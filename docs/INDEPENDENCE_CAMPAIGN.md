@@ -129,9 +129,6 @@ Additions the mission list missed (all `upstream_derived` in the ledger):
 - `src/rt/atrac3p/*` — ~60-file FFmpeg n4.4 ATRAC3+ decoder subset
   (LGPL-2.1-or-later) with a byte-exact blob manifest in
   `src/rt/atrac3p/PROVENANCE.md`. Dependency, not campaign code (see §3).
-- `interface/src/components/ui/*`, `interface/src/hooks/*` — ~20
-  shadcn/ui dashboard primitives (MIT, notice in
-  `THIRD_PARTY_LICENSES/SHADCN_UI.txt`). Dependency, not campaign code.
 - `tools/codegen_gate.py` is listed in the mission; the same record also
   covers the other gates named above — all are in scope together.
 
@@ -139,8 +136,8 @@ Additions the mission list missed (all `upstream_derived` in the ledger):
 
 One row per rewrite unit. "Depends" names in-tree consumers (production or
 test). "Tests today" names only tests that run without private inputs;
-anything needing PPSSPP-captured traces or retail inputs is marked BLOCKED
-accordingly. Sizes at base.
+anything needing external oracle traces or retail inputs has an explicit blocked or not-run disposition; v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
+Sizes at base.
 
 | # | Group (paths) | Upstream | Lines | Depended on by | Tests today | LLE relevance |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -171,7 +168,6 @@ notices, not derived code. None should be replaced by original code:
 | PSPSDK / PSPDEV headers and fixtures (BSD-family notices; `assets/upstream/`, `THIRD_PARTY_LICENSES/PSPSDK.txt`) | External ABI facts + local verification fixtures | **Keep.** Public ABI declarations are facts (names, numbers, layouts), not protectable expression; the tree already enforces identity by pin (`pspdev.lock.json`, `pspsdk_sync.py`). Replacing them would *remove* the independent anchor the clean-room specs cite. |
 | SDL3 (zlib) | Host window/input/audio abstraction | **Keep.** Host-platform abstraction is exactly what the portability rules require (`AGENTS.md`, `PLATFORM_PORTABILITY.md`); a project-owned OS layer per platform would be larger, worse-tested, and no more independent. The excluded `audio.c` SDL backend is still rewritten as original SDL3 API use (G2-adjacent audio item), which is not the same as replacing SDL. |
 | Vulkan loader/headers (Apache-2.0; SDK not redistributed) | Host GPU submission | **Keep**, same reason as SDL3. The independence-relevant code is what is *submitted* (GE semantics, G10/G11), not the submission API. |
-| shadcn/ui dashboard primitives (MIT, notice retained) | Dev-only dashboard components | **Keep.** Generic web UI primitives with a retained MIT notice; outside the runtime's provenance story. |
 | Microsoft Media Foundation (OS component) | `h264_mf.c` decode path | **Keep** as the OS facility; the campaign item is only the thin glue file (G12), rewritten from Microsoft's public API documentation. |
 | System PGF tooling (`pgftool`, `ttf2pgfj.exe`) | Named in upstream font history | **Must not adopt.** `pgftool` has no licence file (terms UNKNOWN) and the converter binary is of unknown provenance (font-origins record §4). The project-owned converter (G4) is specified from the PGF format and metric targets, never from these tools. |
 
@@ -468,16 +464,25 @@ Ledger end-state (checked mechanically):
 5. Dependencies (§3) stay declared with pins and notices; no dependency is
    mislabelled as project-authored.
 
-Enforcing gate (proposed, to be built as tooling, not prose): extend the
-trusted merge-gate posture with `LEDGER_DERIVED_ADMISSION` — the check
-loads the trusted ledger at the base ref and the candidate ledger, and
-fails when the candidate's `upstream_derived` set under `src/`/`tools/`
-grows by any path (new file, relabel, or re-add), unless the delta carries
-an explicit bounded-(c) exemption record signed by the same authority that
-backs other provenance claims. Tightening (fewer derived paths) always
-passes; loosening never passes without that authority. Until the tooling
-exists, the same comparison is a manual review step with the two sorted
-path lists pasted into the PR.
+Enforcing gate (implemented via `tools/provenance_record_gap.py --check`):
+verifies that every upstream-derived production code path (under `src/` or `tools/`,
+excluding `.md`/`.txt` notice and format documents) has an explicit roadmap
+disposition in this document (`status=missing` fails closed). Existing known
+gaps are tracked in a reviewed baseline (`KNOWN_DISPOSITION_GAPS`) with owner
+issue and rationale, ensuring the set of untriaged gaps can shrink but never
+grow; a new unlisted gap fails, and stale baseline entries whose gaps have been
+resolved fail closed until pruned. The gate is wired into `make check`,
+`make readiness`, `make provenance-record-gap-check`, pre-commit hooks, and
+hosted CI (`native_tools` and `main_smoke`).
+
+In addition, the proposed `LEDGER_DERIVED_ADMISSION` merge-gate posture
+extends this to trusted-ledger admission: the check loads the trusted ledger
+at the base ref and the candidate ledger, and fails when the candidate's
+`upstream_derived` set under `src/`/`tools/` grows by any path (new file,
+relabel, or re-add), unless the delta carries an explicit bounded-(c) exemption
+record signed by the same authority that backs other provenance claims.
+Tightening (fewer derived paths) always passes; loosening never passes without
+that authority.
 
 ## 10. Open questions for the maintainer
 

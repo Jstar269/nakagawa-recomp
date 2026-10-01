@@ -937,6 +937,7 @@ static void test_iso_to_native_staging_pipeline(void) {
     PlayerStageCallbacks callbacks = { NULL, staging_progress, NULL };
     PlayerStageSummary summary;
     char error[256];
+    static const char *const loose_content_roots[] = { "xbdata" };
 
     /* ISO directory identifiers carry an explicit byte length. A raw NUL in
      * that span must not be accepted and then truncated into a colliding C
@@ -948,8 +949,12 @@ static void test_iso_to_native_staging_pipeline(void) {
     const char *nul_stage_root = "build/.staging_xb_nul_identifier";
     (void)player_stage_discard(nul_stage_root);
     write_file_bytes(iso_path, image, image_size);
-    assert(player_stage_game_with_summary(iso_path, nul_stage_root, &callbacks,
-                                          &summary, error, sizeof(error)) == NK_ERROR_INVALID_ISO);
+    assert(player_stage_game_with_summary(iso_path, nul_stage_root,
+                                          loose_content_roots,
+                                          sizeof(loose_content_roots) /
+                                              sizeof(loose_content_roots[0]),
+                                          &callbacks, &summary, error,
+                                          sizeof(error)) == NK_ERROR_INVALID_ISO);
     assert(player_stage_discard(nul_stage_root));
     remove(iso_path);
     root_child[32] = 8;
@@ -958,7 +963,9 @@ static void test_iso_to_native_staging_pipeline(void) {
     free(xb.data);
 
     NkResult stage_result = player_stage_game_with_summary(
-        iso_path, stage_root, &callbacks, &summary, error, sizeof(error));
+        iso_path, stage_root, loose_content_roots,
+        sizeof(loose_content_roots) / sizeof(loose_content_roots[0]),
+        &callbacks, &summary, error, sizeof(error));
     if (stage_result != NK_OK) {
         fprintf(stderr, "[XB_TEST] valid staging unexpectedly failed (%d): %s\n",
                 (int)stage_result, error);
@@ -968,6 +975,75 @@ static void test_iso_to_native_staging_pipeline(void) {
     assert(summary.extracted_audio_count == 1);
     assert(summary.extracted_visual_count == 1);
     assert(summary.extracted_layout_count == 2);
+
+    /* A staging request without loose-content bindings stages only EBOOT.BIN;
+     * the player does not infer another payload directory from the ISO. */
+    const char *empty_iso_path = "build/test_xb_empty_stage.iso";
+    const char *empty_stage_root = "build/.staging_xb_empty_assets";
+    const size_t empty_image_size = 32u * 2048u;
+    uint8_t *empty_image = (uint8_t *)calloc(1, empty_image_size);
+    assert(empty_image != NULL);
+    uint8_t *empty_pvd = empty_image + 16u * 2048u;
+    empty_pvd[0] = 1;
+    memcpy(empty_pvd + 1, "CD001", 5);
+    empty_pvd[6] = 1;
+    iso_record(empty_pvd + 156, 17, 2048, 2, &root_name, 1);
+    const IsoFixtureChild empty_root_children[] = {
+        { "PSP_GAME", 18, 2048, 2 }
+    };
+    const IsoFixtureChild empty_game_children[] = {
+        { "SYSDIR", 19, 2048, 2 }
+    };
+    const IsoFixtureChild empty_sysdir_children[] = {
+        { "EBOOT.BIN", 21, 4, 0 }
+    };
+    iso_directory(empty_image + 17u * 2048u, 17, 17,
+                  empty_root_children, 1);
+    iso_directory(empty_image + 18u * 2048u, 18, 17,
+                  empty_game_children, 1);
+    iso_directory(empty_image + 19u * 2048u, 19, 18,
+                  empty_sysdir_children, 1);
+    memcpy(empty_image + 21u * 2048u, "BOOT", 4);
+    (void)player_stage_discard(empty_stage_root);
+    write_file_bytes(empty_iso_path, empty_image, empty_image_size);
+    free(empty_image);
+    assert(player_stage_game_with_summary(empty_iso_path, empty_stage_root,
+                                          NULL, 0, &callbacks, &summary, error,
+                                          sizeof(error)) == NK_OK);
+    assert(error[0] == '\0');
+    assert(summary.extracted_asset_count == 0);
+    char empty_eboot_path[256];
+    snprintf(empty_eboot_path, sizeof(empty_eboot_path), "%s/EBOOT.BIN",
+             empty_stage_root);
+    assert(nk_platform_file_exists(empty_eboot_path));
+    assert(player_stage_discard(empty_stage_root));
+    remove(empty_iso_path);
+
+    /* Direct ISO-stage failures carry an actionable code/message into the
+     * wizard card instead of the previous generic "game staging failed". */
+    const char *missing_stage_root = "build/.staging_xb_missing_input";
+    (void)player_stage_discard(missing_stage_root);
+    assert(player_stage_game_with_summary("build/no_such_source_owned_iso.iso",
+                                          missing_stage_root, NULL, 0, &callbacks,
+                                          &summary, error, sizeof(error)) ==
+           NK_ERROR_FILE_NOT_FOUND);
+    assert(strstr(error, "[STAGE_REQUIRED_FILE_MISSING]") != NULL);
+    assert(!nk_platform_dir_exists(missing_stage_root));
+    assert(player_stage_game_with_summary(NULL, missing_stage_root, NULL, 0,
+                                          &callbacks, &summary, error,
+                                          sizeof(error)) ==
+           NK_ERROR_GENERIC);
+    assert(strstr(error, "[STAGE_REQUEST_INVALID]") != NULL);
+    const char *bad_iso_path = "build/test_xb_malformed_stage.iso";
+    const char *bad_stage_root = "build/.staging_xb_malformed_input";
+    (void)player_stage_discard(bad_stage_root);
+    write_file_bytes(bad_iso_path, "not an ISO", 10);
+    assert(player_stage_game_with_summary(bad_iso_path, bad_stage_root,
+                                          NULL, 0, &callbacks, &summary, error,
+                                          sizeof(error)) == NK_ERROR_INVALID_ISO);
+    assert(strstr(error, "[STAGE_ISO_INVALID]") != NULL);
+    assert(!nk_platform_dir_exists(bad_stage_root));
+    remove(bad_iso_path);
 
     FILE *prx_file = fopen(libfont_destination, "rb");
     assert(prx_file != NULL);

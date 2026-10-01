@@ -27,7 +27,9 @@ extern "C" {
 #define NK_MANIFEST_MAX_BYTES (256 * 1024)
 #define NK_MANIFEST_LIMIT_CLASS "PRODUCT_SECURITY_POLICY"
 #define NK_MANIFEST_MAX_JSON_DEPTH 16
-#define NK_AOT_CACHE_SCHEMA_VERSION 1
+#define NK_AOT_PACKAGE_SCHEMA_VERSION 2
+#define NK_AOT_CACHE_SCHEMA_VERSION 2
+#define NK_AOT_COMPLETION_SCHEMA_VERSION 2
 #define NK_AOT_GENERATED_CODE_ABI_EPOCH 1
 #define NK_AOT_RUNTIME_ABI_EPOCH 1
 #define NK_AOT_COMPLETION_MANIFEST "completion-manifest.json"
@@ -119,15 +121,17 @@ bool nk_title_manifest_read_experimental_profile(
     size_t error_buf_len
 );
 
-/* Validate the v1 generated package at <user_data_root>/packages/<DISC_ID>.
+/* Validate the v2 generated package at <user_data_root>/packages/<DISC_ID>.
  * Experimental entries are additionally bound to their private profile's
- * selected executable hash. `player_abi_version` comes from recomp.h. */
+ * selected executable hash. `current_disc_version` comes from the selected
+ * library ISO inspection; `player_abi_version` comes from recomp.h. */
 NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     const char *user_data_root,
     const char *disc_id,
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
+    const char *current_disc_version,
     uint32_t player_abi_version,
     NkRuntimePackageInfo *out_info,
     char *reason,
@@ -143,6 +147,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
+    const char *current_disc_version,
     uint32_t player_abi_version,
     char out_identity[65]
 );

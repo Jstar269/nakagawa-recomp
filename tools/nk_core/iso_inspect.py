@@ -14,6 +14,7 @@ import struct
 from typing import Dict, Optional, Sequence
 
 import title_manifest
+from .decrypt_boundary import BoundaryOutcome, decrypt_bytes_to, key_file_path
 from .title_registry import TitleRegistry, get_default_registry
 from .types import IsoMetadata
 
@@ -287,6 +288,8 @@ def _canonical_disc_id(value: str) -> str:
 def inspect_iso(
     iso_path: Path | str,
     registry: Optional[TitleRegistry] = None,
+    *,
+    user_data_root: Path | str | None = None,
 ) -> IsoMetadata:
     """Inspect a PSP ISO image and match it against supported title profiles."""
     path = Path(iso_path)
@@ -313,6 +316,7 @@ def inspect_iso(
             title = "Unknown PSP Title"
             version = "1.00"
             identity_structured = False
+            sfo_facts: dict[str, str] = {}
         else:
             sfo_lba, sfo_size = sfo_entry
             if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
@@ -322,6 +326,11 @@ def inspect_iso(
             disc_id = _canonical_disc_id(sfo_dict.get("DISC_ID", ""))
             title = sfo_dict.get("TITLE", "")
             version = sfo_dict.get("DISC_VERSION", "1.00")
+            sfo_facts = {
+                key: sfo_dict[key]
+                for key in ("DISC_ID", "TITLE", "DISC_VERSION", "APP_VER", "PSP_SYSTEM_VER", "CATEGORY")
+                if key in sfo_dict
+            }
             identity_structured = True
             if not title:
                 title = f"PSP Title ({disc_id})"
@@ -338,6 +347,39 @@ def inspect_iso(
             region = "ASIA"
 
         matched = reg.lookup_by_disc_id(disc_id) if identity_structured else None
+        qualification_error = ""
+        if matched is not None and matched.require_local_compatibility_record:
+            from . import package_cache
+
+            recorded = (
+                package_cache.read_local_title_input_identity(user_data_root, disc_id)
+                if user_data_root is not None else None
+            )
+            current_region = region if region in {"JP", "NA", "EU", "KR", "ASIA", "OTHER"} else "OTHER"
+            if recorded is None:
+                qualification_error = (
+                    f"Unqualified revision (SFO DISC_VERSION {version}) for manifest/profile "
+                    f"'{matched.id}': an explicit local compatibility record is required. "
+                    "Register it with --register-local-compatibility-record after reviewing the local inputs."
+                )
+            else:
+                prior = recorded["disc"]
+                if (recorded["manifest"]["id"] != matched.id or
+                    prior["id"] != disc_id or prior["region"] != current_region or
+                    prior["disc_version"] != version or recorded["param_sfo"] != sfo_facts):
+                    if prior["disc_version"] != version:
+                        changed = "SFO revision changed"
+                    elif recorded["manifest"]["id"] != matched.id:
+                        changed = "manifest/profile changed"
+                    elif prior["id"] != disc_id or prior["region"] != current_region:
+                        changed = "DISC_ID or region changed"
+                    else:
+                        changed = "PARAM.SFO facts changed"
+                    qualification_error = (
+                        f"Unqualified revision (SFO DISC_VERSION {version}): {changed}; "
+                        "an explicit local compatibility record is required. "
+                        "Register it with --register-local-compatibility-record after reviewing the local inputs."
+                    )
 
         return IsoMetadata(
             disc_id=disc_id,
@@ -347,6 +389,15 @@ def inspect_iso(
             volume_id=volume_id,
             size_bytes=size_bytes,
             matched_profile=matched,
+            param_sfo_facts=sfo_facts,
+            container_metadata={
+                "format": "iso9660",
+                "volume_id": volume_id,
+                "size_bytes": size_bytes,
+                "pvd_sector": PVD_SECTOR,
+                "sector_size": SECTOR_SIZE,
+            },
+            qualification_error=qualification_error,
         )
 
 
@@ -488,6 +539,10 @@ def write_experimental_profile(
                 offset += count
         executable_sha256 = digest.hexdigest()
         elf_sha256 = executable_sha256
+    if executable_load_address is not None:
+        if executable_entry > 0xFFFFFFFF - executable_load_address:
+            raise IsoInspectionError("relocatable executable entry exceeds the guest address space")
+        executable_entry += executable_load_address
     manifest["executable"]["entry"] = executable_entry
     if executable_load_address is not None:
         manifest["executable"].update({
@@ -735,6 +790,305 @@ def _elf32_mips_usable(
     return have_load and entry_executable
 
 
+# ---------------------------------------------------------------------------
+# Guest-module boundary (issue #295).  The disc's own PRX/ELF modules are
+# resolved through the same per-title folder and built-in decryption boundary
+# as the executable, one module at a time and fail closed per module.
+# ---------------------------------------------------------------------------
+
+MODULE_DIRECTORIES = (
+    ("PSP_GAME", "SYSDIR"),
+    ("PSP_GAME", "SYSDIR", "PRX"),
+    ("PSP_GAME", "USRDIR"),
+    ("PSP_GAME", "USRDIR", "PRX"),
+)
+MAX_MODULE_CANDIDATES = 32
+_MODULE_SUFFIXES = {".prx", ".elf"}
+_EXECUTABLE_FILENAMES = {"eboot.bin", "boot.bin", "eboot.old"}
+
+
+def _prx_container_header_supported(header: bytes) -> bool:
+    """The bounded ``~PSP`` shape the container decoder can accept."""
+    if len(header) < 0x64 or not 1 <= header[0x27] <= 4:
+        return False
+    sizes = struct.unpack_from("<4I", header, 0x54)[: header[0x27]]
+    return all(0 < value <= MAX_EXECUTABLE_BYTES for value in sizes) and \
+        sum(sizes) <= MAX_EXECUTABLE_BYTES
+
+
+def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
+    """The disc's own viable guest-module candidates.
+
+    Bounded ``.prx``/``.elf`` files below the title's module directories, minus
+    the executables, CFW patch modules, and any file the intake route refuses
+    by name or extent (those keep their own named failure).  Each candidate
+    records its member path and whether it is already plain or an encrypted
+    container waiting on the boundary.
+    """
+    path = Path(iso_path)
+    file_size = path.stat().st_size
+    candidates: list[dict] = []
+    with path.open("rb") as stream:
+        for directory in MODULE_DIRECTORIES:
+            for entry in list_iso_directory(path, directory) or []:
+                if entry.is_directory:
+                    continue
+                name = entry.name
+                if Path(name).suffix.casefold() not in _MODULE_SUFFIXES or \
+                        name.casefold() in _EXECUTABLE_FILENAMES:
+                    continue
+                if not title_manifest.FILENAME_RE.fullmatch(name) or \
+                        name.endswith(".") or \
+                        name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+                    continue
+                if entry.multi_extent or entry.size <= 0 or \
+                        entry.size > MAX_EXECUTABLE_BYTES:
+                    continue
+                header = _read_iso_extent(
+                    stream, file_size, entry.lba, entry.size, 0, min(entry.size, 0x64)
+                )
+                if header.startswith(b"\x7fELF"):
+                    if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
+                        continue
+                    blob = _read_iso_extent(
+                        stream, file_size, entry.lba, entry.size, 0, entry.size
+                    )
+                    if len(blob) != entry.size or _has_cfw_or_kernel_only_imports(blob):
+                        continue  # patch modules are excluded from every route
+                    kind = "plain"
+                elif header.startswith(b"~PSP"):
+                    if not _prx_container_header_supported(header):
+                        continue
+                    kind = "encrypted"
+                elif header.startswith(b"~SCE"):
+                    kind = "encrypted"
+                else:
+                    continue
+                candidates.append({
+                    "name": name,
+                    "names": (name,),
+                    "members": (directory + (name,),),
+                    "directory": directory,
+                    "kind": kind,
+                })
+                if len(candidates) > MAX_MODULE_CANDIDATES:
+                    raise IsoInspectionError(
+                        "The ISO contains more than 32 guest-module candidates (#296)."
+                    )
+    return candidates
+
+
+def _module_failure(result: dict, reason: str, detail: str) -> dict:
+    result.update(status="failed", reason=reason, detail=detail)
+    return result
+
+
+def decrypt_needed_modules(
+    iso_path: Path | str,
+    *,
+    user_data_root: Path | str,
+    disc_id: str,
+    modules: Sequence[dict] | None = None,
+) -> dict:
+    """Resolve every module the title needs through the built-in boundary.
+
+    Each ``modules`` entry declares the spellings it can be supplied under
+    (``names``, disc file name first) and the ISO members holding its disc copy
+    (``members``); without ``modules`` the disc's own discovered candidates are
+    used.  Per module:
+
+    * a valid user-supplied plain copy in the per-title decrypted folder wins
+      and is never overwritten (skipped / user-supplied);
+    * an already plain disc copy needs no decryption (skipped / plain);
+    * an encrypted ``~PSP``/``~SCE`` container with no valid user copy is
+      decrypted through the same production boundary into the per-title folder
+      under its disc file name (decrypted);
+    * anything else fails closed for that module alone, naming the exact
+      missing key entry when the boundary reports one (failed).
+
+    Decrypted bytes land only in the private per-user data folder, staged and
+    renamed so an interrupted run never leaves a half-written module.
+    """
+    root = Path(user_data_root).expanduser()
+    module_dir = decrypted_module_dir(root, disc_id)
+    key_hint = key_file_path(root)
+    if modules is None:
+        needs = list_disc_module_candidates(iso_path)
+    else:
+        needs = list(modules)
+    path = Path(iso_path)
+    file_size = path.stat().st_size
+    results: list[dict] = []
+    ready = 0
+    with path.open("rb") as stream:
+        for need in needs:
+            names = tuple(dict.fromkeys(str(spelling) for spelling in need["names"] if spelling))
+            disc_name = names[0] if names else "(unnamed module)"
+            result = {
+                "name": disc_name,
+                "names": list(names),
+                "status": "failed",
+                "reason": "",
+                "detail": "",
+            }
+
+            # 1. A valid user-supplied plain copy wins and is never overwritten.
+            invalid_spelling: str | None = None
+            user_plain: Path | None = None
+            if module_dir is not None:
+                for spelling in names:
+                    candidate = module_dir / spelling
+                    if candidate.is_file():
+                        if _classify_decrypted_elf_file(candidate) == "PLAIN_MIPS_ELF32":
+                            user_plain = candidate
+                            break
+                        if invalid_spelling is None:
+                            invalid_spelling = spelling
+            if user_plain is not None:
+                result.update(status="skipped", reason="user-supplied", detail="")
+                ready += 1
+                results.append(result)
+                continue
+            if invalid_spelling is not None:
+                results.append(_module_failure(
+                    result, "user-supplied-invalid",
+                    f"user-supplied {invalid_spelling} is not a usable plain MIPS ELF32",
+                ))
+                continue
+
+            # 2. The disc copy decides whether anything is needed at all.
+            found = None
+            for member in need.get("members") or ():
+                hit = _lookup_iso_file(stream, file_size, tuple(member))
+                if hit is not None:
+                    found = hit
+                    break
+            if found is None:
+                results.append(_module_failure(
+                    result, "missing", "the disc carries no copy of this module",
+                ))
+                continue
+            lba, extent_size = found
+            if extent_size <= 0 or extent_size > MAX_EXECUTABLE_BYTES:
+                results.append(_module_failure(
+                    result, "unsupported",
+                    "the disc copy exceeds the supported module size",
+                ))
+                continue
+            header = _read_iso_extent(
+                stream, file_size, lba, extent_size, 0, min(extent_size, 0x64)
+            )
+            if header.startswith(b"\x7fELF"):
+                if _elf32_mips_usable(stream, file_size, lba, extent_size):
+                    result.update(status="skipped", reason="plain", detail="")
+                    ready += 1
+                else:
+                    _module_failure(
+                        result, "unsupported",
+                        "the disc copy is not a usable plain MIPS ELF32",
+                    )
+                results.append(result)
+                continue
+            if not (header.startswith(b"~PSP") or header.startswith(b"~SCE")):
+                results.append(_module_failure(
+                    result, "unsupported",
+                    "the disc copy is not a plain module or an encrypted container",
+                ))
+                continue
+
+            # 3. The same production boundary unwraps it under its disc name.
+            if module_dir is None:
+                results.append(_module_failure(
+                    result, "folder-unavailable",
+                    "the per-title decrypted folder is unavailable",
+                ))
+                continue
+            if not key_hint.is_file():
+                results.append(_module_failure(
+                    result, "no-keyfile", f"no local key file at {key_hint}",
+                ))
+                continue
+            try:
+                blob = _read_iso_extent(stream, file_size, lba, extent_size, 0, extent_size)
+            except (OSError, IsoInspectionError) as exc:
+                results.append(_module_failure(result, "disc-read", str(exc)))
+                continue
+            destination = module_dir / disc_name
+            outcome = decrypt_bytes_to(blob, destination, user_data_root=root)
+            if outcome.status == "no-keyfile":
+                results.append(_module_failure(
+                    result, "no-keyfile",
+                    f"no local key file at {outcome.key_path or key_hint}",
+                ))
+                continue
+            if outcome.status != "ok":
+                results.append(_module_failure(
+                    result, "boundary",
+                    outcome.detail or "the container could not be decrypted",
+                ))
+                continue
+            if _classify_decrypted_elf_file(destination) != "PLAIN_MIPS_ELF32":
+                destination.unlink(missing_ok=True)
+                results.append(_module_failure(
+                    result, "boundary", "boundary output is not a usable MIPS ELF32",
+                ))
+                continue
+            result.update(status="decrypted", reason="", detail="")
+            ready += 1
+            results.append(result)
+    return {
+        "module_dir": str(module_dir) if module_dir is not None else None,
+        "ready": ready,
+        "total": len(results),
+        "results": results,
+    }
+
+
+def _guest_modules_check(report: dict, key_hint: Path) -> dict:
+    """The compatibility check line for the module boundary (no tool names)."""
+    ready = report["ready"]
+    total = report["total"]
+    module_dir = report.get("module_dir") or "the per-title decrypted folder"
+    if ready == total:
+        return {
+            "code": "GUEST_MODULES", "status": "OK",
+            "message": f"Guest modules: {ready} of {total} ready.",
+            "issues": [],
+        }
+    failed = [result for result in report["results"] if result["status"] == "failed"]
+    first = failed[0]
+    more = f" ({len(failed) - 1} more not ready)" if len(failed) > 1 else ""
+    label = first["name"]
+    if first["reason"] == "no-keyfile":
+        return {
+            "code": "GUEST_MODULES", "status": "MISSING",
+            "message": (
+                f"Guest modules: {ready} of {total} ready; {label} is encrypted{more}. "
+                f"Supply decrypted modules at {module_dir} (#295), or a local key file "
+                f"at {key_hint} to enable the built-in boundary."
+            ),
+            "issues": [295],
+        }
+    if first["reason"] == "boundary":
+        return {
+            "code": "GUEST_MODULES", "status": "UNSUPPORTED",
+            "message": (
+                f"Guest modules: {ready} of {total} ready; {label} could not be "
+                f"decrypted ({first['detail']}){more}. Supply decrypted modules at "
+                f"{module_dir} (#295), or add the missing entry to your local key file."
+            ),
+            "issues": [295],
+        }
+    return {
+        "code": "GUEST_MODULES", "status": "UNSUPPORTED",
+        "message": (
+            f"Guest modules: {ready} of {total} ready; {label} is not ready "
+            f"({first['detail']}){more}. Supply decrypted modules at {module_dir} (#295)."
+        ),
+        "issues": [295],
+    }
+
+
 def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | None:
     """Return the contained per-title folder for user-supplied decrypted inputs."""
     canonical_id = str(disc_id).upper()
@@ -816,6 +1170,48 @@ def _classify_iso_executable(stream, file_size: int, path: str) -> dict[str, obj
     return result
 
 
+def select_boot_executable_source(iso_path: Path | str) -> str | None:
+    """Select an on-disc boot filename without resolving keys or decrypting files."""
+    path = Path(iso_path)
+    try:
+        size_bytes = path.stat().st_size
+        with path.open("rb") as stream:
+            executables = {
+                "EBOOT.BIN": _classify_iso_executable(stream, size_bytes, "EBOOT.BIN"),
+                "BOOT.BIN": _classify_iso_executable(stream, size_bytes, "BOOT.BIN"),
+            }
+            eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.BIN")
+            )
+            old_eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.OLD")
+            )
+            cfw_loader_detected = False
+            if (
+                eboot_entry is not None
+                and old_eboot_entry is not None
+                and eboot_entry[1] <= MAX_CFW_EBOOT_SCAN_BYTES
+                and executables["EBOOT.BIN"]["classification"] == "PLAIN_MIPS_ELF32"
+            ):
+                loader = _read_iso_extent(
+                    stream, size_bytes, *eboot_entry, 0, eboot_entry[1]
+                )
+                cfw_loader_detected = (
+                    len(loader) == eboot_entry[1]
+                    and _has_cfw_or_kernel_only_imports(loader)
+                )
+    except (OSError, IsoInspectionError, struct.error):
+        return None
+
+    if cfw_loader_detected:
+        return "EBOOT.OLD"
+    eboot_kind = executables["EBOOT.BIN"]["classification"]
+    boot_kind = executables["BOOT.BIN"]["classification"]
+    if eboot_kind == "PSP_ENCRYPTED_CONTAINER" and boot_kind == "PLAIN_MIPS_ELF32":
+        return "BOOT.BIN"
+    return "EBOOT.BIN" if eboot_entry is not None else None
+
+
 def inspect_compatibility_preflight(
     iso_path: Path | str,
     *,
@@ -828,6 +1224,7 @@ def inspect_compatibility_preflight(
     directory_error: str | None = None
     sfo_entry: tuple[int, int] | None = None
     cfw_loader_detected = False
+    eboot_entry: tuple[int, int] | None = None
     try:
         with path.open("rb") as stream:
             sfo_entry = _lookup_iso_file(stream, size_bytes, ("PSP_GAME", "PARAM.SFO"))
@@ -901,6 +1298,39 @@ def inspect_compatibility_preflight(
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
+    # Built-in decryption boundary (issue #295): when the user keeps a local
+    # key file in the private user data, unwrap the disc's encrypted
+    # executable through the production boundary and continue to the
+    # analyzer.  Nothing is ever written next to the ISO or the repository.
+    boundary_outcome: BoundaryOutcome | None = None
+    key_hint = key_file_path(root)
+    if (
+        directory_error is None
+        and eboot_kind in user_decryptable_kinds
+        and module_dir is not None
+        and decrypted_elf is None
+        and eboot_entry is not None
+        and key_hint.is_file()
+    ):
+        lba, extent_size = eboot_entry
+        try:
+            with path.open("rb") as stream:
+                blob = _read_iso_extent(stream, size_bytes, lba, extent_size, 0, extent_size)
+            boundary_outcome = decrypt_bytes_to(
+                blob, module_dir / "EBOOT.elf", user_data_root=root
+            )
+        except (OSError, IsoInspectionError) as exc:
+            boundary_outcome = BoundaryOutcome("failed", str(exc), str(key_hint))
+        if boundary_outcome.status == "ok":
+            decrypted_elf = module_dir / "EBOOT.elf"
+            decrypted_elf_kind = _classify_decrypted_elf_file(decrypted_elf)
+            if decrypted_elf_kind != "PLAIN_MIPS_ELF32":
+                boundary_outcome = BoundaryOutcome(
+                    "failed", "boundary output is not a usable MIPS ELF32",
+                    str(key_hint),
+                )
+                decrypted_elf = None
+                decrypted_elf_kind = "MISSING"
     if (
         not cfw_loader_detected
         and
@@ -910,6 +1340,27 @@ def inspect_compatibility_preflight(
         and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
     ):
         selected = "EBOOT.elf"
+    # Guest-module boundary (issue #295): every module the disc carries is
+    # resolved through the same per-title folder and boundary as the
+    # executable, one module at a time and fail closed per module.
+    module_report: dict[str, object] = {
+        "module_dir": None, "ready": 0, "total": 0, "results": [],
+    }
+    if directory_error is None:
+        try:
+            module_report = decrypt_needed_modules(
+                path, user_data_root=root, disc_id=metadata.disc_id,
+            )
+        except (OSError, IsoInspectionError, struct.error) as exc:
+            module_report = {
+                "module_dir": None, "ready": 0, "total": 0, "results": [],
+                "error": str(exc),
+            }
+    modules_check = (
+        _guest_modules_check(module_report, key_hint)
+        if module_report["total"]
+        else None
+    )
     if directory_error:
         disc_check = {
             "code": "DISC_SFO", "status": "UNSUPPORTED",
@@ -938,10 +1389,10 @@ def inspect_compatibility_preflight(
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
-                "This disc image was modified by a custom-firmware patch. The game "
-                "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
-                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
-                "This boundary is in the works (#308)."
+                "Custom-firmware-patched dump detected; EBOOT.OLD is the game executable "
+                "but is still encrypted. Supply its decrypted form at "
+                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake is "
+                "in the works (#308)."
             ),
             "issues": [308],
         }
@@ -958,18 +1409,41 @@ def inspect_compatibility_preflight(
             "issues": [],
         }
     elif selected == "EBOOT.elf" and decrypted_elf is not None:
-        executable_check = {
-            "code": "EXECUTABLE", "status": "OK",
-            "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
-            "issues": [],
-        }
+        if boundary_outcome is not None and boundary_outcome.status == "ok":
+            executable_check = {
+                "code": "EXECUTABLE", "status": "OK",
+                "message": (
+                    f"The built-in decryption boundary produced a usable MIPS ELF32 at "
+                    f"{decrypted_elf} and it is selected for analysis."
+                ),
+                "issues": [],
+            }
+        else:
+            executable_check = {
+                "code": "EXECUTABLE", "status": "OK",
+                "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+                "issues": [],
+            }
     elif eboot_kind in user_decryptable_kinds and decrypted_elf is not None:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
                 f"Encrypted executable: {decrypted_elf} is invalid or not a usable MIPS ELF32; "
-                f"supply a valid EBOOT.elf and required PRXs at {module_dir} (#295). "
-                "This container remains in the works."
+                f"replace it with a valid decrypted EBOOT.elf and required PRXs at {module_dir}."
+            ),
+            "issues": [],
+        }
+    elif (
+        eboot_kind in user_decryptable_kinds
+        and boundary_outcome is not None
+        and boundary_outcome.status == "failed"
+    ):
+        executable_check = {
+            "code": "EXECUTABLE", "status": "UNSUPPORTED",
+            "message": (
+                f"Encrypted executable: the built-in decryption boundary failed "
+                f"({boundary_outcome.detail}); supply decrypted modules at {module_dir} (#295). "
+                f"Check the local key file at {boundary_outcome.key_path}."
             ),
             "issues": [295],
         }
@@ -978,15 +1452,17 @@ def inspect_compatibility_preflight(
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
                 f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
-                "Automatic decryption is in the works."
+                f"A matching local key file at {key_hint} enables built-in decryption "
+                "for supported formats. The project ships no keys; broader ISO-to-Play "
+                "support is in the works (#308)."
             ),
             "issues": [295],
         }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Encrypted executable. Decryption support is in the works (#295).",
-            "issues": [295],
+            "message": "Encrypted executable format is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "issues": [308],
         }
     elif eboot_kind == "EMPTY_OR_ZERO_FILLED":
         executable_check = {
@@ -996,14 +1472,14 @@ def inspect_compatibility_preflight(
     elif eboot_kind == "SCE_WRAPPER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "~SCE wrapper is not analyzable; container support is in the works (#295).",
-            "issues": [295],
+            "message": "~SCE wrapper could not be analyzed; broader ISO-to-Play support is in the works (#308).",
+            "issues": [308],
         }
     elif eboot_kind == "PBP":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "PBP is not plain ELF; executable unpacking is in the works (#295).",
-            "issues": [295],
+            "message": "PBP executable unpacking is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "issues": [308],
         }
     else:
         executable_check = {
@@ -1082,18 +1558,23 @@ def inspect_compatibility_preflight(
             "code": "MODIFIED_DUMP_CFW_LOADER",
             "status": "IN_PROGRESS" if selected == "EBOOT.elf" else "UNSUPPORTED",
             "message": (
-                "A custom-firmware patch loader was detected; EBOOT.OLD is the game "
-                "executable. The supplied decrypted EBOOT.elf is selected for analysis, "
-                "and patch modules are excluded. CFW dump support is in the works (#308)."
+                "Custom-firmware-patched dump: using the original executable; EBOOT.OLD "
+                "is the game executable selected through the supplied decrypted EBOOT.elf. "
+                "The EBOOT.BIN loader and "
+                "custom-firmware patch modules are excluded. Broader CFW dump support "
+                "is in the works (#308)."
                 if selected == "EBOOT.elf"
-                else "A custom-firmware patch loader was detected. EBOOT.OLD is the game "
-                     "executable (encrypted); supply its decrypted executable at "
-                     "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean "
-                     "dump (#308)."
+                else "Custom-firmware-patched dump detected; EBOOT.OLD is the game "
+                     "executable but is still encrypted. Supply its decrypted form at "
+                     "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake "
+                     "is in the works (#308)."
             ),
             "issues": [308],
         })
-    checks.extend((executable_check, runtime_check, fonts_check, audio_check))
+    checks.append(executable_check)
+    if modules_check is not None:
+        checks.append(modules_check)
+    checks.extend((runtime_check, fonts_check, audio_check))
     if experimental_check is not None:
         checks.insert(0, experimental_check)
     return {
@@ -1101,6 +1582,7 @@ def inspect_compatibility_preflight(
         "selected_executable": selected,
         "selected_executable_source": "EBOOT.OLD" if cfw_loader_detected else selected,
         "decrypted_module_dir": str(module_dir) if module_dir is not None else None,
+        "module_decryption": module_report,
         "decrypted_executable": (
             str(decrypted_elf.resolve(strict=False))
             if selected == "EBOOT.elf" and decrypted_elf is not None
@@ -1108,6 +1590,16 @@ def inspect_compatibility_preflight(
         ),
         "modified_dump_cfw_loader": cfw_loader_detected,
         "boot_fallback": fallback,
+        "key_file": str(key_hint),
+        "built_in_boundary": (
+            {
+                "status": boundary_outcome.status,
+                "detail": boundary_outcome.detail,
+                "key_file": boundary_outcome.key_path,
+            }
+            if boundary_outcome is not None
+            else None
+        ),
         "executables": executables,
         "checks": checks,
     }

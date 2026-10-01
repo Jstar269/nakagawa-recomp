@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 """Source-shape gates for the finite #15 native bulk/parser slice.
@@ -98,11 +98,19 @@ class TestGuestSpanRouting(unittest.TestCase):
         self.assertTrue(0 <= writable < flush < copy < dirty)
         self.assertNotIn("if (!sr_inrange(so0)", body)
 
+    def test_vram_dump_preflights_the_span_before_its_host_pointer(self) -> None:
+        body = _body((ROOT / "src" / "rt" / "ge.c").read_text(encoding="utf-8"), "ge_vramdump_write")
+        readable = body.find("sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)")
+        opened = body.find("fopen(")
+        host = body.find("SR_HOST(GE_CAPTURE_VRAM_BASE)")
+        self.assertTrue(0 <= readable < opened < host)
+
     def test_ge_direct_guest_host_pointers_have_named_complete_span_owners(self) -> None:
         cases = {
             ROOT / "src" / "rt" / "ge.c": {
                 "ge_decode_tex_rgba": ("sr_guest_rect_readable",),
                 "ge_block_transfer": ("sr_guest_rect_readable", "sr_guest_rect_writable"),
+                "ge_vramdump_write": ("sr_guest_span_readable",),
             },
             ROOT / "src" / "rt" / "ge_capture.c": {
                 "ge_capture_begin": ("sr_guest_span_readable",),
@@ -118,6 +126,25 @@ class TestGuestSpanRouting(unittest.TestCase):
         }
         for path, owners in cases.items():
             text = path.read_text(encoding="utf-8")
+            if path.name == "ge.c":
+                # The standalone VRAM decoder CLI build reads a private captured 2 MiB
+                # image through ge_vram_cli_read8, which bounds-checks every byte; it
+                # never touches guest memory. Blank those blocks, but require the check.
+                self.assertIn("ge_vram_cli_bad_read = 1;", text)
+                lines = text.split(chr(10))
+                depth = 0
+                for index, line in enumerate(lines):
+                    stripped = line.strip()
+                    if depth == 0 and stripped == "#ifdef SR_GE_VRAM_DECODER_CLI":
+                        depth = 1
+                        lines[index] = ""
+                    elif depth:
+                        if stripped.startswith(("#if", "#ifdef", "#ifndef")):
+                            depth += 1
+                        elif stripped.startswith("#endif"):
+                            depth -= 1
+                        lines[index] = ""
+                text = chr(10).join(lines)
             if path.name == "ge_gpu.c":
                 # Ignore the explicitly synthetic Vulkan selftest block. Production
                 # code before and after it remains in the census.

@@ -40,7 +40,6 @@ body:
         - Runtime
         - Pipeline tools
         - Reference interpreter
-        - Dashboard
         - Build system
         - Documentation
         - Unsure

@@ -21,7 +21,7 @@ Use a narrower scope when diagnosing one layer:
 .\nk.ps1 Doctor -Scope run
 ```
 
-For automation or the optional local dashboard:
+For automation:
 
 ```powershell
 .\nk.ps1 Doctor -Scope all -Json
@@ -101,6 +101,22 @@ The run scope verifies:
 The doctor's VFPU check remains a name/size baseline for workspace diagnosis; content
 authentication, semantic invariants, checked indexing, and thread-safe publication now live in
 the runtime loader itself (`src/rt/vfpu_tables.c`, embedded SHA-256 manifest).
+
+### Path length
+
+`check_long_paths` measures the repository root plus the longest path that will exist under it, and
+reports whichever is longer: the deepest expected build output
+(`build/synthetic/vfpu_oracle/nakagawa.stdout.txt`) and, when the checkout can enumerate it, the
+longest tracked file. The result names the exact path at risk, the root length, and which of the two
+produced it, so a short repository with one deep directory is diagnosed rather than missed.
+
+Two limits are reported because they answer different questions. `MAX_PATH` is 260 including the
+terminating NUL, so that is the length at which a Win32 call fails. The advisory limit is 240: a build
+appends suffixes (`.o`, `.d`, `.exe`, `.tmp`) to directories it already holds, so a root that is merely
+"under 260" can still fail during the build rather than when the user moves the checkout. When
+`LongPathsEnabled` is off, crossing the advisory margin reports the exact path at risk and the number
+of characters to remove. The check is advisory: it warns and never fails the doctor, so a deep but
+working checkout stays usable.
 
 ## Exit status
 
@@ -198,6 +214,24 @@ mingw32-make clean-preview OLDER_THAN=7
 `make clean`, `clean-fixtures`, `distclean`, and `clean-all` keep their existing pinned
 semantics; `clean-preview` is additive.
 
+## Checkouts at an arbitrary path
+
+An outside contributor clones the public repository wherever their tooling puts it, and a checkout
+under a Windows profile directory whose name contains spaces is ordinary
+(`C:/path/with spaces/nakagawa`). Such a checkout builds, passes
+`mingw32-make native-core-tests`, `mingw32-make check`, `mingw32-make contrib-check` and the Python
+tooling suite; `tools/test_relocated_clone.py` runs a bounded contributor command set from a copy of
+the tracked tree placed under a directory whose own name contains spaces, so that property is tested
+rather than assumed.
+
+Two boundaries remain, and both fail closed with a named message instead of a mysterious failure:
+
+- a `BUILD_DIR` containing a space cannot be represented by GNU Make, so the Makefile refuses it
+  before any recipe runs and names the remedy (a relative `BUILD_DIR`, or `NK_BUILD_ROOT`); see
+  [SETUP.md](SETUP.md#checkout-path-and-build_dir) and #296.
+- guest input pathnames keep travelling through the process environment rather than through recipe
+  text, for the same reason; see [SETUP.md](SETUP.md) and the transport note in the Makefile.
+
 ## Deferred build and workspace ergonomics
 
 The governance work intentionally leaves these as separate, evidence-backed follow-ups:
@@ -211,10 +245,15 @@ The governance work intentionally leaves these as separate, evidence-backed foll
 3. make worktree asset resolution explicit and independent of the invoking checkout;
 4. [DONE - #368] add a long-path diagnostic to the workspace doctor:
    implemented in `tools/nk_doctor_checks.py` (`check_long_paths`, `query_windows_long_paths_enabled`)
-   under code `LONG_PATHS`, reporting Windows `LongPathsEnabled` registry policy and MAX_PATH (260) margin
-   for the deepest expected build path as an advisory `WARN`;
+   under code `LONG_PATHS`, reporting Windows `LongPathsEnabled` registry policy and both the
+   MAX_PATH (260) limit and the 240-character advisory margin for the longer of the deepest expected
+   build path and the longest tracked path, as an advisory `WARN` naming the path at risk;
 5. [DONE - #368] define bounded artifact accumulation and a safe, scoped `clean-all` workflow:
-6. stop root-level artifact pollution and document the intended output roots;
+6. [PARTIAL - #368] stop root-level artifact pollution and document the intended output roots: the
+   `build` lifecycle tests no longer take their `BUILD_DIR` from the repository root, so they cannot
+   make Make write `spaces/` litter into a checkout, and a whitespace-bearing `BUILD_DIR` is refused
+   outright; `clean-preview` still reports only the roots listed above, so a route that writes outside
+   them is not yet surfaced by a single inventory;
 7. eliminate absolute paths from generated `compile_commands.json` where tooling permits;
 8. audit and bound agent database/worktree accumulation;
 9. consider build-cache research only after the correctness and ownership contracts are stable.

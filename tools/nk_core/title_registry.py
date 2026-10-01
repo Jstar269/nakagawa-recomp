@@ -85,6 +85,12 @@ def title_profile_from_manifest(manifest: Dict[str, Any]) -> TitleProfile:
         save_namespace=disc_ids[0] if disc_ids else t_id,
         runtime_profile=manifest.get("hle_profile", "standard"),
         codegen_profile=manifest.get("codegen_profile", "none"),
+        require_local_compatibility_record=bool(
+            manifest.get("disc", {}).get("require_local_compatibility_record", False)
+        ),
+        loose_content_roots=tuple(
+            dict(root) for root in fs.get("loose_content_roots", [])
+        ),
     )
 
 

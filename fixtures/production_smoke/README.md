@@ -6,21 +6,22 @@ header; no binary fixture is committed.
 
 The guest deliberately exercises two load segments, BSS recovery from the PSP
 header, type-A relocations, import extraction, analyzer discovery, chunked C
-generation, a real HLE import, and a relocation-dependent result write. Names,
-addresses, instructions, and data are project-authored test values. They do not
-contain or derive from a retail title.
+generation, real HLE imports (one synthetic plus the sceImpose language pair,
+whose setter/getter round-trip the driver asserts guest-observably), and a
+relocation-dependent result write. Names, addresses, instructions, and data are
+project-authored test values. They do not contain or derive from a retail title.
 
 ## Execution modes
 
 `generate.py generate/verify/run --mode <mode>` selects the mode plan. All modes share the same
-base, entry, helper address (`0x08804028`), import stub, result slot and sentinel.
+base, entry, helper address (`0x08804068`), import stubs, out-slots, result slot and sentinel.
 
 - `aot` — the plain production path: every discovered function is emitted as native code and the
   run must pass the relocation-dependent sentinel.
 - `aot-gap` — the AOT/dispatch seam: the mode's build-time codegen choice
-  (`--omit-aot=0x08804028`) removes the helper from native emission/registration ONLY. Its bytes
+  (`--omit-aot=0x08804068`) removes the helper from native emission/registration ONLY. Its bytes
   stay complete in the guest image; region A's linked `jal` compiles to the typed production
-  `dispatch_call(s, 0x08804028, 0x08804018)` seam. The call's resume PC is carried separately
+  `dispatch_call(s, 0x08804068, 0x08804018)` seam. The call's resume PC is carried separately
   from `$ra`, so the interpreter executes the omitted helper and its return delay slot, then
   hands back before the native continuation. Generated registration explicitly owns the
   helper's executable span; the production interpreter executes the helper bytes only because

@@ -92,7 +92,7 @@ class GenericTitleProofFixtures(unittest.TestCase):
         for hst_mod in HST_MODULES:
             self.assertNotIn(hst_mod, modules)
         # No HST disc, no .exe semantics, portable paths only.
-        self.assertIn("fixtures/synthetic_title2/data", normalized["filesystem"]["data_root"])
+        self.assertEqual(normalized["filesystem"]["data_root"], "fixtures/profile_zero")
         self.assertFalse(any("\\" in p or ":" in p for p in [normalized["filesystem"]["data_root"]]))
         # Runtime bindings are disjoint from the other two synthetics.
         self.assertEqual(len(normalized["runtime_bindings"]["dispatch_aliases"]), 2)
@@ -116,9 +116,11 @@ class GenericTitleProofFixtures(unittest.TestCase):
             # check against HST retired span/modules
             self.assertNotIn(HST_SPAN[0], used)
         self.assertEqual(len(bases), 3, "each fixture must have a distinct executable base")
-        # Ensure synthetic-title2 uses 0x0A4xxxxx family as promised.
-        s2 = title_manifest.validate_manifest(_load(SYNTHETIC2))
-        self.assertEqual(s2["executable"]["base"] >> 20, 0x0A4)
+        # synthetic-title2 sits in its own 1 MiB address family, apart from the other two,
+        # so no literal can satisfy it and another fixture at once.
+        s2_base = title_manifest.validate_manifest(_load(SYNTHETIC2))["executable"]["base"]
+        others = {base >> 20 for base in bases if base != s2_base}
+        self.assertNotIn(s2_base >> 20, others)
 
 
 class GenericPlannerAcceptsSyntheticTitle2(unittest.TestCase):
@@ -138,8 +140,9 @@ class GenericPlannerAcceptsSyntheticTitle2(unittest.TestCase):
         self.assertEqual(plan["title_manifest_id"], "synthetic-title2-v1")
         self.assertEqual(plan["title_kind"], "synthetic")
         self.assertEqual(plan["game_name"], "synthetic_title2")
-        self.assertEqual(plan["game_base"], 0x0A400000)
-        self.assertEqual(plan["game_entry"], 0x0A400000)
+        executable = title_manifest.validate_manifest(_load(SYNTHETIC2))["executable"]
+        self.assertEqual(plan["game_base"], executable["base"])
+        self.assertEqual(plan["game_entry"], executable["entry"])
         self.assertEqual(plan["codegen_profile"], "none")
         self.assertEqual(plan["bss_metadata_source"], "elf")
         self.assertEqual(plan["extra_executable_spans"], [])
@@ -149,8 +152,8 @@ class GenericPlannerAcceptsSyntheticTitle2(unittest.TestCase):
         self.assertEqual(plan["make"]["build_dir"], "build/synthetic_title2")
         # Environment is generic and host-portable: no HST constants invented.
         # Generic planner emits only TITLE_EXTRA_SPANS; HST legacy must not appear for synthetics.
-        self.assertEqual(plan["environment"]["GAME_BASE"], "0x0a400000")
-        self.assertEqual(plan["environment"]["GAME_ENTRY"], "0x0a400000")
+        self.assertEqual(plan["environment"]["GAME_BASE"], f"0x{executable['base']:08x}")
+        self.assertEqual(plan["environment"]["GAME_ENTRY"], f"0x{executable['entry']:08x}")
         self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
         self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         # synthetic_title2 has one optional module but none selected by default -> no module_dir required
@@ -204,7 +207,7 @@ class GenericPlannerAcceptsSyntheticTitle2(unittest.TestCase):
             build_dir=pathlib.Path("build/synthetic_title2"),
         )
         self.assertEqual(plan["title_manifest_id"], "synthetic-title2-v1")
-        self.assertEqual(plan["game_base"], 0x0A400000)
+        self.assertEqual(plan["game_base"], title_manifest.validate_manifest(_load(SYNTHETIC2))["executable"]["base"])
         self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
         self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])
         self.assertFalse(any("--profile=hst" in arg for arg in plan["commands"]["codegen"]))
@@ -441,7 +444,7 @@ class LegacyToolingRetirementTests(unittest.TestCase):
         retired_names = tuple(self.RETIRED_PATHS)
         paths = [
             ROOT / "Makefile",
-            ROOT / "copy_build_assets.ps1",
+            ROOT / "tools" / "copy_build_assets.ps1",
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "assets" / "titles" / "README.md",
@@ -524,7 +527,8 @@ class HostPortability(unittest.TestCase):
         self.assertNotIn("\\\\", rendered)
         self.assertIn("C:/private/EBOOT.elf", rendered)
         self.assertIn("C:/repo/build/synthetic_title2/synthetic_title2_recomp.c", rendered)
-        self.assertIn("C:/private/modules/synthetic2.prx@0x0a800000", rendered)
+        module_address = title_manifest.validate_manifest(_load(SYNTHETIC2))["modules"][0]["load_address"]
+        self.assertIn(f"C:/private/modules/synthetic2.prx@0x{module_address:08x}", rendered)
 
     def test_protected_digest_is_portable_and_covers_only_operational_semantics(self) -> None:
         """A notes-only edit does not move the digest; any operative edit does."""

@@ -42,4 +42,4 @@ python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
-exclude = ["build/", "third_party/", "interface/"]
+exclude = ["build/", "third_party/"]

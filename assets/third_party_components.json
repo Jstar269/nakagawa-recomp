@@ -2,13 +2,13 @@
   "$schema": "./third_party_components.schema.json",
   "name": "nakagawa-recomp-third-party-components",
   "schema_version": 1,
-  "description": "Single machine-readable source of truth for every third-party component that can enter a release artifact. tools/package_notices.py (native package), tools/dashboard_notices.py (dashboard standalone output), tools/generate_sbom.py (SBOM) and tools/test_third_party_notices.py (release gate) all read this file. A component without a spdx_id, a license text in the tree, and (for Python tools) a recorded license fails the gate.",
+  "description": "Single machine-readable source of truth for every third-party component that can enter a release artifact. tools/package_notices.py (native package), tools/generate_sbom.py (SBOM) and tools/test_third_party_notices.py (release gate) all read this file. A component without a spdx_id, a license text in the tree, and (for Python tools) a recorded license fails the gate.",
   "version_source_policy": "No version literal is trusted. Native DLL versions are read from the toolchain's own pacman database (var/lib/pacman/local/<pkg>/desc); Python and npm versions are read from the declared lockfiles. Every license text under third_party/licenses/ was copied verbatim from the component's own distribution in the local toolchain; each record below names the exact file it was copied from.",
   "native": {
     "copy_routes": [
       {
         "id": "compile-asset-copy",
-        "file": "copy_build_assets.ps1",
+        "file": "tools/copy_build_assets.ps1",
         "copies": [
           "SDL3.dll",
           "libgcc_s_seh-1.dll",
@@ -16,6 +16,30 @@
           "libstdc++-6.dll"
         ],
         "note": "The three MinGW/UCRT runtime DLLs are copied only when a bundled .exe/.dll in the build directory actually imports them (objdump -p 'DLL Name' match). The conditional does not narrow the notice obligation: every DLL this route can copy must carry a license record."
+      },
+      {
+        "id": "player-typography-runtime",
+        "file": "tools/stage_runtime_dlls.py",
+        "copies": [
+          "SDL3.dll",
+          "SDL3_ttf.dll",
+          "libfreetype-6.dll",
+          "libharfbuzz-0.dll",
+          "libgraphite2.dll",
+          "libglib-2.0-0.dll",
+          "libintl-8.dll",
+          "libiconv-2.dll",
+          "libpcre2-8-0.dll",
+          "libpng16-16.dll",
+          "zlib1.dll",
+          "libbz2-1.dll",
+          "libbrotlidec.dll",
+          "libbrotlicommon.dll",
+          "libgcc_s_seh-1.dll",
+          "libstdc++-6.dll",
+          "libwinpthread-1.dll"
+        ],
+        "note": "Mechanical PE-import closure of SDL3.dll and SDL3_ttf.dll (objdump -p with the pure-Python PE fallback), recursively, stopping at Windows system DLLs; staged beside build/nakagawa_player.exe and into built packages (#421). The closure is resolved at staging time and fails closed on any unresolved non-system import; this list is the license obligation that follows it."
       }
     ],
     "host_resolved_dlls": [
@@ -24,7 +48,7 @@
     "system_dll_patterns": [
       "^api-ms-win-.*\\.dll$",
       "^ext-ms-win-.*\\.dll$",
-      "^(kernel32|kernelbase|user32|gdi32|shell32|ole32|oleaut32|advapi32|setupapi|imm32|version|winmm|comctl32|comdlg32|shlwapi|ws2_32|wsock32|dnsapi|iphlpapi|netapi32|userenv|uxtheme|dwmapi|d3d[0-9a-z_]*|dxgi|dinput[0-9a-z_]*|xinput[0-9a-z_]*|mfplat|mf|mfreadwrite|mfuuid|ntdll|msvcrt|ucrtbase)\\.dll$"
+      "^(kernel32|kernelbase|user32|gdi32|shell32|ole32|oleaut32|advapi32|setupapi|imm32|version|winmm|comctl32|comdlg32|shlwapi|ws2_32|wsock32|dnsapi|iphlpapi|netapi32|userenv|uxtheme|dwmapi|d3d[0-9a-z_]*|dxgi|dinput[0-9a-z_]*|xinput[0-9a-z_]*|mfplat|mf|mfreadwrite|mfuuid|ntdll|msvcrt|ucrtbase|dwrite|rpcrt4|usp10)\\.dll$"
     ],
     "dlls": {
       "sdl3.dll": {
@@ -40,6 +64,219 @@
             "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-sdl3: ucrt64/share/licenses/SDL3/LICENSE.txt",
             "toolchain_license_rel": "share/licenses/SDL3/LICENSE.txt",
             "sha256": "1c040b8271b37e5076359f8fd54240e371114112924d2df81ef87c7d6a1dfdfd"
+          }
+        ]
+      },
+      "sdl3_ttf.dll": {
+        "name": "SDL3_ttf",
+        "notice_file": "SDL3_ttf.txt",
+        "spdx_id": "Zlib",
+        "pacman_package": "sdl3-ttf",
+        "upstream_origin": "https://github.com/libsdl-org/SDL_ttf",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/SDL3_ttf.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-sdl3-ttf: ucrt64/share/licenses/SDL3_ttf/LICENSE.txt",
+            "toolchain_license_rel": "share/licenses/SDL3_ttf/LICENSE.txt",
+            "sha256": "7826eca0a0f7e591f38dd844e207a200aac81a59b20d8a30c3af8c6282af13e6"
+          }
+        ]
+      },
+      "libfreetype-6.dll": {
+        "name": "FreeType",
+        "notice_file": "FreeType-FTL.txt",
+        "spdx_id": "FTL",
+        "pacman_package": "freetype",
+        "upstream_origin": "https://gitlab.freedesktop.org/freetype/freetype",
+        "disposition": "copied_into_package",
+        "note": "FreeType is dual-licensed FTL or GPL-2.0-or-later; this distribution uses the FTL option, which the FSF lists as GPL-compatible.",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/FreeType-FTL.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-freetype: ucrt64/share/licenses/freetype/FTL.TXT",
+            "toolchain_license_rel": "share/licenses/freetype/FTL.TXT",
+            "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f"
+          }
+        ]
+      },
+      "libharfbuzz-0.dll": {
+        "name": "HarfBuzz",
+        "notice_file": "HarfBuzz.txt",
+        "spdx_id": "MIT",
+        "pacman_package": "harfbuzz",
+        "upstream_origin": "https://github.com/harfbuzz/harfbuzz",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/HarfBuzz.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-harfbuzz: ucrt64/share/licenses/harfbuzz/COPYING",
+            "toolchain_license_rel": "share/licenses/harfbuzz/COPYING",
+            "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+          }
+        ]
+      },
+      "libgraphite2.dll": {
+        "name": "Graphite2",
+        "notice_file": "Graphite2.txt",
+        "spdx_id": "MIT",
+        "pacman_package": "graphite2",
+        "upstream_origin": "https://github.com/silnrsi/graphite",
+        "disposition": "copied_into_package",
+        "note": "Upstream grants a four-way choice (LGPL-2.1+, MPL-2.0, GPL-2.0+, or MIT) per its LICENSE; this distribution uses the MIT option. The copied text carries all four grants in full where required.",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/Graphite2.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-graphite2: ucrt64/share/licenses/graphite2/LICENSE",
+            "toolchain_license_rel": "share/licenses/graphite2/LICENSE",
+            "sha256": "cab46cd45adbfea4b1d0f14b033c70062c73074fa0b56532c2f351576ddf455e"
+          }
+        ]
+      },
+      "libpng16-16.dll": {
+        "name": "libpng",
+        "notice_file": "libpng.txt",
+        "spdx_id": "libpng-2.0",
+        "pacman_package": "libpng",
+        "upstream_origin": "http://www.libpng.org/pub/png/libpng.html",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/libpng.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-libpng: ucrt64/share/licenses/libpng/LICENSE",
+            "toolchain_license_rel": "share/licenses/libpng/LICENSE",
+            "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526"
+          }
+        ]
+      },
+      "zlib1.dll": {
+        "name": "zlib",
+        "notice_file": "zlib.txt",
+        "spdx_id": "Zlib",
+        "pacman_package": "zlib",
+        "upstream_origin": "https://zlib.net/",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/zlib.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-zlib: ucrt64/share/licenses/zlib/LICENSE",
+            "toolchain_license_rel": "share/licenses/zlib/LICENSE",
+            "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+          }
+        ]
+      },
+      "libbz2-1.dll": {
+        "name": "bzip2",
+        "notice_file": "bzip2.txt",
+        "spdx_id": "bzip2-1.0.6",
+        "pacman_package": "bzip2",
+        "upstream_origin": "https://sourceware.org/bzip2/",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/bzip2.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-bzip2: ucrt64/share/licenses/bzip2/LICENSE",
+            "toolchain_license_rel": "share/licenses/bzip2/LICENSE",
+            "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3"
+          }
+        ]
+      },
+      "libbrotlidec.dll": {
+        "name": "Brotli (decoder)",
+        "notice_file": "Brotli.txt",
+        "spdx_id": "MIT",
+        "pacman_package": "brotli",
+        "upstream_origin": "https://github.com/google/brotli",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/Brotli.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-brotli: ucrt64/share/licenses/brotli/LICENSE",
+            "toolchain_license_rel": "share/licenses/brotli/LICENSE",
+            "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+          }
+        ]
+      },
+      "libbrotlicommon.dll": {
+        "name": "Brotli (common)",
+        "notice_file": "Brotli.txt",
+        "spdx_id": "MIT",
+        "pacman_package": "brotli",
+        "upstream_origin": "https://github.com/google/brotli",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/Brotli.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-brotli: ucrt64/share/licenses/brotli/LICENSE",
+            "toolchain_license_rel": "share/licenses/brotli/LICENSE",
+            "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+          }
+        ]
+      },
+      "libglib-2.0-0.dll": {
+        "name": "GLib",
+        "notice_file": "GLib.txt",
+        "spdx_id": "LGPL-2.1-or-later",
+        "pacman_package": "glib2",
+        "upstream_origin": "https://gitlab.gnome.org/GNOME/glib",
+        "disposition": "copied_into_package",
+        "note": "Dynamically linked LGPL-2.1-or-later. LGPL-2.1 section 3 permits use under GPL-3 terms, so it combines with this GPL-3 distribution; the DLL boundary keeps the library replaceable.",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/GLib.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-glib2: ucrt64/share/licenses/glib2/COPYING",
+            "toolchain_license_rel": "share/licenses/glib2/COPYING",
+            "sha256": "fa6f36630bb1e0c571d34b2bbdf188d08495c9dbf58f28cac112f303fc1f58fb"
+          }
+        ]
+      },
+      "libintl-8.dll": {
+        "name": "GNU libintl (gettext runtime)",
+        "notice_file": "libintl.txt",
+        "spdx_id": "LGPL-2.1-or-later",
+        "pacman_package": "gettext-runtime",
+        "upstream_origin": "https://www.gnu.org/software/gettext/",
+        "disposition": "copied_into_package",
+        "note": "Dynamically linked LGPL-2.1-or-later; see the GLib record for the combination note.",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/libintl.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-gettext-runtime: ucrt64/share/licenses/gettext-runtime/intl/COPYING.LIB",
+            "toolchain_license_rel": "share/licenses/gettext-runtime/intl/COPYING.LIB",
+            "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+          }
+        ]
+      },
+      "libiconv-2.dll": {
+        "name": "GNU libiconv",
+        "notice_file": "libiconv.txt",
+        "spdx_id": "LGPL-2.1-or-later",
+        "pacman_package": "libiconv",
+        "upstream_origin": "https://www.gnu.org/software/libiconv/",
+        "disposition": "copied_into_package",
+        "note": "Dynamically linked LGPL-2.1-or-later; see the GLib record for the combination note.",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/libiconv.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-libiconv: ucrt64/share/licenses/libiconv/COPYING.LIB",
+            "toolchain_license_rel": "share/licenses/libiconv/COPYING.LIB",
+            "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+          }
+        ]
+      },
+      "libpcre2-8-0.dll": {
+        "name": "PCRE2",
+        "notice_file": "PCRE2.txt",
+        "spdx_id": "BSD-3-Clause WITH PCRE2-exception",
+        "pacman_package": "pcre2",
+        "upstream_origin": "https://github.com/PCRE2Project/pcre2",
+        "disposition": "copied_into_package",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/PCRE2.txt",
+            "copied_from": "MSYS2 UCRT64 package mingw-w64-ucrt-x86_64-pcre2: ucrt64/share/licenses/pcre2/LICENCE.md",
+            "toolchain_license_rel": "share/licenses/pcre2/LICENCE.md",
+            "sha256": "197d8a73ffee0d6b09adba2f9c677b5f5aede24edf89258a68e48248d010d811"
           }
         ]
       },
@@ -120,6 +357,11 @@
             "file": "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
             "copied_from": "FFmpeg n4.4 upstream COPYING.LGPLv2.1 as imported into src/rt/atrac3p/",
             "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+          },
+          {
+            "file": "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt",
+            "copied_from": "MIPS Technologies, Inc. notice in the byte-identical FFmpeg n4.4 headers src/rt/atrac3p/libavcodec/fft_init_table.c and src/rt/atrac3p/libavcodec/fft_table.h",
+            "sha256": "7f8e4bf527a9c2f387485429f0bf1cf7982dfb70c7d3e87cc53086dd5ebf202c"
           }
         ]
       }
@@ -170,9 +412,9 @@
         "recorded_from": "installed dist-info compiledb-0.10.7.dist-info/METADATA (License: GPL-3.0-or-later; Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)); License-File: LICENSE"
       },
       "ruff": {
-        "version": "0.16.0",
+        "version": "0.16.9",
         "spdx_id": "MIT",
-        "recorded_from": "installed dist-info ruff-0.16.0.dist-info/METADATA (License-Expression: MIT); License-File: LICENSE"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/ruff/0.16.9/json (license_expression: MIT; license_files: LICENSE)"
       },
       "click": {
         "version": "8.5.0",
@@ -185,113 +427,5 @@
         "recorded_from": "installed dist-info bashlex-0.18.dist-info/METADATA (License: GPLv3+; Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)); License-File: LICENSE"
       }
     }
-  },
-  "dashboard": {
-    "lockfile": "interface/package-lock.json",
-    "notices_target": "interface/.next/standalone",
-    "generator": "tools/dashboard_notices.py",
-    "note": "The Next.js standalone output traces npm packages out of node_modules, so it redistributes third-party code even though this repository does not carry node_modules. The lockfile is the exact inventory: every entry's license expression is emitted verbatim. Classes listed in license_obligations need a maintainer decision that this repository does not make.",
-    "license_obligations": {
-      "MIT": {
-        "applies_to": [],
-        "obligation": "MIT requires the copyright notice and permission text to travel with the distribution. Each traced package keeps its own LICENSE file under its node_modules directory; the notices bundle names the exact package so that directory is kept.",
-        "resolved": true
-      },
-      "ISC": {
-        "applies_to": [],
-        "obligation": "ISC requires the copyright notice and permission text to travel with the distribution. The traced package directory carries it.",
-        "resolved": true
-      },
-      "BSD-2-Clause": {
-        "applies_to": [],
-        "obligation": "BSD-2-Clause requires the copyright notice, the conditions and the disclaimer to travel with the distribution. The traced package directory carries it.",
-        "resolved": true
-      },
-      "BSD-3-Clause": {
-        "applies_to": [],
-        "obligation": "BSD-3-Clause requires the copyright notice, the conditions, the disclaimer and the non-endorsement clause to travel with the distribution. The traced package directory carries it.",
-        "resolved": true
-      },
-      "0BSD": {
-        "applies_to": [],
-        "obligation": "0BSD is a public-domain-equivalent dedication with no attribution condition.",
-        "resolved": true
-      },
-      "CC0-1.0": {
-        "applies_to": [],
-        "obligation": "CC0-1.0 is a public-domain dedication. The notices bundle records the dedication; no further attribution is required.",
-        "resolved": true
-      },
-      "WTFPL": {
-        "applies_to": [],
-        "obligation": "Do What The Fuck You Want Public License imposes no attribution condition. Recorded for completeness where it appears inside a choice expression.",
-        "resolved": true
-      },
-      "Unlicense": {
-        "applies_to": [
-          "postgres",
-          "robust-predicates"
-        ],
-        "obligation": "Public-domain dedication. The notices bundle records the dedication; no further attribution is required.",
-        "resolved": true
-      },
-      "Python-2.0": {
-        "applies_to": [
-          "argparse"
-        ],
-        "obligation": "PSF License 2.0 requires the copyright notice and license to travel with the distribution.",
-        "resolved": true
-      },
-      "Apache-2.0": {
-        "applies_to": [
-          "@img/sharp-*",
-          "next",
-          "framer-motion",
-          "recharts",
-          "lightningcss (MPL-2.0 companion)"
-        ],
-        "obligation": "Apache-2.0 requires the NOTICE/attribution text to travel with the distribution where the upstream project supplies one. The per-package copyright and NOTICE text is carried by the traced package itself under its own node_modules directory; the notices bundle names the exact package directories to keep.",
-        "resolved": true
-      },
-      "MPL-2.0": {
-        "applies_to": [
-          "lightningcss",
-          "lightningcss-*",
-          "axe-core"
-        ],
-        "obligation": "File-level copyleft. Redistribution of the unmodified files is permitted with the license text and a statement that the files were not modified.",
-        "resolved": true
-      },
-      "LGPL-3.0-or-later": {
-        "applies_to": [
-          "@img/sharp-libvips-*",
-          "@img/sharp-win32-*",
-          "@img/sharp-wasm32",
-          "@img/sharp-darwin-*"
-        ],
-        "obligation": "libvips and the sharp prebuilt binary packages are LGPL-3.0-or-later and are shipped as prebuilt shared libraries inside the standalone output. The relink mechanism (relinkable object files plus a relink script, dynamic linking against a replaceable library, or exclusion of these packages from the release) was left open by #421, which covers only the native package. The maintainer retired the web dashboard on 2026-09-25 (#314), so exclusion applies: these packages are removed with interface/ and ship in no release.",
-        "resolved": false
-      },
-      "EPL-2.0": {
-        "applies_to": [
-          "elkjs"
-        ],
-        "obligation": "EPL-2.0 section 3 permits a Secondary License (for example GPL-2.0-or-later) for the GPL-incompatible modules. Whether this distribution designates a Secondary License is a maintainer legal decision and is NOT made here. It becomes moot with the web dashboard's retirement (#314), which removes elkjs from every release.",
-        "resolved": false
-      },
-      "CC-BY-4.0": {
-        "applies_to": [
-          "caniuse-lite"
-        ],
-        "obligation": "Creative Commons Attribution 4.0 requires attribution to the creator, a link to the license, and an indication of whether changes were made. caniuse-lite carries the data set compiled from the Can I Use project; the exact attribution string to publish is a maintainer decision. It becomes moot with the web dashboard's retirement (#314), which removes caniuse-lite from every release.",
-        "resolved": false
-      }
-    },
-    "project_attribution": [
-      {
-        "file": "THIRD_PARTY_LICENSES/SHADCN_UI.txt",
-        "covers": "the shadcn/ui primitives copied into interface/src"
-      }
-    ]
   }
 }

@@ -134,7 +134,8 @@ int main(int argc, char *argv[]) {
     printf("[PROCESS_TEST] Invalid UTF-8 working directory and environment refused.\n");
 
     /* Profile directories are read through the wide API: a LOCALAPPDATA outside
-     * the active code page must round-trip as UTF-8, not as '?' bytes. */
+     * the active code page must round-trip as UTF-8, not as '?' bytes. An
+     * explicit LOCALAPPDATA takes precedence over the Known Folder. */
     static WCHAR saved_lad[32768];
     DWORD saved_len = GetEnvironmentVariableW(L"LOCALAPPDATA", saved_lad, 32768);
     WCHAR wcwd[1024];

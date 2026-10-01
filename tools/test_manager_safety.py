@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 """Manager filesystem/process/build safety guarantees (#183).
@@ -232,7 +232,15 @@ class ManagerSafetyContractTests(unittest.TestCase):
         # and must not retain a previous title's value when none is selected.
         self.assertIn('$resolvedDataRoot = Resolve-Path -LiteralPath $effectiveDataRoot', self.manager)
         self.assertIn('$env:SR_DATAROOT = $null', self.manager)
-        self.assertIn('$env:SR_DATAROOT = $resolvedDataRoot.Path', self.manager)
+        self.assertIn('$env:SR_DATAROOT = $ResolvedDataRootPath', self.manager)
+        self.assertIn('$env:SR_LOOSE_CONTENT_ROOTS = $null', self.manager)
+        self.assertIn('--encode-loose-content-roots', self.manager)
+        self.assertIn('Set-NkRuntimeFilesystemEnvironment -ResolvedDataRootPath $resolvedDataRootPath', self.manager)
+
+        diff_start = self.manager.index('function Invoke-DiffFunc')
+        diff_end = self.manager.find('\n    function ', diff_start + 1)
+        diff_body = self.manager[diff_start:diff_end]
+        self.assertIn('Set-NkRuntimeFilesystemEnvironment -ResolvedDataRootPath $resolvedDataRoot', diff_body)
 
     def test_generic_paths_make_no_layout_assumptions(self) -> None:
         self.assertNotIn("place_game_here", self.manager)

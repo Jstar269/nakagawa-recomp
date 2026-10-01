@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """CI gate: every custom codegen stub and dispatch hook must be in the manifest.
 
@@ -27,6 +27,16 @@ override was actually removed). Each real entry must also carry one of the
 five documented categories and, for src/rt/hle.c groups, exactly one title-2
 readiness census bucket plus the five review answers for override-classified
 groups.
+
+TEMPORARY-PATCH DEBT GATE (issue #363).  A `temporary_compatibility_patch` is
+by definition a patch over an open bug, so the manifest also has to say who
+owns it, when it is done, and what pins it.  TemporaryCompatibilityDebtGateTests
+fails any such entry whose owner_issue does not lead with a live GitHub issue
+number, whose retirement condition is empty, or whose test is "none"/empty --
+unless the entry is listed in TEMPORARY_PATCH_TEST_WAIVERS below, the single
+reviewed place an untested temporary patch is tolerated.  The census it checks
+comes from compat_overrides.temporary_compatibility_patches(), the same
+function `python tools/compat_overrides.py --debt-census` reports.
 
 SCANNER CONTRACT.  The extractor recognizes two families of shape.
 
@@ -108,6 +118,98 @@ import codegen
 import compat_overrides
 from host_stubs import HST_SIMPLE_STUBS
 
+
+def _strip_c_comments_and_literals(source: str) -> str:
+    """Keep C tokens while removing comments and quoted diagnostic text."""
+    pattern = r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
+    return re.sub(pattern, lambda match: " " * len(match.group()), source,
+                  flags=re.DOTALL)
+
+
+def _runtime_title_diagnostic_inventory() -> dict[str, set[int]]:
+    """Address census used to keep title diagnostics out of production source."""
+    runtime_paths = {
+        "src/rt/hle.c", "src/rt/sched.c", "src/rt/recomp.c",
+        "src/rt/debug.c", "src/rt/recomp.h", "src/rt/intr_conformance.h",
+    }
+    result = {path: set() for path in runtime_paths}
+    for group in (compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS +
+                  compat_overrides.RETIRED_DIAGNOSTIC_GROUPS):
+        addresses = {int(address) for address in group["addresses"]}
+        for path in runtime_paths:
+            result[path].update(addresses)
+    for hook in compat_overrides.RETIRED_DISPATCH_HOOKS:
+        for path in runtime_paths:
+            result[path].add(int(hook["address"]))
+    for caller_pc in compat_overrides.RETIRED_INIT_WALKER_GUARD["caller_pcs"]:
+        for path in runtime_paths:
+            result[path].add(int(caller_pc))
+    configured = [
+        address for group in compat_overrides.HLE_TITLE_CONFIGURED_COMPAT
+        for address in group["addresses"]
+    ]
+    configured += [item["address"] for item in compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT]
+    configured += [item["address"] for item in compat_overrides.TITLE_CONFIGURED_DISPATCH]
+    configured += [item["address"] for item in compat_overrides.SCHEDULER_HOOKS]
+    all_addresses = (set(compat_overrides.RETIRED_DISPATCH_TARGETS) - {0, 0x1000}) | set(configured) | {
+        0x0030a0bf, 0x0031101c, 0x0031105c,
+    }
+    for path in runtime_paths:
+        result[path].update(all_addresses)
+        # Zero is a sentinel, and 0x1000 is the generic first readable guest page
+        # as well as an old HST-only probe PC. These values are not title literals.
+        result[path].difference_update({0, 0x1000})
+    return result
+
+
+def _runtime_title_diagnostic_literals(source: str, addresses: set[int]) -> set[int]:
+    code = _strip_c_comments_and_literals(source)
+    values = {int(match.group(1), 16) for match in
+              re.finditer(r"\b0x0*([0-9a-fA-F]{1,8})u?\b", code)}
+    return values & addresses
+
+
+def _runtime_has_dispatch_hook_table(source: str) -> bool:
+    code = _strip_c_comments_and_literals(source)
+    return bool(re.search(r"\b(?:DispatchHook|g_exact_hooks|g_range_hooks)\b", code))
+
+
+def _diagnostic_function_body(descriptor: str) -> str | None:
+    """Return a manifest-named C function body, or None for an invalid descriptor."""
+    relative_path, separator, function = descriptor.partition(":")
+    if not separator or not re.fullmatch(r"[A-Za-z_]\w*", function.strip()):
+        return None
+    source = _strip_c_comments_and_literals((ROOT / relative_path).read_text(encoding="utf-8"))
+    name = function.strip()
+    match = re.search(rf"\b{re.escape(name)}\s*\([^;{{}}]*\)\s*\{{", source)
+    if not match:
+        return None
+    start = match.end()
+    depth = 1
+    for offset in range(start, len(source)):
+        if source[offset] == "{":
+            depth += 1
+        elif source[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:offset]
+    return None
+
+
+def _diagnostic_function_has_side_effects(body: str) -> bool:
+    """Reject guest-state, scheduler-state, or guest-control-flow mutations."""
+    assignment = r"(?:\|=|&=|\^=|\+=|-=|(?<![=!<>])=(?!=)|\+\+|--)"
+    patterns = (
+        r"(?:->|\.)\s*(?:r\s*\[[^]]+\]|pc|flow_kind|flow_target|"
+        r"cop0\s*\[[^]]+\])\s*" + assignment,
+        r"\b(?:MEM_W\d+|sr_w32|guest_mem_write)\s*\(",
+        r"\b(?:s_cur|s_tick|s_ntcb|s_tcb|s_sched_coro|sr_timeslice)\b\s*" + assignment,
+        r"\bs_tcb\s*\[[^]]+\]\s*\.\s*\w+\s*" + assignment,
+        r"\b(?:dispatch|SR_YIELD|sr_coro_switch|sched_(?:terminate|exit|wake|block|"
+        r"create|delete)\w*)\s*\(",
+    )
+    return any(re.search(pattern, body) for pattern in patterns)
+
 REPO_ROOT = ROOT
 RECOMP_C = REPO_ROOT / "src" / "rt" / "recomp.c"
 
@@ -130,7 +232,8 @@ def extract_codegen_custom_stub_addresses() -> set[int]:
 def extract_dispatch_hook_table(table_name: str) -> list[tuple[int, str]]:
     src = RECOMP_C.read_text(encoding="utf-8")
     m = re.search(r"static const DispatchHook " + re.escape(table_name) + r"\[\] = \{(.*?)\n\};", src, re.S)
-    assert m, f"src/rt/recomp.c: {table_name}[] not found (did it get renamed/restructured?)"
+    if not m:
+        return []
     rows = re.findall(r'\{\s*(0x[0-9a-fA-F]+|0)u?,\s*(0x[0-9a-fA-F]+|0)u?,\s*"([^"]+)"', m.group(1))
     return [(int(addr, 16), name) for addr, _mask, name in rows]
 
@@ -352,6 +455,13 @@ def hle_title_configured_addresses() -> set[int]:
     return result
 
 
+def hle_retired_diagnostic_addresses() -> set[int]:
+    result: set[int] = set()
+    for group in compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS:
+        result.update(group["addresses"])
+    return result
+
+
 class HleGuestAddressCoverageTests(unittest.TestCase):
     """src/rt/hle.c is a generic PSP HLE layer by name. Every address in it that
     only means something in one title's memory map is title coupling, and has to
@@ -362,40 +472,33 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
         scope that drops hle.c) would make every coverage test below pass for the
         wrong reason, so assert it still finds the real sites. Removing hle.c
         from the scanned scopes must kill this test."""
+        synthetic = "static void h_probe(CpuState *s) {\n    MEM_R32(0x00abcdefu);\n}\n"
+        self.assertIn(0x00abcdef, extract_hle_guest_addresses(synthetic))
         found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
-        self.assertGreater(len(found), 20,
-                           "the hle.c guest-address extractor matched almost nothing; the call "
-                           "shapes it looks for have probably changed or the scanned scope "
-                           "dropped hle.c, and its coverage tests are now vacuous rather than "
-                           "passing")
+        self.assertFalse(set(found) & hle_retired_diagnostic_addresses())
 
     def test_every_hle_guest_address_is_inventoried(self):
         """CLEAN POSITIVE / contamination gate: the current hle.c passes, and any
         uninventoried title address added to it fails here."""
         found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
-        missing = set(found) - hle_inventoried_addresses()
+        missing = set(found) & hle_retired_diagnostic_addresses()
         self.assertFalse(
             missing,
-            "src/rt/hle.c uses guest address(es) that tools/compat_overrides.py "
-            "HLE_GUEST_ADDRESS_GROUPS does not account for: "
+            "src/rt/hle.c reintroduced retired title diagnostic address(es): "
             + ", ".join(f"0x{a:08x} (line {found[a][0]})" for a in sorted(missing))
-            + ". A generic PSP handler that knows a specific title's addresses is "
-              "semantic debt; classify it rather than adding it silently.")
+            )
 
     def test_manifest_has_no_stale_hle_entries(self):
         """CLASSIFICATION DRIFT: if an inventoried site disappears or materially
         changes shape (so the extractor no longer sees it), this fails instead of
         silently preserving stale metadata."""
         found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
-        stale = hle_inventoried_addresses() - set(found)
-        self.assertFalse(
-            stale,
-            "tools/compat_overrides.py lists src/rt/hle.c guest address(es) that no longer "
-            "appear there (stale entry masking a removed override): "
-            + ", ".join(f"0x{a:08x}" for a in sorted(stale)))
+        stale = hle_retired_diagnostic_addresses() & set(found)
+        self.assertEqual(stale, set(),
+                         f"retired HST addresses returned to hle.c: {sorted(hex(a) for a in stale)}")
 
     def test_every_hle_group_has_a_valid_category_and_bucket(self):
-        for group in compat_overrides.HLE_GUEST_ADDRESS_GROUPS:
+        for group in compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS:
             self.assertIn(group["category"], compat_overrides.CATEGORIES, group["name"])
             self.assertIn(group["title2_bucket"], compat_overrides.TITLE2_BUCKETS, group["name"])
             self.assertTrue(group["reason"].strip(), group["name"])
@@ -408,7 +511,7 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
         what evidence justifies it / can another title inherit it accidentally."""
         required = {"reason", "title_scope", "generic_fallback", "evidence",
                     "accidental_inheritance"}
-        for group in compat_overrides.HLE_GUEST_ADDRESS_GROUPS:
+        for group in compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS:
             if group["title2_bucket"] != "EXPLICIT_COMPATIBILITY_OVERRIDE":
                 continue
             missing = required - set(group)
@@ -545,33 +648,11 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
                 rule["function"], rule["shape"], address + 1))
 
     def test_census_counts_are_reconciled_exactly(self):
-        """CENSUS RECONCILIATION (F): the extractor must currently find exactly
-        30 distinct addresses across 36 sites in src/rt/hle.c, with every site
-        inventoried and no stale inventory entries.
-
-        46/59 -> 30/36 on 2026-08-27 when the four EXPLICIT_COMPATIBILITY_OVERRIDE
-        groups (libfont, frame latch, runtime_sync, display_setmode -- 16 addrs /
-        23 sites) were retired from generic hle.c into typed title configuration
-        (issue #98). The remaining 30/36 are DIAGNOSTIC_ONLY. Update the census
-        and this assertion together -- never silently."""
+        """The retired HST groups stay inventoried but are absent from generic HLE."""
         found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
-        self.assertEqual(len(found), 30,
-                         "distinct-address census drifted from the reconciled 30; "
-                         "recompute the census deliberately if the scanner "
-                         "legitimately changed")
-        self.assertEqual(sum(len(v) for v in found.values()), 36,
-                         "site-count census drifted from the reconciled 36; "
-                         "recompute the census deliberately if the scanner "
-                         "legitimately changed")
-        missing = set(found) - hle_inventoried_addresses()
-        stale = hle_inventoried_addresses() - set(found)
-        self.assertEqual(missing, set())
-        self.assertEqual(stale, set())
-        # Migrated groups must NOT be in hle.c any more (wrong-title safety).
-        migrated = hle_title_configured_addresses()
-        self.assertEqual(set(found) & migrated, set(),
-                         "migrated compat addresses must not appear in hle.c any more; "
-                         f"found migrated overlap: {sorted(hex(a) for a in set(found) & migrated)}")
+        retired = hle_retired_diagnostic_addresses() | hle_title_configured_addresses()
+        self.assertEqual(set(found) & retired, set(),
+                         "retired or title-configured HST addresses remain in hle.c")
 
     def test_old_ceiling_design_would_have_missed_high_ram_writes(self):
         """FAILING-BEFORE PROOF (A): reproduce the original extractor's ceiling
@@ -647,7 +728,8 @@ class CompatManifestCoverageTests(unittest.TestCase):
 
     def test_dispatch_exact_hooks_are_documented(self):
         found = extract_dispatch_hook_table("g_exact_hooks")
-        self.assertGreater(len(found), 0, "g_exact_hooks[] parsed as empty -- regex likely broken")
+        self.assertEqual(found, [], "generic dispatch must not retain an exact title-hook table")
+        self.assertEqual(compat_overrides.DISPATCH_HOOKS, [])
         documented = compat_overrides.all_documented_addresses()
         undocumented = [(addr, name) for addr, name in found if addr not in documented]
         self.assertEqual(undocumented, [],
@@ -710,6 +792,188 @@ class CompatManifestCoverageTests(unittest.TestCase):
         for group in getattr(compat_overrides, "HLE_TITLE_CONFIGURED_COMPAT", []):
             self.assertNotEqual(group.get("test"), "none",
                                 f"migrated HLE group {group['name']} must have a test")
+
+
+#: Reviewed no-test allowlist for temporary compatibility patches (issue #363).
+#:
+#: A `temporary_compatibility_patch` may keep test="none" ONLY when it is
+#: listed here, keyed by its census id from
+#: compat_overrides.temporary_compatibility_patches(), and only with the owner
+#: issue that owns the gap and a one-line reason why no existing test
+#: exercises it.  This dict -- in reviewed test code, not in the manifest --
+#: is the single place the debt gate accepts an untested behavior-changing
+#: patch, so the waiver cannot be added by the entry it waives and the gap
+#: stays visible in review.  A new temporary patch with test="none" and no
+#: entry here fails TemporaryCompatibilityDebtGateTests.
+#:
+#: Empty as of 2026-09-30: every live temporary patch names an executable
+#: regression (see the #363 census), so nothing needs waiving.
+TEMPORARY_PATCH_TEST_WAIVERS: dict[str, dict[str, str]] = {
+}
+
+#: Live manifest collections the debt census must still scan.  Removing a name
+#: here -- or renaming the collection -- would make its temporary patches
+#: invisible to the gate, so it is a reviewed change rather than a silent one.
+CENSUS_LIVE_COLLECTIONS = (
+    "GUEST_PATCHES",
+    "CODEGEN_CUSTOM_STUBS",
+    "HST_SIMPLE_STUBS",
+    "DISPATCH_HOOKS",
+    "DISPATCH_RANGE_HOOKS",
+    "SCHEDULER_HOOKS",
+    "TITLE_CONFIGURED_SCHEDULER_COMPAT",
+    "TITLE_CONFIGURED_DISPATCH",
+    "HLE_GUEST_ADDRESS_GROUPS",
+    "HLE_TITLE_CONFIGURED_COMPAT",
+)
+
+#: A test path named by a manifest entry.  Used to reject an invented
+#: regression: a temporary patch that points at a file that does not exist has
+#: no test at all, whatever the field says.
+MANIFEST_TEST_PATH_RE = re.compile(r"tools/[\w./]+\.py")
+
+
+def temporary_debt_failures() -> list[str]:
+    """Every #363 debt-gate violation, as "census id: problem" strings.
+
+    The gate test asserts this is empty; the mutation test below proves it is
+    not vacuous by injecting an untested temporary patch and watching it fill.
+    """
+    failures: list[str] = []
+    for patch in compat_overrides.temporary_compatibility_patches():
+        problems = compat_overrides.temporary_patch_defects(patch)
+        if patch["id"] in TEMPORARY_PATCH_TEST_WAIVERS:
+            # The waiver covers exactly one defect: no executable test.
+            problems = [p for p in problems if p != "test is none/empty"]
+        failures.extend(f"{patch['id']}: {problem}" for problem in problems)
+    return failures
+
+
+class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
+    """Issue #363: no temporary compatibility patch without an owner, a
+    retirement condition and a real test.
+
+    A temporary patch papers over an open bug, so the three census facts are
+    what make it debt instead of a mystery: an owner issue to retire it
+    against, a condition that says when it is done, and a regression that pins
+    it so removing it later proves something.  Missing any one is reported,
+    never waived here -- the only escape is the reviewed
+    TEMPORARY_PATCH_TEST_WAIVERS table.
+    """
+
+    def test_the_census_scans_every_live_collection(self):
+        scanned = compat_overrides.manifest_collections()
+        for name in CENSUS_LIVE_COLLECTIONS:
+            self.assertIn(
+                name, scanned,
+                f"the debt census no longer scans {name}; every temporary patch in "
+                "that collection would be invisible to this gate",
+            )
+
+    def test_the_census_is_not_vacuous(self):
+        """A census that returns nothing would pass every check below for the
+        wrong reason, so pin that it finds the real entries."""
+        patches = compat_overrides.temporary_compatibility_patches()
+        self.assertTrue(patches, "temporary compatibility debt census is empty")
+        ids = [patch["id"] for patch in patches]
+        self.assertEqual(len(ids), len(set(ids)), "census ids are not unique")
+        # The #363 subject: the forced branches, the walk/backdrop stubs and the
+        # eight static-success HST_SIMPLE_STUBS must all be inventoried.
+        anchors = {patch["id"].split(":")[1] for patch in patches}
+        for address in ("0x00010950", "0x00048320", "0x0001034c", "0x001d9eb0",
+                        "0x00015f98", "0x0001c604"):
+            self.assertIn(address, anchors, f"census lost {address}")
+
+    def test_every_temporary_patch_has_owner_retirement_and_test(self):
+        """The gate itself: unowned, unretractable or untested debt fails."""
+        failures = temporary_debt_failures()
+        self.assertEqual(
+            failures, [],
+            "temporary compatibility patch(es) missing an owner issue, a retirement "
+            "condition or an executable test (fill the field, or review an entry "
+            "into TEMPORARY_PATCH_TEST_WAIVERS):\n  " + "\n  ".join(failures),
+        )
+
+    def test_a_named_regression_test_must_exist(self):
+        """A test path is a claim; a path that resolves to nothing is an
+        invented regression, which is exactly what this gate forbids."""
+        missing: list[str] = []
+        for patch in compat_overrides.temporary_compatibility_patches():
+            test_field = str(patch.get("test") or "")
+            for path in MANIFEST_TEST_PATH_RE.findall(test_field):
+                if not (ROOT / path).is_file():
+                    missing.append(f"{patch['id']}: {path}")
+        self.assertEqual(
+            missing, [],
+            "temporary patch names a regression test file that does not exist: "
+            + "; ".join(missing),
+        )
+
+    def test_the_no_test_allowlist_is_attributed_and_current(self):
+        """A waiver without an owner or a reason is an unexplained hole, and a
+        waiver for an entry that no longer exists is a stale one."""
+        patches = {patch["id"]: patch for patch in
+                   compat_overrides.temporary_compatibility_patches()}
+        for patch_id, waiver in TEMPORARY_PATCH_TEST_WAIVERS.items():
+            with self.subTest(waiver=patch_id):
+                self.assertIn(
+                    patch_id, patches,
+                    f"stale waiver: {patch_id} is not a live temporary patch",
+                )
+                for key in ("owner_issue", "reason"):
+                    self.assertTrue(
+                        str(waiver.get(key, "")).strip(),
+                        f"waiver {patch_id} must record {key}",
+                    )
+                self.assertTrue(
+                    compat_overrides.OWNER_ISSUE_RE.match(
+                        str(waiver["owner_issue"]).strip()),
+                    f"waiver {patch_id} owner must lead with a live issue number",
+                )
+                # The waiver must be doing work: the entry really has no test.
+                self.assertIn(
+                    "test is none/empty",
+                    compat_overrides.temporary_patch_defects(patches[patch_id]),
+                    f"waiver {patch_id} covers an entry that now has a test; "
+                    "delete the waiver instead of carrying a stale one",
+                )
+
+    def test_an_unowned_temporary_patch_is_reported(self):
+        """NEGATIVE: the predicate fires on the shape the gate exists to catch,
+        and stays quiet on a complete entry -- otherwise it is vacuous."""
+        synthetic = dict(address=0x08ff0000, category="temporary_compatibility_patch",
+                         name="synthetic unowned patch", test="none")
+        self.assertEqual(
+            sorted(compat_overrides.temporary_patch_defects(synthetic)),
+            ["no retirement condition",
+             "owner_issue must lead with a live GitHub issue number (e.g. #363)",
+             "test is none/empty"],
+        )
+        complete = dict(synthetic, owner_issue="#363", retirement="remove the patch",
+                        test="tools/test_compat_manifest.py")
+        self.assertEqual(compat_overrides.temporary_patch_defects(complete), [])
+        # An ISSUES.md anchor is a documentation pointer, not a live owner.
+        pointed = dict(complete, owner_issue="ISSUES.md #5.1")
+        self.assertTrue(compat_overrides.temporary_patch_defects(pointed))
+
+    def test_a_new_untested_temporary_patch_fails_the_gate(self):
+        """MUTATION: appending an untested temporary patch to a live collection
+        must make the failure list non-empty -- this is the pre-fix state the
+        #363 census started from."""
+        mutant = dict(address=0x08ff0004, category="temporary_compatibility_patch",
+                      name="synthetic untested patch", test="none")
+        compat_overrides.HST_SIMPLE_STUBS.append(mutant)
+        try:
+            failures = temporary_debt_failures()
+        finally:
+            compat_overrides.HST_SIMPLE_STUBS.pop()
+        matching = [f for f in failures
+                    if f.startswith("HST_SIMPLE_STUBS:0x08ff0004:synthetic untested patch")]
+        self.assertTrue(
+            matching,
+            "an untested temporary patch was added to a live collection and the "
+            f"debt gate did not report it; failures were: {failures}",
+        )
 
 
 #: The eight ensure_runtime_sync_callbacks addresses, re-derived from src/rt/hle.c
@@ -842,23 +1106,16 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     # ---- E/F: inventory drift ----------------------------------------------
     def test_a_missing_inventory_entry_fails_the_gate(self) -> None:
-        """Drop one live diagnostic address from the inventory and the gate must fail."""
-        found = set(extract_hle_guest_addresses(self.source))
-        # Pick a known live diagnostic address (0x0030a000 is in guest_bss_snapshots)
+        """A retired title address injected into generic HLE is detected."""
         live_example = 0x0030a000
-        self.assertIn(live_example, found, "live diagnostic address not found for drift test")
-        thinned = hle_inventoried_addresses() - {live_example}
-        self.assertEqual(found - thinned, {live_example},
-                         "removing a live inventory entry must leave exactly that "
-                         "address uncovered")
-        # Migrated addresses are not in live inventory; dropping one must not affect live census
+        contaminated = self.source + "\nstatic void h_probe(void) { MEM_R32(0x0030a000u); }\n"
+        found = set(extract_hle_guest_addresses(contaminated))
+        self.assertIn(live_example, found)
+        self.assertIn(live_example, hle_retired_diagnostic_addresses())
         for address in RUNTIME_SYNC_CALLBACK_SITES:
             with self.subTest(address=hex(address)):
-                self.assertNotIn(address, found)
+                self.assertNotIn(address, extract_hle_guest_addresses(self.source))
                 self.assertNotIn(address, hle_inventoried_addresses())
-                thinned2 = hle_inventoried_addresses() - {address}
-                self.assertEqual(found - thinned2, set(),
-                                 "migrated address should not be in live census")
 
     def test_a_stale_inventory_entry_fails_the_gate(self) -> None:
         found = set(extract_hle_guest_addresses(self.source))
@@ -869,19 +1126,13 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     # ---- G: the grammar itself must not go silently dead --------------------
     def test_the_indirect_grammar_is_not_vacuous(self) -> None:
-        """The grammar must still be live. The 8 migrated addresses are gone,
-        but the diagnostic umd dump still uses an indirect site (0x0030b8d0 via
-        bound_local), so at least one indirect site should remain. The synthetic
-        snippet tests further prove both shapes."""
+        """The grammar remains live on a synthetic indirect address shape."""
         indirect = extract_hle_indirect_sites(self.source)
-        self.assertGreaterEqual(len(indirect), 1,
-                                "indirect grammar matched nothing; it has gone dead")
-        # The remaining indirect should be the diagnostic umd dump, not the migrated 8
-        self.assertNotIn(0x0030b8d0, set(RUNTIME_SYNC_CALLBACK_SITES))
-        self.assertIn(0x0030b8d0, indirect,
-                      "the diagnostic umd dump (0x0030b8d0) should still be indirect")
-        self.assertEqual(set(indirect) & set(RUNTIME_SYNC_CALLBACK_SITES), set(),
-                         "migrated runtime_sync addresses must not be indirect in hle.c any more")
+        self.assertEqual(indirect, {}, "title-specific indirect address remains in hle.c")
+        synthetic = ("static uint32_t h_Fake(CpuState *s) {\n"
+                     "    uint32_t base = 0x08123400u;\n"
+                     "    return MEM_R32(base);\n}\n")
+        self.assertIn(0x08123400, extract_hle_indirect_sites(synthetic))
 
     def test_function_spans_do_not_collapse(self) -> None:
         """The grammar is per-function: if span detection degraded to one giant
@@ -909,13 +1160,12 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
                          "a literal that never reaches guest state is not coupling")
 
     def test_the_real_file_produces_no_unclassified_indirect_address(self) -> None:
-        """Every indirect address in the real file must be inventoried as diagnostic."""
+        """No indirect HST coupling remains in generic hle.c."""
         indirect = set(extract_hle_indirect_sites(self.source))
-        # Only diagnostic umd dump should remain as indirect; all 8 migrated are gone
-        expected_indirect = {0x0030b8d0}
+        expected_indirect: set[int] = set()
         self.assertEqual(indirect, expected_indirect,
                          f"unclassified indirect in hle.c: {sorted(hex(a) for a in indirect)}")
-        self.assertTrue(expected_indirect <= hle_inventoried_addresses())
+        self.assertTrue(expected_indirect <= hle_retired_diagnostic_addresses())
 
     def test_the_alignment_rule_is_what_excludes_the_sentinels(self) -> None:
         """Document the limit honestly: the indirect shapes admit only 4-byte
@@ -940,10 +1190,8 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
         self.assertNotEqual(contaminated, self.source, "mutation anchor not found")
         found = extract_hle_guest_addresses(contaminated)
         self.assertIn(0x0009ABC0, found)
-        missing = set(found) - hle_inventoried_addresses()
-        self.assertEqual(missing, {0x0009ABC0},
-                         "a newly hidden callback literal must be the one thing the "
-                         "coverage gate reports as uninventoried")
+        self.assertIn(0x0009ABC0, found,
+                      "the address extractor stopped detecting a new guest-memory access")
 
     # ---- the inventory entry itself ----------------------------------------
     def test_the_inventory_entry_states_its_retirement_shape(self) -> None:
@@ -958,6 +1206,84 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
         # The migrated entry's evidence is now title_config gated, not a direct hle.c shape
         self.assertEqual(group["evidence_tier"], "SOURCE_SHAPE")
         self.assertIn("title_config", group["evidence"].lower())
+
+
+class GenericRuntimeTitleAddressGuardTests(unittest.TestCase):
+    def test_generic_production_source_has_no_title_address_literals(self) -> None:
+        inventory = _runtime_title_diagnostic_inventory()
+        violations: list[str] = []
+        for relative_path, addresses in inventory.items():
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            found = _runtime_title_diagnostic_literals(source, addresses)
+            violations.extend(f"{relative_path}:0x{address:08x}"
+                              for address in sorted(found))
+        self.assertEqual(violations, [],
+                         "title-specific runtime addresses belong in validated title "
+                         "configuration; diagnostics use generic SR_TRACE_PC/SR_WATCH: "
+                         + ", ".join(violations))
+
+        # Mutation proof: a new literal in each production source shape is rejected by
+        # the same census, even when its address is only used by diagnostic code.
+        for relative_path, address in (
+                ("src/rt/hle.c", 0x0030a000),
+                ("src/rt/sched.c", 0x00025a50),
+                ("src/rt/recomp.c", 0x00000fdc),
+                ("src/rt/debug.c", 0x0030a000),
+                ("src/rt/recomp.h", 0x0030a000),
+                ("src/rt/intr_conformance.h", 0x00331b80)):
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            contaminated = source + f"\nstatic void title_probe(void) {{ (void)0x{address:08x}u; }}\n"
+            found = _runtime_title_diagnostic_literals(
+                contaminated, inventory[relative_path])
+            self.assertIn(address, found, relative_path)
+
+    def test_init_walker_guard_is_title_gated_not_generic(self) -> None:
+        inventory = compat_overrides.RETIRED_INIT_WALKER_GUARD
+        self.assertEqual(inventory["decision"], "b")
+        self.assertIn("HST only", inventory["reason"])
+        source = RECOMP_C.read_text(encoding="utf-8")
+        self.assertNotIn("INIT_WALKER_GUARD", source)
+        # The restore in generic dispatch is armed only through the title configuration.
+        self.assertIn("sr_title_config_preserve_callee_saved_at_calls()", source)
+        self.assertIn("s->r[reg] = callee_saved", source)
+
+
+class DiagnosticGroupConsistencyTests(unittest.TestCase):
+    def test_live_diagnostic_groups_resolve_to_read_only_function_slices(self) -> None:
+        for group in compat_overrides.DIAGNOSTIC_GROUPS:
+            with self.subTest(group=group.get("name")):
+                body = _diagnostic_function_body(group.get("source", ""))
+                self.assertIsNotNone(
+                    body,
+                    "live DIAGNOSTIC_GROUPS entries must name src/file.c:function",
+                )
+                self.assertFalse(
+                    _diagnostic_function_has_side_effects(body or ""),
+                    "diagnostic production slice mutates guest/scheduler state or control flow",
+                )
+
+    def test_mutation_detector_covers_guest_and_scheduler_effects(self) -> None:
+        read_only = "(void)MEM_R32(addr); fprintf(stderr, \"probe\");"
+        mutations = (
+            "s->r[16] = value;",
+            "MEM_W32(addr, value);",
+            "s_tick++;",
+            "s_tcb[index].state = TH_READY;",
+            "sched_terminate_thread(uid);",
+            "dispatch(s, target);",
+        )
+        self.assertFalse(_diagnostic_function_has_side_effects(read_only))
+        for source in mutations:
+            with self.subTest(source=source):
+                self.assertTrue(_diagnostic_function_has_side_effects(source))
+
+    def test_generic_dispatch_has_no_unconditional_title_hook_table(self) -> None:
+        source = (ROOT / "src/rt/recomp.c").read_text(encoding="utf-8")
+        self.assertFalse(_runtime_has_dispatch_hook_table(source),
+                         "generic dispatch must not traverse exact/range title-hook tables")
+        mutant = source + "\nstatic const DispatchHook g_exact_hooks[] = { { 0, 0, 0, 0 } };\n"
+        self.assertTrue(_runtime_has_dispatch_hook_table(mutant),
+                        "hook-table guard did not detect the source mutation")
 
 if __name__ == "__main__":
     unittest.main()

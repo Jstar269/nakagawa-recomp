@@ -136,6 +136,38 @@ static void stage_error(PlayerStageContext *context, NkResult result,
     }
 }
 
+static const char *stage_default_error(NkResult result) {
+    switch (result) {
+        case NK_ERROR_GENERIC:
+            return "[STAGE_FAILED] A staging step failed without a more specific result code; review the staging log and retry.";
+        case NK_ERROR_FILE_NOT_FOUND:
+            return "[STAGE_REQUIRED_FILE_MISSING] The ISO or PSP_GAME/SYSDIR/EBOOT.BIN is missing.";
+        case NK_ERROR_INVALID_ISO:
+            return "[STAGE_ISO_INVALID] The ISO has a malformed or incomplete PSP directory layout.";
+        case NK_ERROR_UNSUPPORTED_TITLE:
+            return "[STAGE_TITLE_UNSUPPORTED] This title is not supported by its current manifest.";
+        case NK_ERROR_IO:
+            return "[STAGE_STORAGE_IO] Could not read the ISO or write staged files; check access and free space.";
+        case NK_ERROR_OUT_OF_MEMORY:
+            return "[STAGE_MEMORY] The ISO staging operation ran out of memory.";
+        case NK_ERROR_PROCESS_SPAWN:
+            return "[STAGE_PROCESS] A required staging process could not be started.";
+        case NK_ERROR_PERMISSION:
+            return "[STAGE_PERMISSION] Permission was denied while staging the ISO.";
+        case NK_ERROR_CANCELLED:
+            return "[STAGE_CANCELLED] Asset staging was cancelled; the title was not added.";
+        case NK_ERROR_ALREADY_EXISTS:
+            return "[STAGE_ALREADY_EXISTS] A staging folder already exists; retry after cleanup.";
+        case NK_ERROR_INVALID_XB:
+            return "[STAGE_XB_INVALID] A companion XB asset archive could not be decoded.";
+        case NK_ERROR_INVALID_EXECUTABLE:
+            return "[STAGE_EXECUTABLE_INVALID] The PSP executable in the ISO is invalid.";
+        case NK_OK:
+        default:
+            return "[STAGE_FAILED] Native ISO staging failed; verify the selected image and retry.";
+    }
+}
+
 static bool stage_cancelled(PlayerStageContext *context) {
     if (!context || !context->callbacks.is_cancelled) return false;
     if (!context->callbacks.is_cancelled(context->callbacks.userdata)) return false;
@@ -512,7 +544,7 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
     if (!source || !destination) {
         if (source) fclose(source);
         if (destination) fclose(destination);
-        remove(destination_path);
+        nk_remove_utf8(destination_path);
         stage_error(context, NK_ERROR_IO, "cannot open PRX staging file");
         return false;
     }
@@ -535,7 +567,7 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
     int source_close_failed = fclose(source) != 0;
     int destination_close_failed = fclose(destination) != 0;
     if (!okay || remaining != 0 || source_close_failed || destination_close_failed) {
-        remove(destination_path);
+        nk_remove_utf8(destination_path);
         if (context->callback_result == NK_ERROR_CANCELLED) return false;
         stage_error(context, NK_ERROR_IO, "failed while copying decrypted PRX");
         return false;
@@ -658,23 +690,32 @@ static bool iso_progress(const char *relative_path, uint64_t bytes_complete,
 
 NkResult player_stage_game_with_summary(const char *iso_path,
                                         const char *staging_root,
+                                        const char *const *loose_content_roots,
+                                        size_t loose_content_root_count,
                                         const PlayerStageCallbacks *callbacks,
                                         PlayerStageSummary *summary,
                                         char *error_message,
                                         size_t error_message_size) {
     if (error_message && error_message_size > 0) error_message[0] = '\0';
     if (summary) memset(summary, 0, sizeof(*summary));
-    if (!iso_path || !staging_root || !staging_root[0]) return NK_ERROR_GENERIC;
+    if (!iso_path || !iso_path[0] || !staging_root || !staging_root[0]) {
+        if (error_message && error_message_size > 0) {
+            snprintf(error_message, error_message_size, "%s",
+                     "[STAGE_REQUEST_INVALID] Select an ISO and a valid staging destination.");
+        }
+        return NK_ERROR_GENERIC;
+    }
     if (nk_platform_dir_exists(staging_root)) {
         if (error_message && error_message_size > 0) {
-            snprintf(error_message, error_message_size,
-                     "staging directory already exists; refusing to reuse it");
+            snprintf(error_message, error_message_size, "%s",
+                     stage_default_error(NK_ERROR_ALREADY_EXISTS));
         }
         return NK_ERROR_ALREADY_EXISTS;
     }
     if (!nk_platform_mkdir_p_private(staging_root)) {
         if (error_message && error_message_size > 0) {
-            snprintf(error_message, error_message_size, "cannot create staging directory");
+            snprintf(error_message, error_message_size, "%s",
+                     stage_default_error(NK_ERROR_IO));
         }
         return NK_ERROR_IO;
     }
@@ -686,20 +727,23 @@ NkResult player_stage_game_with_summary(const char *iso_path,
     context.callback_result = NK_OK;
     if (callbacks) context.callbacks = *callbacks;
 
-    NkResult result = nk_iso_extract_game(iso_path, staging_root, iso_progress,
-                                          &context);
+    NkResult result = nk_iso_extract_game(iso_path, staging_root,
+                                          loose_content_roots,
+                                          loose_content_root_count,
+                                          iso_progress, &context);
     if (result != NK_OK && context.callback_result != NK_OK) {
         result = context.callback_result;
     }
     if (result != NK_OK && error_message && error_message_size > 0) {
         snprintf(error_message, error_message_size, "%s",
-                 context.error_message[0] ? context.error_message : "game staging failed");
+                 context.error_message[0] ? context.error_message : stage_default_error(result));
     }
     if (result == NK_OK && !discover_prx_for_stage(&context)) {
         result = context.callback_result != NK_OK ? context.callback_result : NK_ERROR_IO;
         if (error_message && error_message_size > 0) {
             snprintf(error_message, error_message_size, "%s",
-                     context.error_message[0] ? context.error_message : "PRX discovery failed");
+                     context.error_message[0] ? context.error_message :
+                         stage_default_error(result));
         }
     }
     if (result != NK_OK) {
@@ -709,9 +753,13 @@ NkResult player_stage_game_with_summary(const char *iso_path,
 }
 
 NkResult player_stage_game(const char *iso_path, const char *staging_root,
+                           const char *const *loose_content_roots,
+                           size_t loose_content_root_count,
                            const PlayerStageCallbacks *callbacks,
                            char *error_message, size_t error_message_size) {
-    return player_stage_game_with_summary(iso_path, staging_root, callbacks,
-                                          NULL, error_message,
+    return player_stage_game_with_summary(iso_path, staging_root,
+                                          loose_content_roots,
+                                          loose_content_root_count,
+                                          callbacks, NULL, error_message,
                                           error_message_size);
 }

@@ -26,9 +26,8 @@ only route here.
   paths, provenance disposition, private-input or hardware needs, and smallest proof.
 - Stale handoffs, copied chat summaries, ignored local configuration, and research pages
   are not authority when live source or GitHub disagrees.
-- A scoped agent-instruction file that a build tool generates is not a policy source, even
-  if a more-specific path would normally win. `next dev` writes `interface/AGENTS.md` and
-  `interface/CLAUDE.md`; they are ignored and untracked. This is the only agent authority.
+- A generated, scoped agent-instruction file is not a policy source, even if a more-specific
+  path would normally win. This is the only agent authority.
 - Read-only review or diagnosis creates no branch, worktree, commit, PR, or external
   mutation; report the boundary and stop if no implementation was requested.
 

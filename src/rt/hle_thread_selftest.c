@@ -31,6 +31,12 @@
  * protection, so it is a hard requirement rather than an option.
  */
 
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
+
 #ifndef SR_CORO_LIFECYCLE_TEST
 #error "hle_thread_selftest requires -DSR_CORO_LIFECYCLE_TEST: the coroutine lifecycle \
 instrumentation is this test's protection against the historical RAM runaway."
@@ -42,6 +48,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "flight_recorder.h"
 #include "iso.h"
 #include "title_config.h"
+#include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -49,6 +56,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <string.h>
 #include <windows.h>
 #include <process.h>
+#include <io.h>              /* _dup/_dup2/_fileno/_close: capture the runtime's stderr */
 
 extern void sr_vblank_tick(void);
 void sr_ctrl_sample(void);
@@ -63,6 +71,8 @@ int sr_route_test_sample(uint8_t *out);
  * state machine without a scheduler or GPU. */
 extern void sr_route_test_tick(uint32_t v);
 extern int sr_route_test_cadence_state(uint32_t *last_attempt);
+extern void sr_route_test_import(uint32_t nid);
+extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
@@ -72,6 +82,12 @@ extern uint32_t sr_hle_test_stop_module(CpuState *s);
 extern uint32_t sr_hle_test_unload_module(CpuState *s);
 extern uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop);
 extern void sr_hle_test_module_reset(void);
+extern uint32_t sr_hle_test_started_export(uint32_t nid);
+extern unsigned sr_hle_test_image_count(void);
+extern unsigned sr_hle_test_module_count(void);
+extern int sr_hle_test_started_image_count(void);
+extern uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
+                                           uint32_t patch_nid, uint32_t patch_off);
 extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
 extern void ge_finish_latch_assist(void);
 
@@ -139,6 +155,8 @@ extern int sr_host_data_prepare(void);
 extern size_t sr_host_data_entry_count(void);
 extern void sr_hle_test_data_mark_guest_start(void);
 extern unsigned long sr_hle_test_data_walk_calls(void);
+extern unsigned long long sr_hle_test_data_scan_names(void);
+extern unsigned long long sr_hle_test_data_scan_probes(void);
 extern unsigned long sr_hle_test_data_build_attempts(void);
 extern unsigned long sr_hle_test_data_builds_after_guest(void);
 extern int sr_hle_test_data_state(void);
@@ -162,6 +180,10 @@ extern void sr_display_test_flip_counts(unsigned long *calls, unsigned long *imm
                                         uint32_t *last_err);
 extern void sr_hle_test_sas_reset(void);
 extern void sr_hle_test_audio_reset(void);
+extern void sr_hle_test_audio_lead_reset(void);
+extern void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued);
+extern unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                                   unsigned long *noqueue, long *last_ms);
 extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
@@ -172,6 +194,8 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
 #define NID_SCE_KERNEL_EXIT_DELETE_THREAD_ORACLE 0x809ce29bu
 #define NID_SCE_KERNEL_GET_THREAD_ID 0x293b45b8u
+#define NID_SCE_KERNEL_VOLATILE_MEM_LOCK 0x3e0271d3u
+#define NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK 0xa14f40b2u
 #define NID_SCE_KERNEL_CREATE_MSG_PIPE 0x7c0dc2a0u
 #define NID_SCE_KERNEL_DELETE_MSG_PIPE 0xf0b7da1cu
 #define NID_SCE_KERNEL_TRY_SEND_MSG_PIPE 0x884c9f90u
@@ -187,6 +211,12 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_RTC_SET_TICK 0x7ed29e40u
 #define NID_SCE_RTC_GET_WIN32_FILETIME 0xcf561893u
 #define NID_SCE_KERNEL_DELAY_THREAD 0xceadeb47u
+#define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD 0xbd123d9eu
+#define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB 0x1181e963u
+#define NID_SCE_KERNEL_TERMINATE_THREAD 0x616403bau
+#define NID_SCE_DISPLAY_WAIT_VBLANK_CB 0x8eb9ec49u
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_CB 0x46f186c3u
+#define TEST_SYSCLOCK_DELAY_ADDR 0x00270000u
 #define NID_DISPLAY_FRAME_PER_SEC 0xdba6c4c4u
 #define NID_SCE_KERNEL_LIBC_CLOCK 0x91e4f6a7u
 #define NID_SCE_AUDIO_CH_RESERVE 0x5ec81c55u
@@ -360,7 +390,11 @@ static void audio_fixture_reset(void) {
     s_audio_queue_seq_len = 0;
 }
 
-int gui_on(void) { return 0; }
+static int s_test_gui_on;
+static unsigned long s_test_gui_present_calls;
+static uint32_t s_test_gui_last_addr, s_test_gui_last_stride;
+static int s_test_gui_last_fmt;
+int gui_on(void) { return s_test_gui_on; }
 void gui_pump(void) {}
 uint32_t gui_buttons(void) { return 0u; }
 void gui_consume_button_pulses(void) {}
@@ -369,8 +403,12 @@ void gui_analog(uint8_t *lx, uint8_t *ly) {
     if (ly) *ly = 128;
 }
 int gui_pad_present(void) { return 0; }
-void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
-    (void)fbaddr; (void)fmt; (void)stride;
+int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
+    s_test_gui_present_calls++;
+    s_test_gui_last_addr = fbaddr;
+    s_test_gui_last_fmt = fmt;
+    s_test_gui_last_stride = stride;
+    return 1;
 }
 /* The host-neutral HLE selftest omits the Vulkan backend. With no live GPU target,
  * a fully validated descriptor is correctly classified as guest-authoritative.
@@ -420,6 +458,20 @@ void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+/* Display-source service-cadence attribution (perf.c owns the real counters; the
+ * selftest needs only the symbols to link, and reads the phase tag directly). */
+void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (void)periods; }
+void sr_perf_vblank_coalesced(void) {}
+void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
+void sr_perf_phase_report(int force) { (void)force; }
+int sr_rt_phase;
+uint32_t sr_rt_nid;
+uint32_t (*sr_rt_pc_fn)(void);
+uint32_t (*sr_rt_uid_fn)(void);
+const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
+    "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
+};
 int sr_perf_aot_active;
 void sr_perf_aot_begin(uint32_t pc) { (void)pc; }
 void sr_perf_aot_end(void) {}
@@ -456,12 +508,34 @@ void sr_perf_audio_output(uint64_t started_ns, uint32_t frames) {
 
 /* The FD fixture deliberately exercises the writable host-backed branch.  Keep
  * the ISO side absent and deterministic rather than making the selftest depend
- * on a private game image. */
+ * on a private game image.
+ *
+ * One exception, and it is the same rule: the scePsmfPlayer rejection fixture is a
+ * source-owned PSMF image generated byte for byte by this file (see
+ * psmf_synthetic_build), served from memory only while its own test asks for it.  Every
+ * other path, and every other test, keeps the deliberate ISO miss. */
+static uint8_t s_psmf_synthetic[2048u + 21u];
+static uint32_t s_psmf_synthetic_size;
+static int s_psmf_synthetic_enabled;
+static const char *const s_psmf_synthetic_path = "disc0:/media/synthetic.psmf";
+
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
+    if (s_psmf_synthetic_enabled && guest_path &&
+        strcmp(guest_path, s_psmf_synthetic_path) == 0) {
+        if (out_lba) *out_lba = 0u;
+        if (out_size) *out_size = s_psmf_synthetic_size;
+        return 0;
+    }
     (void)guest_path; (void)out_lba; (void)out_size;
     return -1;
 }
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
+    if (s_psmf_synthetic_enabled && lba == 0u && dst && offset < s_psmf_synthetic_size) {
+        uint32_t n = s_psmf_synthetic_size - offset;
+        if (n > bytes) n = bytes;
+        memcpy(dst, s_psmf_synthetic + offset, n);
+        return (int)n;
+    }
     (void)lba; (void)offset; (void)dst; (void)bytes;
     return -1;
 }
@@ -665,6 +739,8 @@ static void test_title_config_hle_bindings(void) {
     uint32_t libfont_flag = 0, frame_latch = 0;
     int has_libfont = sr_title_config_libfont_ready_flag_addr(&libfont_flag);
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
+    SrTitleReentBindings reent;
+    int has_reent = sr_title_config_reent_bindings(&reent);
     CpuState cpu;
 
     memset(g_mem_base, 0, 0x0c000000u);
@@ -681,6 +757,12 @@ static void test_title_config_hle_bindings(void) {
     expect((has_bringup && has_sync && has_libfont && has_latch) ||
            (!has_bringup && !has_sync && !has_libfont && !has_latch),
            "migrated HLE groups are all configured together or all absent");
+    expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
+           "HST reent compatibility is selected only by the validated HST title config");
+    if (has_reent) {
+        expect(reent.master_reent_addr != 0u && reent.guest_thread_table_addr != 0u,
+               "HST reent compatibility config supplies both required guest addresses");
+    }
 
     s_title_hle_guest_calls = 0;
     s_title_hle_probe = 1;
@@ -1874,6 +1956,84 @@ static void test_controlled_unsupported_registration(void) {
            "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
 }
 
+/* Enter the production Lock/TryLock NID mappings with an output span that crosses
+ * the guest arena boundary. The regression protects the valid output from a partial
+ * write and preserves the existing no-op behavior for NULL output pointers. */
+static void test_volatile_mem_output_preflight(void) {
+    const uint32_t paddr_out = 0x08a10000u;
+    const uint32_t size_out = 0x08a10004u;
+    const uint32_t sentinel = 0xa5c35a3cu;
+    CpuState cpu;
+    sr_hle_init();
+
+    MEM_W32(paddr_out, sentinel);
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = 0x0bfffffeu; /* starts inside the arena; the 4-byte span crosses its end */
+    uint32_t ret = sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_LOCK);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "volatile-memory Lock returns illegal-address when its size output is outside guest memory");
+    expect(MEM_R32(paddr_out) == sentinel,
+           "volatile-memory Lock validates both output spans before writing either one");
+    expect(MEM_R32(size_out) == sentinel,
+           "volatile-memory Lock leaves its valid size output unchanged on refusal");
+
+    MEM_W32(paddr_out, sentinel);
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0x0bfffffeu;
+    cpu.r[6] = size_out;
+    ret = sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "volatile-memory TryLock returns illegal-address when its address output is outside guest memory");
+    expect(MEM_R32(size_out) == sentinel,
+           "volatile-memory TryLock leaves its valid size output unchanged on refusal");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = size_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_LOCK) == 0u,
+           "volatile-memory Lock still succeeds with two valid output spans");
+    expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
+           "volatile-memory Lock preserves the existing 4 MiB scratch-buffer route");
+
+    MEM_W32(paddr_out, sentinel);
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = size_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK) == 0u,
+           "volatile-memory TryLock preserves the existing successful route");
+    expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
+           "volatile-memory TryLock writes both valid outputs");
+
+    MEM_W32(size_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = size_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_LOCK) == 0u,
+           "volatile-memory Lock retains NULL address-output tolerance");
+    expect(MEM_R32(size_out) == 0x00400000u,
+           "volatile-memory Lock still writes the non-NULL size output");
+
+    MEM_W32(paddr_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = paddr_out;
+    cpu.r[6] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_VOLATILE_MEM_TRY_LOCK) == 0u,
+           "volatile-memory TryLock retains NULL size-output tolerance");
+    expect(MEM_R32(paddr_out) == 0x08400000u,
+           "volatile-memory TryLock still writes the non-NULL address output");
+
+}
+
 /* ---- sceUtilityOsk. The keyboard is answered by a person through a native Win32 box
  * (src/rt/osk_win.c), which this host test cannot open, and by SR_OSK_SCRIPT / SR_OSK_TEXT
  * for automation. The stub below stands in for the native box and counts how often it was
@@ -2288,7 +2448,7 @@ static void reset_fixture(void) {
     g_root_uid = 0x110u;
     g_launcher_uid = 0x111u;
     g_worker_uid = 0x114u; /* primary render worker, not the resource worker below */
-    g_master_reent = 0x002cf338u;
+    g_master_reent = 0x00300000u;
     s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
@@ -2297,6 +2457,8 @@ static void reset_fixture(void) {
     s_dispatch_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_pending_vblanks = 0;          /* owed VBLANK episodes */
+    s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_count = 0;
@@ -2306,6 +2468,11 @@ static void reset_fixture(void) {
     s_exit_dispatches = 0;
     s_oracle_thread_action = ORACLE_THREAD_ACTION_EXIT;
     s_cpu = &s_cpu_store;
+    s_test_gui_on = 0;
+    s_test_gui_present_calls = 0;
+    s_test_gui_last_addr = 0;
+    s_test_gui_last_fmt = 0;
+    s_test_gui_last_stride = 0;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
     sr_nested_frame_reset();
@@ -2586,6 +2753,54 @@ static void test_audio_regular_contract_safety(void) {
            "the negative queue sentinel takes the open-loop path after one query");
 }
 
+/* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
+ *
+ * A push count cannot tell a guest that submits what it consumes from one that submits twice
+ * as much: both push frames, and only the queue depth separates them. So the runtime reads
+ * sr_audio_queued() where the blocking output paces against it and publishes the deepest lead
+ * any channel carried in each window. What is pinned here is the contract a reader of the
+ * telemetry depends on: the window's peak is the worst channel, not the last; a window in
+ * which every output had no host queue reports -1 rather than a drift of zero; and the
+ * accumulator resets when a window closes, so the next window starts from nothing. */
+static void test_audio_drift_window_reports_the_pacing_value(void) {
+    int peak = -1;
+    uint32_t peak_ch = 0xffffffffu;
+    unsigned long noqueue = 0, outputs = 0;
+    long last_ms = 0;
+
+    sr_hle_test_audio_lead_reset();
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "a fresh drift window has counted no outputs");
+    expect(last_ms == -1L, "and has published no milliseconds, not zero");
+
+    sr_hle_test_audio_lead_feed(10u, 0, 4410);
+    sr_hle_test_audio_lead_feed(20u, 3, 8820);
+    sr_hle_test_audio_lead_feed(30u, 8, 2205);
+    outputs = sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms);
+    expect(outputs == 3u, "every output in the window is counted");
+    expect(peak == 8820, "the window publishes the deepest lead, not the last reading");
+    expect(peak_ch == 3u, "and the channel that was carrying it");
+
+    /* One window is 300 delivered vblanks; crossing it prints what it saw and resets. */
+    sr_hle_test_audio_lead_feed(300u, 0, 4410);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the window that crosses the boundary starts the next one empty");
+    expect(last_ms == 200L, "the window printed its own peak, 8820 frames as 200 ms");
+    expect(peak == 0, "and the peak resets with it");
+    expect(noqueue == 0u, "as does the count of outputs with no queue");
+    (void)outputs;
+
+    /* No host queue anywhere in a window is absence of a measurement, never a zero drift. */
+    sr_hle_test_audio_lead_reset();
+    sr_hle_test_audio_lead_feed(10u, 0, -1);
+    sr_hle_test_audio_lead_feed(20u, 0, -1);
+    sr_hle_test_audio_lead_feed(300u, 0, -1);
+    expect(sr_hle_test_audio_lead_window(&peak, &peak_ch, &noqueue, &last_ms) == 0u,
+           "the all-unmeasured window closed and reset like any other");
+    expect(last_ms == -1L, "a window with no host queue reports -1 ms, not 0");
+    sr_hle_test_audio_lead_reset();
+}
+
 static uint64_t selftest_guest_u64(uint32_t addr) {
     return (uint64_t)MEM_R32(addr) | ((uint64_t)MEM_R32(addr + 4u) << 32);
 }
@@ -2775,9 +2990,11 @@ static void test_display_clock_reads_are_observational(void) {
 }
 
 static int s_delay_done;      /* set when the delay guest body returned */
-static uint32_t s_delay_ret;  /* return code of sceKernelDelayThread */
+static uint32_t s_delay_ret;  /* return code of the selected delay import */
+static uint32_t s_delay_nid = NID_SCE_KERNEL_DELAY_THREAD;
+static uint32_t s_delay_argument = 1000u;
 
-/* Guest body for the delay test: enters sceKernelDelayThread through the real
+/* Guest body for the delay test: enters the selected delay import through the real
  * NID inside its own coroutine (the production shape), then parks on the
  * scheduler.  The delay's own switch_to_scheduler() is a genuine child->main
  * switch here, so the coroutine-lifecycle invariant (no suppressed
@@ -2786,8 +3003,8 @@ static void delay_coro_body(void *arg) {
     (void)arg;
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 1000u;   /* 1 ms */
-    s_delay_ret = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD);
+    cpu.r[4] = s_delay_argument;
+    s_delay_ret = sr_syscall(&cpu, s_delay_nid);
     s_delay_done = 1;
     selftest_park_on_scheduler();
 }
@@ -2816,6 +3033,8 @@ static void test_delay_advances_unified_timeline(void) {
     s_vbl_event_period_rem = 0;
     s_delay_done = 0;
     s_delay_ret = 0xFFFFFFFFu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_THREAD;
+    s_delay_argument = 1000u;
 
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -3157,17 +3376,19 @@ static void test_display_queries_do_not_progress_display(void) {
 }
 
 /* Guest-visible VCOUNT advances by elapsed display periods at scheduler
- * source-latch boundaries, decoupled from VBLANK service -- it is not a count
- * of delivered/serviced VBLANK episodes and is not described as strictly
- * free-running.  A provisional PSP observation corroborates the service-
- * independence direction, but it does not establish the runtime's exact rate;
- * this checked-in regression is HOST_TESTED source-contract evidence.
+ * source-latch boundaries, and the serviced VBLANK event is a COUNT of those
+ * periods rather than one coalesced bit.
  *
- * This is the public failing-before regression for that boundary, exercised
- * through the production scheduler_latch_due_events / scheduler_service_pending
- * path (not HST, not the hardware probe).  For each N the source deadline is
- * advanced across exactly N periods before service; VCOUNT must reflect V+N,
- * while delivered episodes stay at most one. */
+ * The two used to be deliberately split: VCOUNT advanced by the elapsed period
+ * count while delivery collapsed to a single pending bit.  That split is what
+ * made a vblank-paced title observe fewer VBLANK episodes than display periods
+ * (measured 55.0 Hz against a 59.94 Hz source) with an exactly-correct VCOUNT.
+ * The hardware does not split them: the PSP's IF/IE pair is a level that is
+ * re-asserted for every edge that arrives while the CPU is still in the previous
+ * handler, so a guest that spends N periods inside one stretch with no service
+ * point is owed N handler episodes.  These are the production
+ * scheduler_latch_due_events / scheduler_service_pending path (not HST, not the
+ * hardware probe); HOST_TESTED source-contract evidence. */
 static void test_vcount_tracks_elapsed_source_periods(void) {
     enum {
         NID_DISPLAY_VCOUNT = 0x9c6eaad7u,
@@ -3182,6 +3403,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
 
@@ -3201,21 +3423,24 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         snprintf(msg, sizeof msg, "N=%u: no delivery before the eligible service phase", N);
         expect(s_vbl_count == 0u, msg);
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "a burst of periods coalesces into one pending source bit");
+               "a burst of periods still raises the source bit");
+        expect(s_pending_vblanks == N,
+               "a burst of periods is owed one serviced episode each");
 
-        /* Service once: one delivered episode, VCOUNT unchanged. */
+        /* Service once: the whole burst is delivered, VCOUNT unchanged. */
         scheduler_service_pending();
-        snprintf(msg, sizeof msg, "N=%u: one serviced episode regardless of the burst", N);
-        expect(s_vbl_count == 1u, msg);
+        snprintf(msg, sizeof msg, "N=%u: one serviced episode per elapsed period", N);
+        expect(s_vbl_count == N, msg);
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + N,
                "service does not re-advance guest VCOUNT");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) == 0u,
-               "service clears the coalesced source bit");
+               "service clears the source bit");
+        expect(s_pending_vblanks == 0u, "service clears the owed episode count");
     }
 
-    /* Pending bit already set before the latch: the latch must not manufacture
-     * a second episode; VCOUNT still advances by the crossed periods. */
+    /* Pending bit already set before the latch: the burst still adds its own
+     * episodes; VCOUNT advances by the crossed periods. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3224,6 +3449,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3237,11 +3463,12 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "a pre-set pending bit still lets VCOUNT track the crossed periods");
         expect(s_vbl_count == 0u, "a pre-set pending bit adds no delivery before service");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "a pre-set pending bit still coalesces to one episode");
+        expect(s_vbl_count == 3u,
+               "a pre-set pending bit adds no episode beyond the three crossed periods");
     }
 
     /* Multiple deadline-latch calls before service: each latch contributes its
-     * own period burst to VCOUNT and the delivery stays one episode. */
+     * own period burst and every period is still owed an episode. */
     {
         reset_fixture();
         sr_hle_init();
@@ -3250,6 +3477,7 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_vbl_event_period_rem = 0;
         s_vbl_count = 0;
         s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0;
@@ -3264,9 +3492,11 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
                "multiple latches accumulate VCOUNT (2 + 3 periods)");
         expect(s_vbl_count == 0u, "no delivery yet across multiple latches");
         expect((s_pending_interrupts & SCHED_INTR_VBLANK) != 0,
-               "multiple latches still coalesce into one pending source");
+               "multiple latches still raise the source bit");
+        expect(s_pending_vblanks == 5u,
+               "multiple latches accumulate one owed episode per elapsed period");
         scheduler_service_pending();
-        expect(s_vbl_count == 1u, "one delivery after multiple latches");
+        expect(s_vbl_count == 5u, "every accumulated period is delivered after multiple latches");
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 5u,
                "service leaves the accumulated VCOUNT alone");
@@ -3671,6 +3901,7 @@ static char s_prewarm_root[MAX_PATH];
 
 static void prewarm_env_restore(void) {
     SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", NULL);
 }
 
 typedef struct {
@@ -4007,8 +4238,12 @@ enum {
     HOST_DATA_PHASE_PUBLISH
 };
 
-static int host_data_bench_dir(const char *base, size_t bucket,
-                               char *path, size_t capacity, int create) {
+/* `dirs_created` accumulates the fixture's directory skeleton, so the scaling
+ * assertion can bound directory enumeration against the tree the benchmark
+ * actually built instead of against a hard-coded constant. */
+static int host_data_bench_dir(const char *base, size_t bucket, char *path,
+                               size_t capacity, int create,
+                               size_t *dirs_created) {
     if (!base || !path || capacity == 0u) return 0;
     size_t used = (size_t)snprintf(path, capacity, "%s", base);
     if (used >= capacity) return 0;
@@ -4017,7 +4252,10 @@ static int host_data_bench_dir(const char *base, size_t bucket,
                            bucket, (unsigned)(bucket % 3u));
     if (written < 0 || (size_t)written >= capacity - used) return 0;
     used += (size_t)written;
-    if (create && !hle_make_directory(path)) return 0;
+    if (create) {
+        if (!hle_make_directory(path)) return 0;
+        if (dirs_created) (*dirs_created)++;
+    }
     unsigned components[] = {
         (unsigned)bucket,
         (unsigned)((bucket / 4u) % 20u),
@@ -4029,22 +4267,25 @@ static int host_data_bench_dir(const char *base, size_t bucket,
                            names[level - 1u], components[level - 1u]);
         if (written < 0 || (size_t)written >= capacity - used) return 0;
         used += (size_t)written;
-        if (create && !hle_make_directory(path)) return 0;
+        if (create) {
+            if (!hle_make_directory(path)) return 0;
+            if (dirs_created) (*dirs_created)++;
+        }
     }
     return 1;
 }
 
 static int host_data_bench_write_files(const char *base, size_t count,
-                                       char prefix) {
+                                       char prefix, size_t *dirs_created) {
     char directory[MAX_PATH];
     char path[MAX_PATH];
     for (size_t bucket = 0; bucket < 80u; bucket++) {
         if (!host_data_bench_dir(base, bucket, directory,
-                                 sizeof(directory), 1)) return 0;
+                                 sizeof(directory), 1, dirs_created)) return 0;
     }
     for (size_t i = 0; i < count; i++) {
         if (!host_data_bench_dir(base, i % 80u, directory,
-                                 sizeof(directory), 0)) return 0;
+                                 sizeof(directory), 0, dirs_created)) return 0;
         int written = snprintf(path, sizeof(path), "%s\\%c%05zu.DaTa",
                               directory, prefix, i);
         if (written < 0 || (size_t)written >= sizeof(path)) return 0;
@@ -4084,10 +4325,11 @@ static void host_data_bench_remove_tree(const char *root) {
 }
 
 static int host_data_bench_make_tree(const char *root, size_t total_files,
-                                     char *dataroot, size_t dataroot_capacity) {
+                                     char *dataroot, size_t dataroot_capacity,
+                                     size_t *dirs_created) {
     char usrdir[MAX_PATH];
     char loose[MAX_PATH];
-    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\xbdata_extracted", root);
+    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\primary", root);
     if (n < 0 || (size_t)n >= dataroot_capacity) return 0;
     n = snprintf(usrdir, sizeof(usrdir), "%s\\USRDIR", root);
     if (n < 0 || (size_t)n >= sizeof(usrdir)) return 0;
@@ -4095,15 +4337,40 @@ static int host_data_bench_make_tree(const char *root, size_t total_files,
     if (n < 0 || (size_t)n >= sizeof(loose) ||
         !hle_make_directory(root) || !hle_make_directory(usrdir) ||
         !hle_make_directory(dataroot) || !hle_make_directory(loose)) return 0;
+    /* The four directories above plus every prepared bucket directory are part
+     * of the skeleton a walk has to enumerate. */
+    if (dirs_created) *dirs_created += 4u;
     size_t primary_count = total_files * 4u / 5u;
     size_t loose_count = total_files - primary_count;
-    return host_data_bench_write_files(dataroot, primary_count, 'P') &&
-           host_data_bench_write_files(loose, loose_count, 'L');
+    return host_data_bench_write_files(dataroot, primary_count, 'P', dirs_created) &&
+           host_data_bench_write_files(loose, loose_count, 'L', dirs_created);
 }
 
+/* The census cost is proved by WORK COUNTS, never by the wall clock.
+ *
+ * This used to bound the wall clock of the synthetic 15k/30k/60k preparations,
+ * and a clock is not a correctness input: on a loaded host the same unmodified
+ * source failed this bound in one run out of three (issue #520) while every
+ * count below stayed exactly where it is now.  The three trees have ONE shape
+ * and 1x/2x/4x the files, so the work the census reports must grow 1x/2x/4x as
+ * well; a census that re-enumerated or re-probed per file (O(n^2)) reports
+ * 1x/4x/16x instead, which is what these bounds reject:
+ *
+ *   probes -- the per-file readability open, exactly one per indexed file;
+ *   names  -- every directory entry the census retrieved, "." and ".." included,
+ *             across both the archive-discovery and the primary walk;
+ *   dirs   -- directories enumerated, bounded by the fixture's own skeleton
+ *             (host_data_bench_make_tree counts it) instead of by the file count.
+ *
+ * Wall clock and the per-phase split stay an informational print: they are the
+ * developer evidence about this host's filesystem, and a human reads them. */
 static void test_host_data_scan_scaling(void) {
     static const size_t counts[] = { 15000u, 30000u, 60000u };
     unsigned long long elapsed_ms[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long long names[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long long probes[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long dirs[sizeof(counts) / sizeof(counts[0])] = { 0 };
+    unsigned long skeleton[sizeof(counts) / sizeof(counts[0])] = { 0 };
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) {
         expect(0, "the synthetic host-data benchmark has a working directory");
@@ -4116,19 +4383,33 @@ static void test_host_data_scan_scaling(void) {
     for (size_t sample = 0; sample < sizeof(counts) / sizeof(counts[0]); sample++) {
         char root[MAX_PATH];
         char dataroot[MAX_PATH];
+        size_t dirs_created = 0;
         root[0] = '\0';
         int n = snprintf(root, sizeof(root), "%s\\build\\host_data_scan_%lu_%llu",
                          cwd, (unsigned long)GetCurrentProcessId(),
                          (unsigned long long)GetTickCount64());
         int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
         int tree_ok = root_path_ok &&
-            host_data_bench_make_tree(root, counts[sample], dataroot, sizeof(dataroot));
+            host_data_bench_make_tree(root, counts[sample], dataroot,
+                                      sizeof(dataroot), &dirs_created);
         expect(tree_ok, "the mixed-case 1-to-4-level synthetic host-data tree was created");
         if (!tree_ok) {
             if (root_path_ok) host_data_bench_remove_tree(root);
             continue;
         }
+        char loose_root[MAX_PATH], loose_binding[MAX_PATH + 32];
+        int loose_root_len = snprintf(loose_root, sizeof(loose_root), "%s\\USRDIR", root);
+        int loose_binding_len = loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root)
+            ? snprintf(loose_binding, sizeof(loose_binding), "%s\t\t10\n", loose_root) : -1;
+        expect(loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root) &&
+               loose_binding_len >= 0 && (size_t)loose_binding_len < sizeof(loose_binding),
+               "the synthetic benchmark loose-root binding fits its bounded environment field");
+        if (loose_binding_len < 0 || (size_t)loose_binding_len >= sizeof(loose_binding)) {
+            host_data_bench_remove_tree(root);
+            continue;
+        }
         SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+        SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", loose_binding);
         sr_hle_test_data_reset(0);
         ULONGLONG started = GetTickCount64();
         int state = sr_host_data_prepare();
@@ -4137,11 +4418,18 @@ static void test_host_data_scan_scaling(void) {
                "the synthetic prepared-tree route reaches READY");
         expect(sr_hle_test_data_entry_count() == counts[sample],
                "the primary and loose walks publish every synthetic file exactly once");
+        names[sample] = sr_hle_test_data_scan_names();
+        probes[sample] = sr_hle_test_data_scan_probes();
+        dirs[sample] = sr_hle_test_data_walk_calls();
+        skeleton[sample] = (unsigned long)dirs_created;
+        expect(probes[sample] == (unsigned long long)counts[sample],
+               "the census opens every synthetic file's metadata exactly once");
         fprintf(stderr,
-                "[HOST_DATA_SCALE] files=%zu total_ms=%llu archive_discover_ms=%llu "
-                "walk_ms=%llu loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu "
-                "publish_ms=%llu\n",
-                counts[sample], elapsed_ms[sample],
+                "[HOST_DATA_SCALE] files=%zu total_ms=%llu names_read=%llu file_probes=%llu "
+                "dirs=%lu skeleton=%lu archive_discover_ms=%llu walk_ms=%llu "
+                "loose_walk_ms=%llu finalize_ms=%llu validate_ms=%llu publish_ms=%llu\n",
+                counts[sample], elapsed_ms[sample], names[sample], probes[sample],
+                dirs[sample], skeleton[sample],
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_ARCHIVE_DISCOVER),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_PRIMARY_WALK),
                 sr_hle_test_data_phase_ms(HOST_DATA_PHASE_LOOSE_WALK),
@@ -4152,18 +4440,27 @@ static void test_host_data_scan_scaling(void) {
         sr_hle_test_data_reset(0);
         host_data_bench_remove_tree(root);
     }
-    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u,
+    expect(elapsed_ms[0] != 0u && elapsed_ms[1] != 0u && elapsed_ms[2] != 0u &&
+               names[0] != 0u && names[1] != 0u && names[2] != 0u,
            "all three synthetic scaling sizes were measured");
-    expect(elapsed_ms[1] <= elapsed_ms[0] * 3u + 1000u &&
-               elapsed_ms[2] <= elapsed_ms[0] * 7u + 2000u,
-           "host-data preparation growth stays near-linear from 15k to 60k files");
-    expect(elapsed_ms[2] <= 20000u,
-           "a 60k-file primary-plus-loose synthetic tree prepares within 20 seconds");
+    /* Doubling the files may at most double the names read (2.5x) and may not
+     * quadruple them; quadrupling the files may at most quadruple them (4.5x).
+     * A per-file re-walk or re-probe reports 4x and 16x here. */
+    expect(names[1] <= names[0] * 5u / 2u && names[2] <= names[0] * 9u / 2u,
+           "host-data enumeration name reads grow with the file count, not with its square");
+    /* The skeleton's directories are enumerated by the archive-discovery walk
+     * and again by the primary walk, plus a handful for the loose-content root;
+     * the multiplier is headroom for that, and a per-file enumeration would add
+     * one directory walk per indexed file. */
+    expect(dirs[0] <= skeleton[0] * 4u + 16ul && dirs[1] <= skeleton[1] * 4u + 16ul &&
+               dirs[2] <= skeleton[2] * 4u + 16ul,
+           "directory enumeration is bounded by the prepared tree's skeleton, not the file count");
 }
 
 typedef struct {
     char root[MAX_PATH];
     char dataroot[MAX_PATH];
+    char loose_roots[MAX_PATH + 32];
     char memstick[MAX_PATH];
     char legacy[MAX_PATH];
     char archive[MAX_PATH];
@@ -4177,16 +4474,20 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
     _snprintf(fixture->root, sizeof(fixture->root), "%s\\build\\archive_route_%lu_%llu",
               cwd, (unsigned long)GetCurrentProcessId(),
               (unsigned long long)GetTickCount64());
-    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\xbdata_extracted",
+    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
              fixture->root);
+    _snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
+              "%s\\" "USRDIR\t\t0\t1\t0\n", fixture->root);
     _snprintf(fixture->memstick, sizeof(fixture->memstick), "%s\\memstick", fixture->root);
     _snprintf(fixture->legacy, sizeof(fixture->legacy), "%s\\legacy", fixture->root);
     _snprintf(fixture->archive, sizeof(fixture->archive), "%s\\assets.xb", fixture->dataroot);
     _snprintf(fixture->hidden, sizeof(fixture->hidden), "%s\\assets.xb.hidden", fixture->dataroot);
 
     static const char *const dirs[] = {
-        "", "\\USRDIR", "\\USRDIR\\xbdata_extracted",
+        "", "\\USRDIR", "\\USRDIR\\primary",
+        "\\USRDIR\\primary\\data", "\\USRDIR\\primary\\data\\menu",
         "\\USRDIR\\data", "\\USRDIR\\data\\menu",
+        "\\USRDIR\\packed_archives", "\\USRDIR\\module",
         "\\USRDIR\\PSP", "\\USRDIR\\PSP\\SAVEDATA",
         "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
         "\\memstick", "\\legacy"
@@ -4211,7 +4512,11 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
         const char *body;
     } loose_files[] = {
         { "\\USRDIR\\data\\menu\\loose.to", "loose-route" },
-        { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" }
+        { "\\USRDIR\\data\\menu\\archived.to", "loose-over-archive-route" },
+        { "\\USRDIR\\primary\\data\\menu\\loose.to", "primary-route" },
+        { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" },
+        { "\\USRDIR\\packed_archives\\packed.xb", "packed-archive" },
+        { "\\USRDIR\\module\\start.prx", "module-file" }
     };
     for (size_t i = 0; i < sizeof(loose_files) / sizeof(loose_files[0]); i++) {
         char path[MAX_PATH];
@@ -4229,10 +4534,16 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
 static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixture) {
     if (!fixture) return;
     static const char *const files[] = {
-        "\\USRDIR\\xbdata_extracted\\assets.xb",
-        "\\USRDIR\\xbdata_extracted\\assets.xb.hidden",
+        "\\USRDIR\\primary\\assets.xb",
+        "\\USRDIR\\primary\\assets.xb.hidden",
+        "\\USRDIR\\primary\\data\\menu\\loose.to",
         "\\USRDIR\\data\\menu\\loose.to",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL"
+        "\\USRDIR\\data\\menu\\archived.to",
+        "\\USRDIR\\data\\dupe.to",
+        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
+        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL",
+        "\\USRDIR\\packed_archives\\packed.xb",
+        "\\USRDIR\\module\\start.prx"
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char path[MAX_PATH];
@@ -4240,12 +4551,18 @@ static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixtu
         DeleteFileA(path);
     }
     static const char *const dirs[] = {
+        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA",
+        "\\USRDIR\\data\\menu\\collision.xb.d",
         "\\USRDIR\\data\\menu",
+        "\\USRDIR\\packed_archives",
+        "\\USRDIR\\module",
         "\\USRDIR\\data",
         "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
         "\\USRDIR\\PSP\\SAVEDATA",
         "\\USRDIR\\PSP",
-        "\\USRDIR\\xbdata_extracted",
+        "\\USRDIR\\primary\\data\\menu",
+        "\\USRDIR\\primary\\data",
+        "\\USRDIR\\primary",
         "\\USRDIR",
         "\\memstick",
         "\\legacy"
@@ -4283,6 +4600,24 @@ static uint32_t hle_archive_route_open_result(const char *path) {
     return fd;
 }
 
+static int hle_archive_route_file_matches(const char *path, const char *expected) {
+    static const uint32_t content_addr = 0x0910c000u;
+    CpuState cpu;
+    uint32_t fd = disc_route_open(&cpu, path);
+    if (fd < 3u || fd >= 64u) return 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = content_addr;
+    cpu.r[6] = 64u;
+    uint32_t content_size = sr_hle_test_io_read(&cpu);
+    int content_matches = content_size == strlen(expected) &&
+        memcmp((const uint8_t *)(g_mem_base + content_addr), expected,
+               strlen(expected)) == 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    return content_matches && sr_hle_test_io_close(&cpu) == 0u;
+}
+
 static uint32_t hle_archive_route_stat_result(const char *path, uint32_t *size_out) {
     CpuState cpu;
     static const uint32_t path_addr = 0x09109000u;
@@ -4307,18 +4642,54 @@ static uint32_t hle_archive_route_dopen_result(const char *path) {
     return fd;
 }
 
+static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd) {
+    if (!capture || !saved_fd) return 0;
+    *capture = tmpfile();
+    *saved_fd = -1;
+    if (!*capture) return 0;
+    fflush(stderr);
+    *saved_fd = _dup(_fileno(stderr));
+    if (*saved_fd < 0 || _dup2(_fileno(*capture), _fileno(stderr)) < 0) {
+        if (*saved_fd >= 0) _close(*saved_fd);
+        *saved_fd = -1;
+        fclose(*capture);
+        *capture = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
+                                         char *output, size_t output_size) {
+    if (!capture || !output || output_size == 0u) return 0u;
+    fflush(stderr);
+    rewind(capture);
+    size_t length = fread(output, 1u, output_size - 1u, capture);
+    output[length] = '\0';
+    clearerr(capture);
+    if (saved_fd >= 0) {
+        _dup2(saved_fd, _fileno(stderr));
+        _close(saved_fd);
+    }
+    fclose(capture);
+    return length;
+}
+
 static void test_archive_mode_preserves_loose_routes(void) {
     static const char *const paths[] = {
         "ms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
         "fatms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
         "disc0:/PSP_GAME/USRDIR/data/menu/loose.to",
+        "host0:data/menu/loose.to",
         "disc0:/PSP_GAME/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL"
     };
     const size_t path_count = sizeof(paths) / sizeof(paths[0]);
     const char *old_data_value = getenv("SR_DATAROOT");
+    const char *old_loose_value = getenv("SR_LOOSE_CONTENT_ROOTS");
     const char *old_memstick_value = getenv("SR_MEMSTICK");
     const char *old_fs_value = getenv("SR_FSDIR");
     char *old_data = hle_archive_route_env_copy(old_data_value);
+    char *old_loose = hle_archive_route_env_copy(old_loose_value);
     char *old_memstick = hle_archive_route_env_copy(old_memstick_value);
     char *old_fs = hle_archive_route_env_copy(old_fs_value);
     HleArchiveRouteFixture fixture;
@@ -4336,11 +4707,13 @@ static void test_archive_mode_preserves_loose_routes(void) {
            "the archive/loose route fixture was created");
     if (fixture.root[0] == '\0') {
         free(old_data);
+        free(old_loose);
         free(old_memstick);
         free(old_fs);
         return;
     }
     hle_archive_route_set_env("SR_DATAROOT", fixture.dataroot);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", fixture.loose_roots);
     hle_archive_route_set_env("SR_MEMSTICK", fixture.memstick);
     hle_archive_route_set_env("SR_FSDIR", fixture.legacy);
 
@@ -4352,6 +4725,10 @@ static void test_archive_mode_preserves_loose_routes(void) {
     uint32_t archive_size = 0;
     uint32_t loose_dopen = UINT32_MAX;
     uint32_t archive_dopen = UINT32_MAX;
+    size_t migration_entry_count = 0u;
+    unsigned long long migration_scan_names = 0u;
+    unsigned long long migration_scan_probes = 0u;
+    unsigned long migration_walk_calls = 0ul;
     int moved = MoveFileA(fixture.archive, fixture.hidden);
     expect(moved != 0, "the archive is hidden for the loose-mode comparison");
     if (moved) {
@@ -4363,6 +4740,9 @@ static void test_archive_mode_preserves_loose_routes(void) {
             loose_ready = 1;
             for (size_t i = 0; i < path_count; i++)
                 loose_results[i] = hle_archive_route_open_result(paths[i]);
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "the primary extracted tree wins the migration-root duplicate in loose mode");
             loose_stat = hle_archive_route_stat_result(paths[0], &loose_size);
             loose_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
         }
@@ -4377,8 +4757,20 @@ static void test_archive_mode_preserves_loose_routes(void) {
                "the same fixture reaches READY in archive mode");
         if (state == SR_DATA_TEST_STATE_READY) {
             archive_ready = 1;
+            migration_entry_count = sr_hle_test_data_entry_count();
+            migration_scan_names = sr_hle_test_data_scan_names();
+            migration_scan_probes = sr_hle_test_data_scan_probes();
+            migration_walk_calls = sr_hle_test_data_walk_calls();
+            expect(migration_entry_count == 2u && migration_scan_probes == 5u,
+                   "the parent-root migration mounts two archive members and probes all five former sibling files exactly once");
             for (size_t i = 0; i < path_count; i++)
                 archive_results[i] = hle_archive_route_open_result(paths[i]);
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "the primary extracted tree wins the migration-root duplicate in archive mode");
+            expect(hle_archive_route_file_matches("host0:data/menu/archived.to",
+                                                  "loose-over-archive-route"),
+                   "a loose sibling file wins a matching mounted archive member");
             archive_stat = hle_archive_route_stat_result(paths[0], &archive_size);
             archive_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
         }
@@ -4420,12 +4812,96 @@ static void test_archive_mode_preserves_loose_routes(void) {
                "archive mode serves an archive-only member to a host0: read");
     }
 
+    char filtered_roots[MAX_PATH + 96];
+    int filtered_len = snprintf(filtered_roots, sizeof(filtered_roots),
+        "%s\\" "USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
+    expect(filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots),
+           "the two-exclusion manifest transport fits its bounded environment field");
+    if (filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots)) {
+        hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", filtered_roots);
+        sr_hle_test_data_reset(0);
+        int filtered_state = sr_host_data_prepare();
+        expect(filtered_state == SR_DATA_TEST_STATE_READY,
+               "the same root reaches READY when two irrelevant sibling subtrees are excluded");
+        if (filtered_state == SR_DATA_TEST_STATE_READY) {
+            expect(sr_hle_test_data_entry_count() == 2u &&
+                       sr_hle_test_data_scan_probes() == 3u,
+                   "excluded packed-archive and module subtrees are not probed while the three included sibling files remain");
+            expect(sr_hle_test_data_scan_names() < migration_scan_names &&
+                       sr_hle_test_data_walk_calls() < migration_walk_calls,
+                   "the walker does not enumerate entries inside excluded directories");
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "excluding sibling subtrees preserves extracted-primary precedence");
+        }
+    }
+
+    char duplicate_directory[MAX_PATH];
+    char duplicate_data_directory[MAX_PATH];
+    char duplicate_path[MAX_PATH];
+    char duplicate_alias_path[MAX_PATH];
+    int duplicate_paths_ok =
+        snprintf(duplicate_directory, sizeof(duplicate_directory),
+                 "%s\\USRDIR\\data\\menu\\collision.xb.d", fixture.root) > 0 &&
+        snprintf(duplicate_data_directory, sizeof(duplicate_data_directory),
+                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA", fixture.root) > 0 &&
+        snprintf(duplicate_path, sizeof(duplicate_path),
+                 "%s\\USRDIR\\data\\dupe.to", fixture.root) > 0 &&
+        snprintf(duplicate_alias_path, sizeof(duplicate_alias_path),
+                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
+                 fixture.root) > 0;
+    if (duplicate_paths_ok) {
+        duplicate_paths_ok = hle_make_directory(duplicate_directory) &&
+                             hle_make_directory(duplicate_data_directory);
+    }
+    if (duplicate_paths_ok) {
+        static const char direct_body[] = "direct-duplicate";
+        static const char alias_body[] = "archive-duplicate";
+        FILE *direct = fopen(duplicate_path, "wb");
+        FILE *alias = fopen(duplicate_alias_path, "wb");
+        duplicate_paths_ok = direct && alias;
+        if (direct) {
+            duplicate_paths_ok = fwrite(direct_body, 1u, sizeof(direct_body) - 1u, direct) ==
+                                 sizeof(direct_body) - 1u && duplicate_paths_ok;
+            if (fclose(direct) != 0) duplicate_paths_ok = 0;
+        }
+        if (alias) {
+            duplicate_paths_ok = fwrite(alias_body, 1u, sizeof(alias_body) - 1u, alias) ==
+                                 sizeof(alias_body) - 1u && duplicate_paths_ok;
+            if (fclose(alias) != 0) duplicate_paths_ok = 0;
+        }
+    }
+    expect(duplicate_paths_ok, "the same-root duplicate-key fixture was created");
+    if (duplicate_paths_ok) {
+        hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", fixture.loose_roots);
+        sr_hle_test_data_reset(0);
+        FILE *capture = NULL;
+        int saved_stderr = -1;
+        int capture_ready = hle_data_stderr_capture_begin(&capture, &saved_stderr);
+        int duplicate_state = sr_host_data_prepare();
+        char captured[4096] = {0};
+        if (capture_ready)
+            (void)hle_data_stderr_capture_end(capture, saved_stderr,
+                                              captured, sizeof(captured));
+        expect(capture_ready, "the duplicate-key refusal can be captured");
+        expect(duplicate_state == SR_DATA_TEST_STATE_FAILED,
+               "a genuine duplicate key within one root fails the complete index closed");
+        expect(strstr(captured,
+                      "duplicate guest-file key 'data/dupe.to' within root 1 at '") != NULL &&
+                   strstr(captured, "data/dupe.to' and '") != NULL &&
+                   strstr(captured, "data/menu/collision.xb.d/DATA/DUPE.TO'; refusing index") != NULL &&
+                   strstr(captured, "<root-relative-unavailable>") == NULL,
+               "the refusal names the duplicate guest key and both root-relative host paths");
+    }
+
     sr_hle_test_data_reset(0);
     hle_archive_route_set_env("SR_DATAROOT", old_data);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", old_loose);
     hle_archive_route_set_env("SR_MEMSTICK", old_memstick);
     hle_archive_route_set_env("SR_FSDIR", old_fs);
     hle_archive_route_fixture_remove(&fixture);
     free(old_data);
+    free(old_loose);
     free(old_memstick);
     free(old_fs);
 }
@@ -4596,15 +5072,9 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
     sr_hle_test_data_reset(0);
 }
 
-/* 2b. The disc route serves the whole namespace the guest addresses, not one
- *     physical tree: the archive-derived keys and the loose content beside the
- *     root land in the same key space, and the declared census keeps describing
- *     the configured root alone.
- *
- *     Fixture: <cwd>/build/disc_route_<pid>/USRDIR/xbdata_extracted/menu\a.xb0.d\data\menu\archived.to
- *              <cwd>/build/disc_route_<pid>/USRDIR/data/sound/bgm/bgm_title.sgb
- *     SR_DATAROOT is the xbdata_extracted tree, so BOTH keys must resolve through
- *     one prepared index, and the archive tree must not appear under a second key. */
+/* 2b. The disc route serves a manifest-declared namespace assembled from the
+ *     primary archive root and two loose roots. Their shared key proves the
+ *     declared precedence rule; a second key proves later roots still contribute. */
 static char s_disc_route_root[MAX_PATH];
 
 static int disc_route_make_fixture(void) {
@@ -4618,14 +5088,17 @@ static int disc_route_make_fixture(void) {
      * fixture cannot depend on an earlier test having left a parent behind. */
     static const char *const dirs[] = {
         "", "\\USRDIR",
-        "\\USRDIR\\xbdata_extracted",
-        "\\USRDIR\\xbdata_extracted\\menu",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu",
-        "\\USRDIR\\data",
-        "\\USRDIR\\data\\sound",
-        "\\USRDIR\\data\\sound\\bgm"
+        "\\USRDIR\\primary",
+        "\\USRDIR\\primary\\menu",
+        "\\USRDIR\\primary\\menu\\a.xb0.d",
+        "\\USRDIR\\primary\\menu\\a.xb0.d\\data",
+        "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu",
+        "\\USRDIR\\root_a",
+        "\\USRDIR\\root_a\\sound",
+        "\\USRDIR\\root_a\\sound\\bgm",
+        "\\USRDIR\\root_b",
+        "\\USRDIR\\root_b\\sound",
+        "\\USRDIR\\root_b\\sound\\bgm"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char dir[MAX_PATH];
@@ -4633,8 +5106,10 @@ static int disc_route_make_fixture(void) {
         if (!(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)) return 0;
     }
     static const struct { const char *rel; const char *body; } files[] = {
-        { "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
-        { "\\USRDIR\\data\\sound\\bgm\\bgm_title.sgb", "loose" }
+        { "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
+        { "\\USRDIR\\root_a\\sound\\bgm\\bgm_title.sgb", "first-root" },
+        { "\\USRDIR\\root_b\\sound\\bgm\\bgm_title.sgb", "second-root" },
+        { "\\USRDIR\\root_b\\sound\\bgm\\only_second.bin", "second-only" }
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char file[MAX_PATH];
@@ -4664,8 +5139,14 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     expect(disc_route_make_fixture(), "the disc-route fixture was created");
 
     char dataroot[MAX_PATH];
-    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\xbdata_extracted", s_disc_route_root);
+    char root_a[MAX_PATH], root_b[MAX_PATH], serialized_roots[MAX_PATH * 5];
+    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\primary", s_disc_route_root);
+    snprintf(root_a, sizeof root_a, "%s\\USRDIR\\root_a", s_disc_route_root);
+    snprintf(root_b, sizeof root_b, "%s\\USRDIR\\root_b", s_disc_route_root);
+    snprintf(serialized_roots, sizeof serialized_roots,
+             "%s\tdata\t10\n%s\tdata\t20\n", root_a, root_b);
     SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", serialized_roots);
     sr_hle_test_data_reset(0);
 
     int state = sr_host_data_prepare();
@@ -4684,10 +5165,25 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     const char *loose = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/bgm_title.sgb";
     uint32_t loose_fd = disc_route_open(&cpu, loose);
     expect(loose_fd >= 3u && loose_fd < 64u,
-           "a loose asset beside the root resolves through the same disc path");
-    memset(&cpu, 0, sizeof cpu);
-    cpu.r[4] = loose_fd;
-    expect(sr_hle_test_io_close(&cpu) == 0u, "the loose descriptor closes");
+           "a manifest-bound loose root resolves through the production disc path");
+    static const uint32_t data_addr = 0x09106000u;
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = loose_fd; cpu.r[5] = data_addr; cpu.r[6] = 64u;
+    expect(sr_hle_test_io_read(&cpu) == 10u &&
+           memcmp((const uint8_t *)(g_mem_base + data_addr), "first-root", 10u) == 0,
+           "the lower-precedence-number root wins duplicate guest-file keys");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = loose_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the configured loose descriptor closes");
+
+    const char *second_only = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/only_second.bin";
+    uint32_t second_fd = disc_route_open(&cpu, second_only);
+    expect(second_fd >= 3u && second_fd < 64u,
+           "the second declared root also resolves through HLE");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = second_fd; cpu.r[5] = data_addr; cpu.r[6] = 64u;
+    expect(sr_hle_test_io_read(&cpu) == 11u &&
+           memcmp((const uint8_t *)(g_mem_base + data_addr), "second-only", 11u) == 0,
+           "unique files from later roots remain available");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = second_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the second-root descriptor closes");
 
     /* The device-qualified disc form the engine actually issues must normalize to
      * the same relative key as the bare form.  Both strips consume their trailing
@@ -4711,13 +5207,119 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
         }
     }
 
-    /* ...and the configured root is not enumerated a second time under a key it
-     * never had, which is what the skip exists to prevent. */
-    expect(!sr_hle_test_data_key_seen("xbdata_extracted/"),
-           "the configured root is skipped by the loose walk, not re-indexed");
-
     prewarm_env_restore();
     sr_hle_test_data_reset(0);
+}
+
+static int host_data_duplicate_write_file(const char *root, const char *relative,
+                                          const char *body) {
+    char path[MAX_PATH];
+    int length = snprintf(path, sizeof(path), "%s%s", root, relative);
+    if (length < 0 || (size_t)length >= sizeof(path)) return 0;
+    FILE *file = fopen(path, "wb");
+    if (!file) return 0;
+    size_t body_size = strlen(body);
+    int ok = fwrite(body, 1u, body_size, file) == body_size;
+    if (fclose(file) != 0) ok = 0;
+    return ok;
+}
+
+static void test_primary_extracted_archive_duplicates_match_main(void) {
+    const char *old_data_value = getenv("SR_DATAROOT");
+    const char *old_loose_value = getenv("SR_LOOSE_CONTENT_ROOTS");
+    char *old_data = hle_archive_route_env_copy(old_data_value);
+    char *old_loose = hle_archive_route_env_copy(old_loose_value);
+    char root[MAX_PATH], dataroot[MAX_PATH];
+    root[0] = '\0';
+    dataroot[0] = '\0';
+
+    reset_fixture();
+    sr_hle_init();
+    int root_ok = hle_make_directory("build");
+    char cwd[MAX_PATH];
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) root_ok = 0;
+    if (root_ok) {
+        int length = snprintf(root, sizeof(root), "%s\\build\\primary_archive_dupes_%lu_%llu",
+                              cwd, (unsigned long)GetCurrentProcessId(),
+                              (unsigned long long)GetTickCount64());
+        root_ok = length >= 0 && (size_t)length < sizeof(root);
+    }
+    if (root_ok) {
+        int length = snprintf(dataroot, sizeof(dataroot), "%s\\primary", root);
+        root_ok = length >= 0 && (size_t)length < sizeof(dataroot) &&
+                  hle_make_directory(root) && hle_make_directory(dataroot);
+    }
+
+    static const char *const directories[] = {
+        "\\primary\\zeta", "\\primary\\zeta\\z.xb.d",
+        "\\primary\\zeta\\z.xb.d\\data", "\\primary\\alpha",
+        "\\primary\\alpha\\a.xb.d", "\\primary\\alpha\\a.xb.d\\data"
+    };
+    for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]) && root_ok; i++) {
+        char path[MAX_PATH];
+        int length = snprintf(path, sizeof(path), "%s%s", root, directories[i]);
+        root_ok = length >= 0 && (size_t)length < sizeof(path) && hle_make_directory(path);
+    }
+    if (root_ok) {
+        root_ok = host_data_duplicate_write_file(root,
+                    "\\primary\\zeta\\z.xb.d\\data\\identical.bin", "same-copy") &&
+                  host_data_duplicate_write_file(root,
+                    "\\primary\\alpha\\a.xb.d\\data\\identical.bin", "same-copy") &&
+                  host_data_duplicate_write_file(root,
+                    "\\primary\\zeta\\z.xb.d\\data\\different.bin", "zeta-loses") &&
+                  host_data_duplicate_write_file(root,
+                    "\\primary\\alpha\\a.xb.d\\data\\different.bin", "alpha-wins");
+    }
+    expect(root_ok, "the synthetic primary extracted-archive duplicate tree was created");
+
+    if (root_ok) {
+        hle_archive_route_set_env("SR_DATAROOT", dataroot);
+        hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", "");
+        sr_hle_test_data_reset(0);
+        expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
+               "cross-archive duplicates in the primary extracted tree do not refuse the index");
+        expect(sr_hle_test_data_entry_count() == 4u,
+               "the primary index retains both copies of each duplicate guest key");
+        expect(hle_archive_route_file_matches("disc0:/data/identical.bin", "same-copy"),
+               "identical cross-archive copies remain readable");
+        expect(hle_archive_route_file_matches("disc0:/data/different.bin", "alpha-wins"),
+               "the bytewise-first extracted archive matches the origin/main winner");
+
+        char direct_directory[MAX_PATH];
+        int length = snprintf(direct_directory, sizeof(direct_directory), "%s\\data", dataroot);
+        int direct_ok = length >= 0 && (size_t)length < sizeof(direct_directory) &&
+                        hle_make_directory(direct_directory) &&
+                        host_data_duplicate_write_file(dataroot, "\\data\\identical.bin",
+                                                       "direct-copy");
+        expect(direct_ok, "the primary-root ambiguity fixture was added");
+        if (direct_ok) {
+            sr_hle_test_data_reset(0);
+            FILE *capture = NULL;
+            int saved_stderr = -1;
+            int capture_ready = hle_data_stderr_capture_begin(&capture, &saved_stderr);
+            int state = sr_host_data_prepare();
+            char captured[4096] = {0};
+            if (capture_ready)
+                (void)hle_data_stderr_capture_end(capture, saved_stderr,
+                                                  captured, sizeof(captured));
+            expect(state == SR_DATA_TEST_STATE_FAILED,
+                   "a loose file colliding with an extracted member in the primary root still refuses");
+            expect(capture_ready &&
+                       strstr(captured,
+                              "duplicate guest-file key 'data/identical.bin' within root 0 at '") != NULL &&
+                       strstr(captured,
+                              "alpha/a.xb.d/data/identical.bin' and 'data/identical.bin'; refusing index") != NULL &&
+                       strstr(captured, "<root-relative-unavailable>") == NULL,
+                   "primary-root duplicate diagnostics report both root-relative paths");
+        }
+    }
+
+    sr_hle_test_data_reset(0);
+    hle_archive_route_set_env("SR_DATAROOT", old_data);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", old_loose);
+    host_data_bench_remove_tree(root);
+    free(old_data);
+    free(old_loose);
 }
 
 /* 3. Placement proof, not speed proof: even with per-directory pacing inside
@@ -7974,6 +8576,7 @@ static void test_refer_thread_status(void) {
  * separate behavioural question needing its own evidence.
  * --------------------------------------------------------------------------- */
 #define NID_SCE_CTRL_READ_BUFFER_POSITIVE 0x1f803938u
+#define NID_SCE_CTRL_PEEK_BUFFER_POSITIVE 0x3a622550u
 #define SCE_CTRL_ERROR_INVALID_SIZE 0x80000104u
 #define CTRL_SAMPLE_BYTES 16u
 #define CTRL_BTN_START 0x0008u
@@ -7995,6 +8598,13 @@ static uint32_t ctrl_dispatch(CpuState *cpu, uint32_t buf, uint32_t nbufs) {
     cpu->r[4] = buf;
     cpu->r[5] = nbufs;
     return sr_syscall(cpu, NID_SCE_CTRL_READ_BUFFER_POSITIVE);
+}
+
+static uint32_t ctrl_peek_dispatch(CpuState *cpu, uint32_t buf, uint32_t nbufs) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = buf;
+    cpu->r[5] = nbufs;
+    return sr_syscall(cpu, NID_SCE_CTRL_PEEK_BUFFER_POSITIVE);
 }
 
 /* Deliver n whole vblanks through the production path: sr_vblank_tick() is what
@@ -8095,6 +8705,30 @@ static void test_ctrl_read_buffer_contract(void) {
 
     expect(sr_hle_test_is_registered(NID_SCE_CTRL_READ_BUFFER_POSITIVE),
            "sceCtrlReadBufferPositive is a registered NID in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE),
+           "sceCtrlPeekBufferPositive is a registered NID in this build");
+
+    /* Peek returns the same fresh controller history on repeated calls and leaves
+     * the production read cursor untouched. */
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+    ctrl_tick(2u);
+    ctrl_fill_guest(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u,
+           "sceCtrlPeekBufferPositive returns fresh samples without blocking");
+    uint8_t peeked[2u * CTRL_SAMPLE_BYTES];
+    memcpy(peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(peeked));
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u &&
+               memcmp(peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(peeked)) == 0,
+           "repeated controller peeks return identical unconsumed history");
+    ctrl_fill_guest(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 65u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "an oversized controller peek is rejected rather than clamped");
+    expect(ctrl_guest_all(CTRL_OK_BUF, 64u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
+           "a rejected controller peek writes no guest byte");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 2u) == 2u &&
+               memcmp(peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(peeked)) == 0,
+           "the normal controller read still consumes the history previously peeked");
 
     /* --- no input -------------------------------------------------------- */
     ctrl_env("1", "", "", "");
@@ -9217,8 +9851,10 @@ static void test_nested_frame_handle_hygiene(void) {
 #define NID_SCE_GE_EDRAM_GET_ADDR           0xe47e40e4u
 #define NID_SCE_GE_EDRAM_GET_SIZE           0x1f6752adu
 #define NID_SCE_GE_LIST_ENQUEUE             0xab49e76au
+#define NID_SCE_GE_LIST_DEQUEUE             0x5fb86ab0u
 #define NID_SCE_GE_LIST_SYNC                0x03444eb4u
 #define NID_SCE_GE_LIST_UPDATE_STALL_ADDR   0xe0d68148u
+#define NID_SCE_GE_GET_CMD                  0xdc93cfefu
 #define NID_SCE_GE_DRAW_SYNC                0xb287bd61u
 #define NID_SCE_GE_SET_CALLBACK             0xa4fc06a4u
 #define NID_SCE_GE_UNSET_CALLBACK           0x05db22ceu
@@ -9369,6 +10005,8 @@ static void test_ge_guest_sentinel(void) {
            "sceGeSetCallback is registered in this build");
     expect(sr_hle_test_is_registered(NID_SCE_GE_UNSET_CALLBACK),
            "sceGeUnsetCallback is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_GET_CMD),
+           "sceGeGetCmd is registered in this build");
 
     /* 2. eDRAM query contracts */
     memset(&cpu, 0, sizeof(cpu));
@@ -9532,6 +10170,15 @@ static void test_ge_guest_sentinel(void) {
     cpu.r[4] = 0;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "sceGeDrawSync reports drawing complete");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x01u; /* GE_VADDR: last vertex pointer written by the source-owned list */
+    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == (vtx_base + 0x100u & 0x00ffffffu),
+           "sceGeGetCmd returns the last executed 24-bit command value");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x100u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == 0x800001feu,
+           "sceGeGetCmd rejects a command index outside the 8-bit command register range");
 
     /* 5. Pixel & Boundary assertions */
     uint32_t *fb = (uint32_t *)SR_HOST(fb_base);
@@ -10288,6 +10935,20 @@ static void test_dmac_semantics(void) {
 static void test_display_framebuf_latch(void) {
     reset_fixture();
     sr_hle_init();
+
+    /* A source-owned HLE guest that configures a valid framebuffer reaches the
+     * same GUI presenter call the player uses.  An address whose first byte is
+     * valid but whose complete scanout span crosses eDRAM is refused there. */
+    s_test_gui_on = 1;
+    expect(display_set(0x04000000u, 512, 3, 0) == 0u,
+           "a source-owned guest can configure a framebuffer through production HLE");
+    expect(s_test_gui_present_calls == 1u && s_test_gui_last_addr == 0x04000000u &&
+               s_test_gui_last_fmt == 3 && s_test_gui_last_stride == 512u,
+           "a valid guest framebuffer is submitted through the production GUI presenter");
+    expect(display_set(0x04180000u, 512, 3, 0) == 0u &&
+               s_test_gui_present_calls == 1u,
+           "a framebuffer span crossing eDRAM is not counted as a GUI submission");
+    s_test_gui_on = 0;
 
     const uint32_t out_addr = 0x09000000u;
     const uint32_t out_stride = out_addr + 4u;
@@ -13995,12 +14656,15 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mtx_parks;
         extern int s_pool_parks;
         extern int s_mbx_parks;
-        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
+        int expected_parks = 8 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
         char msg[256];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
+                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
+                 "+ 1 issue #339 joiner + 1 completed sysclock delay body "
+                 "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
+                 "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -15391,6 +16055,103 @@ static void test_route_malformed_files_are_refused(void) {
     remove(RT_PATH);
 }
 
+/* A mask the parser cannot read must refuse the route, not press nothing.
+ *
+ * The failure this pins down is invisible from outside a run: `strtoul` reports no error,
+ * so any token that is not a number became mask 0, the step held no buttons, and the guest
+ * sat on its screen rendering and polling the pad -- byte-identical to a frozen game. Four
+ * separate campaign runs read a frozen title screen that way, because the route asked for
+ * "CROSS" (a name the file format never defined) and pressed nothing at all. The whole
+ * point of a route is that a press arrives; a route that cannot name a button must say so
+ * at load, and one that names it wrongly must not run as though it had.
+ */
+/* A route may name the button it presses (test_route_names_the_buttons_it_presses), so the
+ * remaining failure mode is a token that means no button and no mask: a truncated name, a
+ * hex literal with a stray character, a bare prefix, or a value too wide for the pad mask.
+ * None of these may become a press, because a press that never arrives is indistinguishable
+ * from a game that has frozen. They are refused at load, naming the line and the token. */
+static void test_route_mask_refuses_what_it_cannot_mean(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* Every step that carries a mask refuses a token that is neither. */
+    static const char *const bad[] = {
+        "4000junk",     /* a hex literal with something after it */
+        "0x",           /* a prefix with no digits at all */
+        "1FFFFFFFFF",   /* wider than the 32-bit pad mask: refuse, never truncate */
+        "CROSS+",       /* a name with an empty one after it */
+        "+CROSS",       /* and an empty one before it */
+        "NOSUCHBUTTON", /* a name long enough that a fixed buffer would have cut it short */
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS %s 8\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS mask that means nothing is refused");
+        expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+        expect(sr_route_step(0, sigA) == 0u, "a refused route never reaches the guest as an empty press");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_UNTIL MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_UNTIL mask that means nothing is refused");
+
+        sr_route_reset();
+        snprintf(body, sizeof body,
+                 "CHECKPOINT MAIN_MENU %s\n"
+                 "PRESS_WHILE MAIN_MENU %s 8 240 1000\n"
+                 "END\n", hexA, bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a PRESS_WHILE mask that means nothing is refused");
+
+        sr_route_reset();               /* a bare pad script gets the same answer */
+        snprintf(body, sizeof body, "8600 %s 16\n", bad[i]);
+        rt_write(body);
+        expect(sr_route_load(RT_PATH) == 0, "a bare pad script line whose mask means nothing is refused");
+    }
+    remove(RT_PATH);
+
+    /* The forms that were always legal still load and still reach the guest unchanged. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS 4000 16\n"
+             "PRESS 0x0008 8\n"
+             "PRESS FFFFFFFF 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "hex masks with and without a 0x prefix load");
+    expect(sr_route_step(0, sigA) == 0x4000u, "a bare hex mask still reaches the guest");
+    for (uint32_t v = 1; v < 16; v++)
+        expect(sr_route_step(v, sigA) == 0x4000u, "the named-width press is held");
+    expect(sr_route_step(16, sigA) == 0x0008u, "the next press starts with its own mask");
+    for (uint32_t v = 17; v < 24; v++)
+        expect(sr_route_step(v, sigA) == 0x0008u, "the 0x-prefixed mask is held for its width");
+    expect(sr_route_step(24, sigA) == 0xFFFFFFFFu, "a full-width mask is every button, not a truncation");
+    for (uint32_t v = 25; v < 28; v++)
+        expect(sr_route_step(v, sigA) == 0xFFFFFFFFu, "the full-width press is held for its width");
+    expect(sr_route_step(28, sigA) == 0u, "and released after it");
+    expect(sr_route_status() == RT_DONE, "a legal mask route completes");
+    remove(RT_PATH);
+
+    sr_route_reset();
+    rt_write("1 0x0008 8\n240 0008 8\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script with hex masks still loads");
+    expect(sr_route_status() == RT_LEGACY, "and keeps its original absolute-frame behaviour");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 static void test_route_legacy_pad_script_is_unchanged(void) {
     sr_route_reset();
     rt_write("1 0x0008 8\n240 0x0008 8\n8600 0x4000 16\n");
@@ -15404,6 +16165,178 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
     rt_write("# comment only\n\n");
     expect(sr_route_load(RT_PATH) == 0, "an empty route file loads nothing");
     expect(sr_route_status() == RT_OFF, "an empty route file leaves the pad unscripted");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
+/* WAIT_NID: the step that lets a route gate on what the guest DOES.
+ *
+ * Every other gated step needs a screen signature, and a signature can only be recorded from
+ * a run that is already on that screen -- so the step that would reach a new screen is the one
+ * step that cannot be written. What the guest calls is observable from the first boot and is
+ * the same for every title. Pinned here: the step completes on the import and only on that
+ * import, an import that happened BEFORE the step began does not satisfy it, a name and a raw
+ * NID are the same step, an unknown name is refused at load, and a guest that never calls it
+ * fails the run loudly instead of waiting forever. */
+static void test_route_gates_on_a_guest_event_not_a_signature(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+    expect(open_nid != 0u, "the runtime's own NID table resolves sceIoOpen");
+    expect(sr_route_test_nid("0x109f50bc") == open_nid,
+           "a route may write the same import as raw hex");
+    expect(sr_route_test_nid("sceNotAnImport") == 0u,
+           "a name that is not an import does not resolve");
+
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "PRESS CROSS 8\n"
+             "WAIT_NID sceIoOpen 600\n"
+             "DELAY 2\n"
+             "END\n", hexA);
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that waits on an import loads");
+    expect(sr_route_step(0, sigA) == 0x4000u, "the press before the wait is held");
+    for (uint32_t v = 1; v < 8; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_step(8, sigA) == 0u, "and released after its width");
+
+    /* Another import is not the one being waited for. */
+    sr_route_test_import(0x11111111u);
+    expect(sr_route_step(9, sigA) == 0u, "an unrelated import does not complete the step");
+    expect(sr_route_status() == RT_RUNNING, "and the route is still waiting");
+
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(10, sigA) == 0u, "the waited-for import completes the step");
+    expect(sr_route_step(11, sigA) == 0u, "the step after it begins on the next vblank");
+    expect(sr_route_step(14, sigA) == 0u, "its DELAY is honoured");
+    expect(sr_route_status() == RT_DONE, "and the route completes");
+    remove(RT_PATH);
+
+    /* An import that already happened cannot satisfy a later step. Two waits for the SAME
+     * import in a row is the shape that can tell them apart: the first completes on a feed,
+     * and the second must still be waiting because that feed predates it. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 100\n"
+             "WAIT_NID sceIoOpen 20\n"
+             "WAIT_NID sceIoOpen 50\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "two waits for one import load");
+    expect(sr_route_step(0, sigA) == 0u, "the WAIT is satisfied by the screen");
+    expect(sr_route_status() == RT_RUNNING, "and the first import wait has begun");
+    sr_route_test_import(open_nid);
+    expect(sr_route_step(1, sigA) == 0u, "the feed completes the first import wait");
+    for (uint32_t v = 2; v < 55; v++) (void)sr_route_step(v, sigA);
+    expect(sr_route_status() == RT_FAILED,
+           "a guest that never makes the import again fails the run instead of waiting forever");
+    remove(RT_PATH);
+
+    /* An unknown name is a load-time refusal, not a wait that can never succeed. */
+    sr_route_reset();
+    rt_write("WAIT_NID sceNotAnImport 600\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "an unknown import name is refused at load");
+    expect(sr_route_status() == RT_FAILED, "and the route fails rather than waiting");
+    sr_route_reset();
+    rt_write("WAIT_NID sceIoOpen\nEND\n");
+    expect(sr_route_load(RT_PATH) == 0, "a WAIT_NID without a timeout is refused at load");
+    sr_route_reset();
+    remove(RT_PATH);
+}
+
+
+/* A press mask that names the wrong button cannot fail: the guest receives a bit the
+ * screen ignores and the run looks exactly like a game that has frozen, which is how a
+ * whole investigation once went looking for a scheduler deadlock that was not there. So a
+ * route may name the button instead of counting bits, the name must mean the same bit the
+ * host front-ends publish (NK_PSP_BTN_*_BIT, so a live press and a scripted press cannot
+ * disagree), and a name that is not a button is refused instead of read as a mask. */
+static void test_route_names_the_buttons_it_presses(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+
+    sr_route_reset();
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+
+    /* CROSS by name, then the same mask as hex: the two forms must be the same press. */
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 16\n"
+             "DELAY 4\n"
+             "PRESS 4000 16\n"
+             "DELAY 4\n"
+             "PRESS_WHILE MAIN_MENU START+UP 4 30 100000\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "a route that names buttons loads");
+    expect(sr_route_step(0, NULL) == 0u, "an unobserved screen check presses nothing");
+    expect(sr_route_step(1, sigA) == NK_PSP_BTN_CROSS_BIT,
+           "the press begins on the vblank the screen is reached");
+    for (uint32_t v = 2; v < 17; v++)
+        expect(sr_route_step(v, NULL) == NK_PSP_BTN_CROSS_BIT, "CROSS stays held for its width");
+    expect(sr_route_step(17, NULL) == 0u, "CROSS is released after its width");
+    expect(sr_route_step(21, NULL) == NK_PSP_BTN_CROSS_BIT,
+           "a hex mask means the same button as its name");
+    expect(sr_route_step(38, NULL) == 0u, "the release between presses is honoured");
+
+    /* The repeating step, checked as a pattern rather than against a vblank arithmetic the
+     * reader would have to redo: 120 vblanks is exactly four of its 30-vblank periods, so a
+     * 4-vblank press inside each must be held for 16 of them and released for the rest. */
+    const uint32_t pulse = NK_PSP_BTN_START_BIT | NK_PSP_BTN_UP_BIT;
+    uint32_t first = 0;
+    for (uint32_t v = 30; v < 120 && first == 0; v++)
+        if (sr_route_step(v, NULL) & pulse) first = v;
+    expect(first != 0, "names joined with '+' reach the guest as every button named");
+    int held = 0, loose = 0;
+    for (uint32_t v = first; v < first + 120; v++) {
+        if (sr_route_step(v, NULL) & pulse) held++; else loose++;
+    }
+    expect(held == 16, "the repeating step holds the named buttons 4 of every 30 vblanks");
+    expect(loose == 104, "the repeating step releases the pad between its pulses");
+    expect(sr_route_status() == RT_RUNNING, "the scripted press is still inside its step");
+    remove(RT_PATH);
+
+    /* Case does not matter, and an unknown name is a refusal rather than a silent 0. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "PRESS cross 4\n"
+             "PRESS OK 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 0, "a button name that is not a button is refused");
+    expect(sr_route_status() == RT_FAILED, "the refusal fails the route instead of pressing nothing");
+    remove(RT_PATH);
+
+    /* Every button the host front-ends publish can be named, HOME and HOLD included. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS home+HOLD 4\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "HOME and HOLD are route button names");
+    expect(sr_route_step(1, sigA) == (NK_PSP_BTN_HOME_BIT | NK_PSP_BTN_HOLD_BIT),
+           "HOME+HOLD reaches the guest as both system bits");
+    remove(RT_PATH);
+
+
+    /* The legacy absolute-frame table takes names too: strtoul used to read "CROSS" as 0,
+     * which is the same silent-nothing press one syntax layer down. */
+    sr_route_reset();
+    rt_write("1 0x0008 8\n8600 CROSS 16\n");
+    expect(sr_route_load(RT_PATH) == 1, "a bare pad script accepts a button name");
+    expect(sr_route_status() == RT_LEGACY, "the named bare row keeps legacy behaviour");
+    expect(sr_route_step(8600, NULL) == 0u, "the program stepper stays inert for a legacy script");
     remove(RT_PATH);
     sr_route_reset();
 }
@@ -15777,6 +16710,636 @@ static void test_real_module_start_lifecycle(void) {
     sr_hle_test_module_reset();
 }
 
+/* ---- #280: real late-PRX stop/unload/reload lifecycle and export invalidation ----
+ *
+ * One coherent production-path sequence over a synthetic PRX, using the real
+ * sceKernelStartModule/StopModule/UnloadModule handlers through sr_syscall and the
+ * real late-import registry, export gate and user-partition allocator:
+ *
+ *   load image -> start -> call a dynamic export through a real importer -> stop
+ *   -> unload -> the old export is no longer authorized -> only that image's exact
+ *   reservation came back -> reload the same base with changed bytes and a changed
+ *   export target -> start -> the new export is the one observed.
+ *
+ * A second module is loaded alongside the first and must survive the first's unload
+ * with its own export and reservation intact, and a repeated cycle count exceeds the
+ * 16-entry module and image tables so a leak that never reclaims them is caught.
+ *
+ * The two NIDs are synthetic and deliberately not real PSP exports, so this asserts
+ * the runtime's own lifecycle contract and not an unmeasured hardware error code.
+ */
+#define LIFECYCLE_EXPORT_A   0x7a0000a1u   /* module A's dynamic export */
+#define LIFECYCLE_EXPORT_B   0x7b0000b2u   /* module B's dynamic export */
+#define LIFECYCLE_MOD_A_BASE 0x09000000u
+#define LIFECYCLE_MOD_B_BASE 0x09100000u
+/* The span the loader reserves for each fixture image (the fixture's declared segment
+ * size, rounded into the image's [base, end) reservation). */
+#define LIFECYCLE_IMAGE_SIZE 0xC0u
+#define LIFECYCLE_PATCH_OFF_A_1 0x20u
+#define LIFECYCLE_PATCH_OFF_A_2 0x60u
+/* Guest offset of the reload marker and of the module_start/module_stop entries the
+ * fixture's export table names. All three lie inside the image's declared segment, so
+ * the bytes the loader writes to guest memory are the ones the assertions read. */
+#define LIFECYCLE_MARKER_OFF   0x30u
+#define LIFECYCLE_START_OFF   0x70u
+#define LIFECYCLE_STOP_OFF    0x78u
+
+static uint32_t s_lifecycle_export_calls_a1, s_lifecycle_export_calls_a2;
+static uint32_t s_lifecycle_export_calls_b;
+static uint32_t s_lifecycle_start_calls, s_lifecycle_stop_calls;
+
+static void lifecycle_export_a1_fn(CpuState *s) { s_lifecycle_export_calls_a1++; s->r[2] = 0xa1u; }
+static void lifecycle_export_a2_fn(CpuState *s) { s_lifecycle_export_calls_a2++; s->r[2] = 0xa2u; }
+static void lifecycle_export_b_fn(CpuState *s) { s_lifecycle_export_calls_b++; s->r[2] = 0xb2u; }
+static void lifecycle_start_fn(CpuState *s) { s_lifecycle_start_calls++; s->r[2] = 0x5u; }
+static void lifecycle_stop_fn(CpuState *s) { s_lifecycle_stop_calls++; s->r[2] = 0x6u; }
+
+/* Build a synthetic PRX image. Only the bytes are synthetic: the production
+ * prx_loader.c parser consumes the file, exactly as a real module's would.
+ *
+ * The image carries `jr ra` stubs at the fixed offsets the lifecycle registers as guest
+ * bodies (LIFECYCLE_START_OFF, LIFECYCLE_STOP_OFF, and always LIFECYCLE_PATCH_OFF_A_1),
+ * and `payload` is written to the reload marker so that a reload with different bytes is
+ * observable in guest memory.
+ *
+ * There is deliberately no nid or export-offset parameter. This image's export table is
+ * empty; the export is published by the load hook (sr_hle_test_load_prx_image) against
+ * the registry, not by an export table in the file. Passing the pair here would read as
+ * if the image's export table drove the registration, which it does not. (The reload case
+ * binds the export at LIFECYCLE_PATCH_OFF_A_2 instead, which is why the stub above is
+ * always written at the _A_1 offset.) */
+static int write_lifecycle_prx(const char *path, uint32_t payload) {
+    enum { SIZE = 0x300, PHOFF = 0x34, MODOFF = 0x100, SHSTR_OFF = 0x180 };
+    /* The loaded segment covers file [0x80, 0x80+SEGSZ), so every guest offset the
+     * lifecycle reads or calls has to sit below SEGSZ. */
+    enum { SEGSZ = 0xC0 };
+    static const char section_names[] = "\0.rodata.sceModuleInfo\0.shstrtab\0";
+    uint32_t shoff = (SHSTR_OFF + (uint32_t)sizeof(section_names) + 3u) & ~3u;
+    uint8_t image[SIZE];
+    memset(image, 0, sizeof(image));
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 16, 0xFFA0);
+    fixture_wr16(image + 18, 8);
+    fixture_wr32(image + 20, 1);
+    fixture_wr32(image + 24, 0);
+    fixture_wr32(image + 28, PHOFF);
+    fixture_wr32(image + 32, shoff);
+    fixture_wr16(image + 40, 52);
+    fixture_wr16(image + 42, 32);
+    fixture_wr16(image + 44, 1);
+    fixture_wr16(image + 46, 40);
+    fixture_wr16(image + 48, 3);
+    fixture_wr16(image + 50, 2);
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);
+    fixture_wr32(ph + 4, 0x80);
+    fixture_wr32(ph + 8, 0);
+    fixture_wr32(ph + 12, MODOFF);
+    fixture_wr32(ph + 16, SEGSZ);
+    fixture_wr32(ph + 20, SEGSZ);
+    fixture_wr32(ph + 24, 5);
+    fixture_wr32(ph + 28, 4);
+    /* Module info: name, and an empty export span. A PRX's export span is read two
+     * different ways by the two production consumers -- hle.c's register_prx_exports
+     * walks it as a base-relative virtual address, prx_loader.c validates it as an
+     * already-rebased guest address -- so for a module loaded at a nonzero base no
+     * single value satisfies both. The span is therefore left empty (exactly as the
+     * existing guest-module fixture does) and the dynamic export under test is
+     * registered through the production late-import registry instead. The image bytes,
+     * segment bounds and module-info validation all still run for real. */
+    uint8_t *modinfo = image + MODOFF;
+    memcpy(modinfo + 4, "lifecycle", 10);
+    memcpy(image + SHSTR_OFF, section_names, sizeof(section_names));
+    uint8_t *shdr = image + shoff;
+    fixture_wr32(shdr + 0, 1);
+    fixture_wr32(shdr + 4, 3);
+    fixture_wr32(shdr + 8, 0x40);
+    fixture_wr32(shdr + 12, MODOFF);
+    fixture_wr32(shdr + 16, MODOFF);
+    fixture_wr32(shdr + 20, 52);
+    uint8_t *strtab = image + shoff + 40;
+    fixture_wr32(strtab + 0, 1u + (uint32_t)sizeof(".rodata.sceModuleInfo"));
+    fixture_wr32(strtab + 4, 3);
+    fixture_wr32(strtab + 16, SHSTR_OFF);
+    fixture_wr32(strtab + 20, (uint32_t)sizeof(section_names));
+    fixture_wr32(strtab + 32, 1);
+    /* Body bytes inside the declared segment: the module_start / module_stop entry
+     * addresses the lifecycle uses, the export under test, and the reload marker. */
+    fixture_wr32(image + 0x80 + LIFECYCLE_START_OFF, 0x03e00008u); /* MIPS jr ra */
+    fixture_wr32(image + 0x80 + LIFECYCLE_STOP_OFF, 0x03e00008u);
+    fixture_wr32(image + 0x80 + LIFECYCLE_PATCH_OFF_A_1, 0x03e00008u);
+    fixture_wr32(image + 0x80 + LIFECYCLE_MARKER_OFF, payload);
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
+static void test_late_prx_unload_reload_lifecycle(void) {
+    const char *path_a = "hle_lifecycle_a.prx";
+    const char *path_b = "hle_lifecycle_b.prx";
+    const uint32_t marker_1 = 0x1111aaaa;
+    const uint32_t marker_2 = 0x2222bbbb;
+    CpuState cpu;
+    uint32_t uid_a, uid_b;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=1");
+
+    /* The real load path: the manifest binding this suite runs under declares one
+     * module, so drive the production loader directly with a file it parses. */
+    expect(write_lifecycle_prx(path_a, marker_1),
+           "lifecycle: synthetic module A image written");
+    expect(write_lifecycle_prx(path_b, marker_1),
+           "lifecycle: synthetic module B image written");
+    uid_a = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                       LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid_a != 0, "lifecycle: module A image loads at its declared base");
+    if (uid_a == 0) {
+        /* Leave the process the way the end of this test does. Returning with
+         * SR_REAL_MODULE_START still set and module records live would run every
+         * later test in an environment it was not written for. */
+        remove(path_a);
+        remove(path_b);
+        _putenv("SR_REAL_MODULE_START=0");
+        sr_test_guest_fn_reset();
+        sr_hle_test_module_reset();
+        return;
+    }
+    uid_b = sr_hle_test_load_prx_image(path_b, LIFECYCLE_MOD_B_BASE, LIFECYCLE_EXPORT_B,
+                                       LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid_b != 0, "lifecycle: module B image loads alongside A");
+    expect(MEM_R32(LIFECYCLE_MOD_A_BASE + LIFECYCLE_MARKER_OFF) == marker_1,
+           "lifecycle: module A bytes are present in guest memory at its base");
+    expect(sr_hle_test_image_count() == 2u, "lifecycle: both images are resident");
+
+    /* The load hook already bound each image to a live module record whose
+     * module_start/module_stop are the real entries the loader recorded; only the
+     * guest bodies those entries and the export address need to be supplied. */
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_a1_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_b_fn);
+
+    expect(sr_hle_test_module_count() == 2u, "lifecycle: both module records are live");
+
+    /* ---- start both ---- */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "lifecycle: start module A returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "lifecycle: start module B returns 0");
+    expect(s_lifecycle_start_calls == 2u, "lifecycle: both module_start entries ran");
+
+    /* ---- call a dynamic export through a real importer ----
+     * sr_syscall is the production import seam: it consults the started-export gate
+     * before the host handler table, exactly as a real importer stub is linked. */
+    s_lifecycle_export_calls_a1 = s_lifecycle_export_calls_b = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t ra = sr_syscall(&cpu, LIFECYCLE_EXPORT_A);
+    expect(ra == 0xa1u, "lifecycle: module A's export returns its own result to the importer");
+    expect(s_lifecycle_export_calls_a1 == 1u, "lifecycle: module A's export body ran once");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, LIFECYCLE_EXPORT_B) == 0xb2u,
+           "lifecycle: module B's export is callable and independent");
+    expect(s_lifecycle_export_calls_b == 1u, "lifecycle: module B's export body ran once");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+           "lifecycle: A's export is authorized at its guest address while started");
+
+    /* A second load while the module is still resident must not disturb the running
+     * image: it is idempotent, and the live image's bytes are left alone. This is the
+     * one case where load_prx_image legitimately short-circuits on an existing base. */
+    uint32_t uid_a_again = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE,
+                                                      LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid_a_again != 0, "lifecycle: re-loading a still-resident module succeeds");
+    expect(MEM_R32(LIFECYCLE_MOD_A_BASE + LIFECYCLE_MARKER_OFF) == marker_1,
+           "lifecycle: re-loading a running module does not overwrite its live image");
+    expect(sr_hle_test_image_count() == 2u,
+           "lifecycle: re-loading a running module does not add a second image record");
+    /* Retire the duplicate handle so the counts below describe A and B only. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a_again;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "lifecycle: the duplicate handle unloads without disturbing the first");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+           "lifecycle: unloading the duplicate handle leaves the running module's export linked");
+
+    /* ---- stop (required before unload by the established contract) ---- */
+    s_lifecycle_stop_calls = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module A returns 0");
+    expect(s_lifecycle_stop_calls == 1u, "lifecycle: module A's module_stop ran once");
+
+    /* A stopped module is still loaded: its export stays authorized, which is what
+     * makes the unload boundary (not the stop boundary) the export-retirement point. */
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) != 0,
+           "lifecycle: stop alone does not retire the image's export authority");
+    expect(sr_hle_test_started_image_count() == 2,
+           "lifecycle: both started images are still counted while both are loaded");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module B returns 0");
+
+    /* ---- unload A: retire exactly its own state ---- */
+    unsigned images_before = sr_hle_test_image_count();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: unload module A returns 0");
+
+    /* Stale-export result: the old export is no longer authorized, and the registry no
+     * longer resolves it at all. These are the two conditions link_started_export()
+     * consults, so an import after unload cannot be linked to A: it has no authorized
+     * started image and no resolvable target. (An actual dispatch would additionally
+     * fail closed on the unimplemented-dispatch path, which terminates the process and
+     * so cannot be asserted in-process. That is not claimed here.) */
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: A's export is no longer authorized after unload");
+    expect(sr_hle_test_started_image_count() == 1,
+           "lifecycle: unloading A retired exactly its own started-image state");
+    expect(sr_hle_resolve_late_import(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: the late-import registry no longer resolves the retired export");
+    expect(s_lifecycle_export_calls_a1 == 1u,
+           "lifecycle: the export body ran once and was not re-entered by unloading");
+
+    /* Unload is a one-shot transition: the reclaimed uid no longer resolves. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_BAD_ID,
+           "lifecycle: double unload fails closed on an unknown module id");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_ERROR_MODULE_BAD_ID,
+           "lifecycle: stop after unload fails closed on an unknown module id");
+
+    /* Exact reservation retired: A's range is free again, B's is still held. The probe
+     * asks for the image's own span, so a release of a different range would not
+     * satisfy it. */
+    uint32_t freed_a = sr_alloc_block_at(LIFECYCLE_MOD_A_BASE, LIFECYCLE_IMAGE_SIZE, "probe-a");
+    expect(freed_a != 0xFFFFFFFFu,
+           "lifecycle: unloading A released exactly A's guest reservation");
+    expect(sr_alloc_block_at(LIFECYCLE_MOD_B_BASE, LIFECYCLE_IMAGE_SIZE, "probe-b") == 0xFFFFFFFFu,
+           "lifecycle: unloading A did not release module B's reservation");
+    /* Hand the probe range back so the reload below starts from a clean partition. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = freed_a;
+    sr_syscall(&cpu, 0xb6d61d02u); /* sceKernelFreePartitionMemory */
+
+    /* B preserved: still started, still callable, still registered. */
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_B) == LIFECYCLE_MOD_B_BASE + LIFECYCLE_PATCH_OFF_A_1,
+           "lifecycle: module B keeps its export authority after A is unloaded");
+    s_lifecycle_export_calls_b = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, LIFECYCLE_EXPORT_B) == 0xb2u,
+           "lifecycle: module B's export is still callable after A is unloaded");
+    expect(s_lifecycle_export_calls_b == 1u, "lifecycle: module B's export body still runs");
+    expect(sr_hle_test_image_count() == images_before - 1u,
+           "lifecycle: unloading A reclaimed exactly one image record");
+
+    /* Unload B too, so the same-base reload below is the only resident state. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_b;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: unload module B returns 0");
+    expect(sr_hle_test_image_count() == 0u, "lifecycle: both image records are reclaimed");
+    expect(sr_hle_test_module_count() == 0u, "lifecycle: both module records are reclaimed");
+    expect(sr_hle_test_started_image_count() == 0,
+           "lifecycle: no started-image state survives the unloads");
+
+    /* ---- reload at the same base with changed bytes and a changed export target ---- */
+    expect(write_lifecycle_prx(path_a, marker_2),
+           "lifecycle: reloaded module A image written with changed bytes");
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_2,
+                              lifecycle_export_a2_fn);
+    uint32_t uid_a2 = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE,
+                                                 LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_2);
+    expect(uid_a2 != 0, "lifecycle: module A reloads at the same base after unload");
+    expect(uid_a2 != uid_a,
+           "lifecycle: the reloaded module is a distinct handle from the unloaded one");
+    expect(sr_hle_test_image_count() == 1u,
+           "lifecycle: the reload created a fresh image record rather than reusing one");
+    expect(MEM_R32(LIFECYCLE_MOD_A_BASE + LIFECYCLE_MARKER_OFF) == marker_2,
+           "lifecycle: the reused address range holds the new image, not the old bytes");
+    expect(s_lifecycle_export_calls_a1 == 1u && s_lifecycle_export_calls_a2 == 0u,
+           "lifecycle: the reload rebuilt the export target before anything called it");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: the reloaded image grants no export before it is started");
+
+    s_lifecycle_start_calls = 0;
+    s_lifecycle_export_calls_a1 = s_lifecycle_export_calls_a2 = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a2;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "lifecycle: the reloaded module starts");
+    expect(s_lifecycle_start_calls == 1u, "lifecycle: the reloaded module_start ran again");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_2,
+           "lifecycle: the new export is the one authorized after reload");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, LIFECYCLE_EXPORT_A) == 0xa2u,
+           "lifecycle: the reloaded export is the one the importer observes");
+    expect(s_lifecycle_export_calls_a2 == 1u, "lifecycle: the new export body ran");
+    expect(s_lifecycle_export_calls_a1 == 0u,
+           "lifecycle: the old export body is unreachable after reload");
+
+    /* Retire the reloaded module through the real lifecycle, so the repeated cycles
+     * below start from a partition with no live reservation of their own. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a2;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: the reloaded module stops");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a2;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: the reloaded module unloads");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "lifecycle: unloading the reloaded module retires its new export too");
+    expect(sr_hle_test_image_count() == 0u, "lifecycle: no image is left resident");
+    expect(sr_hle_test_module_count() == 0u, "lifecycle: no module record is left live");
+
+    /* ---- repeated cycles must not exhaust the fixed module/image tables ----
+     * More cycles than the 16-entry tables hold: a module or image record that is
+     * never reclaimed shows up here as a failed load or a stale authorized export. */
+    sr_test_guest_fn_reset();
+    int cycles_ok = 1;
+    for (unsigned i = 0; i < 24u; i++) {
+        const uint32_t marker = 0x3000u + i;
+        if (!write_lifecycle_prx(path_a, marker))
+            break;
+        uint32_t cmod = sr_hle_test_load_prx_image(path_a, LIFECYCLE_MOD_A_BASE,
+                                                   LIFECYCLE_EXPORT_A, LIFECYCLE_PATCH_OFF_A_1);
+        if (cmod == 0) break;
+        CpuState ccpu;
+        memset(&ccpu, 0, sizeof(ccpu));
+        ccpu.r[4] = cmod;
+        if (sr_syscall(&ccpu, 0x50f0c1ecu) != 0) { cycles_ok = 0; break; }
+        memset(&ccpu, 0, sizeof(ccpu));
+        ccpu.r[4] = cmod;
+        if (sr_syscall(&ccpu, 0xd1ff982au) != 0) { cycles_ok = 0; break; }
+        memset(&ccpu, 0, sizeof(ccpu));
+        ccpu.r[4] = cmod;
+        if (sr_syscall(&ccpu, 0x2e0911aau) != 0) { cycles_ok = 0; break; }
+        if (sr_hle_test_started_export(LIFECYCLE_EXPORT_A) != 0) { cycles_ok = 0; break; }
+        if (sr_hle_test_module_count() != 0u || sr_hle_test_image_count() != 0u) { cycles_ok = 0; break; }
+    }
+    expect(cycles_ok, "lifecycle: 24 load/start/stop/unload cycles reclaim every record");
+    expect(sr_hle_test_module_count() == 0u,
+           "lifecycle: repeated cycles do not exhaust the 16-entry module table");
+    expect(sr_hle_test_image_count() == 0u,
+           "lifecycle: repeated cycles do not exhaust the 16-entry image table");
+
+    remove(path_a);
+    remove(path_b);
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
+/* Two handles can name one resident image: a second load of an already-resident base
+ * reuses that image instead of staging a second copy, so both records hold entry
+ * addresses into the same range. Unloading the handle that *owns* the image first must
+ * not free that range out from under the survivor. Retiring on the last reference
+ * instead is what keeps the survivor's module_start/module_stop valid. */
+static void test_late_prx_duplicate_base_last_reference(void) {
+    const char *path = "hle_lifecycle_dup.prx";
+    CpuState cpu;
+    uint32_t owner, survivor;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=1");
+
+    expect(write_lifecycle_prx(path, 0x3333ccccu),
+           "duplicate-base: synthetic module image written");
+    owner = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                       LIFECYCLE_PATCH_OFF_A_1);
+    expect(owner != 0, "duplicate-base: the first handle loads the image");
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_a1_fn);
+
+    /* The second handle names the same already-resident base. */
+    survivor = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                          LIFECYCLE_PATCH_OFF_A_1);
+    expect(survivor != 0 && survivor != owner,
+           "duplicate-base: a second handle names the resident image");
+    expect(sr_hle_test_image_count() == 1u,
+           "duplicate-base: both handles share one image record");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = owner;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "duplicate-base: the owner starts");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = owner;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "duplicate-base: the owner stops");
+
+    /* Unload the image OWNER first: the survivor still references that image. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = owner;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "duplicate-base: unloading the image owner returns 0");
+    expect(sr_hle_test_image_count() == 1u,
+           "duplicate-base: the image survives while another handle still references it");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) != 0,
+           "duplicate-base: the shared image's export is still authorized");
+
+    /* The last reference retires it. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = survivor;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0, "duplicate-base: the survivor starts");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = survivor;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "duplicate-base: the survivor stops");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = survivor;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "duplicate-base: unloading the last handle returns 0");
+    expect(sr_hle_test_image_count() == 0u,
+           "duplicate-base: the image is retired with its last reference");
+    expect(sr_hle_test_started_export(LIFECYCLE_EXPORT_A) == 0,
+           "duplicate-base: the shared export is no longer authorized");
+    expect(sr_hle_test_module_count() == 0u,
+           "duplicate-base: both handles' records are reclaimed");
+
+    remove(path);
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
+/* ---- scePsmfPlayer: a rejected stream has to name itself (issue #288) ---------------- */
+
+#define NID_SCE_PSMF_PLAYER_CREATE       0x235d8787u
+#define NID_SCE_PSMF_PLAYER_DELETE       0x9b71a274u
+#define NID_SCE_PSMF_PLAYER_SET_PSMF_CB  0x58b83577u
+#define NID_SCE_PSMF_PLAYER_START        0x95a84ee5u
+#define NID_SCE_PSMF_PLAYER_STOP         0x1078c008u
+#define NID_SCE_PSMF_PLAYER_UPDATE       0xa0b8ca55u
+#define NID_SCE_PSMF_PLAYER_GET_VIDEO    0x46f61f8bu
+#define NID_SCE_PSMF_PLAYER_GET_STATUS   0xf8ef08a6u
+#define PSMF_STATUS_PLAYING              0x00000004u
+#define PSMF_ERR_NO_DATA                 0x8061600cu
+
+#define PSMF_SELFTEST_BUFFER   0x08800000u
+#define PSMF_SELFTEST_PLAYER   0x09000000u
+#define PSMF_SELFTEST_PATH     0x09010000u
+#define PSMF_SELFTEST_CONFIG   0x09011000u
+#define PSMF_SELFTEST_VIDEO    0x09012000u
+#define PSMF_SELFTEST_CREATE   0x09013000u
+#define PSMF_SELFTEST_ARGS     0x09014000u   /* Start()'s seventh argument, per the o32 ABI */
+#define PSMF_SELFTEST_DISPLAY  0x09020000u
+
+/* The runtime's stderr is the surface a consumer actually reads, so the always-on media
+ * boundary is asserted from the captured text: a counter that outlived the message would
+ * pass while the product went back to a silent freeze. */
+static int s_stderr_saved_fd = -1;
+static int stderr_capture_begin(void) {
+    fflush(stderr);
+    s_stderr_saved_fd = _dup(_fileno(stderr));
+    if (s_stderr_saved_fd < 0) return 0;
+    return freopen("psmf_boundary_capture.txt", "w+", stderr) != NULL;
+}
+static size_t stderr_capture_end(char *out, size_t capacity) {
+    fflush(stderr);
+    rewind(stderr);
+    size_t n = fread(out, 1, capacity - 1u, stderr);
+    out[n] = '\0';
+    clearerr(stderr);
+    if (s_stderr_saved_fd >= 0) {
+        _dup2(s_stderr_saved_fd, _fileno(stderr));
+        _close(s_stderr_saved_fd);
+        s_stderr_saved_fd = -1;
+    }
+    remove("psmf_boundary_capture.txt");
+    return n;
+}
+static int count_occurrences(const char *haystack, const char *needle) {
+    int found = 0;
+    size_t span = strlen(needle);
+    for (const char *at = haystack; (at = strstr(at, needle)) != NULL; at += span) found++;
+    return found;
+}
+
+/* A PSMF header with one video stream, and a single PES packet whose PTS carries prefix
+ * 0011 while its PTS_DTS_flags=10 requires 0010 (ISO/IEC 13818-1:2018 2.4.3.6 Table 2-21).
+ * The demuxer refuses that element, which is exactly the case the runtime used to swallow:
+ * the producer latched a failure, never reached EOF, and the guest only saw a freeze. */
+static void psmf_synthetic_build(void) {
+    static const uint8_t bad_pts_prefix[] = {
+        0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+        0x31, 0x00, 0x05, 0xBF, 0x21,
+        0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+    };
+    uint8_t *image = s_psmf_synthetic;
+    memset(image, 0, sizeof(s_psmf_synthetic));
+    image[0] = 'P'; image[1] = 'S'; image[2] = 'M'; image[3] = 'F';
+    image[8] = 0; image[9] = 0; image[10] = 0x08; image[11] = 0x00;   /* stream offset 2048 */
+    image[12] = 0; image[13] = 0; image[14] = 0; image[15] = 21;      /* stream size */
+    image[0x80] = 0; image[0x81] = 1;                                 /* one stream entry */
+    image[0x82] = 0xE0;                                               /* video stream */
+    image[0x82 + 4] = 0; image[0x82 + 5] = 0; image[0x82 + 6] = 0; image[0x82 + 7] = 1;
+    image[0x82 + 8] = 0; image[0x82 + 9] = 0; image[0x82 + 10] = 0; image[0x82 + 11] = 1;
+    image[0x82 + 12] = 16; image[0x82 + 13] = 9;                      /* 256x144 in 16-pixel units */
+    memcpy(image + 2048u, bad_pts_prefix, sizeof(bad_pts_prefix));
+    s_psmf_synthetic_size = (uint32_t)sizeof(s_psmf_synthetic);
+}
+
+static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[29] = PSMF_SELFTEST_ARGS;
+    return sr_syscall(cpu, nid);
+}
+
+static void test_psmf_rejected_stream_names_the_boundary(void) {
+    CpuState cpu;
+    char captured[8192];
+    SrFlightEvent flight_event;
+    const char *boundary = "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: "
+                           "pes-timestamp-field at source offset 2048";
+
+    sr_hle_init();
+    psmf_synthetic_build();
+    s_psmf_synthetic_enabled = 1;
+
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);            /* priority inside the accepted range */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);           /* H.264 video */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);              /* video stream 0 */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);              /* no audio codec in this stream */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 0u);             /* play speed */
+    MEM_W32(PSMF_SELFTEST_ARGS, 0u);                    /* Start()'s pts argument */
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+    MEM_W32(PSMF_SELFTEST_VIDEO + 0, 0u);               /* buffer width 0: let the player choose */
+    MEM_W32(PSMF_SELFTEST_VIDEO + 4, PSMF_SELFTEST_DISPLAY);
+
+    sr_flight_test_reset(SR_FLIGHT_CLASS_MEDIA, 8u);
+    if (!stderr_capture_begin()) {
+        expect(0, "psmf: the runtime stderr can be captured for the media boundary");
+        sr_flight_test_disable();
+        s_psmf_synthetic_enabled = 0;
+        return;
+    }
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_CREATE) == 0u, "psmf: the player is created");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF_CB, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == 0u, "psmf: the synthetic stream is opened");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_START, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_CONFIG) == 0u, "psmf: playback starts");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_STATUS, PSMF_SELFTEST_PLAYER, 0u) ==
+               PSMF_STATUS_PLAYING, "psmf: the guest sees a playing player");
+    /* Two updates: the demuxer refuses the first element, and the refusal is named once
+     * even though the player keeps being updated. */
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_UPDATE, PSMF_SELFTEST_PLAYER, 0u) == 0u &&
+               psmf_call(&cpu, NID_SCE_PSMF_PLAYER_UPDATE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf: updating a rejected stream keeps returning success");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_STATUS, PSMF_SELFTEST_PLAYER, 0u) ==
+               PSMF_STATUS_PLAYING,
+           "psmf: a rejected stream leaves the guest status unchanged, not FINISHED");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_VIDEO, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_VIDEO) == PSMF_ERR_NO_DATA,
+           "psmf: no picture is invented for a rejected stream");
+    /* A second stream through the same player may be refused too, and then says so again:
+     * the rate limit is per stream, not per process. */
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_STOP, PSMF_SELFTEST_PLAYER, 0u) == 0u &&
+               psmf_call(&cpu, NID_SCE_PSMF_PLAYER_START, PSMF_SELFTEST_PLAYER,
+                         PSMF_SELFTEST_CONFIG) == 0u &&
+               psmf_call(&cpu, NID_SCE_PSMF_PLAYER_UPDATE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf: the same player can start the rejected stream again");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf: the player is deleted");
+    stderr_capture_end(captured, sizeof(captured));
+    s_psmf_synthetic_enabled = 0;
+
+    expect(count_occurrences(captured, boundary) == 2,
+           "psmf: every rejected stream names the demuxer refusal, the reason, and the offset");
+    expect(strstr(captured, "in the works (#288)") != NULL,
+           "psmf: the media boundary carries its tracking issue");
+    expect(strstr(captured, "MPEG_CONTRACT") == NULL,
+           "psmf: the rejection is not reported as some other media boundary");
+    expect(sr_flight_event_count() == 2, "psmf: each rejection is one media flight event");
+    expect(sr_flight_event_at(0, &flight_event) != 0 &&
+               flight_event.event_class == SR_FLIGHT_CLASS_MEDIA &&
+               flight_event.kind == SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED &&
+               flight_event.arg0 == 2048u,
+           "psmf: the flight event carries the media class and the refused offset");
+    sr_flight_test_disable();
+}
+
 static void test_flight_recorder_trace(void) {
     const char *output = "flight_recorder_hle_selftest.json";
     char bundle[16384];
@@ -15842,7 +17405,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 2") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 4") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -15916,6 +17479,420 @@ static void test_flight_recorder_trace(void) {
     SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
 }
 
+static void test_flight_recorder_ge_present_events(void) {
+    const uint32_t list_addr = 0x08980000u;
+    SrFlightSnapshot snapshot;
+    SrFlightEvent event;
+    uint32_t qid;
+    uint32_t ge_events = 0u, present_events = 0u, draw_events = 0u;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_GE | SR_FLIGHT_CLASS_PRESENT, 32u);
+
+    /* Synthetic, zero-vertex draw still exercises the production list walk without
+     * reading vertex memory: PRIM, FINISH, END. */
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    s_cpu->r[5] = 0u;
+    s_cpu->r[6] = 0u;
+    s_cpu->r[7] = 0u;
+    qid = sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xff000000u) == 0x35000000u,
+           "flight GE fixture reaches production list enqueue");
+
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = qid;
+    s_cpu->r[5] = 0u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "flight GE fixture reaches production list sync");
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = 1u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "flight GE fixture reaches production draw sync");
+    /* DeQueue has no registered operation in this build. Exercise its recorder
+     * boundary directly; invoking the guest NID would correctly remain fail-closed. */
+    (void)sr_flight_hle_import(NID_SCE_GE_LIST_DEQUEUE, 0u, qid, 0x08980100u, 0u);
+
+    s_test_gui_on = 1;
+    expect(display_set(0x04000000u, 512, 3, 0u) == 0u,
+           "flight present fixture reaches production SetFrameBuf and presenter");
+    s_test_gui_on = 0;
+
+    expect(sr_flight_event_count() == 9,
+           "flight GE/present fixture records seven GE and two present events");
+    for (int i = 0; i < sr_flight_event_count(); ++i) {
+        expect(sr_flight_event_at((uint32_t)i, &event) != 0,
+               "flight GE/present event is readable");
+        if (event.event_class == SR_FLIGHT_CLASS_GE) {
+            ge_events++;
+            if (event.kind == SR_FLIGHT_KIND_GE_DRAW) {
+                draw_events++;
+                expect(event.arg0 == list_addr && event.arg1 == list_addr &&
+                           event.arg2 == 0u && event.arg3 == 0u,
+                       "GE draw event carries list, command, primitive, and vertex count");
+            }
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_ENQUEUE)
+                expect(event.arg0 == list_addr && event.arg1 == 0u && event.arg2 == qid,
+                       "GE enqueue event carries list, stall, and list id");
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_DEQUEUE)
+                expect(event.arg0 == qid, "GE dequeue event carries the submitted list id");
+        } else if (event.event_class == SR_FLIGHT_CLASS_PRESENT) {
+            present_events++;
+            expect(event.arg0 == 0x04000000u && event.arg1 == 3u &&
+                       event.arg2 == 512u,
+                   "present event carries framebuffer, format, and stride");
+        }
+    }
+    expect(ge_events == 7u && present_events == 2u && draw_events == 1u,
+           "flight GE/present event classes have the expected production counts");
+
+    /* The same production path with the classes disabled remains an empty trace. */
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(0u, 32u);
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    (void)sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    s_test_gui_on = 1;
+    (void)display_set(0x04000000u, 512, 3, 0u);
+    s_test_gui_on = 0;
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 0u && sr_flight_event_count() == 0,
+           "disabled GE/present classes record zero events on the same route");
+    sr_flight_test_disable();
+}
+
+static uint32_t issue339_create_pending_callback(void) {
+    static const char name[] = "issue339-callback";
+    for (size_t i = 0; i < sizeof(name); i++)
+        MEM_W8(ORACLE_CALLBACK_NAME + (uint32_t)i, (uint8_t)name[i]);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ORACLE_CALLBACK_NAME;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x339u;
+    uint32_t uid = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+    cpu.r[4] = uid;
+    cpu.r[5] = 0x339a11u;
+    if (uid) (void)sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK);
+    return uid;
+}
+
+static void test_issue339_terminate_waiting_thread(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x3390u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t mbx_uid = selftest_mbx_create(0);
+    expect(mbx_uid != 0, "issue #339 termination mailbox created through production dispatch");
+
+    uint32_t target_uid = sched_create_thread(ORACLE_THREAD_ENTRY, 40, 0x2000u);
+    TCB *target = tcb_by_uid(target_uid);
+    expect(target && target_uid != 0, "issue #339 termination target created");
+    if (!target || !mbx_uid) return;
+    target->state = TH_READY;
+    target->started = 1;
+    SelftestMbxWaiterCtx waiter;
+    memset(&waiter, 0, sizeof(waiter));
+    waiter.uid = target_uid;
+    waiter.tcb = target;
+    waiter.mbx_uid = mbx_uid;
+    waiter.outptr = MBX_OUTPTR;
+    target->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &waiter,
+                                  (size_t)4 << 20);
+    expect(target->coro != NULL, "issue #339 blocked target coroutine created");
+    s_cur = (int)(target - s_tcb);
+    if (target->coro) sr_coro_switch(target->coro);
+    expect(!waiter.returned && target->state == TH_WAIT_OBJ &&
+           target->wait_kind == 5,
+           "issue #339 target is blocked in a production mailbox wait");
+    expect(selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 1u,
+           "issue #339 mailbox reports the blocked target as its waiter");
+
+    TCB *joiner = fixture_thread(0x3391u, TH_READY, 35);
+    joiner->started = 1;
+    s_joiner_woken = 0;
+    s_joiner_ret = 0xffffffffu;
+    joiner->coro = sr_coro_create(joiner_coro_body, target, (size_t)4 << 20);
+    expect(joiner->coro != NULL, "issue #339 joiner coroutine created");
+    s_cur = (int)(joiner - s_tcb);
+    if (joiner->coro) sr_coro_switch(joiner->coro);
+    expect(joiner->state == TH_WAIT_OBJ && joiner->join_waiting &&
+           joiner->join_target == target_uid,
+           "issue #339 joiner parks on the target through WaitThreadEnd");
+
+    TCB *dormant = fixture_thread(0x3392u, TH_DORMANT, 40);
+    dormant->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = owner->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x80020197u,
+           "TerminateThread(self) returns ILLEGAL_THID");
+    cpu.r[4] = 0x339fffffu;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x80020198u,
+           "TerminateThread(unknown) returns UNKNOWN_THID");
+    cpu.r[4] = dormant->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x800201a2u,
+           "TerminateThread(dormant) returns DORMANT");
+
+    s_cur = (int)(owner - s_tcb);
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0,
+           "TerminateThread stops another thread blocked in an object wait");
+    expect(target->state == TH_DORMANT && !target->coro &&
+           target->exit_status == (int32_t)0x800201acu &&
+           target->wait_obj == 0 && target->wait_kind == 0 &&
+           target->pending_wait_kind == 0 && !target->wake_result_valid,
+           "TerminateThread sets THREAD_TERMINATED and clears the target wait state");
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_EXIT_STATUS) == 0x800201acu,
+           "GetThreadExitStatus reports THREAD_TERMINATED after TerminateThread");
+    expect(selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 0u,
+           "TerminateThread removes the target from its mailbox wait queue");
+    expect(joiner->state == TH_READY && !joiner->join_waiting &&
+           joiner->join_result_valid &&
+           joiner->join_result == 0x800201acu && joiner->wait_obj == 0 &&
+           joiner->wait_kind == 0 && joiner->pending_wait_kind == 0,
+           "TerminateThread wakes the joiner with a clean THREAD_TERMINATED result");
+
+    if (joiner->coro) {
+        s_cur = (int)(joiner - s_tcb);
+        sr_coro_switch(joiner->coro);
+        expect(s_joiner_woken && s_joiner_ret == 0x800201acu,
+               "WaitThreadEnd returns THREAD_TERMINATED when resumed");
+        sr_coro_destroy(joiner->coro);
+        joiner->coro = NULL;
+    }
+    s_cur = (int)(owner - s_tcb);
+    uint32_t msg = MBX_MSG_BASE;
+    mbx_init_packet(msg, 0);
+    expect(selftest_mbx_send(mbx_uid, msg) == 0 &&
+           selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 0u && MEM_R32(MBX_INFO + 44) == 1u,
+           "mailbox send after termination queues a message without a ghost waiter");
+    expect(selftest_mbx_recv(mbx_uid, MBX_OUTPTR, 0) == 0 &&
+           MEM_R32(MBX_OUTPTR) == msg,
+           "mailbox remains usable after its waiter is terminated");
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_THREAD) == 0,
+           "terminated target remains deletable through DeleteThread");
+    expect(selftest_mbx_delete(mbx_uid) == 0,
+           "issue #339 termination mailbox deletes cleanly");
+}
+
+static void test_issue339_sysclock_delay_dispatch(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x3393u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    s_vtime_us = 5000u;
+    s_vbl_next_us = 100000u;
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 1250u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 0u);
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    uint64_t before = s_vtime_us;
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(self->coro != NULL, "issue #339 sysclock delay coroutine created");
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(!s_delay_done && self->state == TH_WAIT_DELAY &&
+           self->wake == before + 1250u,
+           "DelaySysClockThread uses the low-word microsecond duration");
+    sr_hle_advance_time(1250u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done && s_delay_ret == 0,
+           "DelaySysClockThread returns after the same elapsed time as DelayThread");
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD) == 0x800200d3u,
+           "DelaySysClockThread rejects a null SceKernelSysClock pointer");
+
+    /* The high word is significant; leave this long wait parked and terminate it
+     * through the production handler rather than attempting to elapse 2^32 us. */
+    TCB *owner = fixture_thread(0x3394u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *wide = fixture_thread(0x3395u, TH_READY, 40);
+    wide->started = 1;
+    s_vtime_us = 900u;
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 77u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 1u);
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    wide->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(wide->coro != NULL, "wide sysclock delay coroutine created");
+    s_cur = (int)(wide - s_tcb);
+    if (wide->coro) sr_coro_switch(wide->coro);
+    expect(wide->state == TH_WAIT_DELAY &&
+           wide->wake == 900u + UINT64_C(0x10000004d),
+           "DelaySysClockThread includes the full 64-bit SceKernelSysClock value");
+    s_cur = (int)(owner - s_tcb);
+    cpu.r[4] = wide->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0 &&
+           wide->state == TH_DORMANT && wide->wake == 0,
+           "TerminateThread releases a parked full-range sysclock delay");
+}
+
+typedef struct {
+    uint32_t nid;
+    uint32_t ret;
+    int returned;
+} SelftestVblankWaitCtx;
+
+static void selftest_vblank_waiter_fiber_body(void *arg) {
+    SelftestVblankWaitCtx *ctx = (SelftestVblankWaitCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    ctx->ret = sr_syscall(&cpu, ctx->nid);
+    ctx->returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_issue339_callback_wait_dispatch(void) {
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x3396u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    expect(callback_uid != 0, "issue #339 DelaySysClockThreadCB callback created and queued");
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 1000u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 0u);
+    s_vtime_us = 3000u;
+    s_vbl_next_us = 100000u;
+    uint64_t before = s_vtime_us;
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_oracle_callback_calls == 1 && self->state == TH_WAIT_DELAY &&
+           self->is_cb_wait && self->wake == before + 1000u,
+           "DelaySysClockThreadCB services its callback and waits the full duration");
+    sr_hle_advance_time(1000u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done && s_delay_ret == 0,
+           "DelaySysClockThreadCB completes after its sysclock duration");
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "issue #339 delay callback unregisters cleanly");
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *in_window = fixture_thread(0x3397u, TH_RUNNING, 32);
+    in_window->started = 1;
+    s_cur = (int)(in_window - s_tcb);
+    s_vtime_us = 800u;
+    s_vbl_count = 1u;
+    s_vbl_last_us = s_vtime_us;
+    callback_uid = issue339_create_pending_callback();
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t vblank_ret = sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_CB);
+    expect(vblank_ret == 1u && s_oracle_callback_calls == 2,
+           "WaitVblankCB services a callback and preserves the in-window fast result");
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "WaitVblankCB callback unregisters cleanly");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x3398u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x3399u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx vblank;
+    memset(&vblank, 0, sizeof(vblank));
+    vblank.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_CB;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &vblank,
+                                  (size_t)4 << 20);
+    s_cur = (int)(waiter - s_tcb);
+    callback_uid = issue339_create_pending_callback();
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(callback_uid != 0 && s_oracle_callback_calls == 3 &&
+           waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+           waiter->is_cb_wait,
+           "WaitVblankStartCB services a callback then blocks on the real vblank wait object");
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    expect(waiter->state == TH_READY && s_vbl_count == 1u,
+           "a delivered vblank wakes the WaitVblankStartCB waiter");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(vblank.returned && vblank.ret == 0 && !waiter->is_cb_wait,
+           "WaitVblankStartCB returns zero after the delivered vblank");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "WaitVblankStartCB callback unregisters cleanly");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_oracle_mode = saved_oracle_mode;
+}
+
+static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
+    reset_fixture();
+    s_cur = -1;
+    uint64_t before = s_vbl_count;
+    expect(sched_wait_vblank_cb(0) < 0 && sched_wait_vblank_cb(1) < 0,
+           "display CB waits refuse when no current thread exists");
+    expect(s_vbl_count == before,
+           "a refused display CB wait does not advance the vblank count");
+}
+
+static void test_issue339_wait_nids_production_dispatch(void) {
+    reset_fixture();
+    sr_hle_init();
+    int all_registered =
+        sr_hle_test_is_registered(NID_SCE_KERNEL_TERMINATE_THREAD) &&
+        sr_hle_test_is_registered(NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD) &&
+        sr_hle_test_is_registered(NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB) &&
+        sr_hle_test_is_registered(NID_SCE_DISPLAY_WAIT_VBLANK_CB) &&
+        sr_hle_test_is_registered(NID_SCE_DISPLAY_WAIT_VBLANK_START_CB);
+    expect(all_registered,
+           "issue #339 first missing-NID batch is registered for production dispatch");
+    if (!all_registered) return; /* Calling an absent import is a fatal dispatch trap. */
+    test_issue339_terminate_waiting_thread();
+    test_issue339_sysclock_delay_dispatch();
+    test_issue339_callback_wait_dispatch();
+    test_issue339_vblank_cb_wait_requires_a_current_thread();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -15959,6 +17936,7 @@ int main(int argc, char **argv) {
     test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
+    test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
@@ -15968,6 +17946,7 @@ int main(int argc, char **argv) {
     test_explicit_exit_status_exact((int32_t)-17, 0x800200d2u);
     test_explicit_exit_status_exact(0x78, 0x78u);
     test_thread_delete_lifecycle_and_cleanup();
+    test_issue339_wait_nids_production_dispatch();
     test_start_thread_error_semantics();
     test_exit_delete_lifecycle_and_join_result();
     test_wait_thread_end_invalid_targets();
@@ -15975,6 +17954,7 @@ int main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
     test_ctrl_read_buffer_contract();
@@ -16010,6 +17990,7 @@ int main(int argc, char **argv) {
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
     test_disc_route_serves_archive_and_loose_content_in_one_namespace();
+    test_primary_extracted_archive_duplicates_match_main();
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
     test_direct_xb_many_members_skip_loose_walk();
@@ -16061,7 +18042,11 @@ int main(int argc, char **argv) {
     test_intr_context_conformance();
     test_psp_mutex();
     test_real_module_start_lifecycle();
+    test_late_prx_unload_reload_lifecycle();
+    test_late_prx_duplicate_base_last_reference();
+    test_psmf_rejected_stream_names_the_boundary();
     test_flight_recorder_trace();
+    test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can
@@ -16077,7 +18062,11 @@ int main(int argc, char **argv) {
     test_route_press_until_timeout_fails_loudly();
     test_route_alternate_signatures_mask_variable_content();
     test_route_malformed_files_are_refused();
+    test_route_mask_refuses_what_it_cannot_mean();
     test_route_legacy_pad_script_is_unchanged();
+    test_route_names_the_buttons_it_presses();
+    test_route_gates_on_a_guest_event_not_a_signature();
+
     test_route_samples_by_elapsed_vcount_cadence();
 
     check_coroutine_lifecycle();

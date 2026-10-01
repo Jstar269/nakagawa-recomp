@@ -6,7 +6,7 @@
  "game_name": "synthetic",
   "executable": {
     "base": 142606336,
-    "entry": 142606336,
+    "entry": 142606572,
     "bss_metadata_source": "elf",
     "extra_executable_spans": []
   },
@@ -19,7 +19,7 @@
     }
   ],
   "filesystem": {
-    "data_root": "fixtures/synthetic/data",
+    "data_root": "fixtures/profile_zero",
     "memory_stick_root": "build/synthetic/memstick",
     "device_prefixes": ["host0:", "ms0:"]
   },
@@ -29,7 +29,7 @@
   "verification_profile": "synthetic-public",
   "runtime_bindings": {
     "schema_version": 1,
-    "fallback_entry": 142610432,
+    "fallback_entry": 142606572,
     "worker_thread_entry": 142614528,
     "launcher_thread_entry": 142618624,
     "vblank_frame_counter_addr": 142671872,
@@ -67,7 +67,7 @@
     },
     "resources": {
       "mode": "manifest-filesystem",
-      "locators": ["fixtures/pspdev_phase5"]
+      "locators": ["fixtures/profile_zero"]
     },
     "hle_overrides": [],
     "input_mapping": {
@@ -82,67 +82,74 @@
   },
   "profile_zero": {
     "schema_version": 1,
-    "runnable": false,
+    "runnable": true,
     "source_program": {
-      "source_files": ["fixtures/pspdev_phase5/main.c"],
+      "source_files": ["fixtures/profile_zero/main.c"],
       "entry_symbol": "main",
       "ownership": "project-authored-public"
     },
     "build": {
-      "makefile": "fixtures/pspdev_phase5/Makefile",
-      "working_directory": "fixtures/pspdev_phase5",
+      "makefile": "fixtures/profile_zero/Makefile",
+      "working_directory": "fixtures/profile_zero",
       "target": "EBOOT.PBP",
       "toolchain": "PSPDEV/PSPSDK (locally installed)"
     },
     "acceptance": {
       "schema_version": 1,
-      "status": "scaffold",
+      "status": "ready",
       "private_inputs_allowed": false,
       "cases": [
         {
           "id": "program-image",
           "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "SOURCE_SHAPE",
-          "assertion": "A source-owned ELF fixture produces a validated immutable ProgramImage with stable source identity and checked spans."
+          "assertion": "The PSPDEV-built source fixture loads as a ProgramImage whose entry matches the manifest and lies in a checked executable span."
         },
         {
           "id": "aot-generation",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "SOURCE_SHAPE",
           "assertion": "The public source program is accepted by the existing analyzer and AOT generator without selecting an HST profile."
         },
         {
           "id": "runtime-dispatch",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "The profile-zero entry executes through the production runtime and exits with an asserted return state."
         },
         {
           "id": "scheduler-vblank-input",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "A public route asserts one thread, deterministic VBLANK progression, and a controller sample without private title state."
         },
         {
           "id": "ge-presentation",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "A source-owned clear and primitive reach the backend and presentation seam with a truthful public capture result."
         },
         {
           "id": "audio-helper",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_HELPER",
           "assertion": "A source-owned audio sample reaches the selected public audio capability or fails closed as unavailable."
         },
         {
           "id": "savedata-roundtrip",
-          "status": "planned",
+          "status": "implemented",
+          "gate": "profile-zero-e2e",
           "evidence_class": "PRODUCTION_DISPATCH",
           "assertion": "A source-owned save operation is confined to the declared writable root and its bytes round-trip deterministically."
         }
       ]
     }
   },
-  "notes": "Source-owned fixture configuration and Wave-1 profile-zero scaffold only; no retail bytes or derived metadata."
+  "notes": "Source-owned PSPDEV fixture; profile-zero-e2e validates its production route without private inputs. No retail bytes or derived metadata."
 }

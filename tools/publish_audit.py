@@ -90,6 +90,7 @@ FORBIDDEN_PREFIXES = (
     "cache/",
     "docs/opengrip_ref/",
     "fs/",
+    "keys/",
     "logs/",
     "memstick/",
     "opengrip_ref/",
@@ -136,6 +137,23 @@ SPDX_PROVENANCE_SOURCE_EXTENSIONS = SOURCE_EXTENSIONS | {
 SPDX_PROVENANCE_SOURCE_NAMES = frozenset({"CMakeLists.txt", "Makefile"})
 KEY_NAME = re.compile(r"(?:kirk|amctrl|pgd|key|vkey|seed|iv|secret|token)", re.IGNORECASE)
 HEX_16_BYTES = re.compile(r"^[0-9a-fA-F]{32}$")
+#: Local-only KeyStore files (issue #295) can never be committed or packaged.
+KEY_FILE_NAME = re.compile(
+    r"keystore|keyfile|key[_-]file|key[_-]store|psp[_-]keys?|kirk[_-]keys?|"
+    r"^keys\.(?:json|txt|bin|dat)$|\.(?:key|keys)$",
+    re.IGNORECASE,
+)
+#: The name class only applies to data-shaped suffixes; source and prose
+#: files (for example an engine file named nk_psp_keystore.c) may carry the
+#: vocabulary without being a key file.
+KEY_FILE_DATA_SUFFIXES = {
+    "", ".json", ".txt", ".bin", ".dat", ".cfg", ".conf", ".ini",
+    ".key", ".keys", ".pem",
+}
+#: Every loadable KeyStore names this format; a tracked copy carries key material.
+KEYSTORE_CONTENT_MARKER = "nakagawa-psp-keystore"
+#: Source and prose files may legitimately name the KeyStore format itself.
+KEYSTORE_MARKER_TEXT_EXEMPT = {".c", ".h", ".py", ".md"}
 
 WINDOWS_USER_PATH = re.compile(
     r"[a-zA-Z]:\\(?:" + r"Us" + r"ers|Documents and Settings)\\[^\s\\/]+",
@@ -157,19 +175,21 @@ TEMP_PATH = re.compile(
 #: Technical debt management ceilings (Issue #188 Finding 11 O-11).
 #: Ceilings are non-increasing: counts must not rise without explicit budget edit and rationale.
 DEBT_BUDGETS: dict[str, int] = {
-    "eslint_off_rules": 29,
     "ruff_select_rule_families": 4,
     "first_party_todos": 7,
-    "powershell_silently_continue": 53,
+    "powershell_silently_continue": 49,
 }
 
+#: Per-script SilentlyContinue ceilings. The debt check enforces each entry, and a
+#: tracked script missing from this map may not use SilentlyContinue at all, so the
+#: total ceiling above is the sum of these entries.
 POWERSHELL_SILENTLY_CONTINUE_INVENTORY: dict[str, int] = {
-    "copy_build_assets.ps1": 1,
-    "nk_manager.ps1": 25,
+    "nk_manager.ps1": 24,
+    "tools/copy_build_assets.ps1": 3,
     "tools/nk_safety.ps1": 11,
     "tools/test_manager_safety.ps1": 3,
     "tools/test_visual_oracle.ps1": 3,
-    "tools/title_manager_plan.ps1": 9,
+    "tools/title_manager_plan.ps1": 4,
     "tools/vulkan_sdk.ps1": 1,
 }
 
@@ -911,6 +931,11 @@ def _forbidden_path(path: str) -> str | None:
     name = PurePosixPath(normalized).name
     if name == "reference_hashes.json":
         return "game-derived hash manifest"
+    if (
+        PurePosixPath(name).suffix.lower() in KEY_FILE_DATA_SUFFIXES
+        and KEY_FILE_NAME.search(name)
+    ):
+        return "local-only key file (issue #295)"
     if name in ("vfpu_words.txt", "vfpu_words_local.txt", "nidseq_mine.txt", "pgd_keys.txt"):
         return "private/game-derived data artifact"
     if re.fullmatch(r"EBOOT\.BIN\.dec(?:\..+)?", name, re.IGNORECASE):
@@ -920,6 +945,33 @@ def _forbidden_path(path: str) -> str | None:
     if PurePosixPath(normalized).suffix.lower() in FORBIDDEN_EXTENSIONS:
         return f"prohibited extension {PurePosixPath(normalized).suffix}"
     return None
+
+
+def _approved_binary_matches(reason: str, disp: str, manifest_comp: dict | None,
+                             sha256: str) -> bool:
+    """A prohibited-extension path passes only as a reviewed release-manifest binary.
+
+    Project-authored build output (for example the profile-zero PSPDEV fixture,
+    #557) may carry a guest-executable suffix. It is accepted only when the release
+    manifest records it as ``approved_binary`` and its bytes match the pinned
+    SHA-256, so a different file under an approved name is still reported.
+    """
+    if not reason.startswith("prohibited extension") or disp != "approved_binary":
+        return False
+    pinned = ((manifest_comp or {}).get("hashes") or {}).get("sha256", "")
+    return bool(pinned) and bool(sha256) and pinned.lower() == sha256.lower()
+
+
+def is_keystore_content(rel: str, text: str | None) -> bool:
+    """True when the bytes look like a local-only KeyStore (issue #295).
+
+    Every loadable KeyStore carries the format marker, so a tracked copy
+    under any name would ship key material.  Source and prose files may
+    name the format without carrying keys, so they stay exempt.
+    """
+    if not text or KEYSTORE_CONTENT_MARKER not in text:
+        return False
+    return PurePosixPath(rel).suffix.lower() not in KEYSTORE_MARKER_TEXT_EXEMPT
 
 
 def _magic_kind(path_or_bytes: Path | bytes | None, path: str = "") -> str | None:
@@ -1186,31 +1238,6 @@ SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS = frozenset({
     "src/rt/atrac3p/libavutil/thread.h",
 })
 
-# Upstream shadcn/ui files require exact SPDX identifiers: verbatim copies
-# declare MIT; files modified by this project declare MIT AND GPL-3.0-or-later.
-# Their separate MIT source notice is preserved in THIRD_PARTY_LICENSES.
-SPDX_UPSTREAM_HEADER_OVERRIDES = {
-    "interface/src/components/ui/alert-dialog.tsx": "MIT",
-    "interface/src/components/ui/alert.tsx": "MIT",
-    "interface/src/components/ui/badge.tsx": "MIT",
-    "interface/src/components/ui/button.tsx": "MIT",
-    "interface/src/components/ui/dialog.tsx": "MIT",
-    "interface/src/components/ui/dropdown-menu.tsx": "MIT",
-    "interface/src/components/ui/input.tsx": "MIT",
-    "interface/src/components/ui/label.tsx": "MIT",
-    "interface/src/components/ui/progress.tsx": "MIT",
-    "interface/src/components/ui/select.tsx": "MIT",
-    "interface/src/components/ui/slider.tsx": "MIT",
-    "interface/src/components/ui/switch.tsx": "MIT",
-    "interface/src/components/ui/toast.tsx": "MIT",
-    "interface/src/components/ui/toaster.tsx": "MIT",
-    "interface/src/components/ui/toggle-group.tsx": "MIT",
-    "interface/src/components/ui/toggle.tsx": "MIT",
-    "interface/src/components/ui/tooltip.tsx": "MIT",
-    "interface/src/hooks/use-mobile.ts": "MIT AND GPL-3.0-or-later",
-    "interface/src/hooks/use-toast.ts": "MIT AND GPL-3.0-or-later",
-}
-
 PROJECT_SPDX_IDENTIFIER = "GPL-3.0-or-later"
 SPDX_IDENTIFIER_LINE = re.compile(r"SPDX-License-Identifier:\s*(.*?)\s*(?:\*/)?\s*$")
 
@@ -1275,22 +1302,10 @@ def _spdx_provenance_findings(path: str, record: dict, raw_bytes: bytes) -> list
         if not identifiers and byte_exact_import and path not in SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS:
             return []
         evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
-        expected = (
-            SPDX_UPSTREAM_HEADER_OVERRIDES[path]
-            if path in SPDX_UPSTREAM_HEADER_OVERRIDES
-            else evidence.get("license")
-        )
+        expected = evidence.get("license")
         if not isinstance(expected, str) or not expected or expected == "see NOTICE.md":
             return [Finding("SPDX_UPSTREAM_LICENSE_UNKNOWN", path, "upstream provenance does not name an SPDX license")]
-        if path in SPDX_UPSTREAM_HEADER_OVERRIDES:
-            if identifiers != [expected]:
-                actual = ", ".join(identifiers) if identifiers else "missing"
-                return [Finding(
-                    "SPDX_UPSTREAM_LINEAGE",
-                    path,
-                    f"upstream SPDX lineage must declare exactly {expected}; found {actual}",
-                )]
-        elif expected not in identifiers:
+        if expected not in identifiers:
             return [Finding(
                 "SPDX_UPSTREAM_LINEAGE",
                 path,
@@ -1491,25 +1506,12 @@ def _action_pin_findings(repo_root: Path = ROOT, audited_paths: set[str] | None 
 def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None) -> list[Finding]:
     """Audit unmanaged debt surfaces against non-increasing budgets (Issue #188 Finding 11 O-11).
 
-    Fails when any of the four measured surfaces (ESLint disabled rules, ruff select families,
+    Fails when any of the three measured surfaces (ruff select families,
     first-party debt markers, or PowerShell SilentlyContinue) exceeds its configured ceiling.
     """
     findings: list[Finding] = []
 
-    # 1. ESLint disabled rules (interface/eslint.config.mjs)
-    eslint_cfg = repo_root / "interface" / "eslint.config.mjs"
-    if eslint_cfg.is_file():
-        text = _text(eslint_cfg) or ""
-        matches = re.findall(r'["\']([^"\']+)["\']\s*:\s*["\'](off|warn)["\']', text)
-        obs = len(matches)
-        ceiling = DEBT_BUDGETS["eslint_off_rules"]
-        if obs > ceiling:
-            findings.append(
-                Finding("DEBT_BUDGET", "interface/eslint.config.mjs",
-                        f"ESLint disabled rules count {obs} exceeds debt ceiling {ceiling}")
-            )
-
-    # 2. Ruff select rule families (pyproject.toml)
+    # 1. Ruff select rule families (pyproject.toml)
     pyproject = repo_root / "pyproject.toml"
     if pyproject.is_file():
         text = _text(pyproject) or ""
@@ -1524,13 +1526,11 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
                             f"Ruff select rule families count {obs} exceeds debt ceiling {ceiling}")
                 )
 
-    # 3. First-party debt markers
+    # 2. First-party debt markers
     marker_pat = re.compile(r"\b(?:" + r"TO" + r"DO|FIX" + r"ME|HA" + r"CK)\b")
     excluded_prefixes = (
         "third_party/",
         "src/rt/atrac3p/libavcodec/",
-        "interface/node_modules/",
-        "interface/.next/",
         "build/",
         "fs/",
     )
@@ -1568,7 +1568,7 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
                     f"First-party debt marker count {todo_count} exceeds debt ceiling {ceiling}")
         )
 
-    # 4. PowerShell SilentlyContinue
+    # 3. PowerShell SilentlyContinue
     ps_pat = re.compile(r"SilentlyContinue", re.IGNORECASE)
     ps_count = 0
     for rel in all_paths:
@@ -1580,8 +1580,15 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
         text = _text(full_path)
         if text is None:
             continue
-        m = ps_pat.findall(text)
-        ps_count += len(m)
+        script_count = len(ps_pat.findall(text))
+        ps_count += script_count
+        script_ceiling = POWERSHELL_SILENTLY_CONTINUE_INVENTORY.get(rel, 0)
+        if script_count > script_ceiling:
+            findings.append(
+                Finding("DEBT_BUDGET", rel,
+                        f"PowerShell SilentlyContinue count {script_count} exceeds this "
+                        f"script's debt ceiling {script_ceiling}")
+            )
     ceiling = DEBT_BUDGETS["powershell_silently_continue"]
     if ps_count > ceiling:
         findings.append(
@@ -1601,7 +1608,8 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
 #: into a one-line diagnosis.
 TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg",
                                           ".gif", ".ico", ".pdf", ".zip", ".ttf",
-                                          ".otf", ".woff", ".woff2", ".spv", ".wav"})
+                                          ".otf", ".woff", ".woff2", ".spv", ".wav",
+                                          ".prx", ".pbp", ".elf"})
 
 
 def _text_hygiene_is_text_suffix(path: str) -> bool:
@@ -1848,7 +1856,7 @@ def _default_provenance(
     if rel_path.startswith(".github/") or rel_path.startswith(".") or rel_path in (".gitignore", ".gitattributes", ".clang-format", ".editorconfig", ".markdownlint-cli2.jsonc", ".pre-commit-config.yaml"):
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", "configuration", "included", policy_public
 
-    if rel_path.startswith(("src/", "tools/", "interface/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1"):
+    if rel_path.startswith(("src/", "tools/", "mk/", "assets/", "fixtures/", "docs/")) or ext in SOURCE_EXTENSIONS or ext in (".md", ".txt", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ps1") or rel_path in ("Makefile", "pyproject.toml", "nk.ps1", "nk_manager.ps1"):
         gen_kind = "documentation" if (rel_path.startswith("docs/") or ext == ".md") else ("data" if ext in (".json", ".jsonc", ".dat") else ("script" if ext in (".ps1", ".sh") else "source"))
         return "project_authored", "GPL-2.0-or-later", "NOTICE.md", gen_kind, "included", policy_public
 
@@ -2117,12 +2125,20 @@ def _export_content_findings(
         if raw is None or error:
             continue
         digest.update(entry.path.encode("utf-8") + b"\0" + hashlib.sha256(raw).hexdigest().encode("ascii") + b"\n")
+    # The tree-derived fields are optional in the committed control: they are
+    # recomputed HERE from the exact bytes this audit read, which is the only
+    # value that can be trusted, and committing them is what used to make every
+    # unrelated merge rewrite the same line.  A declared value is still checked
+    # against this recomputation, so a stale or forged one is still refused --
+    # absence removes a conflict, not a check.
     recorded = export_document.get("included_content_sha256")
-    if recorded != digest.hexdigest():
+    if recorded is not None and recorded != digest.hexdigest():
         findings.append(Finding("POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json", "included-content digest does not match the audited bytes"))
-    if export_document.get("included_file_count", export_document.get("exported_file_count")) != len(included_all):
+    recorded_included = export_document.get("included_file_count", export_document.get("exported_file_count"))
+    if recorded_included is not None and recorded_included != len(included_all):
         findings.append(Finding("POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json", "included-file count does not match the audited source"))
-    if export_document.get("tracked_file_count", len(entries)) != len(entries):
+    recorded_tracked = export_document.get("tracked_file_count")
+    if recorded_tracked is not None and recorded_tracked != len(entries):
         findings.append(Finding("POLICY_EXPORT_STALE", "PUBLIC_EXPORT.json", "tracked-file count does not match the audited source"))
     expected_excluded = sorted(policy.exclude_paths)
     if sorted(export_document.get("excluded_paths", [])) != expected_excluded:
@@ -2502,6 +2518,8 @@ def audit_entries_with_semantics(
             entry_findings.append(f)
 
         reason = _forbidden_path(rel)
+        if reason and _approved_binary_matches(reason, disp, manifest_comp, sha256):
+            reason = None
         if reason:
             f = Finding("PATH", rel, reason)
             entry_findings.append(f)
@@ -2610,6 +2628,12 @@ def audit_entries_with_semantics(
             if PurePosixPath(rel).suffix.lower() in {".c", ".h", ".py", ".json"}:
                 for line in private_key_assignment_lines(text_str, filename=rel):
                     entry_findings.append(Finding("PRIVATE_KEY", rel, f"direct 16-byte key literal at line {line}"))
+
+            if is_keystore_content(rel, text_str):
+                entry_findings.append(Finding(
+                    "KEYFILE_CONTENT", rel,
+                    "local-only KeyStore content (issue #295); key files must never be tracked or packaged",
+                ))
 
             if (
                 WINDOWS_USER_PATH.search(text_str)

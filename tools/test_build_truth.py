@@ -32,6 +32,15 @@ import codegen
 
 _MTIME_MARGIN_NS = 2_000_000_000
 
+#: Runs the repository's profile tool without ever spelling its path on a command
+#: line, so a checkout under a path containing spaces still works. The path rides
+#: in the environment, the only transport a command interpreter cannot split.
+PROFILE_TOOL_ENV = "NK_PROFILE_TOOL"
+PROFILE_TOOL_LAUNCH = (
+    "import os, runpy, sys; p = os.environ['" + PROFILE_TOOL_ENV + "']; "
+    "sys.argv[0] = p; runpy.run_path(p, run_name='__main__')"
+)
+
 
 def _set_mtime_after(path: Path, *references: Path) -> None:
     """Set ``path`` newer than the references without waiting for the clock."""
@@ -48,6 +57,21 @@ def _set_mtime_before(path: Path) -> None:
     os.utime(path, ns=(target, target))
 
 
+def _make_safe_fixture_dir(name: str) -> Path:
+    """A BUILD_DIR a lifecycle test may hand to Make.
+
+    Not derived from the repository root on purpose. GNU Make splits a target or
+    prerequisite name on whitespace, so a BUILD_DIR that inherits a space from the
+    checkout path (`C:/some path/repo/build/...`) never reaches the recipe intact:
+    Make binds the first fragment as the target and treats the rest as goals, so
+    `clean` deletes a directory the caller never named and the parse-time mkdir
+    creates a `spaces/...` tree in the repository root. The Makefile now refuses
+    such a BUILD_DIR outright; these tests must therefore pass a path Make can
+    represent, and a temporary directory is also the right place for a fixture.
+    """
+    return Path(tempfile.mkdtemp(prefix=f"nakagawa-lifecycle-{name}-")) / "build"
+
+
 class BuildTruthTests(unittest.TestCase):
     def setUp(self) -> None:
         self.make = shutil.which("mingw32-make") or shutil.which("make")
@@ -59,6 +83,14 @@ class BuildTruthTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-build-truth-")
         self.root = Path(self.temp.name)
         (self.root / "build").mkdir()
+        # The real shared make fragment, copied in so the fixture `include`s a
+        # relative name. GNU Make cannot name a file whose path contains a space
+        # -- not as a target, not as a prerequisite, and not even in an
+        # `include` (quotes are kept as literal filename bytes by Make 4.4) --
+        # so a checkout under `C:/some path/repo` cannot be referenced from a
+        # fixture at all. Copying the fragment keeps its DEPFLAGS authoritative
+        # while leaving the fixture's Make-visible names space-free.
+        shutil.copyfile(COMMON_MK, self.root / COMMON_MK.name)
         (self.root / "inner.h").write_text("#define INNER_TOKEN 1\n", encoding="ascii")
         (self.root / "outer.h").write_text('#include "inner.h"\n', encoding="ascii")
         (self.root / "dependent.c").write_text(
@@ -68,6 +100,21 @@ class BuildTruthTests(unittest.TestCase):
         (self.root / "unrelated.c").write_text(
             "int unrelated(void) { return 7; }\n", encoding="ascii"
         )
+        # The profile tool is addressed through the environment, never through a
+        # Make-visible name or a command-line argument. A checkout whose own path
+        # contains a space cannot be spelled on a command line at all: sh and
+        # cmd.exe both split it, so the tool would be handed a truncated path.
+        # The `-c` launcher is the same shape the repository Makefile already
+        # uses for its own inline Python, so it behaves identically under sh and
+        # under the cmd.exe fallback.
+        #
+        # The tool is therefore deliberately NOT a prerequisite here (Make cannot
+        # name it), so the stamp's staleness rests on the profile identity alone.
+        # The tool dependency edge this fixture used to model lives in the
+        # repository Makefile as `$(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)`,
+        # where the tool is a repository-relative name; that edge is asserted in
+        # test_repository_rules_keep_the_profile_tool_dependency.
+        profile_run = PROFILE_TOOL_LAUNCH
         (self.root / "Makefile").write_text(
             textwrap.dedent(
                 f"""
@@ -75,9 +122,9 @@ class BuildTruthTests(unittest.TestCase):
                 CC ?= gcc
                 PROFILE_FLAGS ?= -O0
                 BUILD := build
-                PROFILE_TOOL := {PROFILE_TOOL.as_posix()}
-                include {COMMON_MK.as_posix()}
-                PROFILE_HASH := $(shell $(PYTHON) $(PROFILE_TOOL) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
+                PROFILE_RUN := -c "{profile_run}"
+                include {COMMON_MK.name}
+                PROFILE_HASH := $(shell $(PYTHON) $(PROFILE_RUN) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
                 PROFILE_STAMP := $(BUILD)/.profile-$(PROFILE_HASH)
                 PROFILE_MANIFEST := $(BUILD)/profile.json
                 OBJS := $(BUILD)/dependent.o $(BUILD)/unrelated.o
@@ -85,27 +132,31 @@ class BuildTruthTests(unittest.TestCase):
                 .PHONY: all
                 all: $(OBJS)
 
-                $(PROFILE_STAMP): $(PROFILE_TOOL)
-                \t$(PYTHON) $(PROFILE_TOOL) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
+                $(PROFILE_STAMP):
+                \t$(PYTHON) $(PROFILE_RUN) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
 
                 $(BUILD)/%.o: %.c $(PROFILE_STAMP)
                 \t@echo COMPILE $<
-                \t$(CC) $(PROFILE_FLAGS) $(DEPFLAGS) -c $< -o $@
+                \t"$(CC)" $(PROFILE_FLAGS) $(DEPFLAGS) -c $< -o $@
 
                 -include $(PROFILE_STAMP)
                 -include $(OBJS:.o=.d)
                 """
             ).lstrip(),
             encoding="utf-8",
+            newline="\n",
         )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
     def run_make(self, flags: str) -> str:
+        env = dict(os.environ)
+        env[PROFILE_TOOL_ENV] = str(PROFILE_TOOL)
         proc = subprocess.run(
             [self.make, "--no-print-directory", f"CC={self.cc}", f"PROFILE_FLAGS={flags}"],
             cwd=self.root,
+            env=env,
             check=False,
             capture_output=True,
             text=True,
@@ -157,6 +208,24 @@ class BuildTruthTests(unittest.TestCase):
         self.assertIn("$(RECOMP_PROFILE_STAMP)", makefile)
         self.assertNotIn("$staleObjs", manager)
         self.assertNotIn("Skipping shader recompile", manager)
+
+    def test_repository_rules_keep_the_profile_tool_dependency(self) -> None:
+        """The profile stamps depend on the tool that writes them.
+
+        The build-truth fixture cannot model this edge: GNU Make cannot name a
+        file whose path contains a space, so a fixture rooted under a checkout
+        such as `C:/some path/repo` can never put the tool in a prerequisite
+        list. The repository Makefile has no such constraint -- it names the tool
+        relatively -- so the edge is pinned here, where it is real.
+        """
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("BUILD_PROFILE_TOOL := tools/build_profile.py", makefile)
+        for stamp in ("$(RUNTIME_PROFILE_STAMP)", "$(RECOMP_PROFILE_STAMP)",
+                      "$(CODEGEN_PROFILE_STAMP)", "$(TITLE_CONFIG_STAMP)"):
+            self.assertIn(
+                f"{stamp}: $(BUILD_PROFILE_TOOL)", makefile,
+                f"{stamp} must depend on the tool that writes it",
+            )
 
     def test_forced_same_profile_recipe_does_not_invalidate_objects(self) -> None:
         stamp = self.root / "build" / ".profile-same"
@@ -396,6 +465,60 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertEqual(offenders, [2])
 
 
+class FlightRecorderLinkDependencyTests(unittest.TestCase):
+    """The synthetic media selftest includes mpeg.c, which inherits the
+    production recorder declarations through recomp.h. The Makefile adds
+    SR_FLIGHT_RECORDER_LINKED globally, so this host target must link the real
+    recorder implementation just like the other runtime selftests do.
+    """
+
+    def test_psmf_media_selftest_links_the_recorder_implementation(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        logical = _logical_lines(makefile)
+        selftest = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
+        mpeg = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
+        recomp = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        recorder = (ROOT / "src" / "rt" / "flight_recorder.c").read_text(encoding="utf-8")
+
+        self.assertIn('#include "mpeg.c"', selftest)
+        self.assertIn('#include "recomp.h"', mpeg)
+        self.assertIn('#include "flight_recorder.h"', recomp)
+        self.assertIn("override CFLAGS += -DSR_FLIGHT_RECORDER_LINKED", makefile)
+        self.assertRegex(recorder, r"(?m)^int g_sr_watch_enabled;")
+        self.assertRegex(recorder, r"(?m)^void sr_watch_store\s*\(")
+
+        media_links = [
+            (number, text)
+            for number, text in logical
+            if "psmf_media_selftest.exe" in text and _is_link_statement(text)
+        ]
+        self.assertEqual(len(media_links), 1, media_links)
+        number, link = media_links[0]
+        # The recipe either names the implementation or links the filtered
+        # runtime object set, which carries flight_recorder.o unless the filter
+        # removes it.
+        supplied = "src/rt/flight_recorder.c" in link or (
+            "$(PSMF_MEDIA_RUNTIME_OBJS)" in link
+            and "flight_recorder.o" not in _psmf_media_filtered_out(makefile)
+        )
+        self.assertTrue(
+            supplied,
+            "Makefile:%d links psmf_media_selftest.exe with SR_FLIGHT_RECORDER_LINKED, "
+            "but omits the implementation that defines sr_watch_store and "
+            "g_sr_watch_enabled:\n%s" % (number, link.strip()),
+        )
+
+
+def _psmf_media_filtered_out(makefile: str) -> str:
+    """The objects PSMF_MEDIA_RUNTIME_OBJS removes from RT_OBJS (its filter-out list)."""
+    match = re.search(
+        r"(?m)^PSMF_MEDIA_RUNTIME_OBJS\s*:=\s*\$\(filter-out\s+([^,]*),\s*\$\(RT_OBJS\)\)",
+        makefile,
+    )
+    assert match is not None, "PSMF_MEDIA_RUNTIME_OBJS must stay a filter-out of RT_OBJS"
+    return match.group(1)
+
+
 NESTED_FRAMES_C = "src/rt/nested_frames.c"
 # Anything that already carries nested_frames.c: naming one of these is as good
 # as naming the file, and a recipe should prefer them.
@@ -405,6 +528,9 @@ NESTED_FRAMES_BUNDLES = (
     "$(RT_OBJS)",
     "$(PORTABLE_CORE_SRCS)",
     "$(PORTABLE_CORE_OBJS)",
+    # RT_OBJS minus a fixed filter-out list; test_psmf_runtime_objs_keep_nested_frames
+    # fails if that list ever removes nested_frames.o.
+    "$(PSMF_MEDIA_RUNTIME_OBJS)",
 )
 
 
@@ -444,9 +570,9 @@ def _is_link_statement(text: str) -> bool:
     Prerequisite lines name sources without ever running the linker, and the
     per-object rules compile with -c; neither needs the module's definitions.
     """
-    if " -c " in text or text.rstrip().endswith(" -c"):
+    if re.search(r"(?:^|\s)-c(?:\s|$)", text):
         return False
-    return " -o " in text
+    return re.search(r"(?:^|\s)-o\s", text) is not None
 
 
 class PortableCoreSourceSetTests(unittest.TestCase):
@@ -499,6 +625,21 @@ class PortableCoreSourceSetTests(unittest.TestCase):
         self.assertEqual(entries, self.EXPECTED_PORTABLE_SRCS)
 
 
+def _link_defines_nested_frame_stubs(text: str) -> bool:
+    """True when a source named on the link line defines the nested-frame API itself.
+
+    A self-contained selftest (psmf_media_selftest.c) supplies its own stubs, and
+    linking nested_frames.c as well would be a duplicate definition.
+    """
+    definition = re.compile(r"^\w[\w \t*]*\bsr_nested_frame_acquire\s*\(", re.MULTILINE)
+    for token in re.findall(r"src/[\w/.-]+\.c", text):
+        path = ROOT / token
+        if token != NESTED_FRAMES_C and path.is_file() and definition.search(
+                path.read_text(encoding="utf-8")):
+            return True
+    return False
+
+
 class NestedFramesLinkDependencyTests(unittest.TestCase):
     """hle.c, mpeg.c and sched.c call into nested_frames.c, so every recipe that
     links one of them must also supply it.  This is the same failure shape as
@@ -524,6 +665,11 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
         for expected in ("src/rt/hle.c", "src/rt/mpeg.c", "src/rt/sched.c"):
             self.assertIn(expected, callers)
 
+    def test_psmf_runtime_objs_keep_nested_frames(self) -> None:
+        removed = _psmf_media_filtered_out(self.makefile)
+        self.assertNotIn("nested_frames.o", removed)
+        self.assertIn("src/rt/nested_frames.c", self.makefile.split("RT_SRCS    :=", 1)[1])
+
     def test_every_link_of_a_caller_also_supplies_the_module(self) -> None:
         callers = _nested_frame_callers()
         offenders = []
@@ -533,6 +679,8 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
             if not any(caller in text for caller in callers):
                 continue
             if any(bundle in text for bundle in NESTED_FRAMES_BUNDLES):
+                continue
+            if _link_defines_nested_frame_stubs(text):
                 continue
             offenders.append(f"Makefile:{number}: {text.strip()}")
         self.assertEqual(
@@ -1130,6 +1278,45 @@ class GuestInputTransportTests(unittest.TestCase):
                          "a lane that declares no GAME_ELF was forced to supply one:\n" + blob)
         self.assertNotIn("GAME_ELF does not exist", blob, blob)
 
+    def test_the_makefile_default_guest_elf_does_not_reach_recipe_environments(self) -> None:
+        """The `?=` default must never masquerade as an operator-declared input.
+
+        An unconditional `export GAME_ELF` put eboot.elf into every recipe's
+        environment, so a make nested inside any repository recipe -- the suite
+        under `make test` or `make contrib-check` -- saw origin GAME_ELF =
+        environment, which GAME_INPUT_TRACKED reads as "the operator declared
+        an input": the guest-input stamp was demanded for a lane that declares
+        none. That is exactly how the public-lane test above failed whenever
+        the suite ran through make, and why the same suite passed when run
+        directly. A default without a file behind it must stay invisible to
+        recipes; a declared value (command line, operator environment) still
+        reaches them, and a default that exists on disk is exported by design.
+        """
+        if (ROOT / "eboot.elf").exists():
+            self.skipTest("the fixed default exists on disk and is exported by design")
+        probe = ("--eval=probe-guest-env: ; @$(PYTHON) -c "
+                 "\"import os; print('GAME_ELF_IN_ENV=' + str(os.environ.get('GAME_ELF')))\"")
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", probe, "probe-guest-env"],
+            cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False)
+        blob = self._blob(proc)
+        if proc.returncode != 0 and "unrecognized option" in blob:
+            self.skipTest("this GNU Make has no --eval support")
+        self.assertEqual(proc.returncode, 0, blob)
+        lines = [ln for ln in (proc.stdout or "").splitlines()
+                 if ln.startswith("GAME_ELF_IN_ENV=")]
+        self.assertEqual(len(lines), 1, "the environment probe did not run:\n" + blob)
+        ambient = os.environ.get("GAME_ELF")
+        if ambient is None:
+            self.assertEqual(
+                lines[0], "GAME_ELF_IN_ENV=None",
+                "the Makefile's default GAME_ELF leaked into a recipe environment:\n" + blob)
+        else:
+            self.assertEqual(
+                lines[0], "GAME_ELF_IN_ENV=" + ambient,
+                "an ambient GAME_ELF was not passed through unchanged:\n" + blob)
+
     # -- Make is also a parser -------------------------------------------
 
     def test_M5_make_expands_dollar_in_the_value_and_the_build_fails_closed(self) -> None:
@@ -1374,11 +1561,20 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         for target in ("clean", "clean-fixtures", "tidy", "distclean", "clean-all"):
             self.assertIn(target, public_targets, f"Target {target} missing from PUBLIC_TARGETS")
 
+    def test_platform_ladder_fs_negative_waits_for_positive_image(self) -> None:
+        match = re.search(
+            r"^platform-ladder-fs-negative:\s*(?P<prerequisites>.*)$",
+            self.makefile_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(match, "Filesystem negative ladder target is missing")
+        self.assertIn("platform-ladder-fs", match.group("prerequisites").split())
+
     def test_clean_removes_specified_build_dir(self) -> None:
         """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""
         if not self.make:
             self.skipTest("GNU Make is required")
-        target_dir = ROOT / "build" / "test_lifecycle_clean"
+        target_dir = _make_safe_fixture_dir("clean")
         target_dir.mkdir(parents=True, exist_ok=True)
         sentinel = target_dir / "sample_artifact.o"
         sentinel.write_text("dummy", encoding="utf-8")
@@ -1424,7 +1620,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         """distclean and tidy must preserve .exe and .pdb while removing .o, .d, and ephemeral logs."""
         if not self.make:
             self.skipTest("GNU Make is required")
-        test_dir = ROOT / "build" / "test_lifecycle_distclean"
+        test_dir = _make_safe_fixture_dir("distclean")
         test_dir.mkdir(parents=True, exist_ok=True)
         exe_file = test_dir / "mygame.exe"
         pdb_file = test_dir / "mygame.pdb"
@@ -1485,8 +1681,40 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         self.assertFalse(sub_b.exists(), f"Subdir {sub_b} was not cleaned by clean-all")
         self.assertFalse(recomp_log.exists(), f"Log {recomp_log} was not cleaned by clean-all")
 
+    def test_build_dir_with_a_space_fails_closed_before_any_recipe_runs(self) -> None:
+        """A BUILD_DIR Make cannot name must be refused, not silently fragmented.
+
+        Before the guard, Make split the whitespace-bearing target name derived
+        from BUILD_DIR into several targets: `clean` removed the FIRST fragment --
+        a directory the caller never named -- and the parse-time mkdir created
+        directories named after the remaining fragments in the repository root.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        victim = _make_safe_fixture_dir("guard-victim")
+        victim.mkdir(parents=True, exist_ok=True)
+        keep = victim / "keep.o"
+        keep.write_text("object", encoding="utf-8")
+        spaced = str(victim) + " extra"
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "clean", f"BUILD_DIR={spaced}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("contains a space", proc.stdout + proc.stderr)
+        self.assertIn("NK_BUILD_ROOT", proc.stdout + proc.stderr)
+        self.assertTrue(keep.is_file(), "clean removed a path outside the named BUILD_DIR")
+        # The refused run must not leave Make-fragment directories behind either.
+        self.assertFalse(
+            (ROOT / "spaces").exists(),
+            "a refused BUILD_DIR created a spaces/ tree in the repository root",
+        )
+        shutil.rmtree(victim.parent, ignore_errors=True)
+
     def test_clean_targets_never_delete_protected_paths(self) -> None:
-        """Verification that clean recipes do not touch protected paths or source directories."""
         protected_dirs = [
             ROOT / "assets",
             ROOT / "fixtures",
@@ -1555,7 +1783,7 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_copy_build_assets_script_has_toolchain_discovery_fallback(self) -> None:
         """copy_build_assets.ps1 must attempt compiler toolchain discovery if SDL3.dll is absent from local dirs."""
-        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (ROOT / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("Get-Command gcc", script_text)
         self.assertIn("SDL3.dll", script_text)
 
@@ -1638,12 +1866,138 @@ class MachinePortabilityTests(unittest.TestCase):
 
     def test_copy_build_assets_supports_explicit_sdl3_dll_path(self) -> None:
         """copy_build_assets.ps1 must declare Sdl3DllPath parameter and Makefile must pass SDL3_DLL."""
-        script_text = (ROOT / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        script_text = (ROOT / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
         self.assertIn("[string]$Sdl3DllPath", script_text)
         self.assertIn("Copy-Item $Sdl3DllPath", script_text)
 
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("-Sdl3DllPath \"$(SDL3_DLL)\"", makefile_text)
+
+    def test_copy_build_assets_helper_is_a_tools_script_everywhere_it_is_named(self) -> None:
+        """The post-link asset copy helper is tools/copy_build_assets.ps1.
+
+        The Makefile step, the publication policy and the PowerShell debt
+        inventory are the three places that resolve the helper by path. If any
+        of them still names the repository root, `make compile` stops staging
+        SDL3, the runtime DLLs and font/ without saying so.
+        """
+        helper = ROOT / "tools" / "copy_build_assets.ps1"
+        self.assertTrue(helper.is_file(), "tools/copy_build_assets.ps1 is missing")
+        self.assertFalse(
+            (ROOT / "copy_build_assets.ps1").exists(),
+            "the helper still exists at the repository root",
+        )
+
+        makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn(
+            "$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1",
+            makefile_text,
+        )
+        self.assertNotIn(
+            "-File copy_build_assets.ps1", makefile_text,
+            "the Makefile asset copy step still names the repository root",
+        )
+
+        policy = json.loads(
+            (ROOT / "assets" / "public_source_profile.json").read_text(encoding="utf-8"))
+        self.assertIn("tools/copy_build_assets.ps1", policy["include_paths"])
+        self.assertNotIn(
+            "copy_build_assets.ps1", policy["include_paths"],
+            "the public source profile still publishes the repository root path",
+        )
+
+        import publish_audit
+
+        self.assertIn("tools/copy_build_assets.ps1",
+                      publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY)
+        self.assertNotIn("copy_build_assets.ps1",
+                         publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY)
+
+
+    def test_powershell_debt_inventory_is_enforced_per_script(self) -> None:
+        """Each script keeps its own SilentlyContinue ceiling; the total is their sum."""
+        import tempfile
+
+        import publish_audit
+
+        inventory = publish_audit.POWERSHELL_SILENTLY_CONTINUE_INVENTORY
+        self.assertEqual(sum(inventory.values()),
+                         publish_audit.DEBT_BUDGETS["powershell_silently_continue"])
+        # The repo-wide case below is only meaningful if git actually lists the scripts;
+        # _debt_budget_findings falls back to an empty path list when git fails.
+        import subprocess
+        tracked_scripts = subprocess.run(
+            ["git", "ls-files", "*.ps1"], cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.split()
+        self.assertTrue(set(inventory) <= set(tracked_scripts),
+                        "every inventoried script must be a tracked .ps1 the audit inspects")
+        self.assertEqual(
+            [f for f in publish_audit._debt_budget_findings() if "SilentlyContinue" in f.detail],
+            [],
+        )
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "tools").mkdir()
+            (root / "tools" / "copy_build_assets.ps1").write_text(
+                "$ErrorActionPreference = 'SilentlyContinue'\n" * 4, encoding="utf-8")
+            (root / "unlisted.ps1").write_text(
+                "Get-Item x -ErrorAction SilentlyContinue\n", encoding="utf-8")
+            findings = publish_audit._debt_budget_findings(
+                root, ["tools/copy_build_assets.ps1", "unlisted.ps1"])
+        flagged = {f.path for f in findings if "SilentlyContinue" in f.detail}
+        self.assertEqual(flagged, {"tools/copy_build_assets.ps1", "unlisted.ps1"})
+
+    def test_no_tracked_file_names_the_root_level_copy_build_assets_path(self) -> None:
+        """A relocation is complete only when nothing still names the old path.
+
+        Every tracked mention of the helper must carry its `tools/` directory,
+        so a reader and every tool that resolves the path land on the same
+        file. The generated inventories are the only records allowed to lag;
+        the maintainer regenerates those with provenance-refresh.
+        """
+        # A mention is qualified when its `tools` directory component sits
+        # immediately before it, in plain path form (`tools/...`) or in the
+        # `ROOT / "tools" / "..."` form the tree-wide Python tests use.
+        mention = re.compile(r"copy_build_assets\.ps1")
+        qualified = re.compile(r"tools[\"'\\ /]*$")
+        # The generated inventories are rewritten by provenance-refresh, and this
+        # module has to name the old path in order to assert that nothing else does.
+        allowed = {
+            "assets/public_provenance_ledger.json",
+            "PUBLIC_EXPORT.json",
+            "docs/provenance/MODIFIED_FILE_NOTICES.json",
+            "tools/test_build_truth.py",
+        }
+        if shutil.which("git") is None:
+            self.skipTest("git is required to enumerate the tracked tree")
+        listing = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            capture_output=True, text=True, check=True).stdout
+        offenders = []
+        for entry in sorted(filter(None, listing.split("\0"))):
+            if entry in allowed:
+                continue
+            try:
+                text = (ROOT / entry).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for match in mention.finditer(text):
+                window = text[max(0, match.start() - 32):match.start()]
+                if not qualified.search(window):
+                    offenders.append(entry)
+                    break
+        self.assertEqual(
+            offenders, [],
+            "these tracked files still name the root-level copy_build_assets.ps1 path",
+        )
+
+    def test_windows_package_build_uses_builtin_windows_powershell(self) -> None:
+        """A consumer build must not need a separately installed PowerShell 7."""
+        makefile_text = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        script_text = (Path(__file__).resolve().parents[1] / "tools" / "copy_build_assets.ps1").read_text(encoding="utf-8")
+        self.assertIn("POWERSHELL ?= powershell.exe", makefile_text)
+        self.assertIn("$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1", makefile_text)
+        self.assertIn("#requires -Version 5.1", script_text)
 
     def test_runtime_profile_records_sdl3_identity(self) -> None:
         """runtime_profile.json must record SDL3_PROVIDER, SDL3_VERSION, and SDL3_DIR."""

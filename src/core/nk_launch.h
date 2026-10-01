@@ -10,6 +10,10 @@
 #include "generated/nk_title_catalog.h"
 #include <stdbool.h>
 
+#define NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY \
+    (NK_TITLE_MAX_LOOSE_CONTENT_ROOTS * \
+     (NK_MAX_PATH * 2 + 512 + NK_TITLE_MAX_LOOSE_CONTENT_EXCLUDES * 241) + 1)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,6 +26,14 @@ typedef struct {
     bool vsync;
     bool benchmark_mode;
     bool gui_mode;        /* launch with --gui (interactive GUI) or --sched (headless scheduler) */
+    int master_volume;    /* 0..100 host master gain; prepare_session defaults to 100 so a
+                             caller that never sets it keeps full volume, not silence */
+    /* Host input profile the child must apply, as an absolute path. The player
+       resolves the effective mapping for the disc being launched (its own
+       per-title entry when it has one, else the global profile, #520) and hands
+       it over as NK_INPUT_PROFILE. Empty leaves the child on its own resolved
+       profile path, which is the pre-#520 behaviour. */
+    char input_profile_path[NK_MAX_PATH];
 } NkRuntimeConfig;
 
 typedef struct {
@@ -48,6 +60,9 @@ typedef struct {
     char iso_path[NK_MAX_PATH];
     char prepared_root[NK_MAX_PATH];
     char dataroot_path[NK_MAX_PATH];
+    /* Resolved, manifest-owned filesystem.loose_content_roots transport for HLE.
+       Empty when an older manifest omits the optional binding. */
+    char loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY];
     char font_dir[NK_MAX_PATH];
     char user_data_root[NK_MAX_PATH];
     /* Memory Stick root handed to the runtime as SR_MEMSTICK. Resolved by
@@ -59,7 +74,8 @@ typedef struct {
     char memstick_root[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
-    char selected_executable[NK_MAX_EXECUTABLE_PATH];
+    char boot_executable[NK_MAX_EXECUTABLE_PATH];
+    char selected_executable[NK_MAX_SELECTED_EXECUTABLE_PATH];
     uint32_t base_address;
     uint32_t entry_point;
     bool package_launch;
@@ -69,6 +85,10 @@ typedef struct {
 
     /* Runtime configuration */
     NkRuntimeConfig config;
+
+    /* Optional player-owned BOOT_EVENT side channel used to hand focus to the
+       child after its GUI window is ready. Empty for ordinary launch callers. */
+    char boot_event_file_path[NK_MAX_PATH];
 
     /* Live process tracking */
     NkProcessHandle process;
@@ -140,6 +160,17 @@ NkResult nk_launch_prepare_session(
  * path are re-checked against each other: a session whose executable or title
  * identity was swapped after preparation is rejected instead of spawned. */
 NkResult nk_launch_start(NkLaunchSession *session);
+
+/* Write the "NK_INPUT_PROFILE=<path>" launch environment entry for `session`
+ * into `buf`. Returns false when the session names no profile path (nothing to
+ * add, the child keeps its own resolved profile) or when the entry would not fit
+ * in `buf`; the caller adds the entry exactly when this returns true, so the
+ * profile the player resolved for a disc is the profile the child loads. */
+bool nk_launch_format_input_profile_env(
+    const NkLaunchSession *session,
+    char *buf,
+    size_t buf_sz
+);
 
 /* Check if runtime child process is currently running */
 bool nk_launch_is_running(NkLaunchSession *session);

@@ -49,28 +49,34 @@ CURRENT_FACING_DOCS = {
     "docs/PUBLICATION_READINESS.md",
     "docs/PUBLIC_SOURCE_PROFILE.md",
     "docs/DCO_POLICY.md",
-    "docs/KEY_HISTORY_SCRUB.md",
-    "docs/PGD_AMCTRL_REVIEW_PACKET.md",
-    "docs/PGF_LICENSE_REVIEW_PACKET.md",
-    "docs/PGD_KEYS.md",
     "font/README.md",
-    "interface/README.md",
     "src/rt/gpu_sdl3vk/README.md",
     "tools/README.md",
 }
+
+# These documents are intentionally excluded by the public source profile. Keep them
+# separate from actual current-facing docs while preserving their shorthand audit coverage.
+PRIVATE_EXCLUDED_DOCS = {
+    "docs/KEY_HISTORY_SCRUB.md",
+    "docs/PGD_AMCTRL_REVIEW_PACKET.md",
+    "docs/PGD_KEYS.md",
+    "docs/PGF_LICENSE_REVIEW_PACKET.md",
+}
+
+SHORTHAND_AUDIT_DOCS = CURRENT_FACING_DOCS | PRIVATE_EXCLUDED_DOCS
 
 HISTORICAL_EVIDENCE_DOCS = {
     "docs/STATUS_HISTORY.md",
     "docs/ROADMAP.md",
     "docs/HARDWARE_ORACLE.md",
-    "docs/IMPORT_AUDIT.md",
+    "docs/archive/IMPORT_AUDIT.md",
     "docs/NEXT_SESSION.md",
     "docs/PHASE5_HARDWARE_EVIDENCE.md",
     "docs/PSP_INTR_WAITS_MATRIX.md",
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
     "docs/COVERAGE_LEDGER.md",
-    "docs/TOOLCHAIN_BASELINE_2026-08.md",
-    "docs/ISSUE196_DIRECT_XB.md",
+    "docs/archive/TOOLCHAIN_BASELINE_2026-08.md",
+    "docs/archive/ISSUE196_DIRECT_XB.md",
     "docs/provenance/MODIFIED_FILE_NOTICES.md",
 }
 
@@ -192,7 +198,7 @@ def audit_markdown_files(
         except ValueError:
             rel = doc_path.name
 
-        is_current_doc = rel in CURRENT_FACING_DOCS
+        is_current_doc = rel in SHORTHAND_AUDIT_DOCS
         is_historical_doc = rel in HISTORICAL_EVIDENCE_DOCS
         in_tracker_section = False
         in_at_a_glance = False

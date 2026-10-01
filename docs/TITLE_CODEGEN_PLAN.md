@@ -114,11 +114,16 @@ core acceptance. Existing HST manifests remain valid without this field while th
 manager continues to use its legacy, privately bound path; migration is additive,
 not a production switch.
 
-The public synthetic manifest additionally carries `profile_zero`, which points to
-source-owned PSPDEV/PSPSDK input and a portable Make build path. Its acceptance
-cases distinguish planned production-dispatch/helper evidence from the currently
-implemented source-shape ProgramImage test. `runnable: false` is intentional until
-the actual end-to-end AOT/runtime route is wired and asserted.
+The two public synthetic manifests also carry `profile_zero`, which points to the
+shared source-owned PSPDEV/PSPSDK fixture and a portable Make build path. Every
+implemented acceptance case names `profile-zero-e2e`, which loads the committed
+fixture from `fixtures/profile_zero/prebuilt` (rebuilt from the fixture source and
+byte-compared against its `SHA256SUMS` whenever PSPDEV is installed), validates
+ProgramImage and AOT package outputs, launches the headless production runtime,
+and asserts the seven declared source-shape, dispatch, and helper cases. The
+manifests are runnable only while every case is implemented and has a proving
+gate; missing host runtime build dependencies (Vulkan SDK/SDL3) make the gate
+report SKIP with the printed reason, while a missing PSPDEV toolchain does not.
 
 Current fail-closed limits are deliberate:
 
@@ -159,8 +164,8 @@ and every field is a guest address:
 | `fallback_entry` | `driver.c` when the image entry is not compiled |
 | `worker_thread_entry` | `sched.c` worker role capture and create-reuse |
 | `launcher_thread_entry` | `sched.c` launcher role capture and priority demotion |
-| `vblank_frame_counter_addr` | `sched.c` on each delivered VBLANK |
-| `vblank_vsync_counter_addr` | `sched.c` on each delivered VBLANK |
+| `vblank_frame_counter_addr` | retired: validated and recorded, but no runtime code writes it (a delivered VBLANK writes no guest memory; the guest's own VBLANK handler is the only writer) |
+| `vblank_vsync_counter_addr` | retired: validated and recorded, but no runtime code writes it (same reason) |
 
 Validation fails closed on an unknown field, a non-integer or out-of-range address, a
 misaligned address, an explicit zero (the runtime's "not configured" value, so a
@@ -169,7 +174,7 @@ counter addresses, and equal worker and launcher entries. Omitting the block ent
 is valid and configures nothing.
 
 The block may name addresses and roles. It cannot redefine a PSP semantic: what a
-worker entry, a launcher demotion, or a counter increment *means* stays in the
+worker entry or a launcher demotion *means* stays in the
 runtime, and a binding only decides whether — and where — that meaning applies.
 
 ### Typed collections

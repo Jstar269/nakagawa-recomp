@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "description": "Maintainer-reviewed historical findings of tools/history_audit.py. Each entry is one exact blob id, finding code and path; a blob id names immutable content, so an entry never excuses other bytes. Rewriting published history is out of scope (AGENTS.md section 3), so reviewed historical blobs are recorded here with the reason they were accepted.",
+  "reviewed": [
+    {
+      "blob": "5fbddd555fbd1acb8ae61b8d4e396c3d3900adce",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "tools/test_sbom_binding.py",
+      "reason": "A generic scratch path under /tmp for a downloaded public SPDX schema; it names no user, machine or private input."
+    },
+    {
+      "blob": "3ab6f171efc4a600d573ab1f136638f5b450eb5b",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "tools/boot11_transport_qualify.sh",
+      "reason": "A historical PSPLink host script that named a POSIX home directory and a /tmp scratch folder; the account name is the maintainer's public handle, and no private input or path content is exposed."
+    }
+  ]
+}

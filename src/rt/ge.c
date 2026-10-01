@@ -33,9 +33,16 @@
  */
 
 #define _CRT_SECURE_NO_WARNINGS
+/* Only the standalone VRAM decoder build (nk_cli compiles it with -std=c99) needs the
+ * POSIX declarations; defining the macro in the runtime build would also remove the
+ * glibc default feature set that build gets from an unset macro. */
+#if defined(SR_GE_VRAM_DECODER_CLI) && !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "recomp.h"
 #include "ge_shared.h"
 #include "ge_capture.h"
+#include "flight_recorder.h"
 #include "strbuf.h"
 
 #include <stdint.h>
@@ -60,11 +67,38 @@ static void ge_capture_w32(uint32_t addr, uint32_t value) { ge_capture_note_memo
 #undef MEM_R32
 #undef MEM_W16
 #undef MEM_W32
+#ifdef SR_GE_VRAM_DECODER_CLI
+static int ge_vram_cli_bad_read;
+static uint8_t ge_vram_cli_read8(uint32_t addr) {
+    uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys < GE_CAPTURE_VRAM_BASE || phys >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE) {
+        ge_vram_cli_bad_read = 1;
+        return 0;
+    }
+    return *(const uint8_t *)SR_HOST(phys);
+}
+static uint16_t ge_vram_cli_read16(uint32_t addr) {
+    return (uint16_t)ge_vram_cli_read8(addr) |
+           (uint16_t)((uint16_t)ge_vram_cli_read8(addr + 1u) << 8);
+}
+static uint32_t ge_vram_cli_read32(uint32_t addr) {
+    return (uint32_t)ge_vram_cli_read8(addr) |
+           ((uint32_t)ge_vram_cli_read8(addr + 1u) << 8) |
+           ((uint32_t)ge_vram_cli_read8(addr + 2u) << 16) |
+           ((uint32_t)ge_vram_cli_read8(addr + 3u) << 24);
+}
+#define MEM_R8(a) ge_vram_cli_read8((a))
+#define MEM_R16(a) ge_vram_cli_read16((a))
+#define MEM_R32(a) ge_vram_cli_read32((a))
+#define MEM_W16(a, v) ((void)(a), (void)(v))
+#define MEM_W32(a, v) ((void)(a), (void)(v))
+#else
 #define MEM_R8(a) (g_ge_capture_active ? ge_capture_r8((a)) : sr_r8((a)))
 #define MEM_R16(a) (g_ge_capture_active ? ge_capture_r16((a)) : sr_r16((a)))
 #define MEM_R32(a) (g_ge_capture_active ? ge_capture_r32((a)) : sr_r32((a)))
 #define MEM_W16(a, v) (g_ge_capture_active ? ge_capture_w16((a), (uint16_t)(v)) : sr_w16((a), (uint16_t)(v)))
 #define MEM_W32(a, v) (g_ge_capture_active ? ge_capture_w32((a), (uint32_t)(v)) : sr_w32((a), (uint32_t)(v)))
+#endif
 
 /* Wall-clock ms (MinGW clock() is wall time with CLOCKS_PER_SEC=1000). */
 static unsigned long wall_ms(void) { return (unsigned long)(clock() * 1000ull / CLOCKS_PER_SEC); }
@@ -129,6 +163,7 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
+static uint32_t s_ge_command[256];
 static int s_ge_inited = 0;
 static GeCpuProfileStats s_cpu_profile_stats;
 static int s_cpu_profile = -1;
@@ -334,6 +369,7 @@ static float decode_float24(uint32_t data) {
 }
 
 static void ge_state_init(void) {
+    memset(s_ge_command, 0, sizeof(s_ge_command));
     ge.scis_x2 = 479; ge.scis_y2 = 271;
     ge.maxz = 0xFFFF;
     ge.tex_scale_u = ge.tex_scale_v = 1.0f;
@@ -341,6 +377,12 @@ static void ge_state_init(void) {
     ge.amb_alpha = 0xFF;   /* lit alpha multiplies by this; 0 would blank lit geometry pre-init */
     ge.morph_weight[0] = 1.0f;
     s_ge_inited = 1;
+}
+
+uint32_t ge_get_cmd(uint32_t cmd) {
+    if (cmd > 0xffu) return 0u;
+    if (!s_ge_inited) ge_state_init();
+    return s_ge_command[cmd];
 }
 
 /* ---- Depth buffer ----
@@ -735,6 +777,8 @@ static struct {
     unsigned long fog0, fogfull, texa0;         /* full-fog pixels, no-fog pixels, alpha==0 texels */
     unsigned long skin, bonew;                  /* skinned (weighted) 3D prims, bone matrix writes */
     unsigned long deg3d;                        /* zero-area 3D triangles (zeroed/missing vertex data) */
+    unsigned long nonfinite;                    /* primitives dropped for a non-finite position */
+    unsigned long gpuprim;                      /* primitives the GPU backend took (SR_GPU_GE) */
     unsigned long line3d;                       /* 3D line segments submitted (wireframe map etc.) */
 } s_stat;
 
@@ -791,8 +835,10 @@ static int s_rt_draws_f = 0;         /* draws logged this frame (cap) */
  * bone/world/view/proj matrices as BOTH most-recent guest writes and effective draw-time
  * state (they diverge on cursor-overflow discards and cross-list restores), the decoded
  * VTYPE (weight count uses wc+1 semantics), vertex/index bases, count, prim type, render
- * target, bound texture, and a stable draw_id (FNV-1a over vtype+vbase+prim+count) so the
- * bad draw matches its first recovered equivalent. See tools/ge_transition_diff.py. */
+ * target, bound texture, a stable draw_id (FNV-1a over vtype+vbase+prim+count) so the
+ * bad draw matches its first recovered equivalent, and non_finite, the number of
+ * non-finite values among the four effective matrices (0 for a clean draw). See
+ * tools/ge_transition_diff.py. */
 static int s_tr_enabled = -1;        /* -1=unprobed, 0=off, 1=on */
 static FILE *s_tr_fp = NULL;
 static uint32_t s_tr_ordinal_frame = 0xFFFFFFFFu;
@@ -846,9 +892,39 @@ static uint32_t ge_transition_draw_id(uint32_t vtype, uint32_t vbase, int prim, 
     return h;
 }
 
+/* One JSON-safe number. printf renders a non-finite float as `-nan(ind)` or
+ * `inf`, neither of which is JSON, so a real #69 trace aborted
+ * tools/ge_transition_diff.py at the first corrupted bone matrix. Non-finite
+ * values are emitted as JSON `null`; the diff tool treats a null as a value
+ * that differs from every finite one and flags it as NON_FINITE. Finite values
+ * keep the exact `%.9g` rendering they always had, so existing traces of
+ * uncorrupted frames are unchanged. */
+static void ge_json_float(FILE *fp, float v) {
+    if (isfinite(v)) fprintf(fp, "%.9g", v);
+    else fputs("null", fp);
+}
+
 static void ge_transition_trace_floats(FILE *fp, const float *v, int n) {
-    for (int i = 0; i < n; i++)
-        fprintf(fp, "%s%.9g", i ? "," : "", v[i]);
+    for (int i = 0; i < n; i++) {
+        if (i) fputc(',', fp);
+        ge_json_float(fp, v[i]);
+    }
+}
+
+/* Non-finite values among the four EFFECTIVE matrices, so one record carries the
+ * count the GE drops this draw from. It joins the two halves of a corruption
+ * report that used to live in different files: the SR_NAN_TRAP line naming the
+ * instruction that produced the bad value (same vblank) and the trace record
+ * naming the draw that could not be drawn. Counting nulls by hand was the only
+ * way to get it before. */
+static int ge_transition_trace_nonfinite(void) {
+    const float *v[4] = { ge.bone, ge.world, ge.view, ge.proj };
+    const int len[4] = { 96, 12, 12, 16 };
+    int n = 0;
+    for (int m = 0; m < 4; m++)
+        for (int i = 0; i < len[m]; i++)
+            if (!isfinite(v[m][i])) n++;
+    return n;
 }
 
 static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsigned long prim_index,
@@ -906,7 +982,7 @@ static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsign
     ge_transition_trace_floats(fp, s_tr_proj_w, 16);
     fprintf(fp, "],\"proj_effective\":[");
     ge_transition_trace_floats(fp, ge.proj, 16);
-    fprintf(fp, "]}\n");
+    fprintf(fp, "],\"non_finite\":%d}\n", ge_transition_trace_nonfinite());
     fflush(fp);   /* keep each record crash-safe; this path is opt-in only */
 }
 
@@ -936,6 +1012,12 @@ static int thru_ztest(void) {
 void ge_set_frame(uint32_t frame) {
     ge_capture_configure();
     ge_transition_trace_configure();
+    /* Arm the opt-in instruction trace and store watch, then carry the delivered vblank
+     * into both diagnostics. Their environment probes are cached and inert when unset. */
+    sr_trace_window_configure();
+    sr_trace_note_frame(frame);
+    sr_watch_configure();
+    sr_watch_note_vblank(frame);
     if (ge_capture_active() && frame != s_ge_frame) {
         int boundary_ok = !s_gpu || !s_gpu->capture_boundary || s_gpu->capture_boundary();
         if (!boundary_ok) {
@@ -966,8 +1048,8 @@ void ge_set_frame(uint32_t frame) {
         s_wall_last = now;
         s_ge_ms_acc = 0;
         fprintf(stderr,
-            "GESTAT+ f=%u blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu zrange=%lu zr=[%u,%u] fmt=%u zbp=0x%08x fb=[0x%08x:%lu 0x%08x:%lu 0x%08x:%lu 0x%08x:%lu]\n",
-            frame, s_stat.blk3d, s_stat.skin, s_stat.bonew, s_stat.deg3d, s_stat.line3d,
+            "GESTAT+ f=%u blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu nonfinite=%lu gpuprim=%lu zrange=%lu zr=[%u,%u] fmt=%u zbp=0x%08x fb=[0x%08x:%lu 0x%08x:%lu 0x%08x:%lu 0x%08x:%lu]\n",
+            frame, s_stat.blk3d, s_stat.skin, s_stat.bonew, s_stat.deg3d, s_stat.line3d, s_stat.nonfinite, s_stat.gpuprim,
             s_stat.zrange, ge.minz, ge.maxz, ge.fbfmt, ge.zbp,
             s_stat.fbs[0], s_stat.fbn[0], s_stat.fbs[1], s_stat.fbn[1],
             s_stat.fbs[2], s_stat.fbn[2], s_stat.fbs[3], s_stat.fbn[3]);
@@ -1674,7 +1756,30 @@ static void who_init(void) {
     if (wp) sscanf(wp, "%d,%d", &s_who_x, &s_who_y);
 }
 
+/* Fail closed on a non-finite vertex at the ONE point every rasterized primitive passes
+ * (ge_vtx_finite, the same predicate the Vulkan capture seam applies, so the two GE paths
+ * cannot disagree). Transform mode already carries the stronger upstream verdict CVtx::nf
+ * (clip position, projected screen position and lit colour) and drops before it gets here;
+ * this gate covers what that verdict cannot see:
+ *   - THROUGH mode, where load_vtx reads raw screen coordinates straight out of guest VRAM
+ *     with no finiteness test at all - a game that writes a NaN float into a through vertex
+ *     previously reached both rasterizers unchecked;
+ *   - patch/spline tessellation, whose control-point evaluation writes the position
+ *     straight into a Vtx;
+ *   - a clip-created vertex whose interpolation overflowed.
+ * A NaN here is fatal to the rasterizer: the acceptance tests all compare false against it
+ * and the edge functions become unbounded, and on the GPU a NaN gl_Position has an
+ * undefined fixed-function clipper verdict. Returns 1 (and counts the dropped primitive)
+ * when any of the given vertices is non-finite; pass NULL for the unused corners. */
+static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
+    if ((!a || ge_vtx_finite(a)) && (!b || ge_vtx_finite(b)) && (!c || ge_vtx_finite(c)))
+        return 0;
+    s_stat.nonfinite++;   /* counted apart from nearclip: a separate rejection reason */
+    return 1;
+}
+
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
+    if (vtx_nonfinite(A, B, C)) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
      * depth, shading, blending on the GPU); if it declines it has already flushed, so the
      * software path below stays correctly ordered against prior GPU work. */
@@ -1682,7 +1787,8 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->tri(A, B, C, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
 
     float area=(B->x-A->x)*(C->y-A->y)-(C->x-A->x)*(B->y-A->y);
@@ -1848,11 +1954,13 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
 
 /* Line rasterizer (DDA), used for prim types 1/2 in both modes. */
 static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
+    if (vtx_nonfinite(A, B, NULL)) return;
     if (s_gpu && s_gpu->line) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->line(A, B, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
     float dx=B->x-A->x, dy=B->y-A->y;
     float len=fmaxf(fabsf(dx),fabsf(dy));
@@ -1888,11 +1996,13 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
 }
 
 static void draw_point_vtx(const Vtx *A, int persp) {
+    if (vtx_nonfinite(A, NULL, NULL)) return;
     if (s_gpu && s_gpu->point) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->point(A, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
     if (!zrange_ok(A->z, persp)) { if (s_stat_on > 0) s_stat.zrange++; return; }
     int textured = ge.tex_enable && !ge.clear && ge.tex_addr;
@@ -1938,8 +2048,11 @@ static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0x
 /* Per-vertex lighting in world space: emissive + scene ambient, plus per-light
  * ambient/diffuse/specular for up to 4 directional/point lights (spot treated as point).
  * Material colours come from the registers or the vertex colour per MATERIALUPDATE bits. */
-static void light_vertex(float wx, float wy, float wz, float nx, float ny, float nz,
-                         int vr, int vg, int vb, int va, int *lr, int *lg, int *lb, int *la) {
+/* Returns 0 when a lit channel is not finite. A NaN or infinite channel makes the
+ * (int) conversion below host UB and the written pixel meaningless, so the caller fails the
+ * primitive closed instead (CVtx::nf). Only a finite result is a defined pixel. */
+static int light_vertex(float wx, float wy, float wz, float nx, float ny, float nz,
+                        int vr, int vg, int vb, int va, int *lr, int *lg, int *lb, int *la) {
     float vrf = vr*(1.0f/255.0f), vgf = vg*(1.0f/255.0f), vbf = vb*(1.0f/255.0f);
     /* Lit alpha = material-ambient alpha * scene-ambient alpha; diffuse/specular/emissive never
      * contribute to alpha (PPSSPP Software/Lighting.cpp). With MATERIALUPDATE bit 0 the vertex
@@ -1997,9 +2110,11 @@ static void light_vertex(float wx, float wy, float wz, float nx, float ny, float
             }
         }
     }
+    int lit = isfinite(r) && isfinite(g) && isfinite(b);
     *lr = clamp8((int)(r*255.0f + 0.5f));
     *lg = clamp8((int)(g*255.0f + 0.5f));
     *lb = clamp8((int)(b*255.0f + 0.5f));
+    return lit;
 }
 
 typedef struct {
@@ -2043,12 +2158,25 @@ typedef struct {
     /* PSP primitive-acceptance flags (PPSSPP Clipper::ProcessTriangle / ClipToScreenInternal):
      * oor = projected screen coords outside the GE's 4096-grid; ozp/ozn = z/w beyond +-1. */
     int oor, ozp, ozn;
+    /* Set when a clip position, a projected screen position or a lit colour channel is not
+     * finite. Such a vertex has no defined rasterized result: every comparison in the
+     * acceptance test below is false against NaN, so it would slip through as "inside" and
+     * reach the rasterizer with NaN edge functions or a NaN pixel value (and the (int)
+     * conversion of a NaN channel is host UB). The PSP's answer here is NOT_MEASURED
+     * (docs/HARDWARE_ORACLE.md), so the GE fails closed and counts the primitive instead of
+     * inventing screen coverage. Texcoords are deliberately NOT covered: a game may leave an
+     * infinite texgen matrix in place to force a constant s/t, exactly as it may leave
+     * infinite fog coefficients (see the fog guard above). */
+    int nf;
     /* Projected screen-grid coords (pre-offset) kept for SR_RTRACE decision logging; only
      * meaningful when cw != 0. */
     float sx, sy, sz;
 } CVtx;
 
 static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
+    /* Every non-finite verdict below ORs into nf; the lighting pass runs first, so start
+     * from a clean verdict. */
+    o->nf = 0;
     int profile_phase = s_primitive_profile_current_phase;
     uint64_t transform_started = profile_phase == GE_PRIM_PROFILE_TRANSFORM
         ? SDL_GetTicksNS() : 0;
@@ -2158,7 +2286,9 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
         mat33_mul(ge.world, nx, ny, nz, &wnx, &wny, &wnz);
         float nl = sqrtf(wnx*wnx + wny*wny + wnz*wnz);
         if (nl > 0.0f) { wnx/=nl; wny/=nl; wnz/=nl; }
-        light_vertex(wx, wy, wz, wnx, wny, wnz, o->r, o->g, o->b, o->a, &o->r, &o->g, &o->b, &o->a);
+        if (!light_vertex(wx, wy, wz, wnx, wny, wnz, o->r, o->g, o->b, o->a,
+                          &o->r, &o->g, &o->b, &o->a))
+            o->nf = 1;
         if (lighting_started)
             primitive_profile_end(GE_PRIM_PROFILE_LIGHTING, lighting_started);
     }
@@ -2167,6 +2297,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
      * NOT rasterise primitives whose vertices leave the valid screen grid or the z range —
      * games count on this to hide effect passes and behind-camera geometry. */
     o->oor = o->ozp = o->ozn = 0;
+    if (!(isfinite(o->cx) && isfinite(o->cy) && isfinite(o->cz) && isfinite(o->cw))) o->nf = 1;
     {
         const float zoutside = 1.000030517578125f;
         float zw = o->cz / o->cw;
@@ -2176,6 +2307,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
         float sy = o->cy * decode_float24(ge.viewport_raw[1]) / o->cw + decode_float24(ge.viewport_raw[4]);
         float sz = o->cz * decode_float24(ge.viewport_raw[2]) / o->cw + decode_float24(ge.viewport_raw[5]);
         o->sx = sx; o->sy = sy; o->sz = sz;
+        if (!(isfinite(sx) && isfinite(sy) && isfinite(sz))) o->nf = 1;
         const float SB = 4095.0f + 15.5f / 16.0f;
         if (ge.depth_clip) {
             if (o->cz > -o->cw && (sx >= SB || sy >= SB || sx < 0.0f || sy < 0.0f)) o->oor = 1;
@@ -2236,6 +2368,12 @@ static void project_cvtx(const CVtx *c, Vtx *o) {
 static int transform_vtx_3d(uint32_t addr, const VFmt *vf, Vtx *o) {
     CVtx c;
     transform_vtx_clip(addr, vf, &c);
+    /* Fail closed on a non-finite position (see CVtx::nf): the tests below all compare false
+     * against NaN, so a NaN point or sprite corner would project to a NaN rect. */
+    if (c.nf) {
+        if (s_primitive_profile_counting) s_cpu_profile_stats.primitive_profile_vertex_rejects++;
+        s_stat.nonfinite++; return 0;
+    }
     if (c.cw <= NEAR_W) {
         if (s_primitive_profile_counting) s_cpu_profile_stats.primitive_profile_vertex_rejects++;
         s_stat.nearclip++; return 0;
@@ -2269,6 +2407,9 @@ static void clip_lerp_cvtx(const CVtx *a, const CVtx *b, float t, CVtx *o) {
     /* oor=2 marks a vertex CREATED by the near clip: PPSSPP's clip_interpolate re-projects
      * such vertices and re-checks the screen-grid range (clip_vtx_out_of_range below). */
     o->oor = 2; o->ozp = o->ozn = 0;
+    /* A clip-created vertex inherits finiteness from two finite endpoints unless the
+     * interpolation itself overflowed; keep the fail-closed verdict honest either way. */
+    o->nf = !(isfinite(o->cx) && isfinite(o->cy) && isfinite(o->cz) && isfinite(o->cw));
     o->sx = o->sy = o->sz = 0.0f;
 }
 
@@ -2415,11 +2556,13 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
 /* Rasterise a sprite (axis-aligned rect from two corner vertices). Used by both modes;
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
 static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
+    if (vtx_nonfinite(p0, p1, NULL)) return;
     if (s_gpu && s_gpu->sprite) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->sprite(p0, p1, persp);
         ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
-        if (handled) return;
+        /* gpuprim, not the counters below: a taken primitive returns before them. */
+        if (handled) { s_stat.gpuprim++; return; }
     }
 
     int xa=(int)fminf(p0->x,p1->x), xb=(int)fmaxf(p0->x,p1->x);
@@ -2546,15 +2689,28 @@ static void patch_eval(const ModelVtx *cp,int row_stride,const PatchWeight *wu,
     if(ge.patch_facing&1){m->nx=-m->nx;m->ny=-m->ny;m->nz=-m->nz;}
 }
 
-static void model_to_through(const ModelVtx *m,Vtx *v){
+/* Patch/spline tessellation has no CVtx::nf verdict to consult in through mode (the
+ * control-point evaluation writes the screen position straight into a Vtx), so the
+ * fail-closed non-finite rule is applied here with the same predicate the GPU capture
+ * seam uses (ge_vtx_finite): every acceptance test around this code compares false
+ * against NaN, so a non-finite position would otherwise reach BOTH rasterizers as an
+ * unbounded primitive. */
+static int model_to_through(const ModelVtx *m,Vtx *v){
+    if(!(isfinite(m->x)&&isfinite(m->y)&&isfinite(m->z))){
+        s_stat.nonfinite++;return 0;
+    }
     v->x=m->x;v->y=m->y;v->z=m->z;v->rw=1;v->u=m->u;v->v=m->v;v->fog=1;
     v->r=m->r;v->g=m->g;v->b=m->b;v->a=m->a;
+    return 1;
 }
 
 static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const ModelVtx *c,int through){
-    if(through){Vtx x,y,z;model_to_through(a,&x);model_to_through(b,&y);model_to_through(c,&z);raster_tri(&x,&y,&z,0);return;}
+    if(through){Vtx x,y,z;if(!model_to_through(a,&x)||!model_to_through(b,&y)||!model_to_through(c,&z))return;raster_tri(&x,&y,&z,0);return;}
     CVtx cv[3],cl[4];transform_model_vtx_clip(a,&cv[0]);transform_model_vtx_clip(b,&cv[1]);transform_model_vtx_clip(c,&cv[2]);
     if(ge.cull_enable&&!ge.clear&&(ge.cull&1)==0){CVtx t=cv[0];cv[0]=cv[1];cv[1]=t;}
+    /* Non-finite first, exactly as the triangle path above: a NaN clip position, screen
+     * position or lit colour passes every test below. */
+    if(cv[0].nf||cv[1].nf||cv[2].nf){s_stat.nonfinite++;return;}
     if(cv[0].oor||cv[1].oor||cv[2].oor||(cv[0].cw<0&&cv[1].cw<0&&cv[2].cw<0))return;
     int zp=cv[0].ozp+cv[1].ozp+cv[2].ozp,zn=cv[0].ozn+cv[1].ozn+cv[2].ozn;
     if((!ge.depth_clip&&zp+zn>0)||zp>=3||zn>=3)return;
@@ -2563,14 +2719,15 @@ static void submit_model_triangle(const ModelVtx *a,const ModelVtx *b,const Mode
         Vtx x,y,z;project_cvtx(&cv[0],&x);project_cvtx(&cv[1],&y);project_cvtx(&cv[2],&z);raster_tri(&x,&y,&z,1);
     }else{
         int n=clip_poly_near(cv,3,cl);Vtx p[4];int bad[4]={1,1,1,1};
-        for(int i=0;i<n&&i<4;i++){bad[i]=cl[i].cw<=NEAR_W||clip_vtx_out_of_range(&cl[i]);if(!bad[i])project_cvtx(&cl[i],&p[i]);}
+        for(int i=0;i<n&&i<4;i++){bad[i]=cl[i].nf||cl[i].cw<=NEAR_W||clip_vtx_out_of_range(&cl[i]);if(!bad[i])project_cvtx(&cl[i],&p[i]);}
         for(int i=2;i<n&&i<4;i++)if(!bad[0]&&!bad[i-1]&&!bad[i])raster_tri(&p[0],&p[i-1],&p[i],1);
     }
 }
 
 static void submit_model_line(const ModelVtx *a,const ModelVtx *b,int through){
-    if(through){Vtx x,y;model_to_through(a,&x);model_to_through(b,&y);draw_line_vtx(&x,&y,0);return;}
+    if(through){Vtx x,y;if(!model_to_through(a,&x)||!model_to_through(b,&y))return;draw_line_vtx(&x,&y,0);return;}
     CVtx x,y;transform_model_vtx_clip(a,&x);transform_model_vtx_clip(b,&y);
+    if(x.nf||y.nf){s_stat.nonfinite++;return;}
     if(x.oor||y.oor||(x.cw<0&&y.cw<0))return;
     float dx=clip_d_nearz(&x),dy=clip_d_nearz(&y);
     if(dx<0&&dy<0)return;
@@ -2581,8 +2738,10 @@ static void submit_model_line(const ModelVtx *a,const ModelVtx *b,int through){
 }
 
 static void submit_model_point(const ModelVtx *a,int through){
-    if(through){Vtx v;model_to_through(a,&v);draw_point_vtx(&v,0);return;}
-    CVtx c;transform_model_vtx_clip(a,&c);if(c.cw<=NEAR_W||c.oor||(!ge.depth_clip&&(c.ozp||c.ozn)))return;
+    if(through){Vtx v;if(!model_to_through(a,&v))return;draw_point_vtx(&v,0);return;}
+    CVtx c;transform_model_vtx_clip(a,&c);
+    if(c.nf){s_stat.nonfinite++;return;}
+    if(c.cw<=NEAR_W||c.oor||(!ge.depth_clip&&(c.ozp||c.ozn)))return;
     Vtx v;project_cvtx(&c,&v);draw_point_vtx(&v,1);
 }
 
@@ -3033,6 +3192,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             if (da < 0.0f)       { CVtx t; clip_lerp_cvtx(&ca,&cb, da/(da-db2), &t); ca=t; }
             else if (db2 < 0.0f) { CVtx t; clip_lerp_cvtx(&cb,&ca, db2/(db2-da), &t); cb=t; }
             if (ca.cw <= NEAR_W || cb.cw <= NEAR_W) { s_stat.nearclip++; continue; }
+            if (ca.nf || cb.nf) { s_stat.nonfinite++; continue; }
             /* PPSSPP ProcessLine: clip-created endpoints outside the screen grid kill the line. */
             if (clip_vtx_out_of_range(&ca) || clip_vtx_out_of_range(&cb)) { s_stat.nearclip++; continue; }
             Vtx a, b;
@@ -3042,10 +3202,11 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
     } else if (type == 3 || type == 4 || type == 5) {
         /* SR_RTRACE per-draw bookkeeping: per-reason triangle counters plus a snapshot of the
          * pixel-level stat counters so the TRIDRW+ line can report this draw's pixel outcome. */
-        enum { D_DRAW, D_OOR, D_WNEG, D_ZOUT, D_ZSAME, D_NEARALL, D_CWLOW, D_CLIP };
-        static const char *dec_name[8] =
-            { "DRAW", "drop-oor", "drop-wneg", "drop-zout", "drop-zsame", "drop-nearall", "drop-cwlow", "CLIP" };
-        unsigned long dcnt[8] = {0,0,0,0,0,0,0,0};
+        enum { D_DRAW, D_OOR, D_WNEG, D_ZOUT, D_ZSAME, D_NEARALL, D_CWLOW, D_CLIP, D_NONFINITE };
+        static const char *dec_name[9] =
+            { "DRAW", "drop-oor", "drop-wneg", "drop-zout", "drop-zsame", "drop-nearall", "drop-cwlow", "CLIP",
+              "drop-nonfinite" };
+        unsigned long dcnt[9] = {0,0,0,0,0,0,0,0,0};
         struct { unsigned long tri3d, cull, zfail, afail, px3d, zrange, deg3d, blk3d; } st0;
         st0.tri3d = s_stat.tri3d; st0.cull = s_stat.cull; st0.zfail = s_stat.zfail;
         st0.afail = s_stat.afail; st0.px3d = s_stat.px3d; st0.zrange = s_stat.zrange;
@@ -3113,7 +3274,13 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
              * z range; games rely on it (effect passes, behind-camera geometry). Drawing them
              * (the old behaviour) scattered runaway triangles across the scene. */
             int dec = D_DRAW;
-            if (cv[0].oor || cv[1].oor || cv[2].oor) dec = D_OOR;
+            /* Fail closed on a non-finite clip/screen position FIRST: the out-of-range and
+             * z tests below all compare false against NaN, so a NaN vertex would otherwise be
+             * accepted and rasterized with NaN edge functions (unbounded, garbage coverage).
+             * The PSP's own answer for such a vertex is NOT_MEASURED, so the primitive is
+             * dropped and counted rather than given an invented screen result. */
+            if (cv[0].nf || cv[1].nf || cv[2].nf) dec = D_NONFINITE;
+            else if (cv[0].oor || cv[1].oor || cv[2].oor) dec = D_OOR;
             else if (cv[0].cw < 0.0f && cv[1].cw < 0.0f && cv[2].cw < 0.0f) dec = D_WNEG;
             else {
                 int zp = cv[0].ozp + cv[1].ozp + cv[2].ozp;
@@ -3136,7 +3303,8 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                 else if (dec == D_CLIP) s_cpu_profile_stats.primitive_profile_transform_triangles_clipped++;
                 else s_cpu_profile_stats.primitive_profile_transform_triangles_rejected++;
             }
-            if (dec != D_DRAW) s_stat.nearclip++;
+            if (dec != D_DRAW && dec != D_NONFINITE) s_stat.nearclip++;
+            if (dec == D_NONFINITE) s_stat.nonfinite++;
             int clip_m = -1;
             if (dec == D_CLIP)
                 clip_m = clip_poly_near(cv, 3, cl);
@@ -3197,7 +3365,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                     int bad[4];
                     uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
                     for (int k = 0; k < m && k < 4; k++) {
-                        bad[k] = (cl[k].cw <= NEAR_W) || clip_vtx_out_of_range(&cl[k]);
+                        bad[k] = cl[k].nf || (cl[k].cw <= NEAR_W) || clip_vtx_out_of_range(&cl[k]);
                         if (!bad[k]) project_cvtx(&cl[k], &p[k]);
                     }
                     if (assembly_started)
@@ -3228,12 +3396,12 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         }
         if (rt) {
             fprintf(stderr, "TRIDRW+ f=%u d=%u tris=%lu draw=%lu clip=%lu drop[oor=%lu wneg=%lu zout=%lu "
-                    "zsame=%lu nearall=%lu cwlow=%lu] rast=%lu cull=%lu deg=%lu px=%lu zfail=%lu afail=%lu "
-                    "zrange=%lu blk=%lu\n",
+                    "zsame=%lu nearall=%lu cwlow=%lu nonfinite=%lu] rast=%lu cull=%lu deg=%lu px=%lu "
+                    "zfail=%lu afail=%lu zrange=%lu blk=%lu\n",
                     s_ge_frame, s_rt_draw,
-                    dcnt[0]+dcnt[1]+dcnt[2]+dcnt[3]+dcnt[4]+dcnt[5]+dcnt[6]+dcnt[7],
+                    dcnt[0]+dcnt[1]+dcnt[2]+dcnt[3]+dcnt[4]+dcnt[5]+dcnt[6]+dcnt[7]+dcnt[8],
                     dcnt[D_DRAW], dcnt[D_CLIP], dcnt[D_OOR], dcnt[D_WNEG], dcnt[D_ZOUT],
-                    dcnt[D_ZSAME], dcnt[D_NEARALL], dcnt[D_CWLOW],
+                    dcnt[D_ZSAME], dcnt[D_NEARALL], dcnt[D_CWLOW], dcnt[D_NONFINITE],
                     s_stat.tri3d - st0.tri3d, s_stat.cull - st0.cull, s_stat.deg3d - st0.deg3d,
                     s_stat.px3d - st0.px3d, s_stat.zfail - st0.zfail, s_stat.afail - st0.afail,
                     s_stat.zrange - st0.zrange, s_stat.blk3d - st0.blk3d);
@@ -3340,7 +3508,10 @@ uint32_t ge_run_list(uint32_t addr, int resume) {
     }
     uint64_t profile_started = ge_cpu_profile_begin();
     unsigned long t0 = wall_ms();
+    const int rt_phase_saved = sr_rt_phase;
+    sr_rt_phase = SR_RT_PHASE_GE;
     uint32_t next_addr = ge_run_list_inner(addr, resume);
+    sr_rt_phase = rt_phase_saved;
     if (perf_started) sr_perf_ge_cpu(perf_started);
     if (sr_perf_enabled && s_cpu_profile) {
         uint64_t transform_after = s_cpu_profile_stats.primitive_profile_phase[GE_PRIM_PROFILE_TRANSFORM].ns;
@@ -3418,6 +3589,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     }
     static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
     uint32_t list_addr=addr;
+    const int flight_ge_enabled = sr_flight_class_enabled(SR_FLIGHT_CLASS_GE);
     ge_capture_configure();
     if (!s_capture_done && !ge_capture_active() && s_ge_frame >= s_capture_frame &&
         s_ge_frame <= s_capture_frame_end) {
@@ -3453,6 +3625,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         }
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
+        s_ge_command[cmd] = data;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
         switch (cmd) {
@@ -3740,6 +3913,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_PRIM: {
                 uint64_t profile_started = ge_cpu_profile_begin();
                 uint32_t prim_cmd = addr - 4;   /* op word address (addr already advanced) */
+                if (flight_ge_enabled)
+                    sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
+                                     list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
                 prims++; draw_prim(op, prims, list_addr, prim_cmd);
                 if (s_cpu_profile) {
                     s_cpu_profile_stats.primitive_commands++;
@@ -3778,7 +3954,12 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                  * SR_GESIGNALLOG reports each behavior a bounded number of times while the
                  * command-flow implementation is being validated against real game lists. */
                 pending_signal=1; pending_signal_op=op; break;
-            case GE_FINISH: pending_signal=0; break;  /* END that follows terminates the list */
+            case GE_FINISH:
+                if (flight_ge_enabled)
+                    sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_FINISH_COMMAND,
+                                     list_addr, addr - 4u, data, 0u);
+                pending_signal=0;
+                break;  /* END that follows terminates the list */
             case GE_END:
                 if (pending_signal) {
                     static unsigned char signal_seen[256];
@@ -3816,3 +3997,350 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
 }
 
 uint32_t ge_framebuffer(void) { return ge_fb_addr(); }
+
+static const char *ge_vramdump_format_name(uint32_t format) {
+    static const char *const names[] = {
+        "5650", "5551", "4444", "8888", "CLUT4", "CLUT8", "CLUT16",
+        "CLUT32", "DXT1", "DXT3", "DXT5", "DEPTH16"
+    };
+    return format < sizeof names / sizeof names[0] ? names[format] : "UNKNOWN";
+}
+
+static int ge_vramdump_addr_in_vram(uint32_t address) {
+    uint32_t phys = address & 0x1FFFFFFFu;
+    return phys >= GE_CAPTURE_VRAM_BASE &&
+           phys < GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE;
+}
+
+static uint64_t ge_vramdump_surface_size(uint32_t width, uint32_t height,
+                                         uint32_t stride, uint32_t format) {
+    uint64_t row = stride ? stride : width;
+    uint64_t rows = height;
+    switch (format) {
+        case 0: case 1: case 2: case 6: case 11: return row * rows * 2u;
+        case 3: case 7: return row * rows * 4u;
+        case 4: return ((row + 1u) / 2u) * rows;
+        case 5: return row * rows;
+        case 8: return ((row + 3u) / 4u) * ((rows + 3u) / 4u) * 8u;
+        case 9: case 10: return ((row + 3u) / 4u) * ((rows + 3u) / 4u) * 16u;
+        default: return 0;
+    }
+}
+
+static void ge_vramdump_surface(FILE *file, int *first, const char *name,
+                                const char *kind, uint32_t addr, uint32_t width,
+                                uint32_t height, uint32_t stride, uint32_t format,
+                                int swizzled, const uint8_t *data, size_t data_size) {
+    if (!*first) fputc(',', file);
+    *first = 0;
+    fprintf(file,
+            "{\"name\":\"%s\",\"kind\":\"%s\",\"addr\":\"0x%08x\","
+            "\"width\":%u,\"height\":%u,\"stride\":%u,\"format\":\"%s\","
+            "\"format_code\":%u,\"size_bytes\":%llu,\"swizzled\":%s",
+            name, kind, addr, width, height, stride,
+            ge_vramdump_format_name(format), format,
+            (unsigned long long)ge_vramdump_surface_size(width, height, stride, format),
+            swizzled ? "true" : "false");
+    if (data) {
+        fputs(",\"data_hex\":\"", file);
+        for (size_t i = 0; i < data_size; i++) fprintf(file, "%02x", data[i]);
+        fputc('"', file);
+    }
+    fputc('}', file);
+}
+
+int ge_vramdump_write(const char *directory, uint32_t vblank,
+                      uint32_t display_addr, uint32_t display_stride,
+                      uint32_t display_format) {
+    char image_name[64], image_path[1024], sidecar_path[1024];
+    FILE *image = NULL, *sidecar = NULL;
+    uint32_t clut_command, clut_bytes, clut_format, clut_stride;
+    int first_surface = 1, ok = 0;
+
+    if (!directory || !directory[0]) return 0;
+    if (s_gpu && s_gpu->capture_boundary && !s_gpu->capture_boundary()) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (GPU readback boundary unavailable)\n", vblank);
+        return 0;
+    }
+    if (!sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (guest VRAM span unavailable)\n", vblank);
+        return 0;
+    }
+    if (snprintf(image_name, sizeof image_name, "vram_%u.bin", vblank) >= (int)sizeof image_name ||
+        snprintf(image_path, sizeof image_path, "%s/%s", directory, image_name) >= (int)sizeof image_path ||
+        snprintf(sidecar_path, sizeof sidecar_path, "%s/vram_%u.json", directory, vblank) >= (int)sizeof sidecar_path) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (output path too long)\n", vblank);
+        return 0;
+    }
+
+    image = fopen(image_path, "wb");
+    if (!image) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (cannot open raw image)\n", vblank);
+        return 0;
+    }
+    {
+        size_t written = fwrite(SR_HOST(GE_CAPTURE_VRAM_BASE), 1,
+                                GE_CAPTURE_VRAM_SIZE, image);
+        int close_result = fclose(image);
+        image = NULL;
+        if (written != GE_CAPTURE_VRAM_SIZE || close_result != 0) {
+            remove(image_path);
+            fprintf(stderr, "VRAMDUMP vblank=%u FAIL (raw image write incomplete)\n", vblank);
+            return 0;
+        }
+    }
+
+    clut_command = ge_get_cmd(GE_LOADCLUT);
+    clut_bytes = (clut_command & 0x3Fu) * 32u;
+    if (clut_bytes > sizeof ge.clutram) clut_bytes = (uint32_t)sizeof ge.clutram;
+    clut_format = ge.clut_fmt;
+    clut_stride = clut_bytes / ((clut_format & 3u) == 3u ? 4u : 2u);
+    sidecar = fopen(sidecar_path, "wb");
+    if (!sidecar) {
+        remove(image_path);
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (cannot open JSON sidecar)\n", vblank);
+        return 0;
+    }
+
+    fprintf(sidecar,
+            "{\"schema\":\"nakagawa-vram-dump-v1\",\"vblank\":%u,"
+            "\"vram\":{\"base\":\"0x%08x\",\"size_bytes\":%u,\"image_file\":\"%s\"},",
+            vblank, GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE, image_name);
+    fprintf(sidecar,
+            "\"display_framebuffer\":{\"addr\":\"0x%08x\",\"width\":480,"
+            "\"height\":272,\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"swizzled\":false},",
+            display_addr, display_stride, ge_vramdump_format_name(display_format), display_format);
+    fprintf(sidecar,
+            "\"draw_framebuffer\":{\"addr\":\"0x%08x\",\"width\":480,"
+            "\"height\":272,\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"swizzled\":false},",
+            ge.fbp, ge.fbw, ge_vramdump_format_name(ge.fbfmt & 3u), ge.fbfmt & 3u);
+    fprintf(sidecar,
+            "\"depth_buffer\":{\"addr\":\"0x%08x\",\"width\":480,"
+            "\"height\":272,\"stride\":%u,\"format\":\"DEPTH16\","
+            "\"format_code\":11,\"swizzled\":false},",
+            ge.zbp, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u));
+    fprintf(sidecar, "\"texture_enabled\":%s,\"texture_levels\":[",
+            ge.tex_enable ? "true" : "false");
+    {
+        int first_level = 1;
+        for (uint32_t level = 0; level < 8u; level++) {
+            uint32_t address_low = ge_get_cmd(GE_TEXADDR0 + level);
+            uint32_t buffer_width = ge_get_cmd(GE_TEXBUFWIDTH0 + level);
+            uint32_t size_word = ge_get_cmd(GE_TEXSIZE0 + level);
+            uint32_t address = (address_low & 0x00FFFFFFu) |
+                               ((buffer_width & 0x00FF0000u) << 8);
+            uint32_t width = 1u << (size_word & 0xFu);
+            uint32_t height = 1u << ((size_word >> 8) & 0xFu);
+            uint32_t stride = buffer_width & 0xFFFFu;
+            if (!stride) stride = width;
+            if (!address) continue;
+            if (!first_level) fputc(',', sidecar);
+            first_level = 0;
+            fprintf(sidecar,
+                    "{\"level\":%u,\"addr\":\"0x%08x\",\"width\":%u,"
+                    "\"height\":%u,\"stride\":%u,\"format\":\"%s\","
+                    "\"format_code\":%u,\"size_bytes\":%llu,\"swizzled\":%s,\"in_vram\":%s}",
+                    level, address, width, height, stride,
+                    ge_vramdump_format_name(ge.tex_fmt & 0xFu), ge.tex_fmt & 0xFu,
+                    (unsigned long long)ge_vramdump_surface_size(
+                        width, height, stride, ge.tex_fmt & 0xFu),
+                    ge.tex_swizzle ? "true" : "false",
+                    ge_vramdump_addr_in_vram(address) ? "true" : "false");
+        }
+    }
+    fprintf(sidecar,
+            "],\"clut\":{\"addr\":\"0x%08x\",\"size_bytes\":%u,"
+            "\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"format_word\":\"0x%08x\",\"swizzled\":false,\"loaded_bytes\":%u,"
+            "\"loaded_data_hex\":\"",
+            ge.clut_addr, clut_bytes, clut_stride,
+            ge_vramdump_format_name(clut_format & 3u), clut_format & 3u,
+            clut_format, clut_bytes);
+    for (size_t i = 0; i < sizeof ge.clutram; i++) fprintf(sidecar, "%02x", ge.clutram[i]);
+    fputs("\"},\"surfaces\":[", sidecar);
+
+    ge_vramdump_surface(sidecar, &first_surface, "display_framebuffer", "color",
+                        display_addr, 480u, 272u, display_stride, display_format, 0, NULL, 0);
+    if (ge_vramdump_addr_in_vram(ge.fbp))
+        ge_vramdump_surface(sidecar, &first_surface, "draw_framebuffer", "color",
+                            ge.fbp, 480u, 272u, ge.fbw, ge.fbfmt & 3u, 0, NULL, 0);
+    if (ge.zbp && ge_vramdump_addr_in_vram(ge.zbp))
+        ge_vramdump_surface(sidecar, &first_surface, "depth_buffer", "depth",
+                            ge.zbp, 480u, 272u,
+                            ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
+                            11u, 0, NULL, 0);
+    for (uint32_t level = 0; level < 8u; level++) {
+        uint32_t address_low = ge_get_cmd(GE_TEXADDR0 + level);
+        uint32_t buffer_width = ge_get_cmd(GE_TEXBUFWIDTH0 + level);
+        uint32_t size_word = ge_get_cmd(GE_TEXSIZE0 + level);
+        uint32_t address = (address_low & 0x00FFFFFFu) |
+                           ((buffer_width & 0x00FF0000u) << 8);
+        uint32_t width = 1u << (size_word & 0xFu);
+        uint32_t height = 1u << ((size_word >> 8) & 0xFu);
+        uint32_t stride = buffer_width & 0xFFFFu;
+        char name[32];
+        if (!stride) stride = width;
+        if (!address || !ge_vramdump_addr_in_vram(address)) continue;
+        snprintf(name, sizeof name, "texture_level_%u", level);
+        ge_vramdump_surface(sidecar, &first_surface, name, "texture", address,
+                            width, height, stride,
+                            ge.tex_fmt & 0xFu, ge.tex_swizzle, NULL, 0);
+    }
+    if (clut_bytes && (clut_format & 3u) <= 3u) {
+        uint32_t palette_bpp = (clut_format & 3u) == 3u ? 4u : 2u;
+        uint32_t entries = clut_bytes / palette_bpp;
+        ge_vramdump_surface(sidecar, &first_surface, "clut", "palette",
+                            ge.clut_addr, entries, 1u, entries, clut_format & 3u,
+                            0, ge.clutram, clut_bytes);
+    }
+    fputs("]}\n", sidecar);
+    ok = !ferror(sidecar);
+    if (fclose(sidecar) != 0) ok = 0;
+    sidecar = NULL;
+    if (!ok) {
+        remove(sidecar_path);
+        remove(image_path);
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (JSON sidecar write incomplete)\n", vblank);
+        return 0;
+    }
+    return 1;
+}
+
+#ifdef SR_GE_VRAM_DECODER_CLI
+uint8_t *g_mem;
+int g_ge_capture_active;
+void ge_capture_note_memory(uint32_t addr, uint32_t bytes) { (void)addr; (void)bytes; }
+void sr_oor(uint32_t addr, uint32_t value, int store) {
+    (void)addr; (void)value; (void)store;
+    ge_vram_cli_bad_read = 1;
+}
+uint32_t sr_get_ge_status(void) { return 0; }
+
+static int ge_vram_cli_parse_u32(const char *text, uint32_t *out) {
+    char *end = NULL;
+    unsigned long value;
+    if (!text || !text[0] || !out) return 0;
+    value = strtoul(text, &end, 0);
+    if (end == text || *end != '\0' || value > UINT32_MAX) return 0;
+    *out = (uint32_t)value;
+    return 1;
+}
+
+static int ge_vram_cli_read_file(const char *path, uint8_t *out, size_t size) {
+    FILE *file = fopen(path, "rb");
+    int ok;
+    if (!file) return 0;
+    ok = fread(out, 1, size, file) == size && fgetc(file) == EOF;
+    if (fclose(file) != 0) ok = 0;
+    return ok;
+}
+
+int main(int argc, char **argv) {
+    const size_t arena_size = (size_t)GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE;
+    uint8_t *arena = NULL;
+    uint32_t addr, width, height, stride, format, swizzled, clut_addr, clut_format;
+    uint64_t pixel_count, bytes_per_pixel, byte_extent;
+    uint32_t *pixels = NULL;
+    FILE *output = NULL;
+    int result = 1;
+
+    if (argc != 12 ||
+        !ge_vram_cli_parse_u32(argv[2], &addr) ||
+        !ge_vram_cli_parse_u32(argv[3], &width) ||
+        !ge_vram_cli_parse_u32(argv[4], &height) ||
+        !ge_vram_cli_parse_u32(argv[5], &stride) ||
+        !ge_vram_cli_parse_u32(argv[6], &format) ||
+        !ge_vram_cli_parse_u32(argv[7], &swizzled) ||
+        !ge_vram_cli_parse_u32(argv[8], &clut_addr) ||
+        !ge_vram_cli_parse_u32(argv[9], &clut_format)) {
+        fprintf(stderr, "usage: ge-vram-decoder IMAGE ADDR WIDTH HEIGHT STRIDE FORMAT SWIZZLED CLUT_ADDR CLUT_FORMAT CLUT_FILE RGBA_OUT\n");
+        return 2;
+    }
+    if (!width || !height || width > 4096u || height > 4096u || stride < width ||
+        swizzled > 1u || (format > 10u && format != 11u) ||
+        (format >= 8u && format <= 10u && swizzled) ||
+        (format >= 8u && format <= 10u && (stride & 3u)) ||
+        (uint64_t)width * height > 4194304u ||
+        addr < GE_CAPTURE_VRAM_BASE || addr >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE ||
+        (clut_addr && (clut_addr < GE_CAPTURE_VRAM_BASE ||
+                       clut_addr >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE)) ||
+        clut_format > 0x00FFFFFFu) {
+        fprintf(stderr, "VRAM decoder rejected out-of-range or unsupported surface metadata\n");
+        return 2;
+    }
+    if (format <= 3u) {
+        bytes_per_pixel = format == 3u ? 4u : 2u;
+        byte_extent = ((uint64_t)height - 1u) * stride * bytes_per_pixel +
+                      (uint64_t)width * bytes_per_pixel;
+        if ((uint64_t)addr + byte_extent >
+            (uint64_t)GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE) {
+            fprintf(stderr, "VRAM decoder surface crosses the captured VRAM boundary\n");
+            return 2;
+        }
+    }
+
+    arena = (uint8_t *)calloc(1, arena_size);
+    if (!arena) { fprintf(stderr, "VRAM decoder could not allocate the guest address window\n"); goto done; }
+    g_mem = arena + GE_CAPTURE_VRAM_BASE;
+    if (!ge_vram_cli_read_file(argv[1], arena, GE_CAPTURE_VRAM_SIZE)) {
+        fprintf(stderr, "VRAM decoder input must be exactly 2 MiB\n"); goto done;
+    }
+    g_ge_capture_active = 0;
+    ge.tex_addr = addr;
+    ge.tex_w = (int)width;
+    ge.tex_h = (int)height;
+    ge.tex_bufw = stride;
+    ge.tex_fmt = format;
+    ge.tex_swizzle = (int)swizzled;
+    ge.clut_addr = clut_addr;
+    ge.clut_fmt = clut_format;
+    if (strcmp(argv[10], "-") != 0) {
+        if (!ge_vram_cli_read_file(argv[10], ge.clutram, sizeof ge.clutram)) {
+            fprintf(stderr, "VRAM decoder CLUT input must be exactly 2048 bytes\n"); goto done;
+        }
+    } else if (clut_addr) {
+        uint32_t offset = (clut_addr - GE_CAPTURE_VRAM_BASE) & 0x001FFFFFu;
+        for (uint32_t i = 0; i < sizeof ge.clutram; i++)
+            ge.clutram[i] = arena[(offset + i) & 0x001FFFFFu];
+    }
+
+    pixel_count = (uint64_t)width * height;
+    pixels = (uint32_t *)malloc((size_t)pixel_count * sizeof *pixels);
+    if (!pixels) { fprintf(stderr, "VRAM decoder could not allocate the pixel buffer\n"); goto done; }
+    if (format == 11u) {
+        for (uint32_t y = 0; y < height; y++) {
+            for (uint32_t x = 0; x < width; x++) {
+                uint8_t gray = (uint8_t)(MEM_R16(addr + (y * stride + x) * 2u) >> 8);
+                pixels[y * width + x] = (uint32_t)gray | ((uint32_t)gray << 8) |
+                                        ((uint32_t)gray << 16) | 0xFF000000u;
+            }
+        }
+    } else {
+        ge_decode_tex_rgba(pixels);
+    }
+    if (ge_vram_cli_bad_read) {
+        fprintf(stderr, "VRAM decoder read outside the captured 2 MiB VRAM image\n"); goto done;
+    }
+    output = fopen(argv[11], "wb");
+    if (!output) { fprintf(stderr, "VRAM decoder could not open its RGBA output\n"); goto done; }
+    for (uint64_t i = 0; i < pixel_count; i++) {
+        uint32_t pixel = pixels[i];
+        uint8_t rgba[4] = {(uint8_t)pixel, (uint8_t)(pixel >> 8),
+                           (uint8_t)(pixel >> 16), (uint8_t)(pixel >> 24)};
+        if (fwrite(rgba, 1, sizeof rgba, output) != sizeof rgba) {
+            fprintf(stderr, "VRAM decoder RGBA output write failed\n"); goto done;
+        }
+    }
+    if (fclose(output) != 0) { output = NULL; fprintf(stderr, "VRAM decoder RGBA output close failed\n"); goto done; }
+    output = NULL;
+    result = 0;
+done:
+    if (output) fclose(output);
+    free(pixels);
+    free(arena);
+    g_mem = NULL;
+    return result;
+}
+#endif /* SR_GE_VRAM_DECODER_CLI */

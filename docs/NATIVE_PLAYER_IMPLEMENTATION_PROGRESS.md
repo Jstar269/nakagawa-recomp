@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-Nakagawa Recomp has successfully developed and integrated a native desktop player application (`build/nakagawa_player.exe`) designed to replace browser-based frontend friction with a standalone, cross-platform SDL3 experience.
+Nakagawa Recomp has integrated a native SDL3 player; it is the only UI in the public repository.
 
 The core product design target remains:
 $$\text{NAKAGAWA PROGRAM} + \text{USER'S GAME ISO} \longrightarrow \text{AUTHENTIC RECOMPILED PLAY}$$
@@ -12,17 +12,18 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 
 ### Key Accomplishments
 
-1. **Visual & Functional Baseline Captured**: All 8 developer studio panels and player mode landing screens archived in `docs/ui-baseline/`.
+1. **Historical UI Baseline Retained**: `docs/archive/ui-baseline/` marks the retired browser screens as historical and records the native player baseline.
 2. **Standalone Native Player Implemented (`src/player/`)**:
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
    - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
-   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`; it never performs decryption.
+   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. Separately, the built-in decryption boundary (`src/core/nk_psp_container.c`) unwraps the disc's encrypted executable and its encrypted PRX modules, but only when the user's own key file is present (`<user data>/keys/psp-keyfile.json` or `NAKAGAWA_PSP_KEY_FILE`) and only into the private per-title folder. The player holds no key material, a user-supplied plain module still wins, and a missing key entry fails closed naming the entry
+     ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
    - `nk_xb.c` / `nk_xb.h`: Project-authored bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
    - `nk_iso_extract_game`: ISO directory-record walk that stages `EBOOT.BIN` and `USRDIR/xbdata` without shelling out or requiring Python.
-3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling cleanly alongside runtime objects without MSVC or Node.js dependencies.
+3. **Build System Integration**: Integrated `player` target into `Makefile` (`mingw32-make player`), compiling alongside runtime objects without MSVC dependencies.
 4. **Portable Core Expansion (`tools/nk_core/`)**: Added persistent `GameLibrary`, moved-ISO detection, fallback resolution, space-tolerant paths, and full Unicode/CJK path support.
 5. **Continuous Working-State Preservation**: Existing playable HST route, test suites (`test_nk_core.py`, `test_build_truth.py`, and full tools test suite) remain 100% green.
 
@@ -51,7 +52,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 
 ## 2. Visual Baseline vs. Native Player Results
 
-### Baseline Web Interface (Archived in `docs/ui-baseline/`)
+### Baseline Web Interface (Archived in `docs/archive/ui-baseline/`)
 
 - `01_web_player_mode.png`: Web Player Landing
 - `02_web_studio_iso_loader.png`: ISO Loader (Browser drag-and-drop, sandbox-constrained)
@@ -81,31 +82,14 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 
 ---
 
-## 3. Native UI Regression Matrix Status (Audit & Evidence Strength Alignment)
+## 3. Native UI Capability Status
 
-The matrix distinguishes between architectural staging, implementation completeness, and verified execution:
-
-- `PIPELINE_STAGE_EXISTS`: A state/step is declared in UI/data structures, but backend execution is not yet integrated.
-- `NOT_IMPLEMENTED`: Underlying engine functionality (e.g. retail-disc hash validation) does not yet exist.
-- `PLAN_VERIFIED`: Launch session data/environment parameters construct correctly in unit tests.
-- `EXECUTED_VERIFIED`: Real process spawned, child landmarks observed on host.
-
-| # | Capability | Web Studio Baseline | Native Player Status | Real Evidence Tier |
-| :- | :--- | :--- | :--- | :--- |
-| 1 | ISO Drag & Drop | Sandbox only | Full native filesystem read | **PASS** (Direct OS path handoff) |
-| 2 | Disc Identification | Web Worker sector parse | Direct C ISO9660 PVD + SFO parse | **PASS** (Project-authored C PVD parser) |
-| 3 | Title Qualification | Profile match in JS | Single authoritative manifest catalog | **PASS** (Derived from `assets/titles`) |
-| 4 | Asset Extraction | External PowerShell script | Native ISO/XB staging worker | **PARTIAL** (synthetic native path is verified; module decryption pending; the runtime also serves the read-only archive-backed VFS ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298))) |
-| 5 | Module Decryption | External toolchain | **NOT_SUPPORTED** (open maintainer legal decision, #295) | **NOT_SUPPORTED** (plain inputs only) |
-| 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
-| 7 | Graphics Settings | Web localStorage | Native JSON configuration (`settings.json`) & CLI env | **PASS** (Atomically persisted and round-trip verified) |
-| 8 | Gamepad Calibration | Web Gamepad API | Dedicated native Controller Settings screen (`VIEW_CONTROLLER_SETTINGS`) with interactive button remapping (14 digital PSP controls + analog stick), non-destructive conflict detection, deadzone & trigger threshold calibration, live input/deadzone monitor, guided resting/extreme calibration wizard (#357), and atomic profile persistence | **PASS** (Remapping, deadzone/trigger calibration, live monitor, guided stick/trigger calibration, and atomic profile persistence verified) |
-| 9 | Preflight Checks | `nk_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
-| 10 | Progress Feedback | Server-Sent Events (SSE) | Reactive SDL staging events | **PARTIAL** — native copy/unpack progress supplies bounded file counts and percentages; decryption and hosted/retail progress remain unavailable |
-| 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
-| 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |
-| 13 | Multi-Title Support | Hardcoded HST strings | Data-driven manifest catalog | **IN_PROGRESS** (Unifying title contract) |
-| 14 | In-Game Performance Overlay | Web Studio Profiler | Running game window HUD (F1 / `SR_HUD=1` opt-in) rendering presented FPS, frame time, VBlank rate, and audio active status from `SR_PERF` telemetry; zero guest timing impact; zero GPU work when disabled | **PASS** (SDL3 debug text presentation path overlay, SR_HUD and F1 toggle verified, headless smoke parity maintained) |
+Per-capability status is not maintained here. The single authoritative disposition
+of every former web-dashboard and diagnostic capability — status, surface, owning
+test path, and the tracking issue for anything unbuilt — lives in
+[`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md), which
+`tools/lint_docs.py` enforces. This file keeps the narrative: what was built, what
+the launch path proves, and what it does not.
 
 ---
 
@@ -132,8 +116,18 @@ What this establishes, exactly:
   delivery, `sceDisplaySetFrameBuf`, the display latch and `gui_present` all work
   together on a guest built from committed source, with no external toolchain,
   no retail disc and no private input;
-- `display-smoke-run` asserts the guest-visible framebuffer word headlessly, so
-  the presentation path is gated in CI without a display.
+- `display-smoke-run` first asserts the guest-visible framebuffer word with the
+  headless `--sched` route, then runs the normal `--sched --gui` scheduler route
+  with `SR_VIDEO=offscreen`. The second run uses the explicit host-memory sink,
+  checks that `frame_present` precedes `HOST_PRESENT_SUBMITTED`, and never creates
+  a window. The gate pins all four modern and legacy SDL video/audio selector
+  names to `dummy`, and sets the offscreen selector itself, so inherited
+  interactive selectors cannot change the evidence. Sanitized bring-up reports
+  retain the accepted presenter's backend identity; this route reports
+  `backend=offscreen`.
+  This proves host-sink acceptance for the source-owned fixture; it does not
+  prove visible pixels, live input, audio playback, private-title compatibility,
+  or hardware/PSP acceptance.
 
 The native-player path is exercised separately by
 `mingw32-make display-smoke-player`. It runs the player with
@@ -144,6 +138,21 @@ repository build tree ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/4
 the driver then asserts the generated `--gui` argument and the child runtime's
 `window_ready`/`first_frame` boot events. This is a display-dependent developer
 gate, not a retail-title claim.
+
+The same player-owned launch runs headlessly with
+`--launch-index=N --headless-launch`. The child is spawned without `--gui`, and
+the player waits for it under a bounded timeout, reporting the child's own exit
+status and a distinct failure status if the bound expires; the headless child
+still emits the same `SR_BOOT_EVENT_FILE` startup milestones and consumes
+vblanks, so the guest-visible frame checkpoint is readable without a display.
+`tools/test_player_package_route.py` drives the whole consumer route on the
+source-owned display guest: the BUILD PACKAGE action
+(`package_builder_start` → `tools/nk_cli.py build-package`, real analysis,
+codegen and compilation), the player's own package validator, the headless
+launch, two named missing-prerequisite boundaries ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)
+decrypted inputs, [#296](https://github.com/Jstar269/nakagawa-recomp/issues/296)
+`--psp-header`), and a before/after check that the route changed no
+repository-tracked file.
 
 What it does not establish: any commercial-title compatibility, PSP timing or
 rendering correctness, GE/graphics-pipeline behaviour (this guest writes the
@@ -165,7 +174,6 @@ plain executable plus a built package.
 2. **Separation of Concerns**:
    - `src/player/`: Native SDL3 player application.
    - `tools/nk_core/`: Portable Python core orchestration library.
-   - `interface/`: Preserved as developer diagnostic tooling (Nakagawa Studio).
 3. **Fail-Closed Dispatch**:
    - Unsupported titles are clearly identified and prevented from running to avoid undefined crashes.
    - Missing or moved ISO files trigger structured error dialogs rather than silent halts.

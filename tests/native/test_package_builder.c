@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* Strict C99 hides POSIX declarations used by the route and environment probes. */
+#if !defined(_WIN32) && !defined(_WIN64)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "package_builder.h"
 #include "nk_platform.h"
 
@@ -8,6 +13,37 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#include <direct.h>
+#define nk_tb_chdir _chdir
+#define nk_tb_getcwd _getcwd
+#else
+#include <time.h>
+#include <unistd.h>
+#define nk_tb_chdir chdir
+#define nk_tb_getcwd getcwd
+#endif
+
+/* Set (value non-NULL) or clear (value NULL) a process environment variable
+ * for the duration of a probe, restored by the caller. */
+static void nk_tb_set_env(const char *key, const char *value) {
+    size_t len = strlen(key) + (value ? strlen(value) : 0) + 2;
+    char *pair = (char *)malloc(len);
+    assert(pair != NULL);
+    if (value) snprintf(pair, len, "%s=%s", key, value);
+    else snprintf(pair, len, "%s=", key);
+#if defined(_WIN32) || defined(_WIN64)
+    /* _putenv may retain the pointer, so the string outlives this call. */
+    _putenv(pair);
+#else
+    if (value) setenv(key, value, 1); /* setenv copies */
+    else unsetenv(key);
+    free(pair);
+#endif
+}
 
 static void test_progress_line_parsing(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 1: progress JSON parsing\n");
@@ -45,6 +81,69 @@ static void test_progress_line_parsing(void) {
     assert(!package_builder_parse_progress_line("{\"foo\": \"bar\"}", 14, &ev));
     assert(!package_builder_parse_progress_line("{\"stage\": \"preflight\"}", 22, &ev));
     assert(!package_builder_parse_progress_line("{truncated", 10, &ev));
+}
+
+/* Elapsed time runs while a build is active: the first poll starts the clock and
+ * later polls advance it (it stayed at 0.0 s because nothing set the start time). */
+static void test_elapsed_time_advances_while_building(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: elapsed time advances while building\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST00001", "Elapsed Clock");
+    session.is_building = true;
+    session.start_time_ms = 0;
+    package_builder_poll(&session, 5000u);
+    assert(session.elapsed_ms == 0);
+    package_builder_poll(&session, 7500u);
+    assert(session.elapsed_ms == 2500);
+    package_builder_poll(&session, 9100u);
+    assert(session.elapsed_ms == 4100);
+}
+
+/* A session is reusable. A new start must not inherit the previous run's
+ * clock, or the UI reports the earlier build's elapsed time. This drives the
+ * production entry point with an unavailable interpreter: Windows rejects the
+ * spawn synchronously, while POSIX may fork successfully before exec fails.
+ * Both paths must start with a reset clock. */
+static void test_reused_session_restarts_the_clock(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: reused session restarts the clock\n");
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST00001", "Reused Clock");
+
+    /* State left behind by a finished build. */
+    session.is_building = false;
+    session.is_complete = true;
+    session.is_failed = true;
+    session.is_cancelled = true;
+    session.exit_code = 3;
+    session.start_time_ms = 5000u;
+    session.elapsed_ms = 90000u;
+
+    char log_dir[NK_MAX_PATH];
+    char user_data_root[NK_MAX_PATH];
+    const char *probe = getenv("TMPDIR");
+    if (!probe || !probe[0]) probe = getenv("TEMP");
+    if (!probe || !probe[0]) probe = ".";
+    snprintf(log_dir, sizeof(log_dir), "%s%cnk_pkg_reuse_logs", probe,
+             nk_platform_path_separator());
+    snprintf(user_data_root, sizeof(user_data_root), "%s%cnk_pkg_reuse_data",
+             probe, nk_platform_path_separator());
+
+    /* An unspawnable interpreter still exercises the reset: a reused session
+     * must not keep reporting the previous build while a new start is refused. */
+    NkResult result = package_builder_start(&session,
+                                            "nk-no-such-python-for-clock-test",
+                                            "nk-no-such-cli",
+                                            user_data_root, log_dir);
+    assert(session.start_time_ms == 0);
+    assert(session.elapsed_ms == 0);
+    assert(!session.is_complete);
+    assert(!session.is_cancelled);
+    assert(session.is_building == (result == NK_OK));
+    assert(session.exit_code == -1);
+
+    /* Reap a child accepted by the POSIX spawn backend. The clock's poll
+     * behavior is exercised separately by test_elapsed_time_advances_while_building. */
+    if (result == NK_OK) package_builder_cancel(&session);
 }
 
 static void test_state_machine_transitions(void) {
@@ -94,13 +193,13 @@ static void test_state_machine_transitions(void) {
     /* Test failure transition */
     PackageBuildSession fail_session;
     package_builder_init_session(&fail_session, "ULES00123", "Encrypted Title");
-    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#295). Automatic decryption is in the works.\"}";
+    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#308). Supply a matching local key or decrypted modules.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
     assert(fail_session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
     assert(fail_session.is_failed);
     assert(!fail_session.is_complete);
-    assert(strcmp(fail_session.failure_boundary, "Encrypted executable (#295). Automatic decryption is in the works.") == 0);
+    assert(strcmp(fail_session.failure_boundary, "Encrypted executable (#308). Supply a matching local key or decrypted modules.") == 0);
 }
 
 static void test_output_line_circular_buffer(void) {
@@ -170,12 +269,393 @@ static void test_session_cancellation(void) {
     assert(strcmp(session.current_stage_name, "cancelled") == 0);
 }
 
-int main(void) {
+/* Bounded wait for a real package build (#509). The child's own exit status is
+   the answer; this only caps a build that never ends. */
+#define ROUTE_BUILD_TIMEOUT_MS 900000
+#define ROUTE_POLL_INTERVAL_MS 50
+
+static uint64_t route_now_ms(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)(now.tv_nsec / 1000000);
+#endif
+}
+
+static void route_pause_ms(int ms) {
+#if defined(_WIN32) || defined(_WIN64)
+    Sleep((DWORD)ms);
+#else
+    struct timespec request;
+    request.tv_sec = ms / 1000;
+    request.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&request, NULL);
+#endif
+}
+
+/* Drive the BUILD PACKAGE action the way the player does: discover the
+ * interpreter and the CLI through the player's own lookups, start the build
+ * through the player's own session, and report the state the UI would show.
+ * Nothing here is stubbed -- nk_cli.py build-package runs the production
+ * analysis, codegen and compile. */
+static int run_build_package_route(const char *install_root,
+                                   const char *user_data_root,
+                                   const char *disc_id,
+                                   const char *log_dir) {
+    char python_path[NK_MAX_PATH];
+    if (!package_builder_find_python(python_path, sizeof(python_path))) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=python-not-found\n");
+        return 2;
+    }
+    char cli_path[NK_MAX_PATH];
+    if (!package_builder_find_cli(install_root, cli_path, sizeof(cli_path))) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=cli-not-found\n");
+        return 2;
+    }
+    printf("PACKAGE_BUILD_ROUTE python=%s\n", python_path);
+    printf("PACKAGE_BUILD_ROUTE cli=%s\n", cli_path);
+
+    PackageBuildSession session;
+    package_builder_init_session(&session, disc_id, "Player Package Route");
+    if (package_builder_start(&session, python_path, cli_path, user_data_root, log_dir) != NK_OK) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=spawn-failed\n");
+        printf("PACKAGE_BUILD_ROUTE boundary=%s\n", session.failure_boundary);
+        return 2;
+    }
+
+    uint64_t deadline = route_now_ms() + ROUTE_BUILD_TIMEOUT_MS;
+    while (session.is_building && route_now_ms() < deadline) {
+        package_builder_poll(&session, route_now_ms());
+        if (session.is_building) route_pause_ms(ROUTE_POLL_INTERVAL_MS);
+    }
+    if (session.is_building) {
+        package_builder_cancel(&session);
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=timeout boundary=package build did not finish in %d ms\n",
+               ROUTE_BUILD_TIMEOUT_MS);
+        return 3;
+    }
+
+    for (int i = 0; i < session.output_line_count; i++) {
+        printf("PACKAGE_BUILD_OUTPUT %s\n", package_builder_get_output_line(&session, i));
+    }
+    printf("PACKAGE_BUILD_ROUTE stage=%s complete=%d failed=%d exit=%d\n",
+           session.current_stage_name, session.is_complete ? 1 : 0,
+           session.is_failed ? 1 : 0, session.exit_code);
+    if (session.failure_boundary[0]) {
+        printf("PACKAGE_BUILD_ROUTE boundary=%s\n", session.failure_boundary);
+    }
+    printf("PACKAGE_BUILD_ROUTE log=%s\n", session.log_file_path);
+    printf("PACKAGE_BUILD_ROUTE progress=%s\n", session.progress_file_path);
+
+    if (session.is_failed) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL\n");
+        return 1;
+    }
+    if (!session.is_complete) {
+        printf("PACKAGE_BUILD_ROUTE status=FAIL reason=incomplete\n");
+        return 1;
+    }
+    printf("PACKAGE_BUILD_ROUTE status=PASS\n");
+    return 0;
+}
+
+static void test_cli_search_order_and_guidance(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 6: CLI search order and not-found guidance\n");
+    char cands[PACKAGE_BUILDER_CLI_MAX_CANDIDATES][NK_MAX_PATH];
+
+    /* Documented order: override, exe dir, exe parent, release layout, cwd, cwd parent. */
+    int n = package_builder_cli_candidate_paths("C:/rel/bin", "D:/ovr", cands,
+                                                PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 6);
+    assert(strcmp(cands[0], "D:/ovr/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[1], "C:/rel/bin/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[2], "C:/rel/bin/../tools/nk_cli.py") == 0);
+    assert(strcmp(cands[3], "C:/rel/bin/../source/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[4], "tools/nk_cli.py") == 0);
+    assert(strcmp(cands[5], "../tools/nk_cli.py") == 0);
+
+    /* No override: the executable folder leads. */
+    n = package_builder_cli_candidate_paths("C:/rel/bin", NULL, cands,
+                                            PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 5);
+    assert(strcmp(cands[0], "C:/rel/bin/tools/nk_cli.py") == 0);
+
+    /* Trailing separators never double up. */
+    n = package_builder_cli_candidate_paths("C:/rel/bin/", "D:/ovr/", cands,
+                                            PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 6);
+    assert(strcmp(cands[0], "D:/ovr/tools/nk_cli.py") == 0);
+    assert(strcmp(cands[1], "C:/rel/bin/tools/nk_cli.py") == 0);
+
+    /* Unknown executable folder: the working-directory pair still applies. */
+    n = package_builder_cli_candidate_paths("", "", cands,
+                                            PACKAGE_BUILDER_CLI_MAX_CANDIDATES);
+    assert(n == 2);
+    assert(strcmp(cands[0], "tools/nk_cli.py") == 0);
+    assert(strcmp(cands[1], "../tools/nk_cli.py") == 0);
+
+    /* The not-found card names every searched location and every fix. */
+    char msg[512];
+    package_builder_describe_cli_not_found("C:/rel/bin", msg, sizeof(msg));
+    assert(strstr(msg, "C:/rel/bin/tools") != NULL);
+    assert(strstr(msg, "C:/rel/bin/../source/tools") != NULL);
+    assert(strstr(msg, "NK_INSTALL_ROOT") != NULL);
+    assert(strstr(msg, "source checkout") != NULL);
+
+    /* End to end: isolated cwd, no override -> not found; NK_INSTALL_ROOT -> found. */
+    char saved_cwd[NK_MAX_PATH];
+    char probe_dir[NK_MAX_PATH + 64];
+    assert(nk_tb_getcwd(saved_cwd, sizeof(saved_cwd)) != NULL);
+    assert(nk_platform_get_path(NK_PATH_CACHE, probe_dir, sizeof(probe_dir)));
+    size_t plen = strlen(probe_dir);
+    snprintf(probe_dir + plen, sizeof(probe_dir) - plen, "%ccli_probe",
+             nk_platform_path_separator());
+    assert(nk_platform_mkdir_p(probe_dir));
+
+    /* Copy the prior value out: clearing or resetting invalidates getenv's pointer. */
+    char prior_override[1024];
+    prior_override[0] = '\0';
+    const char *live_override = getenv("NK_INSTALL_ROOT");
+    if (live_override && live_override[0]) {
+        snprintf(prior_override, sizeof(prior_override), "%s", live_override);
+    }
+    nk_tb_set_env("NK_INSTALL_ROOT", NULL);
+    assert(nk_tb_chdir(probe_dir) == 0);
+
+    char found[NK_MAX_PATH];
+    assert(!package_builder_find_cli(probe_dir, found, sizeof(found)));
+
+    nk_tb_set_env("NK_INSTALL_ROOT", saved_cwd);
+    assert(package_builder_find_cli(probe_dir, found, sizeof(found)));
+    assert(strstr(found, "nk_cli.py") != NULL);
+
+    assert(nk_tb_chdir(saved_cwd) == 0);
+    if (prior_override[0]) {
+        nk_tb_set_env("NK_INSTALL_ROOT", prior_override);
+    } else {
+        nk_tb_set_env("NK_INSTALL_ROOT", NULL);
+    }
+}
+
+static void test_toolchain_preflight(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 7: toolchain preflight\n");
+    char tool[32];
+    char msg[512];
+
+    assert(!package_builder_toolchain_missing(true, true, true,
+                                              tool, sizeof(tool), msg, sizeof(msg)));
+    assert(tool[0] == '\0');
+    assert(msg[0] == '\0');
+
+    assert(package_builder_toolchain_missing(true, false, true,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "gcc") == 0);
+    assert(strstr(msg, "BUILD_TOOLCHAIN_MISSING") != NULL);
+    assert(strstr(msg, "pinned prerequisite consent card") != NULL);
+    assert(strstr(msg, "gcc") != NULL);
+    assert(strstr(msg, "PATH") != NULL);
+
+    assert(package_builder_toolchain_missing(true, true, false,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "mingw32-make") == 0);
+    assert(strstr(msg, "mingw32-make") != NULL);
+
+    assert(package_builder_toolchain_missing(false, true, true,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "python") == 0);
+    assert(strstr(msg, "python") != NULL);
+
+    /* With several absent, the compiler is named first. */
+    assert(package_builder_toolchain_missing(true, false, false,
+                                             tool, sizeof(tool), msg, sizeof(msg)));
+    assert(strcmp(tool, "gcc") == 0);
+
+    /* PATH lookup refuses a name that cannot exist anywhere. */
+    char found[NK_MAX_PATH];
+    assert(!package_builder_find_tool("nk_no_such_tool_zz9", found, sizeof(found)));
+}
+
+static void test_pinned_prerequisite_manifest(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 8: pinned prerequisite manifest metadata\n");
+    char cli_path[NK_MAX_PATH];
+    char error[256];
+    PackagePrerequisiteList list;
+    assert(package_builder_find_cli(NULL, cli_path, sizeof(cli_path)));
+    assert(package_builder_load_prerequisites(cli_path, &list, error, sizeof(error)));
+    assert(list.count == 35);
+    assert(list.total_bytes == UINT64_C(100665604));
+    assert(strcmp(list.items[0].id, "cpython-embed-amd64") == 0);
+    assert(strcmp(list.items[0].host, "www.python.org") == 0);
+    assert(strcmp(list.items[0].version, "3.14.7") == 0);
+    assert(strcmp(list.items[0].license, "PSF-2.0") == 0);
+    assert(strcmp(list.items[0].sha256,
+                  "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15") == 0);
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+typedef struct {
+    const unsigned char *body;
+    size_t body_size;
+    size_t delivered_size;
+    size_t offset;
+    const char *final_url;
+    uint64_t content_length;
+    int close_count;
+} FakeDownload;
+
+static bool fake_download_open(void *context, const char *url,
+                               const char *allowed_hosts,
+                               PackageHttpResponse *response) {
+    FakeDownload *fake = (FakeDownload *)context;
+    (void)url;
+    (void)allowed_hosts;
+    response->final_url = fake->final_url;
+    response->has_content_length = true;
+    response->content_length = fake->content_length;
+    response->context = fake;
+    response->read = NULL;
+    response->close = NULL;
+    return true;
+}
+
+static bool fake_download_read(void *context, unsigned char *buffer,
+                               size_t capacity, size_t *bytes_read) {
+    FakeDownload *fake = (FakeDownload *)context;
+    size_t remaining = fake->delivered_size - fake->offset;
+    size_t count = remaining < capacity ? remaining : capacity;
+    if (count) memcpy(buffer, fake->body + fake->offset, count);
+    fake->offset += count;
+    *bytes_read = count;
+    return true;
+}
+
+static void fake_download_close(void *context) {
+    FakeDownload *fake = (FakeDownload *)context;
+    fake->close_count++;
+}
+
+static bool fake_download_transport(void *context, const char *url,
+                                    const char *allowed_hosts,
+                                    PackageHttpResponse *response) {
+    bool ok = fake_download_open(context, url, allowed_hosts, response);
+    response->read = fake_download_read;
+    response->close = fake_download_close;
+    return ok;
+}
+
+static void assert_download_failure(PackagePrerequisite *item,
+                                   FakeDownload *fake, const char *destination,
+                                   const char *expected_code) {
+    char code[64];
+    char message[256];
+    fake->offset = 0;
+    fake->close_count = 0;
+    assert(!package_builder_download_verified(item, destination,
+            fake_download_transport, fake, NULL, NULL,
+            code, sizeof(code), message, sizeof(message)));
+    assert(strcmp(code, expected_code) == 0);
+    assert(message[0] != '\0');
+    assert(fake->close_count == 1);
+    assert(!nk_platform_file_exists(destination));
+    char partial[NK_MAX_PATH];
+    snprintf(partial, sizeof(partial), "%s.part", destination);
+    assert(!nk_platform_file_exists(partial));
+}
+
+static void test_native_download_verification(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 9: native download verification failures\n");
+    static const unsigned char body[] = "hello";
+    char root[NK_MAX_PATH];
+    char dir[NK_MAX_PATH];
+    char dest[NK_MAX_PATH];
+    assert(nk_platform_get_path(NK_PATH_CACHE, root, sizeof(root)));
+    int n = snprintf(dir, sizeof(dir), "%s%cnative-bootstrap-%lu", root,
+                     nk_platform_path_separator(), (unsigned long)time(NULL));
+    assert(n > 0 && (size_t)n < sizeof(dir));
+    assert(nk_platform_mkdir_p(dir));
+    n = snprintf(dest, sizeof(dest), "%s%cverified.zip", dir,
+                 nk_platform_path_separator());
+    assert(n > 0 && (size_t)n < sizeof(dest));
+
+    PackagePrerequisite item;
+    memset(&item, 0, sizeof(item));
+    snprintf(item.id, sizeof(item.id), "synthetic-test");
+    snprintf(item.name, sizeof(item.name), "Synthetic test payload");
+    snprintf(item.url, sizeof(item.url), "https://www.python.org/test.zip");
+    snprintf(item.host, sizeof(item.host), "www.python.org");
+    snprintf(item.allowed_hosts, sizeof(item.allowed_hosts), "www.python.org");
+    snprintf(item.sha256, sizeof(item.sha256),
+             "%064d", 0);
+    item.size_bytes = sizeof(body) - 1;
+
+    FakeDownload fake = {
+        body, sizeof(body) - 1, sizeof(body) - 1, 0,
+        "https://www.python.org/test.zip", sizeof(body) - 1, 0
+    };
+    assert_download_failure(&item, &fake, dest, "HASH_MISMATCH");
+
+    snprintf(item.sha256, sizeof(item.sha256),
+             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    item.size_bytes++;
+    assert_download_failure(&item, &fake, dest, "SIZE_MISMATCH");
+    item.size_bytes--;
+
+    fake.final_url = "https://foreign.example/test.zip";
+    assert_download_failure(&item, &fake, dest, "REDIRECT_REJECTED");
+    fake.final_url = "https://www.python.org/test.zip";
+
+    fake.delivered_size = 3;
+    assert_download_failure(&item, &fake, dest, "TRUNCATED_BODY");
+    fake.delivered_size = sizeof(body) - 1;
+
+    char code[64];
+    char message[256];
+    fake.offset = 0;
+    fake.close_count = 0;
+    assert(package_builder_download_verified(&item, dest, fake_download_transport,
+            &fake, NULL, NULL, code, sizeof(code), message, sizeof(message)));
+    assert(fake.close_count == 1);
+    FILE *saved = fopen(dest, "rb");
+    assert(saved);
+    unsigned char actual[sizeof(body)] = { 0 };
+    assert(fread(actual, 1, sizeof(body) - 1, saved) == sizeof(body) - 1);
+    fclose(saved);
+    assert(memcmp(actual, body, sizeof(body) - 1) == 0);
+    remove(dest);
+    assert(_rmdir(dir) == 0);
+}
+#endif
+
+int main(int argc, char *argv[]) {
+    if (argc == 3 && strcmp(argv[1], "--find-cli") == 0) {
+        char cli_path[NK_MAX_PATH];
+        if (!package_builder_find_cli(argv[2], cli_path, sizeof(cli_path))) {
+            puts("PACKAGE_BUILDER_CLI status=FAIL reason=not-found");
+            return 1;
+        }
+        printf("PACKAGE_BUILDER_CLI status=PASS path=%s\n", cli_path);
+        return 0;
+    }
+    if (argc == 6 && strcmp(argv[1], "--build-package") == 0) {
+        return run_build_package_route(argv[2], argv[3], argv[4], argv[5]);
+    }
     test_progress_line_parsing();
+    test_elapsed_time_advances_while_building();
+    test_reused_session_restarts_the_clock();
     test_state_machine_transitions();
     test_output_line_circular_buffer();
     test_python_and_cli_discovery();
     test_session_cancellation();
+    test_cli_search_order_and_guidance();
+    test_toolchain_preflight();
+    test_pinned_prerequisite_manifest();
+#if defined(_WIN32) || defined(_WIN64)
+    test_native_download_verification();
+#else
+    puts("[PACKAGE_BUILDER_TEST] SKIP native WinHTTP/SHA-256 transport tests (non-Windows host)");
+#endif
 
     printf("ALL PACKAGE BUILDER TESTS PASSED\n");
     return 0;

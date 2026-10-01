@@ -56,10 +56,6 @@ def _is_docs(path: str) -> bool:
     )
 
 
-def _is_dashboard(path: str) -> bool:
-    return path == "interface" or path.startswith("interface/")
-
-
 def _is_workflow_ci(path: str) -> bool:
     logical_path = _logical_tool_path(path) or path
     return (
@@ -85,10 +81,6 @@ def _is_dependency_metadata(path: str) -> bool:
         "Pipfile",
         "Pipfile.lock",
         "poetry.lock",
-        "package.json",
-        "package-lock.json",
-        "interface/package.json",
-        "interface/package-lock.json",
     } or path.startswith("requirements/")
 
 
@@ -114,19 +106,22 @@ def _is_generated_public_metadata(path: str) -> bool:
 
 
 def _is_security_publication(path: str) -> bool:
-    name = PurePosixPath(path).name
+    logical_path = _logical_tool_path(path) or path
+    name = PurePosixPath(logical_path).name
     return (
-        path.startswith(".github/ISSUE_TEMPLATE/")
+        logical_path.startswith(".github/ISSUE_TEMPLATE/")
         or name in {"SECURITY.md", "SECURITY.txt", "NOTICE", "NOTICE.md", "LICENSE", "LICENSE.md"}
-        or path.startswith("docs/PUBLICATION")
-        or path.startswith("docs/LEGAL")
-        or path == "docs/provenance/MODIFIED_FILE_NOTICES.json"
-        or _is_generated_public_metadata(path)
-        or path in {
+        or logical_path.startswith("docs/PUBLICATION")
+        or logical_path.startswith("docs/LEGAL")
+        or logical_path.startswith("docs/provenance/")
+        or logical_path == "docs/INDEPENDENCE_CAMPAIGN.md"
+        or _is_generated_public_metadata(logical_path)
+        or logical_path in {
             "tools/publish_audit.py",
             "tools/generate_sbom.py",
             "tools/verify_key_scrub.py",
             "tools/modified_file_notice_audit.py",
+            "tools/provenance_record_gap.py",
         }
     )
 
@@ -221,7 +216,7 @@ def _is_native_runtime(path: str) -> bool:
         or path.startswith("include/")
         or path.startswith("assets/vfpu/")
         or path.startswith("assets/shaders/")
-        or (suffix in {".c", ".cc", ".cpp", ".h", ".hpp"} and not path.startswith("interface/"))
+        or suffix in {".c", ".cc", ".cpp", ".h", ".hpp"}
         or path in {"driver.c", "recomp.h"}
     )
 
@@ -281,11 +276,20 @@ def _is_python_tool(path: str) -> bool:
     # hle_manifest.py --write-baseline, and tools/psp_oracle/manifest.json is
     # consumed by the oracle tooling. Leaving them unclassified made every HLE
     # registration change an `unknown_paths` hit, which sets force_full and drags
-    # in gates the change cannot affect (notably the dashboard, whose lint is
-    # independently blocked by #248). The Python gate is the one that actually
+    # in gates the change cannot affect. The Python gate is the one that actually
     # validates these files -- test_hle_manifest asserts the baseline is current
     # and reproducible -- so classifying them here neither skips nor weakens a
     # check that was doing real work.
+    #
+    # `tools/README.md` is Markdown, not Python, but it is the *subject* of a
+    # Python regression: `tools/test_lint_docs.py` compares its module index
+    # against the tracked `tools/` module set and fails closed on drift. Routing
+    # the file whose content can break that test is what makes the check enforced
+    # rather than advisory -- otherwise the hosted `python_tests` job is skipped
+    # for exactly the edit that breaks it, and the check only runs in the change
+    # that introduces it. It is named individually instead of through the
+    # `markdown` flag so every other Markdown-only edit keeps skipping the Python
+    # matrix.
     return (
         path.startswith("tools/")
         and (path.endswith(".py") or path.endswith(".json") or path.endswith(".toml"))
@@ -297,6 +301,7 @@ def _is_python_tool(path: str) -> bool:
             "Pipfile",
             "Pipfile.lock",
             "poetry.lock",
+            "tools/README.md",
         }
     )
 
@@ -306,7 +311,6 @@ def _is_recognised(path: str) -> bool:
         predicate(path)
         for predicate in (
             _is_docs,
-            _is_dashboard,
             _is_workflow_ci,
             _is_dependency_metadata,
             _is_security_publication,
@@ -392,7 +396,6 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
         _is_docs(path) or _is_generated_public_metadata(path) for path in files
     )
     workflow_ci = force_full or any(_is_workflow_ci(path) for path in files)
-    dashboard = force_full or any(_is_dashboard(path) for path in files)
     dependency_metadata = force_full or any(_is_dependency_metadata(path) for path in files)
     security_publication = force_full or any(_is_security_publication(path) for path in files)
     public_surface = force_full or any(_is_public_surface(path) for path in files)
@@ -419,7 +422,6 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
     # equivalent runs.
     run_python = python_tools or run_native or workflow_ci or security_publication
     run_windows = run_native
-    run_dashboard = dashboard or workflow_ci
     # A normal main push is already covered by its PR. Workflow changes are
     # exceptional: validate the new workflow itself on the default branch too.
     # Draft pull requests are not a separate validation mode: they get the
@@ -436,7 +438,6 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
         "build_system": str(build_system).lower(),
         "manager_powershell": str(manager_powershell).lower(),
         "title_manifest": str(title_manifest).lower(),
-        "dashboard": str(dashboard).lower(),
         "workflow_ci": str(workflow_ci).lower(),
         "dependency_metadata": str(dependency_metadata).lower(),
         "security_publication": str(security_publication).lower(),
@@ -445,7 +446,6 @@ def classify(paths: Iterable[str], *, event_name: str = "pull_request", draft: b
         "run_python": str(run_python).lower(),
         "run_native": str(run_native).lower(),
         "run_windows": str(run_windows).lower(),
-        "run_dashboard": str(run_dashboard).lower(),
         "run_markdown": str(markdown).lower(),
         "run_main_smoke": str(run_main_smoke).lower(),
         "allow_substantive": str(allow_substantive).lower(),

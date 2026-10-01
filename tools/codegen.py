@@ -4,15 +4,33 @@
 # Modified by Nakagawa Recomp contributors, 2026-08-10.
 # See NOTICE.md for upstream lineage and modification provenance.
 
+"""MIPS to C; consumes ``analyze.py``'s function boundaries and splits the output
+into ``<g>_recomp_<n>.c`` chunks.
+
+``main`` takes ``<elf> <out.c>`` (or ``--env-elf <out.c>``) and emits the translated
+guest as a chain of generated translation units.  The chunk count follows the
+discovered function count and ``--funcs-per-chunk``/``--target-chunk-bytes``; it is
+never a fixed per-title constant.
+"""
+
 import struct
 import re
 import os
 import sys
 from dataclasses import dataclass
 
+# The packaged Windows embeddable interpreter can omit this script's directory
+# from its fixed ``._pth`` search path. Restore it before importing local tools.
+_TOOLS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
+
 # Import the local analyzer
 import build_profile
-from analyze import analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans
+from analyze import (
+    analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
+    canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
+)
 from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
 
@@ -45,6 +63,16 @@ LLE_IMPORT_SEAM = False
 # never copied into guest RAM, so their arena bytes cannot be compared
 # without false-firing on the first check.
 STALE_DETECT = False
+
+# SR_NAN_TRAP NaN/Inf origin diagnostic (issue #69). When True, every FPU and
+# VFPU result write in the generated C is followed by an SR_NAN_TRAP_* check
+# that names the first instructions whose result went non-finite from all-finite
+# operands (see the SR_NAN_TRAP block in src/rt/recomp.h). Set by --nan-trap;
+# default False emits no check statement at all, so the generated C -- and
+# therefore the object built from it -- is byte-identical to a pre-trap build.
+# The C half of the option (-DSR_NAN_TRAP) makes those checks live; without it
+# they expand to ((void)0) and neither half changes behaviour on its own.
+NAN_TRAP = False
 
 
 def enable_lle_import_seam():
@@ -321,20 +349,68 @@ def write_funcs_header(path, emitted, resume_owners=None):
         f.write("#endif\n")
 
 
-def emit_host_return(resumable, comment=None):
+def emit_host_return(resumable, comment=None, stack_census=False):
     """The single host-exit policy for callable and live-frame resume entries."""
     if resumable:
         return "return;"
+    if stack_census:
+        # The census wrapper records the actual guest SP before restoring the
+        # callable ABI boundary. The ordinary generated path remains unchanged.
+        return f"return; /* {comment} */" if comment else "return;"
     if comment:
         return f"s->r[29] = _sp_entry; /* {comment} */\n    return;"
     return "s->r[29] = _sp_entry; return;"
 
 
-def emit_host_fallthrough(resumable):
+def emit_host_fallthrough(resumable, stack_census=False):
     """Natural C fallthrough follows the same entry contract without a fake guest return."""
     if resumable:
         return "/* resume fall-through: guest owns SP */"
+    if stack_census:
+        # Let the outer census wrapper observe the actual guest SP before it
+        # restores the callable host ABI boundary.
+        return "/* census wrapper records fall-through SP */"
     return "s->r[29] = _sp_entry; /* o32 ABI: sp is callee-saved; balance on fall-through end (F3E) */"
+
+
+def wrap_stack_census_functions(func_texts, emitted, resume_owners):
+    """Wrap each callable generated entry with opt-in dynamic SP observation."""
+    for addr in sorted(set(emitted)):
+        if addr in resume_owners:
+            continue
+        symbol = f"f_{addr:08x}"
+        pattern = re.compile(
+            rf"(?m)^void {re.escape(symbol)}\(CpuState \*s\) \{{"
+        )
+        matches = [
+            (index, pattern.search(text))
+            for index, text in enumerate(func_texts)
+            if pattern.search(text) is not None
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"stack census expected one emitted callable body for "
+                f"0x{addr:08x}, found {len(matches)}"
+            )
+        index, match = matches[0]
+        body = f"_sr_stack_census_body_{addr:08x}"
+        replacement = f"static void {body}(CpuState *s) {{"
+        func_texts[index] = (
+            func_texts[index][:match.start()]
+            + replacement
+            + func_texts[index][match.end():]
+        )
+        func_texts[index] += (
+            f"\n\nvoid {symbol}(CpuState *s) {{\n"
+            f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
+            f"    sr_stack_census_enter(0x{addr:08x}u);\n"
+            f"    {body}(s);\n"
+            f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
+            "s->r[29], s->flow_kind);\n"
+            "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
+            "}"
+        )
+    return func_texts
 
 R = lambda i: "0u" if i == 0 else f"s->r[{i}]"           # read GPR (r0 is constant 0)
 F = lambda i: f"s->f[{i}]"
@@ -352,6 +428,89 @@ def s16(w): return (w & 0xFFFF) - 0x10000 if w & 0x8000 else w & 0xFFFF
 def wr(i, expr):
     # Assignment to GPR i; writes to r0 are dropped (ARCHITECTURE section 4).
     return "(void)0;" if i == 0 else f"s->r[{i}] = {expr};"
+
+
+def _nanf(pc, op, fd, out, ins):
+    """SR_NAN_TRAP check for one scalar FPU result. Empty unless --nan-trap.
+
+    `ins` are the C expressions holding the operands the instruction consumed;
+    the codegen samples them into locals before the store, so a destination that
+    aliases a source still reports what was actually read.
+    """
+    if not NAN_TRAP:
+        return ""
+    return (f' SR_NAN_TRAP_F(0x{pc:08x}u,"{op}",{fd}u,{out},'
+            f'{",".join(ins)});')
+
+
+def _nanv(pc, op, vd, out, nout, a, na, b=None, nb=0):
+    """SR_NAN_TRAP check for one VFPU lane result. Empty unless --nan-trap.
+
+    `a`/`na` and `b`/`nb` are the source lane arrays; omitting `b` reports a
+    one-source-vector form.
+    """
+    if not NAN_TRAP:
+        return ""
+    if b is None:
+        # One source vector: the 7-argument form. SR_NAN_TRAP_V2 takes 9, and
+        # emitting it with 7 failed to compile every one-source form (vrcp, the
+        # transcendentals, vmov/vabs/vneg, ...) in a real title build.
+        return (f' SR_NAN_TRAP_V(0x{pc:08x}u,"{op}",{vd}u,{out},{nout},'
+                f'{a},{na});')
+    return (f' SR_NAN_TRAP_V2(0x{pc:08x}u,"{op}",{vd}u,{out},{nout},'
+            f'{a},{na},{b},{nb});')
+
+
+def _nan_matrix(pc, op, vd, out_exprs, in_exprs, in_exprs2=()):
+    """SR_NAN_TRAP check for a form whose operands are scattered v[] elements.
+
+    The matrix forms (vmmul, vtfm) read and write raw physical registers instead
+    of a lane array, so the results and the operands are gathered into arrays
+    first. `in_exprs2`, when given, is a SECOND operand group (vtfm's vector
+    lanes) with its own array and its own macro argument, so the report lists
+    every consumed lane instead of the matrix alone. Only emitted under
+    --nan-trap.
+    """
+    if not NAN_TRAP:
+        return ""
+    outs = " ".join(f"_ntout[{i}]={expr};" for i, expr in enumerate(out_exprs))
+    ins = " ".join(f"_ntin[{i}]={expr};" for i, expr in enumerate(in_exprs))
+    if not in_exprs2:
+        return (f"{{ float _ntin[{len(in_exprs)}], _ntout[{len(out_exprs)}]; {ins} {outs} "
+                + _nanm(pc, op, vd, "_ntout", "_ntin", len(out_exprs), len(in_exprs))
+                + "}")
+    ins2 = " ".join(f"_ntin2[{i}]={expr};" for i, expr in enumerate(in_exprs2))
+    return (f"{{ float _ntin[{len(in_exprs)}], _ntout[{len(out_exprs)}],"
+            f" _ntin2[{len(in_exprs2)}]; {ins} {ins2} {outs} "
+            + _nanm(pc, op, vd, "_ntout", "_ntin", len(out_exprs), len(in_exprs),
+                    "_ntin2", len(in_exprs2))
+            + "}")
+
+
+#: Report names for the VFPU lane forms that share one emitter, so a maintainer
+#: reading NAN_TRAP output sees which instruction produced the value.
+_TRANS_NAME = {16: "vrcp.s", 17: "vrsqrt.s", 18: "vsin.s", 19: "vcos.s",
+               20: "vexp2.s", 21: "vlog2.s", 22: "vsqrt.s", 23: "vasin.s",
+               24: "vrcp.s", 25: "vrsqrt.s", 26: "vsin.s", 27: "vcos.s",
+               28: "vexp2.s", 29: "vlog2.s", 30: "vsqrt.s", 31: "vasin.s"}
+_BINOP_NAME = {(0x18, 0): "vadd.s", (0x18, 1): "vsub.s", (0x18, 7): "vdiv.s",
+               (0x19, 0): "vmul.s"}
+
+
+def _nanm(pc, op, vd, outs, ins, nout, nin, ins2=None, nin2=0):
+    """SR_NAN_TRAP check for a form whose operands are scattered v[] elements.
+
+    The matrix forms (vmmul, vtfm) read and write raw physical registers instead
+    of a lane array, so the operands are gathered into arrays first; a second
+    operand group (vtfm's vector) is passed as its own pair. Only emitted under
+    --nan-trap.
+    """
+    if not NAN_TRAP:
+        return ""
+    if ins2 is None:
+        return f' SR_NAN_TRAP_V(0x{pc:08x}u,"{op}",{vd}u,{outs},{nout},{ins},{nin});'
+    return (f' SR_NAN_TRAP_V2(0x{pc:08x}u,"{op}",{vd}u,{outs},{nout},'
+            f'{ins},{nin},{ins2},{nin2});')
 
 def vreg_indices(reg, size):
     # Physical v[] indices for a VFPU vector register. size is lanes (1=single..4=quad).
@@ -735,7 +894,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                         f"if (((s->vfpuCtrl[3] >> _i) & 1u) == {1 - tf}u) _d[_i]=_s[_i]; ")
             else:
                 raise Unsupported(f"vcmov imm3 {imm3} at 0x{addr:08x}")
-            body = rd_st + move + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}"
+            body = (rd_st + move
+                    + _nanv(addr, "vcmov.s", vd, "_d", n, "_s", n, "_d", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if jump == 0x02:  # vocp
             op9 = (w >> 16) & 0x1F
@@ -745,7 +906,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                         f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]|0xF0000u); "
                         f"sr_vread(_t,s,{_arr(si)},{n},(s->vfpuCtrl[1]&~0xFFu)|0x55u|0xF000u); "
                         f"for(int _i=0;_i<{n};_i++) _d[_i]=isnan(_s[_i])?fabsf(_s[_i]):_t[_i]+_s[_i]; "
-                        f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                        + _nanv(addr, "vocp.s", vd, "_d", n, "_s", n, "_t", n)
+                        + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
                 return "{ " + body + " }", None, 0
             raise Unsupported(f"VFPU9 op 0x{op9:02x} at 0x{addr:08x}")
         if jump == 0x03:  # vcst
@@ -857,7 +1019,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                    5: "(_s[_i]<-1.0f?-1.0f:(_s[_i]>1.0f?1.0f:_s[_i]))"}[optype]
             body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                     f"for(int _i=0;_i<{n};_i++) _d[_i]={per}; "
-                    f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vv2op.s", vd, "_d", n, "_s", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         _TRANS = {16: "sr_vfpu_rcp(_s[_i])", 17: "sr_vfpu_rsqrt(_s[_i])",
                   18: "sr_vfpu_sin(_s[_i])", 19: "sr_vfpu_cos(_s[_i])",
@@ -871,7 +1034,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             si = vreg_indices(vs, n)
             body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                     f"for(int _i=0;_i<{n};_i++) _d[_i]={_TRANS[optype]}; "
-                    f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, _TRANS_NAME[optype], vd, "_d", n, "_s", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if optype in (6, 7):  # vzero / vone
             val = "0.0f" if optype == 6 else "1.0f"
@@ -999,7 +1163,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     f"if({ismin}) _r=(_ai<0&&_bi<0)?(_bi<_ai?_ai:_bi):(_ai<_bi?_ai:_bi); "
                     f"else _r=(_ai<0&&_bi<0)?(_ai<_bi?_ai:_bi):(_bi<_ai?_ai:_bi); memcpy(&_d[_i],&_r,4); }} "
                     f"else _d[_i]={ismin}?(_a[_i]<_b[_i]?_a[_i]:_b[_i]):(_b[_i]<_a[_i]?_a[_i]:_b[_i]); }} "
-                    f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vmin.s" if ismin == "1" else "vmax.s", vd, "_d", n,
+                            "_a", n, "_b", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if sub in (6, 7): # vcmovt / vcmovf
             tf = sub & 1
@@ -1015,7 +1181,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 lines.append(f"for (int _i = 0; _i < {n}; _i++) if (((s->vfpuCtrl[3] >> _i) & 1u) == {1 - tf}u) _d[_i] = _s[_i];")
             else:
                 raise Unsupported(f"vcmov imm3 {imm3} at 0x{addr:08x}")
-            lines.append(f"sr_vwrite(s, {_arr(di)}, _d, {n}, s->vfpuCtrl[2]);{_EAT}")
+            lines.append(_nanv(addr, "vcmovt.s" if tf == 0 else "vcmovf.s",
+                               vd, "_d", n, "_s", n, "_d", n)
+                         + f"sr_vwrite(s, {_arr(di)}, _d, {n}, s->vfpuCtrl[2]);{_EAT}")
             return "{ " + " ".join(lines) + " }", None, 0
         raise Unsupported(f"VFPU3 sub {sub} at 0x{addr:08x}")
     if op == 0x3c and sub == 7 and ((w >> 21) & 0x1F) == 28:
@@ -1054,6 +1222,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
             writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
             writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+            writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
             writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
             return "{ " + " ".join(writes) + _EAT + " }", None, 0
         raise Unsupported(f"VFPUMatrix1 which {which} at 0x{addr:08x}")
@@ -1066,13 +1235,15 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     f"_d[1]=-_s[0]*_t[2]+_s[1]*_t[3]+_s[2]*_t[0]+_s[3]*_t[1]; "
                     f"_d[2]=_s[0]*_t[1]-_s[1]*_t[0]+_s[2]*_t[3]+_s[3]*_t[2]; "
                     f"_d[3]=-_s[0]*_t[0]-_s[1]*_t[1]-_s[2]*_t[2]+_s[3]*_t[3]; "
-                    f"sr_vwrite(s,{_arr(di)},_d,4,s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vqmul.q", vd, "_d", 4, "_s", 4, "_t", 4)
+                    + f"sr_vwrite(s,{_arr(di)},_d,4,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         if n == 3:
             body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},3,s->vfpuCtrl[0]); "
                     f"sr_vread(_t,s,{_arr(ti)},3,s->vfpuCtrl[1]); "
                     f"_d[0]=_s[1]*_t[2]-_s[2]*_t[1]; _d[1]=_s[2]*_t[0]-_s[0]*_t[2]; _d[2]=_s[0]*_t[1]-_s[1]*_t[0]; "
-                    f"sr_vwrite(s,{_arr(di)},_d,3,s->vfpuCtrl[2]);{_EAT}")
+                    + _nanv(addr, "vcrsp.t", vd, "_d", 3, "_s", 3, "_t", 3)
+                    + f"sr_vwrite(s,{_arr(di)},_d,3,s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
         raise Unsupported(f"vcrsp/vqmul size {n} at 0x{addr:08x}")
     if op == 0x3c and sub == 7 and ((w >> 21) & 0x1F) == 29:
@@ -1094,7 +1265,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 lines.append(f"_d[{cos_lane}]=sr_vfpu_cos(_d[{dnames.index(vs)}]);")
         # PSP ignores destination saturation and write-mask bits for the cosine lane.
         dmask=(3<<cos_lane)|(1<<(8+cos_lane))
-        lines.append(f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]&~0x{dmask:x}u);{_EAT}")
+        lines.append(_nanv(addr, "vrot", vd, "_d", n, "(&_a)", 1)
+                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]&~0x{dmask:x}u);{_EAT}")
         return "{ " + " ".join(lines) + " }", None, 0
     if (op == 0x18 and sub in (0, 1, 7)) or (op == 0x19 and sub == 0):
         ti = vreg_indices(vt, n)
@@ -1103,7 +1275,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
                 f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]{oper}_t[_i]; "
-                f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                + _nanv(addr, _BINOP_NAME[(op, sub)], vd, "_d", n, "_s", n, "_t", n)
+                + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 1:  # vdot
         ti = vreg_indices(vt, n)
@@ -1111,7 +1284,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         body = (f"float _s[4],_t[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
                 f"float _d=0.0f; for(int _i=0;_i<{n};_i++) _d+=_s[_i]*_t[_i]; "
-                f"float _dd[1]={{_d}}; sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
+                f"float _dd[1]={{_d}};"
+                + _nanv(addr, "vdot.s", vd, "_dd", 1, "_s", n, "_t", n)
+                + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 4:  # vhdp
         ti = vreg_indices(vt, n)
@@ -1120,7 +1295,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
                 f"float _d=0.0f; for(int _i=0;_i<{n - 1};_i++) _d+=_s[_i]*_t[_i]; "
                 f"_d+=1.0f*_t[{n - 1}]; _d=isnan(_d)?fabsf(_d):_d; "
-                f"float _dd[1]={{_d}}; sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
+                f"float _dd[1]={{_d}};"
+                + _nanv(addr, "vhdp.s", vd, "_dd", 1, "_s", n, "_t", n)
+                + f" sr_vwrite(s,{_arr([dst])},_dd,1,s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x19 and sub == 5:  # vcrs
         if n != 3:
@@ -1131,7 +1308,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         muls = " ".join(f"_d[{i}]=_s[{ss[i]}]*_t[{ts[i]}];" for i in range(n))
         body = (f"float _s[4],_t[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); {muls} "
-                f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                + _nanv(addr, "vcrs.t", vd, "_d", n, "_s", n, "_t", n)
+                + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x3c and sub == 0:  # vmmul
         side = vec_size(w)
@@ -1150,7 +1328,12 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     lines.append(f"_m{a}_{b}+=s->v[{mreg_index(vs, side, b, c)}]*s->v[{mreg_index(vt, side, a, c)}];")
         writes = " ".join(f"s->v[{mreg_index(vd, side, a, b)}]=_m{a}_{b};"
                           for a in range(side) for b in range(side))
-        return "{ " + " ".join(lines) + " " + writes + _EAT + " }", None, 0
+        return "{ " + " ".join(lines) + " " + _nan_matrix(
+            addr, "vmmul", vd,
+            [f"_m{a}_{b}" for a in range(side) for b in range(side)],
+            [f"s->v[{mreg_index(vs, side, b, a)}]" for a in range(side) for b in range(side)]
+            + [f"s->v[{mreg_index(vt, side, a, b)}]" for a in range(side) for b in range(side)],
+        ) + " " + writes + _EAT + " }", None, 0
     if op == 0x3c and sub in (1, 2, 3):  # vtfm
         ins = sub
         side = ins + 1
@@ -1167,13 +1350,19 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             if ins >= n:
                 lines.append(f"_v{i}+=s->v[{mreg_index(vs, side, i, ins)}];")
         writes = " ".join(f"s->v[{di[i]}]=_v{i};" for i in range(side))
-        return "{ " + " ".join(lines) + " " + writes + _EAT + " }", None, 0
+        return "{ " + " ".join(lines) + " " + _nan_matrix(
+            addr, "vtfm", vd,
+            [f"_v{i}" for i in range(side)],
+            [f"s->v[{mreg_index(vs, side, i, k)}]" for i in range(side) for k in range(side)],
+            [f"s->v[{ti[k]}]" for k in range(tn)],
+        ) + " " + writes + _EAT + " }", None, 0
     if op == 0x19 and sub == 2:  # vscl
         scalar = vreg_indices(vt, 1)[0]
         body = (f"float _s[4],_d[4]; sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"float _sc=s->v[{scalar}]; "
                 f"for(int _i=0;_i<{n};_i++) _d[_i]=_s[_i]*_sc; "
-                f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+                + _nanv(addr, "vscl.s", vd, "_d", n, "_s", n, "(&_sc)", 1)
+                + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
     if op == 0x3c and sub == 4:  # vmscl
         vt = (w >> 16) & 0x7F
@@ -1189,10 +1378,24 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         writes.append(f"float _s[4], _t[4]; sr_vread(_s, s, {_arr(last_row_vs)}, {side}, s->vfpuCtrl[0]);")
         writes.append(f"sr_vread(_t, s, (const uint8_t[]){{{scalar_vidx},{scalar_vidx},{scalar_vidx},{scalar_vidx}}}, {side}, s->vfpuCtrl[1]);")
         writes.append(f"float _d[4]; for (int _i = 0; _i < {side}; _i++) _d[_i] = _s[_i] * _t[_i];")
+        writes.append(_nanv(addr, "vmscl", vd, "_d", side, "_s", side, "_t", side))
         writes.append(f"sr_vwrite(s, {_arr(last_row_vd)}, _d, {side}, s->vfpuCtrl[2]);")
         return "{ " + " ".join(writes) + _EAT + " }", None, 0
 
     raise Unsupported(f"VFPU opcode 0x{op:02x} sub 0x{sub:x} at 0x{addr:08x}")
+
+def _fpu_unary(addr, op, fdv, expr, src):
+    """One scalar FPU result computed from a single source operand.
+
+    Without --nan-trap this is the bare assignment the emitter has always
+    produced. With it the operand is sampled into a local first, so the report
+    names what the instruction read even when fd == fs.
+    """
+    if not NAN_TRAP:
+        return f"{F(fdv)} = {expr};"
+    return (f"{{ float _a = {src}; {F(fdv)} = {expr};"
+            + _nanf(addr, op, fdv, F(fdv), ["_a"]) + " }")
+
 
 def fpu_effect(addr, w):
     fmt = rs(w); ft = rt(w); fs = rd(w); fdv = sa(w)
@@ -1219,20 +1422,28 @@ def fpu_effect(addr, w):
         # zero and inf*subnormal would wrongly take the canonical-qNaN path.
         # Integer bit tests are environment-blind. Exact ±inf * exact ±0
         # still canonicalizes to 0x7fc00000.
-        if fn == 0x00: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x01: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_sub_s(_a,_b,s->fcr31); }}", None, 0
+        if fn == 0x00:
+            stmt = f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31);"
+            return stmt + _nanf(addr, "add.s", fdv, F(fdv), ["_a", "_b"]) + " }", None, 0
+        if fn == 0x01:
+            stmt = f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_sub_s(_a,_b,s->fcr31);"
+            return stmt + _nanf(addr, "sub.s", fdv, F(fdv), ["_a", "_b"]) + " }", None, 0
         if fn == 0x02:
             return (f"{{ const uint32_t _ab=s->fi[{fs}],_bb=s->fi[{ft}]; "
                     f"float _a={F(fs)},_b={F(ft)}; "
                     f"if((((_ab & 0x7fffffffu) == 0x7f800000u && (_bb & 0x7fffffffu) == 0u)) || "
                     f"(((_bb & 0x7fffffffu) == 0x7f800000u && (_ab & 0x7fffffffu) == 0u))) "
                     f"s->fi[{fdv}]=0x7fc00000u; "
-                    f"else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31); }}"), None, 0
-        if fn == 0x03: return f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_div_s(_a,_b,s->fcr31); }}", None, 0
-        if fn == 0x04: return f"{F(fdv)} = sqrtf({F(fs)});", None, 0
-        if fn == 0x05: return f"{F(fdv)} = fabsf({F(fs)});", None, 0
-        if fn == 0x06: return f"{F(fdv)} = {F(fs)};", None, 0
-        if fn == 0x07: return f"{F(fdv)} = -{F(fs)};", None, 0
+                    f"else {F(fdv)}=sr_fpu_mul_s(_a,_b,s->fcr31);"
+                    + _nanf(addr, "mul.s", fdv, F(fdv), ["_a", "_b"])
+                    + " }"), None, 0
+        if fn == 0x03:
+            stmt = f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_div_s(_a,_b,s->fcr31);"
+            return stmt + _nanf(addr, "div.s", fdv, F(fdv), ["_a", "_b"]) + " }", None, 0
+        if fn == 0x04: return _fpu_unary(addr, "sqrt.s", fdv, f"sqrtf({F(fs)})", F(fs)), None, 0
+        if fn == 0x05: return _fpu_unary(addr, "abs.s", fdv, f"fabsf({F(fs)})", F(fs)), None, 0
+        if fn == 0x06: return _fpu_unary(addr, "mov.s", fdv, F(fs), F(fs)), None, 0
+        if fn == 0x07: return _fpu_unary(addr, "neg.s", fdv, f"-{F(fs)}", F(fs)), None, 0
         if fn in (0x0C, 0x0D, 0x0E, 0x0F, 0x24):
             return f"s->fi[{fdv}] = sr_fpu_to_word({F(fs)}, 0x{fn:02x}u, s->fcr31);", None, 0
         if fn >= 0x30:
@@ -1755,7 +1966,8 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
 }"""
 
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
-                  profile=None, dispatch_boundaries=None, lle_cpu=False):
+                  profile=None, dispatch_boundaries=None, lle_cpu=False,
+                  stack_census=False):
     hst_profile = profile == "hst"
     if lle_cpu is False:
         lle_cpu = LLE_CPU
@@ -1790,8 +2002,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         labels = set(labels) | set(dup_slot_skips.values())
     out = []
     out.append(f"void {entry_symbol(start, resume_owners)}(CpuState *s) {{")
-    if hst_profile and start in {0x0003D828, 0x0003DFD0, 0x000705B0, 0x001026B8, 0x001039D8}:
-        out.append(f"    sr_boot_probe(s, 0x{start:08x}u);")
     out.append(f"    SR_YIELD(s, 0x{start:08x}u);")   # preemption point (no-op unless scheduler active)
     # Callable entries own an o32 frame contract. Resume entries begin with an
     # already-live owner frame, so the guest instructions alone own SP changes.
@@ -1873,16 +2083,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # loop genuinely spins again, the watchdog thread-dump PC identifies it uniquely
         # (0x00100e98 vs 0x0001038c) — root-cause that spin; do not re-cap (see
         # docs/audit/F3_LOOPCAPS.md and docs/DESIGN_FONT_HLE.md F3 re-scope).
-        # The strtol parser can expose an unterminated asset token only after thousands
-        # of characters. Keep this read-only probe compiled in; sr_boot_probe is a
-        # production no-op unless SR_BOOT_DIAG is explicitly enabled.
-        if hst_profile and addr == 0x000160e8:
-            out.append("    sr_boot_probe(s, 0x000160e8u);")
-        # Job-queue drain instrumentation. The boot watchdog often interrupts
-        # inside the queue's sync callbacks, obscuring the outer queue state.
-        # This read-only probe records count/index progress at the actual loop.
-        if hst_profile and addr == 0x000705e4:
-            out.append("    sr_boot_probe(s, 0x000705e4u);")
         # TOKENSCAN_DIAG: instrumentation ONLY (not a fix) for the post-1.6 blocker. The
         # worker's PC sampler pins on f_001041f4's character-scan loop (top at L_0010433c):
         # it dispatches f_0006517c (a vtable "get char / element" call) once per iteration
@@ -2119,7 +2319,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
             else:
                 out.append(
-                    f"      dispatch(s, _t); {emit_host_return(resumable)} }}"
+                    f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}"
                 )
             continue
         if op == 0 and fn == 0x08:  # jr rs
@@ -2128,22 +2328,22 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
                 # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
-                out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, 0x{ds:08x}u); {emit_host_return(resumable)}")
+                out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, 0x{ds:08x}u); {emit_host_return(resumable, stack_census=stack_census)}")
             elif ds_is_syscall and dsw is not None:
                 # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
                 if a == 31:
-                    out.append(f"    {emit_host_return(resumable)}")
+                    out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
                 else:
                     out.append(f"    {{ uint32_t _t = {R(a)};")
-                    out.append(f"      dispatch(s, _t); {emit_host_return(resumable)} }}")
+                    out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
             elif a == 31:
                 # `jr $ra` IS the host return; $ra is read at the transfer by
                 # construction, so a slot that rewrites it cannot redirect this.
                 out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-                out.append(f"    {emit_host_return(resumable)}")
+                out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
@@ -2151,19 +2351,19 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
-                out.append(f"      dispatch(s, _t); {emit_host_return(resumable)} }}")
+                out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
             continue
         if op == 2:  # j
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in host_entries and not (target in resume_owners and target in labels):
-                out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable)}")
+                out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable, stack_census=stack_census)}")
             elif target in labels:
                 y = f"SR_YIELD(s, 0x{addr:08x}u); " if target <= addr else ""   # backward j: loop edge
                 out.append(f"    {y}goto L_{target:08x};")
             else:
-                out.append(f"    {{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t); {emit_host_return(resumable)} }}")
+                out.append(f"    {{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
             continue
         # conditional branch
         target = branch_target(addr, w)
@@ -2192,10 +2392,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
         else:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
+                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
             else:
                 out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable)} }} }} }}")
+                out.append(f"      if (_c) {{ {{ s->pc = 0x{target:08x}u; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
         if addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
     if continuations:
@@ -2211,13 +2411,13 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # dispatch the guest target and then leave the current native body.
                 out.append(
                     f"    {{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t); "
-                    f"{emit_host_return(resumable)} }}"
+                    f"{emit_host_return(resumable, stack_census=stack_census)} }}"
                 )
             else:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
-                out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame')}")
+                out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame', stack_census=stack_census)}")
         out.append("  _sr_fallthrough_return: ;")
-    out.append(f"    {emit_host_fallthrough(resumable)}")
+    out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
     out.append("}")
     out.append("")
     return out
@@ -2236,7 +2436,9 @@ def main(argv):
     if len(args) < expected:
         sys.stderr.write(
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
-            "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] [--extra-elf=ELF@BASE]...\n"
+            "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
+            "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
+            "[--stack-census]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -2263,6 +2465,9 @@ def main(argv):
     funcs_per_chunk = 2000
     chunk_target_bytes = 0
     extra_span_arg = None
+    cfg_report_path = None
+    cfg_gate = False
+    stack_census = False
     omit_aot = _OmitAot()
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
@@ -2271,6 +2476,15 @@ def main(argv):
             base = int(o.split("=", 1)[1], 16)
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
+        elif o.startswith("--cfg-report="):
+            cfg_report_path = o.split("=", 1)[1]
+            if not cfg_report_path:
+                sys.stderr.write("--cfg-report requires a path\n")
+                return 2
+        elif o == "--cfg-gate":
+            cfg_gate = True
+        elif o == "--stack-census":
+            stack_census = True
         elif o == "--static-verify":
             global SV_ENABLED
             SV_ENABLED = True
@@ -2290,6 +2504,13 @@ def main(argv):
             # Default (absent) preserves byte-identical output.
             global STALE_DETECT
             STALE_DETECT = True
+        elif o == "--nan-trap":
+            # SR_NAN_TRAP: follow every FPU/VFPU result write with a check that
+            # names the instruction whose result went non-finite from all-finite
+            # operands. Default (absent) emits no check statement at all, so the
+            # generated C is byte-identical to a pre-trap build.
+            global NAN_TRAP
+            NAN_TRAP = True
         elif o.startswith("--profile="):
             profile = o.split("=", 1)[1]
         elif o.startswith("--funcs-per-chunk="):
@@ -2323,6 +2544,11 @@ def main(argv):
         elif o.startswith("--extra-elf="):
             cli_extra_specs.append(o.split("=", 1)[1])
 
+    if stack_census:
+        # The dynamic run is meaningful only after the static ownership floor
+        # accepts the same image.
+        cfg_gate = True
+
     try:
         extra_specs = build_profile.resolve_list(
             "GAME_EXTRA_ELFS_ENV", use_env=use_env_extra, cli_values=cli_extra_specs,
@@ -2346,7 +2572,39 @@ def main(argv):
     # configuration, from --extra-span or the TITLE_EXTRA_SPANS seam). Every extra guest
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
-    analyzed, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
+    extra_spans = resolve_extra_spans(extra_span_arg)
+    analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    if cfg_report_path is not None or cfg_gate:
+        # This opt-in gate audits the primary image. Extra modules have their own
+        # analyzer invocation below and remain a separate bring-up surface until
+        # their ownership roots have an equivalent source-owned contract.
+        report_entries, report_ranges = analyzed, ranges
+        if not cfg_gate:
+            # A report-only run describes gate-mode analysis but must not change
+            # the entry set that feeds code emission.
+            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+        cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
+        if cfg_report_path is not None:
+            parent = os.path.dirname(cfg_report_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
+                output.write(canonical_cfg_json(cfg_report))
+            print("wrote CFG report:", cfg_report_path)
+        if cfg_gate:
+            cfg_findings = canonical_cfg_gate(cfg_report)
+            if cfg_findings:
+                for finding in cfg_findings:
+                    sys.stderr.write(
+                        f"CFG_GATE {finding['code']}: {finding['message']}\n"
+                    )
+                return 1
+            print(
+                "CFG_GATE PASS: "
+                f"{len(cfg_report['instructions'])} executable words, "
+                f"{len(cfg_report['entries'])} entries, "
+                f"{len(cfg_report['unowned_executable'])} unowned words recorded"
+            )
     owned_exec_ranges = list(ranges)
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
     omitted = omit_aot.apply(catalog, elf.entry)
@@ -2545,7 +2803,8 @@ def main(argv):
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries)))
+                dispatch_boundaries=dispatch_boundaries,
+                stack_census=stack_census)))
             func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
             text = """void f_000468c8(CpuState *s) {  /* custom stub: main_RunGameLoop - infinite frame loop */
     for (;;) {
@@ -2567,7 +2826,8 @@ def main(argv):
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries)))
+                dispatch_boundaries=dispatch_boundaries,
+                stack_census=stack_census)))
             func_texts[-1] = func_texts[-1].replace(
                 "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
             text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
@@ -2650,13 +2910,15 @@ def main(argv):
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries)))
+                dispatch_boundaries=dispatch_boundaries,
+                stack_census=stack_census)))
             emitted.append(a)
             if STALE_DETECT:
                 stale_funcs.append(a)
         except Unsupported as e:
             reason = str(e).replace('"', "'")
             text = f"void {entry_symbol(a, resume_owners)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
+            text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
             text += f'    sr_unimplemented(0x{a:08x}u, "{reason}");\n}}'
             func_texts.append(text)
             emitted.append(a)
@@ -2668,9 +2930,40 @@ def main(argv):
         sys.stderr.write(f"Processing extra ELF: {extra_elf_path} @ 0x{extra_base:08x}\n")
         extra_elf = Elf(extra_elf_path, base=extra_base)
         extra_ranges = exec_ranges(extra_elf)
+        if cfg_gate:
+            for lo, hi in extra_ranges:
+                if hi <= lo:
+                    continue
+                for old_lo, old_hi in owned_exec_ranges:
+                    if old_hi > old_lo and lo < old_hi and old_lo < hi:
+                        sys.stderr.write(
+                            "CODEGEN_EXEC_SPAN_OVERLAP: extra executable span "
+                            f"0x{lo:08x},0x{hi:08x} overlaps existing span "
+                            f"0x{old_lo:08x},0x{old_hi:08x}\n"
+                        )
+                        return 2
         owned_exec_ranges.extend(extra_ranges)
-        extra_known, _ = analyze(extra_elf)
+        extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
+        extra_known = set(extra_analyzed)
         extra_known = set(a for a in extra_known if in_ranges(a, extra_ranges))
+        if cfg_gate:
+            extra_report = canonical_cfg_report(
+                extra_elf, ranges=extra_ranges, entries=sorted(extra_known)
+            )
+            extra_findings = canonical_cfg_gate(extra_report)
+            if extra_findings:
+                for finding in extra_findings:
+                    sys.stderr.write(
+                        f"CFG_GATE extra-module {finding['code']}: "
+                        f"{finding['message']}\n"
+                    )
+                return 1
+            print(
+                "CFG_GATE PASS: extra module "
+                f"{len(extra_report['instructions'])} executable words, "
+                f"{len(extra_report['entries'])} entries, "
+                f"{len(extra_report['unowned_executable'])} unowned words recorded"
+            )
 
         extra_impmap = {}
         if extra_elf.reloc is not None:
@@ -2699,16 +2992,28 @@ def main(argv):
                 emitted.append(a)
                 continue
             try:
-                func_texts.append("\n".join(emit_function(extra_elf, a, extra_ranges, extra_known, profile=profile)))
+                func_texts.append("\n".join(emit_function(
+                    extra_elf, a, extra_ranges, extra_known, profile=profile,
+                    stack_census=stack_census)))
                 emitted.append(a)
             except Unsupported as e:
                 reason = str(e).replace('"', "'")
                 text = f"void f_{a:08x}(CpuState *s) {{  /* untranslatable: {reason} */\n"
+                text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
                 text += f'    sr_unimplemented(0x{a:08x}u, "{reason}");\n}}'
                 func_texts.append(text)
                 emitted.append(a)
                 stubbed.append((a, reason))
                 sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
+
+    if stack_census:
+        try:
+            func_texts = wrap_stack_census_functions(
+                func_texts, emitted, resume_owners
+            )
+        except ValueError as exc:
+            sys.stderr.write(f"codegen: {exc}\n")
+            return 2
 
     if chunk_target_bytes > 0:
         # Deterministic size-aware partition: preserve emitted function order and
@@ -2767,6 +3072,15 @@ def main(argv):
         "#include <stdio.h>",
         ""
     ]
+    census_entries = sorted({a for a in emitted if a not in resume_owners})
+    if stack_census:
+        census_values = census_entries or [0]
+        main_out.append(
+            "static const uint32_t sr_stack_census_expected_entries[] = {"
+            + ", ".join(f"0x{addr:08x}u" for addr in census_values)
+            + "};"
+        )
+        main_out.append("")
     for i in range(num_files):
         main_out.append(f"void sr_register_chunk_{i}(void);")
     main_out.append("\nvoid sr_register_all(void) {")
@@ -2783,6 +3097,11 @@ def main(argv):
         )
         main_out.append("        exit(1);")
         main_out.append("    }")
+    if stack_census:
+        main_out.append(
+            "    sr_stack_census_begin(sr_stack_census_expected_entries, "
+            f"{len(census_entries)}u);"
+        )
     if STALE_DETECT:
         # TD-27 compact translation-time records (address + entry word +
         # word count + FNV-1a per translated primary-image function). No raw

@@ -315,8 +315,6 @@ def _local_command(
         return "python tools/psp_readiness.py --json && python tools/psp_oracle/run_psplink.py --dry-run"
     if state == "LEGAL_HUMAN_BLOCKED":
         return "python tools/publish_audit.py --tracked-only"
-    if state == "UPSTREAM_BLOCKED":
-        return "cd interface; npm ci; npm test; npm run lint; npm run typecheck; npm run build"
     if state == "ENVIRONMENT_BLOCKED":
         return "python tools/psp_readiness.py --json"
     if state == MISSING_ROUTING_STATE:

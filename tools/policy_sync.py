@@ -46,7 +46,7 @@ HIGH_RISK = (
 
 def tracked_paths(repo_root: Path) -> list[str]:
     out = subprocess.run(["git", "ls-files"], cwd=repo_root, capture_output=True, text=True, check=True)
-    return out.stdout.split()
+    return [path for path in out.stdout.split() if (repo_root / path).exists()]
 
 
 def is_high_risk(path: str) -> bool:
@@ -71,7 +71,12 @@ def _regen_export(policy) -> None:
         provenance_ledger=ledger_path.read_bytes() if ledger_path.is_file() else None,
         manifest=manifest_path.read_bytes() if manifest_path.is_file() else None,
     )
-    public_export.write_document(export_path, document)
+    # The committed control carries the policy-derived fields only.  The
+    # tree-wide digests and counts are recomputed by the publication audit and
+    # the trusted attestation at verification time; committing them would make
+    # every unrelated merge rewrite the same line and conflict with every open
+    # pull request.
+    public_export.write_control_document(export_path, document)
     print(f"regenerated {export_path.name} for policy digest {policy.digest[:16]}...")
 
 

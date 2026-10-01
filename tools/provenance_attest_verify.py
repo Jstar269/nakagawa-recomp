@@ -66,6 +66,12 @@ Tier A -- absolute, whole tree, never grandfathered:
     implementation-bearing path outside it.  Scope is anchored to the trusted
     base policy over the trusted base tree and may only ever widen; letting the
     candidate policy decide was a complete bypass of every rule below.
+``INCLUDED_PATH_UNTRACKED``
+    the profile declares a path as published and the candidate tree has no
+    such file, so the path left the audited universe with no ledger entry and no
+    inherited claim.  The declaration must resolve to a tracked file or be
+    removed from the profile in the same change; a declaration the trusted base
+    already could not resolve is reported rather than blamed on the change.
 ``CLASSIFICATION_DOWNGRADE``
     a path authority still calls implementation was relabelled into a class
     that is not content-gated.
@@ -164,6 +170,8 @@ try:
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         validate_ledger,
     )
+    from .public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
+    from .public_export import build_control_document as _build_control_document
     from .public_export import build_document as _build_export_document
     from .publication_policy import PolicyError, load_policy
 except ImportError:
@@ -173,6 +181,8 @@ except ImportError:
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
         validate_ledger,
     )
+    from public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
+    from public_export import build_control_document as _build_control_document
     from public_export import build_document as _build_export_document
     from publication_policy import PolicyError, load_policy
 
@@ -239,16 +249,29 @@ class VerifyError(RuntimeError):
 class Finding:
     """One fatal or reported observation about the candidate tree."""
 
-    __slots__ = ("code", "path", "detail", "fatal")
+    __slots__ = ("code", "path", "detail", "fatal", "maintainer_action")
 
-    def __init__(self, code: str, path: str, detail: str, *, fatal: bool = True) -> None:
+    def __init__(self, code: str, path: str, detail: str, *, fatal: bool = True,
+                 maintainer_action: bool = False) -> None:
         self.code = code
         self.path = path
         self.detail = detail
         self.fatal = fatal
+        # True when a maintainer, not the pull-request author, is the only party
+        # who can clear this.  It never relaxes the verdict: the finding stays
+        # fatal and fails closed.  It only lets the report say who has to act,
+        # so "add a file" does not read to a contributor as "your change is
+        # wrong".  See MAINTAINER_ACTION_CODES.
+        self.maintainer_action = maintainer_action
 
     def as_dict(self) -> dict:
-        return {"code": self.code, "path": self.path, "detail": self.detail, "fatal": self.fatal}
+        return {
+            "code": self.code,
+            "path": self.path,
+            "detail": self.detail,
+            "fatal": self.fatal,
+            "maintainer_action": self.maintainer_action,
+        }
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -1138,24 +1161,40 @@ def _legacy_export_findings(
         declared = strict_json(raw, code="EXPORT_UNREADABLE", label="legacy public export")
     except VerifyError as error:
         return [Finding(error.code, EXPORT_PATH, str(error))]
+    return _export_field_findings(declared, generated_export, label="legacy export")
+
+
+def _export_field_findings(declared: dict, generated: dict, *, label: str) -> list[Finding]:
+    """Compare a declared export against the recomputed one, field for field.
+
+    A tree-derived field may be absent from the committed control -- that is the
+    shape this repository now commits, so that an unrelated merge cannot rewrite
+    the line and conflict with an open pull request.  Absence is not trust: the
+    value is recomputed here from the candidate tree and the policy, and a
+    declared value that disagrees is refused exactly like any other field.  Every
+    other field, and any field the recomputation does not produce, stays required.
+    """
     findings: list[Finding] = []
-    for field in sorted(set(generated_export) | set(declared)):
+    for field in sorted(set(generated) | set(declared)):
         if field in EXPORT_ADVISORY_FIELDS:
             continue
         if field not in declared:
+            if field in _EXPORT_TREE_DERIVED_FIELDS:
+                continue
             findings.append(Finding(
                 "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
-                f"legacy export omits the generated field {field!r}",
+                f"{label} omits the required field {field!r}",
             ))
-        elif field not in generated_export:
+        elif field not in generated:
             findings.append(Finding(
                 "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
-                f"legacy export declares {field!r}, which the generated export does not produce",
+                f"{label} declares {field!r}, which the recomputation does not produce",
             ))
-        elif declared[field] != generated_export[field]:
+        elif declared[field] != generated[field]:
             findings.append(Finding(
                 "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
-                f"legacy export field {field!r} does not match the trusted integration-time generation",
+                f"{label} field {field!r} does not match the trusted recomputation "
+                "from the candidate tree and the canonical policy",
             ))
     return findings
 
@@ -1202,6 +1241,10 @@ def _ephemeral_verdict_findings(
         trusted_policy,
         authorized_delta=authorized_policy_delta,
     ))
+    findings.extend(_declared_path_findings(
+        candidate_blobs, base_blobs, candidate_policy, trusted_policy,
+        materialized_outside=CONTROL_PATHS,
+    ))
     findings.extend(_ci_findings(candidate_blobs, base_blobs))
 
     candidate_included = {
@@ -1224,6 +1267,7 @@ def _ephemeral_verdict_findings(
             "TRUSTED_SCOPE_VIOLATION", path,
             "new implementation-bearing path is neither included by the candidate policy nor excluded "
             "by the trusted policy, so it would enter the tree unverified",
+            maintainer_action=True,
         ))
 
     legacy_entries: dict[str, dict] | None = None
@@ -1275,12 +1319,14 @@ def _ephemeral_verdict_findings(
                 record_finding, path,
                 "trusted detailed authority has no exact path-specific record for this added or changed "
                 "executable/security-sensitive path",
+                maintainer_action=True,
             ))
         elif record_finding == "TRUSTED_PATH_UNQUALIFIED":
             findings.append(Finding(
                 record_finding, path,
                 "the exact trusted record for this added or changed executable/security-sensitive path "
                 "is not implementation-grade",
+                maintainer_action=True,
             ))
 
         # Optional exact-blob authorization is independent of the candidate
@@ -1573,7 +1619,11 @@ def generate_ephemeral_controls(
         candidate_policy=candidate_policy,
         ledger_bytes=generated_ledger_bytes,
     )
-    generated_export_bytes = _canonical_json_bytes(generated_export)
+    # The generated export has ONE committed shape: the policy-derived control.
+    # The tree-wide digests stay in ``generated_export`` for the field-by-field
+    # comparison, and every writer -- the hosted scratch output and the
+    # maintainer's ``make provenance-refresh`` -- emits the same control bytes.
+    generated_export_bytes = _canonical_json_bytes(_build_control_document(generated_export))
     return EphemeralControls(
         base_commit=base_commit,
         base_tree=base_tree,
@@ -1733,6 +1783,9 @@ def verify_ephemeral(
         },
         "findings": [finding.as_dict() for finding in findings],
         "fatal_count": len(fatal),
+        "maintainer_action_paths": sorted(
+            {finding.path for finding in findings if finding.maintainer_action and finding.fatal}
+        ),
         "exact_blob_approvals_required": require_exact_blob_approvals,
         "blob_approvals_available": len(approvals),
         "blobs_approved_this_candidate": sorted(blob_approved, key=lambda item: item["path"]),
@@ -1771,6 +1824,63 @@ def _policy_findings(
     return findings
 
 
+def _declared_path_findings(
+    candidate: dict[str, bytes],
+    base: dict[str, bytes],
+    candidate_policy,
+    trusted_policy,
+    materialized_outside: frozenset[str] = frozenset(),
+) -> list[Finding]:
+    """A published path the profile declares but the tree does not carry.
+
+    The ledger is built from tracked files intersected with include_paths, and
+    the inherited universe is the trusted base policy over the paths still
+    present in the candidate tree.  A declaration whose file is gone therefore
+    leaves the audited universe through both filters at once: no ledger entry,
+    no export contribution, no inherited claim and no finding.  The profile
+    still says the path ships, so the policy document and the tree disagree
+    about what is published -- silently.
+
+    Dropping the declaration is legitimate, but it is a policy change and
+    belongs to a maintainer-admitted delta (AGENTS.md section 4), not to an edit
+    of the tree that leaves the profile behind.  What is refused here is
+    exactly that quiet form, and a declaration invented for a path that never
+    existed.
+    """
+    findings: list[Finding] = []
+    # An entry the TRUSTED base already declared and already could not resolve
+    # is debt this change did not create.  It stays visible in the report, and
+    # it is left non-fatal so a stale profile does not block every change until
+    # somebody removes the entry.
+    inherited_debt = {
+        entry for entry in trusted_policy.include_paths
+        if trusted_policy.resolve(entry).path not in base
+    }
+    for entry in sorted(candidate_policy.include_paths):
+        if entry in materialized_outside:
+            # This run generates that control outside the candidate tree by
+            # design, so its absence from the tree is the mode, not a defect.
+            continue
+        if candidate_policy.resolve(entry).path in candidate:
+            continue
+        if entry in inherited_debt:
+            findings.append(Finding(
+                "INCLUDED_PATH_UNTRACKED", entry,
+                "the profile declares this path as published, but the trusted base tree has no "
+                "such file either, so the declaration resolved to nothing before this change; "
+                "remove it from the profile by a maintainer-admitted policy delta",
+                fatal=False,
+            ))
+        else:
+            findings.append(Finding(
+                "INCLUDED_PATH_UNTRACKED", entry,
+                "the profile declares this path as published, but the candidate tree has no such "
+                "file, so it is in no ledger, no export and no protected universe; keep tracking "
+                "the file, or remove the declaration from the profile in the same change",
+            ))
+    return findings
+
+
 #: Export fields whose value is security-relevant and therefore recomputed.
 #: Older exports may carry ``candidate_tree``; it is advisory and the actual
 #: candidate tree is bound by the verdict's repository_scope.
@@ -1805,26 +1915,7 @@ def _export_findings(candidate: dict[str, bytes], policy) -> list[Finding]:
         provenance_ledger=ledger_raw,
         manifest=manifest_raw,
     )
-    findings: list[Finding] = []
-    for field in sorted(set(canonical) | set(declared)):
-        if field in EXPORT_ADVISORY_FIELDS:
-            continue
-        if field not in declared:
-            findings.append(Finding(
-                "EXPORT_FIELD_MISMATCH", EXPORT_PATH, f"export omits the required field {field!r}",
-            ))
-        elif field not in canonical:
-            findings.append(Finding(
-                "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
-                f"export declares {field!r}, which the canonical recomputation does not produce",
-            ))
-        elif declared[field] != canonical[field]:
-            findings.append(Finding(
-                "EXPORT_FIELD_MISMATCH", EXPORT_PATH,
-                f"export field {field!r} does not match the canonical recomputation from the "
-                "candidate tree and the trusted-scope policy",
-            ))
-    return findings
+    return _export_field_findings(declared, canonical, label="export")
 
 
 def _ci_findings(candidate: dict[str, bytes], trusted: dict[str, bytes]) -> list[Finding]:
@@ -1963,6 +2054,9 @@ def verify(
             "is issued for it. Update the branch and re-run",
         ))
     findings.extend(_policy_findings(candidate_policy, trusted_policy))
+    findings.extend(_declared_path_findings(
+        candidate_blobs, base_blobs, candidate_policy, trusted_policy,
+    ))
     findings.extend(_ci_findings(candidate_blobs, base_blobs))
 
     for error in validate_ledger(candidate_ledger, require_hashes=True, require_resolved=True):
@@ -2130,12 +2224,14 @@ def verify(
                 record_finding, path,
                 "trusted detailed authority has no exact path-specific record for this added or changed "
                 "executable/security-sensitive path",
+                maintainer_action=True,
             ))
         elif record_finding == "TRUSTED_PATH_UNQUALIFIED":
             findings.append(Finding(
                 record_finding, path,
                 "the exact trusted record for this added or changed executable/security-sensitive path "
                 "is not implementation-grade",
+                maintainer_action=True,
             ))
 
         # -- optional exact-blob authorization ----------------------------
@@ -2228,6 +2324,9 @@ def verify(
         "public_path_count": len(included),
         "findings": [finding.as_dict() for finding in findings],
         "fatal_count": len(fatal),
+        "maintainer_action_paths": sorted(
+            {finding.path for finding in findings if finding.maintainer_action and finding.fatal}
+        ),
         "exact_blob_approvals_required": require_exact_blob_approvals,
         "blob_approvals_available": len(approvals),
         "blobs_approved_this_candidate": sorted(approved_blobs, key=lambda i: i["path"]),
@@ -2294,7 +2393,103 @@ def _print_report(verdict: dict, *, show_debt: bool) -> None:
         for item in debt:
             print(f"          [{item['backing']}] {item['path']}: "
                   "public claim differs; private record details withheld")
+    _print_guidance(verdict)
     print(f"  verdict: {verdict['verdict'].upper()} ({verdict['fatal_count']} fatal finding(s))")
+
+
+def _print_guidance(verdict: dict) -> None:
+    """Say, in plain words, who has to act on the remaining findings.
+
+    A pull request that only adds or touches a path the trusted authority has no
+    exact record for fails closed by design -- the record lives outside the
+    repository and no contributor can create one.  Reporting that as a bare
+    "FAIL" reads as "your change is wrong", which is both untrue and the single
+    biggest source of contributor friction.  The verdict is unchanged; only the
+    explanation names the actor.
+    """
+    fatal = [item for item in verdict["findings"] if item["fatal"]]
+    # The per-finding flag is authoritative; the code set is the fallback for a
+    # verdict written before the flag existed, so an older verdict still gets
+    # the plain-language explanation instead of a bare FAIL.
+    maintainer = [
+        item for item in fatal
+        if item.get("maintainer_action") or item["code"] in MAINTAINER_ACTION_CODES
+    ]
+    if not maintainer:
+        if fatal:
+            print("  what you need to do: fix the finding(s) above in this pull request. "
+                  "They are about your change, not about maintainer bookkeeping.")
+        return
+    paths = sorted({item["path"] for item in maintainer})
+    if len(maintainer) == len(fatal):
+        print(f"  nothing for you to do: a maintainer will admit these {len(paths)} new or "
+              "unrecorded file(s). The protected provenance ledger is maintained outside this "
+              "repository, so only a maintainer can add the record. Your change itself is not "
+              "the problem; this check will pass once the admission lands.")
+    else:
+        print(f"  a maintainer will admit these {len(paths)} new or unrecorded file(s) "
+              "(nothing for you to do about those), but the other finding(s) above are about "
+              "your change and do need your attention.")
+    for path in paths:
+        print(f"          {path}")
+
+
+def _print_contributor_summary(verdict: dict) -> None:
+    """Print the Markdown a pull-request author reads first.
+
+    Written for the job summary rather than for a log: a contributor needs to
+    know in one sentence whether anything is wrong with *their change*.
+    """
+    fatal = [item for item in verdict.get("findings", []) if item.get("fatal")]
+    maintainer = [
+        item for item in fatal
+        if item.get("maintainer_action") or item.get("code") in MAINTAINER_ACTION_CODES
+    ]
+    # The verdict's own list is authoritative, but a finding carries its path
+    # too, and a verdict written before that field existed still names them.
+    paths = sorted(
+        set(verdict.get("maintainer_action_paths") or [])
+        | {item.get("path", "") for item in maintainer if item.get("path")}
+    )
+    if not fatal:
+        print("### Provenance: passed")
+        print("")
+        print("Every changed path is covered by the trusted provenance authority.")
+        return
+    if maintainer and len(maintainer) == len(fatal):
+        print(f"### Provenance: a maintainer admits {len(paths)} new file(s) -- nothing for you to do")
+        print("")
+        print(
+            "These files need an entry in the project's protected provenance ledger, which is "
+            "maintained outside this repository. No contributor can add that entry, and your "
+            "change is not the problem. A maintainer admits the paths and this check passes. "
+            "If you did not mean to add or edit one of them, say so in the pull request."
+        )
+        print("")
+        for path in paths:
+            print(f"- `{path}`")
+        return
+    print("### Provenance: this pull request has findings you can fix")
+    print("")
+    if paths:
+        print(
+            f"A maintainer will admit {len(paths)} of the listed file(s), but the remaining "
+            f"findings below are about your change and need your attention:"
+        )
+    else:
+        print("The findings below are about your change:")
+    print("")
+    for item in fatal:
+        print(f"- `{item['code']}` on `{item['path']}`: {item['detail']}")
+
+
+#: Finding codes a contributor cannot clear alone.  Exposed so the reporting
+#: layer and its tests agree on one list rather than restating it per caller.
+MAINTAINER_ACTION_CODES = frozenset({
+    "TRUSTED_PATH_MISSING",
+    "TRUSTED_PATH_UNQUALIFIED",
+    "TRUSTED_SCOPE_VIOLATION",
+})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2303,8 +2498,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="repository holding both the candidate and base objects")
     parser.add_argument("--candidate", default=None,
                         help="candidate commit-ish under verification (required unless --emit-authority-baseline)")
-    parser.add_argument("--base", required=True, help="trusted base commit-ish supplying policy and prior ledger")
-    parser.add_argument("--trusted-ledger", type=Path, required=True,
+    parser.add_argument("--base", help="trusted base commit-ish supplying policy and prior ledger")
+    parser.add_argument(
+        "--explain-verdict", metavar="VERDICT_JSON", type=Path, default=None,
+        help=(
+            "print the pull-request-author summary for a verdict written by --json and exit; "
+            "used by the hosted job summary so the plain-language explanation is the same "
+            "text the report shows"
+        ),
+    )
+    parser.add_argument("--trusted-ledger", type=Path,
                         help="external detailed implementation ledger; must be outside --repo")
     parser.add_argument(
         "--ephemeral", action="store_true",
@@ -2365,6 +2568,26 @@ def main(argv: list[str] | None = None) -> int:
         help="the immutable revision the trusted ledger was read at; recorded in the verdict",
     )
     args = parser.parse_args(argv)
+
+    if args.explain_verdict is not None:
+        # A standalone explanation mode: the verdict already exists, and the
+        # only question is who has to act on it.  Reading a verdict file is not
+        # verification, so this never prints a verdict of its own.
+        try:
+            verdict = json.loads(args.explain_verdict.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"trusted provenance attestation: VERDICT_UNREADABLE: {error}", file=sys.stderr)
+            return 2
+        _print_contributor_summary(verdict)
+        return 0
+
+    # --base and --trusted-ledger are required for every verifying mode, and not
+    # for --explain-verdict, which reads an existing verdict rather than
+    # producing one. Enforced here so the explanation mode stays a single
+    # command with no inputs a contributor does not have.
+    for name, value in (("--base", args.base), ("--trusted-ledger", args.trusted_ledger)):
+        if value is None:
+            parser.error(f"the following arguments are required: {name}")
 
     try:
         if args.emit_authority_baseline is not None:

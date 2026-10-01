@@ -7,6 +7,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,10 @@ class TitleManifestTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"], 1)
         self.assertEqual(schema["properties"]["codegen_profile"]["enum"], ["none", "hst"])
         self.assertEqual(
+            schema["$defs"]["disc"]["properties"]["require_local_compatibility_record"]["type"],
+            "boolean",
+        )
+        self.assertEqual(
             set(schema["required"]),
             {
                 "schema_version", "id", "display_name", "kind", "executable",
@@ -66,6 +71,11 @@ class TitleManifestTests(unittest.TestCase):
             schema["$defs"]["profileZero"]["properties"]["source_program"]["properties"]["entry_symbol"]["pattern"],
             "^[A-Za-z_][A-Za-z0-9_]*$",
         )
+        profile_zero_case = (
+            schema["$defs"]["profileZero"]["properties"]["acceptance"]
+            ["properties"]["cases"]["items"]
+        )
+        self.assertIn("gate", profile_zero_case["properties"])
         required_bindings = schema["properties"]["required_runtime_bindings"]
         self.assertEqual(required_bindings["maxItems"], len(title_manifest.DECLARABLE_BINDING_FAMILIES))
         self.assertTrue(required_bindings["uniqueItems"])
@@ -143,6 +153,14 @@ class TitleManifestTests(unittest.TestCase):
         }
         normalized = title_manifest.validate_manifest(retail)
         self.assertEqual(normalized["disc"]["id"], "TEST00001")
+
+        retail["disc"]["require_local_compatibility_record"] = True
+        normalized = title_manifest.validate_manifest(retail)
+        self.assertTrue(normalized["disc"]["require_local_compatibility_record"])
+        retail["disc"]["require_local_compatibility_record"] = "yes"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "boolean"):
+            title_manifest.validate_manifest(retail)
+        retail["disc"].pop("require_local_compatibility_record")
 
         retail["disc"]["compatible_revisions"] = ["TEST00002"]
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "forbidden"):
@@ -267,6 +285,151 @@ class TitleManifestTests(unittest.TestCase):
                 with self.assertRaises(title_manifest.TitleManifestError):
                     title_manifest.validate_manifest(value)
 
+    def test_loose_content_roots_validate_paths_mounts_precedence_and_migration_default(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        filesystem = value["filesystem"]
+        self.assertNotIn("loose_content_roots", filesystem)
+        self.assertEqual(title_manifest.validate_manifest(value)["filesystem"]["loose_content_roots"], [])
+
+        filesystem["loose_content_roots"] = [
+            {"root": "second", "mount": "data", "precedence": 20},
+            {"root": "first", "mount": "data", "precedence": 10},
+        ]
+        normalized = title_manifest.validate_manifest(value)
+        self.assertEqual(normalized["filesystem"]["loose_content_roots"], [
+            {"root": "first", "mount": "data", "precedence": 10,
+             "skip_primary_root": False, "exclude": []},
+            {"root": "second", "mount": "data", "precedence": 20,
+             "skip_primary_root": False, "exclude": []},
+        ])
+
+        invalid = [
+            ([{"root": "../outside", "mount": "", "precedence": 1}], "components"),
+            ([{"root": "/absolute", "mount": "", "precedence": 1}], "portable relative"),
+            ([{"root": "same", "mount": "", "precedence": 1},
+              {"root": "SAME", "mount": "other", "precedence": 2}], "duplicate loose-content root"),
+            ([{"root": "parent", "mount": "", "precedence": 1},
+              {"root": "parent/child", "mount": "other", "precedence": 2}], "overlapping loose-content roots"),
+            ([{"root": "one", "mount": "", "precedence": 1},
+              {"root": "two", "mount": "", "precedence": 1}], "duplicate loose-content precedence"),
+            ([{"root": "one", "mount": "../escape", "precedence": 1}], "components"),
+            ([{"root": "one", "mount": "", "precedence": 1, "fallback": True}], "unknown field"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "skip_primary_root": True}], "true exactly when root is '.'"),
+            ([{"root": ".", "mount": "", "precedence": 1,
+               "skip_primary_root": False}], "true exactly when root is '.'"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "exclude": ["../escape"]}], "components"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "exclude": ["cache", "CACHE"]}], "duplicate excluded path"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "exclude": ["a", "b", "c"]}], "maximum is 2"),
+        ]
+        for roots, error in invalid:
+            with self.subTest(roots=roots):
+                candidate = copy.deepcopy(value)
+                candidate["filesystem"]["loose_content_roots"] = roots
+                with self.assertRaisesRegex(title_manifest.TitleManifestError, error):
+                    title_manifest.validate_manifest(candidate)
+
+        candidate = copy.deepcopy(value)
+        candidate["filesystem"]["loose_content_roots"] = [{
+            "root": ".", "mount": "", "precedence": 1,
+        }]
+        normalized_root = title_manifest.validate_manifest(candidate)[
+            "filesystem"]["loose_content_roots"][0]
+        self.assertEqual(normalized_root["root"], ".")
+        self.assertTrue(normalized_root["skip_primary_root"])
+        self.assertEqual(normalized_root["exclude"], [])
+        candidate["filesystem"]["loose_content_roots"].append({
+            "root": "nested", "mount": "", "precedence": 2,
+        })
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "overlapping loose-content roots"):
+            title_manifest.validate_manifest(candidate)
+
+    def test_migration_root_example_encodes_and_resolves_old_host_path(self) -> None:
+        manifest = copy.deepcopy(self.fixture)
+        manifest["filesystem"]["data_root"] = "content/archive"
+        manifest["filesystem"]["loose_content_roots"] = [
+            {"root": ".", "mount": "", "precedence": 0,
+             "skip_primary_root": True},
+        ]
+        validated = title_manifest.validate_manifest(manifest)
+
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            data_root = base / "content" / "archive"
+            data_root.mkdir(parents=True)
+            loose_file = base / "content" / "data" / "sound" / "menu.csv"
+            loose_file.parent.mkdir(parents=True)
+            loose_file.write_bytes(b"synthetic loose file")
+
+            encoded = title_manifest.encode_loose_content_roots(validated, data_root)
+            host_root, mount, precedence, skip_primary, exclude_count = \
+                encoded.rstrip("\n").split("\t")
+            self.assertEqual(Path(host_root), data_root.parent.resolve())
+            self.assertEqual((mount, precedence, skip_primary, exclude_count),
+                             ("", "0", "1", "0"))
+
+            guest_path = "host0:data/sound/menu.csv"
+            relative_key = guest_path.removeprefix("host0:")
+            self.assertEqual((Path(host_root) / relative_key).read_bytes(),
+                             b"synthetic loose file")
+
+    def test_loose_content_encoder_rejects_missing_declared_roots(self) -> None:
+        manifest = copy.deepcopy(self.fixture)
+        manifest["filesystem"]["loose_content_roots"] = [
+            {"root": "missing", "mount": "data", "precedence": 1},
+        ]
+        validated = title_manifest.validate_manifest(manifest)
+        with tempfile.TemporaryDirectory() as temp:
+            data_root = Path(temp) / "archive"
+            data_root.mkdir()
+            with self.assertRaisesRegex(
+                title_manifest.TitleManifestError,
+                "Loose-content root binding #289.*resolved",
+            ):
+                title_manifest.encode_loose_content_roots(validated, data_root)
+
+    def test_generic_runtime_sources_have_no_flagship_data_directory_literals(self) -> None:
+        docs = (ROOT / "docs" / "TITLE_PROFILE_ARCHITECTURE.md").read_text(encoding="utf-8")
+        section = re.search(
+            r"### Typed loose-content roots.*?```json\s*(.*?)```",
+            docs,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(section, "manifest documentation must retain its typed-root example")
+        documented_roots = json.loads("{" + section.group(1) + "}")[
+            "loose_content_roots"
+        ]
+        forbidden = {"xbdata_extracted", "xbdata"}
+        forbidden.update(root["root"] for root in documented_roots if root["root"] != ".")
+        source_suffixes = {".c", ".h", ".cc", ".cpp", ".inc", ".inl"}
+        sources = [
+            path
+            for directory in (ROOT / "src" / "rt", ROOT / "src" / "core")
+            for path in directory.rglob("*")
+            if path.is_file() and path.suffix.lower() in source_suffixes
+        ]
+        hits = [(path.relative_to(ROOT).as_posix(), token)
+                for path in sources for token in forbidden
+                if token.casefold() in path.read_text(encoding="utf-8").casefold()]
+        self.assertEqual(hits, [], f"title filesystem literals leaked into generic runtime: {hits}")
+
+    def test_migration_documentation_uses_the_parent_root_contract(self) -> None:
+        docs = (ROOT / "docs" / "TITLE_PROFILE_ARCHITECTURE.md").read_text(encoding="utf-8")
+        section = re.search(
+            r"For a previous layout.*?```json\s*(.*?)```",
+            docs,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(section)
+        roots = json.loads("{" + section.group(1) + "}")["loose_content_roots"]
+        self.assertEqual(roots, [{
+            "root": ".", "mount": "", "precedence": 0,
+            "skip_primary_root": True,
+        }])
+
     def test_declared_executable_input_uses_the_make_safe_rule(self) -> None:
         value = copy.deepcopy(self.fixture)
         value["filesystem"]["executable"] = "place_game_here/EBOOT.elf"
@@ -377,7 +540,11 @@ class TitleManifestTests(unittest.TestCase):
         self.assertEqual(contract["unknown_capability_policy"], "fail-closed")
         self.assertEqual(contract["profile_id"], "profile-zero-v1")
         self.assertFalse(normalized["profile_zero"]["acceptance"]["private_inputs_allowed"])
-        self.assertEqual(normalized["profile_zero"]["build"]["makefile"], "fixtures/pspdev_phase5/Makefile")
+        self.assertEqual(normalized["profile_zero"]["build"]["makefile"], "fixtures/profile_zero/Makefile")
+        self.assertEqual(
+            normalized["profile_zero"]["acceptance"]["cases"][0]["gate"],
+            "profile-zero-e2e",
+        )
 
         value = copy.deepcopy(self.fixture)
         value["runtime_contract"]["capability_requirements"].append("unknown-host-fastmem")
@@ -433,15 +600,42 @@ class TitleManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "private-title evidence"):
             title_manifest.validate_manifest(value)
 
+    def test_profile_zero_implemented_case_requires_a_named_gate(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        implemented = next(
+            case for case in value["profile_zero"]["acceptance"]["cases"]
+            if case["status"] == "implemented"
+        )
+        implemented.pop("gate")
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "must name their proving gate"):
+            title_manifest.validate_manifest(value)
+
+        implemented["gate"] = "profile-zero-e2e"
+        normalized = title_manifest.validate_manifest(value)
+        self.assertEqual(
+            next(case for case in normalized["profile_zero"]["acceptance"]["cases"]
+                 if case["status"] == "implemented")["gate"],
+            "profile-zero-e2e",
+        )
+
+        implemented["gate"] = "../unsafe"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "must match"):
+            title_manifest.validate_manifest(value)
+
     def test_profile_zero_runnable_claim_matches_acceptance_state(self) -> None:
         value = copy.deepcopy(self.fixture)
-        value["profile_zero"]["runnable"] = True
+        value["profile_zero"]["runnable"] = False
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "exactly when"):
             title_manifest.validate_manifest(value)
 
         value = copy.deepcopy(self.fixture)
-        value["profile_zero"]["acceptance"]["status"] = "ready"
+        value["profile_zero"]["acceptance"]["status"] = "scaffold"
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "exactly when"):
+            title_manifest.validate_manifest(value)
+
+        value = copy.deepcopy(self.fixture)
+        value["profile_zero"]["acceptance"]["cases"][0]["status"] = "planned"
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "every case to be implemented"):
             title_manifest.validate_manifest(value)
 
 

@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "ui_renderer.h"
+#include "ui_clip.h"
 #include "iso_reader.h"
 #include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
@@ -48,7 +49,8 @@ static void draw_rect_outline(SDL_Renderer *ren, float x, float y, float w, floa
  * SDL3_ttf shared library (if the user happens to have it) and open a
  * system UI font already licensed on the user's own machine. If the
  * library, every symbol, or every font file is missing, the classic
- * SDL_RenderDebugText path below draws everything, so the UI works with
+ * SDL_RenderDebugText path below draws everything and the failing step is
+ * logged once to stderr (the fallback is never silent), so the UI works with
  * whatever is thrown at it. Set NK_UI_NO_TTF=1 to force the fallback
  * (e.g. CI machines without the library). Nothing here is linked:
  * SDL_LoadObject/SDL_LoadFunction resolve everything at runtime, so the
@@ -82,6 +84,7 @@ typedef struct {
 typedef struct {
     bool attempted;
     bool ready;
+    const char *fallback_reason; /* stable token naming the failing step */
     SDL_SharedObject *lib;
     UiTtfInitFn f_init;
     UiTtfQuitFn f_quit;
@@ -114,7 +117,7 @@ static float ui_font_pt_for_scale(float scale, float density) {
 
 static bool ui_font_file_exists(const char *path) {
     if (!path || !*path) return false;
-    FILE *f = fopen(path, "rb");
+    FILE *f = nk_fopen_utf8(path, "rb");
     if (!f) return false;
     fclose(f);
     return true;
@@ -124,8 +127,8 @@ static bool ui_font_file_exists(const char *path) {
  * guest semantics). First existing file wins. */
 static bool ui_font_find_system_font(char *out_path, size_t out_len) {
 #if defined(_WIN32) || defined(_WIN64)
-    /* Check user-provided open-source fonts first (%LOCALAPPDATA%\nakagawa\fonts\),
-     * followed by Windows system fonts (%WINDIR%\Fonts\).
+    /* Check user-provided open-source fonts first (the fonts sibling of the
+     * canonical per-user data root), followed by Windows system fonts (%WINDIR%\Fonts\).
      * Open-source font guidelines:
      * - Native UI & Setup Wizard: Inter, Roboto Flex, Rubik (SIL OFL)
      * - In-Game HUD: M PLUS Rounded 1c, Rubik, Nunito (SIL OFL)
@@ -138,10 +141,24 @@ static bool ui_font_find_system_font(char *out_path, size_t out_len) {
         "KosugiMaru-Regular.ttf",
         NULL
     };
-    const char *appdata = getenv("LOCALAPPDATA");
-    if (appdata && *appdata) {
+    char data_root[MAX_PATH_LEN];
+    char app_fonts_root[MAX_PATH_LEN];
+    bool have_app_fonts_root = false;
+    if (nk_platform_resolve_app_data_dir(data_root, sizeof(data_root))) {
+        /* Windows and macOS keep data under <vendor>/data, so fonts sit beside
+         * it in <vendor>/fonts; the XDG root is the vendor directory itself. */
+        char *leaf = strrchr(data_root, nk_platform_path_separator());
+        if (leaf && strcmp(leaf + 1, "data") == 0) *leaf = '\0';
+        int written = snprintf(app_fonts_root, sizeof(app_fonts_root),
+                               "%s%cfonts", data_root,
+                               nk_platform_path_separator());
+        have_app_fonts_root = written > 0 &&
+            (size_t)written < sizeof(app_fonts_root);
+    }
+    if (have_app_fonts_root) {
         for (int i = 0; kOpenSourceFiles[i]; i++) {
-            snprintf(out_path, out_len, "%s\\nakagawa\\fonts\\%s", appdata, kOpenSourceFiles[i]);
+            snprintf(out_path, out_len, "%s%c%s", app_fonts_root,
+                     nk_platform_path_separator(), kOpenSourceFiles[i]);
             if (ui_font_file_exists(out_path)) return true;
         }
     }
@@ -199,6 +216,17 @@ static void *ui_font_sym(const char *name) {
     return (void *)SDL_LoadFunction(g_font.lib, name);
 }
 
+/* One stderr line naming the failing step, then the bitmap fallback. Called
+ * exactly once per process from ui_font_ensure (the load is attempted once),
+ * so the fallback can never be silent (#421). */
+static void ui_font_fall_back(const char *reason, const char *message) {
+    g_font.fallback_reason = reason;
+    fprintf(stderr,
+            "[nakagawa] ui font: readable TTF path unavailable: %s; "
+            "using the SDL_RenderDebugText bitmap fallback\n",
+            message);
+}
+
 /* All-or-nothing load: any missing piece disables the whole layer rather
  * than running a half-wired text stack. */
 static void ui_font_ensure(void) {
@@ -206,22 +234,31 @@ static void ui_font_ensure(void) {
     g_font.attempted = true;
     g_font.active_bucket = -1;
     g_font.density = 1.0f;
+    g_font.fallback_reason = "NONE";
 
     const char *force_off = getenv("NK_UI_NO_TTF");
-    if (force_off && *force_off) return;
+    if (force_off && *force_off) {
+        ui_font_fall_back("forced-off", "disabled by NK_UI_NO_TTF");
+        return;
+    }
 
-#if defined(_WIN32) || defined(_WIN64)
-    static const char *kLibs[] = { "SDL3_ttf.dll", NULL };
-#elif defined(__APPLE__)
-    static const char *kLibs[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
-#else
-    static const char *kLibs[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
-#endif
-    for (int i = 0; kLibs[i]; i++) {
-        g_font.lib = SDL_LoadObject(kLibs[i]);
+    /* Beside the executable first (a user-placed SDL3_ttf.dll wins), then the
+     * platform loader's default bare-name search (PATH on Windows). Built by
+     * the pure player helper so tests pin the order without a loader. */
+    char ttf_candidates[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+    const char *exe_dir = SDL_GetBasePath();
+    int ttf_count = player_app_ttf_library_candidates(
+        exe_dir, ttf_candidates, PLAYER_APP_TTF_MAX_CANDIDATES);
+    for (int i = 0; i < ttf_count; i++) {
+        g_font.lib = SDL_LoadObject(ttf_candidates[i]);
         if (g_font.lib) break;
     }
-    if (!g_font.lib) return;
+    if (!g_font.lib) {
+        ui_font_fall_back("library-missing",
+                          "the SDL3_ttf library was not found beside the "
+                          "executable or on the loader path");
+        return;
+    }
 
     g_font.f_init = (UiTtfInitFn)ui_font_sym("TTF_Init");
     g_font.f_quit = (UiTtfQuitFn)ui_font_sym("TTF_Quit");
@@ -233,13 +270,26 @@ static void ui_font_ensure(void) {
     g_font.f_render = (UiTtfRenderTextFn)ui_font_sym("TTF_RenderText_Blended");
     if (!g_font.f_init || !g_font.f_quit || !g_font.f_open || !g_font.f_close ||
         !g_font.f_set_size || !g_font.f_measure || !g_font.f_measure_prefix || !g_font.f_render) {
+        const char *missing = !g_font.f_init ? "TTF_Init" :
+                              !g_font.f_quit ? "TTF_Quit" :
+                              !g_font.f_open ? "TTF_OpenFont" :
+                              !g_font.f_close ? "TTF_CloseFont" :
+                              !g_font.f_set_size ? "TTF_SetFontSize" :
+                              !g_font.f_measure ? "TTF_GetStringSize" :
+                              !g_font.f_measure_prefix ? "TTF_MeasureString" :
+                              "TTF_RenderText_Blended";
+        char message[160];
+        snprintf(message, sizeof(message),
+                 "the SDL3_ttf library is missing the %s symbol", missing);
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("symbol-missing", message);
         return;
     }
     if (!g_font.f_init()) {
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("init-failed", "TTF_Init failed");
         return;
     }
     char font_path[MAX_PATH_LEN];
@@ -247,13 +297,18 @@ static void ui_font_ensure(void) {
         g_font.f_quit();
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("no-system-font", "no system UI font was found");
         return;
     }
     g_font.font = g_font.f_open(font_path, ui_font_pt_for_scale(1.0f, 1.0f));
     if (!g_font.font) {
+        char message[MAX_PATH_LEN + 64];
+        snprintf(message, sizeof(message),
+                 "the system UI font could not be opened (%s)", font_path);
         g_font.f_quit();
         SDL_UnloadObject(g_font.lib);
         g_font.lib = NULL;
+        ui_font_fall_back("open-failed", message);
         return;
     }
     g_font.ready = true;
@@ -517,6 +572,17 @@ void ui_font_set_density(float density) {
     if (density >= 1.0f && density <= 3.0f) {
         g_font.density = density;
     }
+}
+
+const char *ui_font_mode(void) {
+    ui_font_ensure();
+    return g_font.ready ? "ttf" : "bitmap";
+}
+
+const char *ui_font_fallback_reason(void) {
+    ui_font_ensure();
+    if (g_font.ready) return "NONE";
+    return g_font.fallback_reason ? g_font.fallback_reason : "unknown";
 }
 
 /* Select the raster size for a bucket; cached textures key the bucket, so
@@ -1134,8 +1200,21 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
     return y;
 }
 
+static SDL_FRect s_last_status_badge;
+static bool s_last_status_badge_valid;
+
+bool ui_last_status_badge_rect(SDL_FRect *out_rect) {
+    if (!s_last_status_badge_valid || !out_rect) return false;
+    *out_rect = s_last_status_badge;
+    return true;
+}
+
+static float badge_width(const char *label) {
+    return ui_font_text_width(label, 1.0f) + 16.0f;
+}
+
 static void draw_badge(SDL_Renderer *ren, float x, float y, const char *label, SDL_Color badge_color) {
-    float len = ui_font_text_width(label, 1.0f) + 16.0f;
+    float len = badge_width(label);
     SDL_Color bg = { (Uint8)(badge_color.r / 4), (Uint8)(badge_color.g / 4), (Uint8)(badge_color.b / 4), 255 };
     draw_rounded_fill(ren, x, y, len, 24.0f, 12.0f, bg);
     draw_rounded_outline(ren, x, y, len, 24.0f, 12.0f, badge_color);
@@ -1236,7 +1315,7 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
     draw_rounded_fill(ren, 24.0f, 22.0f, 18.0f, 18.0f, 5.0f, COLOR_LIME);
     draw_text(ren, 52.0f, 16.0f, "NAKAGAWA RECOMP", 1.8f, COLOR_TEXT_WHITE);
     if (w >= 700.0f) {
-        draw_text(ren, 52.0f, 40.0f, "AUTHENTIC PSP PLAYER", 1.0f, COLOR_TEXT_MUTED);
+        draw_text(ren, 52.0f, 40.0f, "PSP RECOMPILATION PLAYER", 1.0f, COLOR_TEXT_MUTED);
     }
 
     /* Mode indicator: hidden on narrow windows so it can never sit under
@@ -1251,24 +1330,28 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
         draw_badge(ren, 460.0f, 20.0f, pid_str, COLOR_LIME);
     }
 
-    /* Controller badge: full label on wide windows, compact state dot
-     * below that, hidden on the narrowest layouts. */
+    /* Leave the Settings header's Build Tools/Settings action group clear. */
     if (w >= 1000.0f) {
         if (app->settings.controller_connected) {
-            draw_badge(ren, w - 320.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_LIME);
+            draw_badge(ren, w - 480.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_LIME);
         } else {
-            draw_badge(ren, w - 320.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
+            draw_badge(ren, w - 480.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
         }
     } else if (w >= 760.0f) {
-        if (app->settings.controller_connected) {
-            draw_badge(ren, w - 300.0f, 20.0f, "PAD OK", COLOR_LIME);
-        } else {
-            draw_badge(ren, w - 300.0f, 20.0f, "KEYBOARD", COLOR_TEXT_DIM);
-        }
+        /* Right-align against the BUILD TOOLS button (w - 278) with an 8 px
+         * gutter, whatever the label's width, so the compact badge clears the
+         * action group by construction. */
+        const char *compact_label = app->settings.controller_connected ? "PAD OK" : "KEYBOARD";
+        draw_badge(ren, w - 278.0f - 8.0f - badge_width(compact_label), 20.0f, compact_label,
+                   app->settings.controller_connected ? COLOR_LIME : COLOR_TEXT_DIM);
     }
 
     /* Settings Button. Mouse-driven; keyboard/gamepad users press S/START
      * (see the footer hints) so the topbar never needs a focus stop. */
+    if (app->active_view == VIEW_SETTINGS &&
+        draw_button(ren, w - 278.0f, 16.0f, 124.0f, 32.0f, "BUILD TOOLS", false, in)) {
+        player_app_open_prerequisite_about(app);
+    }
     if (draw_button(ren, w - 140.0f, 16.0f, 116.0f, 32.0f, "SETTINGS", false, in)) {
         if (app->active_view == VIEW_SETTINGS) {
             player_app_set_view(app, VIEW_LIBRARY);
@@ -1374,17 +1457,14 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     if (hero_tex_entry) {
         ui_load_pic1_if_needed(ren, hero_tex_entry, game->iso_path);
         if (hero_tex_entry->pic1_tex) {
-            SDL_Rect prev_clip;
-            bool had_clip = SDL_RenderClipEnabled(ren);
-            bool saved_clip = had_clip &&
-                              SDL_GetRenderClipRect(ren, &prev_clip);
+            UiClipState saved_clip = ui_clip_save(ren);
             SDL_Rect hero_clip = { (int)hero_x + 1, (int)hero_y + 1, (int)hero_w - 2, (int)hero_h - 2 };
             SDL_SetRenderClipRect(ren, &hero_clip);
             SDL_SetTextureAlphaMod(hero_tex_entry->pic1_tex, 40);
             SDL_FRect dst = { hero_x, hero_y, hero_w, hero_h };
             SDL_RenderTexture(ren, hero_tex_entry->pic1_tex, NULL, &dst);
             draw_filled_rect(ren, hero_x, hero_y, hero_w, hero_h, (SDL_Color){ 12, 15, 18, 120 });
-            SDL_SetRenderClipRect(ren, saved_clip ? &prev_clip : NULL);
+            ui_clip_restore(ren, &saved_clip);
         }
     }
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
@@ -1407,6 +1487,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                     : (runtime_required ? "RUNTIME REQUIRED"
                         : ((game->assets_staged && !game->is_prepared)
                             ? "ASSETS STAGED" : status_label(game->status))))));
+    s_last_status_badge = (SDL_FRect){
+        hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f
+    };
+    s_last_status_badge_valid = true;
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
                (game->is_experimental || package_checking || runtime_required ||
                 package_status == NK_RUNTIME_PACKAGE_STALE ||
@@ -1436,7 +1520,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "Executable decryption is in the works (#295). Build the runtime package from the library (#296/#297).");
+                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf (#295). Build the runtime package from the library (#296/#297).");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "%s selected. Build the runtime package from the library (#296/#297).",
@@ -1474,9 +1558,16 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
     } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
-                             "PlayStation Portable Classic · High-Definition Modern PC Recompilation",
+                             "PSP title · Native PC recompilation",
                              1.2f, hero_w - 64.0f, COLOR_TEXT_MUTED);
     }
+
+    /* Action row geometry, needed by the specs rail below so the two never
+     * overlap: the per-title mapping choice joins the action row on a wide hero
+     * and takes a row of its own directly above it on a narrow one. */
+    float btn_y = hero_y + hero_h - 62.0f;
+    bool scope_on_action_row = (hero_w >= 960.0f);
+    float scope_y = scope_on_action_row ? btn_y : btn_y - 42.0f;
 
     /* Quick Specs Rail: three columns on wide heroes, stacked on narrow.
      * Skipped entirely on compact heroes (see above). */
@@ -1485,8 +1576,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     float rail_h = 60.0f;
     bool stacked_specs = hero_w < 700.0f;
     if (stacked_specs) rail_h = 108.0f;
-    if (rail_y + rail_h > hero_y + hero_h - 80.0f) {
-        rail_h = hero_y + hero_h - 80.0f - rail_y;
+    float rail_bottom = hero_y + hero_h - 80.0f;
+    if (!scope_on_action_row && rail_bottom > scope_y - 4.0f) rail_bottom = scope_y - 4.0f;
+    if (rail_y + rail_h > rail_bottom) {
+        rail_h = rail_bottom - rail_y;
         if (rail_h < 40.0f) rail_h = 40.0f;
     }
     draw_rounded_fill(ren, hero_x + 32.0f, rail_y, hero_w - 64.0f, rail_h, 6.0f, (SDL_Color){ 16, 21, 26, 255 });
@@ -1555,8 +1648,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } /* end specs rail (skipped on compact heroes) */
 
     /* Action Buttons. Focus order: 0 = primary, 1 = add, 2 = remove,
-     * then paging stops. The unavailable pill is never a focus stop. */
-    float btn_y = hero_y + hero_h - 62.0f;
+     * 3 = per-title controller mapping, then paging stops. The unavailable pill
+     * is never a focus stop. (btn_y and scope_y are set above, next to the
+     * specs rail that has to stay clear of them.) */
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
     if (app->is_game_running) {
@@ -1625,6 +1719,39 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             }
         }
         focus++;
+    }
+
+    /* Per-title controller mapping (#520). The label states which mapping this
+     * disc runs, so the choice never has to be guessed at. */
+    {
+        const char *scope_disc = player_app_selected_disc_id(app);
+        bool per_title = input_settings_has_title_mapping(&app->input_settings, scope_disc);
+        char scope_label[64];
+        snprintf(scope_label, sizeof(scope_label), "MAPPING: %s",
+                 per_title ? "THIS GAME" : "GLOBAL");
+        float scope_x = scope_on_action_row ? (hero_x + 708.0f) : hero_x + 32.0f;
+        float scope_h = scope_on_action_row ? 54.0f : 34.0f;
+        bool scope_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, scope_x, scope_y, 220.0f, scope_h,
+                                scope_label, per_title, in, scope_focused)) {
+            /* Editing a per-title mapping never touches the global one: the
+             * switch seeds a disc-owned copy of the global mapping the first
+             * time, and the entry is only persisted by SAVE PROFILE. */
+            input_settings_toggle_scope(&app->input_settings, scope_disc);
+            printf("[PLAYER] Controller mapping for %s: %s\n",
+                   scope_disc ? scope_disc : "(none)",
+                   input_settings_is_title_scope(&app->input_settings)
+                       ? "own mapping (edit in Controller Settings)"
+                       : "global mapping");
+        }
+        focus++;
+    }
+
+    if (app->input_profile_notice[0]) {
+        draw_text_ellipsized(ren, hero_x + 32.0f,
+                             scope_on_action_row ? btn_y - 24.0f : scope_y - 22.0f,
+                             app->input_profile_notice, 0.9f, hero_w - 64.0f,
+                             COLOR_AMBER);
     }
 
     /* Lower Library Strip.
@@ -2000,6 +2127,22 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
  * launch preferences that PLAY NOW consumes, toggles flip, and volume
  * steps clamp 0..100. Focus order is stable so Tab/Enter and gamepad
  * SOUTH all reach the same actions as a mouse click. */
+/* Real save root the launcher resolves at launch: nk_launch_prepare_session
+ * points SR_MEMSTICK at <root>/<disc id> (platform per-user saves; writable by
+ * construction). Computed once because nk_platform_get_path creates the
+ * directory and the root cannot change while the player runs. Replaces the old
+ * save_directory field, which was never read by anything. */
+static char g_saves_root[MAX_PATH_LEN];
+static bool g_saves_root_ready;
+
+static const char *saves_root_display(void) {
+    if (!g_saves_root_ready) {
+        g_saves_root_ready = nk_platform_get_path(NK_PATH_SAVES, g_saves_root,
+                                                  sizeof(g_saves_root));
+    }
+    return g_saves_root_ready ? g_saves_root : "(unavailable)";
+}
+
 static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
@@ -2008,10 +2151,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (card_w > 1216.0f) card_w = 1216.0f;
     float card_x = centered_card_x(w, card_w);
     float card_y = 96.0f;
-    /* Two columns need the four resolution presets (left) to clear the
-     * audio column (right); below this the cursor-flow single column
-     * below takes over, which cannot overlap by construction. */
-    bool two_col = card_w >= 980.0f;
+    /* Two columns need the launcher fullscreen control and save-directory
+     * text to clear one another; below this the single-column flow cannot
+     * overlap by construction. */
+    bool two_col = player_settings_uses_two_columns(app->window_width,
+                                                     app->window_height);
     float card_h = two_col ? 520.0f : 660.0f;
     if (card_y + card_h > h - 40.0f && h > 560.0f) {
         card_h = h - 40.0f - card_y;
@@ -2028,11 +2172,17 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (app->settings_notice[0]) {
         draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
     } else {
-        draw_text(ren, card_x + 32.0f, card_y + 96.0f, "Configuration saved to settings.json.", 1.0f, COLOR_TEXT_DIM);
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f,
+                             "Game settings apply at the next launch; launcher fullscreen applies now.",
+                             1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
     }
+    /* Identify the platform the player runs, never imply endorsement. */
+    draw_text_ellipsized(ren, card_x + 4.0f, card_y + card_h + 14.0f,
+                         "Nakagawa Recomp is an independent project, not affiliated with or endorsed by Sony Interactive Entertainment.",
+                         0.9f, card_w - 64.0f, COLOR_TEXT_DIM);
 
     float col1_x = card_x + 32.0f;
-    float col2_x = two_col ? card_x + card_w * 0.5f : col1_x;
+    float col2_x = two_col ? card_x + player_settings_second_column_offset(card_w) : col1_x;
     float row_y = card_y + 128.0f;
     int focus = 0;
 
@@ -2043,14 +2193,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         float inner_r = card_x + card_w - 32.0f;
         float y = row_y;
         /* Resolution: 2x2 grid when four presets do not fit one row. */
-        draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
         {
             struct { const char *label; int scale; } kRes[] = {
-                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 }, { "8x (4K UHD)", 8 },
+                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
             };
             float bx = col1_x;
             float by = y + 24.0f;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 3; i++) {
                 bool selected = (app->settings.resolution_scale == kRes[i].scale);
                 bool focused = (app->focus_index == focus);
                 if (bx + 140.0f > inner_r + 1.0f && bx > col1_x) {
@@ -2089,12 +2239,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             y = by + 52.0f;
         }
         /* Display toggles. */
-        draw_text(ren, col1_x, y, "DISPLAY (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "GAME DISPLAY (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
         {
             char vsync_label[32];
             snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
             char fs_label[64];
-            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
+            snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
             float by = y + 24.0f;
             float bx = col1_x;
             bool focused = (app->focus_index == focus);
@@ -2118,7 +2268,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                 by += 42.0f;
             }
             char rm_label[40];
-            snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s", app->settings.reduce_motion ? "ON" : "OFF");
+            snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
             focused = (app->focus_index == focus);
             if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
                 player_app_toggle_reduce_motion(app);
@@ -2126,12 +2276,29 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             focus++;
             y = by + 52.0f;
         }
+        draw_text(ren, col1_x, y, "LAUNCHER WINDOW", 1.1f, COLOR_TEXT_DIM);
+        {
+            char launcher_fs_label[64];
+            snprintf(launcher_fs_label, sizeof(launcher_fs_label),
+                     "Launcher fullscreen: %s",
+                     app->settings.launcher_fullscreen ? "ON" : "OFF");
+            bool focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, col1_x, y + 24.0f, 310.0f, 36.0f,
+                                    launcher_fs_label,
+                                    app->settings.launcher_fullscreen, in, focused)) {
+                player_app_toggle_launcher_fullscreen(app);
+            }
+            focus++;
+            draw_text(ren, col1_x + 326.0f, y + 32.0f,
+                      "F11 / Alt+Enter", 0.9f, COLOR_TEXT_DIM);
+            y += 68.0f;
+        }
         /* Volume stepper and audio text. */
         draw_text(ren, col1_x, y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);
         y = draw_text_wrapped(ren, col1_x, y + 22.0f, inner_r - col1_x,
                               "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
                               0.95f, COLOR_TEXT_WHITE, 2);
-        draw_text(ren, col1_x, y + 6.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y + 6.0f, "MASTER VOLUME", 0.9f, COLOR_TEXT_DIM);
         {
             float by = y + 26.0f;
             bool minus_focused = (app->focus_index == focus);
@@ -2166,7 +2333,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                 draw_text(ren, col1_x, y + 24.0f, "No controller connected (keyboard ready).", 1.0f, COLOR_TEXT_WHITE);
             }
             draw_text_ellipsized(ren, col1_x, y + 44.0f,
-                                 app->settings.save_directory[0] ? app->settings.save_directory : "(not configured)",
+                                 saves_root_display(),
                                  1.0f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
@@ -2176,11 +2343,25 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
 
+        float manage_y = y + 50.0f;
+        bool about_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 32.0f, manage_y, 190.0f, 36.0f,
+                                "ABOUT & LICENSES", false, in, about_focused)) {
+            player_app_open_prerequisite_about(app);
+        }
+        focus++;
+        bool remove_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 238.0f, manage_y, 330.0f, 36.0f,
+                                "REMOVE DOWNLOADED BUILD TOOLS", false, in, remove_focused)) {
+            player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+        }
+        focus++;
+
         /* Close in flow: always visible, never overlapping. Grow the card
          * downward to hold it when the window allows. Only the extension
          * is painted: repainting the whole card here would cover the
          * sections drawn above. */
-        float close_y = y + 50.0f;
+        float close_y = y + 100.0f;
         float want_bottom = close_y + 46.0f + 16.0f;
         if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
             float old_bottom = card_y + card_h;
@@ -2202,13 +2383,13 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     float col2_y = row_y;
 
     /* Resolution scale */
-    draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
     {
         struct { const char *label; int scale; } kRes[] = {
-            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 }, { "8x (4K UHD)", 8 },
+            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
         };
         float bx = col1_x;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 3; i++) {
             bool selected = (app->settings.resolution_scale == kRes[i].scale);
             bool focused = (app->focus_index == focus);
             if (draw_button_focused(ren, bx, row_y + 24.0f, 105.0f, 36.0f, kRes[i].label, selected, in, focused)) {
@@ -2240,7 +2421,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Display toggles */
     float tog_y = fps_y + 90.0f;
-    draw_text(ren, col1_x, tog_y, "DISPLAY (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, tog_y, "GAME DISPLAY (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
     {
         char vsync_label[32];
         snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
@@ -2250,14 +2431,14 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
         char fs_label[64];
-        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s (applies from a later build)", app->settings.fullscreen ? "ON" : "OFF");
+        snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
         }
         focus++;
         char rm_label[40];
-        snprintf(rm_label, sizeof(rm_label), "Reduce motion: %s", app->settings.reduce_motion ? "ON" : "OFF");
+        snprintf(rm_label, sizeof(rm_label), "Reduce motion (UI only): %s", app->settings.reduce_motion ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x, tog_y + 68.0f, 210.0f, 36.0f, rm_label, app->settings.reduce_motion, in, focused)) {
             player_app_toggle_reduce_motion(app);
@@ -2265,12 +2446,30 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         focus++;
     }
 
+    float launcher_window_y = tog_y + 44.0f;
+    {
+        char launcher_fs_label[64];
+        snprintf(launcher_fs_label, sizeof(launcher_fs_label),
+                 "Launcher fullscreen: %s",
+                 app->settings.launcher_fullscreen ? "ON" : "OFF");
+        bool focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, col1_x + 220.0f, launcher_window_y + 24.0f,
+                                310.0f, 36.0f, launcher_fs_label,
+                                app->settings.launcher_fullscreen, in, focused)) {
+            player_app_toggle_launcher_fullscreen(app);
+        }
+        focus++;
+    }
+    draw_text(ren, col1_x + 220.0f, launcher_window_y + 64.0f,
+              "Toggle launcher fullscreen: F11 / Alt+Enter", 0.85f,
+              COLOR_TEXT_DIM);
+
     /* Audio */
     draw_text(ren, col2_x, col2_y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);
     draw_text_wrapped(ren, col2_x, col2_y + 24.0f, card_x + card_w - 32.0f - col2_x,
                       "Audio output: sound plays when an audio device is present; with none, the game runs silently.",
                       1.0f, COLOR_TEXT_WHITE, 2);
-    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME (applies from a later build)", 0.9f, COLOR_TEXT_DIM);
+    draw_text(ren, col2_x, col2_y + 70.0f, "MASTER VOLUME", 0.9f, COLOR_TEXT_DIM);
     {
         bool minus_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col2_x, col2_y + 86.0f, 44.0f, 34.0f, "-", false, in, minus_focused)) {
@@ -2313,16 +2512,30 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     }
     focus++;
 
+    float manage_y = card_y + card_h - 72.0f;
+    bool about_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, card_x + 250.0f, manage_y, 190.0f, 46.0f,
+                            "ABOUT & LICENSES", false, in, about_focused)) {
+        player_app_open_prerequisite_about(app);
+    }
+    focus++;
+    bool remove_focused = (app->focus_index == focus);
+    if (draw_button_focused(ren, card_x + 452.0f, manage_y, 330.0f, 46.0f,
+                            "REMOVE DOWNLOADED BUILD TOOLS", false, in, remove_focused)) {
+        player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+    }
+    focus++;
+
     /* Save path lives under the gamepad block: column one grew a second
      * toggle row, so its old slot now belongs to reduce-motion. */
     draw_text(ren, col2_x, pad_y + 92.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
     draw_text_ellipsized(ren, col2_x, pad_y + 116.0f,
-                         app->settings.save_directory[0] ? app->settings.save_directory : "(not configured)",
+                         saves_root_display(),
                          1.1f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_WHITE);
 
     /* Close */
     bool close_focused = (app->focus_index == focus);
-    float close_y = card_y + card_h - 72.0f;
+    float close_y = manage_y;
     if (draw_button_focused(ren, card_x + 32.0f, close_y, 200.0f, 46.0f, "SAVE & CLOSE", true, in, close_focused)) {
         player_app_save_settings(app, NULL);
         player_app_set_view(app, VIEW_LIBRARY);
@@ -2367,7 +2580,25 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
                   0.95f, COLOR_TEXT_DIM);
     }
 
-    float content_y = card_y + 98.0f;
+    /* Which mapping is being edited. Every edit below applies to this mapping
+     * and to no other, so the scope is stated, never implied (#520). */
+    {
+        char scope_line[192];
+        if (input_settings_is_title_scope(&app->input_settings)) {
+            snprintf(scope_line, sizeof(scope_line),
+                     "Editing: %s only \xe2\x80\x94 this disc's own mapping (the global mapping is untouched)",
+                     input_settings_scope_label(&app->input_settings));
+        } else {
+            snprintf(scope_line, sizeof(scope_line),
+                     "Editing: global mapping \xe2\x80\x94 every disc that has no mapping of its own");
+        }
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 94.0f, scope_line,
+                             0.95f, card_w - 64.0f,
+                             input_settings_is_title_scope(&app->input_settings)
+                                 ? COLOR_LIME : COLOR_TEXT_MUTED);
+    }
+
+    float content_y = card_y + 112.0f;
     if (input_settings_has_conflicts(&app->input_settings)) {
         const char *conf = input_settings_get_conflict_summary(&app->input_settings);
         draw_rounded_outline(ren, card_x + 32.0f, content_y, card_w - 64.0f, 24.0f, 4.0f, COLOR_RED);
@@ -2623,6 +2854,24 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
             player_app_set_view(app, VIEW_SETTINGS);
         }
         focus++;
+        y += 44.0f;
+
+        /* Global / this-game choice, last so the focus order of every other
+         * control in this view is unchanged (#520). */
+        if (player_app_selected_disc_id(app)) {
+            char scope_label[96];
+            snprintf(scope_label, sizeof(scope_label), "USE %s MAPPING",
+                     input_settings_is_title_scope(&app->input_settings) ? "GLOBAL" : "THIS GAME");
+            bool scope_focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, card_x + 32.0f, y, 240.0f, 36.0f,
+                                    scope_label,
+                                    input_settings_is_title_scope(&app->input_settings),
+                                    in, scope_focused)) {
+                input_settings_toggle_scope(&app->input_settings,
+                                            player_app_selected_disc_id(app));
+            }
+            focus++;
+        }
 
         (void)focus;
         render_footer_hints(ren, app);
@@ -2816,6 +3065,23 @@ static void render_controller_settings(SDL_Renderer *ren, PlayerApp *app, const 
     }
     focus++;
 
+    /* Global / this-game choice, last so the focus order of every other control
+     * in this view is unchanged (#520). */
+    if (player_app_selected_disc_id(app)) {
+        char scope_label[96];
+        snprintf(scope_label, sizeof(scope_label), "USE %s MAPPING",
+                 input_settings_is_title_scope(&app->input_settings) ? "GLOBAL" : "THIS GAME");
+        bool scope_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 576.0f, bottom_y, 200.0f, 38.0f,
+                                scope_label,
+                                input_settings_is_title_scope(&app->input_settings),
+                                in, scope_focused)) {
+            input_settings_toggle_scope(&app->input_settings,
+                                        player_app_selected_disc_id(app));
+        }
+        focus++;
+    }
+
     (void)focus;
     render_footer_hints(ren, app);
 }
@@ -2926,6 +3192,209 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     }
 }
 
+static void render_prerequisite_consent(SDL_Renderer *ren, PlayerApp *app,
+                                        const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = w - 48.0f;
+    if (card_w > 1180.0f) card_w = 1180.0f;
+    if (card_w < 360.0f) card_w = w - 24.0f;
+    float card_h = h - 36.0f;
+    if (card_h > 660.0f) card_h = 660.0f;
+    if (card_h < 420.0f) card_h = h - 16.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    if (card_y < 8.0f) card_y = 8.0f;
+
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 28.0f, card_y + 20.0f, "ONE-TIME BUILD TOOL DOWNLOAD", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 28.0f, card_y + 50.0f,
+                         "Download the pinned tools needed to build this package?",
+                         1.65f, card_w - 56.0f, COLOR_TEXT_WHITE);
+    draw_text_ellipsized(ren, card_x + 28.0f, card_y + 80.0f,
+                         "Nothing is downloaded until you choose DOWNLOAD. Your answer applies to this build only.",
+                         0.92f, card_w - 56.0f, COLOR_TEXT_MUTED);
+
+    size_t count = app->prerequisites.items.count;
+    float buttons_y = card_y + card_h - 68.0f;
+    float total_y = buttons_y - 28.0f;
+    float list_y = card_y + 114.0f;
+    float line_height = count ? (total_y - list_y - 10.0f) / (float)count : 18.0f;
+    if (line_height > 17.0f) line_height = 17.0f;
+    if (line_height < 11.0f) line_height = 11.0f;
+    for (size_t i = 0; i < count; i++) {
+        const PackagePrerequisite *item = &app->prerequisites.items.items[i];
+        const char *license = strcmp(item->license, "NOASSERTION") == 0
+            ? "NOASSERTION (#304 license review in the works)" : item->license;
+        char row[640];
+        snprintf(row, sizeof(row), "%s %s | %s | %llu bytes | %s",
+                 item->name, item->version, item->host,
+                 (unsigned long long)item->size_bytes, license);
+        draw_text_ellipsized(ren, card_x + 30.0f,
+                             list_y + (float)i * line_height, row,
+                             0.72f, card_w - 60.0f, COLOR_TEXT_WHITE);
+    }
+    char total[160];
+    snprintf(total, sizeof(total), "TOTAL DOWNLOAD SIZE: %llu bytes across %d components",
+             (unsigned long long)app->prerequisites.total_bytes,
+             app->prerequisites.item_count);
+    draw_text_ellipsized(ren, card_x + 28.0f, total_y, total, 0.9f,
+                         card_w - 56.0f, COLOR_AMBER);
+
+    bool download_focused = app->focus_index == 0;
+    if (draw_button_focused(ren, card_x + 28.0f, buttons_y, 184.0f, 42.0f,
+                            "DOWNLOAD", true, in, download_focused)) {
+        player_app_prereq_accept(app, app->prerequisites.bootstrap_python);
+    }
+    bool cancel_focused = app->focus_index == 1;
+    if (draw_button_focused(ren, card_x + 226.0f, buttons_y, 184.0f, 42.0f,
+                            "CANCEL", false, in, cancel_focused)) {
+        player_app_prereq_cancel(app);
+    }
+    render_footer_hints(ren, app);
+}
+
+static void render_prerequisite_progress(SDL_Renderer *ren, PlayerApp *app,
+                                         const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = dialog_card_w(w, 820.0f);
+    float card_h = 390.0f;
+    if (card_h > h - 32.0f) card_h = h - 32.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    if (card_y < 48.0f) card_y = 48.0f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "INSTALLING BUILD TOOLS", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 64.0f,
+                         "The files are checked before they are installed.",
+                         1.55f, card_w - 64.0f, COLOR_TEXT_WHITE);
+    const char *item = app->prerequisites.current_item[0]
+        ? app->prerequisites.current_item
+        : (app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP
+            ? "cpython-embed-amd64" : "Starting the verified fetcher");
+    char item_line[256];
+    snprintf(item_line, sizeof(item_line), "CURRENT ITEM: %s", item);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 122.0f,
+                         item_line, 1.05f, card_w - 64.0f, COLOR_TEXT_WHITE);
+    char item_bytes[192];
+    snprintf(item_bytes, sizeof(item_bytes), "Item: %llu / %llu bytes",
+             (unsigned long long)app->prerequisites.item_received_bytes,
+             (unsigned long long)app->prerequisites.item_total_bytes);
+    draw_text(ren, card_x + 32.0f, card_y + 154.0f, item_bytes, 1.0f, COLOR_TEXT_MUTED);
+    char total_bytes[192];
+    snprintf(total_bytes, sizeof(total_bytes), "Total: %llu / %llu bytes",
+             (unsigned long long)app->prerequisites.total_received_bytes,
+             (unsigned long long)app->prerequisites.total_bytes);
+    draw_text(ren, card_x + 32.0f, card_y + 184.0f, total_bytes, 1.0f, COLOR_TEXT_MUTED);
+    float percent = app->prerequisites.total_bytes
+        ? (float)((double)app->prerequisites.total_received_bytes * 100.0 /
+                  (double)app->prerequisites.total_bytes) : 0.0f;
+    if (percent > 100.0f) percent = 100.0f;
+    draw_progress_bar(ren, card_x + 32.0f, card_y + 220.0f,
+                      card_w - 64.0f, 18.0f, percent);
+    bool cancel_focused = app->focus_index == 0;
+    if (draw_button_focused(ren, card_x + 32.0f, card_y + card_h - 60.0f,
+                            190.0f, 44.0f, "CANCEL", false, in, cancel_focused)) {
+        player_app_prereq_cancel(app);
+    }
+    render_footer_hints(ren, app);
+}
+
+static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
+                                      const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = w - 48.0f;
+    if (card_w > 1120.0f) card_w = 1120.0f;
+    if (card_w < 360.0f) card_w = w - 24.0f;
+    float card_h = h - 40.0f;
+    if (card_h > 650.0f) card_h = 650.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 30.0f, card_y + 24.0f, "ABOUT / THIRD-PARTY NOTICES", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 30.0f, card_y + 58.0f,
+                         "Downloaded build components and their licenses",
+                         1.65f, card_w - 60.0f, COLOR_TEXT_WHITE);
+    float list_y = card_y + 104.0f;
+    int shown = 0;
+    float row_height = 16.0f;
+    for (size_t i = 0; i < app->prerequisites.items.count; i++) {
+        const PackagePrerequisite *item = &app->prerequisites.items.items[i];
+        if (!item->installed) continue;
+        const char *license = strcmp(item->license, "NOASSERTION") == 0
+            ? "NOASSERTION (#304 license review in the works)" : item->license;
+        char row[384];
+        snprintf(row, sizeof(row), "%s %s | %s", item->name,
+                 item->version, license);
+        draw_text_ellipsized(ren, card_x + 32.0f, list_y + (float)shown * row_height,
+                             row, 0.78f, card_w - 64.0f, COLOR_TEXT_WHITE);
+        shown++;
+    }
+    if (shown == 0) {
+        draw_text(ren, card_x + 32.0f, list_y,
+                  "No downloaded build tools are installed in this app-data folder.",
+                  1.0f, COLOR_TEXT_MUTED);
+    }
+    float buttons_y = card_y + card_h - 62.0f;
+    bool open_focused = app->focus_index == 0;
+    if (shown > 0 && draw_button_focused(ren, card_x + 30.0f, buttons_y,
+            230.0f, 42.0f, "OPEN LICENSE TEXTS", false, in, open_focused)) {
+        char data_root[NK_MAX_PATH];
+        if (app->runtime_root[0]) snprintf(data_root, sizeof(data_root), "%s", app->runtime_root);
+        else nk_platform_get_app_data_dir(data_root, sizeof(data_root));
+        int n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
+                         "%s%cprerequisites%cnotices", data_root,
+                         nk_platform_path_separator(), nk_platform_path_separator());
+        app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+    }
+    bool back_focused = app->focus_index == (shown > 0 ? 1 : 0);
+    if (draw_button_focused(ren, card_x + card_w - 216.0f, buttons_y,
+                            184.0f, 42.0f, "BACK TO SETTINGS", true, in, back_focused)) {
+        player_app_set_view(app, VIEW_SETTINGS);
+    }
+    render_footer_hints(ren, app);
+}
+
+static void render_confirm_remove_tools(SDL_Renderer *ren, PlayerApp *app,
+                                        const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = dialog_card_w(w, 700.0f);
+    float card_h = 340.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "CONFIRM REMOVAL", COLOR_AMBER);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 70.0f,
+                         "Remove downloaded build tools?", 1.8f,
+                         card_w - 64.0f, COLOR_TEXT_WHITE);
+    draw_text_wrapped(ren, card_x + 32.0f, card_y + 118.0f, card_w - 64.0f,
+                      "This removes the prerequisites folder from app data. Your game library, ISO files, saves, and built packages are kept.",
+                      1.05f, COLOR_TEXT_MUTED, 3);
+    float buttons_y = card_y + card_h - 62.0f;
+    bool remove_focused = app->focus_index == 0;
+    if (draw_button_focused(ren, card_x + 32.0f, buttons_y, 220.0f, 44.0f,
+                            "REMOVE TOOLS", false, in, remove_focused)) {
+        player_app_remove_prerequisites(app);
+    }
+    bool cancel_focused = app->focus_index == 1;
+    if (draw_button_focused(ren, card_x + 270.0f, buttons_y, 180.0f, 44.0f,
+                            "CANCEL", true, in, cancel_focused)) {
+        player_app_set_view(app, VIEW_SETTINGS);
+    }
+    render_footer_hints(ren, app);
+}
+
 /* --- View: Error Dialog --- */
 static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
@@ -2974,10 +3443,15 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     bool focused = (app->focus_index == 0);
     float btn_y = card_y + card_h - 58.0f;
     if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
-        player_app_set_view(app, app->last_error.return_view);
-        if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
-            strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
-            app->request_file_picker = true;
+        if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
+            app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
+            player_app_prereq_retry(app);
+        } else {
+            player_app_set_view(app, app->last_error.return_view);
+            if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+                strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
+                app->request_file_picker = true;
+            }
         }
     }
 }
@@ -3034,7 +3508,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • Lawfully obtained PSP game ISO\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "This build does not decrypt encrypted executables (#295). It builds runtime "
+                              "This build decrypts encrypted executables with a local key file (#295). It builds runtime "
                               "packages from the library (#296/#297). Verify also lists font (#300) and audio "
                               "(#301) status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
@@ -3428,6 +3902,7 @@ int ui_focus_count(const PlayerApp *app) {
 /* --- Main Frame Render Function --- */
 void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *input) {
     if (!renderer || !app) return;
+    s_last_status_badge_valid = false;
 
     /* Clamp focus before drawing so a resize or library change can never
      * leave the ring on a control that no longer exists. */
@@ -3485,6 +3960,18 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_BUILDING_PACKAGE:
             render_building_package(renderer, app, input);
+            break;
+        case VIEW_PREREQ_CONSENT:
+            render_prerequisite_consent(renderer, app, input);
+            break;
+        case VIEW_PREREQ_PROGRESS:
+            render_prerequisite_progress(renderer, app, input);
+            break;
+        case VIEW_PREREQ_ABOUT:
+            render_prerequisite_about(renderer, app, input);
+            break;
+        case VIEW_CONFIRM_REMOVE_TOOLS:
+            render_confirm_remove_tools(renderer, app, input);
             break;
         default:
             render_empty_library(renderer, app, input);

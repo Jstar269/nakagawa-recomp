@@ -30,11 +30,116 @@ The authoritative public shape is [`assets/title_manifest.schema.json`](../asset
 
 The schema covers manifest identity and kind, retail disc identity, executable layout, module inventory, filesystem roots, game/HLE/code-generation identifiers, feature requirements, compatibility-manifest and verification references, and notes. Optional `runtime_contract` and `profile_zero` blocks have additional machine-checked constraints; `profile_zero` is limited to synthetic manifests. Their exact required fields belong to the schema and validator, not to a second prose-defined schema.
 
+### Typed loose-content roots (#289)
+
+`filesystem.loose_content_roots` optionally declares up to 16 extra host roots
+for the runtime's loose-file VFS. Each entry has `root`, `mount`, and
+`precedence`, with optional `skip_primary_root` and `exclude`. `root` is a safe
+relative path resolved from the parent directory of `filesystem.data_root`; `.`
+names that parent. `mount` is an empty string or a guest-relative prefix.
+`precedence` is a unique integer from 0 through 65535; the lower number wins
+when loose roots expose the same guest file key. `skip_primary_root` defaults
+to true exactly for `root: "."`, so the primary data-root child is not walked a
+second time. `exclude` lists up to two safe, root-relative paths; matching
+directories are skipped before descent. A file under the primary
+`filesystem.data_root` wins a duplicate against any loose root, preserving the
+pre-migration extracted-tree behavior.
+During ISO staging, the player looks for each configured relative root under
+PSP_GAME/USRDIR and stages any matching directory at that same relative path.
+With no configured roots, it stages the executable only and performs no
+neighbor-directory discovery.
+
+Roots that are duplicated or overlap are rejected, including a parent root and
+one of its descendants. Unknown keys, absolute paths, traversal, malformed
+mounts, and duplicate precedence values also fail validation. Within one loose
+root, case-folded duplicate guest-file keys and file/directory key collisions
+refuse the index. Duplicate keys within one extracted archive subtree also
+refuse the index.
+
+The primary extracted root preserves the legacy resolution for copies of the
+same guest key and archive variant from distinct extracted-XB subtrees (for
+example, `<archive>.xb.d`). The index retains every copy and sorts equal keys by
+variant, root precedence, then bytewise UTF-8 host path; opening the key selects
+the first path. This makes the lexically first extracted archive path win
+independently of host enumeration order, whether the copies contain identical
+or different bytes. A copy in the primary root wins over copies in loose roots.
+Packed-archive mode has a separate order: archive paths are sorted bytewise,
+then members retain archive insertion order, so the first member with the
+selected key and variant wins. Unreadable selected files fail closed.
+
+For example, a synthetic profile can mount two sibling roots into the same
+guest namespace:
+
+```json
+"loose_content_roots": [
+  {"root": "assets_a", "mount": "data", "precedence": 10},
+  {"root": "assets_b", "mount": "data", "precedence": 20}
+]
+```
+
+The private flagship manifest expresses its roots with these same typed entries;
+its local manifest and inputs remain outside this repository. A manifest that
+omits `loose_content_roots` still loads and normalizes to an empty list. That is
+the explicit migration default: no neighboring-directory discovery occurs, so
+profiles that need extra roots must add the field before expecting those files
+to resolve. The named runtime boundary is **loose-content root binding — in the
+works ([#289](https://github.com/Jstar269/nakagawa-recomp/issues/289))**; the
+private flagship parity route has not been established by public fixtures.
+
+For a previous layout with `filesystem.data_root` at
+`<something>/USRDIR/xbdata` or
+`<something>/USRDIR/xbdata_extracted`, the declaration below recreates the
+former parent walk and its file set. It contributes files such as
+`data/sound/menu.csv` at their original guest paths, skips only the primary
+data-root directory while walking the parent, and keeps primary files ahead of
+duplicate loose files:
+
+```json
+"loose_content_roots": [
+  {"root": ".", "mount": "", "precedence": 0, "skip_primary_root": true}
+]
+```
+
+The old inference activated only for its recognized parent/archive-root
+layout. It indexed the primary root, then visited every sibling directory
+recursively while skipping that direct primary child. It rejected links,
+non-regular entries, and files larger than the guest size limit; it did not
+filter packed-archive or module siblings. Leaving `exclude` absent preserves
+that traversal. A title profile can exclude additional root-relative subtrees
+when its compatibility contract establishes that they are outside the guest
+namespace or unnecessary to resolve. For this extracted-tree layout, duplicate
+keys from the primary extracted root take priority over adjacent loose files;
+the manifest transport now carries that ordering explicitly.
+
+A retail disc may set `disc.require_local_compatibility_record` when its
+revision needs an explicit local qualification. That switch contains no retail
+hashes: the user's package builder records exact executable/module inputs under
+the per-user data root. A missing or changed record is reported as an
+`Unqualified revision` boundary; the registry does not select a nearby profile
+or infer compatibility from DISC_ID alone. See [issue #315](https://github.com/Jstar269/nakagawa-recomp/issues/315) and the [runtime package identity contract](RUNTIME_PACKAGING_ARCHITECTURE.md#5-local-aot-package-contract-v2).
+
 ### Temporary compatibility configuration
 
 The current schema also permits an optional, typed `runtime_bindings` block for specific compatibility seams. These bindings are not structural facts about a disc and do not establish generic PSP semantics. They are bounded configuration consumed by the runtime; `required_runtime_bindings` names the binding families the selected profile depends on so a missing required family fails validation. These mechanisms remain compatibility debt and are expected to retire as the underlying generic behavior becomes correct. [Issue #363](https://github.com/Jstar269/nakagawa-recomp/issues/363) tracks that work; [`TITLE_CODEGEN_PLAN.md`](TITLE_CODEGEN_PLAN.md) documents validation and runtime consumption, and [`PORTING.md`](PORTING.md) inventories the remaining title coupling.
 
 The target remains a generic core that does not require title-specific patches. The current contract records the temporary bindings honestly rather than describing the target state as already achieved. Public schema fields do not authorize private paths, retail bytes, captures, or derived evidence.
+
+The generic dispatcher has no exact or range title-hook table. Historical resource-shaped
+targets now reach ordinary lookup and fail at a named interpreter boundary; the runtime
+reports the boundary as in the works under [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285).
+Unsupported interpreter forms remain fail-closed. HST-specific diagnostic probes in the
+HLE, scheduler, and recompiler were removed; use generic SR_TRACE_PC or SR_WATCH
+instrumentation when those observations are needed. The init-walker r16 save/restore
+no longer names caller addresses in generic dispatch. Real hardware does not restore
+$s0-$s7 or $fp/$s8 for a callee, so a generic title keeps every register write its
+callee makes. Only the HST title configuration arms a restore of those registers at a
+returning CALL (`sr_title_config_preserve_callee_saved_at_calls`), recorded as #363 debt
+until the flagship's clobber is root-caused.
+
+The HST Newlib master and guest thread-table addresses are isolated behind the typed
+SrTitleReentBindings accessor in src/rt/title_config.c. It returns values only for the
+validated hst codegen profile with the matching HST source id. Other profiles receive no
+addresses and perform no guest-table seeding.
 
 ## 3. Catalog identity and generic launch resolution
 
@@ -72,5 +177,7 @@ For the native player’s current implementation boundary and process lifecycle,
 - Python/native identity and path resolution have source-owned parity and fail-closed regression coverage under #366.
 - A real second-title bring-up remains pending under #285.
 - Temporary profile-owned compatibility bindings remain visible debt under #363.
+- HST reent-table configuration remains title-gated compatibility debt under #363; generic
+  dispatch rejection and diagnostic cleanup do not establish full second-title support.
 - Release and preparation version authority remains unresolved under #333.
 - Private title inputs and private acceptance remain separate from public schema and synthetic-fixture results.

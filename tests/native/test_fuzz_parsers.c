@@ -11,8 +11,17 @@
 #include "nk_xb.h"
 #include "nk_title_manifest.h"
 #include "nk_library.h"
+#include "nk_input_profile.h"
 #include "nk_platform.h"
 #include "prx_loader.h"
+#include "nk_psp_aes.h"
+#include "nk_psp_container.h"
+#include "nk_psp_ec.h"
+#include "nk_psp_inflate.h"
+#include "nk_psp_keystore.h"
+#include "nk_psp_kirk.h"
+#include "nk_psp_kle.h"
+#include "nk_psp_sha1.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -79,6 +88,14 @@ static void put32le(uint8_t *p, uint32_t value) {
 static uint32_t get32le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* The KL4E/KL3E header carries its copy length most-significant byte first. */
+static void put32be(uint8_t *p, uint32_t value) {
+    p[0] = (uint8_t)(value >> 24);
+    p[1] = (uint8_t)(value >> 16);
+    p[2] = (uint8_t)(value >> 8);
+    p[3] = (uint8_t)value;
 }
 
 static void put32_iso_both(uint8_t *p, uint32_t value) {
@@ -1087,6 +1104,102 @@ static void test_fuzz_manifest(unsigned iters) {
     fflush(stdout);
 }
 
+/* -----------------------------------------------------------------------------
+ * 6. Per-Game Input Profile JSON Seed Builder & Harness
+ * -------------------------------------------------------------------------- */
+static const char s_valid_input_profile_json[] =
+    "{\n"
+    "  \"schema_version\": 2,\n"
+    "  \"device\": { \"guid\": \"030000005e0400008e02000000007200\","
+    " \"name_hint\": \"Test Pad\" },\n"
+    "  \"calibration\": {\n"
+    "    \"trigger_threshold\": 8192,\n"
+    "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+    "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+    "  },\n"
+    "  \"psp_bindings\": [ { \"control\": \"cross\", \"primary\": \"south\" } ],\n"
+    "  \"navigation_bindings\": [ { \"action\": \"confirm\", \"primary\": \"button:south\" } ],\n"
+    "  \"per_title\": [\n"
+    "    { \"disc_id\": \"TEST00001\", \"profile\": {\n"
+    "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
+    "        \"calibration\": {\n"
+    "          \"trigger_threshold\": 8192,\n"
+    "          \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+    "          \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+    "        },\n"
+    "        \"psp_bindings\": [ { \"control\": \"cross\", \"primary\": \"south\" } ],\n"
+    "        \"navigation_bindings\": [] } }\n"
+    "  ]\n"
+    "}";
+
+/* A document that loaded is a document the runtime has to be able to use
+ * unchanged, so a mutated input that is accepted must satisfy what a
+ * hand-written one does: every mapping validates, every stored disc ID is one
+ * the per-title whitelist accepts, and the table is within its bound. */
+static void assert_loaded_profile_is_usable(const NkInputProfileFile *doc) {
+    char why[256];
+    assert(nk_input_profile_validate(&doc->global, why, sizeof(why)) == NK_OK);
+    assert(doc->title_count >= 0 && doc->title_count <= NK_INPUT_MAX_PER_TITLE);
+    for (int i = 0; i < doc->title_count; i++) {
+        assert(nk_input_profile_disc_id_safe(doc->title_disc_id[i]));
+        assert(nk_input_profile_validate(&doc->title[i], why, sizeof(why)) == NK_OK);
+        assert(nk_input_profile_file_find_title(doc, doc->title_disc_id[i]) == i);
+    }
+}
+
+static void test_fuzz_input_profile(unsigned iters) {
+    printf("[FUZZ] Testing per-game input profile parser (%u iterations)...\n", iters);
+    fflush(stdout);
+
+    const char *profile_path = "build/fuzz_input_profile_temp.json";
+    size_t seed_size = strlen(s_valid_input_profile_json);
+    size_t cap = seed_size * 2u + 64u;
+    char err[256];
+    NkInputProfileFile base;
+    uint8_t *mutated = (uint8_t *)malloc(cap);
+    assert(mutated != NULL);
+
+    err[0] = '\0';
+    assert(nk_input_profile_file_parse_json(&base, s_valid_input_profile_json, seed_size,
+                                            err, sizeof(err)) == NK_OK);
+    assert(base.title_count == 1);
+    assert_loaded_profile_is_usable(&base);
+
+    unsigned accepted = 0;
+    unsigned accepted_from_file = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        NkInputProfileFile doc;
+        size_t cur_size = seed_size;
+
+        memcpy(mutated, s_valid_input_profile_json, seed_size);
+        mutate_buffer(mutated, &cur_size, cap);
+
+        err[0] = '\0';
+        if (nk_input_profile_file_parse_json(&doc, (const char *)mutated, cur_size,
+                                             err, sizeof(err)) == NK_OK) {
+            accepted++;
+            assert_loaded_profile_is_usable(&doc);
+        }
+
+        /* Every 16th input also crosses the file boundary, so the loader's
+         * size cap and read path are fuzzed and not only the parser's. */
+        if ((i % 16u) == 0u) {
+            write_file_bytes(profile_path, mutated, cur_size);
+            if (nk_input_profile_file_load(&doc, profile_path, err, sizeof(err)) == NK_OK) {
+                accepted_from_file++;
+                assert_loaded_profile_is_usable(&doc);
+            }
+        }
+    }
+
+    remove(profile_path);
+    free(mutated);
+
+    printf("[FUZZ] Input profile parser completed: %u/%u accepted, %u via the file loader, 0 crashes\n",
+           accepted, iters, accepted_from_file);
+    fflush(stdout);
+}
+
 typedef struct {
     uint32_t state[8];
     uint64_t bits;
@@ -1235,24 +1348,36 @@ static void test_fuzz_package(unsigned iters) {
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
     const char *aot_digest =
-        "e9937d6f8ce6f61a6039e79e815f179ef468e9d8434ecf0ed3bd90b683f2ccba";
+        "b3eb00cb06471b7a44bea245a7ef96fc5b4b79d9a6a8d6ed7ac5c71bca62c89a";
     const char *native_digest =
         "f43a16301ce14295ebe90b2c4ba7d605d681d310f98eeab008b782f4ffdbb492";
+    const char *identity_digest =
+        "b892f46111beb45d527213ad7b44bf1286fcb01a8bad842090946aeba92b65b1";
+    static const char identity_json[] =
+        "{\"container\":null,"
+        "\"disc\":{\"disc_version\":null,\"id\":null,\"region\":null},"
+        "\"format\":\"nakagawa-title-input-identity\","
+        "\"main_executable\":{\"name\":\"EBOOT.BIN\",\"sha256\":"
+        "\"f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d\"},"
+        "\"manifest\":{\"id\":\"synthetic-allegrex-v1\",\"schema_version\":1},"
+        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":1}";
     int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
-        "{\"schema_version\":1,\"aot\":{\"digest\":\"%s\",\"components\":{"
+        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":{"
         "\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
         "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
         "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1}},\"native\":{\"digest\":\"%s\","
+        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}},"
+        "\"native\":{\"digest\":\"%s\","
         "\"components\":{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
         "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}}}",
-        aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest, native_digest, 0, 0);
+        aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest,
+        identity_digest, native_digest, 0, 0);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
-        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":1,\"key\":%s,"
+        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
         "\"current_epoch\":1,\"generated_code_reusable\":true}}",
         cache_key_json);
@@ -1268,12 +1393,13 @@ static void test_fuzz_package(unsigned iters) {
         title_id, cache_json, 0, fixture_sha);
     assert(report_length > 0 && (size_t)report_length < sizeof(report_json));
     int package_length = snprintf(package_json, sizeof(package_json),
-        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,\"cache\":%s,"
+        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":2,\"cache\":%s,"
         "\"title\":{\"id\":\"%s\",\"display_name\":\"Synthetic fixture\","
         "\"kind\":\"retail\",\"manifest_sha256\":\"%064d\","
         "\"protected_digest\":\"%064d\"},"
         "\"inputs\":{\"manifest\":{\"sha256\":\"%064d\"},"
         "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"title_input_identity\":%s,"
         "\"runtime\":{\"abi\":\"CpuState\",\"abi_version\":2,"
         "\"abi_header_sha256\":\"%064d\",\"run_entry\":\"0x00000000\","
         "\"runtime_contract\":null,\"runtime_bindings\":{},"
@@ -1281,7 +1407,8 @@ static void test_fuzz_package(unsigned iters) {
         "\"executable\":{\"path\":\"%s\",\"sha256\":\"%s\","
         "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
         "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
-        cache_json, title_id, 0, 0, 0, fixture_sha, 0, executable_name, fixture_sha);
+        cache_json, title_id, 0, 0, 0, fixture_sha, identity_json, 0,
+        executable_name, fixture_sha);
     assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
     write_file_bytes(package_path, package_json, (size_t)package_length);
     write_file_bytes(report_path, report_json, (size_t)report_length);
@@ -1291,20 +1418,26 @@ static void test_fuzz_package(unsigned iters) {
     snprintf(completion_path, sizeof(completion_path), "%s%ccompletion-manifest.json",
              package_dir, nk_platform_path_separator());
     int completion_length = snprintf(completion_json, sizeof(completion_json),
-        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":1,"
-        "\"status\":\"complete\",\"cache_key\":%s,\"artifacts\":["
+        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":2,"
+        "\"status\":\"complete\",\"cache_key\":%s,\"title_input_identity\":%s,\"artifacts\":["
         "{\"path\":\"package.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"build-report.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"%s\",\"sha256\":\"%s\"},"
         "{\"path\":\"synthetic-allegrex-v1_image.bin\",\"sha256\":\"%s\"}]}\n",
-        cache_key_json, package_hash, report_hash, executable_name, fixture_sha, fixture_sha);
+        cache_key_json, identity_json, package_hash, report_hash, executable_name,
+        fixture_sha, fixture_sha);
     assert(completion_length > 0 && (size_t)completion_length < sizeof(completion_json));
     write_file_bytes(completion_path, completion_json, (size_t)completion_length);
 
     NkRuntimePackageInfo info;
-    assert(nk_title_manifest_validate_aot_package(
-               absolute_root, disc_id, title_id, false, "EBOOT.BIN", 2,
-               &info, reason, sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+    NkRuntimePackageStatus initial_status = nk_title_manifest_validate_aot_package(
+        absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, 2,
+        &info, reason, sizeof(reason));
+    if (initial_status != NK_RUNTIME_PACKAGE_OK) {
+        fprintf(stderr, "[FUZZ] package v2 seed rejected (%d): %s\n",
+                (int)initial_status, reason);
+    }
+    assert(initial_status == NK_RUNTIME_PACKAGE_OK);
     assert(info.package_root[0] != '\0');
 
     uint8_t mutated[4096];
@@ -1326,7 +1459,7 @@ static void test_fuzz_package(unsigned iters) {
 
         memset(&info, 0xA5, sizeof(info));
         NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package(
-            absolute_root, disc_id, title_id, false, "EBOOT.BIN", 2,
+            absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, 2,
             &info, reason, sizeof(reason));
         if (status == NK_RUNTIME_PACKAGE_OK) {
             assert(info.package_root[0] != '\0');
@@ -1343,7 +1476,7 @@ static void test_fuzz_package(unsigned iters) {
     remove(completion_path);
     remove(executable_path);
     remove(image_path);
-    printf("[FUZZ] Package v1 JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
+    printf("[FUZZ] Package v2 JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
     fflush(stdout);
 }
 
@@ -1401,8 +1534,941 @@ static void test_fuzz_library(unsigned iters) {
 }
 
 /* -----------------------------------------------------------------------------
- * Main Entry Point
+ * 7. Built-in PSP decryption boundary (issue #295, fuzz coverage for #319)
+ *
+ * Every parser the decryption boundary exposes to user-supplied bytes gets a
+ * seeded mutation harness here: the container probe/framing (~PSP, ~SCE,
+ * PBP), the ~PSP header parse, the KeyStore JSON loader, the
+ * DEFLATE/zlib/gzip inflater, the KL4E/KL3E decoder and the KIRK command
+ * dispatch on attacker-controlled headers.
+ *
+ * ALL SEEDS ARE SYNTHETIC and built in this file: a tiny source-owned
+ * ELF32/MIPS image, a type-2 ~PSP container sealed around it with constant
+ * fake keys (never key material), a synthetic KeyStore document, and
+ * gzip/zlib/raw-deflate plus KL4E/KL3E streams produced by the small writers
+ * below.  No retail, firmware or key bytes are involved.
+ *
+ * Ceilings asserted by these harnesses (the boundary's own limits):
+ *   wrapper depth 8; ~PSP psp_size in [0x150, file size] and segments <= 4;
+ *   KeyStore 64 KiB and 512 entries; inflate output <= the cap passed in
+ *   (64 MiB in production, 256 KiB here); KL output <= the declared
+ *   elf_size; KIRK data_size <= size - header and 16-byte aligned.
  * -------------------------------------------------------------------------- */
+#define FUZZ_PSP_TAG 0x5EED3191u /* obviously synthetic; no retail meaning */
+#define FUZZ_PSP_CODE 67         /* synthetic KIRK keyvault slot */
+#define FUZZ_KEYSTORE_FORMAT "nakagawa-psp-keystore-1"
+#define FUZZ_INFLATE_CAP (256u * 1024u)
+#define FUZZ_CANARY 0xC7u
+
+/* Constant, obviously-fake key bytes.  Derived from an entry id so each
+ * synthetic key differs; this is a test pattern, not key material. */
+static void fuzz_fake_key(uint8_t *out, unsigned id) {
+    for (unsigned i = 0; i < 16u; i++) {
+        out[i] = (uint8_t)(0x11u + 0x23u * (id + i));
+    }
+}
+
+static void fuzz_hex_encode(const uint8_t *bytes, size_t n, char *out) {
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2u] = digits[(bytes[i] >> 4) & 0x0Fu];
+        out[i * 2u + 1u] = digits[bytes[i] & 0x0Fu];
+    }
+    out[n * 2u] = '\0';
+}
+
+/* The complete synthetic key set the sealed ~PSP container needs. */
+static size_t build_keystore_json(char *buf, size_t cap) {
+    uint8_t cmd1[16], vault[16], tag_key[16];
+    char cmd1_hex[33], vault_hex[33], tag_hex[33];
+    fuzz_fake_key(cmd1, 1u);
+    fuzz_fake_key(vault, 2u);
+    fuzz_fake_key(tag_key, 3u);
+    fuzz_hex_encode(cmd1, sizeof(cmd1), cmd1_hex);
+    fuzz_hex_encode(vault, sizeof(vault), vault_hex);
+    fuzz_hex_encode(tag_key, sizeof(tag_key), tag_hex);
+    int n = snprintf(buf, cap,
+                     "{\"format\":\"" FUZZ_KEYSTORE_FORMAT "\",\"entries\":{"
+                     "\"kirk.cmd1.key\":\"%s\","
+                     "\"kirk.keyvault.%d\":\"%s\","
+                     "\"prx.tag.0x%08X\":{\"code\":%d,\"key\":\"%s\"}}}",
+                     cmd1_hex, FUZZ_PSP_CODE, vault_hex,
+                     (unsigned)FUZZ_PSP_TAG, FUZZ_PSP_CODE, tag_hex);
+    assert(n > 0 && (size_t)n < cap);
+    return (size_t)n;
+}
+
+/* Tiny source-owned ELF32/MIPS image (one PT_LOAD, entry inside it). */
+static size_t build_tiny_elf(uint8_t *buf, size_t cap) {
+    const uint32_t ehsize = 52u, phsize = 32u, text_off = 84u;
+    assert(cap >= 128u);
+    memset(buf, 0, cap);
+    buf[0] = 0x7Fu; buf[1] = 'E'; buf[2] = 'L'; buf[3] = 'F';
+    buf[4] = 1u; buf[5] = 1u; buf[6] = 1u; /* 32-bit, LSB, current */
+    put16le(buf + 16, 2u);   /* e_type ET_EXEC */
+    put16le(buf + 18, 8u);   /* e_machine EM_MIPS */
+    put32le(buf + 20, 1u);   /* e_version */
+    put32le(buf + 24, 0x08804000u + text_off); /* e_entry */
+    put32le(buf + 28, ehsize);
+    put32le(buf + 32, 0u);   /* e_shoff */
+    put32le(buf + 36, 0x60000000u);
+    put16le(buf + 40, (uint16_t)ehsize);
+    put16le(buf + 42, (uint16_t)phsize);
+    put16le(buf + 44, 1u);   /* e_phnum */
+    put16le(buf + 46, 40u);
+    put32le(buf + 52, 1u);   /* p_type PT_LOAD */
+    put32le(buf + 56, text_off);
+    put32le(buf + 60, 0x08804000u);
+    put32le(buf + 64, 0x08804000u);
+    put32le(buf + 68, 32u);  /* p_filesz */
+    put32le(buf + 72, 0x1000u); /* p_memsz: the entry lies inside */
+    put32le(buf + 76, 5u);   /* p_flags RX */
+    put32le(buf + 80, 4u);   /* p_align */
+    memcpy(buf + text_off, "NK319", 5);
+    return (size_t)text_off + 32u;
+}
+
+/* ---- gzip / zlib / raw DEFLATE stream writers (harness-local) ---------- */
+
+typedef struct {
+    uint8_t *buf;
+    size_t cap;
+    size_t len;
+    uint32_t acc;
+    int have;
+    int overflow;
+} FuzzBits;
+
+static void fuzz_put_bits(FuzzBits *w, uint32_t value, int count) {
+    for (int i = 0; i < count; i++) {
+        uint32_t bit = (value >> i) & 1u;
+        w->acc |= (uint32_t)bit << w->have;
+        if (++w->have == 8) {
+            if (w->len >= w->cap) { w->overflow = 1; return; }
+            w->buf[w->len++] = (uint8_t)w->acc;
+            w->acc = 0u;
+            w->have = 0;
+        }
+    }
+}
+
+/* DEFLATE packs Huffman codes most-significant bit first. */
+static void fuzz_put_code(FuzzBits *w, uint32_t code, int nbits) {
+    for (int i = nbits - 1; i >= 0; i--) {
+        fuzz_put_bits(w, (code >> i) & 1u, 1);
+    }
+}
+
+static void fuzz_put_literal(FuzzBits *w, uint8_t byte) {
+    if (byte < 144u) fuzz_put_code(w, 0x30u + byte, 8);
+    else fuzz_put_code(w, 0x190u + (uint32_t)(byte - 144u), 9);
+}
+
+static void fuzz_finish_bits(FuzzBits *w) {
+    if (w->have != 0) {
+        if (w->len < w->cap) w->buf[w->len++] = (uint8_t)w->acc;
+        else w->overflow = 1;
+        w->acc = 0u;
+        w->have = 0;
+    }
+}
+
+/* Fixed-Huffman block: literals, then `matches` back-references of the
+ * longest length (code 285, distance 1), then end-of-block. */
+static size_t build_deflate_fixed(uint8_t *out, size_t cap,
+                                  const uint8_t *literals, size_t lit_count,
+                                  unsigned matches) {
+    FuzzBits w;
+    w.buf = out; w.cap = cap; w.len = 0; w.acc = 0u; w.have = 0; w.overflow = 0;
+    fuzz_put_bits(&w, 1u, 1);  /* final block */
+    fuzz_put_bits(&w, 1u, 2);  /* fixed Huffman */
+    for (size_t i = 0; i < lit_count; i++) fuzz_put_literal(&w, literals[i]);
+    for (unsigned m = 0; m < matches && !w.overflow; m++) {
+        fuzz_put_code(&w, 0xC5u, 8); /* length symbol 285 -> 258 bytes */
+        fuzz_put_code(&w, 0u, 5);    /* distance symbol 0 -> distance 1 */
+    }
+    fuzz_put_code(&w, 0u, 7);        /* end of block */
+    fuzz_finish_bits(&w);
+    assert(!w.overflow);
+    return w.len;
+}
+
+/* Single stored (uncompressed) block, as the firmware's own payloads use. */
+static size_t build_deflate_stored(uint8_t *out, size_t cap,
+                                   const uint8_t *data, size_t n) {
+    assert(n <= 0xFFFFu && cap >= n + 5u);
+    out[0] = 1u; /* final block, stored type */
+    out[1] = (uint8_t)n;
+    out[2] = (uint8_t)(n >> 8);
+    out[3] = (uint8_t)(~out[1]);
+    out[4] = (uint8_t)(~out[2]);
+    memcpy(out + 5, data, n);
+    return n + 5u;
+}
+
+static uint32_t fuzz_crc32(const uint8_t *p, size_t n) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; i++) {
+        int k;
+        crc ^= p[i];
+        for (k = 0; k < 8; k++) {
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+        }
+    }
+    return ~crc;
+}
+
+static uint32_t fuzz_adler32(const uint8_t *p, size_t n) {
+    uint32_t s1 = 1u, s2 = 0u;
+    while (n > 0u) {
+        size_t k = (n < 5552u) ? n : 5552u;
+        n -= k;
+        while (k-- > 0u) { s1 += *p++; s2 += s1; }
+        s1 %= 65521u;
+        s2 %= 65521u;
+    }
+    return (s2 << 16) | s1;
+}
+
+static size_t build_gzip(uint8_t *out, size_t cap, const uint8_t *deflated,
+                         size_t deflated_len, const uint8_t *plain,
+                         size_t plain_len) {
+    assert(cap >= deflated_len + 18u);
+    out[0] = 0x1Fu; out[1] = 0x8Bu; out[2] = 8u; out[3] = 0u;
+    memset(out + 4, 0, 5);  /* MTIME */
+    out[8] = 0u;            /* XFL */
+    out[9] = 3u;            /* OS = Unix; no name, no comment, no hcrc */
+    memcpy(out + 10, deflated, deflated_len);
+    size_t at = 10u + deflated_len;
+    put32le(out + at, fuzz_crc32(plain, plain_len));
+    put32le(out + at + 4u, (uint32_t)plain_len);
+    return at + 8u;
+}
+
+static size_t build_zlib(uint8_t *out, size_t cap, const uint8_t *deflated,
+                         size_t deflated_len, const uint8_t *plain,
+                         size_t plain_len) {
+    assert(cap >= deflated_len + 6u);
+    out[0] = 0x78u; out[1] = 0x9Cu; /* CM=8, FCHECK valid */
+    memcpy(out + 2, deflated, deflated_len);
+    size_t at = 2u + deflated_len;
+    uint32_t adler = fuzz_adler32(plain, plain_len);
+    out[at + 0u] = (uint8_t)(adler >> 24);
+    out[at + 1u] = (uint8_t)(adler >> 16);
+    out[at + 2u] = (uint8_t)(adler >> 8);
+    out[at + 3u] = (uint8_t)adler;
+    return at + 4u;
+}
+
+/* ---- synthetic type-2 ~PSP sealer (mirrors tools/test_psp_decrypt.py) --- */
+
+#define FUZZ_KLE_SIZE 0x1000u
+
+static size_t seal_type2_psp(uint8_t *out, size_t cap, const uint8_t *payload,
+                             size_t payload_len, int compressed,
+                             uint32_t elf_size) {
+    uint8_t cmd1_key[16], vault_key[16], tag_key[16], a_key[16], c_key[16];
+    uint8_t ctr[0x90], xorbuf[0x90], clear[0x40], t_kh[0x40], chain[0x60];
+    uint8_t hdr_tail[0x30], metadata[0x10], digest[0x14], sha_input[0x150];
+    uint8_t *cmac_input;
+    size_t data_offset = 0x80u;
+    size_t chk_size = (payload_len + 15u) & ~(size_t)15u;
+    size_t container_size = 0x150u + chk_size;
+    size_t at;
+    AES_ctx ctx;
+    SHA_CTX sha;
+
+    assert(cap >= container_size);
+    fuzz_fake_key(cmd1_key, 1u);
+    fuzz_fake_key(vault_key, 2u);
+    fuzz_fake_key(tag_key, 3u);
+    for (unsigned i = 0; i < 16u; i++) {
+        a_key[i] = (uint8_t)(tag_key[i] ^ 0xA5u);
+        c_key[i] = (uint8_t)(tag_key[i] ^ 0x5Au);
+    }
+
+    /* expandSeed(): counter-styled pattern through the keyvault pass. */
+    for (unsigned n = 0; n < 0x90u / 16u; n++) {
+        memcpy(ctr + n * 16u, tag_key, 16u);
+        ctr[n * 16u] = (uint8_t)n;
+    }
+    AES_set_key(&ctx, vault_key, 128);
+    AES_cbc_decrypt(&ctx, ctr, xorbuf, (int)sizeof(xorbuf));
+
+    /* The 0x80-byte ~PSP header copy (CMD1 pre-data and prxHeader). */
+    memset(out, 0, container_size);
+    memcpy(out, "~PSP", 4);
+    put16le(out + 4, 0x0200u);
+    put16le(out + 6, (uint16_t)(compressed ? 1u : 0u));
+    memcpy(out + 0x0A, "synthetic", 9);
+    out[0x26] = 1u;
+    out[0x27] = 2u; /* nsegments */
+    put32le(out + 0x28, elf_size);
+    put32le(out + 0x2C, (uint32_t)container_size);
+    put32le(out + 0x30, 0x08804000u + 0x54u);
+    put32le(out + 0x38, 0x100u);
+    put32le(out + 0x3C, 0x10u);
+    put32le(out + 0x40, 0x10u);
+    put32le(out + 0x44, 0x08804000u);
+    put32le(out + 0x48, 0x08809000u);
+    put32le(out + 0x54, elf_size);
+    put32le(out + 0x58, 0x100u);
+    put32le(out + 0x78, 0x06060000u);
+
+    /* CMD1 header tail at 0x60: mode, ecdsa_hash, sizes and the padding. */
+    memset(hdr_tail, 0, sizeof(hdr_tail));
+    put32le(hdr_tail, 1u); /* KIRK_MODE_CMD1 */
+    put32le(hdr_tail + 0x10, (uint32_t)payload_len);
+    put32le(hdr_tail + 0x14, (uint32_t)data_offset);
+    memset(metadata, 0, sizeof(metadata)); /* all 16 bytes enter the CMAC-covered header */
+    put32le(metadata, (uint32_t)payload_len);
+    put32le(metadata + 4u, (uint32_t)data_offset);
+
+    /* Wrapped CMD1 pre-data: the payload under a_key, then the 0x40 block. */
+    AES_set_key(&ctx, a_key, 128);
+    AES_cbc_encrypt(&ctx, payload, out + 0x150u, (int)chk_size);
+    cmac_input = (uint8_t *)malloc(0x30u + 0x80u + chk_size);
+    assert(cmac_input != NULL);
+    memcpy(cmac_input, hdr_tail, 0x30u);
+    memcpy(cmac_input + 0x30u, out, 0x80u);
+    memcpy(cmac_input + 0xB0u, out + 0x150u, chk_size);
+    AES_set_key(&ctx, c_key, 128);
+    AES_CMAC(&ctx, cmac_input, (int)(0x30u + 0x80u + chk_size), clear + 0x30u);
+    AES_CMAC(&ctx, hdr_tail, (int)sizeof(hdr_tail), clear + 0x20u);
+    free(cmac_input);
+    {
+        uint8_t wrap_in[0x20], wrap_out[0x20];
+        memcpy(wrap_in, a_key, 16u);
+        memcpy(wrap_in + 16u, c_key, 16u);
+        AES_set_key(&ctx, cmd1_key, 128);
+        AES_cbc_encrypt(&ctx, wrap_in, wrap_out, (int)sizeof(wrap_in));
+        memcpy(clear, wrap_out, 0x20u);
+    }
+
+    /* Inverse of the production header transform: out = kirk7(in ^ xa) ^ xb. */
+    for (unsigned i = 0; i < 0x40u; i++) {
+        t_kh[i] = (uint8_t)(clear[i] ^ xorbuf[0x50u + i]);
+    }
+    AES_set_key(&ctx, vault_key, 128);
+    AES_cbc_encrypt(&ctx, t_kh, t_kh, (int)sizeof(t_kh));
+    for (unsigned i = 0; i < 0x40u; i++) {
+        t_kh[i] = (uint8_t)(t_kh[i] ^ xorbuf[0x10u + i]);
+    }
+
+    /* Integrity digest over the type-2 view, in the production part order. */
+    memset(sha_input, 0, sizeof(sha_input));
+    at = 0u;
+    put32le(sha_input + at, FUZZ_PSP_TAG);
+    at += 4u;
+    memcpy(sha_input + at, xorbuf, 0x10u);
+    at += 0x10u;
+    at += 0x58u + 0x10u; /* the zeroed empty region and the zeroed id */
+    memcpy(sha_input + at, t_kh, 0x40u);
+    at += 0x40u;
+    memcpy(sha_input + at, metadata, 0x10u);
+    at += 0x10u;
+    memcpy(sha_input + at, out, 0x80u);
+    at += 0x80u;
+    assert(at == 0x14Cu);
+    SHAInit(&sha);
+    SHAUpdate(&sha, sha_input, (int)at);
+    SHAFinal(digest, &sha);
+
+    /* The chained keyvault pass covers {id, sha1, kirkHeader[0:0x3C]}. */
+    memset(chain, 0, sizeof(chain));
+    memcpy(chain + 0x10u, digest, 0x14u);
+    memcpy(chain + 0x24u, t_kh, 0x3Cu);
+    AES_set_key(&ctx, vault_key, 128);
+    AES_cbc_encrypt(&ctx, chain, chain, (int)sizeof(chain));
+
+    memcpy(out + 0x80u, chain + 0x24u, 0x30u);
+    memcpy(out + 0xB0u, metadata, 0x10u);
+    memcpy(out + 0xC0u, chain + 0x54u, 0x0Cu);
+    memcpy(out + 0xCCu, t_kh + 0x3Cu, 0x04u);
+    put32le(out + 0xD0, FUZZ_PSP_TAG);
+    memcpy(out + 0x12Cu, chain + 0x10u, 0x14u);
+    memcpy(out + 0x140u, chain, 0x10u);
+    put32le(out + 0x2C, (uint32_t)container_size);
+    return container_size;
+}
+
+static void test_fuzz_decrypt_boundary(unsigned iters) {
+    printf("[FUZZ] Testing PSP decryption boundary: ~PSP/~SCE/PBP framing, "
+           "KeyStore, inflate, KL4E/KL3E, KIRK dispatch (%u iterations)...\n",
+           iters);
+    fflush(stdout);
+
+    char json[1024];
+    size_t json_len = build_keystore_json(json, sizeof(json));
+    NkKeystore *ks = nk_keystore_create();
+    char err[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, json_len, err, sizeof(err)) == NK_PSP_OK);
+    assert(nk_keystore_count(ks) == 3u);
+
+    uint8_t elf[256];
+    size_t elf_len = build_tiny_elf(elf, sizeof(elf));
+    uint8_t sealed[1024];
+    size_t sealed_len = seal_type2_psp(sealed, sizeof(sealed), elf, elf_len, 0,
+                                        (uint32_t)elf_len);
+
+    /* Self-check: the synthetic container round-trips through production. */
+    {
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        uint8_t *out = NULL;
+        size_t out_size = 0;
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_probe(&ctx, sealed, sealed_len, &info) == NK_PSP_OK);
+        assert(info.kind == NK_CTR_PSP);
+        assert(info.tag == FUZZ_PSP_TAG);
+        assert(info.compressed == 0);
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_decrypt(&ctx, sealed, sealed_len, &out, &out_size) ==
+               NK_PSP_OK);
+        assert(out != NULL && out_size == elf_len);
+        assert(memcmp(out, elf, elf_len) == 0);
+        free(out);
+    }
+
+    uint8_t wrapped[1200];
+    uint8_t *mutated;
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        unsigned form = (unsigned)(fuzz_rand32() % 3u);
+        size_t seed_len = sealed_len;
+        const uint8_t *seed = sealed;
+        if (form == 1u) { /* ~SCE outer wrapper */
+            memcpy(wrapped, "~SCE", 4);
+            put32le(wrapped + 4, 0x10u);
+            memcpy(wrapped + 0x10u, sealed, sealed_len);
+            seed = wrapped;
+            seed_len = 0x10u + sealed_len;
+        } else if (form == 2u) { /* PBP package carrying DATA.PSP */
+            memset(wrapped, 0, 0x28u);
+            memcpy(wrapped, "\0PBP", 4);
+            put32le(wrapped + 0x20, 0x28u);
+            memcpy(wrapped + 0x28u, sealed, sealed_len);
+            seed = wrapped;
+            seed_len = 0x28u + sealed_len;
+        }
+        /* Exact-size heap copy: any read past the caller's length traps. */
+        mutated = (uint8_t *)malloc(seed_len);
+        assert(mutated != NULL);
+        memcpy(mutated, seed, seed_len);
+        size_t cur_size = seed_len;
+        mutate_buffer(mutated, &cur_size, seed_len);
+
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        char entries[4][80];
+        int n_entries;
+        nk_psp_ctx_init(&ctx, ks);
+        (void)nk_container_probe(&ctx, mutated, cur_size, &info);
+        nk_psp_ctx_init(&ctx, ks);
+        n_entries = nk_container_key_entries(&info, ks, entries, 4);
+        assert(n_entries >= 0 && n_entries <= 4);
+        nk_psp_ctx_init(&ctx, ks);
+        {
+            uint8_t *out = NULL;
+            size_t out_size = 0;
+            int rc = nk_container_decrypt(&ctx, mutated, cur_size, &out, &out_size);
+            if (rc == NK_PSP_OK) {
+                assert(out != NULL);
+                assert(out_size <= 64u * 1024u * 1024u);
+                assert(out_size >= 4u && memcmp(out, "\x7f"
+                                                        "ELF", 4) == 0);
+                accepted++;
+            }
+            assert(out == NULL || rc == NK_PSP_OK);
+            free(out);
+        }
+        free(mutated);
+    }
+    nk_keystore_free(ks);
+    printf("[FUZZ] Decryption boundary completed: %u/%u decrypted, 0 crashes\n",
+           accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- KeyStore JSON loader --------------------------------------------- */
+
+static void test_fuzz_keystore(unsigned iters) {
+    printf("[FUZZ] Testing KeyStore JSON loader (%u iterations)...\n", iters);
+    fflush(stdout);
+
+    char seed[1024];
+    size_t seed_len = build_keystore_json(seed, sizeof(seed));
+    const char *path = "build/fuzz_test_keystore.json";
+    char err[256];
+    {
+        NkKeystore *ks = nk_keystore_create();
+        assert(ks != NULL);
+        assert(nk_keystore_load_json(ks, seed, seed_len, err, sizeof(err)) ==
+               NK_PSP_OK);
+        nk_keystore_free(ks);
+    }
+
+    /* Ceiling: the file is rejected outright past 64 KiB, never truncated. */
+    {
+        char *big = (char *)malloc(NK_KEYSTORE_MAX_BYTES + 2u);
+        NkKeystore *ks = nk_keystore_create();
+        assert(big != NULL && ks != NULL);
+        memset(big, ' ', NK_KEYSTORE_MAX_BYTES + 1u);
+        assert(nk_keystore_load_json(ks, big, NK_KEYSTORE_MAX_BYTES + 1u, err,
+                                     sizeof(err)) != NK_PSP_OK);
+        assert(nk_keystore_count(ks) == 0u);
+        nk_keystore_free(ks);
+        free(big);
+    }
+
+    uint8_t *mutated = (uint8_t *)malloc(4096u);
+    assert(mutated != NULL);
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        size_t cur_size = seed_len;
+        memcpy(mutated, seed, seed_len);
+        mutate_buffer(mutated, &cur_size, 4096u);
+
+        NkKeystore *ks = nk_keystore_create();
+        assert(ks != NULL);
+        if (nk_keystore_load_json(ks, (const char *)mutated, cur_size, err,
+                                  sizeof(err)) == NK_PSP_OK) {
+            const uint8_t *value = NULL;
+            size_t value_len = 0;
+            assert(nk_keystore_count(ks) <= NK_KEYSTORE_MAX_ENTRIES);
+            if (nk_keystore_get(ks, "kirk.cmd1.key", &value, &value_len) == 0) {
+                /* Entry lengths are validated at load: never anything else. */
+                assert(value_len == 16u || value_len == 20u || value_len == 21u);
+            }
+            accepted++;
+        }
+        nk_keystore_free(ks);
+
+        if ((i % 8u) == 0u) { /* the file route as well as the buffer route */
+            write_file_bytes(path, mutated, cur_size);
+            NkKeystore *fks = nk_keystore_create();
+            assert(fks != NULL);
+            (void)nk_keystore_load_file(fks, path, err, sizeof(err));
+            nk_keystore_free(fks);
+        }
+    }
+    remove(path);
+    free(mutated);
+    printf("[FUZZ] KeyStore JSON completed: %u/%u accepted, 0 crashes\n",
+           accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- inflate (raw DEFLATE / zlib / gzip) ------------------------------ */
+
+static void test_fuzz_inflate(unsigned iters) {
+    printf("[FUZZ] Testing inflate: raw DEFLATE, zlib and gzip (%u iterations)...\n",
+           iters);
+    fflush(stdout);
+
+    uint8_t plain[64];
+    for (size_t i = 0; i < sizeof(plain); i++) plain[i] = (uint8_t)(i * 7u + 3u);
+
+    uint8_t deflated[2048];
+    size_t deflated_len = build_deflate_fixed(deflated, sizeof(deflated), plain,
+                                             16u, 0u);
+    uint8_t gzipped[2100];
+    size_t gzipped_len = build_gzip(gzipped, sizeof(gzipped), deflated,
+                                    deflated_len, plain, 16u);
+    uint8_t zlibbed[2100];
+    size_t zlibbed_len = build_zlib(zlibbed, sizeof(zlibbed), deflated,
+                                    deflated_len, plain, 16u);
+    uint8_t stored[128];
+    size_t stored_len = build_deflate_stored(stored, sizeof(stored), plain, 16u);
+    uint8_t gz_stored[160];
+    size_t gz_stored_len = build_gzip(gz_stored, sizeof(gz_stored), stored,
+                                      stored_len, plain, 16u);
+    /* Expansion bomb: 1200 back-references, 302 KiB out of ~2 KiB. */
+    uint8_t bomb[2048];
+    size_t bomb_len = build_deflate_fixed(bomb, sizeof(bomb), plain, 1u, 1200u);
+
+    struct { const uint8_t *data; size_t size; } seeds[5];
+    seeds[0].data = deflated; seeds[0].size = deflated_len;
+    seeds[1].data = gzipped;  seeds[1].size = gzipped_len;
+    seeds[2].data = zlibbed;  seeds[2].size = zlibbed_len;
+    seeds[3].data = gz_stored; seeds[3].size = gz_stored_len;
+    seeds[4].data = bomb;     seeds[4].size = bomb_len;
+
+    char err[128];
+    /* Fixed expectations: a well-formed stream decodes, a bomb is refused. */
+    {
+        uint8_t *out = NULL;
+        size_t out_len = 0;
+        assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 0u,
+                              FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out_len == 16u);
+        assert(memcmp(out, plain, 16u) == 0);
+        free(out);
+        out = NULL;
+        out_len = 0;
+        assert(nk_psp_inflate(bomb, bomb_len, &out, &out_len, 0u,
+                              FUZZ_INFLATE_CAP, err, sizeof(err)) ==
+               NK_INFLATE_ERR_OVERFLOW);
+        assert(out == NULL && out_len == 0u);
+    }
+    /* A zlib-looking input shorter than a zlib stream is refused as
+     * truncated; the header flags byte is never read past the input. */
+    {
+        static const uint8_t short_zlib[4] = {0x78u, 0x9Cu, 0x00u, 0x20u};
+        uint8_t *out = NULL;
+        size_t out_len = 0;
+        assert(nk_psp_inflate(short_zlib, sizeof(short_zlib), &out, &out_len, 0u,
+                              FUZZ_INFLATE_CAP, err, sizeof(err)) ==
+               NK_INFLATE_ERR_TRUNCATED);
+        assert(out == NULL && out_len == 0u);
+    }
+
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        unsigned pick = (unsigned)(fuzz_rand32() % 5u);
+        size_t seed_size = seeds[pick].size;
+        uint8_t *mutated = (uint8_t *)malloc(seed_size);
+        assert(mutated != NULL);
+        memcpy(mutated, seeds[pick].data, seed_size);
+        size_t cur_size = seed_size;
+        mutate_buffer(mutated, &cur_size, seed_size);
+
+        uint8_t *out = NULL;
+        size_t out_len = 0;
+        int rc = nk_psp_inflate(mutated, cur_size, &out, &out_len, 0u,
+                                FUZZ_INFLATE_CAP, err, sizeof(err));
+        if (rc == NK_INFLATE_OK) {
+            assert(out != NULL);
+            assert(out_len <= FUZZ_INFLATE_CAP); /* the declared ceiling */
+            accepted++;
+        } else {
+            assert(out == NULL && out_len == 0u);
+        }
+        free(out);
+        free(mutated);
+    }
+    printf("[FUZZ] Inflate completed: %u/%u decoded, 0 crashes\n", accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- KIRK command dispatch on attacker-controlled headers -------------- */
+
+/* A key file carrying every ECDSA entry the KeyStore accepts must satisfy an
+ * ECDSA-signed CMD1 block: the curve loads, and a fake signature then fails
+ * the integrity check. Before the fix, load_curve asked for kirk.ecdsa.p1 /
+ * a1, names the KeyStore rejects, so this path always reported a missing key. */
+static void test_kirk_ecdsa_curve_names(void) {
+    printf("[FUZZ] Testing that an ECDSA key file satisfies the KIRK curve loader...\n");
+    fflush(stdout);
+    static const char *const names20[] = {
+        "kirk.ecdsa.p", "kirk.ecdsa.a", "kirk.ecdsa.b1", "kirk.ecdsa.b2",
+        "kirk.ecdsa.gx1", "kirk.ecdsa.gy1", "kirk.ecdsa.gx2", "kirk.ecdsa.gy2",
+        "kirk.ecdsa.px1", "kirk.ecdsa.py1"};
+    static const char *const names21[] = {"kirk.ecdsa.n1", "kirk.ecdsa.n2"};
+    char json[2048];
+    uint8_t cmd1[16];
+    char cmd1_hex[33];
+    fuzz_fake_key(cmd1, 1u);
+    fuzz_hex_encode(cmd1, sizeof(cmd1), cmd1_hex);
+    int n = snprintf(json, sizeof(json),
+                     "{\"format\":\"" FUZZ_KEYSTORE_FORMAT "\",\"entries\":{"
+                     "\"kirk.cmd1.key\":\"%s\"", cmd1_hex);
+    assert(n > 0 && (size_t)n < sizeof(json));
+    for (size_t i = 0; i < sizeof(names20) / sizeof(names20[0]); i++) {
+        uint8_t v[20];
+        char hex[41];
+        for (unsigned b = 0; b < 20u; b++) v[b] = (uint8_t)(0x40u + i * 7u + b);
+        fuzz_hex_encode(v, sizeof(v), hex);
+        n += snprintf(json + n, sizeof(json) - (size_t)n, ",\"%s\":\"%s\"", names20[i], hex);
+        assert((size_t)n < sizeof(json));
+    }
+    for (size_t i = 0; i < sizeof(names21) / sizeof(names21[0]); i++) {
+        uint8_t v[21];
+        char hex[43];
+        v[0] = 0u;
+        for (unsigned b = 1; b < 21u; b++) v[b] = (uint8_t)(0xF0u - i - b);
+        fuzz_hex_encode(v, sizeof(v), hex);
+        n += snprintf(json + n, sizeof(json) - (size_t)n, ",\"%s\":\"%s\"", names21[i], hex);
+        assert((size_t)n < sizeof(json));
+    }
+    n += snprintf(json + n, sizeof(json) - (size_t)n, "}}");
+    assert((size_t)n < sizeof(json));
+
+    NkKeystore *ks = nk_keystore_create();
+    char err[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, (size_t)n, err, sizeof(err)) == NK_PSP_OK);
+
+    enum { SIZE = 0x90u + 0x80u };
+    uint8_t in[SIZE], out[SIZE];
+    memset(in, 0, sizeof(in));
+    put32le(in + 0x60, 1u);      /* KIRK_MODE_CMD1 */
+    in[0x64] = 1u;               /* ecdsa_hash: signed with the curve-1 key */
+    put32le(in + 0x70, 0x80u);   /* data_size */
+    put32le(in + 0x74, 0x10u);   /* data_offset */
+    for (unsigned i = 0; i < 0x80u; i++) in[0x90u + i] = (uint8_t)i;
+
+    NkPspCtx ctx;
+    nk_psp_ctx_init(&ctx, ks);
+    int rc = sceUtilsBufferCopyWithRange(&ctx, out, SIZE, in, SIZE, KIRK_CMD_DECRYPT_PRIVATE);
+    assert(rc != KIRK_INVALID_OPERATION);   /* the curve and public key loaded */
+    assert(rc != KIRK_OPERATION_SUCCESS);   /* a fake signature never verifies */
+    assert(ctx.missing_entry[0] == '\0');
+    nk_keystore_free(ks);
+}
+
+/* nk_ec_mod_n finishes in a fixed number of steps for every order a key file
+ * can supply (the earlier repeated subtraction hung on a tiny order), and it
+ * agrees with the definition for orders near the real 160-bit ones. */
+static void test_ec_mod_n_is_bounded(unsigned iters) {
+    printf("[FUZZ] Testing bounded reduction modulo a key-file curve order (%u iterations)...\n",
+           iters);
+    fflush(stdout);
+    uint8_t x[NK_EC_BYTES], nn[NK_EC_BYTES], out[NK_EC_BYTES];
+    memset(x, 0xFF, sizeof(x));
+    memset(nn, 0, sizeof(nn));
+    assert(nk_ec_mod_n(x, nn, out) == -1);             /* order 0 is refused */
+    nn[NK_EC_BYTES - 1] = 2u;
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* (2^160 - 1) mod 2 = 1 */
+    for (unsigned i = 0; i + 1u < NK_EC_BYTES; i++) assert(out[i] == 0u);
+    assert(out[NK_EC_BYTES - 1] == 1u);
+    nn[NK_EC_BYTES - 1] = 3u;
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* 2^160 = 1 (mod 3) */
+    for (unsigned i = 0; i < NK_EC_BYTES; i++) assert(out[i] == 0u);
+    memset(nn, 0xFF, sizeof(nn));
+    assert(nk_ec_mod_n(x, nn, out) == 0);              /* x == n */
+    for (unsigned i = 0; i < NK_EC_BYTES; i++) assert(out[i] == 0u);
+
+    /* Orders with the top bit set: x mod n is x or x - n (one subtraction). */
+    for (unsigned it = 0; it < iters; it++) {
+        for (unsigned i = 0; i < NK_EC_BYTES; i++) {
+            x[i] = (uint8_t)fuzz_rand32();
+            nn[i] = (uint8_t)fuzz_rand32();
+        }
+        nn[0] |= 0x80u;
+        uint8_t expect[NK_EC_BYTES];
+        int x_ge_n = memcmp(x, nn, NK_EC_BYTES) >= 0;
+        int borrow = 0;
+        for (int i = NK_EC_BYTES - 1; i >= 0; i--) {
+            int d = (int)x[i] - (x_ge_n ? (int)nn[i] : 0) - borrow;
+            borrow = d < 0;
+            expect[i] = (uint8_t)(d < 0 ? d + 256 : d);
+        }
+        assert(nk_ec_mod_n(x, nn, out) == 0);
+        assert(memcmp(out, expect, NK_EC_BYTES) == 0);
+    }
+}
+
+static void test_fuzz_kirk(unsigned iters) {
+    printf("[FUZZ] Testing KIRK command dispatch on hostile headers "
+           "(%u iterations)...\n", iters);
+    fflush(stdout);
+
+    char json[1024];
+    size_t json_len = build_keystore_json(json, sizeof(json));
+    NkKeystore *ks = nk_keystore_create();
+    char err[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, json_len, err, sizeof(err)) == NK_PSP_OK);
+
+    /* Two synthetic header shapes the attacker controls: a CMD1 block
+     * (0x90 header: mode, ecdsa_hash, data_size, data_offset) and an
+     * AES128-CBC block (0x14 header: mode, keyseed, data_size), each
+     * followed by a 0x80 body. */
+    enum { FUZZ_KIRK_SIZE = 0x90u + 0x80u, FUZZ_KIRK_GUARD = 64 };
+    uint8_t cmd1_seed[FUZZ_KIRK_SIZE];
+    uint8_t cbc_seed[FUZZ_KIRK_SIZE];
+    memset(cmd1_seed, 0, sizeof(cmd1_seed));
+    memcpy(cmd1_seed, "CMAC", 4);       /* AES_key slot */
+    put32le(cmd1_seed + 0x60, 1u);      /* KIRK_MODE_CMD1 */
+    cmd1_seed[0x64] = 0u;               /* ecdsa_hash */
+    put32le(cmd1_seed + 0x70, 0x80u);   /* data_size */
+    put32le(cmd1_seed + 0x74, 0x10u);   /* data_offset */
+    memset(cbc_seed, 0, sizeof(cbc_seed));
+    put32le(cbc_seed, 4u);              /* KIRK_MODE_ENCRYPT_CBC */
+    put32le(cbc_seed + 0x0C, FUZZ_PSP_CODE); /* keyvault slot */
+    put32le(cbc_seed + 0x10, 0x80u);    /* data_size (16-byte aligned) */
+    for (unsigned i = 0; i < 0x80u; i++) {
+        cmd1_seed[0x90u + i] = (uint8_t)(i * 3u);
+        cbc_seed[0x90u + i] = (uint8_t)(i * 5u);
+    }
+
+    static const int kirk_commands[] = {
+        KIRK_CMD_DECRYPT_PRIVATE, KIRK_CMD_ENCRYPT_IV_0, KIRK_CMD_DECRYPT_IV_0,
+        KIRK_CMD_PRIV_SIGN_CHECK, KIRK_CMD_SHA1_HASH, 0x7F};
+
+    /* The unmutated CBC header is a well-formed command: the AES pass runs
+     * and writes exactly data_size bytes at 0x14, and nothing past the
+     * caller's declared output size. */
+    {
+        uint8_t *outbuf = (uint8_t *)malloc(FUZZ_KIRK_SIZE + FUZZ_KIRK_GUARD);
+        assert(outbuf != NULL);
+        memset(outbuf, FUZZ_CANARY, FUZZ_KIRK_SIZE + FUZZ_KIRK_GUARD);
+        NkPspCtx ctx;
+        nk_psp_ctx_init(&ctx, ks);
+        assert(sceUtilsBufferCopyWithRange(&ctx, outbuf, FUZZ_KIRK_SIZE, cbc_seed,
+                                           FUZZ_KIRK_SIZE,
+                                           KIRK_CMD_ENCRYPT_IV_0) ==
+               KIRK_OPERATION_SUCCESS);
+        assert(outbuf[0x14] != FUZZ_CANARY);
+        for (unsigned g = 0; g < FUZZ_KIRK_GUARD; g++) {
+            assert(outbuf[FUZZ_KIRK_SIZE + g] == FUZZ_CANARY);
+        }
+        free(outbuf);
+    }
+
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        int cmd = kirk_commands[fuzz_rand32() % 6u];
+        const uint8_t *seed = ((fuzz_rand32() % 2u) != 0u) ? cmd1_seed : cbc_seed;
+        size_t insize = FUZZ_KIRK_SIZE;
+        size_t scratch;
+        uint8_t *inbuf = (uint8_t *)malloc(insize);
+        assert(inbuf != NULL);
+        memcpy(inbuf, seed, insize);
+        scratch = insize;
+        mutate_buffer(inbuf, &scratch, insize);
+
+        /* Exactly the caller's declared output size, plus a poisoned tail:
+         * any write past the negotiated size is caught without a sanitizer. */
+        uint8_t *outbuf = (uint8_t *)malloc(insize + FUZZ_KIRK_GUARD);
+        assert(outbuf != NULL);
+        memset(outbuf, FUZZ_CANARY, insize + FUZZ_KIRK_GUARD);
+        NkPspCtx ctx;
+        nk_psp_ctx_init(&ctx, ks);
+        int rc = sceUtilsBufferCopyWithRange(&ctx, outbuf, (int)insize, inbuf,
+                                             (int)insize, cmd);
+        for (unsigned g = 0; g < FUZZ_KIRK_GUARD; g++) {
+            assert(outbuf[insize + g] == FUZZ_CANARY);
+        }
+        if (rc == KIRK_OPERATION_SUCCESS) accepted++;
+        free(outbuf);
+        free(inbuf);
+
+        /* The ECDSA commands take fixed, exactly-checked sizes. */
+        if ((i % 4u) == 0u) {
+            uint8_t cmd13_out[0x28];
+            uint8_t *heap13 = (uint8_t *)malloc(0x3Cu);
+            uint8_t *heap17 = (uint8_t *)malloc(0x64u);
+            assert(heap13 != NULL && heap17 != NULL);
+            memset(heap13, 0x11u, 0x3Cu);
+            memset(heap17, 0x22u, 0x64u);
+            scratch = 0x3Cu;
+            mutate_buffer(heap13, &scratch, 0x3Cu);
+            scratch = 0x64u;
+            mutate_buffer(heap17, &scratch, 0x64u);
+            memset(cmd13_out, 0, sizeof(cmd13_out));
+            nk_psp_ctx_init(&ctx, ks);
+            (void)sceUtilsBufferCopyWithRange(&ctx, cmd13_out,
+                                              (int)sizeof(cmd13_out), heap13,
+                                              (int)0x3Cu,
+                                              KIRK_CMD_ECDSA_MULTIPLY_POINT);
+            nk_psp_ctx_init(&ctx, ks);
+            (void)sceUtilsBufferCopyWithRange(&ctx, NULL, 0, heap17,
+                                              (int)0x64u,
+                                              KIRK_CMD_ECDSA_VERIFY);
+            nk_psp_ctx_init(&ctx, ks);
+            (void)sceUtilsBufferCopyWithRange(&ctx, NULL, 0, heap17,
+                                              (int)0x64u - 1,
+                                              KIRK_CMD_ECDSA_VERIFY);
+            free(heap13);
+            free(heap17);
+        }
+    }
+    nk_keystore_free(ks);
+    printf("[FUZZ] KIRK dispatch completed: %u/%u accepted, 0 crashes\n",
+           accepted, iters);
+    fflush(stdout);
+}
+
+/* ---- KL4E / KL3E decoder ---------------------------------------------- */
+
+static void test_fuzz_kle(unsigned iters) {
+    printf("[FUZZ] Testing KL4E/KL3E decoder on hostile headers "
+           "(%u iterations)...\n", iters);
+    fflush(stdout);
+
+    uint8_t payload[64];
+    for (size_t i = 0; i < sizeof(payload); i++) payload[i] = (uint8_t)(i * 5u + 9u);
+
+    /* A synthetic "uncompressed" KL stream: the firmware's direct-copy
+     * form, which is the one form a host can produce without the range
+     * encoder.  The arithmetic-coded form is reached only by mutating it. */
+    uint8_t kl4e[128];
+    size_t kl4e_len = 0;
+    memcpy(kl4e, "KL4E", 4);
+    kl4e[4] = 0x80u | 3u; /* direct copy, shift = 3 */
+    put32be(kl4e + 5, (uint32_t)sizeof(payload));
+    memcpy(kl4e + 9, payload, sizeof(payload));
+    kl4e_len = 9u + sizeof(payload);
+    uint8_t kl3e[128];
+    memcpy(kl3e, "KL3E", 4);
+    memcpy(kl3e + 4, kl4e + 4, kl4e_len - 4u);
+    size_t kl3e_len = kl4e_len;
+
+    uint8_t *out = (uint8_t *)malloc(FUZZ_KLE_SIZE);
+    assert(out != NULL);
+    memset(out, 0, FUZZ_KLE_SIZE);
+    {
+        void *end = NULL;
+        int rc = decompress_kle(out, (int)FUZZ_KLE_SIZE, kl4e + 4,
+                                (int)(kl4e_len - 4u), &end, 1);
+        assert(rc == (int)sizeof(payload));
+        assert(memcmp(out, payload, sizeof(payload)) == 0);
+        assert(end != NULL);
+        assert((uint8_t *)end >= kl4e + 4 && (uint8_t *)end <= kl4e + kl4e_len);
+    }
+    /* A stream that declares more bytes than it carries fails closed
+     * instead of copying from beyond the input. */
+    {
+        uint8_t truncated[12];
+        void *end = NULL;
+        int rc;
+        memcpy(truncated, kl4e, sizeof(truncated));
+        put32be(truncated + 5, 0x400u); /* claims 1024 bytes, carries 7 */
+        rc = decompress_kle(out, (int)FUZZ_KLE_SIZE, truncated + 4,
+                            (int)(sizeof(truncated) - 4u), &end, 1);
+        assert(rc < 0);
+        assert(end == NULL);
+    }
+    /* Fewer than the five header bytes is refused outright. */
+    {
+        void *end = NULL;
+        assert(decompress_kle(out, (int)FUZZ_KLE_SIZE, kl4e + 4, 4, &end, 1) < 0);
+        assert(decompress_kle(out, (int)FUZZ_KLE_SIZE, kl4e + 4, 0, &end, 0) < 0);
+    }
+
+    unsigned decoded = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        int is_kl4e = (fuzz_rand32() % 2u) != 0u;
+        const uint8_t *seed = is_kl4e ? kl4e : kl3e;
+        size_t seed_len = is_kl4e ? kl4e_len : kl3e_len;
+        /* Exact-size heap copy: the decoder may never read past it. */
+        uint8_t *inbuf = (uint8_t *)malloc(seed_len);
+        assert(inbuf != NULL);
+        memcpy(inbuf, seed, seed_len);
+        size_t cur_size = seed_len;
+        mutate_buffer(inbuf, &cur_size, seed_len);
+
+        memset(out, 0, FUZZ_KLE_SIZE);
+        void *end = NULL;
+        int in_size = (cur_size > 4u) ? (int)(cur_size - 4u) : 0;
+        int rc = decompress_kle(out, (int)FUZZ_KLE_SIZE, inbuf + 4, in_size,
+                                &end, is_kl4e);
+        assert(rc <= (int)FUZZ_KLE_SIZE);
+        if (rc > 0) {
+            assert((uint8_t *)end >= inbuf && (uint8_t *)end <= inbuf + cur_size);
+            decoded++;
+        }
+        free(inbuf);
+    }
+    free(out);
+    printf("[FUZZ] KL4E/KL3E completed: %u/%u decoded, 0 crashes\n", decoded, iters);
+    fflush(stdout);
+}
+
+
 int main(int argc, char **argv) {
     unsigned iters = 100;
 
@@ -1428,8 +2494,16 @@ int main(int argc, char **argv) {
     test_fuzz_xb(iters);
     test_fuzz_prx(iters);
     test_fuzz_manifest(iters);
+    test_fuzz_input_profile(iters);
     test_fuzz_package(iters > 1000 ? 1000 : iters);
     test_fuzz_library(iters > 500 ? 500 : iters);
+    test_fuzz_decrypt_boundary(iters > 4000 ? 4000 : iters);
+    test_fuzz_keystore(iters > 1000 ? 1000 : iters);
+    test_fuzz_inflate(iters > 2000 ? 2000 : iters);
+    test_fuzz_kirk(iters > 2000 ? 2000 : iters);
+    test_fuzz_kle(iters > 2000 ? 2000 : iters);
+    test_kirk_ecdsa_curve_names();
+    test_ec_mod_n_is_bounded(iters > 2000 ? 2000 : iters);
 
     printf("=================================================================\n");
     printf("ALL DETERMINISTIC PARSER FUZZ HARNESSES PASSED SUCCESSFULLY!\n");

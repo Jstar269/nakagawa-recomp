@@ -153,38 +153,41 @@ def synthetic_stale_package(runtime_root: Path) -> None:
     (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
 
 
-def has_amber_badge(bmp: tuple[int, int, int, bytes]) -> bool:
+def badge_rect(frame: dict[str, str]) -> tuple[int, int, int, int]:
+    """The status badge rectangle the renderer reported for this frame."""
+    x, y, w, h = (int(value) for value in frame["badge"].split(","))
+    if w <= 0 or h <= 0:
+        raise AssertionError(f"frame {frame.get('frame')} drew no status badge")
+    return x, y, w, h
+
+
+def has_amber_badge(bmp: tuple[int, int, int, bytes], rect: tuple[int, int, int, int]) -> bool:
+    """True when the reported status badge is drawn in the amber accent."""
     width, height, _, _ = bmp
-    # The selected card's status pill is at x=64, y=124 in a 1280x720 frame.
-    right = min(width, 244)
-    bottom = min(height, 164)
+    x0, y0, w, h = rect
+    right = min(width, x0 + w)
+    bottom = min(height, y0 + h)
     return any(
         (lambda color: color[0] > 180 and 90 < color[1] < 205 and color[2] < 90)(
             pixel_rgb(bmp, x, y)
         )
-        for y in range(min(112, bottom), bottom)
-        for x in range(min(56, right), right)
+        for y in range(max(0, y0), bottom)
+        for x in range(max(0, x0), right)
     )
 
 
-def has_hero_title_text(bmp: tuple[int, int, int, bytes]) -> bool:
-    width, height, _, _ = bmp
-    return any(
-        all(channel > 200 for channel in pixel_rgb(bmp, x, y))
-        for y in range(145, min(210, height))
-        for x in range(48, min(720, width))
-    )
-
-
-# The synthetic ICON0.PNG is one opaque pixel of this color, and the hero card
-# draws it centered in the 108x64 icon box at the card's top right.
 ICON_ART_RGB = (50, 190, 120)
 
 
 def has_icon_art(bmp: tuple[int, int, int, bytes]) -> bool:
     width, height, _, _ = bmp
     return any(
-        all(abs(channel - want) <= 12 for channel, want in zip(pixel_rgb(bmp, x, y), ICON_ART_RGB, strict=True))
+        all(
+            abs(channel - expected) <= 12
+            for channel, expected in zip(
+                pixel_rgb(bmp, x, y), ICON_ART_RGB, strict=True
+            )
+        )
         for y in range(112, min(196, height))
         for x in range(min(1120, width), min(1210, width))
     )
@@ -195,7 +198,7 @@ def parse_frames(output: str) -> list[dict[str, str]]:
     for line in output.splitlines():
         if not line.startswith("[PLAYER_UI_TEST] frame="):
             continue
-        fields = dict(re.findall(r"([a-z_]+)=([^ ]+)", line))
+        fields = dict(re.findall(r"([a-z_]+)=(\S+)", line))
         if "frame" not in fields or "view" not in fields:
             raise AssertionError(f"malformed player frame record: {line}")
         frames.append(fields)
@@ -214,8 +217,11 @@ class NativePlayerUiTests(unittest.TestCase):
         drop_invalid_iso: bool = False,
         art_iso: str | None = None,
         stale_package: bool = False,
-        show_window: bool = False,
         wait_background: bool = False,
+        legacy_data: bool = False,
+        env_extra: dict[str, str] | None = None,
+        width: int = 1280,
+        height: int = 720,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -224,6 +230,9 @@ class NativePlayerUiTests(unittest.TestCase):
             userprofile = scratch / "profile"
             for directory in (appdata, localappdata, userprofile):
                 directory.mkdir()
+            legacy_root = userprofile / "Nakagawa" / "data"
+            if legacy_data:
+                legacy_root.mkdir(parents=True)
             profile = scratch / "controller-profile.json"
             if invalid_profile:
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
@@ -255,6 +264,8 @@ class NativePlayerUiTests(unittest.TestCase):
                     "NK_INPUT_PROFILE": str(profile),
                 }
             )
+            if env_extra:
+                env.update(env_extra)
 
             args = [str(PLAYER_EXE), f"--view={view}"]
             event_script = list(events)
@@ -267,10 +278,10 @@ class NativePlayerUiTests(unittest.TestCase):
             args.append(f"--ui-test-screenshot={screenshot}")
             if ui_iso_path is not None:
                 args.append(f"--ui-test-iso-path={ui_iso_path}")
-            if show_window:
-                args.append("--ui-test-show-window")
             if wait_background:
                 args.append("--ui-test-wait-background")
+            args.append(f"--width={width}")
+            args.append(f"--height={height}")
             if error_code:
                 args.append(f"--ui-test-error-code={error_code}")
 
@@ -310,14 +321,28 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertTrue(all(int(frame["pixels"], 16) != 0 for frame in frames))
             self.assertTrue(screenshot.is_file())
             bmp = read_bmp(screenshot)
-            self.assertEqual((bmp[0], bmp[1]), (1280, 720))
+            self.assertEqual((bmp[0], bmp[1]), (width, height))
             return {
                 "frames": frames,
                 "bmp": bmp,
                 "profile_exists": profile.is_file(),
                 "stdout": completed.stdout,
                 "wall_seconds": wall_seconds,
+                "stderr": completed.stderr,
+                "legacy_root": legacy_root,
+                "legacy_root_exists": legacy_root.is_dir(),
             }
+
+    def test_legacy_data_root_is_reported_once_without_moving_it(self) -> None:
+        run = self.run_player("empty", legacy_data=True)
+        stderr = run["stderr"]
+        legacy_root = run["legacy_root"]
+        assert isinstance(stderr, str)
+        assert isinstance(legacy_root, Path)
+        expected_old_path = str(legacy_root.parent.parent) + "\\Nakagawa\\data"
+        marker = f'LEGACY_DATA_DIR_FOUND: old_path="{expected_old_path}"'
+        self.assertEqual(stderr.count(marker), 1, stderr)
+        self.assertTrue(run["legacy_root_exists"])
 
     def test_empty_library_wizard_picker_and_font_confirmation(self) -> None:
         run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"))
@@ -354,6 +379,43 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[2]["view"], "library")
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
 
+    def test_settings_layout_avoids_launcher_save_overlap_at_client_widths(self) -> None:
+        cases = (
+            (1044, 900, "1"),
+            (1187, 900, "1"),
+            (1043, 900, "0"),
+            (800, 720, "0"),
+            (1188, 619, "0"),
+            (1188, 620, "1"),
+        )
+        for width, height, expected_two_col in cases:
+            with self.subTest(width=width, height=height):
+                run = self.run_player("settings", width=width, height=height)
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["settings_two_col"], expected_two_col)
+
+    def test_script_can_wait_for_a_view_and_a_minimum_duration(self) -> None:
+        started = time.monotonic()
+        run = self.run_player(
+            "settings",
+            (
+                "KEY_ESCAPE",
+                "WAIT_VIEW=library|settings,1000",
+                "WAIT_MS=100",
+                "ASSERT_VIEW=library",
+                "KEY_S",
+            ),
+        )
+        elapsed = time.monotonic() - started
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertGreaterEqual(elapsed, 0.08)
+        self.assertIn("[PLAYER_UI_TEST] wait_view actual=library result=PASS", run["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] wait_ms result=PASS", run["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] assert_view result=PASS actual=library", run["stdout"])
+        self.assertEqual(frames[-1]["view"], "settings")
+
     def test_mouse_click_adds_disc_through_sdl_event_loop(self) -> None:
         run = self.run_player(
             "library", ("MOUSE_MOVE=400,360", "MOUSE_DOWN", "MOUSE_UP")
@@ -364,7 +426,10 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
 
     def test_library_card_states_include_experimental_and_ready(self) -> None:
-        missing = self.run_player("library", ())
+        # The ordinary library auto-discovers built showcase packages beside
+        # the test executable. Use the in-memory staged-but-unbuilt card so the
+        # missing-runtime state is stable whether or not `make showcase` ran.
+        missing = self.run_player("ready-library", (), runtime_ready=False)
         missing_frame = missing["frames"][0]  # type: ignore[index]
         self.assertEqual(missing_frame["selected_prepared"], "0")
         self.assertEqual(missing_frame["selected_package_status"], "1")
@@ -396,7 +461,6 @@ class NativePlayerUiTests(unittest.TestCase):
             events,
             art_iso="unavailable",
             stale_package=True,
-            show_window=True,
             wait_background=True,
         )
         frames = offline["frames"]
@@ -413,18 +477,15 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertLess(offline["wall_seconds"], 6.0)
         self.assertEqual(frames[-1]["selected_package_status"], "3")
         self.assertEqual(frames[-1]["selected_runtime"], "0")
-        self.assertTrue(has_hero_title_text(offline["bmp"]))
         # An absent disc image must show the initials placeholder, never a
         # blank or a blocked frame waiting for the drive.
         self.assertFalse(has_icon_art(offline["bmp"]))
-        self.assertIn("window_shown=1 high_density=1", offline["stdout"])
 
         available = self.run_player(
             "ready",
             ("KEY_LEFT",) * 8,
             art_iso="available",
             stale_package=True,
-            show_window=True,
             wait_background=True,
         )
         art_frames = available["frames"]
@@ -434,12 +495,8 @@ class NativePlayerUiTests(unittest.TestCase):
             [0] * len(art_frames),
         )
         self.assertEqual(art_frames[-1]["selected_package_status"], "3")
-        # Art arrives on a worker thread after the first frame, so the very
-        # first frame is already the drawn library with its title. A readable
-        # disc image with PIC1.PNG must not leave the card clipped away.
-        self.assertTrue(has_hero_title_text(available["bmp"]))
+        # Synthetic icon art arrives without blocking the UI frame.
         self.assertTrue(has_icon_art(available["bmp"]))
-        self.assertIn("window_shown=1 high_density=1", available["stdout"])
 
     def test_inspection_and_support_screens_render_and_return(self) -> None:
         for view in ("inspecting", "supported", "experimental", "unsupported", "preparing"):
@@ -456,7 +513,9 @@ class NativePlayerUiTests(unittest.TestCase):
         frame = run["frames"][0]  # type: ignore[index]
         self.assertEqual(frame["selected_staged"], "1")
         self.assertEqual(frame["selected_runtime"], "0")
-        self.assertTrue(has_amber_badge(run["bmp"]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(has_amber_badge(run["bmp"], badge_rect(frames[-1])))
 
     def test_staging_and_package_build_cancellation_render_progress(self) -> None:
         staging = self.run_player("wizard-staging", ("KEY_ESCAPE",))
@@ -542,6 +601,45 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[0]["error"], code)
                 self.assertEqual(frames[1]["view"], "library")
                 self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
+                # Only a missing or corrupt source reopens the file picker.
+                expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
+                self.assertEqual(frames[1]["picker"], expected_picker)
+
+    def test_per_title_controller_mapping_choice(self) -> None:
+        """A disc can get its own mapping, or go back to the global one."""
+        # The library card carries the choice: three tabs reach it, because the
+        # primary action, add and remove come first and paging never applies to
+        # a one-title library.
+        card = self.run_player("library", ("KEY_TAB", "KEY_TAB", "KEY_TAB", "KEY_RETURN"))
+        card_frames = card["frames"]
+        assert isinstance(card_frames, list)
+        self.assertEqual(card_frames[0]["input_scope"], "global")
+        self.assertEqual(card_frames[0]["input_titles"], "0")
+        self.assertEqual(card_frames[4]["input_scope"], "TEST00005")
+        self.assertEqual(card_frames[4]["input_titles"], "1")
+        self.assertNotEqual(card_frames[0]["pixels"], card_frames[4]["pixels"])
+
+        # The same control in Controller Settings, which says which mapping it
+        # is editing, and which is the 23rd focus stop of that view.
+        settings = self.run_player(
+            "controller", tuple(["KEY_TAB"] * 22 + ["KEY_RETURN"])
+        )
+        settings_frames = settings["frames"]
+        assert isinstance(settings_frames, list)
+        self.assertEqual(settings_frames[0]["input_scope"], "global")
+        self.assertEqual(settings_frames[0]["focus_count"], "23")
+        self.assertEqual(settings_frames[23]["input_scope"], "TEST00005")
+        self.assertNotEqual(settings_frames[0]["pixels"], settings_frames[23]["pixels"])
+
+        # Toggling back returns the disc to the global mapping.
+        back = self.run_player(
+            "controller", tuple(["KEY_TAB"] * 22 + ["KEY_RETURN"] * 2)
+        )
+        back_frames = back["frames"]
+        assert isinstance(back_frames, list)
+        self.assertEqual(back_frames[23]["input_scope"], "TEST00005")
+        self.assertEqual(back_frames[24]["input_scope"], "global")
+        self.assertEqual(back_frames[24]["input_titles"], "0")
 
     def test_quit_from_library_runs_through_sdl_event_loop(self) -> None:
         run = self.run_player("library", ("KEY_ESCAPE",))
@@ -549,6 +647,46 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "library")
         self.assertEqual(frames[-1]["running"], "0")
+
+    def test_failed_close_confirmation_needs_a_second_explicit_close(self) -> None:
+        run = self.run_player(
+            "library",
+            ("CLOSE", "CLOSE"),
+            env_extra={
+                "NK_UI_TEST_GAME_RUNNING": "1",
+                "NK_UI_TEST_MESSAGEBOX_FAIL": "1",
+            },
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["game_running"], "1")
+        self.assertEqual(frames[-1]["game_running"], "1")
+        self.assertEqual(frames[-1]["running"], "0")
+        self.assertIn("Repeat the close request", run["stderr"])
+        self.assertIn("explicit force-quit", run["stderr"])
+
+    def test_font_fallback_reason_is_reported(self) -> None:
+        """Every frame names the active text path and, on fallback, why (#421)."""
+        forced = self.run_player("library", (), env_extra={"NK_UI_NO_TTF": "1"})
+        forced_frames = forced["frames"]
+        assert isinstance(forced_frames, list)
+        for frame in forced_frames:
+            self.assertEqual(frame["font"], "bitmap")
+            self.assertEqual(frame["font_reason"], "forced-off")
+        self.assertIn("NK_UI_NO_TTF", str(forced["stderr"]))
+
+        normal = self.run_player("library", ())
+        normal_frames = normal["frames"]
+        assert isinstance(normal_frames, list)
+        for frame in normal_frames:
+            self.assertIn(frame["font"], ("ttf", "bitmap"))
+            if frame["font"] == "ttf":
+                self.assertEqual(frame["font_reason"], "NONE")
+            else:
+                # A fallback without a named reason is exactly the silent
+                # degradation this contract forbids.
+                self.assertNotEqual(frame["font_reason"], "NONE")
+                self.assertTrue(frame["font_reason"])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@
 
 #include "nk_platform.h"
 #include <windows.h>
+#include <shlobj.h>
+#include <objbase.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +45,32 @@ static bool wide_to_utf8(const WCHAR *wide, char *out_utf8, size_t max_utf8_byte
         return false;
     }
     return true;
+}
+
+FILE *nk_fopen_utf8(const char *path, const char *mode) {
+    if (!path || !mode) return NULL;
+    WCHAR wpath[32768];
+    WCHAR wmode[32];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0])) ||
+        !utf8_to_wide(mode, wmode, sizeof(wmode) / sizeof(wmode[0]))) return NULL;
+    return _wfopen(wpath, wmode);
+}
+
+int nk_remove_utf8(const char *path) {
+    if (!path || !*path) return -1;
+    WCHAR wpath[32768];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0]))) return -1;
+    return DeleteFileW(wpath) ? 0 : -1;
+}
+
+int nk_rename_utf8(const char *from, const char *to) {
+    if (!from || !*from || !to || !*to) return -1;
+    WCHAR wfrom[32768];
+    WCHAR wto[32768];
+    if (!utf8_to_wide(from, wfrom, sizeof(wfrom) / sizeof(wfrom[0])) ||
+        !utf8_to_wide(to, wto, sizeof(wto) / sizeof(wto[0]))) return -1;
+    return MoveFileExW(wfrom, wto,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
 }
 
 bool nk_platform_file_exists(const char *path) {
@@ -143,14 +171,71 @@ static bool env_get_utf8(const WCHAR *name, char *out_utf8, size_t max_utf8_byte
     return wide_to_utf8(wvalue, out_utf8, max_utf8_bytes);
 }
 
-bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
+bool nk_platform_resolve_windows_data_base(
+    const char *known_local_app_data,
+    const char *local_app_data,
+    const char *roaming_app_data,
+    char *out_base,
+    size_t max_len
+) {
+    if (!out_base || max_len == 0) return false;
+    /* An explicit LOCALAPPDATA wins so launchers, tests and the Python tools
+     * (which read the same variable) agree on one root; the Known Folder
+     * covers processes started without it. */
+    const char *base = local_app_data && local_app_data[0]
+        ? local_app_data
+        : (known_local_app_data && known_local_app_data[0]
+            ? known_local_app_data
+            : (roaming_app_data && roaming_app_data[0] ? roaming_app_data : NULL));
+    if (!base) return false;
+    size_t length = strlen(base);
+    if (length >= max_len) return false;
+    memcpy(out_base, base, length + 1);
+    return true;
+}
+
+static bool known_local_app_data_utf8(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    out_path[0] = '\0';
+    PWSTR wide_path = NULL;
+    HRESULT result = SHGetKnownFolderPath(
+        &FOLDERID_LocalAppData, KF_FLAG_DEFAULT, NULL, &wide_path);
+    bool resolved = SUCCEEDED(result) && wide_path &&
+        wide_to_utf8(wide_path, out_path, max_len);
+    if (wide_path) CoTaskMemFree(wide_path);
+    return resolved;
+}
+
+static bool get_windows_data_base(char *out_base, size_t max_len) {
+    char known_local_app_data[32768] = "";
+    char local_app_data[32768] = "";
+    char roaming_app_data[32768] = "";
+    (void)known_local_app_data_utf8(known_local_app_data,
+                                    sizeof(known_local_app_data));
+    (void)env_get_utf8(L"LOCALAPPDATA", local_app_data,
+                       sizeof(local_app_data));
+    (void)env_get_utf8(L"APPDATA", roaming_app_data,
+                       sizeof(roaming_app_data));
+    if (nk_platform_resolve_windows_data_base(
+            known_local_app_data, local_app_data, roaming_app_data,
+            out_base, max_len)) {
+        return true;
+    }
+    static bool reported_unavailable = false;
+    if (!reported_unavailable) {
+        reported_unavailable = true;
+        fprintf(stderr,
+            "DATA_DIR_UNAVAILABLE: LOCALAPPDATA is unset and Windows could not resolve "
+            "FOLDERID_LocalAppData or APPDATA. USERPROFILE alone is not a data directory.\n");
+    }
+    return false;
+}
+
+static bool resolve_windows_path(NkPathType type, char *out_path,
+                                 size_t max_len) {
     if (!out_path || max_len == 0) return false;
     char base[32768];
-    if (!env_get_utf8(L"LOCALAPPDATA", base, sizeof(base)) &&
-        !env_get_utf8(L"APPDATA", base, sizeof(base)) &&
-        !env_get_utf8(L"USERPROFILE", base, sizeof(base))) {
-        return false;
-    }
+    if (!get_windows_data_base(base, sizeof(base))) return false;
 
     const char *subdir = "data";
     switch (type) {
@@ -163,14 +248,29 @@ bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
     }
 
     int written = snprintf(out_path, max_len, "%s\\Nakagawa\\%s", base, subdir);
-    if (written < 0 || (size_t)written >= max_len) return false;
+    return written > 0 && (size_t)written < max_len;
+}
 
-    nk_platform_mkdir_p(out_path);
+bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len) {
+    if (!resolve_windows_path(type, out_path, max_len)) return false;
+    (void)nk_platform_mkdir_p(out_path);
     return true;
+}
+
+bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len) {
+    return resolve_windows_path(NK_PATH_DATA, out_path, max_len);
 }
 
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len) {
     return nk_platform_get_path(NK_PATH_DATA, out_path, max_len);
+}
+
+bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return false;
+    char profile[32768];
+    if (!env_get_utf8(L"USERPROFILE", profile, sizeof(profile))) return false;
+    int written = snprintf(out_path, max_len, "%s\\Nakagawa\\data", profile);
+    return written > 0 && (size_t)written < max_len;
 }
 
 /* Helper to escape arguments for Windows command line according to Microsoft CRT rules */
@@ -457,6 +557,9 @@ bool nk_platform_spawn_process(
         return false;
     }
 
+    /* The player may minimize itself after the runtime reports its first GUI
+       window. Allow that user-launched child to claim the foreground then. */
+    AllowSetForegroundWindow(pi.dwProcessId);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     out_process->native_handle = (void *)pi.hProcess;

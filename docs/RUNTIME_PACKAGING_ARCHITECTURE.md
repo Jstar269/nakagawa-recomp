@@ -91,11 +91,11 @@ list is not evidence that a distributable installer or title package exists:
 
 | Target Environment | Packaging Strategy | Binary Artifacts |
 | --- | --- | --- |
-| **Windows x86-64** | Inno Setup / MSIX / Portable ZIP | `nakagawa_player.exe`, `bin/nakagawa_core.dll` (or static), `build/<game>/<game>.exe`, SDL3.dll |
+| **Windows x86-64** | Inno Setup / MSIX / Portable ZIP | `nakagawa_player.exe`, `bin/nakagawa_core.dll` (or static), `build/<game>/<game>.exe`, SDL3.dll, SDL3_ttf.dll + resolved closure, `THIRD_PARTY_NOTICES/` |
 | **Linux / Steam Deck** | AppImage / Flatpak | `nakagawa_player`, `bin/<game>`, `libSDL3.so` bundled in AppDir |
 | **macOS ARM64** | App Bundle (`Nakagawa.app`) | `Nakagawa.app/Contents/MacOS/nakagawa_player`, helper executables in `MacOS/` |
 
-## 5. Local AOT package contract (v1)
+## 5. Local AOT package contract (v2)
 
 The planner can run the existing analyzer, code generator, and two-phase Make
 pipeline for a plaintext executable ELF. Run it from the repository root with the
@@ -106,7 +106,7 @@ $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
 python tools/title_codegen_plan.py assets/titles/my-title.json `
   --package `
   --game-elf place_game_here/EBOOT.elf `
-  --output-dir build/my-title
+  --output-dir "$env:LOCALAPPDATA\Nakagawa\data\developer-packages\my-title"
 ~~~
 
 When the manifest requires PSP-header BSS metadata, also pass
@@ -117,11 +117,12 @@ the AOT build. `--game-name` defaults to the manifest's `game_name`, then to its
 portable `id`. The manifest's `codegen_profile` is authoritative. `--public-safe`
 selects the synthetic/public-safe runtime backends for fixture builds.
 
-The output directory must be dedicated and untracked (use an ignored `build/`
-subdirectory or a directory outside the repository). The command refuses a
-tracked in-repository output and refuses to reuse an existing package directory
-when its manifest, executable, selected PRXs, or PSP header hashes differ. The
-manifest remains unchanged. Make's `all` target still runs the generation and
+The output directory must be dedicated and untracked. Retail package identity
+contains local executable and module hashes, so the planner refuses to write a
+retail package inside the repository; use the per-user data root as above or
+the player's `build-package` action. The command refuses to reuse an existing
+package directory when its manifest, executable, selected PRXs, or PSP header
+hashes differ. The manifest remains unchanged. Make's `all` target still runs the generation and
 compile phases separately so generated chunks are linked on a clean build.
 Current Make recipes cannot transport whitespace or shell-sensitive characters
 in bound paths. Inputs at such paths are copied byte-for-byte into
@@ -134,16 +135,26 @@ an unsupported path is rejected as `PACKAGE_UNSUPPORTED_PATH` (#296).
 
 | Field | Meaning |
 | --- | --- |
-| `format`, `schema_version` | `nakagawa-aot-package`, version `1`. |
+| `format`, `schema_version` | `nakagawa-aot-package`, version `2`. |
 | `title` | Manifest `id`, display name, kind, raw manifest SHA-256, and protected-semantics digest. |
 | `inputs` | SHA-256 for the manifest, executable ELF, selected PRXs with load addresses, and optional PSP header. Absolute input paths are omitted. |
+| `title_input_identity` | Versioned exact local inputs: manifest/profile and schema, DISC_ID/region/DISC_VERSION, selected PARAM.SFO facts, ISO container facts, decrypted main executable name/hash, required guest PRX names/hashes, and optional PSP-header hash/magic. Retail hashes remain only in per-user package data. |
 | `runtime` | `CpuState` ABI version and header hash, resolved guest run entry, runtime contract, bindings, and required bindings. |
 | `executable` | Relative native executable path and hash plus the guest ELF entry address. |
 | `generated_objects` | Sorted relative object paths and SHA-256 hashes. |
-| `required_local_assets` | Manifest title-data/resource roots, selected or optional guest PRXs, and host SDL3/Vulkan runtime requirements. These are references; title assets are not copied into the package. |
+| `required_local_assets` | Manifest title-data/resource roots, selected or optional guest PRXs, and host SDL3/SDL3_ttf/Vulkan runtime requirements. These are references; title assets are not copied into the package. |
 | `build_report` | Relative path `build-report.json`. |
 | `cache` | Versioned AOT/native cache key, codegen options, and runtime ABI compatibility decision. |
-| `completion-manifest.json` | Completion marker containing the cache key and SHA-256 for every published artifact; written last. |
+| `completion-manifest.json` | Completion marker containing the cache key, the exact title input identity, and SHA-256 for every published artifact; written last. |
+
+The cache key includes the canonical `title_input_identity` digest. The same
+record is stored under `<user data>/title-input-identities/<DISC_ID>/` and the
+completion marker. Native package validation compares the package against that
+current per-user record and the selected library entry's SFO revision before
+launch. It reports changed classes such as `main executable`, a named guest
+module, `SFO revision`, or `manifest/profile`; it never prints input hashes.
+Revision qualification that needs a title-specific compatibility decision is
+an explicit boundary and remains in the works under [issue #315](https://github.com/Jstar269/nakagawa-recomp/issues/315).
 
 `build-report.json` has format `nakagawa-build-report`, schema version `1`, the
 same `input_hashes`, Python/planner/analyzer/codegen/Make versions, the compiler
@@ -164,6 +175,28 @@ resulting package. Checkout-independent run-directory provisioning (#297) is
 still tracked there; analyzer ownership and stack-balance gates remain tracked
 by #291.
 
+### Host runtime DLL staging (#421)
+
+Every Windows route that ships or runs a player stages the same host runtime
+DLLs with one mechanical step, `tools/stage_runtime_dlls.py`: `SDL3.dll` and
+`SDL3_ttf.dll` (each overridable via `SDL3_DLL` / `SDL3_TTF_DLL`, otherwise
+resolved from `C:/msys64/ucrt64/bin`), plus the SDL3_ttf dependency closure
+resolved by walking PE import tables recursively and stopping at Windows system
+DLLs. The step runs from the Makefile's `player` target (beside
+`build/nakagawa_player.exe`) and from `tools/nk_cli.py build-package` (into each
+built package). It never stages a partial closure: when an import is
+unresolved, it names it. The player target then fails. A package build still
+succeeds with its required SDL3, libiconv and Vulkan runtimes, and prints the
+unresolved import as a warning, because the prerequisite installer (#296) does
+not provide SDL3_ttf yet; that player draws with the bitmap fallback and logs
+why. Licence texts for every staged DLL are copied beside them
+as `THIRD_PARTY_NOTICES/` by `tools/package_notices.py`, driven by
+`assets/third_party_components.json`. Because the closure sits beside the
+executable, launching from Explorer or a plain `cmd.exe` without MSYS2 on `PATH`
+uses the readable TTF font; the 8x8 SDL bitmap font remains only as a logged
+last-resort fallback (`NK_UI_NO_TTF=1` forces it), and the workspace doctor
+reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`.
+
 ## 6. Private content-addressed cache contract (#316)
 
 A package is reusable only when every semantic input that can affect its output
@@ -173,7 +206,7 @@ following key components:
 | Key component | AOT generated C | Native objects/runtime package |
 | --- | --- | --- |
 | Exact executable bytes SHA-256 | required | required |
-| Validated manifest/profile and selected guest-module/PSP-header digests | required | required |
+| Validated manifest/profile, exact title-input identity, and selected guest-module/PSP-header digests | required | required |
 | Analyzer/codegen semantics epoch and analyzer/codegen content digests | required | required |
 | Codegen options (profile, base/entry, spans, chunking, selected options, correctness modes) | required | required |
 | Generated-code ABI epoch | required | required |
@@ -197,7 +230,7 @@ The cache decision has three levels:
   source, flag, or explicitly compatible runtime ABI change requires native
   objects to be rebuilt and relinked.
 * `aot-regenerate`: executable bytes, manifest/bindings, analyzer/codegen
-  semantics, codegen options, or an incompatible generated/runtime ABI requires
+semantics, codegen options, title-input identity, or an incompatible generated/runtime ABI requires
   fresh AOT output.
 
 A runtime ABI change reuses generated C only when the package layer explicitly

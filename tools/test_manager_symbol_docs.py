@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 """Keep hst_manager FindSymbol guidance aligned with public documentation."""
@@ -26,8 +26,16 @@ class ManagerSymbolDocumentationTests(unittest.TestCase):
         assert warning is not None
 
         doc_path = warning.group(1).replace("\\", "/")
-        document = ROOT / doc_path
-        self.assertTrue(document.is_file(), f"missing FindSymbol setup page: {doc_path}")
+        doc_file, _, doc_anchor = doc_path.partition("#")
+        document = ROOT / doc_file
+        self.assertTrue(document.is_file(), f"missing FindSymbol setup page: {doc_file}")
+        if doc_anchor:
+            headings = re.findall(r"^#{1,6} (.+)$", document.read_text(encoding="utf-8"), re.MULTILINE)
+            slugs = {
+                re.sub(r"[^a-z0-9 -]", "", h.lower()).replace(" ", "-")
+                for h in headings
+            }
+            self.assertIn(doc_anchor, slugs, f"FindSymbol setup anchor is not a heading in {doc_file}")
 
         docs = document.read_text(encoding="utf-8")
         expected_candidates = (

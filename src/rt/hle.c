@@ -34,10 +34,17 @@
 #ifndef SR_BUILD_DIR
 #define SR_BUILD_DIR "build/hst"
 #endif
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#include "vfs_contained.h"
+#endif
 #include "recomp.h"
 #include "iso.h"
 #include "pgf_api.h"
 #include "pgd_api.h"
+#include "nk_input_profile.h"
 #include "evf.h"         /* pure sceKernelEventFlag pattern/mode semantics */
 #include "asset_index.h" /* dynamic extracted-data index (issue #223) */
 #include "archive_vfs.h" /* validated read-only XB provider (issue #298) */
@@ -55,19 +62,71 @@
 #include "flight_recorder.h"
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
+#include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 #include <setjmp.h>
-#include <process.h>     /* _exit() */
-#include <windows.h>     /* Sleep() */
 #include <stdatomic.h>
 #include <errno.h>
 #include <limits.h>
+#ifdef _WIN32
+#include <process.h>     /* _exit() */
+#include <windows.h>     /* Sleep() */
 #include <io.h>          /* _open_osfhandle/_fdopen for contained FILE* opens */
 #include <fcntl.h>       /* _O_BINARY/_O_RDWR/_O_APPEND */
+#else
+#include <unistd.h>      /* _exit(), getcwd(), readlink() */
+#include <time.h>        /* clock_gettime()/nanosleep() for the host seams below */
+#include <dirent.h>      /* opendir()/readdir() for the host data census */
+#include <sys/stat.h>    /* mkdir()/stat()/lstat() for the host path helpers */
+#include <sys/statvfs.h> /* statvfs() for the memstick volume report */
+#endif
+
+/* ---- host primitive seam -------------------------------------------------------
+ * The Windows spellings below are the ORIGINAL Win32 calls, unchanged, so a
+ * Windows build is byte-for-byte the build it was. Each non-Windows arm is the
+ * same operation expressed with the primitive the host actually publishes --
+ * not a stub, and not a fabricated result. A feature with no equivalent on a
+ * host is refused at the one place that would use it (see ms0_fopen_utf8 and the
+ * host data walk), so the guest observes the ordinary PSP error instead of a
+ * crash or a made-up success. */
+#ifdef _WIN32
+static void sr_host_sleep_ms(uint32_t ms) { Sleep(ms); }
+static uint64_t sr_host_monotonic_ms(void) { return GetTickCount64(); }
+/* 100 ns ticks since 1601-01-01, the same unit FILETIME carries, so the RTC
+ * epoch arithmetic below is unchanged. */
+static uint64_t sr_host_filetime_ticks(void) {
+    FILETIME ft;
+    ULARGE_INTEGER value;
+    GetSystemTimeAsFileTime(&ft);
+    value.LowPart = ft.dwLowDateTime;
+    value.HighPart = ft.dwHighDateTime;
+    return value.QuadPart;
+}
+#else
+static void sr_host_sleep_ms(uint32_t ms) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000u);
+    ts.tv_nsec = (long)(ms % 1000u) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
+}
+static uint64_t sr_host_monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0u;
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+/* CLOCK_REALTIME is seconds since 1970-01-01; scaled here into the same
+ * 100 ns-since-1601 unit FILETIME carries so RTC_FILETIME_EPOCH_TICK stays the
+ * one epoch constant and the guest-visible tick arithmetic is unchanged. */
+static uint64_t sr_host_filetime_ticks(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0u;
+    return (uint64_t)ts.tv_sec * 10000000ull + (uint64_t)ts.tv_nsec / 100ull;
+}
+#endif
 
 uint32_t sr_last_nid = 0;
 
@@ -246,6 +305,25 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid) {
     return result;
 }
 
+/* Unlink every registered export whose target lies in [lo, hi). This is the export
+ * authority a loaded image owns, so unloading that image retires exactly its own
+ * exports: an importer can no longer resolve a NID to an address in a range the
+ * kernel has just released. Entries outside the range belong to other resident
+ * images and are left untouched. Sorted order by NID is preserved, so the lookup
+ * above keeps its binary search. */
+static void sr_hle_unregister_late_imports_in_range(uint32_t lo, uint32_t hi) {
+    if (hi <= lo) return;
+    hle_lock();
+    unsigned kept = 0;
+    for (unsigned i = 0; i < s_late_import_n; i++) {
+        uint32_t t = s_late_imports[i].target;
+        if (t >= lo && t < hi) continue;
+        s_late_imports[kept++] = s_late_imports[i];
+    }
+    s_late_import_n = kept;
+    hle_unlock();
+}
+
 static void sr_hle_register_entry(uint32_t nid, const char *name, HleFn fn,
                                   uint32_t unsupported_error) {
     /* Duplicate NID guard. The 3 dead duplicate registrations found in this file's static
@@ -420,94 +498,7 @@ static uint32_t s_heap_base = 0;          /* partition floor: heap value at init
 static uint32_t s_heap_last_bump = 0;     /* mirror of last s_heap value, for the main-thread diagnostic */
 uint32_t user_partition_last_heap(void) { return s_heap_last_bump ? s_heap_last_bump : s_heap; }
 
-/* ---- diagnostic: snapshot state at libc "should be called from main thread" prints ----
- * The libc runtime on PSP caches sceKernelGetThreadId() into a BSS slot during
- * _init_libc and every subsequent guarded syscall (__cxa_guard_acquire, _malloc_r,
- * atexit, __assert) compares the current thread's UID against that cached value. When
- * they do not match it prints "libc:%s: should be called from main thread".
- *
- * At the moment that fires we want the *exact* combination that broke the check:
- *   - cur_uid the scheduler reports right now (gets cached via s_cur by the cooperative
- *     scheduler; can be 0 if the assertion runs during a transitional window)
- *   - the cached BSS slots the libc/libgcc helpers read (just past sr_load_segment's
- *     reported end at 0x0030a020 -- libc_main_thid sits in this tail)
- *   - the most recent allocation address handed out, so a BSS-aliasing alloc is
- *     immediately visible in the log.
- *
- * Snapshotting wraps a single fprintf so the trace stays readable; one struct per fire. */
-typedef struct {
-    uint32_t pc, ra;
-    uint32_t a0, a1;            /* printf format msg ptr at A0 + libc fn-name at A1 */
-    uint32_t cur_uid;
-    uint32_t bss_tail[12];      /* [0x0030a020..0x0030a04c], eight core slots */
-    uint32_t bss_main_ids[3];   /* [0x0030a054..0x0030a05c], suspect libc_main_thid probes */
-    uint32_t bss_higher[3];     /* [0x0031a03c..0x0031a044], gp-relative frame table head */
-    uint32_t heap_bump_ptr;     /* last s_heap value user_partition_init / alloc_block set */
-    uint32_t heap_alloc_addr;   /* most recent rounded-up allocation address */
-} MainThreadDiag;
-
-static MainThreadDiag sr_last_mt_diag;
 static uint32_t sr_last_alloc_addr = 0;     /* last heap allocation rounded address */
-
-/* Run as: sr_capture_mainthread_diag(s, &sr_last_mt_diag); re-used by both the printf
- * and ExitThread hooks so a second snapshot lands beside the first without another struct. */
-static MainThreadDiag *sr_capture_mainthread_diag(CpuState *s, MainThreadDiag *d) {
-    if (!sr_title_config_diagnostics_enabled()) return d;
-    uint32_t sp = s->r[29];
-    d->pc  = s->pc;
-    d->ra  = MEM_R32(sp + 4u);
-    d->a0  = s->r[4];
-    d->a1  = s->r[5];
-    d->cur_uid = sched_current_uid();
-    d->bss_tail[ 0] = MEM_R32(0x0030a020u); d->bss_tail[ 1] = MEM_R32(0x0030a024u);
-    d->bss_tail[ 2] = MEM_R32(0x0030a028u); d->bss_tail[ 3] = MEM_R32(0x0030a02cu);
-    d->bss_tail[ 4] = MEM_R32(0x0030a030u); d->bss_tail[ 5] = MEM_R32(0x0030a034u);
-    d->bss_tail[ 6] = MEM_R32(0x0030a038u); d->bss_tail[ 7] = MEM_R32(0x0030a03cu);
-    d->bss_tail[ 8] = MEM_R32(0x0030a040u); d->bss_tail[ 9] = MEM_R32(0x0030a044u);
-    d->bss_tail[10] = MEM_R32(0x0030a048u); d->bss_tail[11] = MEM_R32(0x0030a04cu);
-    d->bss_main_ids[0] = MEM_R32(0x0030a054u);
-    d->bss_main_ids[1] = MEM_R32(0x0030a058u);
-    d->bss_main_ids[2] = MEM_R32(0x0030a05cu);
-    d->bss_higher[0] = MEM_R32(0x0031a03cu);
-    d->bss_higher[1] = MEM_R32(0x0031a040u);
-    d->bss_higher[2] = MEM_R32(0x0031a044u);
-    d->heap_bump_ptr   = user_partition_last_heap();
-    d->heap_alloc_addr = sr_last_alloc_addr;
-    return d;
-}
-
-static void sr_dump_mainthread_diag(const char *prefix, const MainThreadDiag *d) {
-    if (!sr_title_config_diagnostics_enabled()) return;
-    fprintf(stderr,
-        "==%s== pc=0x%08x ra=0x%08x a0=0x%08x a1=0x%08x cur_uid=0x%x\n"
-        "  bss[0x0030a000..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a010..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a020..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a030..+0x10]=%08x %08x %08x %08x\n"
-        "  bss[0x0030a040..+0x10]=%08x %08x %08x %08x  /* guest module/EH-metadata registry */\n"
-        "  bss[0x0030a054..+0x0c]=%08x %08x %08x\n"
-        "  bss[0x0031a03c..+0x0c]=%08x %08x %08x  /* gp-relative frame table head */\n"
-        "  heap_bump_ptr=0x%08x heap_last_alloc=0x%08x %s\n",
-        prefix,
-        d->pc, d->ra, d->a0, d->a1, d->cur_uid,
-        MEM_R32(0x0030a000u), MEM_R32(0x0030a004u), MEM_R32(0x0030a008u), MEM_R32(0x0030a00cu),
-        MEM_R32(0x0030a010u), MEM_R32(0x0030a014u), MEM_R32(0x0030a018u), MEM_R32(0x0030a01cu),
-        d->bss_tail[0], d->bss_tail[1], d->bss_tail[2], d->bss_tail[3],
-        d->bss_tail[4], d->bss_tail[5], d->bss_tail[6], d->bss_tail[7],
-        d->bss_tail[8], d->bss_tail[9], d->bss_tail[10], d->bss_tail[11],
-        d->bss_main_ids[0], d->bss_main_ids[1], d->bss_main_ids[2],
-        d->bss_higher[0], d->bss_higher[1], d->bss_higher[2],
-        d->heap_bump_ptr, d->heap_alloc_addr,
-        (d->heap_alloc_addr < sr_loaded_end())
-            ? " <-- last alloc overlaps the loaded image/BSS!" : "");
-    if (d->bss_tail[8]) {
-        fprintf(stderr, "  deref[0x0030a040] -> MEM[0x%08x] = 0x%08x\n", d->bss_tail[8], MEM_R32(d->bss_tail[8]));
-    }
-    if (d->bss_tail[9]) {
-        fprintf(stderr, "  deref[0x0030a044] -> MEM[0x%08x] = 0x%08x\n", d->bss_tail[9], MEM_R32(d->bss_tail[9]));
-    }
-}
-
 /* Start the user partition after the complete flat image, including zero-filled BSS.
  * tools/prxload.py preserves the original ~PSP header's segment-memory sizes when a
  * stripped ELF has lost them. An explicit override may move the base higher, but may
@@ -738,14 +729,6 @@ static uint32_t alloc_block(uint32_t size) {
         s_blocks[slot].next      = next;
     }
 
-    /* Telemetry: emit structured line so WebUI /api/recomp/allocs can parse the live block chain.
-     * Format: ALLOC_BLOCK uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0
-     * Gated on SR_POSTUMD so release/perf runs are not affected. */
-    if (getenv("SR_POSTUMD")) {
-        fprintf(stderr, "ALLOC_BLOCK: uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0\n",
-                uid, addr, size, prev, next);
-        fflush(stderr);
-    }
     return uid;
 }
 
@@ -889,11 +872,6 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     s_blocks[slot].prev      = prev;
     s_blocks[slot].next      = next;
 
-    if (getenv("SR_POSTUMD")) {
-        fprintf(stderr, "ALLOC_BLOCK: uid=0x%x addr=0x%08x size=0x%x prev=0x%08x next=0x%08x fl=0\n",
-                uid, addr, eff, prev, next);
-        fflush(stderr);
-    }
     return uid;
 }
 
@@ -1781,10 +1759,6 @@ static uint32_t h_StartThread(CpuState *s) {
     if (result == 0) sched_preempt();
     return result;
 }
-/* Forward decls of hle-internal diagnostic helpers (defined below). Used by h_ExitThread. */
-extern void sr_postumd_advance(int active_after);
-extern void sr_postumd_signal_shutdown(uint64_t captured_count);
-extern uint64_t sr_postumd_reads(void);
 extern void sr_exitsnap_capture(CpuState *s);
 extern void sr_exitsnap_dump_latest(const char *tag);
 static int s_exit_delete_request;
@@ -1827,18 +1801,9 @@ static uint32_t h_ExitThread(CpuState *s) {
     if (sched_uid_is_worker(uid)) {
         sr_exitsnap_capture(s);
         sr_exitsnap_dump_latest("worker-exit-pre");
-        sr_postumd_signal_shutdown(sr_postumd_reads());
     }
     fprintf(stderr, "HLE: ExitThread cur_uid=0x%x ra=0x%08x (death_wish=%d)\n",
             uid, s->r[31], death_wish);
-    if (sr_title_config_diagnostics_enabled()) {
-        fprintf(stderr,
-                "  re-snapshot: cur_uid=0x%x libc_main_id[0x0030a040]=0x%08x [0x0030a058]=0x%08x "
-                "frame_head[0x0031a03c]=0x%08x last_alloc=0x%08x\n",
-                sched_current_uid(),
-                MEM_R32(0x0030a040u), MEM_R32(0x0030a058u),
-                MEM_R32(0x0031a03cu), sr_last_alloc_addr);
-    }
     fprintf(stderr,
             "  regs uid=0x%x: pc=0x%08x sp=0x%08x gp=0x%08x k0=0x%08x k0+4=0x%08x k0+0x38c=0x%08x "
             "v0=0x%08x a0=0x%08x t0..t3=0x%08x/0x%08x/0x%08x/0x%08x s0..s3=0x%08x/0x%08x/0x%08x/0x%08x\n",
@@ -1876,9 +1841,8 @@ static uint32_t h_DelayThread(CpuState *s) {
     sched_delay_current(A0);
     return 0;
 }
-static uint32_t h_DelayThreadCB(CpuState *s) {
+static uint32_t h_DelayThreadCBForUsec(uint64_t usec) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;  /* L6/L7 */
-    uint32_t usec = A0;
     uint32_t thread_uid = sched_current_uid();
     sched_vtime_refresh();
     uint64_t end_time = sched_vtime_deadline_after(usec);
@@ -1891,11 +1855,51 @@ static uint32_t h_DelayThreadCB(CpuState *s) {
         }
         uint64_t remaining = end_time - sched_vtime_us();
         sched_set_current_cb_wait(1);
-        sched_delay_current((uint32_t)remaining);
+        sched_delay_current(remaining);
         sched_set_current_cb_wait(0);
         sched_vtime_refresh();
     }
     return 0;
+}
+static uint32_t h_DelayThreadCB(CpuState *s) {
+    return h_DelayThreadCBForUsec(A0);
+}
+
+/* PSP's public pspkerror.h names ILLEGAL_ADDR as 0x800200D3 for kernel APIs.
+ * Keep it distinct from the subsystem-specific 0x80000103 memory error used by
+ * several HLE objects below. */
+#define SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR 0x800200d3u
+
+static uint32_t h_ReadSysClockDelay(uint32_t addr, uint64_t *usec_out) {
+    if (!addr || !usec_out || !sr_guest_span_readable(addr, 8u))
+        return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
+    uint64_t low = MEM_R32(addr);
+    uint64_t high = MEM_R32(addr + 4u);
+    *usec_out = low | (high << 32);
+    return 0;
+}
+
+/* Public PSPSDK pspthreadman.h: int sceKernelDelaySysClockThread(SceKernelSysClock *delay)
+ * and int sceKernelDelaySysClockThreadCB(SceKernelSysClock *delay). The only argument is
+ * the pointer in $a0; the SceKernelSysClock it names (low word, high word) is the delay in
+ * microseconds, so $a1 is not an argument of either call. */
+static uint32_t h_DelaySysClockThread(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    sched_delay_current(usec);
+    return 0;
+}
+
+static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    return h_DelayThreadCBForUsec(usec);
 }
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
@@ -1905,6 +1909,12 @@ static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
     return sched_delete_thread(A0);
+}
+static uint32_t h_TerminateThread(CpuState *s) {
+    /* DORMANT and invalid/self targets have distinct public PSPSDK error
+     * classes; sched_terminate_thread supplies ILLEGAL_THID/UNKNOWN_THID. */
+    if (sched_is_dormant(A0)) return 0x800201a2u; /* SCE_KERNEL_ERROR_DORMANT */
+    return sched_terminate_thread(A0);
 }
 static uint32_t h_DeleteThread(CpuState *s) {
     return sched_delete_thread(A0);
@@ -2164,6 +2174,15 @@ static uint32_t elf_vaddr_to_file(const SrElfPhdr *ph, unsigned n, uint32_t va, 
     return UINT32_MAX;
 }
 
+/* A 32-bit byte offset must be representable as this host's long for fseek.
+ * The limit travels as a parameter rather than being written inline so that a
+ * host whose long is wider than 32 bits (LP64) still takes the comparison
+ * instead of a tautology the compiler rejects. On Windows, where long is
+ * 32-bit, this is exactly `(uint64_t)off <= (uint64_t)LONG_MAX`. */
+static int sr_off_fits_long(uint32_t off, long limit) {
+    return (uint64_t)off <= (uint64_t)limit;
+}
+
 static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned phnum, size_t file_len) {
     uint32_t gp, ent_top, ent_end, stub_top, stub_end;
     uint16_t attributes; uint8_t major, minor;
@@ -2210,7 +2229,7 @@ static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum, s
             uint32_t end = (uint32_t)end64;
             if (pass == 0 && !begin) continue;
             for (uint32_t off = begin; off <= end && end - off >= 52u; ) {
-                if ((uint64_t)off > (uint64_t)LONG_MAX || fseek(f, (long)off, SEEK_SET) || fread(mi, 1, 52, f) != 52) break;
+                if (!sr_off_fits_long(off, LONG_MAX) || fseek(f, (long)off, SEEK_SET) || fread(mi, 1, 52, f) != 52) break;
                 if (valid_module_info(mi, ph, phnum, file_len)) return off;
                 if (UINT32_MAX - off < 4u) break;
                 off += 4u;
@@ -2234,9 +2253,11 @@ typedef struct {
     char path[256];
     uint32_t module_start;
     uint32_t module_stop;
+    uint32_t image_base;
     int started;
     int stopped;
     int unloaded;
+    int in_use;
     int libfont_compat_poke_pending;
 } LoadedModule;
 
@@ -2245,15 +2266,53 @@ static int s_nloaded_modules = 0;
 
 static LoadedModule *find_loaded_module(uint32_t uid) {
     for (int i = 0; i < s_nloaded_modules; i++) {
-        if (s_loaded_modules[i].uid == uid) {
+        if (s_loaded_modules[i].in_use && s_loaded_modules[i].uid == uid) {
             return &s_loaded_modules[i];
         }
     }
     return NULL;
 }
 
+/* Claim a module record, reusing a slot a previous unload released before growing the
+ * table. Returns NULL only when all slots hold live modules. */
+static LoadedModule *alloc_loaded_module_slot(void) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        if (!s_loaded_modules[i].in_use) {
+            /* A released record still holds the dead module's uid, path and entry
+             * addresses. Clear it and claim it here, so the caller cannot install a
+             * module that find_loaded_module() and retire_loaded_module() both refuse
+             * to see because in_use was never set. */
+            LoadedModule *reused = &s_loaded_modules[i];
+            memset(reused, 0, sizeof(*reused));
+            reused->in_use = 1;
+            return reused;
+        }
+    }
+    if (s_nloaded_modules >= (int)(sizeof(s_loaded_modules) / sizeof(s_loaded_modules[0])))
+        return NULL;
+    LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
+    memset(mod, 0, sizeof(*mod));
+    mod->in_use = 1;
+    return mod;
+}
+
+/* Reclaim the record of a module that has been unloaded. The uid stops resolving, so a
+ * later start/stop/unload of it fails closed on SCE_ERROR_MODULE_BAD_ID exactly as the
+ * kernel rejects an id it no longer knows, and the fixed table does not fill up with
+ * the tombstones of modules that are long gone (#280). */
+static void retire_loaded_module(LoadedModule *mod) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        if (&s_loaded_modules[i] != mod || !mod->in_use) continue;
+        for (int j = i + 1; j < s_nloaded_modules; j++) s_loaded_modules[j - 1] = s_loaded_modules[j];
+        s_nloaded_modules--;
+        memset(&s_loaded_modules[s_nloaded_modules], 0, sizeof(s_loaded_modules[0]));
+        return;
+    }
+}
+
 static uint32_t s_last_prx_entry = 0;
 static uint32_t s_last_prx_stop = 0;
+static uint32_t s_last_prx_base = 0;
 
 static unsigned register_prx_exports(const char *host_path, uint32_t base) {
     FILE *f = fopen(host_path, "rb");
@@ -2435,8 +2494,11 @@ int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n) {
 /* Resident images: LoadModuleByID repopulates every manifest module, and a second load must
  * not overwrite a running module's live data. `started` is set once the module's real
  * module_start has run; only then are its exports linked to importers (see
- * started_module_export). */
-typedef struct { uint32_t base, end; int started; } PrxImage;
+ * started_module_export). `alloc_uid` is the exact user-partition reservation the image
+ * owns, retained so unload can release precisely that range and nothing else (#280).
+ * A released slot is compacted out of the table, so repeated load/unload cycles cannot
+ * exhaust the fixed image table. */
+typedef struct { uint32_t base, end; uint32_t alloc_uid; int started; } PrxImage;
 static PrxImage s_prx_images[16];
 static unsigned s_prx_image_count;
 static atomic_int s_prx_started_count;
@@ -2461,9 +2523,38 @@ static void mark_module_started(uint32_t entry) {
     }
 }
 
+/* Retire one image: drop the export authority the kernel would unlink at unload, clear the
+ * per-image started flag, release exactly the reservation this image owns, and reclaim the
+ * table slot. Only the image's own [base,end) range and its own allocation are touched, so
+ * a sibling module loaded elsewhere keeps its exports and its reservation. */
+static void unload_prx_image(uint32_t base) {
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (s_prx_images[i].base != base) continue;
+        PrxImage img = s_prx_images[i];
+        if (img.started) {
+            img.started = 0;
+            atomic_fetch_sub_explicit(&s_prx_started_count, 1, memory_order_release);
+        }
+        sr_hle_unregister_late_imports_in_range(img.base, img.end);
+        if (img.alloc_uid != 0u && img.alloc_uid != 0xFFFFFFFFu) free_block(img.alloc_uid);
+        for (unsigned j = i + 1; j < s_prx_image_count; j++) s_prx_images[j - 1] = s_prx_images[j];
+        s_prx_image_count--;
+        memset(&s_prx_images[s_prx_image_count], 0, sizeof(s_prx_images[0]));
+        return;
+    }
+}
+
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
-    for (unsigned i = 0; i < s_prx_image_count; i++)
-        if (s_prx_images[i].base == base) return 1;
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (s_prx_images[i].base != base) continue;
+        /* The image is already resident and is not re-staged over a running module's
+         * live data, but this load still depends on it. Report the base so the new
+         * record references that image; recording image_base == 0 would leave it
+         * holding module_start/module_stop addresses into a range the image owner
+         * frees on its own unload, and unload would never know to keep it alive. */
+        s_last_prx_base = base;
+        return 1;
+    }
     if (s_prx_image_count >= sizeof(s_prx_images) / sizeof(s_prx_images[0])) return 0;
 
     SrPrxImage img;
@@ -2481,23 +2572,28 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
     }
     uint32_t size = (img.end > base && img.end - base > s_prx_stage_len) ? img.end - base
                                                                          : s_prx_stage_len;
+    uint32_t alloc_uid = 0xFFFFFFFFu;
     int ok = 0;
     if (size == 0 || img.start != base) {
         fprintf(stderr, "PRX image: %s: unexpected span [0x%08x,0x%08x) for base 0x%08x\n",
                 host_path, img.start, img.end, base);
-    } else if (sr_alloc_block_at(base, size, name) == 0xFFFFFFFFu) {
+    } else if ((alloc_uid = sr_alloc_block_at(base, size, name)) == 0xFFFFFFFFu) {
         fprintf(stderr,
                 "GUEST_MODULE_LOAD_ADDRESS_COLLISION: %s: declared range "
                 "[0x%08x,0x%08x) is not free in the user partition; "
                 "refusing to relocate (#308)\n",
                 host_path, base, base + size);
     } else if (!sr_guest_span_writable(base, size)) {
+        /* The reservation is already taken, so hand it straight back rather than
+         * leaking a partition range this image will never occupy. */
+        free_block(alloc_uid);
         fprintf(stderr, "PRX image: %s: range [0x%08x,0x%08x) not writable guest memory\n",
                 host_path, base, base + size);
     } else {
         memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
-        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, 0};
+        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, alloc_uid, 0};
+        s_last_prx_base = base;
         fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
                 img.modname, base, base + size, img.nexp, img.nimp);
         ok = 1;
@@ -2512,6 +2608,7 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
 static int populate_guest_module(const char *file, uint32_t base, int required) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
+    s_last_prx_base = 0;
     char image_path[1024];
     int written = snprintf(image_path, sizeof(image_path), "%s/%s", guest_module_root(), file);
     if (written <= 0 || (size_t)written >= sizeof(image_path)) {
@@ -2543,6 +2640,7 @@ static int populate_known_module(const char *guest_path) {
     int required = 0;
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
+    s_last_prx_base = 0;
     if (!sr_title_config_guest_module(guest_path, &file, &base, &required)) return 0;
     return populate_guest_module(file, base, required) ? 1 : -1;
 }
@@ -2825,6 +2923,10 @@ typedef struct {
     uint32_t videoFramesOut, audioBlocksOut, videoErrors, audioErrors;
     uint32_t audioUpmixBlocks, audioFormatRejects;
     int videoDrained;
+    /* The demuxer refusal has already been named on stderr for this stream.  Latched
+     * with the same lifetime as the producer's own failure state, so one rejected
+     * element produces exactly one message and a reset stream can report the next one. */
+    int rejectNamed;
     char path[512]; SrPsmfQueue q[PSMF_TRACKS][PSMF_Q_STAGES];
 } SrPsmfPlayer;
 static SrPsmfPlayer s_psmf_players[4];
@@ -2870,12 +2972,35 @@ static int64_t psmf_be_timestamp(const uint8_t *p) {
 }
 static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEGLOG") ? 1 : 0; return v; }
 
+/* A rejected stream is a product boundary, not a debug event.  The producer fails closed
+ * and never reaches EOF, so without a named boundary the consumer only sees the picture
+ * freeze with nothing in the log: the one thing this runtime must not do.  The message is
+ * always on (SR_MPEGLOG is for counters, not for the reason playback stopped), once per
+ * stream, and it states the guest-visible consequence instead of hiding it.  The same edge
+ * goes to the flight recorder so a bring-up or library sweep can classify the run from a
+ * structured record rather than by scraping text. */
+static void psmf_name_rejection(SrPsmfPlayer *p) {
+    if (!p || !p->producer || p->rejectNamed) return;
+    if (!sr_psmf_producer_failed(p->producer)) return;
+    p->rejectNamed = 1;
+    const char *reason = sr_psmf_producer_fail_reason(p->producer);
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+    fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
+            "at source offset %llu; no further access unit is decoded and the player keeps "
+            "its current status; in the works (#288)\n",
+            reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
+                           (uint32_t)st.fail_offset,
+                           (uint32_t)(st.fail_offset >> 32), 0u, 0u);
+}
+
 /* Move access units from the producer into the player's per-track queues.  The producer's
  * own bounded queue is the only place work is throttled: an AU is never dropped here, a full
  * player queue simply leaves the next access unit upstream until the decoder drains it. */
 static void psmf_produce(SrPsmfPlayer *p) {
     if (!p || !p->producer) return;
     sr_psmf_producer_pump(p->producer, 16);
+    psmf_name_rejection(p);
     for (unsigned track = 0; track < PSMF_TRACKS; track++) {
         SrPsmfQueue *q = &p->q[track][PSMF_Q_AU];
         while (q->count < PSMF_Q_DEPTH) {
@@ -2904,6 +3029,8 @@ static void psmf_produce(SrPsmfPlayer *p) {
              * run instead of guessed from it.  vpts is the last displaypts delivered. */
             fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
                     " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
+                    " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
                     " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
                     " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
                     (unsigned)sr_audio_vbl(),
@@ -2915,6 +3042,18 @@ static void psmf_produce(SrPsmfPlayer *p) {
                     (unsigned long long)st.audio_resync_bytes,
                     p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
                     p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
+                    (unsigned long long)st.video_submitted,
+                    (unsigned long long)st.video_decoded,
+                    (unsigned long long)st.video_delivered,
+                    (unsigned long long)st.video_warmup_held,
+                    (unsigned long long)st.video_eos_drained,
+                    (unsigned long long)st.video_rejected,
+                    (unsigned long long)st.audio_submitted,
+                    (unsigned long long)st.audio_decoded,
+                    (unsigned long long)st.audio_delivered,
+                    (unsigned long long)st.audio_warmup_held,
+                    (unsigned long long)st.audio_eos_drained,
+                    (unsigned long long)st.audio_rejected,
                     (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
                     p->videoErrors, p->audioErrors,
                     (long long)p->videoClock, (long long)p->audioClock,
@@ -2948,6 +3087,9 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
     p->displayPts = 0; p->videoDrained = 0;
     p->videoFramesOut = p->audioBlocksOut = p->videoErrors = p->audioErrors = 0;
     p->audioUpmixBlocks = p->audioFormatRejects = 0;
+    /* Every caller resets or replaces the producer in the same breath, so the named
+     * boundary goes with it: a fresh stream may be rejected, and may say so once. */
+    p->rejectNamed = 0;
 }
 
 /* Presentation time of one submitted picture.  A packet that carried a PTS sets the clock;
@@ -2981,11 +3123,18 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             }
         }
         if (p->h264 >= 0) {
-            if (slot->hostData && slot->bytes &&
-                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes) < 0)
-                p->videoErrors++;
-            else
+            if (slot->hostData && slot->bytes) {
+                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                             SR_PSMF_MEDIA_SUBMITTED);
+                if (sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData,
+                                      slot->bytes) < 0) {
+                    p->videoErrors++;
+                } else {
+                    psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+                }
+            } else {
                 psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+            }
         }
         free(slot->hostData);
         slot->hostData = NULL;
@@ -3011,9 +3160,13 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
                   sr_h264_frame_ex(p->h264, 0, &target, &info);
     if (r < 0) { p->videoErrors++; return -1; }
     if (r == 0) { if (eos) p->videoDrained = 1; return 0; }
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 SR_PSMF_MEDIA_DECODED);
     if (info.width <= 0 || info.height <= 0 || info.stride <= 0 ||
         info.delivered_format < SR_H264_PIXEL_5650 ||
         info.delivered_format > SR_H264_PIXEL_8888) {
+        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                     SR_PSMF_MEDIA_REJECTED);
         p->videoErrors++;
         return -1;
     }
@@ -3026,6 +3179,9 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
     if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
     p->displayPts = value;
     *pts_out = value;
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 eos ? SR_PSMF_MEDIA_EOS_DRAINED :
+                                       SR_PSMF_MEDIA_DELIVERED);
     p->videoFramesOut++;
     return 1;
 }
@@ -3063,10 +3219,19 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                                                         PSMF_AUDIO_SAMPLES * sizeof(int16_t));
                     if (p->atrac && p->audioPcm) {
                         int samples = 0;
+                        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                     SR_PSMF_MEDIA_SUBMITTED);
                         int rc = atrac3p_bridge_decode(p->atrac, frame + 8, (int)data,
                                                        p->audioPcm, &samples);
-                        if (rc == 0 && samples == PSMF_AUDIO_SAMPLES) {
-                            if (channels == 2) {
+                        if (rc == 0) {
+                            sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                         SR_PSMF_MEDIA_DECODED);
+                            p->audioPcmSampleCount = 0;
+                            if (samples != PSMF_AUDIO_SAMPLES) {
+                                p->audioFormatRejects++;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
+                            } else if (channels == 2) {
                                 p->audioPcmSampleCount = samples;
                             } else if (channels == 1) {
                                 /* The PSP block is stereo; a mono stream is duplicated into both
@@ -3081,6 +3246,8 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                             } else {
                                 p->audioFormatRejects++;
                                 p->audioPcmSampleCount = 0;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
                             }
                             if (p->audioPcmSampleCount == PSMF_AUDIO_SAMPLES) {
                                 if (slot->flags & 1u) { p->audioClock = slot->pts; p->audioClockValid = 1; }
@@ -3177,7 +3344,8 @@ static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
  * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
  * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
- * public PSP player contract. */
+ * public PSP player contract. Its initial NO_DATA gate precedes decode, so no decoded picture
+ * enters the warm-up-held disposition on this path. */
 static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
 /* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
  * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
@@ -3191,6 +3359,8 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     if(!psmf_audio_fill(p)){sched_delay_current(10000);return PSMF_ERR_NO_DATA;}
     const uint8_t*src=(const uint8_t*)p->audioPcm;
     for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                 SR_PSMF_MEDIA_DELIVERED);
     p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
     sched_delay_current(30000);
     return 0;}
@@ -3276,39 +3446,15 @@ static uint32_t h_ExitGame(CpuState *s) {
                 s->pc, s->r[31], s->r[29], s->r[28], s->r[2], s->r[4], s->r[5]);
         fprintf(stderr, "  insn[vblank-cb-begin]=0x%08x insn[vblank-cb-next]=0x%08x\n",
                 s->pc ? MEM_R32(s->pc) : 0, s->pc ? MEM_R32(s->pc + 4) : 0);
-        if (sr_title_config_diagnostics_enabled()) {
-            fprintf(stderr, "  exit-context[0x310a034]=0x%08x [0x002cf6b4]=0x%08x\n",
-                    MEM_R32(0x310a034u), MEM_R32(0x002cf6b4u));
-        }
         fflush(stderr);
         /* Give the host a chance to drain. Without this, stdio buffers get truncated by
          * _exit; the operator sees ~16 KB of trailing context instead of 1 MB. */
-        Sleep(50);
+        sr_host_sleep_ms(50);
         fflush(NULL);
         _exit(code);
     }
-    sr_trace_close(); fflush(NULL); Sleep(50); _exit(code);
+    sr_trace_close(); fflush(NULL); sr_host_sleep_ms(50); _exit(code);
     return code; /* unreachable, keeps the handler signature honest */
-}
-
-/* I4: post-umd.ufl tracker. Counter + active flag; stepped by h_IoRead after the
- *   head read of umd.ufl completes, peeked by h_IoOpen for subsequent IoOpens,
- *   flushed by h_ExitThread on the worker's first pre-shutdown syscall.
- *   Activated by SR_POSTUMD env (default off). The local copies here live at file
- *   scope so h_IoRead/h_IoOpen can see them without extern hop. */
-static uint64_t s_postumd_count = 0;
-static int      s_postumd_active = 0;
-uint64_t sr_postumd_reads(void) { return s_postumd_count; }
-void sr_postumd_advance(int active_after) {
-    s_postumd_count++;
-    if (active_after) s_postumd_active = 1;
-}
-void sr_postumd_signal_shutdown(uint64_t captured_count) {
-    if (!s_postumd_active && captured_count == 0) return;
-    s_postumd_active = 0;
-    fprintf(stderr, "POSTUMD: shutdown signal after %llu post-umd IoReads (worker turn finalized)\n",
-            (unsigned long long)captured_count);
-    fflush(stderr);
 }
 
 /* I3: deepest-frame register snapshot when the worker (uid 0x115) is about to exit. The
@@ -3425,6 +3571,20 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
     return 0;
 }
 
+/* True when a live module record other than `mod` still depends on the same PRX image.
+ * Two handles can name one base: a second load of an already-resident base reuses that
+ * image instead of staging a second copy, and both records then hold entry addresses
+ * into it. Retiring the image while either record is alive would free the range out
+ * from under the other handle's module_start/module_stop. */
+static int another_record_references_image(const LoadedModule *mod) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        const LoadedModule *other = &s_loaded_modules[i];
+        if (other == mod || !other->in_use || other->unloaded) continue;
+        if (other->image_base == mod->image_base) return 1;
+    }
+    return 0;
+}
+
 static uint32_t h_UnloadModule_Trace(CpuState *s) {
     if (!real_module_start_enabled()) {
         uint32_t uid = sched_current_uid();
@@ -3441,10 +3601,19 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     if (!mod || mod->unloaded) {
         return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
     }
+    /* Unload requires the stop the lifecycle contract establishes: a module that is
+     * still running keeps its image and its exports, exactly as today (unmeasured). */
     if (mod->started && !mod->stopped) {
         return SCE_ERROR_MODULE_ALREADY_LOADED; /* unmeasured */
     }
-    mod->unloaded = 1;
+    /* The kernel unlinks a module's exports and releases its memory here, and this is
+     * the only point at which a stopped module's export authority is retired. Stop
+     * deliberately leaves the image resident: a stopped module is still loaded and can
+     * be started again, so retiring its exports at stop would be an invented semantic. */
+    if (mod->image_base && !another_record_references_image(mod)) {
+        unload_prx_image(mod->image_base);
+    }
+    retire_loaded_module(mod);
     return 0;
 }
 
@@ -3514,11 +3683,12 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
          * left these diagnostics permanently silent). A build with no worker/launcher
          * binding has no role to report, so both branches stay quiet. */
         if (sched_current_is_worker() && sr_title_config_diagnostics_enabled()) {
-            fprintf(stderr, "DEBUG: CpuSuspendIntr worker=0x%x: r16 (s0)=0x%x, r26 (k0)=0x%x, k0+4=0x%x, MEM(0x002cf6b4)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
-                    sched_current_uid(), s->r[16], s->r[26], s->r[26] ? MEM_R32(s->r[26] + 4) : 0, MEM_R32(0x002cf6b4u), s->r[31], s->r[29]);
-            for (int i = 0; i < 20; i++) {
+            fprintf(stderr, "DEBUG: CpuSuspendIntr worker=0x%x: r16 (s0)=0x%x, "
+                    "r26 (k0)=0x%x, k0+4=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
+                    sched_current_uid(), s->r[16], s->r[26],
+                    s->r[26] ? MEM_R32(s->r[26] + 4) : 0, s->r[31], s->r[29]);
+            for (int i = 0; i < 20; i++)
                 fprintf(stderr, " +%d:0x%x", i * 4, MEM_R32(s->r[29] + i * 4));
-            }
             fprintf(stderr, "\n");
         }
         if (sched_current_is_launcher() && sr_title_config_diagnostics_enabled()) {
@@ -3544,8 +3714,9 @@ static uint32_t h_CpuResumeIntr(CpuState *s) {
             fprintf(stderr, "\n");
         }
         if (sched_current_is_launcher() && sr_title_config_diagnostics_enabled()) {
-            fprintf(stderr, "DEBUG: CpuResumeIntr launcher=0x%x: r2 (v0)=0x%x, r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x, MEM(0x0030aa88)=0x%x\n",
-                    sched_current_uid(), s->r[2], s->r[16], s->r[17], s->r[26], s->r[31], MEM_R32(0x0030aa88u));
+            fprintf(stderr, "DEBUG: CpuResumeIntr launcher=0x%x: r2 (v0)=0x%x, "
+                    "r16 (s0)=0x%x, r17 (s1)=0x%x, r26 (k0)=0x%x, ra=0x%x\n",
+                    sched_current_uid(), s->r[2], s->r[16], s->r[17], s->r[26], s->r[31]);
         }
     }
     sched_resume_interrupts(A0);
@@ -3710,6 +3881,7 @@ static uint32_t h_Memcpy(CpuState *s) {
     return dst;
 }
 
+#ifdef _WIN32
 /* ---- checked UTF-8/UTF-16 host-path helpers (issue #223) --------------------------
  *
  * Guest paths and environment variables are UTF-8.  Keep them as UTF-8 in the
@@ -4096,28 +4268,6 @@ static int sr_wide_module_font_root(wchar_t **out) {
     return ok;
 }
 
-/* The managed HST executable lives at <repo>/build/hst/hst.exe.  Resolve the
- * default data tree from that executable location, never from process CWD. */
-static int sr_wide_module_data_root(wchar_t **out) {
-    if (!out) return 0;
-    *out = NULL;
-    wchar_t *module_dir = NULL, *build_dir = NULL, *repo_dir = NULL;
-    wchar_t *candidate = NULL, *next = NULL;
-    int ok = sr_wide_module_dir_alloc(&module_dir) &&
-             sr_wide_parent_alloc(module_dir, &build_dir) &&
-             sr_wide_parent_alloc(build_dir, &repo_dir) &&
-             sr_wide_join_alloc(repo_dir, L"place_game_here", &candidate) &&
-             sr_wide_join_alloc(candidate,
-                                L"EXTRACTED\\PSP_GAME\\USRDIR\\xbdata_extracted", &next) &&
-             sr_wide_extended_absolute_alloc(next, out);
-    free(module_dir);
-    free(build_dir);
-    free(repo_dir);
-    free(candidate);
-    free(next);
-    return ok;
-}
-
 static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode) {
     wchar_t *wide = NULL;
     if (!mode || !sr_wide_path_alloc(path, &wide)) return NULL;
@@ -4147,59 +4297,6 @@ static int sr_ensure_directory_utf8(const char *path) {
     return made || (error == ERROR_ALREADY_EXISTS &&
                     attributes != INVALID_FILE_ATTRIBUTES &&
                     (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
-}
-
-static char *sr_utf8_join_alloc(const char *left, const char *right, char separator) {
-    if (!left || !right) return NULL;
-    size_t a = strlen(left), b = strlen(right);
-    int need_separator = a > 0 && b > 0 && left[a - 1] != '/' && left[a - 1] != '\\';
-    size_t extra = b;
-    if (extra > SIZE_MAX - (size_t)need_separator - 1u) return NULL;
-    extra += (size_t)need_separator + 1u;
-    if (a > SIZE_MAX - extra) return NULL;
-    char *joined = (char *)malloc(a + extra);
-    if (!joined) return NULL;
-    memcpy(joined, left, a);
-    size_t at = a;
-    if (need_separator) joined[at++] = separator;
-    memcpy(joined + at, right, b + 1u);
-    return joined;
-}
-
-/* Unified Memory Stick root (issue #334): ordinary sceIo* and savedata share
- * sr_ms0_root/sr_ms0_resolve so one guest path maps to one host path. Foreign
- * devices (disc0:, ...) fail closed (NULL). Empty file guests are rejected;
- * empty directory guests resolve to the root itself. */
-static char *host_path_alloc(const char *guest) {
-    if (!guest || !guest[0]) return NULL;
-    const char *root = sr_ms0_root();
-    if (!sr_ensure_directory_utf8(root)) return NULL;
-    size_t root_len = strlen(root), guest_len = strlen(guest);
-    if (root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) return NULL;
-    size_t cap = root_len + guest_len + 2u;
-    char *path = (char *)malloc(cap);
-    if (!path) return NULL;
-    if (!sr_ms0_resolve(root, guest, path, cap, '\\')) {
-        free(path);
-        return NULL;
-    }
-    return path;
-}
-
-static char *host_dir_path_alloc(const char *guest) {
-    if (!guest) return NULL;
-    const char *root = sr_ms0_root();
-    if (!sr_ensure_directory_utf8(root)) return NULL;
-    size_t root_len = strlen(root), guest_len = strlen(guest);
-    if (root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) return NULL;
-    size_t cap = root_len + guest_len + 2u;
-    char *out = (char *)malloc(cap);
-    if (!out) return NULL;
-    if (!sr_ms0_resolve(root, guest, out, cap, '\\')) {
-        free(out);
-        return NULL;
-    }
-    return out;
 }
 
 /* Contained FILE* open under the unified Memory Stick root: OPEN -> HANDLE ->
@@ -4243,6 +4340,598 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
         return NULL;
     }
     return fp;
+}
+
+#else /* !_WIN32: the same host-path layer expressed with POSIX primitives ----- */
+/* The Windows layer above exists for two reasons that have no POSIX form: the
+ * UTF-16 Win32 call surface, and handle-based containment verified through
+ * \\?\-prefixed final paths. The conversions, joins, environment reads, module
+ * directory and stream sizing below are ordinary host operations and are
+ * re-expressed here with the POSIX primitive that performs them. One Win32-only
+ * concept is NOT simulated:
+ *
+ *   - the \\?\ extended-length prefix: POSIX paths are bounded by the host, not
+ *     by MAX_PATH, so sr_wide_extended_absolute_alloc is the identity copy and
+ *     the 'is this already extended/absolute' predicates report what this host
+ *     actually has;
+ *   - the \\?\ extended-length prefix: POSIX paths are bounded by the host, not
+ *     by MAX_PATH, so sr_wide_extended_absolute_alloc is the identity copy and
+ *     the 'is this already extended/absolute' predicates report what this host
+ *     actually has. */
+
+static int sr_utf8_to_wide_alloc(const char *src, wchar_t **out) {
+    if (!src || !out || !sr_asset_index_valid_utf8(src)) return 0;
+    *out = NULL;
+    size_t n = strlen(src);
+    if (n > (size_t)INT_MAX) return 0;
+    wchar_t *base = (wchar_t *)calloc(n + 1u, sizeof(wchar_t));
+    if (!base) return 0;
+    size_t at = 0;
+    const unsigned char *p = (const unsigned char *)src;
+    while (*p) {
+        wchar_t unit;
+        if (*p < 0x80u) {
+            unit = (wchar_t)*p++;
+        } else if ((*p & 0xE0u) == 0xC0u && p[1] && (p[1] & 0xC0u) == 0x80u) {
+            unit = (wchar_t)(((uint32_t)(*p & 0x1Fu) << 6) | (uint32_t)(p[1] & 0x3Fu));
+            if ((uint32_t)unit < 0x80u) { free(base); return 0; }   /* overlong */
+            p += 2;
+        } else if ((*p & 0xF0u) == 0xE0u && p[1] && p[2] &&
+                   (p[1] & 0xC0u) == 0x80u && (p[2] & 0xC0u) == 0x80u) {
+            unit = (wchar_t)(((uint32_t)(*p & 0x0Fu) << 12) |
+                             ((uint32_t)(p[1] & 0x3Fu) << 6) | (uint32_t)(p[2] & 0x3Fu));
+            if ((uint32_t)unit < 0x800u) { free(base); return 0; }   /* overlong */
+            p += 3;
+        } else if ((*p & 0xF8u) == 0xF0u && p[1] && p[2] && p[3] &&
+                   (p[1] & 0xC0u) == 0x80u && (p[2] & 0xC0u) == 0x80u &&
+                   (p[3] & 0xC0u) == 0x80u) {
+            uint32_t cp = ((uint32_t)(*p & 0x07u) << 18) |
+                          ((uint32_t)(p[1] & 0x3Fu) << 12) |
+                          ((uint32_t)(p[2] & 0x3Fu) << 6) | (uint32_t)(p[3] & 0x3Fu);
+            if (cp < 0x10000u || cp > 0x10FFFFu) { free(base); return 0; }
+            if (cp >= 0xD800u && cp <= 0xDFFFu) { free(base); return 0; } /* surrogate */
+            unit = (wchar_t)cp;
+            p += 4;
+        } else {
+            free(base);
+            return 0;
+        }
+        if (sizeof(wchar_t) < 4u && unit > 0xFFFFu) { free(base); return 0; }
+        base[at++] = unit;
+    }
+    *out = base;
+    return 1;
+}
+
+static int sr_wide_to_utf8_alloc(const wchar_t *src, char **out) {
+    if (!src || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(src);
+    if (n > (size_t)INT_MAX) return 0;
+    char *utf8 = (char *)malloc(n * 4u + 1u);
+    if (!utf8) return 0;
+    size_t at = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t cp = (uint32_t)src[i];
+        if (cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) { free(utf8); return 0; }
+        if (cp < 0x80u) {
+            utf8[at++] = (char)cp;
+        } else if (cp < 0x800u) {
+            utf8[at++] = (char)(0xC0u | (cp >> 6));
+            utf8[at++] = (char)(0x80u | (cp & 0x3Fu));
+        } else if (cp < 0x10000u) {
+            utf8[at++] = (char)(0xE0u | (cp >> 12));
+            utf8[at++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            utf8[at++] = (char)(0x80u | (cp & 0x3Fu));
+        } else {
+            utf8[at++] = (char)(0xF0u | (cp >> 18));
+            utf8[at++] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+            utf8[at++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            utf8[at++] = (char)(0x80u | (cp & 0x3Fu));
+        }
+    }
+    utf8[at] = '\0';
+    *out = utf8;
+    return 1;
+}
+
+/* POSIX environment names are byte strings, so the name literal crosses from
+ * this translation unit's wchar_t to the host's char exactly as it crosses to
+ * the wide Win32 environment there. */
+static int sr_wide_env_alloc(const wchar_t *name, wchar_t **value_out,
+                             int *present_out) {
+    if (!name || !value_out || !present_out) return 0;
+    *value_out = NULL;
+    *present_out = 0;
+    char *narrow_name = NULL;
+    if (!sr_wide_to_utf8_alloc(name, &narrow_name)) return 0;
+    const char *value = getenv(narrow_name);
+    free(narrow_name);
+    if (!value) return 1;
+    wchar_t *wide = NULL;
+    if (!sr_utf8_to_wide_alloc(value, &wide)) return 0;
+    *value_out = wide;
+    *present_out = 1;
+    return 1;
+}
+
+static int sr_utf8_env_alloc(const wchar_t *name, char **value_out,
+                             int *present_out) {
+    if (!name || !value_out || !present_out) return 0;
+    *value_out = NULL;
+    *present_out = 0;
+    char *narrow_name = NULL;
+    if (!sr_wide_to_utf8_alloc(name, &narrow_name)) return 0;
+    const char *value = getenv(narrow_name);
+    free(narrow_name);
+    if (!value) return 1;
+    size_t n = strlen(value);
+    if (n > (size_t)INT_MAX) return 0;
+    char *copy = (char *)malloc(n + 1u);
+    if (!copy) return 0;
+    memcpy(copy, value, n + 1u);
+    *value_out = copy;
+    *present_out = 1;
+    return 1;
+}
+
+/* '/' is this host's separator. A backslash is an ordinary filename byte here,
+ * so the join inserts one separator and rewrites nothing. */
+static int sr_wide_join_alloc(const wchar_t *left, const wchar_t *right,
+                              wchar_t **out) {
+    if (!left || !right || !out) return 0;
+    *out = NULL;
+    size_t a = wcslen(left), b = wcslen(right);
+    int separator = a > 0 && b > 0 && left[a - 1] != L'/';
+    size_t extra = b;
+    if (extra > SIZE_MAX - (size_t)separator - 1u) return 0;
+    extra += (size_t)separator + 1u;
+    if (a > SIZE_MAX - extra) return 0;
+    size_t total = a + extra;
+    if (total > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *joined = (wchar_t *)malloc(total * sizeof(*joined));
+    if (!joined) return 0;
+    memcpy(joined, left, a * sizeof(*joined));
+    size_t at = a;
+    if (separator) joined[at++] = L'/';
+    memcpy(joined + at, right, b * sizeof(*joined));
+    joined[at + b] = L'\0';
+    *out = joined;
+    return 1;
+}
+
+static int sr_wide_get_current_directory(wchar_t **out) {
+    if (!out) return 0;
+    *out = NULL;
+    size_t capacity = 256u;
+    for (;;) {
+        char *buf = (char *)malloc(capacity);
+        if (!buf) return 0;
+        if (getcwd(buf, capacity)) {
+            int ok = sr_utf8_to_wide_alloc(buf, out);
+            free(buf);
+            return ok;
+        }
+        int grow = errno == ERANGE && capacity <= (size_t)INT_MAX / 2u;
+        free(buf);
+        if (!grow) return 0;
+        capacity *= 2u;
+    }
+}
+
+/* Only this host's own absolute-path form exists here: a leading '/'. The
+ * \\?\ extended form and the drive-letter form of the Windows layer have no
+ * counterpart on this host, so they are not defined at all -- no predicate
+ * that can only ever answer "no" is compiled here. */
+static int sr_wide_is_absolute(const wchar_t *path) {
+    return path && path[0] == L'/';
+}
+
+/* Same rule as the Windows layer: a '.' or '..' component is refused here
+ * rather than handed to the host to resolve. */
+static int sr_wide_has_dot_component(const wchar_t *path) {
+    if (!path) return 1;
+    const wchar_t *p = path;
+    while (*p) {
+        while (*p == L'/') p++;
+        const wchar_t *start = p;
+        while (*p && *p != L'/') p++;
+        size_t n = (size_t)(p - start);
+        if ((n == 1u && start[0] == L'.') ||
+            (n == 2u && start[0] == L'.' && start[1] == L'.')) return 1;
+    }
+    return 0;
+}
+
+/* POSIX resolves '.' and '..' inside the kernel, so this only anchors a
+ * relative input to the working directory and leaves the components intact. */
+static int sr_wide_full_path_alloc(const wchar_t *input, wchar_t **out) {
+    if (!input || !out) return 0;
+    *out = NULL;
+    if (sr_wide_is_absolute(input)) {
+        size_t n = wcslen(input);
+        if (n > SIZE_MAX - 1u || n + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+        wchar_t *copy = (wchar_t *)malloc((n + 1u) * sizeof(*copy));
+        if (!copy) return 0;
+        memcpy(copy, input, (n + 1u) * sizeof(*copy));
+        *out = copy;
+        return 1;
+    }
+    wchar_t *cwd = NULL;
+    if (!sr_wide_get_current_directory(&cwd)) return 0;
+    wchar_t *joined = NULL;
+    int ok = sr_wide_join_alloc(cwd, input, &joined);
+    free(cwd);
+    if (!ok) return 0;
+    *out = joined;
+    return 1;
+}
+
+static int sr_wide_extended_absolute_alloc(const wchar_t *absolute, wchar_t **out) {
+    if (!absolute || !out || !sr_wide_is_absolute(absolute) ||
+        sr_wide_has_dot_component(absolute)) return 0;
+    size_t n = wcslen(absolute);
+    if (n > SIZE_MAX - 1u || n + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *copy = (wchar_t *)malloc((n + 1u) * sizeof(*copy));
+    if (!copy) return 0;
+    memcpy(copy, absolute, (n + 1u) * sizeof(*copy));
+    *out = copy;
+    return 1;
+}
+
+static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **out) {
+    if (!value || !out || !value[0]) return 0;
+    *out = NULL;
+    size_t n = wcslen(value);
+    if (n > SIZE_MAX - 1u || n + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *wide = (wchar_t *)malloc((n + 1u) * sizeof(*wide));
+    if (!wide) return 0;
+    memcpy(wide, value, (n + 1u) * sizeof(*wide));
+    if (!sr_wide_is_absolute(wide)) {
+        wchar_t *canonical = NULL;
+        if (!sr_wide_full_path_alloc(wide, &canonical)) {
+            free(wide);
+            return 0;
+        }
+        free(wide);
+        wide = canonical;
+    }
+    int ok = sr_wide_extended_absolute_alloc(wide, out);
+    free(wide);
+    return ok;
+}
+
+/* Resolve a UTF-8 path to an absolute host path. */
+static int sr_wide_path_alloc(const char *utf8_path, wchar_t **out) {
+    if (!utf8_path || !out || !utf8_path[0]) return 0;
+    *out = NULL;
+    wchar_t *raw = NULL;
+    if (!sr_utf8_to_wide_alloc(utf8_path, &raw)) return 0;
+    wchar_t *absolute = NULL;
+    if (sr_wide_is_absolute(raw)) {
+        size_t n = wcslen(raw);
+        if (n != SIZE_MAX && n + 1u <= SIZE_MAX / sizeof(wchar_t)) {
+            absolute = (wchar_t *)malloc((n + 1u) * sizeof(*absolute));
+            if (absolute) memcpy(absolute, raw, (n + 1u) * sizeof(*absolute));
+        }
+    } else {
+        wchar_t *cwd = NULL;
+        if (sr_wide_get_current_directory(&cwd)) {
+            sr_wide_join_alloc(cwd, raw, &absolute);
+            free(cwd);
+        }
+    }
+    free(raw);
+    if (!absolute) return 0;
+    if (sr_wide_has_dot_component(absolute)) {
+        wchar_t *canonical = NULL;
+        if (!sr_wide_full_path_alloc(absolute, &canonical)) {
+            free(absolute);
+            return 0;
+        }
+        free(absolute);
+        absolute = canonical;
+    }
+    int ok = sr_wide_extended_absolute_alloc(absolute, out);
+    free(absolute);
+    return ok;
+}
+
+/* Split rules agree with the Windows layer: a path's parent and name are
+ * taken at the last separator, and a trailing separator is not part of a name. */
+static int sr_wide_parent_alloc(const wchar_t *path, wchar_t **out) {
+    if (!path || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(path);
+    while (n > 0u && path[n - 1u] == L'/') n--;      /* ignore trailing separators */
+    if (n == 0u) return 0;
+    size_t at = n;
+    while (at > 0u && path[at - 1u] != L'/') at--;
+    if (at == 0u) return 0;
+    while (at > 1u && path[at - 1u] == L'/') at--;    /* drop the separator itself */
+    wchar_t *parent = (wchar_t *)malloc((at + 1u) * sizeof(*parent));
+    if (!parent) return 0;
+    memcpy(parent, path, at * sizeof(*parent));
+    parent[at] = L'\0';
+    *out = parent;
+    return 1;
+}
+
+/* Case-insensitive wide compare: the Windows layer uses _wcsicmp here, and a
+ * host directory name is just as case-folded on this host. ASCII fold only --
+ * the names compared are the project's own ASCII tree names. */
+static int sr_wide_stricmp(const wchar_t *left, const wchar_t *right) {
+    if (!left || !right) return left == right ? 0 : 1;
+    while (*left && *right) {
+        wchar_t a = *left, b = *right;
+        if (a >= L'A' && a <= L'Z') a = (wchar_t)(a - L'A' + L'a');
+        if (b >= L'A' && b <= L'Z') b = (wchar_t)(b - L'A' + L'a');
+        if (a != b) return (int)a - (int)b;
+        left++;
+        right++;
+    }
+    return (int)*left - (int)*right;
+}
+
+static int sr_wide_basename_alloc(const wchar_t *path, wchar_t **out) {
+    if (!path || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(path);
+    while (n > 0u && path[n - 1u] == L'/') n--;
+    if (n == 0u) return 0;
+    size_t at = n;
+    while (at > 0u && path[at - 1u] != L'/') at--;
+    wchar_t *name = (wchar_t *)malloc((n - at + 1u) * sizeof(*name));
+    if (!name) return 0;
+    memcpy(name, path + at, (n - at + 1u) * sizeof(*name));
+    *out = name;
+    return 1;
+}
+
+/* The directory this executable was loaded from: /proc/self/exe here, with the
+ * configured SR_EXE_DIR override honoured first, exactly as the Windows layer
+ * honours SR_EXE_DIR ahead of the module handle. */
+static int sr_wide_module_dir_alloc(wchar_t **out) {
+    if (!out) return 0;
+    *out = NULL;
+    wchar_t *configured = NULL;
+    int present = 0;
+    if (sr_wide_env_alloc(L"SR_EXE_DIR", &configured, &present) && present) {
+        if (configured[0]) {
+            wchar_t *full = NULL;
+            int ok = sr_wide_configured_root_wide_alloc(configured, &full);
+            free(configured);
+            *out = full;
+            return ok;
+        }
+        free(configured);
+    }
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1u);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+    wchar_t *full = NULL;
+    if (!sr_utf8_to_wide_alloc(buf, &full)) return 0;
+    wchar_t *dir = NULL;
+    int ok = sr_wide_parent_alloc(full, &dir);
+    free(full);
+    *out = dir;
+    return ok;
+}
+
+static int sr_wide_module_font_root(wchar_t **out) {
+    if (!out) return 0;
+    wchar_t *configured = NULL;
+    int present = 0;
+    if (sr_wide_env_alloc(L"SR_FONTDIR", &configured, &present) && present &&
+        configured[0]) {
+        int ok = sr_wide_configured_root_wide_alloc(configured, out);
+        free(configured);
+        return ok;
+    }
+    free(configured);
+    wchar_t *module_dir = NULL, *repo_dir = NULL, *candidate = NULL;
+    int ok = sr_wide_module_dir_alloc(&module_dir) &&
+             sr_wide_parent_alloc(module_dir, &repo_dir) &&
+             sr_wide_join_alloc(repo_dir, L"font", &candidate) &&
+             sr_wide_extended_absolute_alloc(candidate, out);
+    free(module_dir);
+    free(repo_dir);
+    free(candidate);
+    return ok;
+}
+
+/* This host takes a byte path, so the mode crosses from the caller's wchar_t
+ * literal (always one of the ASCII r/w/a/+ letters) and fopen does the work. */
+static int sr_narrow_mode_alloc(const wchar_t *mode, char **out) {
+    if (!mode || !out) return 0;
+    *out = NULL;
+    size_t n = wcslen(mode);
+    if (n == 0u || n > 15u) return 0;
+    char *narrow = (char *)malloc(n + 1u);
+    if (!narrow) return 0;
+    for (size_t i = 0; i < n; i++) {
+        if ((uint32_t)mode[i] > 0x7Fu) { free(narrow); return 0; }
+        narrow[i] = (char)mode[i];
+    }
+    narrow[n] = '\0';
+    *out = narrow;
+    return 1;
+}
+
+static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode) {
+    char *narrow = NULL;
+    FILE *f = NULL;
+    if (!path || !mode || !sr_narrow_mode_alloc(mode, &narrow)) return NULL;
+    f = fopen(path, narrow);
+    free(narrow);
+    return f;
+}
+
+static int sr_stream_size_u32(FILE *stream, uint32_t *size_out) {
+    if (!stream || !size_out) return 0;
+    if (fseeko(stream, 0, SEEK_END) != 0) return 0;
+    off_t end = ftello(stream);
+    int ok = end >= 0 && (uint64_t)end <= UINT32_MAX;
+    if (fseeko(stream, 0, SEEK_SET) != 0) ok = 0;
+    if (ok) *size_out = (uint32_t)end;
+    return ok;
+}
+
+static int sr_ensure_directory_utf8(const char *path) {
+    if (!path || !path[0]) return 0;
+    if (mkdir(path, 0777) == 0) return 1;
+    if (errno != EEXIST) return 0;
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* The guest path is reduced to the seam's canonical root-relative grammar
+ * before any host operation. PSP mount-root separators are consumed once;
+ * host-absolute paths, foreign devices, traversal, repeated separators and
+ * overlong components fail with the PSP illegal-path result. */
+static sr_cd_status ms0_posix_guest_relpath(const char *guest, char *rel, size_t cap) {
+    return sr_cd_ms0_guest_relpath(guest, rel, cap);
+}
+
+static sr_cd_status ms0_posix_host_relpath(const char *host_path, char *rel, size_t cap) {
+    const char *root = sr_ms0_root();
+    if (!host_path || !root || !root[0] || !rel || cap == 0) return SR_CD_INVALID_PATH;
+    size_t root_len = strlen(root);
+    if (strncmp(host_path, root, root_len) != 0) return SR_CD_INVALID_PATH;
+    const char *tail = host_path + root_len;
+    if (root[root_len - 1u] != '/') {
+        if (*tail != '/') return SR_CD_INVALID_PATH;
+        tail++;
+    }
+    size_t len = strlen(tail);
+    if (len == 0 || len >= cap) return SR_CD_INVALID_PATH;
+    memcpy(rel, tail, len + 1u);
+    return sr_cd_rel_is_acceptable(rel) ? SR_CD_OK : SR_CD_INVALID_PATH;
+}
+
+static uint32_t ms0_posix_psp_error(sr_cd_status status) {
+    return sr_cd_psp_error(status);
+}
+
+static sr_cd_status ms0_posix_root_open(sr_cd_root *root) {
+    if (!sr_ensure_directory_utf8(sr_ms0_root())) return SR_CD_IO_ERROR;
+    return sr_cd_root_open(sr_ms0_root(), root);
+}
+
+static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
+                                sr_cd_status *status_out) {
+    if (status_out) *status_out = SR_CD_INVALID_PATH;
+    if (!rel || !mode || !mode[0]) return NULL;
+    char parent[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
+    if (!sr_cd_rel_split(rel, parent, sizeof(parent), leaf, sizeof(leaf))) return NULL;
+
+    int has_w = 0, has_a = 0, has_plus = 0;
+    for (const wchar_t *p = mode; *p; p++) {
+        if (*p == L'w') has_w = 1;
+        else if (*p == L'a') has_a = 1;
+        else if (*p == L'+') has_plus = 1;
+        else if (*p != L'r' && *p != L'b') return NULL;
+    }
+    if ((has_w && has_a) || ((has_w || has_a) && !has_plus)) return NULL;
+    sr_cd_file_mode file_mode = has_w ? SR_CD_FILE_READ_WRITE_TRUNCATE :
+                                has_a ? SR_CD_FILE_READ_WRITE_APPEND :
+                                has_plus ? SR_CD_FILE_READ_WRITE : SR_CD_FILE_READ;
+
+    sr_cd_root root;
+    sr_cd_status st = ms0_posix_root_open(&root);
+    if (st != SR_CD_OK) {
+        if (status_out) *status_out = st;
+        return NULL;
+    }
+    FILE *stream = NULL;
+    st = sr_cd_open_file(&root, parent, leaf, file_mode, &stream);
+    sr_cd_root_close(&root);
+    if (status_out) *status_out = st;
+    return st == SR_CD_OK ? stream : NULL;
+}
+
+static FILE *ms0_fopen_guest_utf8(const char *guest_path, const wchar_t *mode,
+                                  sr_cd_status *status_out) {
+    char rel[SR_CD_REL_MAX];
+    sr_cd_status st = ms0_posix_guest_relpath(guest_path, rel, sizeof(rel));
+    if (st != SR_CD_OK) {
+        if (status_out) *status_out = st;
+        return NULL;
+    }
+    return ms0_fopen_rel_utf8(rel, mode, status_out);
+}
+
+/* Compatibility helper for the legacy-flat import, whose destination was
+ * already resolved beneath the unified root. The final open still enters the
+ * descriptor-relative seam and never opens the joined pathname. */
+static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+    char rel[SR_CD_REL_MAX];
+    if (ms0_posix_host_relpath(host_path, rel, sizeof(rel)) != SR_CD_OK) return NULL;
+    return ms0_fopen_rel_utf8(rel, mode, NULL);
+}
+#endif /* _WIN32 */
+
+/* The three helpers below name no host primitive: the unified Memory Stick
+ * root resolution, the byte-path join and the directory-root resolution are
+ * the same work on every host, so they are compiled once and shared. */
+static char *sr_utf8_join_alloc(const char *left, const char *right, char separator) {
+    if (!left || !right) return NULL;
+    size_t a = strlen(left), b = strlen(right);
+    int need_separator = a > 0 && b > 0 && left[a - 1] != '/' && left[a - 1] != '\\';
+    size_t extra = b;
+    if (extra > SIZE_MAX - (size_t)need_separator - 1u) return NULL;
+    extra += (size_t)need_separator + 1u;
+    if (a > SIZE_MAX - extra) return NULL;
+    char *joined = (char *)malloc(a + extra);
+    if (!joined) return NULL;
+    memcpy(joined, left, a);
+    size_t at = a;
+    if (need_separator) joined[at++] = separator;
+    memcpy(joined + at, right, b + 1u);
+    return joined;
+}
+
+/* Unified Memory Stick root (issue #334): ordinary sceIo* and savedata share
+ * sr_ms0_root/sr_ms0_resolve so one guest path maps to one host path. Foreign
+ * devices (disc0:, ...) fail closed (NULL). Empty file guests are rejected;
+ * empty directory guests resolve to the root itself. */
+#ifdef _WIN32
+#define SR_HOST_PATH_SEP '\\'
+#else
+#define SR_HOST_PATH_SEP '/'
+#endif
+
+static char *host_path_alloc(const char *guest) {
+    if (!guest || !guest[0]) return NULL;
+    const char *root = sr_ms0_root();
+    if (!sr_ensure_directory_utf8(root)) return NULL;
+    size_t root_len = strlen(root), guest_len = strlen(guest);
+    if (root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) return NULL;
+    size_t cap = root_len + guest_len + 2u;
+    char *path = (char *)malloc(cap);
+    if (!path) return NULL;
+    if (!sr_ms0_resolve(root, guest, path, cap, SR_HOST_PATH_SEP)) {
+        free(path);
+        return NULL;
+    }
+    return path;
+}
+
+static char *host_dir_path_alloc(const char *guest) {
+    if (!guest) return NULL;
+    const char *root = sr_ms0_root();
+    if (!sr_ensure_directory_utf8(root)) return NULL;
+    size_t root_len = strlen(root), guest_len = strlen(guest);
+    if (root_len > SIZE_MAX - 2u || guest_len > SIZE_MAX - root_len - 2u) return NULL;
+    size_t cap = root_len + guest_len + 2u;
+    char *out = (char *)malloc(cap);
+    if (!out) return NULL;
+    if (!sr_ms0_resolve(root, guest, out, cap, SR_HOST_PATH_SEP)) {
+        free(out);
+        return NULL;
+    }
+    return out;
 }
 
 /* Atomic count of successful legacy flat fs/ -> unified-ms-root imports so
@@ -4318,9 +5007,26 @@ static PGF *font_open_from_root(const wchar_t *root, const wchar_t *name,
         fprintf(stderr, "font_load: %s path construction failed\n", source);
         return NULL;
     }
+#ifdef _WIN32
     PGF *font = pgf_open_w(path);
     if (!font)
         fprintf(stderr, "font_load: %s font could not be opened (%ls)\n", source, path);
+#else
+    /* This host has no wide fopen. The PGF reader derives the same internal font
+     * name from the path's basename, and a UTF-8 conversion of that basename is
+     * byte-identical to what pgf_open_w encodes, so the narrow entry point
+     * parses exactly the same font. */
+    PGF *font = NULL;
+    char *utf8 = NULL;
+    if (sr_wide_to_utf8_alloc(path, &utf8)) {
+        font = pgf_open(utf8);
+        if (!font)
+            fprintf(stderr, "font_load: %s font could not be opened (%s)\n", source, utf8);
+        free(utf8);
+    } else {
+        fprintf(stderr, "font_load: %s font path is not convertible\n", source);
+    }
+#endif
     free(path);
     return font;
 }
@@ -6502,10 +7208,11 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
 }
 
 static uint32_t h_VolatileMemLock(CpuState *s) {
-    /* sceKernelVolatileMemLock(type, void **paddr, int *psize): hand the app the 4MB volatile
-     * partition. PPSSPP returns base 0x08400000, size 0x00400000; the game uses it as the
-     * destination scratch buffer for decompressing/copying loaded assets, so the out-params
-     * must be filled or the copy targets NULL. */
+    /* Keep the established 4 MiB success route and NULL-output tolerance. Check
+     * both complete non-NULL output spans before writing either one. */
+    if ((A1 && !sr_guest_span_writable(A1, 4u)) ||
+        (A2 && !sr_guest_span_writable(A2, 4u)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A1) MEM_W32(A1, 0x08400000u);
     if (A2) MEM_W32(A2, 0x00400000u);
     return 0;
@@ -6589,7 +7296,7 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
  * the settle, fire the UMD-ready signal so any waiting thread and the registered callback fire. */
 static uint32_t h_UmdActivate(CpuState *s) {
     (void)s;
-    extern void sched_delay_current(uint32_t);
+    extern void sched_delay_current(uint64_t);
     /* 30 ms virtual delay keeps the loader's stat-read interleaving realistic. */
     sched_delay_current(30000);
     sr_umd_signal_ready();
@@ -6689,10 +7396,12 @@ void sr_callback_unregister_owner(uint32_t thread_uid) {
 }
 
 extern void sr_mutex_release_thread(uint32_t thread_uid);
+static void mbx_remove_thread_waiters(uint32_t thread_uid);
 
 void sr_hle_release_thread_resources(uint32_t thread_uid) {
     sr_mutex_release_thread(thread_uid);
     if (thread_uid) {
+        mbx_remove_thread_waiters(thread_uid);
         for (int i = 0; i < FPL_MAX; i++) {
             if (s_fpls[i].used) fpl_remove_waiter(&s_fpls[i], thread_uid);
         }
@@ -6979,12 +7688,7 @@ static uint64_t rtc_now_tick(void) {
          * establish the calendar offset.  Anchor it at guest time zero so a
          * first RTC query made after boot-time work does not double-count the
          * elapsed scheduler time.  Subsequent reads are guest-time only. */
-        FILETIME ft;
-        ULARGE_INTEGER value;
-        GetSystemTimeAsFileTime(&ft);
-        value.LowPart = ft.dwLowDateTime;
-        value.HighPart = ft.dwHighDateTime;
-        uint64_t host_tick = RTC_FILETIME_EPOCH_TICK + value.QuadPart / 10u;
+        uint64_t host_tick = RTC_FILETIME_EPOCH_TICK + sr_host_filetime_ticks() / 10u;
         uint64_t elapsed = now_usec();
         s_rtc_epoch_tick = host_tick >= elapsed ? host_tick - elapsed : 0u;
         s_rtc_last_tick = host_tick;
@@ -7320,12 +8024,13 @@ static uint32_t h_LoadModule(CpuState *s) {
             poke_pending = 1;
         }
     }
-    if (s_nloaded_modules < 16) {
-        LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (mod) {
         mod->uid = uid;
         snprintf(mod->path, sizeof(mod->path), "%s", path);
         mod->module_start = s_last_prx_entry;
         mod->module_stop = s_last_prx_stop;
+        mod->image_base = s_last_prx_base;
         mod->started = 0;
         mod->stopped = 0;
         mod->unloaded = 0;
@@ -7451,13 +8156,14 @@ uint32_t sr_hle_test_stop_module(CpuState *s) { return h_StopModule_Trace(s); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
 
 uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop) {
-    if (s_nloaded_modules >= 16) return 0;
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (!mod) return 0;
     uint32_t uid = sr_alloc_uid();
-    LoadedModule *mod = &s_loaded_modules[s_nloaded_modules++];
     mod->uid = uid;
     snprintf(mod->path, sizeof(mod->path), "%s", path ? path : "test_module.prx");
     mod->module_start = module_start;
     mod->module_stop = module_stop;
+    mod->image_base = 0;
     mod->started = 0;
     mod->stopped = 0;
     mod->unloaded = 0;
@@ -7468,28 +8174,64 @@ uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, ui
 void sr_hle_test_module_reset(void) {
     s_nloaded_modules = 0;
     memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
+    s_prx_image_count = 0;
+    memset(s_prx_images, 0, sizeof(s_prx_images));
+    atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
+}
+
+/* Read-only views of the lifecycle state a regression needs to observe: the export
+ * address a started module currently authorises for a NID, and how many module and
+ * image records are live. Used to prove an unload retired exactly its own state. */
+uint32_t sr_hle_test_started_export(uint32_t nid) { return started_module_export(nid); }
+unsigned sr_hle_test_image_count(void) { return s_prx_image_count; }
+unsigned sr_hle_test_module_count(void) { return (unsigned)s_nloaded_modules; }
+int sr_hle_test_started_image_count(void) {
+    return atomic_load_explicit(&s_prx_started_count, memory_order_acquire);
+}
+
+/* Load a synthetic PRX through the production image loader and bind it to a fresh
+ * module record, performing exactly the ownership work h_LoadModule does for a
+ * manifest-declared module: the real relocation/staging load, the real fixed-address
+ * user-partition reservation, the real export registration, and the same
+ * record->image_base link that lets unload retire this image. Only the manifest lookup
+ * and the module's entry addresses are supplied by the caller. */
+uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
+                                    uint32_t patch_nid, uint32_t patch_off) {
+    s_last_prx_entry = 0;
+    s_last_prx_stop = 0;
+    s_last_prx_base = 0;
+    if (!load_prx_image(host_path, base, "lifecycle")) return 0;
+    (void)register_prx_exports(host_path, base);
+    /* The fixture leaves its module-info export span empty (the two production readers
+     * of that span disagree on its base, so no single value satisfies both), so the
+     * dynamic export under test is published through the same late-import registry
+     * register_prx_exports() writes into, at the guest address the caller names. */
+    sr_hle_register_late_import(patch_nid, base + patch_off);
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (!mod) return 0;
+    uint32_t uid = sr_alloc_uid();
+    memset(mod, 0, sizeof(*mod));
+    mod->in_use = 1;
+    mod->uid = uid;
+    snprintf(mod->path, sizeof(mod->path), "%s", host_path);
+    mod->module_start = base + 0x70;   /* module_start address the fixture declares */
+    mod->module_stop = base + 0x78;    /* module_stop address the fixture declares */
+    mod->image_base = s_last_prx_base;
+    return uid;
 }
 #endif
 
 static uint32_t h_KernelPrintf(CpuState *s) {
-    char msg[512];
-    if (!guest_cstr(A0, msg, sizeof(msg)))
+    char fmt_check[1024];   /* the whole format must be readable, NUL-terminated guest text */
+    if (!guest_cstr(A0, fmt_check, sizeof(fmt_check)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    char arg[256] = "";
-    /* PSP user-space pointers reside at 0x08000000..0x0BFFFFFF. The old check
-     * `s->r[5] < 0x08000000u` was perfectly inverted: it accepted kernel/low
-     * addresses and rejected real user strings. Only log the format argument if
-     * it points into mapped guest user RAM. */
-    if (s->r[5] && s->r[5] >= 0x08000000u && s->r[5] < 0x0C000000u && sr_inrange(s->r[5])) {
-        if (!guest_cstr(s->r[5], arg, sizeof(arg)))
-            arg[0] = '\0';
-    }
-    fprintf(stderr, "GAMELOG: format='%s' a1=0x%08x a2=0x%08x a3=0x%08x arg='%s'\n", msg, A1, A2, A3, arg);
-    if (strstr(msg, "should be called from main thread")) {
-        sr_capture_mainthread_diag(s, &sr_last_mt_diag);
-        sr_dump_mainthread_diag("MAIN_THREAD_ASSERT", &sr_last_mt_diag);
-    }
-    return 0;
+    /* printf formats its variadic words ($5 onward) and returns the formatted
+     * length. The PSP debug console is the host log here; the guest sees only the
+     * return value. */
+    char line[1024];
+    int written = sr_guest_format_host(s, A0, 5u, line, (int)sizeof(line));
+    fprintf(stderr, "GAMELOG: %s\n", line);
+    return (uint32_t)written;
 }
 
 #define SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES 0x80020320u
@@ -7566,24 +8308,20 @@ typedef struct {
 } DirFd;
 static DirFd s_dirfds[32];
 
-/* ---- Data-root lookup: serve files extracted from the game's XB archives -------------
+/* ---- Data-root lookup: serve files extracted from XB archives ------------------------
  *
- * The game requests paths like "data/menu/text/CommonText_Acce.to" which exist on the
- * ISO ONLY as packed XB archives (xbdata/<subdir>/<archive>.xb{,0,2,3}). The dev workflow
- * extracts those archives once with tools/extract_xb.py into xbdata_extracted/, producing
- * the tree:
- *     <SR_DATAROOT>/<subdir>/<archive>.xb[0-9].d/<relpath-as-on-disc>
- *
- * To serve those files through h_IoOpen / h_IoGetstat we build (once) a sorted relative-path
- * -> host-path cache by walking SR_DATAROOT recursively. Lookup is then O(log N).
+ * The development workflow extracts packed XB archive members under
+ * <SR_DATAROOT>/<archive>.xb[0-9].d/<relative-path>. To serve those files through
+ * h_IoOpen / h_IoGetstat we build a sorted relative-path -> host-path cache by
+ * walking the explicitly configured data root. Lookup is then O(log N).
  * The cache is published only after the walk, sort, expected-count, and
  * enumerated-size checks succeed; an enumeration or allocation failure destroys
  * the temporary table and permanently fails the data-root route. The actual
  * file open is deferred until the guest requests an entry and fails closed if
  * the indexed host path is no longer readable.
  *
- * SR_DATAROOT defaults to the executable-relative
- * "place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted" tree.
+ * SR_DATAROOT is supplied by the native launcher's validated title filesystem
+ * binding. Without it, the generic runtime does not infer a title directory.
  */
 
 static SrAssetIndex s_data_index;
@@ -7618,6 +8356,14 @@ static atomic_int s_data_state;
 static unsigned long s_data_test_walk_calls;         /* directories enumerated */
 static unsigned long s_data_test_build_attempts;     /* census attempts total */
 static unsigned long s_data_test_builds_after_guest; /* attempts after guest start */
+/* Enumeration WORK, counted rather than timed. `names` is every directory entry
+ * the census retrieved (".", ".." and real children alike); `probes` is the
+ * per-file readability open that precedes publication. With the walk count these
+ * are the deterministic O(n) evidence for the census: a wall clock measures the
+ * host filesystem and the machine's load, so a load-sensitive scaling bound is a
+ * flaky correctness gate rather than a scaling proof. */
+static unsigned long long s_data_test_scan_names;    /* directory entries read */
+static unsigned long long s_data_test_scan_probes;   /* per-file metadata opens */
 static int s_data_test_guest_started;
 static int s_data_test_pace_ms;                      /* per-directory pacing hook */
 #endif
@@ -7634,12 +8380,12 @@ enum {
     SR_DATA_TEST_PHASE_PUBLISH,
     SR_DATA_TEST_PHASE_COUNT
 };
-static ULONGLONG s_data_test_phase_ms[SR_DATA_TEST_PHASE_COUNT];
-#define SR_DATA_TEST_PHASE_START(name) ((name) = GetTickCount64())
+static uint64_t s_data_test_phase_ms[SR_DATA_TEST_PHASE_COUNT];
+#define SR_DATA_TEST_PHASE_START(name) ((name) = sr_host_monotonic_ms())
 #define SR_DATA_TEST_PHASE_STOP(phase, name) \
-    (s_data_test_phase_ms[(phase)] += GetTickCount64() - (name))
+    (s_data_test_phase_ms[(phase)] += sr_host_monotonic_ms() - (name))
 static void data_report_phases(void) {
-    const ULONGLONG *ms = s_data_test_phase_ms;
+    const uint64_t *ms = s_data_test_phase_ms;
     fprintf(stderr, "host_data: phase_ms archive_discover=%llu walk=%llu loose_walk=%llu "
                     "finalize=%llu validate=%llu publish=%llu\n",
             (unsigned long long)ms[SR_DATA_TEST_PHASE_ARCHIVE_DISCOVER],
@@ -7653,6 +8399,273 @@ static void data_report_phases(void) {
 
 static char *data_rel_join(const char *prefix, const char *name) {
     return sr_utf8_join_alloc(prefix, name, '/');
+}
+
+#define SR_DATA_MAX_LOOSE_ROOTS 16u
+#define SR_DATA_MAX_LOOSE_ROOT_EXCLUDES 2u
+typedef struct {
+    wchar_t *host_wide;
+    char *host_utf8;
+    char *mount;
+    uint32_t precedence;
+    int skip_primary_root;
+    char exclude[SR_DATA_MAX_LOOSE_ROOT_EXCLUDES][241];
+    size_t exclude_count;
+} SrDataLooseRoot;
+
+static SrDataLooseRoot s_data_loose_roots[SR_DATA_MAX_LOOSE_ROOTS];
+static size_t s_data_loose_root_count;
+
+static int data_relative_path_equal(const char *a, const char *b) {
+    return a && b && strlen(a) == strlen(b) &&
+           sr_vfs_strnicmp(a, b, strlen(a)) == 0;
+}
+
+static void data_loose_roots_clear(void) {
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        free(s_data_loose_roots[i].host_wide);
+        free(s_data_loose_roots[i].host_utf8);
+        free(s_data_loose_roots[i].mount);
+        memset(&s_data_loose_roots[i], 0, sizeof(s_data_loose_roots[i]));
+    }
+    s_data_loose_root_count = 0;
+}
+
+static int data_loose_mount_valid(const char *mount) {
+    if (!mount) return 0;
+    if (!mount[0]) return 1;
+    const char *part = mount;
+    for (const char *p = mount;; p++) {
+        if (*p == '/' || *p == '\0') {
+            size_t len = (size_t)(p - part);
+            if (len == 0u || (len == 1u && part[0] == '.') ||
+                (len == 2u && part[0] == '.' && part[1] == '.')) return 0;
+            for (size_t i = 0; i < len; i++) {
+                char c = part[i];
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')) return 0;
+            }
+            if (!*p) break;
+            part = p + 1;
+        }
+    }
+    return 1;
+}
+
+static int data_wide_path_overlaps(const wchar_t *a, const wchar_t *b) {
+    size_t a_len = wcslen(a), b_len = wcslen(b);
+    while (a_len > 1u && (a[a_len - 1u] == L'/' || a[a_len - 1u] == L'\\')) a_len--;
+    while (b_len > 1u && (b[b_len - 1u] == L'/' || b[b_len - 1u] == L'\\')) b_len--;
+    size_t common = a_len < b_len ? a_len : b_len;
+    for (size_t i = 0; i < common; i++) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca == L'/') ca = L'\\';
+        if (cb == L'/') cb = L'\\';
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return 0;
+    }
+    if (a_len == b_len) return 1;
+    return a_len < b_len ? (b[common] == L'/' || b[common] == L'\\')
+                         : (a[common] == L'/' || a[common] == L'\\');
+}
+
+static int data_wide_path_equal(const wchar_t *a, const wchar_t *b) {
+    if (!a || !b) return a == b;
+    size_t a_len = wcslen(a), b_len = wcslen(b);
+    while (a_len > 1u && (a[a_len - 1u] == L'/' || a[a_len - 1u] == L'\\')) a_len--;
+    while (b_len > 1u && (b[b_len - 1u] == L'/' || b[b_len - 1u] == L'\\')) b_len--;
+    if (a_len != b_len) return 0;
+    for (size_t i = 0; i < a_len; i++) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca == L'/') ca = L'\\';
+        if (cb == L'/') cb = L'\\';
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
+static int data_parse_precedence(const wchar_t *text, uint32_t *out) {
+    if (!text || !text[0] || !out) return 0;
+    uint32_t value = 0;
+    for (const wchar_t *p = text; *p; p++) {
+        if (*p < L'0' || *p > L'9') return 0;
+        uint32_t digit = (uint32_t)(*p - L'0');
+        if (value > (65535u - digit) / 10u) return 0;
+        value = value * 10u + digit;
+    }
+    *out = value;
+    return 1;
+}
+
+static int data_parse_boolean_flag(const wchar_t *text, int *out) {
+    if (!text || !out) return 0;
+    if (wcscmp(text, L"0") == 0) *out = 0;
+    else if (wcscmp(text, L"1") == 0) *out = 1;
+    else return 0;
+    return 1;
+}
+
+static int data_loose_root_parse(const wchar_t *primary_root) {
+    data_loose_roots_clear();
+    wchar_t *serialized = NULL;
+    int present = 0;
+    if (!sr_wide_env_alloc(L"SR_LOOSE_CONTENT_ROOTS", &serialized, &present)) return 0;
+    if (!present || !serialized || !serialized[0]) {
+        free(serialized);
+        return 1;
+    }
+    size_t serialized_len = wcslen(serialized);
+    if (serialized_len > 32767u || !primary_root) {
+        fprintf(stderr, "host_data: loose-content binding #289 (in the works) exceeds its limit\n");
+        free(serialized);
+        return 0;
+    }
+    wchar_t *primary_parent = NULL;
+    if (!sr_wide_parent_alloc(primary_root, &primary_parent)) {
+        free(serialized);
+        return 0;
+    }
+    int ok = 1;
+    wchar_t *cursor = serialized;
+    wchar_t *serialized_end = serialized + serialized_len;
+    while (cursor < serialized_end && ok) {
+        wchar_t *line_end = wcschr(cursor, L'\n');
+        if (!line_end) line_end = serialized_end;
+        wchar_t saved_end = *line_end;
+        *line_end = L'\0';
+        if (line_end > cursor && line_end[-1] == L'\r') line_end[-1] = L'\0';
+        wchar_t *fields[5u + SR_DATA_MAX_LOOSE_ROOT_EXCLUDES] = {0};
+        size_t field_count = 1u;
+        fields[0] = cursor;
+        for (wchar_t *p = cursor; *p; p++) {
+            if (*p == L'\t') {
+                *p = L'\0';
+                if (field_count >= sizeof(fields) / sizeof(fields[0])) {
+                    ok = 0;
+                    break;
+                }
+                fields[field_count++] = p + 1;
+            }
+        }
+        if (!ok || !cursor[0] || (field_count != 3u && field_count < 5u)) {
+            ok = 0;
+        } else {
+            uint32_t precedence = 0;
+            size_t mount_len = wcslen(fields[1]);
+            char mount[241];
+            if (mount_len > 240u || !data_parse_precedence(fields[2], &precedence)) {
+                ok = 0;
+            } else {
+                for (size_t i = 0; i < mount_len; i++) {
+                    if ((uint32_t)fields[1][i] > 0x7fu) { ok = 0; break; }
+                    mount[i] = (char)fields[1][i];
+                }
+                mount[mount_len] = '\0';
+                if (ok && !data_loose_mount_valid(mount)) ok = 0;
+            }
+            int legacy_row = field_count == 3u;
+            int skip_primary = 0;
+            char excludes[SR_DATA_MAX_LOOSE_ROOT_EXCLUDES][241] = {{0}};
+            size_t exclude_count = 0u;
+            if (!legacy_row) {
+                uint32_t declared_excludes = 0u;
+                if (!data_parse_boolean_flag(fields[3], &skip_primary) ||
+                    !data_parse_precedence(fields[4], &declared_excludes) ||
+                    declared_excludes > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+                    field_count != 5u + declared_excludes) {
+                    ok = 0;
+                } else {
+                    exclude_count = declared_excludes;
+                    for (size_t exclude_index = 0; exclude_index < exclude_count; exclude_index++) {
+                        const wchar_t *field = fields[5u + exclude_index];
+                        size_t exclude_len = wcslen(field);
+                        if (exclude_len == 0u || exclude_len > 240u) { ok = 0; break; }
+                        for (size_t char_index = 0; char_index < exclude_len; char_index++) {
+                            if ((uint32_t)field[char_index] > 0x7fu) { ok = 0; break; }
+                            excludes[exclude_index][char_index] = (char)field[char_index];
+                        }
+                        excludes[exclude_index][exclude_len] = '\0';
+                        if (ok && !data_loose_mount_valid(excludes[exclude_index])) ok = 0;
+                        for (size_t previous = 0; previous < exclude_index && ok; previous++) {
+                            if (data_relative_path_equal(excludes[previous],
+                                                         excludes[exclude_index]))
+                                ok = 0;
+                        }
+                        if (!ok) break;
+                    }
+                }
+            }
+            wchar_t *host_wide = NULL;
+            char *host_utf8 = NULL;
+            if (ok && (!cursor[0] || wcschr(cursor, L'\t') ||
+                       !sr_wide_configured_root_wide_alloc(cursor, &host_wide) ||
+                       !sr_wide_to_utf8_alloc(host_wide, &host_utf8))) ok = 0;
+            if (ok) {
+#ifdef _WIN32
+                DWORD attributes = GetFileAttributesW(host_wide);
+                if (attributes == INVALID_FILE_ATTRIBUTES ||
+                    !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+                    (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) ok = 0;
+#else
+                struct stat st, link;
+                if (lstat(host_utf8, &link) != 0 || S_ISLNK(link.st_mode) ||
+                    stat(host_utf8, &st) != 0 || !S_ISDIR(st.st_mode)) ok = 0;
+#endif
+            }
+            if (ok) {
+                int same_parent = data_wide_path_equal(host_wide, primary_parent);
+                int overlaps_primary = data_wide_path_overlaps(host_wide, primary_root);
+                if (legacy_row) skip_primary = same_parent;
+                if ((overlaps_primary && !same_parent) ||
+                    (skip_primary && !same_parent) || (same_parent && !skip_primary)) ok = 0;
+                for (size_t i = 0; i < s_data_loose_root_count && ok; i++) {
+                    if (data_wide_path_overlaps(host_wide, s_data_loose_roots[i].host_wide))
+                        ok = 0;
+                    if (s_data_loose_roots[i].precedence == precedence) ok = 0;
+                }
+            }
+            if (ok && s_data_loose_root_count < SR_DATA_MAX_LOOSE_ROOTS) {
+                SrDataLooseRoot *root = &s_data_loose_roots[s_data_loose_root_count++];
+                root->host_wide = host_wide; host_wide = NULL;
+                root->host_utf8 = host_utf8; host_utf8 = NULL;
+                root->mount = sr_asset_index_strdup(mount);
+                root->precedence = precedence;
+                root->skip_primary_root = skip_primary;
+                root->exclude_count = exclude_count;
+                memcpy(root->exclude, excludes, sizeof(root->exclude));
+                if (!root->mount) ok = 0;
+            } else if (ok) {
+                ok = 0;
+            }
+            free(host_wide);
+            free(host_utf8);
+        }
+        if (!ok) {
+            fprintf(stderr, "host_data: loose-content binding #289 (in the works) is malformed, overlapping, or unavailable\n");
+            break;
+        }
+        cursor = (saved_end == L'\n') ? line_end + 1 : serialized_end;
+    }
+    free(primary_parent);
+    free(serialized);
+    if (!ok) {
+        data_loose_roots_clear();
+        return 0;
+    }
+    for (size_t i = 1; i < s_data_loose_root_count; i++) {
+        size_t j = i;
+        while (j > 0 && s_data_loose_roots[j].precedence <
+                            s_data_loose_roots[j - 1].precedence) {
+            SrDataLooseRoot swap = s_data_loose_roots[j];
+            s_data_loose_roots[j] = s_data_loose_roots[j - 1];
+            s_data_loose_roots[j - 1] = swap;
+            j--;
+        }
+    }
+    return 1;
 }
 
 typedef struct {
@@ -7679,23 +8692,37 @@ static int data_walk_push(DataWalkDir **stack, size_t *count, size_t *capacity,
     return 1;
 }
 
+static int data_loose_path_excluded(const char *relative,
+                                   const char exclude_paths[][241],
+                                   size_t exclude_count) {
+    if (!relative || !exclude_paths) return 0;
+    for (size_t i = 0; i < exclude_count; i++) {
+        if (data_relative_path_equal(relative, exclude_paths[i])) return 1;
+    }
+    return 0;
+}
+
 /* Iterative depth-first walk of `root`, recording every regular file's relative
  * path and absolute host path.  An explicit heap stack keeps a crafted 32k
  * extended path from consuming the host thread's call stack.
  *
- * `skip_top_name` (optional) names one directory directly under `root` that the
- * walk does not descend into, by case-insensitive comparison.  It exists for the
- * route that adds a second root beside the first: that root is a parent of the
- * first, so the first root's own subtree would otherwise be enumerated twice. */
-static int data_walk(const wchar_t *root, const char *relprefix,
-                     const wchar_t *skip_top_name, SrAssetIndex *index) {
-    if (!root || !relprefix || !index) return 0;
+ * `skip_top_name` (optional) names the primary root directly under `root`.
+ * `exclude_paths` name additional root-relative paths that are not entered.
+ * `mount` affects guest keys only; the walk stack always keeps host-relative
+ * paths so exclusions do not depend on the guest namespace prefix. */
+#ifdef _WIN32
+static int data_walk(const wchar_t *root, const char *mount,
+                     const wchar_t *skip_top_name,
+                     const char exclude_paths[][241], size_t exclude_count,
+                     SrAssetIndex *index, uint32_t precedence) {
+    if (!root || !mount || !index || exclude_count > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+        (exclude_count != 0u && !exclude_paths)) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
     size_t root_len = wcslen(root);
     if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
     wchar_t *initial_host = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial_host));
-    char *initial_rel = sr_asset_index_strdup(relprefix);
+    char *initial_rel = sr_asset_index_strdup("");
     if (!initial_host || !initial_rel) {
         free(initial_host);
         free(initial_rel);
@@ -7716,7 +8743,7 @@ static int data_walk(const wchar_t *root, const char *relprefix,
         /* Test-only pacing: proves the census COMPLETES before the guest-start
          * boundary when the hook placement is correct (a placement proof, not a
          * speed proof). Production builds never pace. */
-        if (s_data_test_pace_ms > 0) Sleep((DWORD)s_data_test_pace_ms);
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
         s_data_test_walk_calls++;
 #endif
         wchar_t *pattern = NULL;
@@ -7740,6 +8767,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
         }
 
         for (;;) {
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!(fd.cFileName[0] == L'.' && (fd.cFileName[1] == L'\0' ||
                                               (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0')))) {
                 char *name = NULL;
@@ -7755,8 +8785,10 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     if (skip_top_name && current.rel[0] == '\0' &&
                         _wcsicmp(fd.cFileName, skip_top_name) == 0) {
-                        /* Already enumerated from its own root; do not pay for it
-                         * twice. On this title that subtree is 56,672 entries. */
+                        /* The primary data root is walked separately. */
+                    } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                        exclude_count)) {
+                        /* Excluded directories are never pushed onto the walk stack. */
                     } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                         fprintf(stderr, "host_data: refusing reparse-point directory\n");
                         ok = 0;
@@ -7768,10 +8800,16 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         child_host = NULL;
                         child_rel = NULL;
                     }
+                } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                    exclude_count)) {
+                    /* An excluded file is not indexed or opened. */
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                     fprintf(stderr, "host_data: refusing reparse-point file\n");
                     ok = 0;
                 } else {
+#ifdef SR_HLE_THREAD_SELFTEST
+                    s_data_test_scan_probes++;
+#endif
                     HANDLE probe = CreateFileW(child_host, GENERIC_READ,
                                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                                 NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -7790,19 +8828,24 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                     int variant = -1;
                     uint64_t file_size = ((uint64_t)fd.nFileSizeHigh << 32) |
                                          (uint64_t)fd.nFileSizeLow;
+                    char *key_relative = mount[0]
+                        ? data_rel_join(mount, child_rel)
+                        : sr_asset_index_strdup(child_rel);
                     if (file_size > UINT32_MAX) {
                         fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
                         ok = 0;
-                    } else if (!sr_asset_index_key_from_rel(child_rel, &key, &variant)) {
+                    } else if (!key_relative ||
+                               !sr_asset_index_key_from_rel(key_relative, &key, &variant)) {
                         fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
                                 index->count);
                         ok = 0;
-                    } else if (!sr_asset_index_add_sized(index, key, host_utf8, variant,
-                                                         file_size)) {
+                    } else if (!sr_asset_index_add_sized_precedence(
+                                   index, key, host_utf8, variant, file_size, precedence)) {
                         fprintf(stderr, "host_data: index allocation failed after %zu files\n",
                                 index->count);
                         ok = 0;
                     }
+                    free(key_relative);
                 }
                 free(name);
                 free(child_rel);
@@ -7832,6 +8875,171 @@ static int data_walk(const wchar_t *root, const char *relprefix,
     free(stack);
     return ok;
 }
+#else /* !_WIN32: the same index census over the POSIX directory primitives ---
+ * The walk below is the identical algorithm -- iterative heap stack, same
+ * relative-key construction, same refusals -- reading each directory with
+ * opendir/readdir and classifying an entry with lstat. A symbolic link is this
+ * host's redirect, so it is refused exactly where the Windows walk refuses a
+ * reparse point, and a regular file is still read-open probed so a race cannot
+ * publish an entry the guest cannot later open. */
+static int data_walk(const wchar_t *root, const char *mount,
+                     const wchar_t *skip_top_name,
+                     const char exclude_paths[][241], size_t exclude_count,
+                     SrAssetIndex *index, uint32_t precedence) {
+    if (!root || !mount || !index || exclude_count > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+        (exclude_count != 0u && !exclude_paths)) return 0;
+    DataWalkDir *stack = NULL;
+    size_t stack_count = 0, stack_capacity = 0;
+    size_t root_len = wcslen(root);
+    if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
+    wchar_t *initial_host = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial_host));
+    char *initial_rel = sr_asset_index_strdup("");
+    if (!initial_host || !initial_rel) {
+        free(initial_host);
+        free(initial_rel);
+        return 0;
+    }
+    memcpy(initial_host, root, (root_len + 1u) * sizeof(*initial_host));
+    if (!data_walk_push(&stack, &stack_count, &stack_capacity, initial_host, initial_rel)) {
+        free(initial_host);
+        free(initial_rel);
+        free(stack);
+        return 0;
+    }
+
+    int ok = 1;
+    while (ok && stack_count != 0u) {
+        DataWalkDir current = stack[--stack_count];
+        char *host_utf8 = NULL;
+        if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
+            fprintf(stderr, "host_data: host-path conversion failed during enumeration\n");
+            free(current.host);
+            free(current.rel);
+            ok = 0;
+            break;
+        }
+        DIR *dir = opendir(host_utf8);
+        if (!dir) {
+            fprintf(stderr, "host_data: enumeration failed (errno=%d)\n", errno);
+            free(host_utf8);
+            free(current.host);
+            free(current.rel);
+            ok = 0;
+            break;
+        }
+        for (;;) {
+            errno = 0;
+            struct dirent *entry = readdir(dir);
+            if (!entry) {
+                if (errno != 0) {
+                    fprintf(stderr, "host_data: enumeration terminated with errno=%d\n", errno);
+                    ok = 0;
+                }
+                break;
+            }
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            wchar_t *name = NULL;
+            wchar_t *child_host = NULL;
+            char *child_rel = NULL;
+            char *child_utf8 = NULL;
+            char *key = NULL;
+            if (!sr_utf8_to_wide_alloc(entry->d_name, &name) ||
+                !sr_wide_join_alloc(current.host, name, &child_host) ||
+                !(child_rel = data_rel_join(current.rel, entry->d_name)) ||
+                !sr_wide_to_utf8_alloc(child_host, &child_utf8)) {
+                fprintf(stderr, "host_data: path conversion/join failed during enumeration\n");
+                ok = 0;
+            } else {
+                struct stat st;
+                /* Classify and probe the entry relative to the open directory, so no path is
+                 * re-resolved between the check and the open. */
+                if (fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+                    fprintf(stderr, "host_data: entry could not be classified (errno=%d)\n", errno);
+                    ok = 0;
+                } else if (S_ISLNK(st.st_mode)) {
+                    /* This host's reparse point: a link can redirect the walk
+                     * outside the root, so it is refused, not followed. */
+                    fprintf(stderr, "host_data: refusing symbolic link %s\n", child_utf8);
+                    ok = 0;
+                } else if (S_ISDIR(st.st_mode)) {
+                    if (skip_top_name && current.rel[0] == '\0' &&
+                        sr_wide_stricmp(name, skip_top_name) == 0) {
+                        /* Already enumerated from its own root; do not pay for
+                         * it twice. */
+                    } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                        exclude_count)) {
+                        /* Excluded directories are never pushed onto the walk stack. */
+                    } else if (!data_walk_push(&stack, &stack_count, &stack_capacity,
+                                               child_host, child_rel)) {
+                        fprintf(stderr, "host_data: directory-stack allocation failed\n");
+                        ok = 0;
+                    } else {
+                        child_host = NULL;
+                        child_rel = NULL;
+                    }
+                } else if (!S_ISREG(st.st_mode)) {
+                    fprintf(stderr, "host_data: refusing non-regular entry %s\n", child_utf8);
+                    ok = 0;
+                } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                    exclude_count)) {
+                    /* An excluded file is not indexed or opened. */
+                } else {
+                    int probe_fd = openat(dirfd(dir), entry->d_name,
+                                          O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+                    struct stat probe_st;
+                    int probe_ok = probe_fd >= 0 && fstat(probe_fd, &probe_st) == 0 &&
+                                   S_ISREG(probe_st.st_mode) &&
+                                   probe_st.st_dev == st.st_dev && probe_st.st_ino == st.st_ino;
+                    if (probe_fd >= 0) close(probe_fd);
+                    if (!probe_ok) {
+                        fprintf(stderr, "host_data: indexed file readability check failed "
+                                        "(entry=%zu errno=%d)\n", index->count, errno);
+                        ok = 0;
+                    } else {
+                        int variant = -1;
+                        char *key_relative = mount[0]
+                            ? data_rel_join(mount, child_rel)
+                            : sr_asset_index_strdup(child_rel);
+                        if ((uint64_t)st.st_size > UINT32_MAX) {
+                            fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
+                            ok = 0;
+                        } else if (!key_relative ||
+                                   !sr_asset_index_key_from_rel(key_relative, &key, &variant)) {
+                            fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
+                                    index->count);
+                            ok = 0;
+                        } else if (!sr_asset_index_add_sized_precedence(
+                                       index, key, child_utf8, variant,
+                                       (uint64_t)st.st_size, precedence)) {
+                            fprintf(stderr, "host_data: index allocation failed after %zu files\n",
+                                    index->count);
+                            ok = 0;
+                        }
+                        free(key_relative);
+                    }
+                }
+            }
+            free(name);
+            free(child_rel);
+            free(child_host);
+            free(child_utf8);
+            free(key);
+            if (!ok) break;
+        }
+        closedir(dir);
+        free(host_utf8);
+        free(current.host);
+        free(current.rel);
+    }
+    while (stack_count != 0u) {
+        DataWalkDir pending = stack[--stack_count];
+        free(pending.host);
+        free(pending.rel);
+    }
+    free(stack);
+    return ok;
+}
+#endif /* _WIN32 */
 
 typedef struct {
     char *path;
@@ -7873,6 +9081,7 @@ static void archive_candidates_destroy(ArchiveCandidate *items, size_t count) {
     free(items);
 }
 
+#ifdef _WIN32
 static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                                  size_t *archive_count_out) {
     if (!root || !vfs || !archive_count_out) return -1;
@@ -7896,7 +9105,7 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
 #ifdef SR_HLE_THREAD_SELFTEST
-        if (s_data_test_pace_ms > 0) Sleep((DWORD)s_data_test_pace_ms);
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
         s_data_test_walk_calls++;
 #endif
         wchar_t *pattern = NULL;
@@ -7919,6 +9128,9 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
             break;
         }
         for (;;) {
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!(fd.cFileName[0] == L'.' &&
                   (fd.cFileName[1] == L'\0' ||
                    (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0')))) {
@@ -8015,6 +9227,154 @@ static int data_root_validate(const wchar_t *root, int configured) {
     }
     return 1;
 }
+#else /* !_WIN32: archive discovery and root validation over POSIX stat ----- */
+static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
+                                 size_t *archive_count_out) {
+    if (!root || !vfs || !archive_count_out) return -1;
+    *archive_count_out = 0;
+    DataWalkDir *stack = NULL;
+    size_t stack_count = 0, stack_capacity = 0;
+    size_t root_len = wcslen(root);
+    if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return -1;
+    wchar_t *initial = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial));
+    char *initial_utf8 = NULL;
+    if (!initial || !sr_wide_to_utf8_alloc(root, &initial_utf8)) {
+        free(initial);
+        return -1;
+    }
+    memcpy(initial, root, (root_len + 1u) * sizeof(*initial));
+    if (!data_walk_push(&stack, &stack_count, &stack_capacity, initial, NULL)) {
+        free(initial);
+        free(initial_utf8);
+        return -1;
+    }
+    free(initial_utf8);
+
+    ArchiveCandidate *candidates = NULL;
+    size_t candidate_count = 0, candidate_capacity = 0;
+    int ok = 1;
+    int found = 0;
+    while (ok && stack_count != 0u) {
+        DataWalkDir current = stack[--stack_count];
+        char *host_utf8 = NULL;
+        if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
+            ok = 0;
+            free(current.host);
+            break;
+        }
+        DIR *dir = opendir(host_utf8);
+        if (!dir) {
+            if (errno == ENOENT) { free(current.host); break; }
+            ok = 0;
+            free(host_utf8);
+            free(current.host);
+            break;
+        }
+        for (;;) {
+            errno = 0;
+            struct dirent *entry = readdir(dir);
+            if (!entry) {
+                if (errno != 0) ok = 0;
+                break;
+            }
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            wchar_t *name = NULL;
+            wchar_t *child = NULL;
+            char *child_utf8 = NULL;
+            if (!sr_utf8_to_wide_alloc(entry->d_name, &name) ||
+                !sr_wide_join_alloc(current.host, name, &child) ||
+                !sr_wide_to_utf8_alloc(child, &child_utf8)) {
+                ok = 0;
+            } else {
+                struct stat st;
+                if (lstat(child_utf8, &st) != 0) {
+                    ok = 0;
+                } else if (S_ISLNK(st.st_mode)) {
+                    ok = 0;
+                } else if (S_ISDIR(st.st_mode)) {
+                    if (!data_walk_push(&stack, &stack_count, &stack_capacity, child, NULL)) {
+                        ok = 0;
+                    } else {
+                        child = NULL;
+                    }
+                } else if (!S_ISREG(st.st_mode)) {
+                    ok = 0;
+                } else {
+                    int variant = -1;
+                    if (sr_archive_variant_from_name(child_utf8, &variant)) {
+                        if (!archive_candidate_push(&candidates, &candidate_count,
+                                                    &candidate_capacity, child_utf8, variant)) {
+                            ok = 0;
+                        } else {
+                            child_utf8 = NULL;
+                            found = 1;
+                        }
+                    }
+                }
+            }
+            free(name);
+            free(child);
+            free(child_utf8);
+            if (!ok) break;
+        }
+        closedir(dir);
+        free(host_utf8);
+        free(current.host);
+    }
+    while (stack_count != 0u) {
+        DataWalkDir pending = stack[--stack_count];
+        free(pending.host);
+    }
+    free(stack);
+    if (ok && found && candidate_count != 0u) {
+        qsort(candidates, candidate_count, sizeof(*candidates), archive_candidate_cmp);
+        for (size_t i = 0; i < candidate_count; i++) {
+            NkResult result = sr_archive_vfs_mount_file(
+                vfs, candidates[i].path, false, candidates[i].variant, NULL);
+            if (result != NK_OK) {
+                fprintf(stderr, "host_data: archive mount failed for %s (%d); refusing archive route\n",
+                        candidates[i].path, (int)result);
+                ok = 0;
+                break;
+            }
+        }
+        if (ok && !sr_archive_vfs_finalize(vfs)) ok = 0;
+    }
+    archive_candidates_destroy(candidates, candidate_count);
+    if (!ok) return -1;
+    *archive_count_out = candidate_count;
+    return candidate_count != 0u;
+}
+
+static int data_root_validate(const wchar_t *root, int configured) {
+    if (!root) return 0;
+    char *utf8 = NULL;
+    if (!sr_wide_to_utf8_alloc(root, &utf8)) return 0;
+    struct stat st;
+    int present = stat(utf8, &st) == 0;
+    if (!present) {
+        fprintf(stderr, "host_data: root attributes failed (errno=%d)\n", errno);
+        free(utf8);
+        return 0;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "host_data: data root is not a directory\n");
+        free(utf8);
+        return 0;
+    }
+    /* An explicitly supplied root is an operator-owned path and may be a
+     * lawful link used to stage a long-path fixture. The executable-anchored
+     * default must not silently follow a link outside the repo. */
+    struct stat link;
+    int is_link = lstat(utf8, &link) == 0 && S_ISLNK(link.st_mode);
+    free(utf8);
+    if (is_link && !configured) {
+        fprintf(stderr, "host_data: executable-relative root is a symbolic link\n");
+        return 0;
+    }
+    return 1;
+}
+#endif /* _WIN32 */
 
 /* Enumeration is the transactional completeness boundary.  WIN32_FIND_DATAW
  * supplies each regular file's checked size, while the walk's read-open probe
@@ -8064,83 +9424,211 @@ static int data_validate_archive_index(size_t primary_count) {
     return 1;
 }
 
-/* Fold the loose content tree beside the configured root into the same namespace.
- *
- * The guest addresses one disc namespace, rooted at USRDIR: it asks for
- * `disc0:/PSP_GAME/USRDIR/<rel>` and `host0:<rel>`, and the canonical prepared
- * layout splits that namespace across two physical trees -- the
- * extracted-archive root (`<...>/USRDIR/xbdata_extracted`, i.e. SR_DATAROOT) and
- * the loose content beside it (`<...>/USRDIR/data`, `movie_us/`, `module/`,
- * `bundle_data/`, `umd.ufl`).  Keys are relative to whichever root produced
- * them, so both trees land in one key space no matter which root served the file.
- *
- * A loose asset can legitimately be outside the configured extracted tree, so
- * the index must include that adjacent content rather than treating a miss as a
- * decoder or player failure.  The synthetic regression below proves the two
- * sources resolve through one namespace without requiring retail bytes.
- *
- * Deliberately narrow: applying a second walk to the parent unconditionally would
- * be unbounded (`SR_DATAROOT=C:\extracted` would enumerate `C:\`).  So it applies
- * only when the configured root really is the canonical prepared layout -- an
- * extracted-archive directory named `xbdata_extracted`/`xbdata` whose parent is a
- * `USRDIR`.  Any other root keeps the single-root behaviour untouched.
- *
- * Returns 1 when the route is not applicable or the walk completed, and only 0
- * when the walk applied and failed, because a partially enumerated extra root
- * must refuse the index rather than publish it. */
-static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
-    wchar_t *parent = NULL;
-    wchar_t *primary_name = NULL;
-    wchar_t *parent_name = NULL;
-    int applied = 0;
-    int ok = 1;
-    if (sr_wide_parent_alloc(primary_root, &parent) &&
-        sr_wide_basename_alloc(primary_root, &primary_name) &&
-        sr_wide_basename_alloc(parent, &parent_name) &&
-        (_wcsicmp(primary_name, L"xbdata_extracted") == 0 ||
-         _wcsicmp(primary_name, L"xbdata") == 0) &&
-        _wcsicmp(parent_name, L"USRDIR") == 0) {
-        DWORD attributes = GetFileAttributesW(parent);
-        if (attributes != INVALID_FILE_ATTRIBUTES &&
-            (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
-            !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-            applied = 1;
-            fprintf(stderr, "host_data: also indexing the loose content beside the "
-                            "extracted-archive root\n");
-            ok = data_walk(parent, "", primary_name, index);
+static const char *data_index_root_for_precedence(uint32_t precedence,
+                                                  const char *primary_root_utf8) {
+    if (precedence == 0u) return primary_root_utf8;
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        if (s_data_loose_roots[i].precedence + 1u == precedence)
+            return s_data_loose_roots[i].host_utf8;
+    }
+    return NULL;
+}
+
+static const char *data_index_relative_path(const SrAssetIndexEntry *entry,
+                                           const char *primary_root_utf8) {
+    const char *base = entry
+        ? data_index_root_for_precedence(entry->precedence, primary_root_utf8)
+        : NULL;
+    const char *relative = NULL;
+    if (entry && entry->host && base) {
+        size_t base_len = strlen(base);
+        size_t host_len = strlen(entry->host);
+        while (base_len > 1u && (base[base_len - 1u] == '/' || base[base_len - 1u] == '\\'))
+            base_len--;
+        if (host_len >= base_len && sr_vfs_strnicmp(entry->host, base, base_len) == 0 &&
+            (entry->host[base_len] == '\0' || entry->host[base_len] == '/' ||
+             entry->host[base_len] == '\\')) {
+            relative = entry->host + base_len;
+            while (*relative == '/' || *relative == '\\') relative++;
         }
     }
-    if (applied && !ok) {
-        fprintf(stderr, "host_data: loose-content enumeration failed; refusing partial index\n");
+    return relative;
+}
+
+static void data_duplicate_relative_path(const SrAssetIndexEntry *entry,
+                                         const char *primary_root_utf8,
+                                         char output[161]) {
+    const char *relative = data_index_relative_path(entry, primary_root_utf8);
+    if (!relative) relative = "<root-relative-unavailable>";
+    size_t length = strlen(relative);
+    if (length < 161u) {
+        for (size_t i = 0; i < length; i++)
+            output[i] = relative[i] == '\\' ? '/' : relative[i];
+        output[length] = '\0';
+        return;
     }
-    free(parent);
-    free(primary_name);
-    free(parent_name);
+    for (size_t i = 0; i < 157u; i++)
+        output[i] = relative[i] == '\\' ? '/' : relative[i];
+    memcpy(output + 157u, "...", 4u);
+}
+
+/* Return the separator after the first archive-extraction marker recognized by
+ * sr_asset_index_key_from_rel(). The preceding root-relative prefix identifies
+ * one extracted archive; bytewise path comparison matches the finalized index. */
+static const char *data_extracted_archive_relative_end(const char *relative) {
+    if (!relative) return NULL;
+    for (const char *scan = relative;;) {
+        const char *xb = sr_asset_index_find_ci(scan, ".xb");
+        if (!xb) return NULL;
+        const char *suffix = xb + 3;
+        uint64_t parsed_variant = 0;
+        int variant_overflow = 0;
+        while (*suffix >= '0' && *suffix <= '9') {
+            uint64_t digit = (uint64_t)(*suffix - '0');
+            if (parsed_variant > (UINT64_MAX - digit) / 10u)
+                variant_overflow = 1;
+            else
+                parsed_variant = parsed_variant * 10u + digit;
+            suffix++;
+        }
+        if (!variant_overflow && parsed_variant <= (uint64_t)INT_MAX &&
+            suffix[0] == '.' &&
+            (suffix[1] == 'd' || suffix[1] == 'D') &&
+            (suffix[2] == '/' || suffix[2] == '\\')) {
+            return suffix + 2;
+        }
+        scan = xb + 3;
+    }
+}
+
+static int data_extracted_archive_prefix_equal(const char *left,
+                                               const char *left_end,
+                                               const char *right,
+                                               const char *right_end) {
+    size_t left_length = (size_t)(left_end - left);
+    size_t right_length = (size_t)(right_end - right);
+    if (left_length != right_length) return 0;
+    for (size_t i = 0; i < left_length; i++) {
+        char left_char = left[i] == '\\' ? '/' : left[i];
+        char right_char = right[i] == '\\' ? '/' : right[i];
+        if (left_char != right_char) return 0;
+    }
+    return 1;
+}
+
+static int data_primary_duplicate_is_cross_archive(
+    const SrAssetIndexEntry *previous, const SrAssetIndexEntry *entry,
+    const char *primary_root_utf8) {
+    /* The finalized index orders equal key/variant/root entries by host path.
+     * A shared extracted-archive prefix is therefore contiguous in that run. */
+    if (!previous || !entry || previous->precedence != 0u ||
+        entry->precedence != 0u) return 0;
+    const char *previous_relative = data_index_relative_path(previous, primary_root_utf8);
+    const char *entry_relative = data_index_relative_path(entry, primary_root_utf8);
+    const char *previous_end = data_extracted_archive_relative_end(previous_relative);
+    const char *entry_end = data_extracted_archive_relative_end(entry_relative);
+    return previous_end && entry_end &&
+           !data_extracted_archive_prefix_equal(previous_relative, previous_end,
+                                                entry_relative, entry_end);
+}
+
+/* Exact guest-file collisions across manifest roots are intentional overlays:
+ * the lower precedence value wins. A collision within one root is ambiguous
+ * after guest-key case folding and refuses the whole index. The primary root is
+ * the compatibility exception: different extracted-XB subtrees may expose the
+ * same key, and the index's host-path sort chooses the stable legacy winner. */
+static int data_validate_duplicate_policy(const SrAssetIndex *index,
+                                          const wchar_t *primary_root_wide) {
+    if (!index || !index->finalized || !primary_root_wide) return 0;
+    char *primary_root_utf8 = NULL;
+    if (!sr_wide_to_utf8_alloc(primary_root_wide, &primary_root_utf8)) return 0;
+    int ok = 1;
+    for (size_t i = 0; i < index->count; i++) {
+        const SrAssetIndexEntry *entry = &index->entries[i];
+        if (i > 0u) {
+            const SrAssetIndexEntry *previous = &index->entries[i - 1u];
+            if (strcmp(previous->key, entry->key) == 0 &&
+                previous->variant == entry->variant &&
+                previous->precedence == entry->precedence &&
+                !data_primary_duplicate_is_cross_archive(previous, entry,
+                                                         primary_root_utf8)) {
+                char previous_path[161], current_path[161];
+                data_duplicate_relative_path(previous, primary_root_utf8, previous_path);
+                data_duplicate_relative_path(entry, primary_root_utf8, current_path);
+                fprintf(stderr,
+                        "host_data: duplicate guest-file key '%.*s' within root %u at '%s' and '%s'; refusing index\n",
+                        120, entry->key, (unsigned)entry->precedence,
+                        previous_path, current_path);
+                ok = 0;
+                break;
+            }
+        }
+        size_t key_len = strlen(entry->key);
+        size_t first = sr_asset_index_lower_bound(index, entry->key);
+        size_t after = first;
+        while (after < index->count &&
+               strcmp(index->entries[after].key, entry->key) == 0) after++;
+        if (after < index->count &&
+            strncmp(index->entries[after].key, entry->key, key_len) == 0 &&
+            index->entries[after].key[key_len] == '/') {
+            fprintf(stderr, "host_data: guest file/directory key collision; refusing index\n");
+            ok = 0;
+            break;
+        }
+    }
+    free(primary_root_utf8);
     return ok;
 }
 
-static char *data_loose_path_alloc(const char *key) {
-    if (!s_data_root_utf8 || !key) return NULL;
-    if (!key[0]) return sr_asset_index_strdup(s_data_root_utf8);
-    size_t root_len = strlen(s_data_root_utf8);
+/* Enumerate only roots carried by the validated title filesystem binding.
+ * The manifest default is an empty set; generic HLE performs no directory
+ * discovery. Lower precedence numbers win duplicate guest-file keys. */
+static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        SrDataLooseRoot *root = &s_data_loose_roots[i];
+        wchar_t *primary_name = NULL;
+        const wchar_t *skip = NULL;
+        if (root->skip_primary_root) {
+            if (!sr_wide_basename_alloc(primary_root, &primary_name)) return 0;
+            skip = primary_name;
+        }
+        /* The manifest rank orders loose roots after the primary data root;
+         * primary is 0 and declared ranks occupy 1..65536. */
+        int ok = data_walk(root->host_wide, root->mount, skip,
+                           root->exclude, root->exclude_count, index,
+                           root->precedence + 1u);
+        free(primary_name);
+        if (!ok) {
+            fprintf(stderr, "host_data: configured loose-content root failed; refusing partial index\n");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static char *data_loose_path_alloc(const char *root_utf8, const char *key) {
+    if (!root_utf8 || !key) return NULL;
+    if (!key[0]) return sr_asset_index_strdup(root_utf8);
+    size_t root_len = strlen(root_utf8);
     size_t key_len = strlen(key);
     if (root_len > SIZE_MAX - key_len - 2u) return NULL;
     size_t capacity = root_len + key_len + 2u;
     char *path = (char *)malloc(capacity);
     if (!path) return NULL;
-    if (sr_vfs_host_dir_path(s_data_root_utf8, key, path, capacity, '\\') <= 0) {
+    if (sr_vfs_host_dir_path(root_utf8, key, path, capacity, '\\') <= 0) {
         free(path);
         return NULL;
     }
     return path;
 }
 
-static int data_loose_file_open(const char *key, FILE **file_out,
-                                uint32_t *size_out) {
+#ifdef _WIN32
+static int data_loose_file_open_at(const char *root_utf8, const char *key,
+                                   FILE **file_out, uint32_t *size_out) {
     if (file_out) *file_out = NULL;
     if (size_out) *size_out = 0;
-    if (!s_data_root_utf8 || !key || !key[0]) return 0;
-    char *path = data_loose_path_alloc(key);
+    if (!root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(root_utf8, key);
     if (!path) return -1;
     wchar_t *wide = NULL;
     if (!sr_wide_path_alloc(path, &wide)) {
@@ -8173,11 +9661,74 @@ static int data_loose_file_open(const char *key, FILE **file_out,
     if (size_out) *size_out = size;
     return 1;
 }
+#else /* !_WIN32: the same open, refusing directories and symlinks ------------- */
+static int data_loose_file_open_at(const char *root_utf8, const char *key,
+                                   FILE **file_out, uint32_t *size_out) {
+    if (file_out) *file_out = NULL;
+    if (size_out) *size_out = 0;
+    if (!root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(root_utf8, key);
+    if (!path) return -1;
+    /* Open first and judge the opened file: O_NOFOLLOW refuses a symlink (ELOOP), fstat
+     * refuses a directory or special file, so no check can be raced by a path swap. */
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int open_errno = errno;
+    free(path);
+    if (fd < 0) return (open_errno == ENOENT || open_errno == ENOTDIR) ? 0 : -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return -1;
+    }
+    FILE *file = fdopen(fd, "rb");
+    if (!file) {
+        close(fd);
+        return -1;
+    }
+    if (!sr_stream_size_u32(file, size_out)) {
+        fclose(file);
+        if (size_out) *size_out = 0;
+        return -1;
+    }
+    if (file_out) *file_out = file;
+    else fclose(file);
+    return 1;
+}
+#endif /* _WIN32 */
 
+static const char *data_loose_key_for_mount(const char *key, const char *mount) {
+    if (!key || !mount) return NULL;
+    if (!mount[0]) return key;
+    size_t mount_len = strlen(mount);
+    if (sr_vfs_strnicmp(key, mount, mount_len) != 0) return NULL;
+    if (key[mount_len] == '\0') return "";
+    return key[mount_len] == '/' ? key + mount_len + 1u : NULL;
+}
+
+static int data_loose_file_open(const char *key, FILE **file_out,
+                                uint32_t *size_out) {
+    if (file_out) *file_out = NULL;
+    if (size_out) *size_out = 0;
+    if (!key || !key[0]) return 0;
+    int primary_result = data_loose_file_open_at(s_data_root_utf8, key,
+                                                  file_out, size_out);
+    if (primary_result != 0) return primary_result;
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        const char *relative = data_loose_key_for_mount(key,
+                                                        s_data_loose_roots[i].mount);
+        if (!relative || !relative[0]) continue;
+        int result = data_loose_file_open_at(s_data_loose_roots[i].host_utf8,
+                                             relative, file_out, size_out);
+        if (result != 0) return result;
+    }
+    return 0;
+}
+
+#ifdef _WIN32
 static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
     if (found_out) *found_out = 0;
     if (!s_data_root_utf8 || !list) return -1;
-    char *path = data_loose_path_alloc(key ? key : "");
+    char *path = data_loose_path_alloc(s_data_root_utf8, key ? key : "");
     if (!path) return -1;
     wchar_t *wide = NULL;
     wchar_t *pattern = NULL;
@@ -8247,6 +9798,66 @@ static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_
     FindClose(handle);
     return result;
 }
+#else /* !_WIN32: the same merge over opendir/readdir -------------------------- */
+static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
+    if (found_out) *found_out = 0;
+    if (!s_data_root_utf8 || !list) return -1;
+    char *path = data_loose_path_alloc(s_data_root_utf8, key ? key : "");
+    if (!path) return -1;
+    struct stat st, link;
+    int is_link = lstat(path, &link) == 0 && S_ISLNK(link.st_mode);
+    if (stat(path, &st) != 0) {
+        free(path);
+        return 0;
+    }
+    if (!S_ISDIR(st.st_mode) || is_link) {
+        free(path);
+        return -1;
+    }
+    if (found_out) *found_out = 1;
+    DIR *dir = opendir(path);
+    if (!dir) {
+        int missing = errno == ENOENT;
+        free(path);
+        return missing ? 0 : -1;
+    }
+    int result = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) result = -1;
+            break;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        int variant = -1;
+        if (!sr_archive_variant_from_name(entry->d_name, &variant)) {
+            char *child = sr_utf8_join_alloc(path, entry->d_name, '/');
+            if (!child) {
+                result = -1;
+            } else {
+                struct stat cst;
+                if (lstat(child, &cst) != 0 || S_ISLNK(cst.st_mode) ||
+                    !(S_ISDIR(cst.st_mode) || S_ISREG(cst.st_mode))) {
+                    result = -1;
+                } else if (S_ISDIR(cst.st_mode)) {
+                    if (!sr_vfs_dirlist_merge(list, entry->d_name, 1, 0u)) result = -1;
+                } else if ((uint64_t)cst.st_size > UINT32_MAX) {
+                    list->skipped++;
+                } else if (!sr_vfs_dirlist_merge(list, entry->d_name, 0,
+                                                 (uint64_t)cst.st_size)) {
+                    result = -1;
+                }
+                free(child);
+            }
+        }
+        if (result != 0) break;
+    }
+    closedir(dir);
+    free(path);
+    return result;
+}
+#endif /* _WIN32 */
 
 /* Build the extracted-data index ONCE, before guest execution starts.
  *
@@ -8274,11 +9885,13 @@ int sr_host_data_prepare(void) {
          * already terminal or being prepared is never re-scanned here. */
         return atomic_load_explicit(&s_data_state, memory_order_acquire);
     }
+    data_loose_roots_clear();
     wchar_t *configured_root = NULL;
     int configured_present = 0;
     int env_ok = sr_wide_env_alloc(L"SR_DATAROOT", &configured_root, &configured_present);
     if (!configured_present && sr_title_config_expected_data_file_count() == 0) {
         free(configured_root);
+        data_loose_roots_clear();
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_DISABLED, memory_order_release);
         fprintf(stderr, "host_data: disabled (no SR_DATAROOT configured and this profile "
                         "declares no extracted-data census); guest lookups will fall back "
@@ -8292,27 +9905,26 @@ int sr_host_data_prepare(void) {
     free(s_data_root_utf8);
     s_data_root_utf8 = NULL;
     s_data_archive_mode = 0;
-    const char *root_label = configured_present ? "<configured SR_DATAROOT>" :
-        "<executable>/../../place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted";
+    const char *root_label = "<configured SR_DATAROOT>";
     fprintf(stderr, "host_data: scanning %s ...\n", root_label);
     wchar_t *root_wide = NULL;
-    int root_ok = env_ok && (configured_present ?
-        (configured_root[0] && sr_wide_configured_root_wide_alloc(configured_root, &root_wide)) :
-        sr_wide_module_data_root(&root_wide));
+    int root_ok = env_ok && configured_present && configured_root && configured_root[0] &&
+                  sr_wide_configured_root_wide_alloc(configured_root, &root_wide);
     if (!root_ok) {
         if (!env_ok)
             fprintf(stderr, "host_data: SR_DATAROOT could not be read\n");
         else if (configured_present)
             fprintf(stderr, "host_data: SR_DATAROOT is configured but is not a valid absolute path\n");
         else
-            fprintf(stderr, "host_data: executable-relative data root could not be resolved\n");
+            fprintf(stderr, "host_data: extracted-data census requires a configured SR_DATAROOT\n");
     }
     free(configured_root);
-    if (root_ok && !data_root_validate(root_wide, configured_present)) root_ok = 0;
+    if (root_ok && !data_root_validate(root_wide, 1)) root_ok = 0;
+    if (root_ok && !data_loose_root_parse(root_wide)) root_ok = 0;
     size_t primary_count = 0;
     size_t archive_count = 0;
     int archive_mode = 0;
-    ULONGLONG phase_started = 0;
+    uint64_t phase_started = 0;
     if (root_ok) {
         SR_DATA_TEST_PHASE_START(phase_started);
         archive_mode = archive_data_discover(root_wide, &s_archive_vfs, &archive_count);
@@ -8334,13 +9946,15 @@ int sr_host_data_prepare(void) {
             SR_DATA_TEST_PHASE_START(phase_started);
             if (walk_ok && temporary.count != 0u &&
                 !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+            if (walk_ok && temporary.count != 0u &&
+                !data_validate_duplicate_policy(&temporary, root_wide)) walk_ok = 0;
             SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         }
     } else if (walk_ok) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         sr_archive_vfs_init(&s_archive_vfs);
         SR_DATA_TEST_PHASE_START(phase_started);
-        walk_ok = data_walk(root_wide, "", NULL, &temporary);
+        walk_ok = data_walk(root_wide, "", NULL, NULL, 0u, &temporary, 0u);
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_PRIMARY_WALK, phase_started);
         if (walk_ok) {
             primary_count = temporary.count;
@@ -8350,6 +9964,7 @@ int sr_host_data_prepare(void) {
         }
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+        if (walk_ok && !data_validate_duplicate_policy(&temporary, root_wide)) walk_ok = 0;
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !data_validate_index(&temporary, primary_count)) walk_ok = 0;
@@ -8362,6 +9977,7 @@ int sr_host_data_prepare(void) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         free(s_data_root_utf8);
         s_data_root_utf8 = NULL;
+        data_loose_roots_clear();
         s_data_archive_mode = 0;
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
@@ -8379,6 +9995,7 @@ int sr_host_data_prepare(void) {
             sr_archive_vfs_destroy(&s_archive_vfs);
             free(s_data_root_utf8);
             s_data_root_utf8 = NULL;
+            data_loose_roots_clear();
             s_data_archive_mode = 0;
             atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
             return SR_DATA_STATE_FAILED;
@@ -8400,6 +10017,7 @@ int sr_host_data_prepare(void) {
         fprintf(stderr, "host_data: failed to publish finalized index\n");
         sr_asset_index_destroy(&temporary);
         sr_archive_vfs_destroy(&s_archive_vfs);
+        data_loose_roots_clear();
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
     }
@@ -8408,7 +10026,7 @@ int sr_host_data_prepare(void) {
     fprintf(stderr, "host_data: indexed %zu files under %s\n", s_data_index.count, root_label);
     if (s_data_index.count != primary_count) {
         fprintf(stderr, "host_data: configured root contributed %zu of them; %zu came from "
-                        "the loose content beside it\n",
+                        "configured loose roots\n",
                 primary_count, s_data_index.count - primary_count);
     }
     data_report_phases();
@@ -8436,6 +10054,11 @@ unsigned long long sr_hle_test_data_phase_ms(unsigned int phase) {
     return phase < SR_DATA_TEST_PHASE_COUNT ?
         (unsigned long long)s_data_test_phase_ms[phase] : 0u;
 }
+/* Enumeration work counters: how many directory entries the census read and how
+ * many per-file metadata opens it made. Deterministic, so a scaling assertion
+ * can be proved by them instead of by the wall clock. */
+unsigned long long sr_hle_test_data_scan_names(void) { return s_data_test_scan_names; }
+unsigned long long sr_hle_test_data_scan_probes(void) { return s_data_test_scan_probes; }
 int sr_hle_test_data_state(void) {
     return atomic_load_explicit(&s_data_state, memory_order_acquire);
 }
@@ -8466,11 +10089,14 @@ void sr_hle_test_data_reset(int pace_ms) {
     sr_archive_vfs_init(&s_archive_vfs);
     free(s_data_root_utf8);
     s_data_root_utf8 = NULL;
+    data_loose_roots_clear();
     s_data_archive_mode = 0;
     atomic_store_explicit(&s_data_state, SR_DATA_STATE_UNINITIALIZED, memory_order_release);
     s_data_test_walk_calls = 0;
     s_data_test_build_attempts = 0;
     s_data_test_builds_after_guest = 0;
+    s_data_test_scan_names = 0;
+    s_data_test_scan_probes = 0;
     s_data_test_guest_started = 0;
     s_data_test_pace_ms = pace_ms;
     memset(s_data_test_phase_ms, 0, sizeof(s_data_test_phase_ms));
@@ -8496,15 +10122,15 @@ static char *data_normalize_guest_key(const char *guest_path, int *wanted_varian
      * `disc0:/PSP_GAME/USRDIR/<rel>` lookup therefore missed the index and fell
      * through to the ISO route. This was an implementation off-by-one, not a
      * property of the PSP path grammar. */
-    if (_strnicmp(p, "PSP_GAME/", 9) == 0 || _strnicmp(p, "PSP_GAME\\", 9) == 0) p += 9;
-    if (_strnicmp(p, "USRDIR/", 7) == 0 || _strnicmp(p, "USRDIR\\", 7) == 0) p += 7;
+    if (sr_vfs_strnicmp(p, "PSP_GAME/", 9) == 0 || sr_vfs_strnicmp(p, "PSP_GAME\\", 9) == 0) p += 9;
+    if (sr_vfs_strnicmp(p, "USRDIR/", 7) == 0 || sr_vfs_strnicmp(p, "USRDIR\\", 7) == 0) p += 7;
     /* Localized roots are selected by the game itself.  For this build the table is
      * data_00_USE, data_02_FRE, data_03_SPA, ... and the matching archives are .xb0,
      * .xb2, .xb3, ... with internal paths rooted at plain data/. */
     *wanted_variant = -2;          /* -2 = unqualified path */
     const char *localized_tail = NULL;
     size_t guest_key_length = strlen(p);
-    if (guest_key_length >= 8u && _strnicmp(p, "data_", 5) == 0 &&
+    if (guest_key_length >= 8u && sr_vfs_strnicmp(p, "data_", 5) == 0 &&
         p[5] >= '0' && p[5] <= '9' && p[6] >= '0' && p[6] <= '9' &&
         p[7] == '_') {
         const char *slash = strpbrk(p + 8, "/\\");
@@ -8570,7 +10196,10 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
          * is a name sceIoOpen resolves under the identical variant. */
         if (!sr_asset_index_variant_selected(candidate->variant, wanted_variant)) continue;
         if (wanted_variant >= 0) { chosen = candidate; break; }
-        if (!chosen || candidate->variant == -1 ||
+        if (!chosen ||
+            (candidate->variant == -1 && chosen->variant != -1) ||
+            (candidate->variant == chosen->variant &&
+             candidate->precedence < chosen->precedence) ||
             (chosen->variant != -1 && candidate->variant < chosen->variant)) {
             chosen = candidate;
         }
@@ -8586,9 +10215,9 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
 static int data_archive_guest_path_allowed(const char *guest_path) {
     if (!guest_path || !guest_path[0]) return 0;
     if (!strchr(guest_path, ':')) return 1;
-    return _strnicmp(guest_path, "disc0:", 6) == 0 ||
-           _strnicmp(guest_path, "umd:", 4) == 0 ||
-           (_strnicmp(guest_path, "host", 4) == 0 &&
+    return sr_vfs_strnicmp(guest_path, "disc0:", 6) == 0 ||
+           sr_vfs_strnicmp(guest_path, "umd:", 4) == 0 ||
+           (sr_vfs_strnicmp(guest_path, "host", 4) == 0 &&
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
 
@@ -8617,16 +10246,6 @@ static uint32_t h_IoOpen(CpuState *s) {
     uint32_t flags = A1;
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "HLE_IoOpen: opening '%s' flags=0x%x\n", path, flags);
-    /* I4 mirror: every IoOpen after umd.ufl Read-completes is suspect of 'missing-game-file'
-     * and pre-empts engine_Shutdown. Print path + uid of caller. */
-    if (getenv("SR_POSTUMD")) {
-        extern uint64_t sr_postumd_reads(void);
-        if (sr_postumd_reads() > 0) {
-            fprintf(stderr, "POSTUMD: Open(%s) flags=0x%x caller_uid=0x%x cur_uid=0x%x pc=0x%08x ra=0x%08x\n",
-                    path, flags, A0 ? A0 : 0, sched_current_uid(), s->pc, s->r[31]);
-            fflush(stderr);
-        }
-    }
     if (getenv("SR_PATHHEX")) {
         int bad = 0; for (int i = 0; path[i]; i++) if ((unsigned char)path[i] < 0x20 || (unsigned char)path[i] >= 0x7f) bad = 1;
         if (bad || path[0] == 0) {
@@ -8644,6 +10263,9 @@ static uint32_t h_IoOpen(CpuState *s) {
 
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
+#ifndef _WIN32
+    sr_cd_status open_status = SR_CD_NOT_FOUND;
+#endif
     uint32_t lba, size;
     int in_iso = (iso_lookup(path, &lba, &size) == 0);
 
@@ -8655,12 +10277,31 @@ static uint32_t h_IoOpen(CpuState *s) {
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
         else if (writing || creating) mode = L"r+b"; /* update; fall back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
+#ifdef _WIN32
         FILE *fp = hp ? ms0_fopen_utf8(hp, mode) : NULL;
         if (!fp && (writing || creating) && hp) fp = ms0_fopen_utf8(hp, L"w+b");
         if (!fp && !writing && !creating && hp && ms0_try_legacy_flat_import(path, hp))
             fp = ms0_fopen_utf8(hp, mode);
+#else
+        FILE *fp = sr_ms0_classify(path, NULL) == SR_MS0_OWNED ?
+                   ms0_fopen_guest_utf8(path, mode, &open_status) : NULL;
+        if (!fp && (writing || creating) && open_status == SR_CD_NOT_FOUND &&
+            sr_ms0_classify(path, NULL) == SR_MS0_OWNED)
+            fp = ms0_fopen_guest_utf8(path, L"w+b", &open_status);
+        if (!fp && !writing && !creating && open_status == SR_CD_NOT_FOUND && hp &&
+            ms0_try_legacy_flat_import(path, hp))
+            fp = ms0_fopen_guest_utf8(path, mode, &open_status);
+#endif
         free(hp);
         if (!fp) {
+#ifndef _WIN32
+            if (sr_ms0_classify(path, NULL) == SR_MS0_OWNED &&
+                open_status != SR_CD_NOT_FOUND) {
+                fprintf(stderr, "sceIoOpen: contained Memory Stick path refused (%s): %s\n",
+                        path, sr_cd_status_name(open_status));
+                return ms0_posix_psp_error(open_status);
+            }
+#endif
             if (!writing && !creating && s_data_archive_mode &&
                 data_archive_guest_path_allowed(path)) {
                 int wanted_variant = -2;
@@ -8866,65 +10507,6 @@ static uint32_t h_IoRead(CpuState *s) {
             fprintf(stderr, "Read vbl=%u fd=%u off=%u size=%u dst=0x%08x -> %u\n",
                     s_vcount_fwd, fd, f->off - done, count, dst, done);
     }
-    /* I4 diagnostic: every Read on the worker (uid 0x115) AFTER dst==0x30b8d0 (umd.ufl
-     * buffer) arms tracking. We record path+dst for every subsequent Read so we can see
-     * if engine_Shutdown pre-empted a missing-file IoOpen. SR_POSTUMD env-gates; default
-     * off by default so normal runs don't get spammed. */
-    if (getenv("SR_POSTUMD") && sr_title_config_diagnostics_enabled() &&
-        sched_current_is_worker()) {
-        if (dst == 0x0030b8d0u) {
-            sr_postumd_advance(1);   /* arm */
-            fprintf(stderr, "POSTUMD: armed at first umd.ufl Read fd=%u size=%u dst=0x%08x -> %u\n",
-                    fd, count, dst, done);
-            fflush(stderr);
-        } else if (s_postumd_active) {
-            sr_postumd_advance(0);
-            if (s_postumd_count <= 64) {
-                fprintf(stderr, "POSTUMD: Read fd=%u off_after=%u size=%u dst=0x%08x -> %u\n",
-                        fd, f->off, count, dst, done);
-                fflush(stderr);
-            }
-        }
-    }
-    /* Phase 2.A diagnostic: classify the umd.ufl payload the worker (uid 0x115) reads
-     * into the guest buffer at 0x0030b8d0 (411568 bytes). The magic tells us which
-     * decoder path we need -- raw PRX (rebase in host), scrambled (decrypt first), or
-     * plain data (loader never executes it). One-shot so we don't spam the trace.
-     *
-     * Pivot: Phase 2.A revealed this buffer is a CSV path-manifest, not a PRX. The
-     * guest launcher walks it to validate inner-file boundaries against ISO UMD disc
-     * queries. Sample rows here so we can match the tokenizer the engine uses. */
-    if (sr_title_config_diagnostics_enabled() && dst == 0x0030b8d0u &&
-        count == 411568u && getenv("SR_UMDDUMP")) {
-        static int dumped = 0;
-        if (!dumped) {
-            dumped = 1;
-            fprintf(stderr, "UMD_DUMP: umd.ufl head @ 0x0030b8d0 (fd=%u):\n", fd);
-            for (int off = 0; off < 64; off++) {
-                fprintf(stderr, "  +0x%03x:", (unsigned)off);                for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", MEM_R8((uint32_t)(0x0030b8d0u + (uint32_t)off + (uint32_t)i)));
-                fprintf(stderr, " ");
-                for (int i = 0; i < 16; i++) {
-                    uint8_t c = MEM_R8((uint32_t)(0x0030b8d0u + (uint32_t)off + (uint32_t)i));
-                    fprintf(stderr, "%c", (c >= 0x20 && c < 0x7f) ? (char)c : '.');
-                }
-                fprintf(stderr, "\n");
-            }
-            fprintf(stderr, "UMD_DUMP: trailing 64 bytes of the buffer:\n");
-            uint32_t base = 0x0030b8d0u;
-            uint32_t len = 411568u;
-            for (int off = (int)(len - 64); off < (int)len; off += 16) {
-                fprintf(stderr, "  +0x%06x:", (unsigned)off);
-                for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", MEM_R8(base + (uint32_t)off + (uint32_t)i));
-                fprintf(stderr, " ");
-                for (int i = 0; i < 16; i++) {
-                    uint8_t c = MEM_R8(base + (uint32_t)off + (uint32_t)i);
-                    fprintf(stderr, "%c", (c >= 0x20 && c < 0x7f) ? (char)c : '.');
-                }
-                fprintf(stderr, "\n");
-            }
-            fflush(stderr);
-        }
-    }
     return done;
 }
 static uint32_t h_IoLseek32(CpuState *s) {
@@ -9116,6 +10698,7 @@ static uint32_t h_IoClose(CpuState *s) {
  * directory.  An empty directory reports ERROR_FILE_NOT_FOUND for the `*`
  * pattern and is still an existing directory; every other initial failure is
  * an incomplete listing and must stay fail-closed. */
+#ifdef _WIN32
 static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) {
     if (found) *found = 0;
     if (error == ERROR_FILE_NOT_FOUND) {
@@ -9124,6 +10707,7 @@ static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) 
     }
     return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
 }
+#endif
 
 /* Merge the writable host overlay's children for `guest_path` into `list`.
  *
@@ -9290,8 +10874,8 @@ static uint32_t h_IoDopen(CpuState *s) {
             d->used = 1; d->index = 0;
             d->path = sr_asset_index_strdup(path);
             if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
-            int device_path = _strnicmp(path, "disc0:", 6) == 0 ||
-                               _strnicmp(path, "umd:", 4) == 0;
+            int device_path = sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
+                               sr_vfs_strnicmp(path, "umd:", 4) == 0;
             int iso_first_result = -1;
             IsoDirEntry iso_first = {0};
             if (device_path) {
@@ -9462,6 +11046,7 @@ static uint32_t h_IoDclose(CpuState *s) {
  * (0x02425818); its five words are maxClusters, freeClusters, maxSectors,
  * sectorSize, and sectorCount. The host root is the unified Memory Stick
  * root (issue #334) shared with ordinary sceIo* ms0: operations and savedata. */
+#ifdef _WIN32
 static int io_memstick_capacity(uint32_t info[5]) {
     char *host_root = host_dir_path_alloc("");
     wchar_t *host_root_wide = NULL;
@@ -9501,6 +11086,35 @@ static int io_memstick_capacity(uint32_t info[5]) {
     info[4] = sectors_per_cluster;
     return 1;
 }
+#else /* !_WIN32: the same PSP-visible volume numbers from statvfs() ----------- */
+static int io_memstick_capacity(uint32_t info[5]) {
+    char *host_root = host_dir_path_alloc("");
+    struct statvfs vfs;
+    int queried = host_root && statvfs(host_root, &vfs) == 0;
+    free(host_root);
+    if (!queried) return 0;
+    /* statvfs reports fragment size; POSIX.1-2008 exposes no sector size, so
+     * the PSP per-sector field carries the host fragment and the cluster
+     * count is expressed in those same fragments. The PSP-visible clamp
+     * below is the one that matters: a 32-bit consumer must not wrap. */
+    uint32_t bytes_per_sector = vfs.f_frsize ? (uint32_t)vfs.f_frsize : (uint32_t)vfs.f_bsize;
+    uint32_t sectors_per_cluster = 1u;
+    if (!bytes_per_sector) return 0;
+    uint64_t max_clusters = vfs.f_blocks;
+    uint64_t max_psp_clusters = UINT32_MAX / (uint64_t)bytes_per_sector;
+    if (max_clusters > max_psp_clusters) max_clusters = max_psp_clusters;
+    uint64_t available_clusters = vfs.f_bavail < vfs.f_bfree ? vfs.f_bavail : vfs.f_bfree;
+    if (available_clusters > max_clusters) available_clusters = max_clusters;
+    uint64_t max_sectors = max_clusters * sectors_per_cluster;
+    if (max_sectors > UINT32_MAX) return 0;
+    info[0] = (uint32_t)max_clusters;
+    info[1] = (uint32_t)available_clusters;
+    info[2] = (uint32_t)max_sectors;
+    info[3] = bytes_per_sector;
+    info[4] = sectors_per_cluster;
+    return 1;
+}
+#endif /* _WIN32 */
 
 static atomic_uint s_memstick_insert_eject_callback_uid;
 
@@ -9622,6 +11236,7 @@ static uint32_t h_IoCloseAsync(CpuState *s) {
     return 0;
 }
 /* Parent directory of a host path (last separator). Returns 0 if no parent. */
+#ifdef _WIN32
 static int ms0_parent_path(const char *host_path, char *out, size_t cap) {
     if (!host_path || !out || cap == 0) return 0;
     const char *slash = strrchr(host_path, '\\');
@@ -9634,11 +11249,13 @@ static int ms0_parent_path(const char *host_path, char *out, size_t cap) {
     out[n] = '\0';
     return 1;
 }
+#endif /* _WIN32 */
 
 /* Parent must exist, be a directory, and stay inside the canonical ms root.
  * Missing parent -> not-found; non-directory parent -> is-a-directory;
  * outside root -> illegal path. Residual TOCTOU: containment is a by-path
  * check immediately before the subsequent Create/Move/Delete. */
+#ifdef _WIN32
 static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canonical) {
     char parent[512];
     if (!ms0_parent_path(hp, parent, sizeof(parent))) return 0x80010005u;
@@ -9651,14 +11268,14 @@ static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canoni
     if (!sr_vfs_dir_is_contained(parent, canonical)) return 0x80010016u;
     return 0;
 }
+#endif /* _WIN32 */
 
 /* sceIoRename(oldname, newname). Both names resolve beneath the unified
- * Memory Stick root (host_path_alloc), never the disc. Foreign devices and
- * traversal fail closed with EINVAL (0x80010016). An existing regular-file
- * destination is removed through the contained delete before MoveFileEx
- * WITHOUT MOVEFILE_REPLACE_EXISTING (directories refuse with EISDIR). Parent
- * directories are pre-verified for existence and containment; residual TOCTOU
- * on those by-path checks is documented here rather than hidden. */
+ * Memory Stick root, never the disc. POSIX uses the descriptor-relative
+ * renameat extension in vfs_contained.h; Windows keeps its verified-root
+ * checks and MoveFileEx route below. Foreign devices and traversal fail closed
+ * with EINVAL (0x80010016). */
+#ifdef _WIN32
 static uint32_t h_IoRename(CpuState *s) {
     char oldpath[256], newpath[256];
     if (!guest_cstr(A0, oldpath, sizeof(oldpath)) || !guest_cstr(A1, newpath, sizeof(newpath)))
@@ -9726,11 +11343,13 @@ static uint32_t h_IoRename(CpuState *s) {
     }
     return 0;
 }
+#endif /* _WIN32 */
 
 /* sceIoMkdir(path): create the final component under the unified Memory Stick
  * root. Foreign/traversal -> EINVAL; missing parent -> ENOENT; already exists
  * -> EEXIST; CreateDirectoryW failure -> EIO. Intermediate components are not
  * created (PSP mkdir does not create parents). */
+#ifdef _WIN32
 static uint32_t h_IoMkdir(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
@@ -9767,10 +11386,50 @@ static uint32_t h_IoMkdir(CpuState *s) {
     if (err == ERROR_ALREADY_EXISTS) return 0x80010011u;
     return 0x80010005u;
 }
+#endif /* _WIN32 */
+
+#ifndef _WIN32
+static uint32_t h_IoRename(CpuState *s) {
+    char old_guest[256], new_guest[256];
+    char old_rel[SR_CD_REL_MAX], new_rel[SR_CD_REL_MAX];
+    if (!guest_cstr(A0, old_guest, sizeof(old_guest)) ||
+        !guest_cstr(A1, new_guest, sizeof(new_guest)))
+        return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    sr_cd_status st = ms0_posix_guest_relpath(old_guest, old_rel, sizeof(old_rel));
+    if (st == SR_CD_OK)
+        st = ms0_posix_guest_relpath(new_guest, new_rel, sizeof(new_rel));
+    if (st != SR_CD_OK) return ms0_posix_psp_error(st);
+
+    sr_cd_root root;
+    st = ms0_posix_root_open(&root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_rename_file(&root, old_rel, new_rel);
+        sr_cd_root_close(&root);
+    }
+    return ms0_posix_psp_error(st);
+}
+
+static uint32_t h_IoMkdir(CpuState *s) {
+    char guest[256], rel[SR_CD_REL_MAX];
+    if (!guest_cstr(A0, guest, sizeof(guest)))
+        return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
+    if (st != SR_CD_OK) return ms0_posix_psp_error(st);
+
+    sr_cd_root root;
+    st = ms0_posix_root_open(&root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_mkdir_leaf(&root, rel);
+        sr_cd_root_close(&root);
+    }
+    return ms0_posix_psp_error(st);
+}
+#endif /* !_WIN32 */
 
 /* sceIoRemove(path): delete one regular file under the unified Memory Stick
  * root through the contained-delete seam. Foreign/traversal -> EINVAL;
  * missing -> ENOENT; directory -> EISDIR; delete failure -> EIO. */
+#ifdef _WIN32
 static uint32_t h_IoRemove(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
@@ -9803,6 +11462,25 @@ static uint32_t h_IoRemove(CpuState *s) {
     free(hp);
     return ok ? 0 : 0x80010005u;
 }
+#endif /* _WIN32 */
+
+#ifndef _WIN32
+static uint32_t h_IoRemove(CpuState *s) {
+    char guest[256], rel[SR_CD_REL_MAX];
+    if (!guest_cstr(A0, guest, sizeof(guest)))
+        return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
+    if (st != SR_CD_OK) return ms0_posix_psp_error(st);
+
+    sr_cd_root root;
+    st = ms0_posix_root_open(&root);
+    if (st == SR_CD_OK) {
+        st = sr_cd_delete_file(&root, rel);
+        sr_cd_root_close(&root);
+    }
+    return ms0_posix_psp_error(st);
+}
+#endif /* !_WIN32 */
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* The focused native HLE harness exposes the small IoFileMgr slice under its
@@ -9866,6 +11544,7 @@ static uint32_t h_IoGetstat(CpuState *s) {
          * sceIoGetstat). Foreign devices fail closed here and fall through. */
         char *hp = host_path_alloc(path);
         if (hp) {
+#ifdef _WIN32
             wchar_t *wh = NULL;
             if (sr_wide_path_alloc(hp, &wh)) {
                 WIN32_FILE_ATTRIBUTE_DATA fad;
@@ -9890,6 +11569,29 @@ static uint32_t h_IoGetstat(CpuState *s) {
                 }
                 free(wh);
             }
+#else
+            /* lstat, not stat: a symlink is this host's redirect and must be
+             * reported as the link itself, exactly as the Windows leg reports
+             * a reparse point rather than its target. */
+            struct stat fad;
+            if (lstat(hp, &fad) == 0) {
+                free(hp);
+                int is_dir = S_ISDIR(fad.st_mode);
+                uint64_t fsize = (uint64_t)S_ISREG(fad.st_mode) ? (uint64_t)fad.st_size : 0u;
+                if (getenv("SR_STATLOG"))
+                    fprintf(stderr, "Getstat(%s) -> ms0 host size=0x%llx dir=%d\n",
+                            path, (unsigned long long)fsize, is_dir);
+                for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
+                MEM_W32(st + 0, is_dir ? (0x1000u | 0x0124u) : (0x2000u | 0x0124u));
+                MEM_W32(st + 4, is_dir ? 0x0010u : (0x0004u | 0x0001u));
+                if (!is_dir) {
+                    MEM_W32(st + 8, (uint32_t)fsize);
+                    MEM_W32(st + 12, (uint32_t)(fsize >> 32));
+                }
+                MEM_W32(st + 0x40, 0); /* st_private[0]: no LBN (host-backed) */
+                return 0;
+            }
+#endif
             free(hp);
         }
         if (s_data_archive_mode && data_archive_guest_path_allowed(path)) {
@@ -10071,6 +11773,81 @@ static uint32_t audio_frames_to_us(uint32_t ch, uint32_t frames) {
     return us ? us : 1u;
 }
 
+/* SR_AUDIOSTAT: the audio drift the guest actually felt, read where it is felt.
+ *
+ * sr_audio_queued() is the value the blocking output below paces against -- the audio the
+ * host mixer still owes the guest -- so it is also the honest place to measure drift. Counting
+ * pushed frames cannot: a guest that submits exactly what it consumes and one that submits
+ * twice as much both push frames, and only the queue depth tells them apart. A queue that only
+ * grows is drift a consumer hears as lag building over minutes while nothing is dropped; once
+ * it reaches the mixer's capacity the push clamps and real guest audio is lost. Neither is
+ * visible in the end-of-run totals, so the reading is windowed (LEAD_WINDOW_VBLANK vblanks,
+ * about five seconds) and printed as AUDIOSTAT_LEAD, which gives a long run a series instead
+ * of a single end figure.
+ *
+ * The line is backend-neutral on purpose: the two host mixers are separate translation units
+ * with separate telemetry, and neither is in every build, but this code is. `queued` is the
+ * deepest lead any channel carried in the window and `lead_ms` is that lead in milliseconds
+ * of audio; both are -1 when every output in the window had no host queue at all, which is
+ * absence of a measurement and must never read as a drift of zero. */
+#define LEAD_WINDOW_VBLANK 300u
+#define LEAD_FRAMES_PER_MS  (44100u / 1000u)
+static uint32_t s_lead_last_vbl;
+static unsigned long s_lead_outputs, s_lead_noqueue;
+static int s_lead_peak;
+static uint32_t s_lead_peak_ch;
+static long s_lead_last_ms;
+
+static void audio_lead_note(uint32_t vbl, int ch, int queued) {
+    s_lead_outputs++;
+    if (queued < 0) {
+        s_lead_noqueue++;
+    } else if (queued > s_lead_peak) {
+        s_lead_peak = queued;
+        s_lead_peak_ch = (uint32_t)(ch < 0 ? 0 : ch);
+    }
+    if (vbl < s_lead_last_vbl) return;                  /* no window across a vcount reset */
+    if (vbl - s_lead_last_vbl < LEAD_WINDOW_VBLANK) return;
+    s_lead_last_vbl = vbl;
+    int measured = s_lead_noqueue < s_lead_outputs;     /* some output saw a real queue */
+    s_lead_last_ms = measured ? (long)s_lead_peak / (long)LEAD_FRAMES_PER_MS : -1L;
+    fprintf(stderr, "AUDIOSTAT_LEAD: vbl=%u ch=%u outputs=%lu queued=%d lead_ms=%ld\n",
+            vbl, s_lead_peak_ch, s_lead_outputs, measured ? s_lead_peak : -1, s_lead_last_ms);
+    s_lead_outputs = s_lead_noqueue = 0;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0;
+}
+
+static void audio_note_lead(int ch, int queued) {
+    extern uint32_t sr_audio_vbl(void);   /* defined later in this file */
+    if (!audio_stat_on()) return;
+    audio_lead_note(sr_audio_vbl(), ch, queued);
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only view of the drift window, so the selftest can assert what the
+ * AUDIOSTAT_LEAD line would say without capturing stderr: feed a reading, read the
+ * window's own accumulator back, and read the milliseconds the line printed. */
+void sr_hle_test_audio_lead_reset(void) {
+    s_lead_last_vbl = 0;
+    s_lead_outputs = s_lead_noqueue = 0;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0;
+    s_lead_last_ms = -1L;
+}
+void sr_hle_test_audio_lead_feed(uint32_t vbl, int ch, int queued) {
+    audio_lead_note(vbl, ch, queued);
+}
+unsigned long sr_hle_test_audio_lead_window(int *peak, uint32_t *peak_ch,
+                                            unsigned long *noqueue, long *last_ms) {
+    *peak = s_lead_peak;
+    *peak_ch = s_lead_peak_ch;
+    *noqueue = s_lead_noqueue;
+    *last_ms = s_lead_last_ms;
+    return s_lead_outputs;
+}
+#endif
+
 /* SR_AUDIOSTAT: buffer identity per channel. Proving the buffer sceAudioOutput2
  * receives is the same one __sceSasCore wrote is what links the two stages; the
  * addresses are guest-side and the game double-buffers, so record a small set. */
@@ -10167,6 +11944,7 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
      * contracts (<= 65536 frames), so 2u * n cannot wrap. */
     while ((q = sr_audio_queued((int)ch)) >= 0 && (uint32_t)q > 2u * n)
         sched_delay_current(audio_frames_to_us(ch, (uint32_t)q - 2u * n));
+    audio_note_lead((int)ch, q);
     return n;
 }
 static uint32_t h_AudioOutputBlocking(CpuState *s) {
@@ -10333,7 +12111,7 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 #define ROUTE_FAIL_EXIT  86
 
 enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
-       ROUTE_OP_WHILE, ROUTE_OP_END };
+       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
 /* One named screen. Parts of a screen legitimately vary between otherwise identical
@@ -10384,6 +12162,50 @@ static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
 static int      s_route_nlegacy;
 static int      s_route_loaded;
 
+/* WAIT_NID: gate a step on a guest-visible EVENT rather than on what a screen looks like.
+ *
+ * A screen signature has to be recorded from a run that is already on that screen, and until
+ * a route can reach a screen it cannot record one: the step before any checkpoint is the one
+ * that needs a screen nobody has a signature for. What the guest does, on the other hand, is
+ * observable from the first boot -- a module load, a savedata status poll, a display mode
+ * change -- and it is the same for every title, so a route file can name it and the runtime
+ * stays title-neutral.
+ *
+ * sr_syscall() is the single point every guest import passes through, so the observation is
+ * one store there and one compare here. The ring holds the most recent dispatches; a step
+ * matches only an entry newer than the moment the step began, so an event that already
+ * happened cannot satisfy a later step. Set when the running step is a WAIT_NID, so a build
+ * with no route pays one predictable branch per import. */
+#define ROUTE_NID_RING 64
+static uint32_t s_route_nid_ring[ROUTE_NID_RING];
+static unsigned long s_route_nid_pos;      /* total dispatches observed, ever */
+static int      s_route_watch_nid;         /* a running WAIT_NID step wants the ring */
+static unsigned long s_route_nid_start;    /* dispatch count when that step began */
+
+/* The one place the ring is written, so the dispatcher's gate and the selftest's feed are
+ * the same code. */
+static void route_note_nid(uint32_t nid) {
+    s_route_nid_ring[s_route_nid_pos % ROUTE_NID_RING] = nid;
+    s_route_nid_pos++;
+}
+
+/* Has the guest called `nid` since the running step began? */
+static int route_nid_since(uint32_t nid) {
+    unsigned long seen = s_route_nid_pos - s_route_nid_start;
+    if (seen > ROUTE_NID_RING) seen = ROUTE_NID_RING;
+    for (unsigned long i = 0; i < seen; i++) {
+        unsigned long idx = s_route_nid_pos - 1 - i;
+        if (s_route_nid_ring[idx % ROUTE_NID_RING] == nid) return 1;
+    }
+    return 0;
+}
+
+static void route_nid_watch(int on) {
+    s_route_watch_nid = on;
+    s_route_nid_start = s_route_nid_pos;
+}
+
+
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
 /* A route that cannot be trusted must not be allowed to look like one that can. Every
@@ -10410,6 +12232,119 @@ static int route_hex_nib(int c) {
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
+}
+
+/* The pad bits a route can name, in the order they are listed in the layout the guest
+ * reads (NK_PSP_BTN_*_BIT, shared with both host front-ends). A route that presses the
+ * wrong bit does not fail: the game receives a button the screen ignores and the run
+ * looks exactly like a frozen game, which is the most expensive way to learn that a
+ * mask was one bit out. Naming the button removes the counting, and an unknown name is
+ * refused rather than read as a mask that happens to parse. */
+static const struct { const char *name; uint32_t bit; } s_route_btn[] = {
+    { "SELECT",   NK_PSP_BTN_SELECT_BIT   },
+    { "START",    NK_PSP_BTN_START_BIT    },
+    { "UP",       NK_PSP_BTN_UP_BIT       },
+    { "RIGHT",    NK_PSP_BTN_RIGHT_BIT    },
+    { "DOWN",     NK_PSP_BTN_DOWN_BIT     },
+    { "LEFT",     NK_PSP_BTN_LEFT_BIT     },
+    { "L",        NK_PSP_BTN_LTRIGGER_BIT },
+    { "R",        NK_PSP_BTN_RTRIGGER_BIT },
+    { "TRIANGLE", NK_PSP_BTN_TRIANGLE_BIT },
+    { "CIRCLE",   NK_PSP_BTN_CIRCLE_BIT   },
+    { "CROSS",    NK_PSP_BTN_CROSS_BIT    },
+    { "SQUARE",   NK_PSP_BTN_SQUARE_BIT   },
+    { "HOME",     NK_PSP_BTN_HOME_BIT     },
+    { "HOLD",     NK_PSP_BTN_HOLD_BIT     },
+};
+#define ROUTE_NBTN ((int)(sizeof s_route_btn / sizeof s_route_btn[0]))
+
+static int route_casecmp(const char *a, const char *b) {
+    for (;; a++, b++) {
+        int ca = (unsigned char)*a, cb = (unsigned char)*b;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb || ca == 0) return ca - cb;
+    }
+}
+
+/* A press mask is either a hex literal (as every route written before this existed, with
+ * or without the 0x prefix the legacy table accepts) or one or more button names joined by
+ * '+'. A token is read as hex only when every one of its characters is a hex digit, because
+ * several names begin with one (CROSS, CIRCLE) and a prefix test would swallow them whole.
+ * The hex form is bounded: at most 8 digits and at least one, because `strtoul` reports
+ * neither a value too wide for the mask nor a bare "0x", and both would arrive as a
+ * different mask than the route asked for.
+ * Returns 0 on success, -1 for anything else, so an unreadable token -- an unknown button
+ * included -- fails the route at load instead of pressing nothing for the rest of the run.
+ * "The press never arrived" is indistinguishable from a hang from outside
+ * (docs/DEBUGGING.md, "A press that arrives and is ignored"). */
+static int route_parse_mask(const char *tok, uint32_t *out) {
+    if (!tok || !tok[0]) return -1;
+    const char *digits = (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) ? tok + 2 : tok;
+    int all_hex = digits[0] != 0;
+    for (const char *p = digits; *p; p++)
+        if (route_hex_nib((unsigned char)*p) < 0) { all_hex = 0; break; }
+    if (all_hex) {
+        int n = 0;
+        uint32_t v = 0;
+        for (const char *p = digits; *p; p++, n++) {
+            if (n >= 8) return -1;              /* wider than the mask: refuse, do not truncate */
+            v = (v << 4) | (uint32_t)route_hex_nib((unsigned char)*p);
+        }
+        if (n == 0) return -1;                  /* a bare "0x" names no button */
+        *out = v;
+        return 0;
+    }
+    uint32_t mask = 0;
+    const char *p = tok;
+    for (;;) {
+        char name[16];
+        int n = 0;
+        while (p[n] && p[n] != '+' && n < (int)sizeof name - 1) { name[n] = p[n]; n++; }
+        name[n] = 0;
+        if (n == 0 || (size_t)n >= sizeof name) return -1;
+        int found = -1;
+        for (int i = 0; i < ROUTE_NBTN; i++)
+            if (route_casecmp(name, s_route_btn[i].name) == 0) { found = i; break; }
+        if (found < 0) return -1;
+        mask |= s_route_btn[found].bit;
+        if (p[n] == 0) break;
+        p += n + 1;                     /* skip the '+' */
+    }
+    *out = mask;
+    return 0;
+}
+
+/* An import named as the runtime names it, or as raw hex. The hex form exists so a route
+ * never depends on a name being in the table: the NID is the guest-visible fact, the name is
+ * a convenience. */
+static int route_nid_from_token(const char *tok, uint32_t *out) {
+    if (tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) return route_parse_mask(tok, out);
+    for (size_t i = 0; i < sr_nid_table_count; i++)
+        if (strcmp(sr_nid_table[i].name, tok) == 0) { *out = sr_nid_table[i].nid; return 0; }
+    return -1;
+}
+
+/* What a mask presses, in words. Printed once per press step at load so any run's own
+ * log says which buttons the route asked for: "the route pressed START and the screen
+ * ignored it" is a one-line diagnosis, while the same fact spread across a hex mask is
+ * a puzzle. */
+static void route_describe_mask(uint32_t mask, char *out, size_t n) {
+    size_t used = 0;
+    out[0] = 0;
+    for (int i = 0; i < ROUTE_NBTN; i++) {
+        if (!(mask & s_route_btn[i].bit)) continue;
+        int w = snprintf(out + used, n - used, "%s%s", used ? "+" : "", s_route_btn[i].name);
+        if (w < 0 || (size_t)w >= n - used) return;
+        used += (size_t)w;
+    }
+    if (used == 0 && n > 8) snprintf(out, n, "0x%04x", mask);
+}
+
+/* The names a mask argument may use, for the refusal that has to teach the fix. */
+static const char *route_button_names(void) {
+    return "SELECT START UP RIGHT DOWN LEFT L R TRIANGLE CIRCLE CROSS SQUARE HOME HOLD, "
+           "joinable with '+'";
 }
 
 /* Exactly `want` bytes of hex and nothing else: a truncated signature would silently
@@ -10546,8 +12481,14 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: expected '<frame> <hexmask> <width>'\n", path, lineno);
             return -1;
         }
+        uint32_t lmask = 0;
+        if (route_parse_mask(m, &lmask) != 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: '%s' is not a hex mask or a button name (%s)\n",
+                    path, lineno, m, route_button_names());
+            return -1;
+        }
         s_route_legacy[s_route_nlegacy].f    = (uint32_t)strtoul(tok, NULL, 10);
-        s_route_legacy[s_route_nlegacy].mask = (uint32_t)strtoul(m, NULL, 16);
+        s_route_legacy[s_route_nlegacy].mask = lmask;
         s_route_legacy[s_route_nlegacy].w    = (uint32_t)strtoul(w, NULL, 10);
         s_route_nlegacy++;
         return 0;
@@ -10659,7 +12600,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 return -1;
             }
             snprintf(st.name, ROUTE_NAME_MAX, "%s", name);
-            st.a = (uint32_t)strtoul(m, NULL, 16);
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: %s: '%s' is not a hex mask or a button name "
+                                "(%s)\n", path, lineno, tok, m, route_button_names());
+                return -1;
+            }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             st.c = (uint32_t)strtoul(p, NULL, 10);
             st.d = (uint32_t)strtoul(t, NULL, 10);
@@ -10671,9 +12616,32 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             st.op = ROUTE_OP_PRESS;
             char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
             if (!m || !w) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS <hexmask> <width>\n", path, lineno); return -1; }
-            st.a = (uint32_t)strtoul(m, NULL, 16);
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS: '%s' is not a hex mask or a button name (%s)\n",
+                        path, lineno, m, route_button_names());
+                return -1;
+            }
             st.b = (uint32_t)strtoul(w, NULL, 10);
             if (st.b < 1) { fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS width must be >= 1\n", path, lineno); return -1; }
+        } else if (strcmp(tok, "WAIT_NID") == 0) {
+            st.op = ROUTE_OP_NID;
+            char *nid = strtok(NULL, " \t\r\n"), *to = strtok(NULL, " \t\r\n");
+            if (!nid || !to) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID <import|0xNID> <timeout>\n", path, lineno);
+                return -1;
+            }
+            if (route_nid_from_token(nid, &st.b) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID: '%s' is not an import name and not "
+                                "a 0x-prefixed NID (the runtime's own table is "
+                                "src/rt/nid_names.h; a name it does not carry can be written as hex)\n",
+                        path, lineno, nid);
+                return -1;
+            }
+            st.a = (uint32_t)strtoul(to, NULL, 10);
+            if (st.a < 1u) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: WAIT_NID timeout must be >= 1 vblank\n", path, lineno);
+                return -1;
+            }
         } else if (strcmp(tok, "DELAY") == 0) {
             st.op = ROUTE_OP_DELAY;
             char *n = strtok(NULL, " \t\r\n");
@@ -10707,6 +12675,7 @@ void sr_route_reset(void) {
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
+    route_nid_watch(0);
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
 }
@@ -10758,6 +12727,28 @@ int sr_route_load(const char *path) {
                         "sample_every=%d, tolerance=%d)\n",
                 path, s_route_nsteps, s_route_ncp, s_route_cols, s_route_rows,
                 s_route_sample_every, s_route_tol);
+        /* Say what each press asks for, in button names. The guest is given the same bits
+         * a player produces, so "the route pressed START and the title ignored it" is a
+         * fact this log can state outright instead of leaving a reader to decode a mask. */
+        for (int i = 0; i < s_route_nsteps; i++) {
+            RouteStep *st = &s_route_prog[i];
+            if (st->op != ROUTE_OP_PRESS && st->op != ROUTE_OP_UNTIL && st->op != ROUTE_OP_WHILE)
+                continue;
+            char what[64];
+            route_describe_mask(st->a, what, sizeof what);
+            fprintf(stderr, "ROUTE: step %d (%s) presses %s\n", i,
+                    st->op == ROUTE_OP_PRESS ? "PRESS" :
+                    st->op == ROUTE_OP_UNTIL ? "PRESS_UNTIL" : "PRESS_WHILE", what);
+        }
+        /* And say what each WAIT_NID is waiting for, the same way: a route that stalls on an
+         * event names the event in the log instead of leaving a reader to guess. */
+        for (int i = 0; i < s_route_nsteps; i++) {
+            RouteStep *st = &s_route_prog[i];
+            if (st->op != ROUTE_OP_NID) continue;
+            const char *nm = sr_nid_name(st->b);
+            fprintf(stderr, "ROUTE: step %d (WAIT_NID) waits for %s (0x%08x) for %u vblanks\n",
+                    i, nm ? nm : "an unnamed import", st->b, st->a);
+        }
         return 1;
     }
     if (s_route_nlegacy > 0) {
@@ -10805,7 +12796,13 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             return keys;
         }
         RouteStep *st = &s_route_prog[s_route_pc];
-        if (!s_route_step_started) { s_route_step_start = v; s_route_step_started = 1; }
+        if (!s_route_step_started) {
+            s_route_step_start = v;
+            s_route_step_started = 1;
+            /* The NID watch is armed by the step that wants it, so "called since this step
+             * began" is measured from this vblank and not from the start of the route. */
+            route_nid_watch(st->op == ROUTE_OP_NID);
+        }
         uint32_t el = v - s_route_step_start;
         switch (st->op) {
         case ROUTE_OP_PRESS:
@@ -10903,6 +12900,25 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
                            st->line, st->name, v,
                            bi >= 0 ? s_route_cp[bi].name : "<unknown>", bd, st->name, d,
                            wi >= 0 ? s_route_cp[wi].tol : s_route_tol);
+            }
+            return keys;
+        }
+        case ROUTE_OP_NID: {
+            const char *nm = sr_nid_name(st->b);
+            if (route_nid_since(st->b)) {
+                fprintf(stderr, "ROUTE: guest called %s (0x%08x) at vblank %u (step %d, after "
+                                "%u vblanks)\n",
+                        nm ? nm : "an unnamed import", st->b, v, s_route_pc, el);
+                route_advance();
+                continue;
+            }
+            if (el >= st->a) {
+                route_fail("line %d: WAIT_NID %s (0x%08x) was not called within %u vblanks "
+                           "(from vblank %u to %u); the guest made %lu imports in that time, "
+                           "none of them this one",
+                           st->line, nm ? nm : "?", st->b, el, s_route_step_start, v,
+                           s_route_nid_pos - s_route_nid_start);
+                return keys;
             }
             return keys;
         }
@@ -11106,6 +13122,9 @@ static uint32_t ctrl_fill(uint32_t buf, uint32_t count, int negate) {
     return ctrl_fill_n(buf, count, negate, 0);
 }
 static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
+static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
+    return ctrl_fill_n(A0, A1, 0, 1);
+}
 
 /* sceDisplay: remember the framebuffer; vblank waits block until the next delivered vblank. */
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride);
@@ -11447,8 +13466,17 @@ static void display_present_active(void) {
                 s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         return;
     }
-    gui_present(s_display_active.addr, s_display_active.fmt,
-                (uint32_t)s_display_active.stride);
+    int presented = gui_present(s_display_active.addr, s_display_active.fmt,
+                                (uint32_t)s_display_active.stride);
+    if (presented) {
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_FRAME,
+                               s_display_active.addr, (uint32_t)s_display_active.fmt,
+                               (uint32_t)s_display_active.stride, s_vcount);
+        if (getenv("SR_PRESENT_TRACE"))
+            fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
+                    s_vcount, s_display_active.addr, s_display_active.fmt,
+                    s_display_active.stride);
+    }
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------
@@ -11572,7 +13600,11 @@ static void route_tick(uint32_t v) {
     int pending = 0;
     if (s_route_state == ROUTE_RUNNING && s_route_pc < s_route_nsteps) {
         int op = s_route_prog[s_route_pc].op;
-        pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END);
+        /* WAIT_NID is the one gated step that watches the guest rather than the screen, so it
+         * needs no signature: sampling the framebuffer for it would cost the observer's ~20%
+         * of vblank rate (measured) to learn nothing. */
+        pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END ||
+                    op == ROUTE_OP_NID);
     }
     /* Elapsed-delivered-VCOUNT cadence (#109 reconstruction): delivered VCOUNT is
      * elapsed-period accounting and may jump over every exact residue of
@@ -11601,6 +13633,14 @@ static void route_tick(uint32_t v) {
  * regression drive production sampling/cadence/state-machine behavior without
  * a scheduler, a title, or a GPU. Production builds compile none of this. */
 void sr_route_test_tick(uint32_t v) { route_tick(v); }
+/* Feed the import ring exactly as sr_syscall() does, gate included, and resolve a route's
+ * name-or-hex token through the production resolver. A step that waits on a guest event is
+ * only trustworthy if the observation it reads is the one the dispatcher writes. */
+void sr_route_test_import(uint32_t nid) { if (s_route_watch_nid) route_note_nid(nid); }
+uint32_t sr_route_test_nid(const char *tok) {
+    uint32_t nid = 0;
+    return route_nid_from_token(tok, &nid) == 0 ? nid : 0u;
+}
 /* Read-only view of the cadence bookkeeping: whether an attempt was recorded
  * and which delivered VCOUNT it holds. Pins the record-BEFORE-readback order
  * (a failed readback must still consume its cadence slot). */
@@ -11629,6 +13669,86 @@ static uint32_t s_fbsnap_win_lo[SR_FBSNAP_MAX_WINDOWS], s_fbsnap_win_hi[SR_FBSNA
 static int s_fbsnap_win_n = 0;
 static char s_fbcap_armed[128];  /* path armed for the CURRENT frame's present ("" = none) */
 static char s_fbcap_legacy[64];  /* legacy snap_*.ppm path for the same frame ("" = none) */
+
+#define SR_VRAMDUMP_MAX_VBLANKS 8
+static uint32_t s_vramdump_vblanks[SR_VRAMDUMP_MAX_VBLANKS];
+static unsigned s_vramdump_count;
+static unsigned s_vramdump_done;
+static char s_vramdump_dir[768];
+
+static void vramdump_init_once(void) {
+    static int initialized;
+    const char *selection, *directory;
+    const char *cursor;
+    if (initialized) return;
+    initialized = 1;
+    selection = getenv("SR_VRAMDUMP");
+    if (!selection || !selection[0]) return;
+    directory = getenv("SR_VRAMDUMP_DIR");
+    if (!directory || !directory[0] || strlen(directory) >= sizeof s_vramdump_dir) {
+        fprintf(stderr, "VRAMDUMP CONFIG_FAIL (SR_VRAMDUMP_DIR must name an existing output directory)\n");
+        return;
+    }
+    memcpy(s_vramdump_dir, directory, strlen(directory) + 1u);
+    cursor = selection;
+    while (*cursor) {
+        char *end = NULL;
+        unsigned long value;
+        if (s_vramdump_count >= SR_VRAMDUMP_MAX_VBLANKS || *cursor < '0' || *cursor > '9')
+            goto invalid;
+        errno = 0;
+        value = strtoul(cursor, &end, 10);
+        if (errno == ERANGE || end == cursor || value > UINT32_MAX || (*end && *end != ','))
+            goto invalid;
+        for (unsigned i = 0; i < s_vramdump_count; i++)
+            if (s_vramdump_vblanks[i] == (uint32_t)value) goto invalid;
+        s_vramdump_vblanks[s_vramdump_count++] = (uint32_t)value;
+        if (!*end) break;
+        cursor = end + 1;
+        if (!*cursor) goto invalid;
+    }
+    if (!s_vramdump_count) goto invalid;
+    fprintf(stderr, "VRAMDUMP enabled selections=%u\n", s_vramdump_count);
+    return;
+
+invalid:
+    s_vramdump_count = 0;
+    fprintf(stderr, "VRAMDUMP CONFIG_FAIL (expected up to %u unique decimal vblank values)\n",
+            SR_VRAMDUMP_MAX_VBLANKS);
+}
+
+static void vramdump_try_present(uint32_t vcount, const DisplayFrameState *fb) {
+    vramdump_init_once();
+    if (!s_vramdump_count || !fb) return;
+    /* PASS must only ever mean a presented frame: apply the conditions
+     * display_present_active() applies before it hands a frame to the presenter. A
+     * vblank where it would decline stays selected and is reported NOT_CAPTURED. */
+    if (!gui_on() || !fb->addr || !display_host_span_valid(fb)) return;
+    for (unsigned i = 0; i < s_vramdump_count; i++) {
+        unsigned bit = 1u << i;
+        if (s_vramdump_vblanks[i] != vcount || (s_vramdump_done & bit)) continue;
+        s_vramdump_done |= bit;
+        if (ge_vramdump_write(s_vramdump_dir, vcount, fb->addr,
+                              (uint32_t)fb->stride, (uint32_t)fb->fmt))
+            fprintf(stderr, "VRAMDUMP vblank=%u PASS\n", vcount);
+        else
+            fprintf(stderr, "VRAMDUMP vblank=%u FAIL (see diagnostic above)\n", vcount);
+        break;
+    }
+}
+
+static void vramdump_note_vblank(uint32_t vcount) {
+    vramdump_init_once();
+    if (!s_vramdump_count) return;
+    for (unsigned i = 0; i < s_vramdump_count; i++) {
+        unsigned bit = 1u << i;
+        if (!(s_vramdump_done & bit) && s_vramdump_vblanks[i] < vcount) {
+            s_vramdump_done |= bit;
+            fprintf(stderr, "VRAMDUMP vblank=%u NOT_CAPTURED (no frame was presented at that vblank)\n",
+                    s_vramdump_vblanks[i]);
+        }
+    }
+}
 
 static void fbcap_parse_windows_once(void) {
     static int done = 0;
@@ -11729,6 +13849,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     int32_t stride = (int32_t)A1;
     int32_t fmt = (int32_t)A2;
     uint32_t sync = A3;
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_SET_FRAMEBUF,
+                           addr, (uint32_t)fmt, (uint32_t)stride, s_vcount);
     if (ge_log_on())
         fprintf(stderr, "DISPLAY_SET_FB: buf=0x%08x stride=%d fmt=%d sync=%u vcount=%u\n",
                 addr, stride, fmt, sync, s_vcount);
@@ -11770,6 +13892,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
+        vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     } else {
         s_setfb.latched++;
@@ -11964,9 +14087,8 @@ static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t str
  * sceDisplayWaitVblank succeeds with 1 (L323) while sceDisplayWaitVblankStart
  * returns ILLEGAL_CONTEXT (L325). Those cells are `NOT RUN` against this runtime
  * in docs/PSP_INTR_WAITS_MATRIX.md and belong to the interrupt-context work.
- * The CB variants (0x46f186c3, 0xdba6c4c4's neighbours) remain unregistered
- * until the callback-aware wait transaction lands; splitting these two handlers
- * does not change that. */
+ * The callback variants below use the same measured wait split, while the
+ * scheduler keeps servicing callbacks until a delivered VBLANK satisfies it. */
 static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
     (void)s;
     if (ge_log_on()) fprintf(stderr, "HLE: WaitVblankStart (vcount=%u)\n", s_vcount);
@@ -11981,6 +14103,20 @@ static uint32_t h_DisplayWaitVblank(CpuState *s) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     /* 1 when the caller was already inside the interval and did not block. */
     return (uint32_t)sched_wait_vblank();
+}
+
+static uint32_t h_DisplayWaitVblankStartCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(1);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : 0u;
+}
+
+static uint32_t h_DisplayWaitVblankCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(0);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : (uint32_t)result;
 }
 static uint32_t h_DisplayGetMode(CpuState *s) {
     if (A0) MEM_W32(A0, 0);  /* mode 0 */
@@ -12059,10 +14195,12 @@ void sr_vblank_tick(void) {
          * double-buffering title (which flips at VBLANK, not synchronously) with no
          * present-truthful capture at all. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
+        vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     }
     if (ge_log_on() && (s_vcount & 0x3f) == 0)
         fprintf(stderr, "VBLANK tick %u\n", s_vcount);
+    vramdump_note_vblank(s_vcount);
     /* Full guest-PC dumps contain thousands of rows and synchronous five-second cadence
      * materially distorts the route being profiled. Keep periodic capture opt-in and let the
      * canonical manager choose a bounded default for runs that may be force-stopped before
@@ -12553,6 +14691,12 @@ typedef struct {
 
 static GeListInfo s_ge_lists[GE_LIST_MAX];
 
+static uint32_t h_GeGetCmd(CpuState *s) {
+    (void)s;
+    if (A0 > 0xffu) return 0x800001feu; /* SCE_KERNEL_ERROR_INVALID_VALUE */
+    return ge_get_cmd(A0);
+}
+
 /* Stall addresses that arrived after the GE already consumed the list. Counted
  * for the selftest and for SR_GELOG triage: a ring-buffer guest that flushes more
  * chunks than the list has commands is normal traffic, not an error. */
@@ -12564,6 +14708,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     uint32_t cbid = A2;
     uint32_t cbarg = A3;
     uint32_t list_id = 0x35000000u | (s_ge_list_next++ & 0x00ffffffu);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_ENQUEUE,
+                           list, stall, list_id, cbid);
 
     ge_enqueue_trace_emit(s, "enqueue", list_id, list, stall, cbid);
 
@@ -12614,6 +14760,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, list, stall, next_pc);
         ge_finish_callback(s, cbid, list_id, cbarg);
     } else {
         /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
@@ -12644,6 +14792,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                           slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
                           new_stall,
                           slot >= 0 ? s_ge_lists[slot].cbid : 0u);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_STALL_UPDATE,
+                           list_id, slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
+                           new_stall, slot >= 0 ? s_ge_lists[slot].stall_addr : 0u);
 
     if (slot == -1) {
         ge_enqueue_trace_result(s, "update_stall", list_id, "not_found", 0u, 0);
@@ -12687,6 +14838,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, s_ge_lists[slot].start_pc,
+                               s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
         ge_finish_callback(s, s_ge_lists[slot].cbid, list_id, s_ge_lists[slot].cbarg);
@@ -12706,6 +14860,9 @@ static uint32_t h_GeListSync(CpuState *s) {
     uint32_t syncType = A1;
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].uid == qid) {
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                                   qid, s_ge_lists[i].start_pc,
+                                   s_ge_lists[i].stall_addr, syncType);
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
@@ -12717,6 +14874,8 @@ static uint32_t h_GeListSync(CpuState *s) {
             }
         }
     }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                           qid, 0u, 0u, syncType);
     if (ge_log_on())
         fprintf(stderr, "GE_SYNC: qid=0x%08x NOT FOUND in list table\n", qid);
     return 0;
@@ -12754,6 +14913,8 @@ static uint32_t h_GeDrawSync(CpuState *s) {
     int busy = 0;
     for (int i = 0; i < GE_LIST_MAX; i++)
         if (s_ge_lists[i].status == 1) { busy = 1; break; }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
+                           mode, (uint32_t)busy, 0u, 0u);
     if (mode == 1u) return busy ? 1u : 0u;
     if (busy) sched_delay_current(1000);
     return 0;
@@ -13742,6 +15903,12 @@ static void mbx_remove_waiter(Mbx *m, uint32_t thid) {
             m->nwaiters--;
             break;
         }
+    }
+}
+
+static void mbx_remove_thread_waiters(uint32_t thread_uid) {
+    for (int i = 0; i < MBX_MAX; i++) {
+        if (s_mbx[i].used) mbx_remove_waiter(&s_mbx[i], thread_uid);
     }
 }
 
@@ -15578,9 +17745,14 @@ static void hle_register_selftest_oracle_handlers(void) {
 static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xceadeb47, "sceKernelDelayThread", h_DelayThread);
     sr_hle_register(0x68da9e36, "sceKernelDelayThreadCB", h_DelayThreadCB);
+    sr_hle_register(0xbd123d9e, "sceKernelDelaySysClockThread", h_DelaySysClockThread);
+    sr_hle_register(0x1181e963, "sceKernelDelaySysClockThreadCB", h_DelaySysClockThreadCB);
+    sr_hle_register(0x616403ba, "sceKernelTerminateThread", h_TerminateThread);
     sr_hle_register(0x82826f70, "sceKernelSleepThreadCB", h_SleepThreadCB);
     sr_hle_register(0x36cdfade, "sceDisplayWaitVblank", h_DisplayWaitVblank);
     sr_hle_register(0x984c27e7, "sceDisplayWaitVblankStart", h_DisplayWaitVblankStart);
+    sr_hle_register(0x8eb9ec49, "sceDisplayWaitVblankCB", h_DisplayWaitVblankCB);
+    sr_hle_register(0x46f186c3, "sceDisplayWaitVblankStartCB", h_DisplayWaitVblankStartCB);
     sr_hle_register(0x4e3a1105, "sceKernelWaitSema", h_WaitSema);
     sr_hle_register(0x6d212bac, "sceKernelWaitSemaCB", h_WaitSemaCB);
     sr_hle_register(0x55c20a00, "sceKernelCreateEventFlag", h_CreateEventFlag);
@@ -15635,10 +17807,12 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ReferLwMutexStatus);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
+    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
+    sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -15745,6 +17919,7 @@ static void hle_register_ge_handlers(void) {
     sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
     sr_hle_register(0x1f6752ad, "sceGeEdramGetSize", h_GeEdramGetSize);
     sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
+    sr_hle_register(0xdc93cfef, "sceGeGetCmd", h_GeGetCmd);
 }
 
 static void hle_register_atrac_handlers(void) {
@@ -15929,11 +18104,44 @@ static void hle_register_mpeg_shared_handlers(void) {
     sr_hle_register(0x4571cc64, "sceMpegAvcDecodeFlush", h_MpegAvcDecodeFlush);
 }
 
+/* These YCbCr handlers are registered by the focused media fixture and by the full registry,
+ * so the fixture reaches the same production argument marshalling through sr_syscall(). */
+static void hle_register_mpeg_ycbcr_handlers(void) {
+    sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
+    sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
+    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_MpegAvcDecodeMode);
+    sr_hle_register(0xf0eb1125, "sceMpegAvcDecodeYCbCr", h_MpegAvcDecodeYCbCr);
+    sr_hle_register(0xf2930c9c, "sceMpegAvcDecodeStopYCbCr", h_MpegAvcDecodeStopYCbCr);
+    sr_hle_register(0x0558b075, "sceMpegAvcCopyYCbCr", h_MpegAvcCopyYCbCr);
+    sr_hle_register(0x31bd0272, "sceMpegAvcCsc", h_MpegAvcCsc);
+}
+
 /* sceImpose language/confirm-button mode (see h_ImposeSetLanguageMode). One definition, called
  * by both registry branches, so the executable harness dispatches the production mapping. */
 static void hle_register_impose_handlers(void) {
     sr_hle_register(0x36aa6e91, "sceImposeSetLanguageMode", h_ImposeSetLanguageMode);
     sr_hle_register(0x24fd7bcf, "sceImposeGetLanguageMode", h_ImposeGetLanguageMode);
+}
+
+/* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
+ * implemented here; decoder output remains a separate fail-closed stage.  One definition,
+ * called by both registry branches, so the executable harness dispatches the production
+ * mapping and the named media boundaries are reachable from a production-path test. */
+static void hle_register_psmf_player_handlers(void) {
+    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
+    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
+    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
+    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
+    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
+    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
+    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
+    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
+    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
+    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
+    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
+    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
+    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
+    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
 void sr_hle_init(void) {
@@ -15943,6 +18151,9 @@ void sr_hle_init(void) {
         while (atomic_load_explicit(&s_hle_init_state, memory_order_acquire) != 2) { }
         return;
     }
+#ifdef SR_MPEG_MEDIA_SELFTEST
+    hle_register_mpeg_ycbcr_handlers();
+#else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;
     hle_register_bulk_memory_handlers();
@@ -15973,6 +18184,7 @@ void sr_hle_init(void) {
     hle_register_power_lock_handlers();
     hle_register_gpi_gpo_handlers();
     hle_register_mpeg_shared_handlers();
+    hle_register_psmf_player_handlers();
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
@@ -15991,6 +18203,9 @@ void sr_hle_init(void) {
      * mixup sprayed two wild words per asset load and zeroed the model-slot counter). */
     sr_hle_register(0x7591c7db, "sceKernelSetCompiledSdkVersion", h_SetCompiledSdkVersion);
     sr_hle_register(0x35669d4c, "sceKernelSetCompiledSdkVersion600_602", h_SetCompiledSdkVersion);
+    sr_hle_register(0x91de343c, "sceKernelSetCompiledSdkVersion500_505", h_SetCompiledSdkVersion);
+    sr_hle_register(0xebd5c3e6, "sceKernelSetCompiledSdkVersion395", h_SetCompiledSdkVersion);
+    sr_hle_register(0x358ca1bb, "sceKernelSetCompiledSdkVersion606", h_SetCompiledSdkVersion);
     sr_hle_register(0xf77d77cb, "sceKernelSetCompilerVersion", h_SetCompiledSdkVersion);
     /* sceKernelAllocPartitionMemory, sceKernelGetBlockHeadAddr, sceKernelFreePartitionMemory,
      * sceKernelTotalFreeMemSize, sceKernelMaxFreeMemSize registered via
@@ -16055,13 +18270,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
     sr_hle_register(0x769bebb6, "sceMpegRingbufferQueryPackNum", h_MpegRingbufferQueryPackNum);
-    sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
-    sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
-    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_MpegAvcDecodeMode);
-    sr_hle_register(0xf0eb1125, "sceMpegAvcDecodeYCbCr", h_MpegAvcDecodeYCbCr);
-    sr_hle_register(0xf2930c9c, "sceMpegAvcDecodeStopYCbCr", h_MpegAvcDecodeStopYCbCr);
-    sr_hle_register(0x0558b075, "sceMpegAvcCopyYCbCr", h_MpegAvcCopyYCbCr);
-    sr_hle_register(0x31bd0272, "sceMpegAvcCsc", h_MpegAvcCsc);
+    hle_register_mpeg_ycbcr_handlers();
     sr_hle_register(0xc02cf6b5, "sceMpegQueryPcmEsSize", h_MpegQueryPcmEsSize);
     sr_hle_register(0x8c1e027d, "sceMpegGetPcmAu", h_MpegGetPcmAu);
     sr_hle_register(0x9dcfb7ea, "sceMpegChangeGetAuMode", h_MpegChangeGetAuMode);
@@ -16082,20 +18291,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xf8dcb679, "sceMpegQueryAtracEsSize", h_MpegQueryAtracEsSize);
     /* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
      * implemented here; decoder output remains a separate fail-closed stage. */
-    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
-    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
-    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
-    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
-    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
-    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
-    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
-    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
-    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
-    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
-    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
-    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
-    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
-    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+    hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
     sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
     sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
@@ -16192,7 +18388,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xf78ba90a, "sceKernelStderr", h_StdFd);
     /* scePower / sceSuspendForUser / LoadExecForUser: locks and registrations succeed. */
     hle_register_power_lock_handlers();
-    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
     /* Unlock takes only the type arg -- it must NOT run the Lock handler: writing the
      * out-params through leftover a1/a2 register garbage sprayed two wild 4-byte writes
      * per asset-load unlock (this zeroed the resource registry's model-slot counter,
@@ -16227,6 +18422,7 @@ void sr_hle_init(void) {
 
     hle_register_atrac_handlers();
     hle_register_sas_handlers();
+#endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
 }
 
@@ -16259,6 +18455,14 @@ static int link_started_export(CpuState *s, uint32_t nid) {
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
+    /* A syscall is where a guest thread can stop making scheduler progress, so the
+     * attribution of a late display period has to be able to name it. */
+    const int rt_phase_saved = sr_rt_phase;
+    sr_rt_phase = SR_RT_PHASE_SYSCALL;
+    sr_rt_nid = nid;
+    /* One store per import, and only while a route is waiting on one: this is what lets a
+     * route gate on a guest-visible event instead of on a screen signature. */
+    if (s_route_watch_nid) route_note_nid(nid);
     uint64_t flight_sequence = sr_flight_hle_import(
         nid, sched_current_uid(), s ? s->r[4] : 0u, s ? s->pc : 0u, s ? s->r[31] : 0u);
     if (flight_sequence != 0u && s) {
@@ -16274,6 +18478,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (link_started_export(s, nid)) {
         uint32_t ret = s->r[2];
         if (flight_sequence != 0u) sr_flight_hle_return(flight_sequence, ret);
+        sr_rt_phase = rt_phase_saved;
         return ret;
     }
     HleEntry *e = hle_find(nid);
@@ -16336,5 +18541,6 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     if (e->unsupported_error) {
         sr_flight_unsupported(e->nid, e->unsupported_error, sched_current_uid(), s->pc);
     }
+    sr_rt_phase = rt_phase_saved;
     return ret;
 }

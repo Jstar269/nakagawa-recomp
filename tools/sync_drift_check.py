@@ -37,9 +37,7 @@ Limitations, stated plainly:
 
 * Content hashing cannot by itself tell which side is *older*. A differing text
   file is reported as ``GENERIC_DRIFT`` with both digests and must be read by a
-  human. The one place direction is decidable is the npm lockfile, where package
-  versions are ordered, so :func:`compare_lockfiles` reports an explicit
-  ``export_behind`` verdict.
+  human.
 * The tool never copies, writes or repairs anything. It only classifies.
 * A clean report means the two trees agree on generic content at this instant. It
   is not a legal clearance, not a publication gate, and not a substitute for
@@ -100,7 +98,7 @@ def index_tree(root: Path) -> dict[str, str]:
     ``.git`` and build/dependency output are skipped: they are never release
     content and their presence differs by how the tree was materialized.
     """
-    skip_dirs = {".git", "node_modules", "build", ".next", "__pycache__", ".ruff_cache"}
+    skip_dirs = {".git", "build", "__pycache__", ".ruff_cache"}
     out: dict[str, str] = {}
     for path in root.rglob("*"):
         if not path.is_file():
@@ -225,54 +223,7 @@ def classify(
     return findings
 
 
-def _lock_versions(path: Path) -> dict[str, str]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    out: dict[str, str] = {}
-    for key, value in (data.get("packages") or {}).items():
-        if not key or not isinstance(value, dict):
-            continue
-        version = value.get("version")
-        if isinstance(version, str):
-            out[key] = version
-    return out
-
-
-def _version_key(version: str) -> tuple[int, ...]:
-    parts: list[int] = []
-    for chunk in version.split("-")[0].split("."):
-        try:
-            parts.append(int(chunk))
-        except ValueError:
-            parts.append(0)
-    return tuple(parts)
-
-
-def compare_lockfiles(export_root: Path, public_root: Path, rel: str = "interface/package-lock.json") -> list[dict]:
-    """Report npm packages whose resolved version differs between the two trees.
-
-    This is the one comparison where direction is decidable, so it answers the
-    "public security fix missing privately" case directly.
-    """
-    export_lock, public_lock = export_root / rel, public_root / rel
-    if not (export_lock.is_file() and public_lock.is_file()):
-        return []
-    exported, published = _lock_versions(export_lock), _lock_versions(public_lock)
-    findings: list[dict] = []
-    for name in sorted(set(exported) & set(published)):
-        if exported[name] == published[name]:
-            continue
-        findings.append(
-            {
-                "package": name,
-                "export": exported[name],
-                "public": published[name],
-                "export_behind": _version_key(exported[name]) < _version_key(published[name]),
-            }
-        )
-    return findings
-
-
-def render(findings: list[dict[str, str]], lock_findings: list[dict]) -> tuple[str, bool]:
+def render(findings: list[dict[str, str]]) -> tuple[str, bool]:
     counts: dict[str, int] = {}
     for finding in findings:
         counts[finding["category"]] = counts.get(finding["category"], 0) + 1
@@ -280,14 +231,6 @@ def render(findings: list[dict[str, str]], lock_findings: list[dict]) -> tuple[s
     lines = ["=== sync drift report ==="]
     for category in ("GENERIC_DRIFT", "UNKNOWN", "EXPECTED_PUBLIC_ONLY", "EXPECTED_PRIVATE_EXCLUSION"):
         lines.append(f"{category}: {counts.get(category, 0)}")
-
-    behind = [entry for entry in lock_findings if entry["export_behind"]]
-    if lock_findings:
-        lines.append("")
-        lines.append(f"npm lockfile: {len(lock_findings)} differing package(s), {len(behind)} where the export is BEHIND public")
-        for entry in lock_findings:
-            marker = "EXPORT BEHIND" if entry["export_behind"] else "export ahead"
-            lines.append(f"  [{marker}] {entry['package']}: export={entry['export']} public={entry['public']}")
 
     for category in ("GENERIC_DRIFT", "UNKNOWN"):
         rows = [f for f in findings if f["category"] == category]
@@ -297,7 +240,7 @@ def render(findings: list[dict[str, str]], lock_findings: list[dict]) -> tuple[s
             for row in rows:
                 lines.append(f"  {row['path']}: {row['detail']}")
 
-    failed = bool(counts.get("GENERIC_DRIFT")) or bool(counts.get("UNKNOWN")) or bool(behind)
+    failed = bool(counts.get("GENERIC_DRIFT")) or bool(counts.get("UNKNOWN"))
     lines.append("")
     lines.append("RESULT: FAIL (unknown findings are always failures)" if failed else "RESULT: OK")
     return "\n".join(lines), failed
@@ -325,11 +268,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     findings = classify(index_tree(export_root), index_tree(public_root), excluded_exact, excluded_globs)
-    lock_findings = compare_lockfiles(export_root, public_root)
-    text, failed = render(findings, lock_findings)
+    text, failed = render(findings)
 
     if args.json:
-        print(json.dumps({"findings": findings, "lockfile": lock_findings, "failed": failed}, indent=2))
+        print(json.dumps({"findings": findings, "failed": failed}, indent=2))
     else:
         print(text)
     return 1 if failed else 0

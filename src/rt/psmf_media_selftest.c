@@ -29,6 +29,7 @@
 
 #include "psmf_producer.h"
 #include "sr_h264.h"
+#include "flight_recorder.h"
 #include "perf.h"
 #include "mpeg.c"
 #include <stdint.h>
@@ -38,43 +39,63 @@
 
 static int checks, failures;
 #define CHECK(x, text) do { checks++; if (!(x)) { failures++; fprintf(stderr, "FAIL: %s\n", text); } } while (0)
+
+static void check_media_conservation(const char *track, uint64_t decoded,
+                                    uint64_t delivered, uint64_t held,
+                                    uint64_t eos_drained, uint64_t rejected) {
+    uint64_t accounted = delivered + held + eos_drained + rejected;
+    checks++;
+    if (decoded != accounted) {
+        failures++;
+        fprintf(stderr,
+                "FAIL: %s disposition conservation: decoded=%llu delivered=%llu "
+                "held=%llu eos_drained=%llu rejected=%llu accounted=%llu\n",
+                track, (unsigned long long)decoded, (unsigned long long)delivered,
+                (unsigned long long)held, (unsigned long long)eos_drained,
+                (unsigned long long)rejected, (unsigned long long)accounted);
+    }
+}
+
 /* Bounded diagnostics for the acceptance runs: SR_PSMF_MEDIA_DEBUG=1 prints the counters that
  * say where a media chain stopped, without making the normal run noisy. */
 #define MEDIA_DEBUG(...) do { if (getenv("SR_PSMF_MEDIA_DEBUG")) fprintf(stderr, __VA_ARGS__); } while (0)
 
+/* The flight recorder sees only these scalar milestones when the selftest is
+ * explicitly run with SR_FLIGHT=media;N. They describe this source-owned
+ * fixture, not a PSP media ABI or a private-title observation. */
+static void flight_media_test_milestone(uint32_t stage, uint32_t arg1,
+                                        uint32_t arg2, uint32_t arg3) {
+    (void)stage; (void)arg1; (void)arg2; (void)arg3;
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE,
+                           stage, arg1, arg2, arg3);
+}
+
 /* ---- guest arena ------------------------------------------------------------------------ */
-/* sr_h264_frame() writes into guest memory through SR_HOST(), so the selftest owns a flat
- * arena and a no-op VRAM-dirty sink, exactly as the runtime stubs them. */
-uint8_t *g_mem = NULL;
-CpuState *s_cpu;
-int g_sr_heap_watch;
-int g_sr_metadata_watch;
-int g_hle_depth;
-int g_sr_last_writer_enabled;
-uint32_t g_sr_store_context_pc;
-unsigned g_sr_store_context_limit;
-unsigned g_sr_store_context_count;
-int g_sr_store_context_mem_gpr;
-uint32_t g_sr_store_context_mem_offset;
-unsigned g_sr_store_context_mem_words;
-uint32_t g_sr_mem_watch_context_pc;
-unsigned g_sr_mem_watch_context_limit;
-unsigned g_sr_mem_watch_context_count;
-int g_sr_mem_watch_context_fpr;
-uint32_t g_sr_mem_watch_context_fpr_value;
-SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
-int g_sr_mem_watch_count;
-atomic_int_least32_t sr_timeslice;
-void sr_oor(uint32_t addr, uint32_t value, int store) { (void)addr; (void)value; (void)store; }
-uint32_t sr_get_ge_status(void) { return 0; }
-void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc) { (void)addr; (void)width; (void)value; (void)pc; }
-void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc) { (void)addr; (void)width; (void)value; (void)pc; }
-uint32_t sched_current_uid(void) { return 0; }
-int sr_nested_frame_acquire(uint32_t owner, uint32_t *sp, int *handle) { (void)owner; (void)sp; (void)handle; return 0; }
-int sr_nested_frame_release(int handle) { (void)handle; return 0; }
-void dispatch(CpuState *s, uint32_t target) { (void)s; (void)target; }
-RecompFn sr_lookup(uint32_t addr) { (void)addr; return NULL; }
-void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) { (void)addr; (void)bytes; }
+/* The linked production runtime owns memory, scheduler, and debug state. This
+ * fixture installs only its flat synthetic arena into that runtime memory. */
+
+static uint32_t guest_mpeg_import(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2,
+                                  uint32_t a3, uint32_t a4) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3; cpu.r[8] = a4;
+    return sr_syscall(&cpu, nid);
+}
+
+static int guest_bytes_are(uint32_t addr, uint32_t size, uint8_t value) {
+    const uint8_t *bytes = (const uint8_t *)SR_HOST(addr);
+    for (uint32_t i = 0; i < size; i++) if (bytes[i] != value) return 0;
+    return 1;
+}
+
+static int guest_rgba_matches(uint32_t addr, uint32_t width, uint32_t height,
+                              const uint8_t expected[4]) {
+    const uint8_t *pixels = (const uint8_t *)SR_HOST(addr);
+    for (uint32_t i = 0; i < width * height; i++) {
+        if (memcmp(pixels + (size_t)i * 4u, expected, 4u) != 0) return 0;
+    }
+    return 1;
+}
 
 #define ARENA_BYTES (8u * 1024u * 1024u)
 #define GUEST_BUF   (0x08000000u + 0x00400000u)   /* 4 MiB into guest RAM */
@@ -501,6 +522,7 @@ static void test_demux_and_au_contract(void) {
     uint8_t *bytes = build_psmf(&size, au_off, au_len);
     CHECK(bytes != NULL, "fixture allocated");
     if (!bytes) return;
+    flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_SOURCE_READY, size, FIX_PICTURES, 0u);
     /* The generator is deterministic, so the expected elementary stream can be rebuilt here
      * and compared against what the producer hands back. */
     static uint8_t es[65536];
@@ -511,6 +533,9 @@ static void test_demux_and_au_contract(void) {
     SrPsmfProducer *p = open_fixture(bytes, size, &mem, 7u);   /* 7-byte reads */
     CHECK(p != NULL, "producer opens the synthetic PSMF");
     if (!p) { free(bytes); return; }
+    flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_PRODUCER_OPEN,
+                                sr_psmf_producer_video_streams(p),
+                                sr_psmf_producer_audio_streams(p), 7u);
 
     uint32_t got_sizes[FIX_PICTURES + 2];
     uint32_t got_pts[FIX_PICTURES + 2];
@@ -530,6 +555,11 @@ static void test_demux_and_au_contract(void) {
                 au.data = NULL;
             }
             sr_psmf_au_release(&au);
+            if (n < FIX_PICTURES + 2) {
+                flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_AU_READY,
+                                            (uint32_t)n, got_sizes[n],
+                                            (uint32_t)got_has_pts[n]);
+            }
             n++;
         }
     }
@@ -564,6 +594,109 @@ static void test_demux_and_au_contract(void) {
     CHECK(st.source_failures == 0, "fragmented reads never report a source failure");
     CHECK(st.failed == 0, "no parser failure on well-formed input");
     CHECK(st.eof, "the producer reaches end of file");
+    flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_EOF,
+                                (uint32_t)st.video_aus, (uint32_t)st.audio_aus,
+                                st.eof ? 1u : 0u);
+    sr_psmf_producer_close(p);
+    free(bytes);
+}
+
+/* The generated stream feeds a deterministic consumer-stage model so both video and audio
+ * accounting can cover warm-up hold, normal delivery, rejection, and EOS disposition even on
+ * platforms whose real media backend is unavailable. Real H.264 output accounting is checked
+ * separately below. */
+static void test_media_disposition_conservation(void) {
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint32_t size = 0;
+    uint8_t *bytes = build_psmf(&size, au_off, au_len);
+    if (!bytes) { CHECK(0, "disposition fixture allocated"); return; }
+    MemSource mem;
+    SrPsmfProducer *p = open_fixture(bytes, size, &mem, 512u);
+    CHECK(p != NULL, "producer opens for disposition accounting");
+    if (!p) { free(bytes); return; }
+
+    uint64_t video_aus = 0, audio_aus = 0;
+    for (int guard = 0; guard < 4096 && !sr_psmf_producer_eof(p); guard++) {
+        sr_psmf_producer_pump(p, 4);
+        SrPsmfAu au;
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_SUBMITTED);
+            video_aus++;
+            sr_psmf_au_release(&au);
+        }
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au)) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_SUBMITTED);
+            audio_aus++;
+            sr_psmf_au_release(&au);
+        }
+    }
+    CHECK(sr_psmf_producer_eof(p), "disposition fixture reaches EOS");
+    CHECK(video_aus == FIX_PICTURES, "disposition fixture submits each picture once");
+    CHECK(audio_aus >= 2, "disposition fixture submits interleaved audio blocks");
+
+    for (uint64_t i = 0; i < video_aus; i++) {
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO, SR_PSMF_MEDIA_DECODED);
+        if (i == 0) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_WARMUP_HELD);
+        } else if (i + 1 == video_aus) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_EOS_DRAINED);
+        } else {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_DELIVERED);
+        }
+    }
+    for (uint64_t i = 0; i < audio_aus; i++) {
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO, SR_PSMF_MEDIA_DECODED);
+        if (i == 0) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_WARMUP_HELD);
+        } else if (i + 1 == audio_aus) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_REJECTED);
+        } else {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_DELIVERED);
+        }
+    }
+
+    SrPsmfProducerStats st;
+    sr_psmf_producer_stats(p, &st);
+    CHECK(st.video_warmup_held == 1 && st.audio_warmup_held == 1,
+          "warm-up outputs remain explicitly accounted while held");
+    for (int call = 0; call < 3; call++) {
+        /* The first three synthetic getter calls return NO_DATA without changing a held output. */
+        CHECK(st.video_warmup_held == 1 && st.audio_warmup_held == 1,
+              "warm-up getter keeps decoded outputs held");
+    }
+    CHECK(sr_psmf_producer_resolve_warmup_hold(p, SR_PSMF_AU_VIDEO,
+                                                SR_PSMF_MEDIA_DELIVERED),
+          "video warm-up output transitions to delivery");
+    CHECK(sr_psmf_producer_resolve_warmup_hold(p, SR_PSMF_AU_AUDIO,
+                                                SR_PSMF_MEDIA_DELIVERED),
+          "audio warm-up output transitions to delivery");
+    sr_psmf_producer_stats(p, &st);
+
+    check_media_conservation("video", st.video_decoded, st.video_delivered,
+                             st.video_warmup_held, st.video_eos_drained,
+                             st.video_rejected);
+    check_media_conservation("audio", st.audio_decoded, st.audio_delivered,
+                             st.audio_warmup_held, st.audio_eos_drained,
+                             st.audio_rejected);
+    CHECK(st.video_submitted == video_aus && st.video_decoded == video_aus,
+          "video submission and decode counters are exact");
+    CHECK(st.video_delivered == video_aus - 1 && st.video_eos_drained == 1 &&
+              st.video_rejected == 0 && st.video_warmup_held == 0,
+          "video dispositions classify warm-up and EOS outputs");
+    CHECK(st.audio_submitted == audio_aus && st.audio_decoded == audio_aus,
+          "audio submission and decode counters are exact");
+    CHECK(st.audio_delivered == audio_aus - 1 && st.audio_rejected == 1 &&
+              st.audio_eos_drained == 0 && st.audio_warmup_held == 0,
+          "audio dispositions classify warm-up delivery and rejection");
+
     sr_psmf_producer_close(p);
     free(bytes);
 }
@@ -605,20 +738,36 @@ static void test_real_decode_into_guest_buffer(void) {
                 CHECK(au.pts >= last_pts, "known video timestamps remain ordered");
                 last_pts = au.pts;
             }
-            sr_h264_submit_au(dec, au.data, au.size);
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_SUBMITTED);
+            int submit_rc = sr_h264_submit_au(dec, au.data, au.size);
+            CHECK(submit_rc == 0, "a complete picture is accepted by the decoder");
             sr_psmf_au_release(&au);
             aus++;
         }
         int r = sr_h264_frame_ex(dec, 0, &target, &info);
         CHECK(r >= 0, "decoding a fed access unit never fails");
         if (r > 0) {
-            CHECK(info.width == 64 && info.height == 64, "decoded frame reports the fixture dimensions");
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_DECODED);
+            int valid = info.width == 64 && info.height == 64 &&
+                        info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                        info.delivered_format == SR_H264_PIXEL_8888 &&
+                        info.stride == 64 * 4;
+            CHECK(info.width == 64 && info.height == 64,
+                  "decoded frame reports the fixture dimensions");
             CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
                   "decoder-native format remains explicit");
             CHECK(info.delivered_format == SR_H264_PIXEL_8888,
                   "guest delivery format remains explicit");
             CHECK(info.stride == 64 * 4, "guest delivery stride is explicit");
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         valid ? SR_PSMF_MEDIA_DELIVERED :
+                                                 SR_PSMF_MEDIA_REJECTED);
             frames_before_eos++;
+            flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_FRAME_READY,
+                                        (uint32_t)frames_before_eos,
+                                        (uint32_t)info.width, (uint32_t)info.height);
         }
         if (sr_psmf_producer_eof(p) && r == 0) break;
     }
@@ -632,6 +781,16 @@ static void test_real_decode_into_guest_buffer(void) {
         int r = sr_h264_drain(dec, &target, &info);
         CHECK(r >= 0, "end-of-stream drain never fails");
         if (r <= 0) break;
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                     SR_PSMF_MEDIA_DECODED);
+        int valid = info.width == 64 && info.height == 64 &&
+                    info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                    info.delivered_format == SR_H264_PIXEL_8888 &&
+                    info.stride == 64 * 4;
+        CHECK(valid, "EOS-drained frame satisfies the fixture contract");
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                     valid ? SR_PSMF_MEDIA_EOS_DRAINED :
+                                             SR_PSMF_MEDIA_REJECTED);
         frames_after_eos++;
     }
     CHECK(frames_before_eos + frames_after_eos == FIX_PICTURES,
@@ -642,6 +801,19 @@ static void test_real_decode_into_guest_buffer(void) {
     int extra = 0;
     for (int i = 0; i < 8; i++) if (sr_h264_drain(dec, &target, &info) > 0) extra++;
     CHECK(extra == 0, "a drained decoder produces no further pictures");
+    SrPsmfProducerStats st;
+    sr_psmf_producer_stats(p, &st);
+    check_media_conservation("real H.264 video", st.video_decoded,
+                             st.video_delivered, st.video_warmup_held,
+                             st.video_eos_drained, st.video_rejected);
+    CHECK(st.video_submitted == (uint64_t)aus,
+          "real H.264 submission counter matches accepted pictures");
+    CHECK(st.video_decoded == (uint64_t)(frames_before_eos + frames_after_eos),
+          "real H.264 decode counter matches output pictures");
+    CHECK(st.video_delivered == (uint64_t)frames_before_eos &&
+              st.video_eos_drained == (uint64_t)frames_after_eos &&
+              st.video_warmup_held == 0 && st.video_rejected == 0,
+          "real H.264 outputs have exact getter and EOS dispositions");
     sr_h264_destroy(dec);
     sr_psmf_producer_close(p);
     free(bytes);
@@ -1232,80 +1404,192 @@ static void test_multistream_selection(void) {
     free(bytes);
 }
 
+/* Decoder-independent fail-closed paths of the #302 YCbCr contract. These run on every host,
+ * including ones without an H.264 backend, so the refusals and the hidden-state guard keep
+ * runtime coverage when the guest-picture probe below SKIPs. */
+static void test_mpeg_ycbcr_fail_closed_paths(void) {
+    enum {
+        FC_DESC = 0x08200000u,
+        FC_DATA = 0x08210000u,
+        FC_SIZE = 0x08220000u,
+        FC_YCBCR = 0x08230000u,
+        FC_RANGE = 0x08240000u,
+        FC_DEST = 0x08250000u,
+        FC_PTR = 0x08260000u,
+        FC_INIT = 0x08270000u,
+        FC_AU = 0x08280000u,
+    };
+    MEM_W32(FC_DESC, 0u);
+    CHECK(mpeg_create(FC_DESC, FC_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "fail-closed fixture creates a decoder-less MPEG context");
+    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 64u, 32u, FC_SIZE) == 0 &&
+              MEM_R32(FC_SIZE) == 3200u,
+          "YCbCr query returns the checked planar size");
+    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 17u, 32u, FC_SIZE) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "YCbCr query rejects unsupported geometry");
+    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 64u, 32u, FC_SIZE + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "YCbCr query rejects an unaligned result pointer");
+    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR) == 0,
+          "YCbCr init accepts an aligned allocation");
+    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "YCbCr init rejects an unaligned allocation");
+    YcbcrBuf *state = ycbcr_find(FC_DESC, FC_YCBCR);
+    CHECK(state != NULL && state->rgba != NULL, "YCbCr init retains host picture state");
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(FC_PTR, FC_YCBCR);
+    MEM_W32(FC_RANGE, 0u);
+    MEM_W32(FC_RANGE + 4u, 0u);
+    MEM_W32(FC_RANGE + 8u, 64u);
+    MEM_W32(FC_RANGE + 12u, 32u);
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, 0u, 64u, FC_DEST) == SCE_MPEG_ERROR_INVALID_VALUE,
+          "CSC rejects an invalid range pointer");
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == 0 &&
+              MEM_R8(FC_DEST) == 0x40u,
+          "CSC writes the retained host picture deterministically");
+    CHECK(mpeg_avc_copy_ycbcr(FC_DESC, FC_YCBCR, FC_YCBCR + 0x10000u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "Copy rejects an uninitialized source");
+    MEM_W32(FC_INIT, 0xdeadbeefu);
+    CHECK(mpeg_avc_decode_ycbcr(FC_DESC, FC_AU, FC_PTR, FC_INIT) == SCE_MPEG_ERROR_NO_DATA &&
+              MEM_R32(FC_INIT) == 0u,
+          "Decode reports no picture and clears ready without a decoder");
+    state = ycbcr_find(FC_DESC, FC_YCBCR);
+    if (state) state->valid = 1;
+    MEM_W32(FC_RANGE + 8u, 80u);
+    MEM_W32(FC_RANGE + 12u, 40u);
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == 0,
+          "CSC clips a partial source range");
+    MEM_W32(FC_INIT, 0xdeadbeefu);
+    CHECK(mpeg_avc_decode_stop_ycbcr(FC_DESC, FC_YCBCR, FC_INIT) == 0 && MEM_R32(FC_INIT) == 0u,
+          "Stop clears the tracked picture state");
+    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR) == 0,
+          "YCbCr reinitialization resets the allocation");
+    state = ycbcr_find(FC_DESC, FC_YCBCR);
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(FC_RANGE + 8u, 64u);
+    MEM_W32(FC_RANGE + 12u, 32u);
+    MEM_W8(FC_YCBCR, 0xa5u);
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == SCE_MPEG_ERROR_INVALID_VALUE,
+          "guest mutation cannot reuse hidden RGBA state");
+}
+
 static void test_mpeg_ycbcr_guest_contract(void) {
     enum {
         TD_MPEG_DESC = 0x08100000u,
         TD_MPEG_DATA = 0x08110000u,
         TD_MPEG_SIZE = 0x08120000u,
         TD_MPEG_YCBCR = 0x08130000u,
+        TD_MPEG_COPY = 0x08134000u,
         TD_MPEG_RANGE = 0x08140000u,
         TD_MPEG_DEST = 0x08150000u,
         TD_MPEG_PTR = 0x08160000u,
         TD_MPEG_INIT = 0x08170000u,
         TD_MPEG_AU = 0x08180000u,
+        TD_MPEG_MODE = 0x08190000u,
+        TD_MPEG_COPY_DEST = 0x081a0000u,
     };
+    const uint32_t width = 64u, height = 64u;
+    const uint32_t header_bytes = 128u;
+    const uint32_t y_bytes = width * height;
+    const uint32_t chroma_bytes = y_bytes / 4u;
+    const uint32_t allocation_size = header_bytes + y_bytes + 2u * chroma_bytes;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    uint8_t es[65536];
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
+          "MPEG YCbCr fixture builds the existing synthetic I_PCM stream");
+    if (!es_len) return;
+
     MEM_W32(TD_MPEG_DESC, 0u);
     CHECK(mpeg_create(TD_MPEG_DESC, TD_MPEG_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
           "MPEG YCbCr fixture creates a context");
-    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_SIZE) == 0,
-          "MPEG YCbCr fixture queries guest geometry");
-    CHECK(MEM_R32(TD_MPEG_SIZE) == 3200u, "MPEG YCbCr fixture uses the checked planar size");
-    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 17u, 32u, TD_MPEG_SIZE) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "MPEG YCbCr query rejects unsupported geometry");
-    CHECK(mpeg_avc_query_ycbcr_size(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_SIZE + 1u) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "MPEG YCbCr query rejects an unaligned result pointer");
-    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR) == 0,
-          "MPEG YCbCr fixture initializes guest storage");
-    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR + 1u) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "MPEG YCbCr init rejects an unaligned allocation");
-    YcbcrBuf *state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
-    CHECK(state != NULL && state->rgba != NULL, "MPEG YCbCr fixture retains host state");
-    if (state) {
-        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
-        state->valid = 1;
+    Mpeg *ctx = mpeg_find(TD_MPEG_DESC);
+    CHECK(ctx != NULL, "MPEG YCbCr fixture finds its context");
+    if (!ctx) return;
+    ctx->streamWidth = width;
+    ctx->streamHeight = height;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    ctx->totalPackets = 1u;
+    ctx->fedPackets = 1u;
+    const int decoder_available = ctx->h264 >= 0;
+    if (!decoder_available) {
+        fprintf(stderr, "SKIP: YCbCr guest-picture probe needs a real H.264 backend\n");
+    } else {
+        for (int i = 0; i < FIX_PICTURES; i++)
+            CHECK(sr_h264_submit_au(ctx->h264, es + au_off[i], au_len[i]) == 0,
+                  "synthetic I_PCM access unit reaches the MPEG decoder");
     }
+
+    memset(SR_HOST(TD_MPEG_YCBCR), 0xa5, allocation_size);
+    memset(SR_HOST(TD_MPEG_COPY), 0xa5, allocation_size);
+    memset(SR_HOST(TD_MPEG_DEST), 0x5a, (size_t)width * height * 4u);
+    memset(SR_HOST(TD_MPEG_AU), 0, 24u);
+    CHECK(guest_mpeg_import(0x211a057cu, TD_MPEG_DESC, UINT32_MAX, width, height, TD_MPEG_SIZE) == 0,
+          "guest dispatch queries YCbCr storage size");
+    CHECK(MEM_R32(TD_MPEG_SIZE) == allocation_size,
+          "guest YCbCr query size covers the modeled header and packed 4:2:0 spans");
+    CHECK(guest_mpeg_import(0x67179b1bu, TD_MPEG_DESC, UINT32_MAX, width, height, TD_MPEG_YCBCR) == 0,
+          "guest dispatch initializes the decode allocation");
+    CHECK(guest_mpeg_import(0x67179b1bu, TD_MPEG_DESC, UINT32_MAX, width, height, TD_MPEG_COPY) == 0,
+          "guest dispatch initializes the copy allocation");
+    MEM_W32(TD_MPEG_MODE, 0u);
+    MEM_W32(TD_MPEG_MODE + 4u, 3u);
+    CHECK(guest_mpeg_import(0xa11c7026u, TD_MPEG_DESC, TD_MPEG_MODE, 0u, 0u, 0u) == 0,
+          "guest dispatch selects RGBA output for the CSC pixel contract");
+    CHECK(guest_bytes_are(TD_MPEG_YCBCR, header_bytes, 0u),
+          "Init zeroes the 128-byte guest header");
+    CHECK(guest_bytes_are(TD_MPEG_YCBCR + header_bytes, y_bytes, 0u),
+          "Init zeroes the luma-sized guest plane span");
+    CHECK(guest_bytes_are(TD_MPEG_YCBCR + header_bytes + y_bytes, chroma_bytes, 0u),
+          "Init zeroes the first quarter-size chroma plane span");
+    CHECK(guest_bytes_are(TD_MPEG_YCBCR + header_bytes + y_bytes + chroma_bytes,
+                          chroma_bytes, 0u),
+          "Init zeroes the second quarter-size chroma plane span");
+
     MEM_W32(TD_MPEG_PTR, TD_MPEG_YCBCR);
     MEM_W32(TD_MPEG_RANGE, 0u);
     MEM_W32(TD_MPEG_RANGE + 4u, 0u);
-    MEM_W32(TD_MPEG_RANGE + 8u, 64u);
-    MEM_W32(TD_MPEG_RANGE + 12u, 32u);
-    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, 0u, 64u, TD_MPEG_DEST) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "MPEG CSC rejects an invalid range pointer");
-    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) == 0,
-          "MPEG YCbCr fixture converts an untouched allocation");
-    CHECK(MEM_R8(TD_MPEG_DEST) == 0x40u, "MPEG CSC writes the host picture deterministically");
-    CHECK(mpeg_avc_copy_ycbcr(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_YCBCR + 0x10000u) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "MPEG Copy rejects an uninitialized source");
-    CHECK(mpeg_avc_decode_ycbcr(TD_MPEG_DESC, TD_MPEG_AU, TD_MPEG_PTR, TD_MPEG_INIT) ==
-              SCE_MPEG_ERROR_NO_DATA && MEM_R32(TD_MPEG_INIT) == 0u,
-          "MPEG Decode reports no picture without a decoder");
-    state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
-    if (state) state->valid = 1;
-    MEM_W32(TD_MPEG_RANGE + 8u, 80u);
-    MEM_W32(TD_MPEG_RANGE + 12u, 40u);
-    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) == 0,
-          "MPEG CSC clips a partial source range");
-    CHECK(mpeg_avc_decode_stop_ycbcr(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_INIT) == 0 &&
-              MEM_R32(TD_MPEG_INIT) == 0u,
-          "MPEG Stop clears the tracked picture state");
-    CHECK(mpeg_avc_init_ycbcr(TD_MPEG_DESC, UINT32_MAX, 64u, 32u, TD_MPEG_YCBCR) == 0,
-          "MPEG YCbCr reinitialization resets the allocation");
-    state = ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR);
-    if (state) {
-        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
-        state->valid = 1;
+    MEM_W32(TD_MPEG_RANGE + 8u, width);
+    MEM_W32(TD_MPEG_RANGE + 12u, height);
+    MEM_W32(TD_MPEG_INIT, 0xdeadbeefu);
+    uint32_t decode_result = guest_mpeg_import(0xf0eb1125u, TD_MPEG_DESC, TD_MPEG_AU,
+                                               TD_MPEG_PTR, TD_MPEG_INIT, 0u);
+    if (decoder_available) {
+        CHECK(decode_result == 0u && MEM_R32(TD_MPEG_INIT) == 1u,
+              "guest Decode succeeds and sets ready when the synthetic picture is decoded");
+        CHECK(ctx->h264Frames > 0, "guest Decode retained a decoded synthetic I_PCM picture");
+        CHECK(guest_bytes_are(TD_MPEG_YCBCR, allocation_size, 0u),
+              "decoded picture leaves the modeled guest YCbCr allocation zero-filled");
+        CHECK(guest_mpeg_import(0x0558b075u, TD_MPEG_DESC, TD_MPEG_COPY, TD_MPEG_YCBCR, 0u, 0u) == 0u,
+              "guest Copy accepts the initialized source and destination");
+        CHECK(guest_bytes_are(TD_MPEG_COPY, allocation_size, 0u),
+              "guest Copy copies the current modeled zero-filled allocation bytes");
+        memset(SR_HOST(TD_MPEG_DEST), 0x5a, (size_t)width * height * 4u);
+        memset(SR_HOST(TD_MPEG_COPY_DEST), 0x5a, (size_t)width * height * 4u);
+        static const uint8_t expected_rgba[4] = { 255u, 203u, 138u, 255u };
+        CHECK(guest_mpeg_import(0x31bd0272u, TD_MPEG_DESC, TD_MPEG_COPY, TD_MPEG_RANGE,
+                                width, TD_MPEG_COPY_DEST) == 0u,
+              "guest CSC accepts the copied decoded picture");
+        CHECK(guest_rgba_matches(TD_MPEG_COPY_DEST, width, height, expected_rgba),
+              "guest Copy retains the decoded picture for later CSC");
+        CHECK(guest_mpeg_import(0x31bd0272u, TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE,
+                                width, TD_MPEG_DEST) == 0u,
+              "guest CSC accepts the decoded picture");
+        CHECK(guest_rgba_matches(TD_MPEG_DEST, width, height, expected_rgba),
+              "guest CSC writes decoded I_PCM pixels into the guest destination");
+    } else {
+        fprintf(stderr, "SKIP: guest Decode/Copy/CSC pixel assertions need an H.264 backend\n");
     }
-    MEM_W32(TD_MPEG_RANGE + 8u, 64u);
-    MEM_W32(TD_MPEG_RANGE + 12u, 32u);
-    MEM_W8(TD_MPEG_YCBCR, 0xa5u);
-    CHECK(mpeg_avc_csc(TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE, 64u, TD_MPEG_DEST) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "guest mutation cannot reuse hidden RGBA state");
+
     CHECK(mpeg_query_pcm_es_size(TD_MPEG_DESC, TD_MPEG_SIZE + 0x20u, TD_MPEG_SIZE + 0x24u) == 0 &&
               MEM_R32(TD_MPEG_SIZE + 0x20u) == 320u && MEM_R32(TD_MPEG_SIZE + 0x24u) == 320u,
           "MPEG PCM size query returns the documented fixed sizes");
@@ -1323,6 +1607,7 @@ static void test_mpeg_ycbcr_guest_contract(void) {
 
 int main(int argc, char **argv) {
     sr_perf_init();
+    sr_flight_init();
     unsigned fuzz_iterations = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--fuzz-iters") == 0 && i + 1 < argc) {
@@ -1338,6 +1623,7 @@ int main(int argc, char **argv) {
     memset(arena, 0, sizeof(arena));
 
     test_demux_and_au_contract();
+    test_media_disposition_conservation();
     test_multistream_selection();
     test_track_independence();
     test_real_decode_into_guest_buffer();
@@ -1348,6 +1634,7 @@ int main(int argc, char **argv) {
     test_backend_registry_fail_closed();
     test_backend_reset_and_restart();
     test_backend_malformed_input();
+    test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 

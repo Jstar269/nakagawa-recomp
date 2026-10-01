@@ -86,6 +86,12 @@ static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
 
 static int      s_renderer_terminal = 0;
+/* A quit request (window close, SDL_EVENT_QUIT, ESC) is sticky. Two call sites drain
+ * the SDL event queue -- gui_pump's sdl3vk_poll() and every present -- and only the
+ * former exits the process. When a present consumed the quit (the common case: it
+ * polls every frame), the request was lost and the runtime kept running with no
+ * window, so the launcher could never see the game end. */
+static int      s_quit_requested = 0;
 static uint64_t s_swapchain_gen = 0;
 static uint64_t s_frame_sem_gen = 0;
 
@@ -246,9 +252,17 @@ static int create_swapchain(void) {
     sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
     {
         VkPresentModeKHR pm[8]; uint32_t npm = 8;
-        if (vkGetPhysicalDeviceSurfacePresentModesKHR(s_pdev, s_surf, &npm, pm) >= VK_SUCCESS)
-            for (uint32_t i = 0; i < npm; i++)
-                if (pm[i] == VK_PRESENT_MODE_MAILBOX_KHR) { sci.presentMode = pm[i]; break; }
+        int avail[8]; int navail = 0;
+        if (vkGetPhysicalDeviceSurfacePresentModesKHR(s_pdev, s_surf, &npm, pm) >= VK_SUCCESS) {
+            for (uint32_t i = 0; i < npm && i < 8; i++) avail[navail++] = (int)pm[i];
+        }
+        const char *vs = getenv("SR_VSYNC");
+        int vsync_on = !vs || !vs[0] || atoi(vs) != 0;
+        sci.presentMode = (VkPresentModeKHR)sdl3vk_pick_present_mode(vsync_on, avail, navail);
+        if (!vsync_on && sci.presentMode == VK_PRESENT_MODE_FIFO_KHR) {
+            fprintf(stderr, "sdl3vk: SR_VSYNC=0 requested but this surface offers no "
+                            "MAILBOX/IMMEDIATE mode; falling back to FIFO (vsync)\n");
+        }
     }
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = old;
@@ -261,6 +275,24 @@ static int create_swapchain(void) {
     memset(s_swap_img_fence,0,sizeof(s_swap_img_fence));
     s_swapchain_gen++;
     return 1;
+}
+
+/* Guard the plain-int present-mode contract the picker documents against the
+ * Vulkan enum actually compiled against (IMMEDIATE=0, MAILBOX=1, FIFO=2). */
+typedef char sdl3vk_present_mode_immediate_is_0[(int)VK_PRESENT_MODE_IMMEDIATE_KHR == 0 ? 1 : -1];
+typedef char sdl3vk_present_mode_mailbox_is_1[(int)VK_PRESENT_MODE_MAILBOX_KHR == 1 ? 1 : -1];
+typedef char sdl3vk_present_mode_fifo_is_2[(int)VK_PRESENT_MODE_FIFO_KHR == 2 ? 1 : -1];
+
+int sdl3vk_pick_present_mode(int vsync, const int *available, int count) {
+    const int immediate = 0;
+    const int mailbox = 1;
+    const int fifo = 2;
+    if (vsync) return fifo;
+    for (int i = 0; i < count; i++)
+        if (available[i] == mailbox) return mailbox;
+    for (int i = 0; i < count; i++)
+        if (available[i] == immediate) return immediate;
+    return fifo;
 }
 
 /* ---- init --------------------------------------------------------------------------- */
@@ -276,6 +308,15 @@ int sdl3vk_init(const char *title) {
     if (!s_win) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 0;
+    }
+    {
+        /* Settings > Fullscreen (SR_FULLSCREEN), applied before the Vulkan
+         * surface is created so the swapchain picks up the right extent. */
+        const char *fs = getenv("SR_FULLSCREEN");
+        if (fs && fs[0] && atoi(fs) != 0 && !SDL_SetWindowFullscreen(s_win, true)) {
+            fprintf(stderr, "sdl3vk: SR_FULLSCREEN=1 could not be applied: %s\n",
+                    SDL_GetError());
+        }
     }
 
     Uint32 next = 0;
@@ -469,6 +510,28 @@ int sdl3vk_init(const char *title) {
     return 1;
 }
 
+bool sdl3vk_raise_window(void) {
+    if (!s_win) return false;
+
+    bool raised = SDL_RaiseWindow(s_win);
+    if (!raised) {
+        fprintf(stderr, "sdl3vk: SDL_RaiseWindow failed: %s\n", SDL_GetError());
+    }
+#ifdef _WIN32
+    SDL_PropertiesID properties = SDL_GetWindowProperties(s_win);
+    HWND window = (HWND)SDL_GetPointerProperty(
+        properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!window) {
+        fprintf(stderr, "sdl3vk: SDL did not expose the Win32 game window handle\n");
+        raised = false;
+    } else if (!SetForegroundWindow(window)) {
+        fprintf(stderr, "sdl3vk: Win32 refused foreground activation for the game window\n");
+        raised = false;
+    }
+#endif
+    return raised;
+}
+
 /* ---- input -------------------------------------------------------------------------- */
 
 /* The profile's host enums index SDL's arrays directly; keep them numerically identical. */
@@ -611,9 +674,9 @@ static void poll_input(int *quit) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
-        case SDL_EVENT_QUIT: *quit = 1; break;
+        case SDL_EVENT_QUIT: s_quit_requested = 1; break;
         case SDL_EVENT_KEY_DOWN:
-            if (ev.key.key == SDLK_ESCAPE) *quit = 1;
+            if (ev.key.key == SDLK_ESCAPE) s_quit_requested = 1;
             if (ev.key.key == SDLK_F1 && !ev.key.repeat) {
                 sdl3vk_hud_set_enabled(!s_hud_enabled);
             }
@@ -636,19 +699,20 @@ static void poll_input(int *quit) {
 
     uint32_t b = 0;
     const bool *k = SDL_GetKeyboardState(NULL);
-    /* Same bindings as the GDI front-end (gui.c read_keys). */
-    if (k[SDL_SCANCODE_RETURN]) b |= 0x0008;                       /* START   */
-    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= 0x0001; /* SELECT */
-    if (k[SDL_SCANCODE_X]) b |= 0x4000;                            /* CROSS   */
-    if (k[SDL_SCANCODE_Z]) b |= 0x2000;                            /* CIRCLE  */
-    if (k[SDL_SCANCODE_A]) b |= 0x8000;                            /* SQUARE  */
-    if (k[SDL_SCANCODE_S]) b |= 0x1000;                            /* TRIANGLE*/
-    if (k[SDL_SCANCODE_Q]) b |= 0x0100;                            /* L       */
-    if (k[SDL_SCANCODE_W]) b |= 0x0200;                            /* R       */
-    if (k[SDL_SCANCODE_UP])    b |= 0x0010;
-    if (k[SDL_SCANCODE_DOWN])  b |= 0x0040;
-    if (k[SDL_SCANCODE_LEFT])  b |= 0x0080;
-    if (k[SDL_SCANCODE_RIGHT]) b |= 0x0020;
+    /* Same bindings as the GDI front-end (gui.c read_keys), from the same table
+     * (src/core/nk_input_profile.h). */
+    if (k[SDL_SCANCODE_RETURN]) b |= NK_PSP_BTN_START_BIT;         /* START   */
+    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= NK_PSP_BTN_SELECT_BIT; /* SELECT */
+    if (k[SDL_SCANCODE_X]) b |= NK_PSP_BTN_CROSS_BIT;              /* CROSS   */
+    if (k[SDL_SCANCODE_Z]) b |= NK_PSP_BTN_CIRCLE_BIT;             /* CIRCLE  */
+    if (k[SDL_SCANCODE_A]) b |= NK_PSP_BTN_SQUARE_BIT;             /* SQUARE  */
+    if (k[SDL_SCANCODE_S]) b |= NK_PSP_BTN_TRIANGLE_BIT;           /* TRIANGLE*/
+    if (k[SDL_SCANCODE_Q]) b |= NK_PSP_BTN_LTRIGGER_BIT;           /* L       */
+    if (k[SDL_SCANCODE_W]) b |= NK_PSP_BTN_RTRIGGER_BIT;           /* R       */
+    if (k[SDL_SCANCODE_UP])    b |= NK_PSP_BTN_UP_BIT;
+    if (k[SDL_SCANCODE_DOWN])  b |= NK_PSP_BTN_DOWN_BIT;
+    if (k[SDL_SCANCODE_LEFT])  b |= NK_PSP_BTN_LEFT_BIT;
+    if (k[SDL_SCANCODE_RIGHT]) b |= NK_PSP_BTN_RIGHT_BIT;
 
     uint8_t lx = 128, ly = 128;
     s_pad_present = s_pad != NULL;
@@ -676,6 +740,7 @@ static void poll_input(int *quit) {
     }
     s_buttons = b;
     s_lx = lx; s_ly = ly;
+    if (s_quit_requested) *quit = 1;
 }
 
 int sdl3vk_get_vk(Sdl3VkInfo *out) {
@@ -2287,6 +2352,26 @@ int sdl3vk_capture_selftest(void) {
             fprintf(stderr, "terminal state: refused arm exposed stale result=%d\n",
                     sdl3vk_capture_result()); ok = 0;
         }
+    }
+
+    /* Test 7: a quit consumed by a present is not lost. The present path drains the
+     * event queue every frame, so a window close almost always lands there; the
+     * process-exit decision is made later by sdl3vk_poll(). */
+    {
+        s_renderer_terminal = 0;
+        create_swapchain();
+        SDL_Event quit_ev;
+        SDL_zero(quit_ev);
+        quit_ev.type = SDL_EVENT_QUIT;
+        if (!SDL_PushEvent(&quit_ev)) {
+            fprintf(stderr, "quit: SDL_PushEvent failed: %s\n", SDL_GetError()); ok = 0;
+        }
+        (void)sdl3vk_present_rgba(px);
+        if (sdl3vk_poll() != 0) {
+            fprintf(stderr, "quit: a quit consumed by a present was lost; sdl3vk_poll() still reports alive\n");
+            ok = 0;
+        }
+        s_quit_requested = 0;
     }
 
     int errors = sdl3vk_validation_error_count();

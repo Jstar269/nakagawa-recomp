@@ -17,7 +17,7 @@ the captured then-current-`main` classification of every cell.
 > may now resolve to an unrelated live public object. Read every bare number below as a
 > historical identifier unless it is written as an explicit link.
 
-This document is **historical evidence**, not a current plan or status dashboard.
+This document is **historical evidence**, not a current plan or status summary.
 It records what the cited hardware oracle and captured Nakagawa revision did,
 and which cells could not then be exercised. See historical tracker item #88 for the
 semantics work, and the PR ordering at the end of this file. PR-A, PR-B and PR-C1 are implemented; PR-C2
@@ -147,6 +147,13 @@ alongside the `sceKernelSendMbx` / `sceKernelPollMbx` / `sceKernelCancelReceiveM
 `sceKernelReferMbxStatus` NIDs this snapshot did not list. Live registration status is
 regenerated in [`PSP_INTR_WAITS_CENSUS.md`](PSP_INTR_WAITS_CENSUS.md); the cells below
 stay pinned until harness probe cases for the object model land.
+
+**Snapshot note (issue #339 wait batch superseded).** `sceKernelTerminateThread`,
+`sceKernelDelaySysClockThread`, `sceKernelDelaySysClockThreadCB`, `sceDisplayWaitVblankCB`
+and `sceDisplayWaitVblankStartCB` now resolve to dedicated production handlers
+(`h_TerminateThread`, `h_DelaySysClockThread`, `h_DelaySysClockThreadCB`,
+`h_DisplayWaitVblankCB`, `h_DisplayWaitVblankStartCB`, issue #339). Live registration
+status is regenerated in [`PSP_INTR_WAITS_CENSUS.md`](PSP_INTR_WAITS_CENSUS.md).
 
 Of the registered remainder the harness covers 54 probe cases. The registered APIs
 deliberately left out of the executable matrix, with their reasons:
@@ -660,7 +667,7 @@ introduce a universal pre-handler gate: fact 3 above rules it out.
    `INVALID_SIZE` (`0x80000104`) for count 256 and `CAN_NOT_WAIT` (`0x800201a7`) for valid across 3 contexts (6 cells). Test-only prerequisite first.
 7. **PR-G - registration of the 26 unregistered `waits.cpp` APIs**, in whatever order
    their subsystems land (Mbx, Tlspl, MsgPipe blocking forms,
-   `DelaySysClockThread`, the `sceDisplay` CB/Multi variants, `sceIoGetAsyncStat`).
+   `DelaySysClockThread`, the `sceDisplayWaitVblank*` CB/Multi variants, `sceIoGetAsyncStat`).
    The full VPL set (`CreateVpl`, `DeleteVpl`, `TryAllocateVpl`, `AllocateVpl`, `AllocateVplCB`,
    `FreeVpl`, `ReferVplStatus`) is now registered with wait queue integration.
    Each expands the matrix rather than changing it.

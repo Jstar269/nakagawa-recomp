@@ -44,9 +44,7 @@ In scope:
 - unsafe processing of malformed ELF/PRX/ISO/XB/PSMF or save inputs by the runtime, the Python
   translation tools (`tools/`), or the native player and its core library (`src/player/`, `src/core/`);
 - path traversal or unsafe filesystem access in the VFS, extraction and staging tools, the native
-  player, and the dashboard APIs;
-- command execution, secret exposure, or access-control issues in the dashboard (`interface/`), which
-  binds to `127.0.0.1` by default;
+  player;
 - host-side hardware-runner and oracle tooling (`tools/psp_oracle/`) that talks to a connected device;
 - publication and provenance controls that could let private inputs, paths, keys, or traces reach the
   public tree, an export, or a CI log; and
@@ -60,4 +58,4 @@ Out of scope:
 - reports that require redistribution of copyrighted game data.
 
 This research software processes untrusted binary formats and is not sandboxed. Run it only on files
-you are authorized to use, and do not expose the dashboard to untrusted networks.
+you are authorized to use.

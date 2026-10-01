@@ -24,11 +24,13 @@ import subprocess
 import sys
 from typing import Any
 
+from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
+
 ROOT = Path(__file__).resolve().parent.parent
 
 #: Machine-readable source of truth for every third-party component that can enter
-#: a release artifact. The native package, the dashboard standalone output, the
-#: SBOM and the release gate all read this one file.
+#: a release artifact. The native package, the SBOM and the release gate all read
+#: this one file.
 COMPONENTS_IDENTITY = "assets/third_party_components.json"
 COMPONENTS_PATH = ROOT / COMPONENTS_IDENTITY
 
@@ -87,13 +89,13 @@ def notice_file_name(record: dict[str, Any]) -> str:
 def component_license_sources(
     record: dict[str, Any], toolchain_root: Path | None, repo_root: Path
 ) -> list[tuple[Path, str]]:
-    """Return the (path, display label) license texts for one component record.
+    """Resolve every declared license text, preferring in-tree copies.
 
-    The in-tree text under ``third_party/licenses/`` is authoritative because it
-    travels with the source; the local toolchain copy is the fallback so a host
-    whose toolchain is newer than the checked-in text still resolves one.
+    Each inventory entry is required. The local toolchain is a per-entry
+    fallback; finding one declared text must not hide another missing notice.
     """
     sources: list[tuple[Path, str]] = []
+    missing: list[str] = []
     for entry in record.get("license_texts", []):
         in_tree = repo_root / entry["file"]
         if in_tree.is_file():
@@ -104,6 +106,17 @@ def component_license_sources(
             candidate = toolchain_root / toolchain_rel
             if candidate.is_file():
                 sources.append((candidate, toolchain_rel))
+                continue
+        missing.append(entry["file"])
+
+    if missing:
+        component = record.get("name", "component")
+        declared = ", ".join(missing)
+        raise PackageRouteError(
+            "PACKAGE_LICENSE_TEXT_MISSING",
+            f"LICENSE_TEXT_MISSING: required license text(s) for {component} "
+            f"were not found in the source tree or local toolchain: {declared}",
+        )
     return sources
 
 
@@ -181,6 +194,20 @@ def is_system_dll(name: str) -> bool:
     return any(pat.fullmatch(clean) is not None for pat in SYSTEM_DLL_PATTERNS)
 
 
+def _prerequisite_toolchain_root() -> Path | None:
+    """The pinned-prerequisite installer's UCRT64 root, when installed (#296/#547).
+
+    the installer extracts each MSYS2 package under ``<data root>/prerequisites/msys64``,
+    so its toolchain root is ``<data root>/prerequisites/msys64/ucrt64`` with
+    ``bin/`` and ``share/licenses/`` coming from the packages themselves.
+    """
+    try:
+        data_root = default_data_root()
+    except PrerequisiteFetchError:
+        return None
+    return data_root / "prerequisites" / "msys64" / "ucrt64"
+
+
 def resolve_toolchain_root() -> Path | None:
     """Discover the local compiler toolchain root (e.g. C:/msys64/ucrt64)."""
     def is_toolchain_root(candidate: Path) -> bool:
@@ -197,6 +224,12 @@ def resolve_toolchain_root() -> Path | None:
         gcc_bin = Path(gcc_path).resolve().parent
         if gcc_bin.name.lower() == "bin":
             candidates.append(gcc_bin.parent)
+    # The one-consent installer's pinned toolchain outranks the hardcoded MSYS2
+    # fallback, so the clean-PATH route stages the closure from the toolchain the
+    # build just used.
+    prerequisite_root = _prerequisite_toolchain_root()
+    if prerequisite_root is not None:
+        candidates.append(prerequisite_root)
     candidates.append(Path("C:/msys64/ucrt64"))
     for candidate in candidates:
         if is_toolchain_root(candidate):

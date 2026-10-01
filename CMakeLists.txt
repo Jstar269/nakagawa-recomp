@@ -27,6 +27,16 @@ set(CORE_SOURCES
     src/core/nk_xb.c
     src/core/nk_input_profile.c
     src/core/nk_json.c
+    src/core/nk_psp_crypto.c
+    src/core/nk_psp_keystore.c
+    src/core/nk_psp_aes.c
+    src/core/nk_psp_sha1.c
+    src/core/nk_psp_ec.c
+    src/core/nk_psp_kirk.c
+    src/core/nk_psp_prx.c
+    src/core/nk_psp_kle.c
+    src/core/nk_psp_inflate.c
+    src/core/nk_psp_container.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -37,6 +47,9 @@ else()
 endif()
 
 add_library(nakagawa_core STATIC ${CORE_SOURCES})
+if(WIN32)
+    target_link_libraries(nakagawa_core PUBLIC shell32 ole32 uuid)
+endif()
 
 target_include_directories(nakagawa_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
@@ -47,6 +60,9 @@ target_include_directories(nakagawa_core PUBLIC
 # Native Core Test Harness
 # -----------------------------------------------------------------------------
 enable_testing()
+# Several native CTests write relative scratch files under build/. Keep that
+# directory in the CMake binary tree for out-of-source builds.
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")
 
 add_executable(test_core_catalog tests/native/test_core_catalog.c)
 target_link_libraries(test_core_catalog PRIVATE nakagawa_core)
@@ -76,10 +92,12 @@ add_test(NAME pgf_public_test COMMAND test_pgf_public)
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
     src/player/setup_staging.c
+    src/rt/archive_vfs.c
 )
 target_include_directories(test_xb_parser PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rt
 )
 target_link_libraries(test_xb_parser PRIVATE nakagawa_core)
 add_test(NAME xb_parser_test COMMAND test_xb_parser)
@@ -99,6 +117,13 @@ target_include_directories(test_player_state PRIVATE
 )
 target_link_libraries(test_player_state PRIVATE nakagawa_core)
 add_test(NAME player_state_test COMMAND test_player_state)
+# The sample player state uses a source-relative fixture path, so this CTest
+# must run from the source tree just like the Makefile test target.
+# Scratch files go to the binary tree, so an out-of-source build is
+# self-sufficient and never needs <source>/build to exist.
+set_tests_properties(player_state_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    ENVIRONMENT "NK_TEST_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/build")
 
 add_executable(test_package_builder
     tests/native/test_package_builder.c
@@ -155,12 +180,12 @@ if(BUILD_PLAYER)
     endif()
 
     if(NOT SDL3_FOUND AND NK_BOOTSTRAP_SDL3)
-        message(STATUS "System SDL3 not found; bootstrapping pinned official release SDL3 3.2.4")
+        message(STATUS "System SDL3 not found; bootstrapping pinned official release SDL3 3.4.16")
         include(FetchContent)
         FetchContent_Declare(
             SDL3
-            URL "https://github.com/libsdl-org/SDL/releases/download/release-3.2.4/SDL3-3.2.4.tar.gz"
-            URL_HASH SHA256=2938328317301dfbe30176d79c251733aa5e7ec5c436c800b99ed4da7adcb0f0
+            URL "https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-3.4.16.tar.gz"
+            URL_HASH SHA256=7322236cd12090c3eb40b9728be4d49c76f66ad17d04369584d4ecad5cf77c68
         )
         set(SDL_TEST OFF CACHE BOOL "" FORCE)
         set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)

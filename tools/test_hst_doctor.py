@@ -24,8 +24,77 @@ import nk_doctor_checks  # noqa: E402
 import nk_doctor_core  # noqa: E402
 import shader_embed  # noqa: E402
 from hst_test_fixtures import write_elf, write_iso, write_psp_header  # noqa: E402
+from nk_core.prereq_fetcher import PrerequisiteFetchError  # noqa: E402
 
 _CHECKS_MODULE = nk_doctor_checks
+
+
+class DataDirectoryTests(unittest.TestCase):
+    def test_doctor_reports_resolved_root_and_legacy_location(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            legacy_root = profile / "Nakagawa" / "data"
+            legacy_root.mkdir(parents=True)
+            resolved_root = Path(temp) / "ApplicationData" / "Nakagawa" / "data"
+            report = nk_doctor.Report(Path(temp) / "repo", "repo")
+
+            with mock.patch.dict(os.environ, {"USERPROFILE": str(profile)}, clear=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+                 mock.patch.object(nk_doctor_checks, "default_data_root", return_value=resolved_root):
+                nk_doctor_checks.check_data_directory(report)
+
+            root_results = [result for result in report.results if result.code == "DATA_DIR_ROOT"]
+            legacy_results = [result for result in report.results if result.code == "LEGACY_DATA_DIR_FOUND"]
+            self.assertEqual(len(root_results), 1)
+            self.assertEqual(root_results[0].path, str(resolved_root))
+            self.assertEqual(len(legacy_results), 1)
+            self.assertEqual(legacy_results[0].path, str(legacy_root))
+            self.assertIn(str(resolved_root), legacy_results[0].detail or "")
+            self.assertFalse(resolved_root.exists())
+
+    def test_doctor_does_not_report_legacy_location_when_new_root_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            (profile / "Nakagawa" / "data").mkdir(parents=True)
+            resolved_root = Path(temp) / "ApplicationData" / "Nakagawa" / "data"
+            resolved_root.mkdir(parents=True)
+            report = nk_doctor.Report(Path(temp) / "repo", "repo")
+
+            with mock.patch.dict(os.environ, {"USERPROFILE": str(profile)}, clear=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+                 mock.patch.object(nk_doctor_checks, "default_data_root", return_value=resolved_root):
+                nk_doctor_checks.check_data_directory(report)
+
+            self.assertFalse(any(result.code == "LEGACY_DATA_DIR_FOUND" for result in report.results))
+
+    def test_doctor_reports_legacy_location_when_current_root_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile"
+            legacy_root = profile / "Nakagawa" / "data"
+            legacy_root.mkdir(parents=True)
+            report = nk_doctor.Report(Path(temp) / "repo", "repo")
+
+            with mock.patch.dict(os.environ, {"USERPROFILE": str(profile)}, clear=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+                 mock.patch.object(
+                     nk_doctor_checks,
+                     "default_data_root",
+                     side_effect=PrerequisiteFetchError("DATA_DIR_UNAVAILABLE"),
+                 ):
+                nk_doctor_checks.check_data_directory(report)
+
+            codes = [result.code for result in report.results]
+            legacy_results = [result for result in report.results if result.code == "LEGACY_DATA_DIR_FOUND"]
+            self.assertIn("DATA_DIR_UNAVAILABLE", codes)
+            self.assertEqual(len(legacy_results), 1)
+            self.assertEqual(legacy_results[0].path, str(legacy_root))
+            self.assertIn("unavailable", legacy_results[0].detail or "")
+
+
+# Scripts the CONSUMER package build runs, keyed by repo-relative posix path.
+# They target the Windows PowerShell that ships with Windows (5.1) so a clean
+# machine needs no PowerShell 7.
+CONSUMER_BUILD_POWERSHELL = {"tools/copy_build_assets.ps1": "5.1"}
 
 
 class ElfValidationTests(unittest.TestCase):
@@ -151,6 +220,60 @@ class PrivateInputTests(unittest.TestCase):
             asset = [result for result in report.results if result.code == "INPUT_XB_DATA"][-1]
             self.assertEqual(asset.status, "FAIL")
 
+    def test_parent_loose_files_warn_when_manifest_has_no_migration_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "content" / "archive"
+            data_root.mkdir(parents=True)
+            (data_root / "asset.bin").write_bytes(b"synthetic-primary")
+            loose_file = root / "content" / "data" / "sound" / "menu.csv"
+            loose_file.parent.mkdir(parents=True)
+            loose_file.write_bytes(b"synthetic-loose")
+            manifest = {
+                "kind": "synthetic",
+                "filesystem": {"data_root": "content/archive"},
+            }
+            report = nk_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": ""}):
+                self.check_inputs(
+                    root,
+                    report,
+                    need_iso=False,
+                    need_assets=True,
+                    context_manifest=manifest,
+                )
+            warnings = [result for result in report.results if result.code == "MIGRATE_LOOSE_CONTENT_ROOTS"]
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(warnings[0].status, "WARN")
+            self.assertIn("#289 is in the works", warnings[0].summary)
+
+    def test_parent_loose_migration_binding_suppresses_doctor_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "content" / "archive"
+            data_root.mkdir(parents=True)
+            (data_root / "asset.bin").write_bytes(b"synthetic-primary")
+            loose_file = root / "content" / "data" / "sound" / "menu.csv"
+            loose_file.parent.mkdir(parents=True)
+            loose_file.write_bytes(b"synthetic-loose")
+            manifest = {
+                "kind": "synthetic",
+                "filesystem": {
+                    "data_root": "content/archive",
+                    "loose_content_roots": [{"root": ".", "mount": "", "precedence": 0}],
+                },
+            }
+            report = nk_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": ""}):
+                self.check_inputs(
+                    root,
+                    report,
+                    need_iso=False,
+                    need_assets=True,
+                    context_manifest=manifest,
+                )
+            self.assertFalse(any(result.code == "MIGRATE_LOOSE_CONTENT_ROOTS" for result in report.results))
+
     def test_expected_disc_id_is_retired_from_doctor_core(self) -> None:
         self.assertFalse(
             hasattr(nk_doctor_core, "EXPECTED_DISC_ID"),
@@ -264,9 +387,8 @@ class PrivateInputTests(unittest.TestCase):
 
 
 class RepositoryContractTests(unittest.TestCase):
-    def make_docs(self, root: Path, *, package_license: str = "GPL-3.0-or-later") -> None:
+    def make_docs(self, root: Path, *, manifest_license: str = "GPL-3.0-or-later") -> None:
         (root / "docs").mkdir(parents=True)
-        (root / "interface").mkdir()
         (root / "assets").mkdir()
         (root / "LICENSE").write_text("GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n", encoding="utf-8")
         notice = """GPL-3.0-or-later
@@ -282,20 +404,19 @@ This remains subject to legal review.
         (root / "SECURITY.md").write_text("security\n", encoding="utf-8")
         (root / "CODE_OF_CONDUCT.md").write_text("conduct\n", encoding="utf-8")
         (root / "docs" / "PUBLICATION_READINESS.md").write_text("publication\n", encoding="utf-8")
-        (root / "interface" / "package.json").write_text(json.dumps({"license": package_license}), encoding="utf-8")
         (root / "assets" / "release_manifest.json").write_text(
-            json.dumps({"license": "GPL-3.0-or-later"}), encoding="utf-8"
+            json.dumps({"license": manifest_license}), encoding="utf-8"
         )
 
     def test_license_metadata_mismatch_is_a_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.make_docs(root, package_license="GPL-2.0-or-later")
+            self.make_docs(root, manifest_license="GPL-2.0-or-later")
             report = nk_doctor.Report(root, "repo")
             nk_doctor.check_repository_contract(report)
             warnings = [result for result in report.results if result.code == "LICENSE_METADATA" and result.status == "WARN"]
             self.assertEqual(len(warnings), 1)
-            self.assertIn("package.json", warnings[0].path or "")
+            self.assertIn("release_manifest.json", warnings[0].path or "")
 
     def test_consistent_contract_has_no_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -556,6 +677,10 @@ class EnvironmentContractTests(unittest.TestCase):
                 self.assertEqual(result.status, "FAIL")
 
     def test_powershell_floor_is_pinned_to_the_documented_minimum(self) -> None:
+        # The consumer build step runs under the Windows PowerShell 5.1 that
+        # ships with Windows, so a clean machine needs no PowerShell 7 install
+        # (tools/test_build_truth.py pins the Makefile side of this); every other
+        # script keeps the documented floor.
         # Issue #337: one floor, four surfaces. The static feature inventory
         # proves no tracked .ps1 needs anything above $IsWindows (6.0); the
         # enforced value is the oldest still-supported line, pinned here so the
@@ -570,14 +695,15 @@ class EnvironmentContractTests(unittest.TestCase):
                 f"{doc.relative_to(ROOT)} does not document the PowerShell {floor}+ floor",
             )
         for script in sorted((ROOT / name for name in (
-            "copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1", "tools/nk_safety.ps1",
+            "tools/copy_build_assets.ps1", "nk.ps1", "nk_manager.ps1", "tools/nk_safety.ps1",
             "tools/test_manager_safety.ps1", "tools/test_visual_oracle.ps1",
             "tools/title_manager_plan.ps1", "tools/vulkan_sdk.ps1",
         ))):
+            want = CONSUMER_BUILD_POWERSHELL.get(script.relative_to(ROOT).as_posix(), floor)
             self.assertIn(
-                f"#requires -Version {floor}",
+                f"#requires -Version {want}",
                 script.read_text(encoding="utf-8-sig"),
-                f"{script.relative_to(ROOT)} does not declare '#requires -Version {floor}'",
+                f"{script.relative_to(ROOT)} does not declare '#requires -Version {want}'",
             )
 
     def test_windows_11_requires_workstation_product_type_and_build_floor(self) -> None:
@@ -670,19 +796,20 @@ class SimpleFrontEndTests(unittest.TestCase):
         for script in (
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
-            ROOT / "copy_build_assets.ps1",
+            ROOT / "tools" / "copy_build_assets.ps1",
             ROOT / "tools" / "nk_safety.ps1",
             ROOT / "tools" / "test_manager_safety.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",
             ROOT / "tools" / "title_manager_plan.ps1",
             ROOT / "tools" / "vulkan_sdk.ps1",
         ):
-            self.assertIn(
-                f"#requires -Version {_CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT}",
-                script.read_text(encoding="utf-8-sig"),
-                script.name,
-            )
-        self.assertIn("pwsh -NoProfile", self.makefile)
+            want = CONSUMER_BUILD_POWERSHELL.get(
+                script.relative_to(ROOT).as_posix(), _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
+            self.assertIn(f"#requires -Version {want}",
+                          script.read_text(encoding="utf-8-sig"), script.name)
+        # The build step's host is a variable (built-in Windows PowerShell by
+        # default), never a hard-coded interpreter name.
+        self.assertIn("$(POWERSHELL) -NoProfile", self.makefile)
         self.assertNotIn("powershell -NoProfile", self.makefile)
         for action in ("Doctor", "Build", "Rebuild", "Play", "Verify", "Manager"):
             self.assertIn(f'"{action}"', self.frontend)
@@ -717,7 +844,7 @@ class SimpleFrontEndTests(unittest.TestCase):
 
     def test_all_tracked_powershell_scripts_declare_consistent_requires_version(self) -> None:
         expected_scripts = {
-            ROOT / "copy_build_assets.ps1",
+            ROOT / "tools" / "copy_build_assets.ps1",
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "tools" / "nk_safety.ps1",
@@ -746,7 +873,9 @@ class SimpleFrontEndTests(unittest.TestCase):
         self.assertEqual(discovered_scripts, expected_scripts)
         for script in discovered_scripts:
             content = script.read_text(encoding="utf-8-sig")
-            expected_header = f"#requires -Version {_CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT}"
+            want = CONSUMER_BUILD_POWERSHELL.get(
+                script.relative_to(ROOT).as_posix(), _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT)
+            expected_header = f"#requires -Version {want}"
             self.assertIn(
                 expected_header,
                 content,
@@ -821,6 +950,176 @@ class LongPathDiagnosticTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "WARN")
         self.assertNotEqual(results[0].status, "FAIL")
+
+    def test_long_paths_measure_root_plus_longest_tracked_path(self) -> None:
+        """A synthetic root whose longest TRACKED path is the risk, not the build output.
+
+        The build-output estimate here is short, so only the tracked path can push
+        the total past the advisory margin. This is the case a single hard-coded
+        build path cannot see: the repository is short but one tracked directory
+        is deep.
+        """
+        # Anchored at the filesystem root so the length is the same on every
+        # host: a "C:\\" literal is relative on POSIX and would absorb the cwd.
+        # The name is sized so the total lands between the advisory limit (240)
+        # and MAX_PATH (260) whatever the anchor's length ("C:\\" or "/").
+        anchor = Path.cwd().anchor
+        root = Path(anchor) / ("r" * (99 - len(anchor)))
+        deep_tracked = Path("src") / "rt" / "gpu_sdl3vk" / ("d" * 120) / "shader.c"
+        report = nk_doctor.Report(root, "build")
+        with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=False), \
+             mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
+             mock.patch.object(nk_doctor_checks, "longest_tracked_relative_path", return_value=None):
+            nk_doctor_checks.check_long_paths(report, root, tracked_rel=deep_tracked)
+        results = [r for r in report.results if r.code == "LONG_PATHS"]
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertEqual(result.status, "WARN")
+        self.assertEqual(result.metadata["deepest_source"], "tracked path")
+        self.assertEqual(result.metadata["deepest_relative"], deep_tracked.as_posix())
+        self.assertTrue(result.metadata["exceeds_advisory"])
+        # Compared through resolve() because the doctor measures the resolved
+        # root: on POSIX, ``Path("C:\\...")`` is relative, so an unresolved
+        # join would drop the working-directory prefix the doctor adds.
+        expected_total = len(str(root.resolve() / deep_tracked))
+        self.assertEqual(result.metadata["total_len"], expected_total)
+        self.assertIn("advisory margin", result.summary)
+        # The remediation must name the exact path at risk and the shortfall.
+        self.assertIn(str(root.resolve() / deep_tracked), result.remediation)
+        self.assertIn(
+            str(result.metadata["total_len"] - nk_doctor_checks.LONG_PATH_ADVISORY_LIMIT),
+            result.remediation,
+        )
+
+    def test_long_paths_enumerate_tracked_paths_from_the_checkout(self) -> None:
+        """The tracked side is measured from the real checkout, not a guess."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self.assertIsNone(nk_doctor_checks.longest_tracked_relative_path(root))
+            subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+            deepest = Path("src") / "deep" / ("x" * 150) / "file.c"
+            target = root / deepest
+            target.parent.mkdir(parents=True)
+            target.write_text("int x;\n", encoding="ascii")
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+            found = nk_doctor_checks.longest_tracked_relative_path(root)
+            self.assertIsNotNone(found)
+            self.assertEqual(found.as_posix(), deepest.as_posix())
+
+    def test_long_paths_stay_advisory_without_a_checkout(self) -> None:
+        """No local checkout means the build-output estimate is used on its own."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report = nk_doctor.Report(root, "build")
+            with mock.patch.object(nk_doctor_checks, "query_windows_long_paths_enabled", return_value=True), \
+                 mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"):
+                nk_doctor_checks.check_long_paths(report, root)
+            results = [r for r in report.results if r.code == "LONG_PATHS"]
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].status, "PASS")
+            self.assertEqual(results[0].metadata["deepest_source"], "build output")
+            self.assertEqual(
+                results[0].metadata["deepest_relative"],
+                nk_doctor_checks.DEEPEST_EXPECTED_BUILD_PATH.as_posix(),
+            )
+
+
+class TypographyRuntimeCheckTests(unittest.TestCase):
+    """The player's SDL3_ttf runtime is a reported workspace fact, never silent (#421)."""
+
+    def player_root(self, tmp: str) -> Path:
+        root = Path(tmp)
+        (root / "build").mkdir()
+        # Synthetic executables: the check never executes them, it only stages
+        # expectations around their directory.
+        (root / "build" / "nakagawa_player.exe").write_bytes(b"MZ\0\0synthetic player")
+        return root
+
+    @staticmethod
+    def fake_resolver(graph: dict[str, list[str]]):
+        def imports_of(path: Path) -> list[str]:
+            return list(graph.get(path.name.lower(), []))
+
+        def is_system(name: str) -> bool:
+            return name.lower() in {"kernel32.dll", "user32.dll"}
+
+        return imports_of, is_system
+
+    def test_missing_sdl3_ttf_is_a_clear_finding_not_a_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.player_root(tmp)
+            empty_msys = root / "msys-bin"
+            empty_msys.mkdir()
+            imports_of, is_system = self.fake_resolver({})
+            report = nk_doctor.Report(root, "workspace")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SDL3_TTF_DLL", None)
+                nk_doctor_checks.check_typography_runtime(
+                    report, empty_msys, imports_of=imports_of, is_system=is_system,
+                )
+            ttf = [r for r in report.results if r.code == "RUNTIME_SDL3_TTF"]
+            self.assertEqual(len(ttf), 1)
+            self.assertEqual(ttf[0].status, "FAIL")
+            self.assertIn("SDL3_ttf", ttf[0].summary)
+            self.assertTrue(ttf[0].remediation)
+
+    def test_staged_ttf_with_resolved_closure_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.player_root(tmp)
+            empty_msys = root / "msys-bin"
+            empty_msys.mkdir()
+            player_dir = root / "build"
+            graph = {
+                "sdl3_ttf.dll": ["SDL3.dll", "libfreetype-6.dll", "KERNEL32.dll"],
+                "sdl3.dll": ["KERNEL32.dll"],
+                "libfreetype-6.dll": ["zlib1.dll"],
+                "zlib1.dll": [],
+            }
+            # Real file names, so a case-sensitive host (the Linux CI runner) finds them.
+            canonical = {"sdl3_ttf.dll": "SDL3_ttf.dll", "sdl3.dll": "SDL3.dll"}
+            for name in graph:
+                (player_dir / canonical.get(name, name)).write_bytes(b"MZ\0\0" + name.encode())
+            imports_of, is_system = self.fake_resolver(graph)
+            report = nk_doctor.Report(root, "workspace")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SDL3_TTF_DLL", None)
+                nk_doctor_checks.check_typography_runtime(
+                    report, empty_msys, imports_of=imports_of, is_system=is_system,
+                )
+            statuses = {r.code: r.status for r in report.results}
+            self.assertEqual(statuses.get("RUNTIME_SDL3_TTF"), "PASS")
+            self.assertEqual(statuses.get("RUNTIME_SDL3_TTF_CLOSURE"), "PASS")
+
+    def test_ttf_resolved_only_outside_the_player_dir_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.player_root(tmp)
+            msys = root / "msys-bin"
+            msys.mkdir()
+            (msys / "SDL3_ttf.dll").write_bytes(b"MZ\0\0synthetic ttf")
+            imports_of, is_system = self.fake_resolver({"sdl3_ttf.dll": ["KERNEL32.dll"]})
+            report = nk_doctor.Report(root, "workspace")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SDL3_TTF_DLL", None)
+                nk_doctor_checks.check_typography_runtime(
+                    report, msys, imports_of=imports_of, is_system=is_system,
+                )
+            ttf = [r for r in report.results if r.code == "RUNTIME_SDL3_TTF"]
+            self.assertEqual(len(ttf), 1)
+            self.assertEqual(ttf[0].status, "WARN")
+            self.assertIn("beside", (ttf[0].summary or "") + (ttf[0].detail or ""))
+
+    def test_no_player_executable_is_an_explicit_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "build").mkdir()
+            empty_msys = root / "msys-bin"
+            empty_msys.mkdir()
+            imports_of, is_system = self.fake_resolver({})
+            report = nk_doctor.Report(root, "workspace")
+            nk_doctor_checks.check_typography_runtime(
+                report, empty_msys, imports_of=imports_of, is_system=is_system,
+            )
+            self.assertEqual([r.status for r in report.results], ["INFO"])
 
 
 if __name__ == "__main__":

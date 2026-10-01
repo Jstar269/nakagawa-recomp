@@ -47,13 +47,21 @@ import tempfile
 import time
 from typing import Any
 
+# The Windows embeddable Python runtime uses a fixed ``._pth`` search path and
+# may omit the directory containing this script. Keep sibling tool imports
+# available when the package builder launches this script from that runtime.
+_TOOLS_DIRECTORY = str(Path(__file__).resolve().parent)
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
+
 import title_manifest
 
 GAME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MIN_FUNCS_PER_CHUNK = 1
 MAX_FUNCS_PER_CHUNK = 100_000
 MANAGER_PLAN_VERSION = 1
-PACKAGE_SCHEMA_VERSION = 1
+PACKAGE_SCHEMA_VERSION = 2
+BUILD_REPORT_SCHEMA_VERSION = 1
 PACKAGE_FORMAT = "nakagawa-aot-package"
 BUILD_REPORT_FORMAT = "nakagawa-build-report"
 ROOT = Path(__file__).resolve().parents[1]
@@ -602,6 +610,20 @@ def _ensure_untracked_output(output_dir: Path) -> None:
             )
 
 
+def _ensure_private_identity_output(manifest: dict[str, Any], output_dir: Path) -> None:
+    """Keep retail executable/module hashes out of the public checkout."""
+    if manifest.get("kind") != "retail":
+        return
+    repository_root = ROOT.resolve()
+    resolved_output = output_dir.resolve(strict=False)
+    if resolved_output == repository_root or resolved_output.is_relative_to(repository_root):
+        raise PackageRouteError(
+            "PACKAGE_PRIVATE_IDENTITY_PATH",
+            "retail title identity contains local executable and module hashes; "
+            "write packages under the per-user data root",
+        )
+
+
 def _version_identity(executable: str, label: str) -> tuple[str, str]:
     try:
         completed = subprocess.run(
@@ -727,7 +749,7 @@ def _make_input_images(
                         "name": row["name"],
                         "classification": row["classification"],
                         "status": "in the works",
-                        "tracking_issue": 71,
+                        "tracking_issue": 308,
                     })
         unsupported_imports.sort(
             key=lambda row: (row["module"], row["library"], row["nid"])
@@ -856,6 +878,13 @@ def _required_local_assets(
             },
             {
                 "kind": "host-runtime-library",
+                "name": "SDL3_ttf.dll",
+                "required": False,
+                "bundled": (output_dir / "SDL3_ttf.dll").is_file(),
+                "resolution": "package directory or host PATH",
+            },
+            {
+                "kind": "host-runtime-library",
                 "name": "vulkan-1.dll",
                 "required": True,
                 "bundled": (output_dir / "vulkan-1.dll").is_file(),
@@ -958,6 +987,7 @@ def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
 def _cache_key_for_build(
     *,
     input_hashes: dict[str, Any],
+    title_input_identity: dict[str, Any],
     plan: dict[str, Any],
     selected_optional: set[str],
     funcs_per_chunk: int,
@@ -974,8 +1004,12 @@ def _cache_key_for_build(
         selected_optional=selected_optional,
         funcs_per_chunk=funcs_per_chunk,
     )
+    options["planner_sha256"] = package_cache.sha256_file(
+        ROOT / "tools" / "title_codegen_plan.py"
+    )
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
+        title_input_identity=title_input_identity,
         codegen_options=options,
         analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
         codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
@@ -1008,6 +1042,7 @@ def build_package(
     public_safe: bool | None = None,
     reuse_aot_from: Path | None = None,
     native_only: bool = False,
+    title_input_identity_file: Path | None = None,
 ) -> dict[str, Any]:
     """Run the canonical two-phase Make build and emit package/report JSON."""
     from nk_core import package_cache
@@ -1030,6 +1065,7 @@ def build_package(
     # The output directory is written by the Make recipes, so it must itself be
     # Make-safe. Inputs are staged into it when their own paths are not.
     output_dir = _absolute_path(output_dir, "output-dir", make_safe=False)
+    _ensure_private_identity_output(normalized, output_dir)
     _ensure_untracked_output(output_dir)
     output_rendered = output_dir.as_posix()
     if any(char in _MAKE_UNSAFE_PATH_CHARS for char in output_rendered):
@@ -1129,6 +1165,49 @@ def build_package(
         input_hashes = _hash_package_inputs(
             manifest_path, game_elf, selected_modules, module_input_paths, psp_header
         )
+        if title_input_identity_file is not None:
+            identity_path = _absolute_path(
+                title_input_identity_file, "title input identity path", make_safe=False
+            )
+            try:
+                title_input_identity = package_cache.validate_title_input_identity(
+                    json.loads(identity_path.read_text(encoding="utf-8"))
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError, package_cache.PackageCacheError) as exc:
+                raise PackageRouteError(
+                    "PACKAGE_INVALID_IDENTITY", f"title input identity is invalid: {exc}"
+                ) from exc
+        else:
+            # A direct planner build has no ISO, so it has no PARAM.SFO, container
+            # or DISC_VERSION facts to record; those fields stay null. The consumer
+            # route (nk_cli build-package) inspects the ISO and always passes a full
+            # identity through --title-input-identity-file, and only that route
+            # writes the local record that launch and Doctor compare against.
+            disc = normalized.get("disc", {})
+            header = input_hashes.get("psp_header")
+            title_input_identity = package_cache.build_title_input_identity(
+                manifest=normalized,
+                executable_name=game_elf.name,
+                executable_sha256=input_hashes["executable"]["sha256"],
+                modules=input_hashes["modules"],
+                psp_header_sha256=header["sha256"] if isinstance(header, dict) else None,
+                disc_id=disc.get("id") if isinstance(disc, dict) else None,
+                region=disc.get("region") if isinstance(disc, dict) else None,
+            )
+        if title_input_identity["manifest"]["id"] != normalized["id"]:
+            raise PackageRouteError(
+                "PACKAGE_INVALID_IDENTITY", "title input identity names a different manifest/profile"
+            )
+        if title_input_identity["main_executable"]["sha256"] != input_hashes["executable"]["sha256"]:
+            raise PackageRouteError(
+                "PACKAGE_INVALID_IDENTITY", "title input identity does not match the main executable"
+            )
+        if {item["name"]: item["sha256"] for item in title_input_identity["modules"]} != {
+            item["name"]: item["sha256"] for item in input_hashes["modules"]
+        }:
+            raise PackageRouteError(
+                "PACKAGE_INVALID_IDENTITY", "title input identity does not match the module inputs"
+            )
         dest_package_path = output_dir / "package.json"
         dest_report_path = output_dir / "build-report.json"
         if dest_package_path.exists():
@@ -1142,6 +1221,11 @@ def build_package(
                 raise PackageRouteError(
                     "PACKAGE_OUTPUT_CONFLICT",
                     "output-dir already contains a package built from different inputs",
+                )
+            if previous_package.get("title_input_identity") != title_input_identity:
+                raise PackageRouteError(
+                    "PACKAGE_OUTPUT_CONFLICT",
+                    "output-dir already contains a package bound to different title input identity",
                 )
         elif dest_report_path.exists():
             raise PackageRouteError(
@@ -1165,6 +1249,7 @@ def build_package(
         cc_display_name, cc_identity = _version_identity(cc_executable, "C compiler")
         cache_key = _cache_key_for_build(
             input_hashes=input_hashes,
+            title_input_identity=title_input_identity,
             plan=plan,
             selected_optional=selected_optional,
             funcs_per_chunk=funcs_per_chunk,
@@ -1300,26 +1385,27 @@ def build_package(
             "unsupported_instruction_count": len(unsupported_instructions),
             "unsupported_region_count": len(unsupported_regions),
         }
-        cache = package_cache.cache_metadata(
-            cache_key,
-            _cache_codegen_options(
-                plan,
-                selected_optional=selected_optional,
-                funcs_per_chunk=funcs_per_chunk,
-            ),
+        cache_options = _cache_codegen_options(
+            plan,
+            selected_optional=selected_optional,
+            funcs_per_chunk=funcs_per_chunk,
         )
+        cache_options["planner_sha256"] = package_cache.sha256_file(
+            ROOT / "tools" / "title_codegen_plan.py"
+        )
+        cache = package_cache.cache_metadata(cache_key, cache_options)
         backends_mode = "public" if public_safe else "private"
         backend_limits = (
             [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ]
             if public_safe
             else []
         )
         report = {
             "format": BUILD_REPORT_FORMAT,
-            "schema_version": PACKAGE_SCHEMA_VERSION,
+            "schema_version": BUILD_REPORT_SCHEMA_VERSION,
             "title_id": normalized["id"],
             "runtime_abi": {"name": "CpuState", "version": codegen_abi_version()},
             "cache": cache,
@@ -1349,6 +1435,7 @@ def build_package(
                 "protected_digest": compute_protected_digest(normalized),
             },
             "inputs": input_hashes,
+            "title_input_identity": title_input_identity,
             "runtime": {
                 "abi": "CpuState",
                 "abi_version": codegen_abi_version(),
@@ -1369,8 +1456,8 @@ def build_package(
         }
         build_workspace.mkdir(parents=True, exist_ok=True)
         from package_notices import generate_package_notices
-        # Notices live beside package.json (THIRD_PARTY_NOTICES/, RELINK.md); package.json keeps
-        # its fixed v1 key set because the native package validator rejects unknown root keys.
+        # Notices live beside package.json (THIRD_PARTY_NOTICES/, RELINK.md); the local input
+        # identity is package metadata and remains in the user's data root.
         generate_package_notices(build_workspace, repo_root=ROOT)
         report_path = build_workspace / "build-report.json"
         package_path = build_workspace / "package.json"
@@ -1379,6 +1466,7 @@ def build_package(
         package_cache.write_completion_manifest(
             build_workspace,
             cache_key,
+            title_input_identity=title_input_identity,
             backends=backends_mode,
             limits=backend_limits,
         )
@@ -1413,6 +1501,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, help="dedicated untracked package/build directory")
     parser.add_argument("--module-dir", type=Path)
     parser.add_argument("--psp-header", type=Path)
+    parser.add_argument("--title-input-identity-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--make-command", help="Make executable (default: mingw32-make on Windows, make elsewhere)")
     parser.add_argument("--public-safe", action="store_true", help="build with the public-safe runtime backends")
     parser.add_argument("--reuse-aot-from", type=Path, help=argparse.SUPPRESS)
@@ -1471,6 +1560,7 @@ def main(argv: list[str] | None = None) -> int:
                 public_safe=True if args.public_safe else None,
                 reuse_aot_from=args.reuse_aot_from,
                 native_only=args.native_only,
+                title_input_identity_file=args.title_input_identity_file,
             )
             return 0
         if args.output_dir is not None or args.make_command is not None or args.public_safe:

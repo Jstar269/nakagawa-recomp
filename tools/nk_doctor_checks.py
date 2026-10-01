@@ -18,6 +18,7 @@ import sys
 import uuid
 
 from nk_core import package_cache
+from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
 from nk_doctor_core import (
     EXPECTED_VFPU_FILES,
     PRIVATE_EXTENSIONS,
@@ -130,6 +131,52 @@ def _windows_version_info() -> tuple[int | None, int | None]:
         return None, None
 
 
+def _report_legacy_data_directory(report: Report, data_root: Path | None) -> None:
+    profile = os.environ.get("USERPROFILE")
+    if platform.system() != "Windows" or not profile:
+        return
+
+    legacy_root = Path(profile) / "Nakagawa" / "data"
+    if not legacy_root.is_dir() or (data_root is not None and data_root.is_dir()):
+        return
+    current = str(data_root) if data_root is not None else "unavailable"
+    report.warn(
+        "LEGACY_DATA_DIR_FOUND",
+        "Legacy per-user data exists and needs a manual move",
+        path=legacy_root,
+        detail=f"Current per-user data root: {current}",
+        remediation=(
+            f"Resolve the current per-user data root, then move the contents of "
+            f"{legacy_root} manually. Doctor does not move or delete user data."
+        ),
+    )
+
+
+def check_data_directory(report: Report) -> None:
+    """Report the shared per-user data root and any unmigrated legacy root."""
+    try:
+        data_root = default_data_root()
+    except PrerequisiteFetchError as exc:
+        report.fail(
+            "DATA_DIR_UNAVAILABLE",
+            str(exc),
+            remediation=(
+                "Set LOCALAPPDATA or APPDATA on Windows, or XDG_DATA_HOME or HOME "
+                "on POSIX, then rerun Doctor."
+            ),
+        )
+        _report_legacy_data_directory(report, None)
+        return
+
+    report.info(
+        "DATA_DIR_ROOT",
+        "Resolved per-user data root",
+        path=data_root,
+        metadata={"exists": data_root.is_dir()},
+    )
+    _report_legacy_data_directory(report, data_root)
+
+
 def check_platform(report: Report) -> None:
     is_windows = os.name == "nt"
     if is_windows:
@@ -191,6 +238,47 @@ def check_platform(report: Report) -> None:
 
 DEEPEST_EXPECTED_BUILD_PATH = Path("build") / "synthetic" / "vfpu_oracle" / "nakagawa.stdout.txt"
 
+#: MAX_PATH is 260 including the terminating NUL, so the longest path a Win32
+#: call can open is 259 characters. The advisory limit is lower on purpose: a
+#: build appends suffixes (".o", ".exe", ".d", ".tmp") to directories it already
+#: holds, so a root that is merely "under 260" can still fail during the build
+#: rather than at the moment the user moves the checkout. 240 leaves room for
+#: the deepest of those suffixes plus a sibling name.
+LONG_PATH_ADVISORY_LIMIT = 240
+MAX_PATH = 260
+
+
+def longest_tracked_relative_path(root: Path) -> Path | None:
+    """The longest tracked path relative to *root*, or None when unknowable.
+
+    Read-only and bounded: one ``git ls-files`` call, no working-tree walk, and no
+    private input is named beyond the tracked file list the doctor already reads
+    for GIT_TRACKED_PRIVATE. A checkout without a local .git (an exported tree, a
+    source archive) reports None and the caller keeps its build-output estimate.
+    """
+    git = shutil.which("git")
+    if not git or not (root / ".git").exists():
+        return None
+    try:
+        proc = subprocess.run(
+            [git, "ls-files", "-z"],
+            cwd=root,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    longest = b""
+    for item in proc.stdout.split(b"\0"):
+        if len(item) > len(longest):
+            longest = item
+    if not longest:
+        return None
+    return Path(longest.decode("utf-8", errors="replace"))
+
 
 def query_windows_long_paths_enabled() -> bool | None:
     """Read Windows LongPathsEnabled policy from the registry.
@@ -219,60 +307,111 @@ def check_long_paths(
     report: Report,
     root: Path | None = None,
     deepest_rel: Path | str | None = None,
+    tracked_rel: Path | str | None = None,
 ) -> None:
-    """Advisory diagnostic for Windows MAX_PATH (260) hazards and LongPathsEnabled policy."""
+    """Advisory diagnostic for Windows MAX_PATH (260) hazards and LongPathsEnabled policy.
+
+    The measured length is the repository root plus the longest path that will
+    exist under it: the deepest expected build output and, when the checkout can
+    enumerate it, the longest tracked file. The longest of those is the path most
+    likely to cross a limit, and it is named in the result.
+    """
     resolved_root = (root or report.root).resolve()
-    rel_path = Path(deepest_rel) if deepest_rel is not None else DEEPEST_EXPECTED_BUILD_PATH
-    expected_deepest = resolved_root / rel_path
+    build_rel = Path(deepest_rel) if deepest_rel is not None else DEEPEST_EXPECTED_BUILD_PATH
+    if tracked_rel is None:
+        tracked_rel = longest_tracked_relative_path(resolved_root)
+    candidates: list[tuple[str, Path]] = [("build output", build_rel)]
+    if tracked_rel is not None:
+        candidates.append(("tracked path", Path(tracked_rel)))
+    deepest_source, deepest_relative = max(
+        candidates, key=lambda item: len(str(resolved_root / item[1]))
+    )
+    expected_deepest = resolved_root / deepest_relative
     total_len = len(str(expected_deepest))
-    exceeds_260 = total_len > 260
+    exceeds_260 = total_len > MAX_PATH
+    exceeds_advisory = total_len > LONG_PATH_ADVISORY_LIMIT
     is_windows = (platform.system() == "Windows") or (os.name == "nt")
+    metadata = {
+        "long_paths_enabled": None,
+        "total_len": total_len,
+        "deepest_path": str(expected_deepest),
+        "deepest_relative": deepest_relative.as_posix(),
+        "deepest_source": deepest_source,
+        "root_len": len(str(resolved_root)),
+        "advisory_limit": LONG_PATH_ADVISORY_LIMIT,
+        "max_path": MAX_PATH,
+        "exceeds_260": exceeds_260,
+        "exceeds_advisory": exceeds_advisory,
+    }
+    detail = (
+        f"deepest expected path length={total_len} (root {len(str(resolved_root))} + "
+        f"{deepest_source} {deepest_relative.as_posix()}; advisory "
+        f"{LONG_PATH_ADVISORY_LIMIT}, MAX_PATH {MAX_PATH}): {expected_deepest}"
+    )
 
     if not is_windows:
         report.pass_(
             "LONG_PATHS",
             f"Expected build path length ({total_len} chars) within filesystem limits",
             detail=f"Non-Windows platform; deepest expected path: {expected_deepest}",
-            metadata={"long_paths_enabled": None, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": exceeds_260},
+            metadata=metadata,
         )
         return
 
     long_paths_enabled = query_windows_long_paths_enabled()
+    metadata["long_paths_enabled"] = long_paths_enabled
 
     if exceeds_260 and not long_paths_enabled:
         report.warn(
             "LONG_PATHS",
             f"Deepest expected build path ({total_len} chars) exceeds 260 characters and Windows LongPathsEnabled policy is disabled",
             path=expected_deepest,
-            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
+            detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
             remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem or move the repository to a shorter path (for example directly under the drive root).",
-            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": True, "max_path": 260},
+            metadata=metadata,
         )
     elif exceeds_260 and long_paths_enabled:
         report.warn(
             "LONG_PATHS",
             f"Deepest expected build path ({total_len} chars) exceeds 260 characters",
             path=expected_deepest,
-            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
+            detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
             remediation="Windows LongPathsEnabled is enabled, but legacy Win32 tools without long-path manifests may still fail. Consider using a shorter repository root.",
-            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": True, "max_path": 260},
+            metadata=metadata,
+        )
+    elif exceeds_advisory and not long_paths_enabled:
+        report.warn(
+            "LONG_PATHS",
+            f"Deepest expected build path ({total_len} chars) exceeds the "
+            f"{LONG_PATH_ADVISORY_LIMIT}-character advisory margin and Windows "
+            "LongPathsEnabled policy is disabled",
+            path=expected_deepest,
+            detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
+            remediation=(
+                f"Shorten the checkout by at least {total_len - LONG_PATH_ADVISORY_LIMIT} "
+                f"character(s); '{expected_deepest}' is the path at risk. Alternatively "
+                "enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem. "
+                "Build outputs append suffixes to this path, so a build can fail before the "
+                "260-character limit itself is reached."
+            ),
+            metadata=metadata,
         )
     elif not long_paths_enabled:
         report.warn(
             "LONG_PATHS",
-            f"Windows LongPathsEnabled policy is disabled (deepest expected build path: {total_len}/260 chars)",
+            f"Windows LongPathsEnabled policy is disabled (deepest expected build path: {total_len}/{MAX_PATH} chars)",
             path=expected_deepest,
-            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
+            detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
             remediation="Enable LongPathsEnabled in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem to avoid MAX_PATH issues in deep directories.",
-            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": False, "max_path": 260},
+            metadata=metadata,
         )
     else:
         report.pass_(
             "LONG_PATHS",
             "Repository path length within 260 characters and Windows LongPathsEnabled is enabled",
             path=expected_deepest,
-            detail=f"LongPathsEnabled={long_paths_enabled}, deepest expected path length={total_len} (limit 260): {expected_deepest}",
-            metadata={"long_paths_enabled": long_paths_enabled, "total_len": total_len, "deepest_path": str(expected_deepest), "exceeds_260": False, "max_path": 260},
+            detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
+            metadata=metadata,
         )
 
 
@@ -976,6 +1115,7 @@ class TitleDiagnosticContext:
     module_dir: Path | None
     psp_header_path: Path | None
     data_root: Path | None
+    has_loose_content_roots: bool
     disc_image: Path | None
     required_modules: tuple[str, ...]
     requires_game_elf: bool
@@ -995,6 +1135,40 @@ def _safe_manifest_path(root: Path, value: object) -> Path | None:
     if not isinstance(value, str) or not _MANIFEST_PATH_RE.fullmatch(value):
         return None
     return root.joinpath(*value.split("/"))
+
+
+def _has_loose_files_beside_data_root(data_root: Path, limit: int = 100_000) -> bool:
+    """Check for bounded regular files beside a manifest data root.
+
+    The data root itself is excluded; the previous generic walk served other
+    files under its parent. Symlinks are neither followed nor counted.
+    """
+    try:
+        absolute_root = Path(os.path.abspath(os.fspath(data_root)))
+        parent = absolute_root.parent
+        root_path = os.path.normcase(os.fspath(absolute_root))
+        pending = [parent]
+        scanned = 0
+        while pending and scanned < limit:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    scanned += 1
+                    if scanned > limit:
+                        return False
+                    entry_path = Path(entry.path)
+                    try:
+                        if os.path.normcase(os.path.abspath(os.fspath(entry_path))) == root_path:
+                            continue
+                        if entry.is_file(follow_symlinks=False):
+                            return True
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry_path)
+                    except OSError:
+                        continue
+    except OSError:
+        return False
+    return False
 
 
 def _manifest_mapping(
@@ -1052,6 +1226,8 @@ def title_diagnostic_context(
     declared_module_dir = _safe_manifest_path(root, filesystem.get("module_dir"))
     declared_psp_header = _safe_manifest_path(root, filesystem.get("psp_header"))
     declared_disc_image = _safe_manifest_path(root, filesystem.get("disc_image"))
+    raw_loose_roots = filesystem.get("loose_content_roots")
+    has_loose_content_roots = isinstance(raw_loose_roots, list) and bool(raw_loose_roots)
 
     data_root = declared_data_root
     module_dir = declared_module_dir
@@ -1095,6 +1271,7 @@ def title_diagnostic_context(
         module_dir=module_dir,
         psp_header_path=psp_header,
         data_root=data_root,
+        has_loose_content_roots=has_loose_content_roots,
         disc_image=declared_disc_image,
         required_modules=tuple(required_modules),
         requires_game_elf=True,
@@ -1221,6 +1398,21 @@ def check_private_inputs(
                     )
 
     if need_assets and context.requires_assets:
+        manifest_data_root = context.data_root
+        if (
+            manifest_data_root is not None
+            and manifest_data_root.is_dir()
+            and not context.has_loose_content_roots
+            and _has_loose_files_beside_data_root(manifest_data_root)
+        ):
+            report.warn(
+                "MIGRATE_LOOSE_CONTENT_ROOTS",
+                "Loose files beside the manifest data root need filesystem.loose_content_roots (#289 is in the works)",
+                path=manifest_data_root.parent,
+                remediation=(
+                    "Declare each loose-content root in filesystem.loose_content_roots so the runtime can bind it explicitly."
+                ),
+            )
         sr_dataroot = os.environ.get("SR_DATAROOT")
         if sr_dataroot:
             data_path = Path(sr_dataroot)
@@ -1473,6 +1665,126 @@ def check_runtime_dependencies(report: Report, msys_path: Path, game_name: str =
             report.fail("RUNTIME_VULKAN", "Resolved Vulkan loader is not a valid x86-64 DLL", path=vulkan, detail=detail)
 
 
+def check_typography_runtime(
+    report: Report,
+    msys_path: Path,
+    game_name: str = "nakagawa_player",
+    *,
+    imports_of: object = None,
+    is_system: object = None,
+) -> None:
+    """Report whether SDL3_ttf and its resolved closure sit beside the player (#421).
+
+    The launcher resolves SDL3_ttf at run time and falls back to the SDL bitmap
+    font only as a logged last resort, so an unstaged typography runtime is
+    always a named finding, never a silent pass. The closure is the mechanical
+    PE import walk from tools/stage_runtime_dlls.py, stopping at Windows system
+    DLLs.
+    """
+    import stage_runtime_dlls as staging
+
+    root = report.root
+    exe = None
+    for candidate in (root / "build" / f"{game_name}.exe", root / "build" / game_name):
+        if candidate.is_file():
+            exe = candidate
+            break
+    if exe is None:
+        report.info(
+            "RUNTIME_SDL3_TTF",
+            "Player executable not built; the SDL3_ttf staging check does not apply yet",
+            remediation="Run 'mingw32-make player'; it stages the typography runtime beside the executable.",
+        )
+        return
+
+    ttf_name = "SDL3_ttf.dll"
+    beside = exe.parent / ttf_name
+    override = os.environ.get("SDL3_TTF_DLL", "")
+    candidates = [beside]
+    if override:
+        candidates.append(Path(override))
+    candidates.append(msys_path / ttf_name)
+    resolved = next((path for path in candidates if path.is_file()), None)
+    if resolved is None:
+        searched = ", ".join(str(path) for path in candidates)
+        report.fail(
+            "RUNTIME_SDL3_TTF",
+            "SDL3_ttf was not found beside the player or in the configured UCRT64 bin directory",
+            path=beside,
+            detail=f"searched {searched}",
+            remediation=(
+                "Install mingw-w64-ucrt-x86_64-sdl3_ttf (or set SDL3_TTF_DLL) and run "
+                "'mingw32-make player'; without it the player falls back to the SDL "
+                "bitmap font and logs the fallback at startup."
+            ),
+        )
+        report.fail(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure cannot be resolved without SDL3_ttf",
+            remediation="Stage the typography runtime beside the player first.",
+        )
+        return
+
+    if resolved != beside:
+        report.warn(
+            "RUNTIME_SDL3_TTF",
+            "SDL3_ttf resolves only outside the player directory",
+            path=resolved,
+            detail=f"not staged beside the player at {beside}",
+            remediation=(
+                "Run 'mingw32-make player' (or tools/stage_runtime_dlls.py --target build) "
+                "so launches without the toolchain on PATH keep the readable TTF font."
+            ),
+        )
+    else:
+        report.pass_(
+            "RUNTIME_SDL3_TTF",
+            "SDL3_ttf is staged beside the player",
+            path=beside,
+        )
+
+    walk = {}
+    if imports_of is not None:
+        walk["imports_of"] = imports_of
+    if is_system is not None:
+        walk["is_system"] = is_system
+    search_dirs = [exe.parent, msys_path]
+    try:
+        closure = staging.resolve_dll_closure(resolved, search_dirs=search_dirs, **walk)
+    except staging.StageError as exc:
+        report.fail(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure is incomplete",
+            path=exe.parent,
+            detail=str(exc),
+            remediation="Run 'mingw32-make player'; it stages the whole resolved closure beside the executable.",
+        )
+        return
+    dependencies = closure[1:]
+    missing_beside = [dep.name for dep in dependencies if not (exe.parent / dep.name).is_file()]
+    if not dependencies:
+        report.pass_(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "SDL3_ttf has no non-system dependencies to stage",
+            path=exe.parent,
+        )
+    elif missing_beside:
+        report.warn(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure is not fully staged beside the player",
+            path=exe.parent,
+            detail=f"missing beside the player: {', '.join(sorted(missing_beside))}",
+            remediation="Run 'mingw32-make player'; it stages the whole resolved closure beside the executable.",
+        )
+    else:
+        report.pass_(
+            "RUNTIME_SDL3_TTF_CLOSURE",
+            "The SDL3_ttf dependency closure is staged beside the player",
+            path=exe.parent,
+            detail=", ".join(sorted(dep.name for dep in dependencies)),
+        )
+
+
 def check_build_products(report: Report, game_name: str = "recomp") -> None:
     build = report.root / "build" / game_name
     exe = build / f"{game_name}.exe"
@@ -1521,6 +1833,41 @@ def check_runtime_package_cache(
             "Runtime package cache entry is incomplete or corrupt",
             path=package_dir,
             detail=reason,
+            remediation=remediation,
+        )
+        return
+    package_path = package_dir / "package.json"
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package identity cannot be read",
+            path=package_path,
+            remediation=remediation,
+        )
+        return
+    current_identity = package_cache.read_local_title_input_identity(user_data_root, disc_id.upper())
+    package_identity = package.get("title_input_identity") if isinstance(package, dict) else None
+    if current_identity is None:
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package has no current local title input identity",
+            path=package_dir,
+            detail="No local compatibility record exists for this disc's current inputs.",
+            remediation=remediation,
+        )
+        return
+    identity_changes = package_cache.title_input_identity_changes(
+        package_identity, current_identity
+    )
+    if identity_changes:
+        report.fail(
+            "RUNTIME_PACKAGE_CACHE",
+            "Runtime package identity does not match the current local inputs",
+            path=package_dir,
+            detail=(", ".join(identity_changes) +
+                    "; the package was built from different local inputs."),
             remediation=remediation,
         )
         return
@@ -1792,7 +2139,6 @@ def check_repository_contract(report: Report) -> None:
         report.fail("LICENSE_ROOT", "Root LICENSE does not appear to contain the canonical GPLv3 text", path=license_path)
 
     metadata_paths = {
-        "interface/package.json": ("license", "GPL-3.0-or-later"),
         "assets/release_manifest.json": ("license", "GPL-3.0-or-later"),
     }
     for rel, (field_name, expected) in metadata_paths.items():

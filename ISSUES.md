@@ -1,4 +1,4 @@
-# Project status dashboard
+# Project status summary
 
 **Repository status: active sanitized public source.**
 `Jstar269/nakagawa-recomp` is the public source repository. Its public history
@@ -7,7 +7,7 @@ development history is not ordinary `main` ancestry and must not be reconnected.
 This status is not legal clearance, a release announcement, or a PSP-correctness
 claim.
 
-**Live GitHub Issues are the authority for work-item state.** This dashboard
+**Live GitHub Issues are the authority for work-item state.** This summary
 describes work areas and records what past closures established. It deliberately
 carries no frozen counts: verify current state on the
 linked live issue, and read counts from the generator cited beside each area.
@@ -16,12 +16,10 @@ linked live issue, and read counts from the generator cited beside each area.
 
 - Public-source safeguards: exact-tree, provenance, history, security, and
   export gates remain required for proposed changes and release candidates.
-- Purge force-pushed commits: [issue #166](https://github.com/Jstar269/nakagawa-recomp/issues/166).
-  Unreachable commits after a history rewrite require GitHub-side garbage collection.
 - Unified PSP clocks, waits, and interrupt delivery remain source-owned
   runtime work.
 - Direct XB archive/VFS tooling is documented in
-  [`docs/ISSUE196_DIRECT_XB.md`](docs/ISSUE196_DIRECT_XB.md); title inputs
+  [`docs/archive/ISSUE196_DIRECT_XB.md`](docs/archive/ISSUE196_DIRECT_XB.md); title inputs
   remain local-only.
 - The versioned title-manifest/toolkit boundary is described in
   [`assets/titles/README.md`](assets/titles/README.md); only generic and
@@ -40,6 +38,9 @@ linked live issue, and read counts from the generator cited beside each area.
 Each entry states what the closure established and its limits. Current state
 remains on the linked live issue.
 
+- History-cleanup tracker: [issue #166](https://github.com/Jstar269/nakagawa-recomp/issues/166)
+  is closed. Its request concerned GitHub-side collection of unreachable commits;
+  tracker closure alone does not establish that those objects were collected.
 - PSP DMA copy semantics: [issue #23](https://github.com/Jstar269/nakagawa-recomp/issues/23) is closed; see the live issue.
 - Post-save prize-ceremony progression: [issue #63](https://github.com/Jstar269/nakagawa-recomp/issues/63) is closed; see the live issue.
 - Audio stuttering during qualified gameplay: [issue #67](https://github.com/Jstar269/nakagawa-recomp/issues/67) is closed; see the live issue.
@@ -116,6 +117,6 @@ ledger, release manifest, SBOMs, and `tools/publish_audit.py` must describe the
 same exact bytes. A candidate or export cannot select a relaxed private audit
 mode or self-authorize provenance.
 
-Do not treat this dashboard as a release announcement. Update it only when the
+Do not treat this summary as a release announcement. Update it only when the
 public-source boundary or milestone record changes, and keep private
 investigation narratives outside the public source tree.

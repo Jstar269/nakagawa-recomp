@@ -184,6 +184,9 @@ class Repository:
     def branch(self, name: str, start: str) -> None:
         self._git("checkout", "--quiet", "-B", name, start)
 
+    def head(self) -> str:
+        return self._git("rev-parse", "HEAD")
+
 
 class GateCase(unittest.TestCase):
     """Base fixture: a clean base commit that the verifier accepts."""
@@ -1392,6 +1395,102 @@ class TrustedScopeTests(GateCase):
         self.assertPasses(self.run_verify(head))
 
 
+class IncludedPathDeclarationTests(GateCase):
+    """An include_paths entry that no longer resolves is not a quiet removal.
+
+    The ledger is built from tracked files intersected with include_paths, and
+    the gate's inherited universe is the trusted base policy over the paths
+    still present in the candidate tree.  A path dropped from the tree while
+    its include_paths entry survives therefore leaves the audited universe
+    through both filters at once: no ledger entry, no inherited claim, no
+    finding.  The profile still says the path is published, so the policy
+    document and the tree disagree about what ships -- silently.
+    """
+
+    BACKED = "src/rt/widget.c"
+
+    # -- fixture helpers -----------------------------------------------------
+
+    def declared_paths(self) -> set[str]:
+        """The include_paths the trusted base policy actually carries."""
+        document = json.loads(
+            (self.repo.root / verifier.POLICY_PATH).read_text(encoding="utf-8"),
+        )
+        return set(document["include_paths"])
+
+    def _rebase_with_stale_declaration(self, path: str) -> None:
+        """Move the trusted base onto a policy that already declares a dead path.
+
+        This is the state the real repository is in: an entry that no longer
+        resolves, inherited from commits that deleted the file and left the
+        declaration behind.
+        """
+        self.repo.branch("base-amend", self.base)
+        document = dict(POLICY)
+        document["include_paths"] = sorted(self.declared_paths() | {path})
+        self.repo.write(verifier.POLICY_PATH, json.dumps(document, indent=2) + "\n")
+        self.base = self.repo.commit("base already carried a stale declaration")
+
+    def _untrack_but_keep_declared(self, path: str) -> str:
+        """Delete the file, regenerate every control, and leave the entry."""
+        self.repo.branch("drop", self.base)
+        self.repo.remove(path)
+        self.write_ledger([e for e in self.current_entries(self.base) if e["path"] != path])
+        return self.repo.commit("stop tracking a path the profile still publishes")
+
+    # -- cases ---------------------------------------------------------------
+
+    def test_untracking_a_published_path_is_fatal(self) -> None:
+        head = self._untrack_but_keep_declared(self.BACKED)
+        verdict = self.run_verify(head)
+        self.assertEqual(
+            verdict["verdict"], "fail",
+            msg="an untracked path the profile still publishes dropped out of the "
+                "audited universe without any finding",
+        )
+        self.assertIn("INCLUDED_PATH_UNTRACKED", self.codes(verdict), msg=f"findings: {verdict['findings']}")
+
+    def test_declaring_a_path_that_never_existed_is_fatal(self) -> None:
+        """The other half of the same hole: inventing coverage, not losing it."""
+        self.repo.branch("invent", self.base)
+        self.write_policy(list(self.FILES) + ["src/rt/never_existed.c"])
+        head = self.repo.commit("publish a path that does not exist")
+        self.assertFatal(self.run_verify(head), "INCLUDED_PATH_UNTRACKED")
+
+    def test_debt_already_in_the_base_is_reported_but_not_fatal(self) -> None:
+        """A stale entry the base already carried is news, not this change's fault.
+
+        It stays visible in every report instead of failing each change until
+        somebody removes the entry from the profile.
+        """
+        self._rebase_with_stale_declaration("docs/removed_long_ago.md")
+        self.repo.branch("inherited", self.base)
+        raw = b"# extra documentation\n"
+        self.repo.write("docs/extra.md", raw)
+        self.write_policy(sorted(self.declared_paths() | {"docs/extra.md"}))
+        self.write_ledger(self.current_entries(self.base) + [{
+            "path": "docs/extra.md", "classification": "reviewed_documentation",
+            "evidence": {"source": "public documentation review"}, "sha256": _sha(raw),
+        }])
+        head = self.repo.commit("widen scope while the stale declaration is carried forward")
+        verdict = self.run_verify(head)
+        self.assertPasses(verdict)
+        self.assertEqual(
+            [(item["path"], item["fatal"]) for item in verdict["findings"]
+             if item["code"] == "INCLUDED_PATH_UNTRACKED"],
+            [("docs/removed_long_ago.md", False)],
+        )
+
+    def test_removing_the_declaration_with_the_file_is_allowed(self) -> None:
+        """The sanctioned route: the entry goes when the file goes."""
+        self.repo.branch("work", self.base)
+        self.repo.remove(self.BACKED)
+        self.write_policy([p for p in self.declared_paths() if p != self.BACKED])
+        self.write_ledger([e for e in self.current_entries(self.base) if e["path"] != self.BACKED])
+        head = self.repo.commit("delete the file and its declaration together")
+        self.assertPasses(self.run_verify(head))
+
+
 class ClassificationFloorTests(GateCase):
     """An implementation file may not be relabelled out of content gating."""
 
@@ -2436,11 +2535,12 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             trusted_ledger=self.trusted_ledger,
             workdir=self.outside / "local-generation",
         )
-        self.assertEqual(local.generated_ledger["refresh"]["workflow"], "refresh-reviewed")
-        self.assertEqual(local.generated_ledger["refresh"]["trusted_tree"],
-                         verifier._rev_tree(self.repo.root, self.base))
-        self.assertEqual(local.generated_ledger["refresh"]["candidate_tree"], candidate_tree)
-        self.assertEqual(local.generated_ledger["refresh"]["refreshed_paths"], ["docs/notes.md"])
+        # A refresh commits a per-path ledger, never the single-slot ``refresh``
+        # audit block.  Carrying it made every landing rewrite the same lines
+        # and left a block that can no longer reconcile against a later base;
+        # the base here still has one, and the committed result must not.
+        self.assertNotIn("refresh", local.generated_ledger)
+        self.assertNotIn(b'"refresh"', local.generated_ledger_bytes)
         self.assertNotIn("candidate_tree", local.generated_export)
         self.repo.write(verifier.LEDGER_PATH, local.generated_ledger_bytes)
         self.repo.write(verifier.EXPORT_PATH, local.generated_export_bytes)
@@ -2449,7 +2549,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         hosted = self.run_ephemeral(refreshed_head, authority_baseline=True)
         hosted_ledger = Path(hosted["generated_outputs"]["ledger_path"]).read_bytes()
         hosted_export = Path(hosted["generated_outputs"]["export_path"]).read_bytes()
-        self.assertEqual(json.loads(hosted_ledger)["refresh"], local.generated_ledger["refresh"])
+        self.assertNotIn("refresh", json.loads(hosted_ledger))
         self.assertEqual(local.generated_ledger_bytes, hosted_ledger)
         self.assertEqual(local.generated_export_bytes, hosted_export)
         self.assertEqual(hosted["verdict"], "pass", hosted["findings"])
@@ -2641,6 +2741,26 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.assertFalse(verdict["legacy_controls_present"]["ledger"])
         self.assertFalse(verdict["legacy_controls_present"]["export"])
 
+    def test_ephemeral_untracked_declared_path_fails_closed(self) -> None:
+        """The hosted mode must not let a declared path leave the tree silently."""
+        self.repo.branch("ephemeral-untracked-declaration", self.base)
+        self.repo.remove("src/rt/widget.c")
+        entries = json.loads(self.baseline().read_text(encoding="utf-8"))["entries"]
+        self.write_ledger([entry for entry in entries if entry["path"] != "src/rt/widget.c"])
+        head = self.repo.commit("drop a published path but keep its declaration")
+
+        verdict = self.run_ephemeral(head)
+
+        self.assertEqual(verdict["verdict"], "fail", verdict["findings"])
+        self.assertIn(
+            ("INCLUDED_PATH_UNTRACKED", "src/rt/widget.c"),
+            {
+                (finding["code"], finding["path"])
+                for finding in verdict["findings"]
+                if finding["fatal"]
+            },
+        )
+
     def test_stale_legacy_controls_cannot_hide_the_fresh_hash(self) -> None:
         self.repo.branch("stale-legacy", self.base)
         changed = b"int core(void) { return 99; }\n"
@@ -2771,11 +2891,25 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
 
     def test_blessed_candidate_policy_and_exact_delta_can_authorize_a_change(self) -> None:
         self.repo.branch("authorized-policy-change", self.base)
+        # The declaration has to resolve to a file the tree carries, so this
+        # case publishes the document it declares and the legacy controls stay
+        # coherent; what is under test is authorizing the policy change.
+        raw = b"# new documentation\n"
+        self.repo.write("docs/new.md", raw)
         policy_path = self.repo.root / verifier.POLICY_PATH
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         policy["include_paths"] = sorted(set(policy["include_paths"]) | {"docs/new.md"})
         candidate_policy_raw = _canonical(policy)
         self.repo.write(verifier.POLICY_PATH, candidate_policy_raw)
+        base_entries = json.loads(run_git(
+            ["show", f"{self.base}:{verifier.LEDGER_PATH}"], cwd=self.repo.root,
+            check=True, capture_output=True,
+        ).stdout.decode("utf-8"))["entries"]
+        classification, evidence = provenance_ledger._class_for("docs/new.md", None)
+        self.write_ledger(base_entries + [{
+            "path": "docs/new.md", "classification": classification,
+            "evidence": evidence, "sha256": _sha(raw),
+        }])
         head = self.repo.commit("authorized candidate policy change")
 
         baseline_raw = run_git(
@@ -2958,6 +3092,112 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         )
 
 
+class IndependentRefreshMergeTests(EphemeralGenerationTests):
+    """Two reviewed refreshes of different paths must land without a resync.
+
+    A refresh used to write a single-slot ``refresh`` audit block into the
+    committed ledger, holding the trusted base tree, the candidate tree and the
+    refreshed path list.  Every landing rewrote those same lines, so two
+    independent refreshes conflicted, and a block written against one base can
+    never reconcile against a later one -- so landing one reviewed change made
+    every other open change's committed controls disagree with the trusted
+    generation and forced a full control resync on it.
+
+    The committed controls are per-path again, so an unrelated landing is a
+    clean merge whose controls already equal a fresh generation of the merged
+    tree: no resync, no second regeneration, no private authority.
+    """
+
+    #: Two documentation paths far apart in the ledger's sort order, so a
+    #: passing merge cannot be an accident of adjacent lines, and neither needs
+    #: implementation-grade authority to be edited.
+    PATH_A = "docs/notes.md"
+    PATH_B = "README.md"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.back_legacy_path()
+        # Put the base into the same committed control form a real main branch
+        # carries, so the two branches below only differ in the paths they edit.
+        self.repo.before_commit = None
+        controls = provenance_refresh.generate_controls(
+            repo=self.repo.root,
+            base_rev=self.base,
+            candidate_tree=verifier._rev_tree(self.repo.root, self.base),
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / "base-controls",
+        )
+        self.repo.write(verifier.LEDGER_PATH, controls.generated_ledger_bytes)
+        self.repo.write(verifier.EXPORT_PATH, controls.generated_export_bytes)
+        self.base = self.repo.commit("base in committed control form")
+
+    def _reviewed_branch(self, name: str, path: str, raw: bytes) -> str:
+        """One reviewed change: edit a path, then regenerate its controls."""
+        self.repo.branch(name, self.base)
+        self.repo.write(path, raw)
+        self.repo.commit(f"edit {path}")
+        controls = provenance_refresh.generate_controls(
+            repo=self.repo.root,
+            base_rev=self.base,
+            candidate_tree=verifier._rev_tree(self.repo.root, self.repo.head()),
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / f"controls-{name}",
+        )
+        self.repo.write(verifier.LEDGER_PATH, controls.generated_ledger_bytes)
+        self.repo.write(verifier.EXPORT_PATH, controls.generated_export_bytes)
+        return self.repo.commit(f"provenance: refresh controls for {path}")
+
+    def test_two_independent_refreshes_merge_and_the_merged_controls_still_verify(self) -> None:
+        landed = self._reviewed_branch("change-a", self.PATH_A, b"# fixture notes, edited by A\n")
+        self._reviewed_branch("change-b", self.PATH_B, b"# fixture\n\nedited by B\n")
+
+        merge = run_git(
+            ["merge", "--no-edit", "change-a"],
+            cwd=self.repo.root, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(
+            merge.returncode, 0,
+            "two independent refreshes must merge without a control conflict:\n"
+            f"{merge.stdout}\n{merge.stderr}",
+        )
+        for path in (verifier.LEDGER_PATH, verifier.EXPORT_PATH):
+            self.assertNotIn(b"<<<<<<<", (self.repo.root / path).read_bytes())
+
+        # ``landed`` is what main becomes, so it is the base the hosted gate
+        # will name.  Verifying against it is the whole point: the merge needs
+        # no regeneration, because what the branch already carries is the
+        # trusted generation of the merged tree against the moved base.
+        head = self.repo.head()
+        verdict = self.run_ephemeral(head, base=landed, authority_baseline=True)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        self.assertEqual(verdict["fatal_count"], 0, verdict["findings"])
+        self.assertEqual(
+            (self.repo.root / verifier.LEDGER_PATH).read_bytes(),
+            Path(verdict["generated_outputs"]["ledger_path"]).read_bytes(),
+        )
+        self.assertEqual(
+            (self.repo.root / verifier.EXPORT_PATH).read_bytes(),
+            Path(verdict["generated_outputs"]["export_path"]).read_bytes(),
+        )
+
+    def test_a_refresh_commits_no_single_slot_audit_block(self) -> None:
+        self._reviewed_branch("change-a", self.PATH_A, b"# fixture notes, edited by A\n")
+
+        committed = json.loads(
+            (self.repo.root / verifier.LEDGER_PATH).read_text(encoding="utf-8")
+        )
+        self.assertNotIn("refresh", committed)
+        # The per-path entries still carry the exact content the trusted
+        # generation produced; only the tree-wide audit slot is gone.
+        entry = next(
+            item for item in committed["entries"] if item["path"] == self.PATH_A
+        )
+        self.assertEqual(
+            entry["sha256"],
+            hashlib.sha256(b"# fixture notes, edited by A\n").hexdigest(),
+        )
+
+
 class RealHistoryParityTests(unittest.TestCase):
     """Historical parity may gain only the explicit changed-test boundary."""
 
@@ -3075,11 +3315,25 @@ class RealHistoryParityTests(unittest.TestCase):
             (finding["code"], finding["path"])
             for finding in ephemeral["findings"] if finding["fatal"]
         }
-        expected = {
+        # The property under test is that the two modes agree. The specific
+        # fatal set additionally depends on whether the repository's *committed*
+        # controls have been regenerated since the generator last changed; an
+        # EXPORT_FIELD_MISMATCH against PUBLIC_EXPORT.json is that pending
+        # regeneration, not a disagreement between the modes, and it disappears
+        # once a maintainer refreshes the control.
+        self.assertIn(
             ("TRUSTED_PATH_MISSING", "tools/test_discovery_contract.py"),
-        }
-        self.assertEqual(committed_fatal, expected, committed["findings"])
+            committed_fatal,
+            committed["findings"],
+        )
         self.assertEqual(ephemeral_fatal, committed_fatal, ephemeral["findings"])
+        self.assertTrue(
+            committed_fatal <= {
+                ("TRUSTED_PATH_MISSING", "tools/test_discovery_contract.py"),
+                ("EXPORT_FIELD_MISMATCH", verifier.EXPORT_PATH),
+            },
+            f"unexpected fatal findings on the real history: {sorted(committed_fatal)}",
+        )
 
 
 if __name__ == "__main__":

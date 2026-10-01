@@ -8,9 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 import sysconfig
 import tempfile
@@ -18,8 +20,10 @@ from typing import Any, Mapping
 
 CACHE_FORMAT = "nakagawa-aot-cache"
 COMPLETION_FORMAT = "nakagawa-aot-cache-completion"
-CACHE_SCHEMA_VERSION = 1
-COMPLETION_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
+COMPLETION_SCHEMA_VERSION = 2
+TITLE_INPUT_IDENTITY_FORMAT = "nakagawa-title-input-identity"
+TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 1
 ANALYZER_CODEGEN_SEMANTICS_EPOCH = "analyzer-codegen-v1"
 GENERATED_CODE_ABI_EPOCH = 1
 RUNTIME_ABI_EPOCH = 1
@@ -30,6 +34,7 @@ CACHE_ROOT_PARTS = ("cache", "packages")
 COMPLETION_MANIFEST = "completion-manifest.json"
 DEFAULT_MAX_CACHE_ENTRIES = 8
 CACHE_LIMIT_ENV = "NK_AOT_CACHE_MAX_ENTRIES"
+LOCAL_IDENTITIES_DIR = "title-input-identities"
 
 
 class PackageCacheError(ValueError):
@@ -68,26 +73,517 @@ def _digest(value: Any) -> str:
     return sha256_bytes(canonical_json(value).encode("utf-8"))
 
 
+def build_title_input_identity(
+    *,
+    manifest: Mapping[str, Any],
+    executable_name: str,
+    executable_sha256: str,
+    modules: list[Mapping[str, Any]],
+    psp_header_sha256: str | None = None,
+    psp_header_magic: str | None = None,
+    disc_id: str | None = None,
+    region: str | None = None,
+    disc_version: str | None = None,
+    param_sfo: Mapping[str, Any] | None = None,
+    container: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the private, versioned identity record for one package input set."""
+    module_records = [
+        {"name": item.get("name"), "sha256": item.get("sha256")}
+        for item in sorted(modules, key=lambda item: str(item.get("name", "")))
+    ]
+    identity = {
+        "format": TITLE_INPUT_IDENTITY_FORMAT,
+        "schema_version": TITLE_INPUT_IDENTITY_SCHEMA_VERSION,
+        "manifest": {
+            "id": manifest.get("id"),
+            "schema_version": manifest.get("schema_version"),
+        },
+        "disc": {
+            "id": disc_id.upper() if isinstance(disc_id, str) else None,
+            "region": region,
+            "disc_version": disc_version,
+        },
+        "param_sfo": dict(param_sfo) if param_sfo is not None else None,
+        "container": dict(container) if container is not None else None,
+        "main_executable": {"name": executable_name, "sha256": executable_sha256},
+        "modules": module_records,
+        "psp_header": (
+            {"sha256": psp_header_sha256, "magic": psp_header_magic}
+            if psp_header_sha256 is not None else None
+        ),
+    }
+    validate_title_input_identity(identity)
+    return identity
+
+
+def validate_title_input_identity(value: Any) -> dict[str, Any]:
+    """Validate the local identity schema without exposing or logging hashes."""
+    root_keys = {
+        "format", "schema_version", "manifest", "disc", "param_sfo",
+        "container", "main_executable", "modules", "psp_header",
+    }
+    if not isinstance(value, dict) or set(value) != root_keys:
+        raise PackageCacheError("title input identity fields do not match schema v1")
+    if value.get("format") != TITLE_INPUT_IDENTITY_FORMAT or value.get("schema_version") != TITLE_INPUT_IDENTITY_SCHEMA_VERSION:
+        raise PackageCacheError("title input identity format or schema is unsupported")
+    manifest = value.get("manifest")
+    if not isinstance(manifest, dict) or set(manifest) != {"id", "schema_version"}:
+        raise PackageCacheError("title input identity manifest record is invalid")
+    if not isinstance(manifest.get("id"), str) or not manifest["id"]:
+        raise PackageCacheError("title input identity manifest ID is invalid")
+    if type(manifest.get("schema_version")) is not int or manifest["schema_version"] < 1:
+        raise PackageCacheError("title input identity manifest schema is invalid")
+    disc = value.get("disc")
+    if not isinstance(disc, dict) or set(disc) != {"id", "region", "disc_version"}:
+        raise PackageCacheError("title input identity disc record is invalid")
+    disc_id = disc.get("id")
+    if disc_id is not None and (
+        not isinstance(disc_id, str) or re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id) is None
+    ):
+        raise PackageCacheError("title input identity DISC_ID is invalid")
+    region = disc.get("region")
+    if region is not None and region not in {"JP", "NA", "EU", "KR", "ASIA", "OTHER", "TEST", "HOMEBREW"}:
+        raise PackageCacheError("title input identity region is invalid")
+    version = disc.get("disc_version")
+    if version is not None and (not isinstance(version, str) or not version or len(version) > 32):
+        raise PackageCacheError("title input identity DISC_VERSION is invalid")
+    sfo = value.get("param_sfo")
+    if sfo is not None:
+        if not isinstance(sfo, dict) or set(sfo) - {
+            "DISC_ID", "TITLE", "DISC_VERSION", "APP_VER", "PSP_SYSTEM_VER", "CATEGORY",
+        }:
+            raise PackageCacheError("title input identity PARAM.SFO facts are invalid")
+        if any(not isinstance(item, str) or len(item) > 256 for item in sfo.values()):
+            raise PackageCacheError("title input identity PARAM.SFO fact is invalid")
+    container = value.get("container")
+    if container is not None:
+        if not isinstance(container, dict) or set(container) != {
+            "format", "volume_id", "size_bytes", "pvd_sector", "sector_size",
+        }:
+            raise PackageCacheError("title input identity container metadata is invalid")
+        if not isinstance(container.get("format"), str) or not isinstance(container.get("volume_id"), str):
+            raise PackageCacheError("title input identity container label is invalid")
+        for field in ("size_bytes", "pvd_sector", "sector_size"):
+            if type(container.get(field)) is not int or container[field] < 0:
+                raise PackageCacheError(f"title input identity container {field} is invalid")
+    executable = value.get("main_executable")
+    if not isinstance(executable, dict) or set(executable) != {"name", "sha256"}:
+        raise PackageCacheError("title input identity main executable record is invalid")
+    if not isinstance(executable.get("name"), str) or not executable["name"]:
+        raise PackageCacheError("title input identity main executable name is invalid")
+    _input_sha(executable, "title input identity main executable")
+    modules = value.get("modules")
+    if not isinstance(modules, list):
+        raise PackageCacheError("title input identity modules must be an array")
+    names: set[str] = set()
+    for item in modules:
+        if not isinstance(item, dict) or set(item) != {"name", "sha256"}:
+            raise PackageCacheError("title input identity module record is invalid")
+        name = item.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            raise PackageCacheError("title input identity module name is invalid or repeated")
+        names.add(name)
+        _input_sha(item, f"title input identity module {name}")
+    header = value.get("psp_header")
+    if header is not None:
+        if not isinstance(header, dict) or set(header) != {"sha256", "magic"}:
+            raise PackageCacheError("title input identity PSP header record is invalid")
+        _input_sha(header, "title input identity PSP header")
+        if header.get("magic") is not None and not isinstance(header["magic"], str):
+            raise PackageCacheError("title input identity PSP header magic is invalid")
+    return value
+
+
+def title_input_identity_digest(value: Any) -> str:
+    return _digest(validate_title_input_identity(value))
+
+
+def title_input_identity_changes(previous: Any, current: Any) -> tuple[str, ...]:
+    """Return human-readable identity classes; never include hashes or source bytes."""
+    try:
+        old = validate_title_input_identity(previous)
+        new = validate_title_input_identity(current)
+    except PackageCacheError:
+        return ("identity record changed",)
+    changes: list[str] = []
+    if old["manifest"] != new["manifest"]:
+        changes.append("manifest/profile changed")
+    if old["disc"]["id"] != new["disc"]["id"]:
+        changes.append("DISC_ID changed")
+    if old["disc"]["region"] != new["disc"]["region"]:
+        changes.append("region changed")
+    if (old["disc"]["disc_version"] != new["disc"]["disc_version"] or
+        (old["param_sfo"] or {}).get("DISC_VERSION") != (new["param_sfo"] or {}).get("DISC_VERSION") or
+        (old["param_sfo"] or {}).get("APP_VER") != (new["param_sfo"] or {}).get("APP_VER")):
+        changes.append("SFO revision changed")
+    if old["param_sfo"] != new["param_sfo"] and "SFO revision changed" not in changes:
+        changes.append("PARAM.SFO facts changed")
+    if old["main_executable"] != new["main_executable"]:
+        changes.append("main executable changed")
+    old_modules = {item["name"]: item["sha256"] for item in old["modules"]}
+    new_modules = {item["name"]: item["sha256"] for item in new["modules"]}
+    for name in sorted(set(old_modules) | set(new_modules)):
+        if old_modules.get(name) != new_modules.get(name):
+            changes.append(f"module {name} changed")
+    if old["container"] != new["container"]:
+        changes.append("container metadata changed")
+    if old["psp_header"] != new["psp_header"]:
+        changes.append("PSP header changed")
+    return tuple(changes)
+
+
+def local_title_input_identity_path(user_data_root: Path | str, disc_id: str) -> Path:
+    if re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id or "") is None:
+        raise PackageCacheError("title input identity DISC_ID is invalid")
+    return Path(user_data_root).expanduser().resolve(strict=False) / LOCAL_IDENTITIES_DIR / disc_id / "title-input-identity.json"
+
+
+def write_local_title_input_identity(
+    user_data_root: Path | str, identity: Mapping[str, Any]
+) -> Path:
+    normalized = validate_title_input_identity(dict(identity))
+    disc_id = normalized["disc"]["id"]
+    if not disc_id:
+        raise PackageCacheError("synthetic package identity has no user ISO record")
+    user_root = Path(user_data_root).expanduser().resolve(strict=False)
+    repository_root = Path(__file__).resolve().parents[2]
+    if not cache_root_is_private(user_root, repository_root):
+        raise PackageCacheError("title input identity must be stored outside the public repository")
+    destination = local_title_input_identity_path(user_root, disc_id)
+    for directory in (destination.parent.parent, destination.parent):
+        if directory.is_symlink():
+            raise PackageCacheError("title input identity directory is a symlink")
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if user_root not in destination.parent.resolve(strict=True).parents:
+        raise PackageCacheError("title input identity path escaped the user data directory")
+    _atomic_write(destination, canonical_json(normalized).encode("utf-8"))
+    return destination
+
+
+def read_local_title_input_identity(user_data_root: Path | str, disc_id: str) -> dict[str, Any] | None:
+    path = local_title_input_identity_path(user_data_root, disc_id)
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        return validate_title_input_identity(_read_json(path))
+    except (OSError, ValueError, PackageCacheError):
+        return None  # malformed or hostile identity input is simply absent
+
+
+# Explicit resource ceilings for externally supplied JSON artifacts on the
+# package/cache route (#319). The byte ceiling is enforced with a bounded read
+# through one open handle -- never a whole-file read -- so a hostile or corrupt
+# file cannot be ingested wholesale before it is rejected. The depth/count scan
+# runs on the raw text before json.loads, so pathological nesting cannot first
+# explode inside the standard parser. The limits exceed any legitimate package,
+# cache, completion, or identity document by orders of magnitude.
+MAX_CACHE_JSON_BYTES = 1024 * 1024
+MAX_CACHE_JSON_DEPTH = 32
+MAX_CACHE_JSON_MEMBERS = 16384
+MAX_CACHE_JSON_ITEMS = 16384
+MAX_CACHE_JSON_NODES = 65536
+# Keep decimal conversion bounded even when Python's process-wide guard is
+# disabled. This matches the usual 4,300-digit Python integer ceiling.
+MAX_CACHE_JSON_INTEGER_DIGITS = 4300
+
+
+class BoundedJsonError(ValueError):
+    """Named, controlled failure while reading a bounded external JSON artifact."""
+
+
+# Diagnostics are attacker-reachable: every key and scalar in an externally
+# supplied artifact is attacker-chosen text, and a rejection message is usually
+# the one thing that gets logged or echoed back to a user. Bounding the artifact
+# therefore does not by itself bound the message it produces, so untrusted
+# values are quoted only as a short prefix and untrusted name lists only as a
+# short sample. Rejection itself is unchanged; only the echoed detail is.
+MAX_JSON_ECHO_CHARS = 64
+MAX_JSON_ECHO_FIELDS = 8
+
+
+def bounded_echo(value: Any, *, max_chars: int = MAX_JSON_ECHO_CHARS) -> str:
+    """Render one untrusted value for a message without echoing bulk data.
+
+    Strings are truncated before any quoting, so a multi-hundred-kilobyte key
+    cannot inflate an exception message (or the log record that captures it)
+    past ``max_chars``. Non-strings are rendered with ``repr`` and truncated
+    afterwards; that transient repr is bounded by the artifact ceiling already
+    accepted by the reader, so it is not a new amplification path.
+    """
+    if type(value) is str:
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars] + "...[truncated]"
+    text = repr(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...[truncated]"
+
+
+def bounded_echo_fields(names: Any, *, max_chars: int = MAX_JSON_ECHO_CHARS) -> str:
+    """Render a set of untrusted field names as a short, fixed-size sample."""
+    ordered = sorted(names)
+    shown = ", ".join(bounded_echo(name, max_chars=max_chars) for name in ordered[:MAX_JSON_ECHO_FIELDS])
+    if len(ordered) > MAX_JSON_ECHO_FIELDS:
+        shown += f", ... (+{len(ordered) - MAX_JSON_ECHO_FIELDS} more)"
+    return shown
+
+
+def _bounded_json_bytes(path: Path, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` (+1) bytes of ``path`` through one handle.
+
+    ``fstat`` and the reads share the descriptor, so a replacement or growth
+    race cannot substitute a different file behind the size gate. The extra
+    byte detects a file that grew while it was being read; nothing is ever
+    truncated silently.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    try:
+        size = os.fstat(fd).st_size
+        if size > max_bytes:
+            raise BoundedJsonError(
+                f"{path} is {size} bytes, over the {max_bytes}-byte JSON artifact limit"
+            )
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if len(data) > max_bytes:
+        raise BoundedJsonError(
+            f"{path} grew past the {max_bytes}-byte JSON artifact limit"
+        )
+    return data
+
+
+def _bounded_json_scan(
+    text: str,
+    *,
+    max_depth: int,
+    max_members: int,
+    max_items: int,
+    max_nodes: int,
+) -> None:
+    """Count containers, members, comma separators, and scalars in raw JSON text.
+
+    Runs before json.loads so hostile nesting or bulk fails at the named
+    ceiling instead of first recursing inside the standard parser. Strings and
+    escapes are skipped with a state machine; counts are conservative upper
+    bounds, so a document that passes can never exceed the ceilings after
+    parsing either. The node count is re-checked after the loop because the
+    in-string branch continues before the per-character test, which would
+    otherwise let a document whose final node is a string closer finish one
+    node past the ceiling.
+    """
+    depth = 0
+    members = 0
+    separators = 0
+    nodes = 0
+    in_string = False
+    escaped = False
+    # Tracks whether the previous character can continue a number, so a number
+    # is counted once at its leading character. A boolean rather than a
+    # sentinel character: "" is a substring of every string, so a ""-seeded
+    # "not previously numeric" test would silently never fire for a document
+    # that starts with a digit.
+    prev_numeric = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+                nodes += 1
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+            nodes += 1
+            if depth > max_depth:
+                raise BoundedJsonError(
+                    f"JSON nesting exceeds {max_depth} levels"
+                )
+        elif char in "}]":
+            depth -= 1
+        elif char == ":":
+            members += 1
+        elif char == ",":
+            separators += 1
+        elif char in "-0123456789":
+            if not prev_numeric:
+                nodes += 1
+        elif char in "tfn":
+            nodes += 1
+        if nodes > max_nodes:
+            raise BoundedJsonError(
+                f"JSON document exceeds {max_nodes} structural nodes"
+            )
+        prev_numeric = char in "-0123456789.eE"
+    if nodes > max_nodes:
+        raise BoundedJsonError(
+            f"JSON document exceeds {max_nodes} structural nodes"
+        )
+    if members > max_members:
+        raise BoundedJsonError(
+            f"JSON document exceeds {max_members} object members"
+        )
+    if separators > max_items:
+        raise BoundedJsonError(
+            f"JSON document exceeds {max_items} comma separators"
+        )
+
+
+def _json_integer(text: str) -> int:
+    if len(text.removeprefix("-")) > MAX_CACHE_JSON_INTEGER_DIGITS:
+        raise BoundedJsonError(
+            f"JSON integer exceeds {MAX_CACHE_JSON_INTEGER_DIGITS} digits"
+        )
+    try:
+        return int(text)
+    except ValueError as exc:
+        # A stricter host-wide digit guard may reject before the local ceiling.
+        raise BoundedJsonError("JSON integer exceeds the host integer digit limit") from exc
+
+
+def _json_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise BoundedJsonError("JSON number must be finite and representable as a float")
+    return value
+
+
+def _json_nonfinite(_text: str) -> None:
+    raise BoundedJsonError("JSON number must be finite; NaN and Infinity are unsupported")
+
+
+def bounded_json_loads(
+    text: str,
+    *,
+    max_depth: int = MAX_CACHE_JSON_DEPTH,
+    max_members: int = MAX_CACHE_JSON_MEMBERS,
+    max_items: int = MAX_CACHE_JSON_ITEMS,
+    max_nodes: int = MAX_CACHE_JSON_NODES,
+) -> Any:
+    """Parse JSON text under the cache-artifact ceilings with named errors."""
+    _bounded_json_scan(
+        text,
+        max_depth=max_depth,
+        max_members=max_members,
+        max_items=max_items,
+        max_nodes=max_nodes,
+    )
+    try:
+        return json.loads(
+            text, object_pairs_hook=_no_duplicate_pairs, parse_int=_json_integer,
+            parse_float=_json_float, parse_constant=_json_nonfinite,
+        )
+    except BoundedJsonError:
+        raise
+    except UnicodeDecodeError as exc:  # defensive: callers decode bytes first
+        raise BoundedJsonError(f"JSON artifact is not valid UTF-8: {exc}") from exc
+    except RecursionError as exc:
+        raise BoundedJsonError(
+            "JSON artifact nesting exceeded the parser recursion budget"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise BoundedJsonError(f"JSON artifact is not valid JSON: {exc}") from exc
+
+
+def read_bounded_json(
+    path: Path,
+    *,
+    max_bytes: int = MAX_CACHE_JSON_BYTES,
+    max_depth: int = MAX_CACHE_JSON_DEPTH,
+    max_members: int = MAX_CACHE_JSON_MEMBERS,
+    max_items: int = MAX_CACHE_JSON_ITEMS,
+    max_nodes: int = MAX_CACHE_JSON_NODES,
+) -> Any:
+    """Read one externally supplied JSON artifact under explicit ceilings.
+
+    Byte ceiling first (bounded read through one handle), deterministic UTF-8
+    decode, pre-parse depth/count scan, duplicate-key and nonfinite-number
+    rejection, bounded decimal integer conversion, and
+    RecursionError containment. Every malformed outcome raises the named
+    ``BoundedJsonError`` rather than a parser-implementation exception.
+    """
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    data = _bounded_json_bytes(path, max_bytes)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BoundedJsonError(f"{path} is not valid UTF-8: {exc}") from exc
+    return bounded_json_loads(
+        text,
+        max_depth=max_depth,
+        max_members=max_members,
+        max_items=max_items,
+        max_nodes=max_nodes,
+    )
+
+
 def _no_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError(f"duplicate JSON field: {key}")
+            raise BoundedJsonError(f"duplicate JSON field: {bounded_echo(key)}")
         result[key] = value
     return result
 
 
 def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_pairs)
+    return read_bounded_json(path)
+
+
+_ARTIFACT_COMPONENT_RE = re.compile(r"[A-Za-z0-9._+-]+")
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
 
 
 def _safe_relative(value: Any) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
+    """Validate one cache/package artifact relative path.
+
+    Mirrors is_valid_artifact_path() in src/core/nk_title_manifest.c so the
+    completion manifest never records a path the native package validator
+    rejects: components are [A-Za-z0-9._+-] (the '+' is required by GCC/MSYS2
+    runtime library names such as libstdc++-6.dll), with no traversal,
+    separators, reserved device names, or trailing dot/space.
+    """
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > 240
+        or "\\" in value
+        or ":" in value
+        or value.startswith("/")
+        or value.endswith("/")
+        or "//" in value
+    ):
         raise PackageCacheError("cache artifact path is not a portable relative path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise PackageCacheError("cache artifact path escapes the package")
-    return path.as_posix()
+    for part in value.split("/"):
+        if part in {"", ".", ".."}:
+            raise PackageCacheError("cache artifact path escapes the package")
+        if (
+            not _ARTIFACT_COMPONENT_RE.fullmatch(part)
+            or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+        ):
+            raise PackageCacheError("cache artifact path is not a portable relative path")
+    return value
 
 
 def _resolve_within(root: Path, relative: str) -> Path:
@@ -315,6 +811,7 @@ def _normal_modules(value: Any) -> list[dict[str, Any]]:
 def build_cache_key(
     *,
     input_hashes: Mapping[str, Any],
+    title_input_identity: Mapping[str, Any] | None = None,
     codegen_options: Mapping[str, Any],
     analyzer_sha256: str,
     codegen_sha256: str,
@@ -332,6 +829,10 @@ def build_cache_key(
     executable_sha256 = _input_sha(input_hashes.get("executable"), "executable")
     manifest_sha256 = _input_sha(input_hashes.get("manifest"), "manifest")
     modules = _normal_modules(input_hashes.get("modules"))
+    identity_digest = (
+        title_input_identity_digest(dict(title_input_identity))
+        if title_input_identity is not None else None
+    )
     psp_header = input_hashes.get("psp_header")
     psp_header_sha256 = None
     if psp_header is not None:
@@ -345,6 +846,7 @@ def build_cache_key(
         "executable_sha256": executable_sha256,
         "manifest_sha256": manifest_sha256,
         "modules_sha256": _digest(modules),
+        "title_input_identity_sha256": identity_digest,
         "psp_header_sha256": psp_header_sha256,
         "analyzer_codegen_epoch": analyzer_codegen_epoch,
         "analyzer_sha256": analyzer_sha256,
@@ -457,7 +959,8 @@ def compare_cache_keys(
     reasons: list[str] = []
     generated_reusable = True
     for component in (
-        "executable_sha256", "manifest_sha256", "modules_sha256", "psp_header_sha256",
+        "executable_sha256", "manifest_sha256", "modules_sha256", "title_input_identity_sha256",
+        "psp_header_sha256",
         "analyzer_codegen_epoch", "analyzer_sha256", "codegen_sha256",
         "codegen_options_sha256", "generated_code_abi_epoch",
     ):
@@ -530,16 +1033,25 @@ def write_completion_manifest(
     package_dir: Path,
     key: Mapping[str, Any],
     *,
+    title_input_identity: Mapping[str, Any] | None = None,
     backends: str | None = None,
     limits: list[str] | None = None,
 ) -> Path:
     package_dir = package_dir.resolve(strict=False)
     artifacts = _artifact_records(package_dir)
+    if title_input_identity is None:
+        try:
+            package = _read_json(package_dir / "package.json")
+        except (OSError, ValueError) as exc:
+            raise PackageCacheError(f"package input identity is unavailable: {exc}") from exc
+        title_input_identity = package.get("title_input_identity") if isinstance(package, dict) else None
+    identity = validate_title_input_identity(dict(title_input_identity)) if title_input_identity is not None else None
     document: dict[str, Any] = {
         "format": COMPLETION_FORMAT,
         "schema_version": COMPLETION_SCHEMA_VERSION,
         "status": "complete",
         "cache_key": key,
+        "title_input_identity": identity,
         "artifacts": artifacts,
     }
     if backends is not None:
@@ -564,11 +1076,11 @@ def validate_completion_manifest(
     try:
         document = _read_json(path)
     except (OSError, ValueError) as exc:
-        return False, f"completion manifest is unreadable: {exc}", None
+        return False, f"completion manifest is unreadable: {exc}", None  # includes BoundedJsonError
     if not isinstance(document, dict):
         return False, "completion manifest must be a JSON object", None
-    allowed = {"format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits"}
-    required = {"format", "schema_version", "status", "cache_key", "artifacts"}
+    allowed = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts", "backends", "limits"}
+    required = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts"}
     doc_keys = set(document)
     if not required.issubset(doc_keys) or not doc_keys.issubset(allowed):
         return False, "completion manifest fields do not match the cache contract", None
@@ -586,6 +1098,16 @@ def validate_completion_manifest(
         return False, str(exc), None
     if expected_key is not None and key != expected_key:
         return False, "completion manifest cache key does not match the package", None
+    try:
+        identity = validate_title_input_identity(document["title_input_identity"])
+    except PackageCacheError as exc:
+        return False, str(exc), None
+    try:
+        aot_components, _ = _key_components(key, "aot")
+    except PackageCacheError as exc:
+        return False, str(exc), None
+    if aot_components.get("title_input_identity_sha256") != title_input_identity_digest(identity):
+        return False, "completion manifest title input identity does not match the cache key", None
     artifacts = document["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
         return False, "completion manifest artifact list is empty", None
@@ -624,7 +1146,7 @@ def package_cache_key(package_dir: Path) -> Mapping[str, Any] | None:
     try:
         document = _read_json(package_dir / "package.json")
     except (OSError, ValueError):
-        return None
+        return None  # unreadable or hostile package metadata carries no cache key
     return _key_from_document(document)
 
 
@@ -638,9 +1160,12 @@ def validate_package_cache(
         package = _read_json(package_dir / "package.json")
         report = _read_json(package_dir / "build-report.json")
     except (OSError, ValueError) as exc:
+        # BoundedJsonError names byte/depth/count/duplicate-key/UTF-8 failures.
         return False, f"package metadata is unreadable: {exc}"
     if not isinstance(package, dict) or not isinstance(report, dict):
         return False, "package metadata must contain JSON objects"
+    if package.get("format") != "nakagawa-aot-package" or package.get("schema_version") != 2:
+        return False, "package format or schema is unsupported"
     cache = package.get("cache")
     key = _key_from_document(package)
     if not isinstance(cache, dict) or key is None:
@@ -681,6 +1206,12 @@ def validate_package_cache(
     inputs = package.get("inputs", {})
     if not isinstance(inputs, dict):
         return False, "package input metadata is invalid"
+    try:
+        identity = validate_title_input_identity(package.get("title_input_identity"))
+    except PackageCacheError as exc:
+        return False, str(exc)
+    if title_input_identity_digest(identity) != components.get("title_input_identity_sha256"):
+        return False, "package title input identity disagrees with cache key"
     executable_input = inputs.get("executable", {})
     manifest_input = inputs.get("manifest", {})
     if not isinstance(executable_input, dict) or not isinstance(manifest_input, dict):
@@ -695,6 +1226,19 @@ def validate_package_cache(
         return False, "package module input metadata is invalid"
     if modules_digest != components.get("modules_sha256"):
         return False, "package module digest disagrees with cache key"
+    title = package.get("title")
+    if not isinstance(title, dict) or identity["manifest"]["id"] != title.get("id"):
+        return False, "package title input identity does not match its manifest/profile"
+    if identity["main_executable"]["sha256"] != executable_input.get("sha256"):
+        return False, "package title input identity does not match the main executable"
+    identity_modules = {item["name"]: item["sha256"] for item in identity["modules"]}
+    package_modules = {
+        item.get("name"): item.get("sha256")
+        for item in inputs.get("modules", [])
+        if isinstance(item, Mapping)
+    }
+    if identity_modules != package_modules:
+        return False, "package title input identity does not match its module inputs"
     psp_header = inputs.get("psp_header")
     expected_psp_header = components.get("psp_header_sha256")
     if psp_header is None:
@@ -736,11 +1280,13 @@ def validate_package_cache(
         if not object_file.is_file() or sha256_file(object_file) != item.get("sha256"):
             return False, f"package generated object digest is stale: {object_path}"
         required.add(object_path)
-    valid, reason, _ = validate_completion_manifest(
+    valid, reason, completion = validate_completion_manifest(
         package_dir,
         expected_key=expected_key,
         required_paths=required,
     )
     if not valid:
         return False, reason
+    if completion is None or completion.get("title_input_identity") != identity:
+        return False, "completion manifest title input identity does not match package.json"
     return True, ""

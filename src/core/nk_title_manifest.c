@@ -51,6 +51,8 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
 
 #define MAX_MODULES 32
 #define MAX_COMPAT_DISC_IDS 16
+#define MAX_LOOSE_CONTENT_ROOTS 16
+#define MAX_LOOSE_CONTENT_EXCLUDES 2
 #define NK_MANIFEST_MAX_OVERLAYS 8
 
 /* The window a guest module's base must lie in: its code and data are both placed there, so a
@@ -77,6 +79,12 @@ typedef struct {
     uint32_t run_entry;
     char bss_metadata_source[16];
     char data_root[257];
+    char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241];
+    char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241];
+    char loose_root_exclude_paths[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES][241];
+    const char *loose_root_exclude_ptrs[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES];
+    NkLooseContentRoot loose_roots[MAX_LOOSE_CONTENT_ROOTS];
+    size_t loose_root_count;
     char memory_stick_root[129];
     char hle_profile[65];
     char codegen_profile[65];
@@ -222,7 +230,8 @@ static bool is_valid_filename(const char *s) {
     return true;
 }
 
-static bool is_valid_portable_path(const char *s) {
+/* Shared shape rule for relative paths. */
+static bool is_valid_relative_path(const char *s, bool allow_plus) {
     if (!s || !*s) return false;
     size_t len = strlen(s);
     if (len > 240) return false;
@@ -242,7 +251,8 @@ static bool is_valid_portable_path(const char *s) {
         if (token[tlen - 1] == '.' || token[tlen - 1] == ' ') return false;
         for (size_t i = 0; i < tlen; i++) {
             char c = token[i];
-            if (!isalnum((unsigned char)c) && c != '.' && c != '_' && c != '-') return false;
+            if (!isalnum((unsigned char)c) && c != '.' && c != '_' && c != '-' &&
+                !(allow_plus && c == '+')) return false;
         }
         /* Check Windows reserved */
         char base[16];
@@ -263,6 +273,37 @@ static bool is_valid_portable_path(const char *s) {
         token = strtok(NULL, "/");
     }
     return true;
+}
+
+/* Title-manifest "make-safe" rule: components are [A-Za-z0-9._-] only. Stays in
+ * lockstep with the schema parser (assets/title_manifest.schema.json
+ * relativePath) and tools/title_manifest.py portable_path(). */
+static bool is_valid_portable_path(const char *s) {
+    return is_valid_relative_path(s, false);
+}
+
+static bool is_valid_loose_root_path(const char *s) {
+    return s && strcmp(s, ".") == 0 ? true : is_valid_portable_path(s);
+}
+
+static bool loose_root_paths_overlap(const char *a, const char *b) {
+    if (strcmp(a, ".") == 0 || strcmp(b, ".") == 0) return true;
+    size_t a_len = strlen(a), b_len = strlen(b);
+    size_t common = a_len < b_len ? a_len : b_len;
+    for (size_t i = 0; i < common; i++) {
+        if (nk_ascii_lower((unsigned char)a[i]) != nk_ascii_lower((unsigned char)b[i]))
+            return false;
+    }
+    return a_len == b_len || (a_len < b_len ? b[a_len] == '/' : a[b_len] == '/');
+}
+
+/* Host runtime package artifacts additionally allow '+' in path components
+ * because GCC/MSYS2 runtime library names contain it (libstdc++-6.dll,
+ * libc++.so). Mirrors _safe_relative() in tools/nk_core/package_cache.py, which
+ * inventories these files into the completion manifest; traversal, separators,
+ * reserved device names and a trailing dot or space stay rejected. */
+static bool is_valid_artifact_path(const char *s) {
+    return is_valid_relative_path(s, true);
 }
 
 /* filesystem.disc_image is only handed to the runtime (PSP_ISO), never to Make, so its
@@ -323,7 +364,9 @@ static bool is_guest_device_path(const char *s) {
 }
 
 static bool is_load_address_evidence(const char *s) {
-    static const char * const classes[] = {"measured-hw", "measured-ppsspp", "provisional", NULL};
+    static const char * const classes[] = {
+        "measured-hw", "measured-ppsspp", "provisional", "documented-psp-default", NULL
+    };
     for (int i = 0; classes[i]; i++) {
         if (strcmp(s, classes[i]) == 0) return true;
     }
@@ -425,6 +468,14 @@ bool nk_title_manifest_parse_buffer(
     JsonNode *root = json_parse(json_str, json_len, error_buf, error_buf_len);
     if (!root) return false;
 
+    char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
+    char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
+    char loose_root_excludes[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES][241] = {{{0}}};
+    size_t loose_root_exclude_counts[MAX_LOOSE_CONTENT_ROOTS] = {0};
+    bool loose_root_skip_primary[MAX_LOOSE_CONTENT_ROOTS] = {0};
+    uint32_t loose_root_precedence[MAX_LOOSE_CONTENT_ROOTS] = {0};
+    size_t loose_root_count = 0;
+
     /* 1. Root keys validation */
     static const char * const allowed_root_keys[] = {
         "schema_version", "id", "display_name", "kind", "disc", "executable",
@@ -502,7 +553,10 @@ bool nk_title_manifest_parse_buffer(
             json_free(root);
             return false;
         }
-        static const char * const allowed_disc_keys[] = {"id", "region", "revision_policy", "compatible_revisions", NULL};
+        static const char * const allowed_disc_keys[] = {
+            "id", "region", "revision_policy", "compatible_revisions",
+            "require_local_compatibility_record", NULL
+        };
         static const char * const required_disc_keys[] = {"id", "region", "revision_policy", NULL};
         if (!check_object_keys(disc_node, "$.disc", allowed_disc_keys, required_disc_keys, error_buf, error_buf_len)) {
             json_free(root);
@@ -539,6 +593,13 @@ bool nk_title_manifest_parse_buffer(
         const char *pol = pol_node->u.str_val;
         if (strcmp(pol, "exact-disc-id") != 0 && strcmp(pol, "explicit-compatible-revisions") != 0) {
             if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.revision_policy: unsupported revision policy");
+            json_free(root);
+            return false;
+        }
+        JsonNode *local_record_node = obj_get(disc_node, "require_local_compatibility_record");
+        if (local_record_node && local_record_node->type != JSON_BOOL) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.disc.require_local_compatibility_record: must be a boolean");
             json_free(root);
             return false;
         }
@@ -592,8 +653,15 @@ bool nk_title_manifest_parse_buffer(
 
     /* 7. executable validation */
     JsonNode *exe_node = obj_get(root, "executable");
-    static const char * const allowed_exe_keys[] = {"base", "entry", "bss_metadata_source", "extra_executable_spans", NULL};
-    if (!check_object_keys(exe_node, "$.executable", allowed_exe_keys, allowed_exe_keys, error_buf, error_buf_len)) {
+    static const char * const allowed_exe_keys[] = {
+        "base", "entry", "bss_metadata_source", "extra_executable_spans",
+        "load_address", "load_address_evidence", NULL
+    };
+    static const char * const required_exe_keys[] = {
+        "base", "entry", "bss_metadata_source", "extra_executable_spans", NULL
+    };
+    if (!check_object_keys(exe_node, "$.executable", allowed_exe_keys,
+                           required_exe_keys, error_buf, error_buf_len)) {
         json_free(root);
         return false;
     }
@@ -606,6 +674,35 @@ bool nk_title_manifest_parse_buffer(
     }
     if (!parse_uint32(obj_get(exe_node, "entry"), &exe_entry)) {
         if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.entry: invalid entry address");
+        json_free(root);
+        return false;
+    }
+    JsonNode *load_address_node = obj_get(exe_node, "load_address");
+    JsonNode *load_address_evidence_node = obj_get(exe_node, "load_address_evidence");
+    if (load_address_node) {
+        uint32_t load_address = 0;
+        if (!parse_uint32(load_address_node, &load_address)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.load_address: invalid address");
+            json_free(root);
+            return false;
+        }
+        if (exe_base != load_address) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.base: must match load_address when a main executable load binding is declared");
+            json_free(root);
+            return false;
+        }
+        if (!load_address_evidence_node || load_address_evidence_node->type != JSON_STRING ||
+            !is_load_address_evidence(load_address_evidence_node->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.load_address_evidence: unsupported evidence class");
+            json_free(root);
+            return false;
+        }
+    } else if (load_address_evidence_node) {
+        if (error_buf) snprintf(error_buf, error_buf_len,
+                                "$.executable.load_address_evidence: requires load_address");
         json_free(root);
         return false;
     }
@@ -778,7 +875,7 @@ bool nk_title_manifest_parse_buffer(
      * (issue #196 Phase 4): a manifest declares where its private inputs live.
      * The runtime consumes only the required runtime-filesystem contract today;
      * the optional declarations are accepted (and validated) for tool parity. */
-    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", NULL};
+    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", "loose_content_roots", NULL};
     static const char * const required_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", NULL};
     if (!check_object_keys(fs_node, "$.filesystem", allowed_fs_keys, required_fs_keys, error_buf, error_buf_len)) {
         json_free(root);
@@ -847,6 +944,179 @@ bool nk_title_manifest_parse_buffer(
                 if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: duplicate device prefix", p);
                 json_free(root);
                 return false;
+            }
+        }
+    }
+
+    JsonNode *loose_node = obj_get(fs_node, "loose_content_roots");
+    if (loose_node) {
+        if (loose_node->type != JSON_ARRAY) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.filesystem.loose_content_roots: must be an array");
+            json_free(root);
+            return false;
+        }
+        if (loose_node->u.arr.count > MAX_LOOSE_CONTENT_ROOTS) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.filesystem.loose_content_roots: contains %zu items; maximum is %d",
+                                    loose_node->u.arr.count, MAX_LOOSE_CONTENT_ROOTS);
+            json_free(root);
+            return false;
+        }
+        static const char * const allowed_root_keys[] = {
+            "root", "mount", "precedence", "skip_primary_root", "exclude", NULL
+        };
+        static const char * const required_root_keys[] = {"root", "mount", "precedence", NULL};
+        for (size_t i = 0; i < loose_node->u.arr.count; i++) {
+            char item_path[96];
+            snprintf(item_path, sizeof(item_path), "$.filesystem.loose_content_roots[%zu]", i);
+            JsonNode *item = loose_node->u.arr.items[i];
+            if (!check_object_keys(item, item_path, allowed_root_keys,
+                                   required_root_keys, error_buf, error_buf_len)) {
+                json_free(root);
+                return false;
+            }
+            JsonNode *root_path = obj_get(item, "root");
+            JsonNode *mount = obj_get(item, "mount");
+            JsonNode *priority = obj_get(item, "precedence");
+            JsonNode *skip_primary_node = obj_get(item, "skip_primary_root");
+            JsonNode *exclude_node = obj_get(item, "exclude");
+            if (!root_path || root_path->type != JSON_STRING ||
+                strlen(root_path->u.str_val) > 240 ||
+                !is_valid_loose_root_path(root_path->u.str_val)) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.root: must be '.' or a portable relative POSIX-style path without traversal",
+                    item_path);
+                json_free(root);
+                return false;
+            }
+            if (!mount || mount->type != JSON_STRING || strlen(mount->u.str_val) > 240 ||
+                (mount->u.str_val[0] && !is_valid_portable_path(mount->u.str_val))) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.mount: must be empty or a portable relative POSIX-style path",
+                    item_path);
+                json_free(root);
+                return false;
+            }
+            uint32_t precedence = 0;
+            if (!parse_uint32(priority, &precedence) || precedence > 65535u) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.precedence: must be an integer in range 0..65535", item_path);
+                json_free(root);
+                return false;
+            }
+            bool skip_primary = strcmp(root_path->u.str_val, ".") == 0;
+            if (skip_primary_node) {
+                if (skip_primary_node->type != JSON_BOOL) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.skip_primary_root: must be a boolean", item_path);
+                    json_free(root);
+                    return false;
+                }
+                skip_primary = skip_primary_node->u.bool_val;
+            }
+            if (skip_primary != (strcmp(root_path->u.str_val, ".") == 0)) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.skip_primary_root: must be true exactly when root is '.'",
+                    item_path);
+                json_free(root);
+                return false;
+            }
+            if (exclude_node && exclude_node->type != JSON_ARRAY) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.exclude: must be an array", item_path);
+                json_free(root);
+                return false;
+            }
+            size_t exclude_count = exclude_node ? exclude_node->u.arr.count : 0u;
+            if (exclude_count > MAX_LOOSE_CONTENT_EXCLUDES) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.exclude: contains %zu items; maximum is %d",
+                    item_path, exclude_count, MAX_LOOSE_CONTENT_EXCLUDES);
+                json_free(root);
+                return false;
+            }
+            for (size_t exclude_index = 0; exclude_index < exclude_count; exclude_index++) {
+                JsonNode *exclude_path = exclude_node->u.arr.items[exclude_index];
+                char exclude_item_path[128];
+                snprintf(exclude_item_path, sizeof(exclude_item_path),
+                         "%.64s.exclude[%zu]", item_path, exclude_index);
+                if (!exclude_path || exclude_path->type != JSON_STRING ||
+                    strlen(exclude_path->u.str_val) > 240 ||
+                    !is_valid_portable_path(exclude_path->u.str_val)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.120s: must be a portable relative POSIX-style path without traversal",
+                        exclude_item_path);
+                    json_free(root);
+                    return false;
+                }
+                for (size_t previous_exclude = 0; previous_exclude < exclude_index;
+                     previous_exclude++) {
+                    if (nk_ascii_casecmp(loose_root_excludes[i][previous_exclude],
+                                          exclude_path->u.str_val) == 0) {
+                        if (error_buf) snprintf(error_buf, error_buf_len,
+                            "%.120s: duplicate excluded path", exclude_item_path);
+                        json_free(root);
+                        return false;
+                    }
+                }
+                snprintf(loose_root_excludes[i][exclude_index],
+                         sizeof(loose_root_excludes[i][exclude_index]), "%s",
+                         exclude_path->u.str_val);
+            }
+            for (size_t previous = 0; previous < i; previous++) {
+                if (loose_root_precedence[previous] == precedence) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.precedence: duplicate loose-content precedence", item_path);
+                    json_free(root);
+                    return false;
+                }
+                if (nk_ascii_casecmp(loose_root_paths[previous], root_path->u.str_val) == 0) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.root: duplicate loose-content root", item_path);
+                    json_free(root);
+                    return false;
+                }
+                if (loose_root_paths_overlap(loose_root_paths[previous], root_path->u.str_val)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.root: overlapping loose-content roots", item_path);
+                    json_free(root);
+                    return false;
+                }
+            }
+            snprintf(loose_root_paths[i], sizeof(loose_root_paths[i]), "%s", root_path->u.str_val);
+            snprintf(loose_root_mounts[i], sizeof(loose_root_mounts[i]), "%s", mount->u.str_val);
+            loose_root_exclude_counts[i] = exclude_count;
+            loose_root_skip_primary[i] = skip_primary;
+            loose_root_precedence[i] = precedence;
+            loose_root_count++;
+        }
+        /* Array order is canonicalized by numeric precedence, so every consumer
+         * applies the same first-wins duplicate-file rule. */
+        for (size_t i = 1; i < loose_root_count; i++) {
+            size_t j = i;
+            while (j > 0 && loose_root_precedence[j] < loose_root_precedence[j - 1]) {
+                char path_swap[241], mount_swap[241];
+                char excludes_swap[MAX_LOOSE_CONTENT_EXCLUDES][241];
+                size_t exclude_count_swap = loose_root_exclude_counts[j];
+                bool skip_primary_swap = loose_root_skip_primary[j];
+                memcpy(path_swap, loose_root_paths[j], sizeof(path_swap));
+                memcpy(loose_root_paths[j], loose_root_paths[j - 1], sizeof(path_swap));
+                memcpy(loose_root_paths[j - 1], path_swap, sizeof(path_swap));
+                memcpy(mount_swap, loose_root_mounts[j], sizeof(mount_swap));
+                memcpy(loose_root_mounts[j], loose_root_mounts[j - 1], sizeof(mount_swap));
+                memcpy(loose_root_mounts[j - 1], mount_swap, sizeof(mount_swap));
+                memcpy(excludes_swap, loose_root_excludes[j], sizeof(excludes_swap));
+                memcpy(loose_root_excludes[j], loose_root_excludes[j - 1], sizeof(excludes_swap));
+                memcpy(loose_root_excludes[j - 1], excludes_swap, sizeof(excludes_swap));
+                loose_root_exclude_counts[j] = loose_root_exclude_counts[j - 1];
+                loose_root_exclude_counts[j - 1] = exclude_count_swap;
+                loose_root_skip_primary[j] = loose_root_skip_primary[j - 1];
+                loose_root_skip_primary[j - 1] = skip_primary_swap;
+                uint32_t priority_swap = loose_root_precedence[j];
+                loose_root_precedence[j] = loose_root_precedence[j - 1];
+                loose_root_precedence[j - 1] = priority_swap;
+                j--;
             }
         }
     }
@@ -1145,6 +1415,28 @@ bool nk_title_manifest_parse_buffer(
     temp.run_entry = fallback_entry ? fallback_entry : exe_entry;
     snprintf(temp.bss_metadata_source, sizeof(temp.bss_metadata_source), "%s", bss_src);
     snprintf(temp.data_root, sizeof(temp.data_root), "%s", dr_node->u.str_val);
+    temp.loose_root_count = loose_root_count;
+    for (size_t i = 0; i < loose_root_count; i++) {
+        snprintf(temp.loose_root_paths[i], sizeof(temp.loose_root_paths[i]), "%s",
+                 loose_root_paths[i]);
+        snprintf(temp.loose_root_mounts[i], sizeof(temp.loose_root_mounts[i]), "%s",
+                 loose_root_mounts[i]);
+        for (size_t exclude_index = 0;
+             exclude_index < loose_root_exclude_counts[i]; exclude_index++) {
+            snprintf(temp.loose_root_exclude_paths[i][exclude_index],
+                     sizeof(temp.loose_root_exclude_paths[i][exclude_index]), "%s",
+                     loose_root_excludes[i][exclude_index]);
+            temp.loose_root_exclude_ptrs[i][exclude_index] =
+                temp.loose_root_exclude_paths[i][exclude_index];
+        }
+        temp.loose_roots[i].root = temp.loose_root_paths[i];
+        temp.loose_roots[i].mount = temp.loose_root_mounts[i];
+        temp.loose_roots[i].precedence = loose_root_precedence[i];
+        temp.loose_roots[i].skip_primary_root = loose_root_skip_primary[i];
+        temp.loose_roots[i].exclude = loose_root_exclude_counts[i]
+            ? temp.loose_root_exclude_ptrs[i] : NULL;
+        temp.loose_roots[i].exclude_count = (int)loose_root_exclude_counts[i];
+    }
     snprintf(temp.memory_stick_root, sizeof(temp.memory_stick_root), "%s", ms_node->u.str_val);
     snprintf(temp.hle_profile, sizeof(temp.hle_profile), "%s", hle_node->u.str_val);
 
@@ -1184,6 +1476,8 @@ bool nk_title_manifest_parse_buffer(
     temp.entry.run_entry = temp.run_entry;
     temp.entry.bss_metadata_source = temp.bss_metadata_source;
     temp.entry.data_root = temp.data_root;
+    temp.entry.loose_content_roots = temp.loose_root_count ? temp.loose_roots : NULL;
+    temp.entry.loose_content_root_count = (int)temp.loose_root_count;
     temp.entry.memory_stick_root = temp.memory_stick_root;
     temp.entry.hle_profile = temp.hle_profile;
     temp.entry.codegen_profile = temp.codegen_profile;
@@ -1357,6 +1651,19 @@ bool nk_title_manifest_parse_buffer(
     dest->entry.run_entry = dest->run_entry;
     dest->entry.bss_metadata_source = dest->bss_metadata_source;
     dest->entry.data_root = dest->data_root;
+    for (size_t i = 0; i < dest->loose_root_count; i++) {
+        dest->loose_roots[i].root = dest->loose_root_paths[i];
+        dest->loose_roots[i].mount = dest->loose_root_mounts[i];
+        for (int exclude_index = 0;
+             exclude_index < dest->loose_roots[i].exclude_count; exclude_index++) {
+            dest->loose_root_exclude_ptrs[i][exclude_index] =
+                dest->loose_root_exclude_paths[i][exclude_index];
+        }
+        dest->loose_roots[i].exclude = dest->loose_roots[i].exclude_count
+            ? dest->loose_root_exclude_ptrs[i] : NULL;
+    }
+    dest->entry.loose_content_roots = dest->loose_root_count ? dest->loose_roots : NULL;
+    dest->entry.loose_content_root_count = (int)dest->loose_root_count;
     dest->entry.memory_stick_root = dest->memory_stick_root;
     dest->entry.hle_profile = dest->hle_profile;
     dest->entry.codegen_profile = dest->codegen_profile;
@@ -2272,7 +2579,7 @@ static bool package_path_is_symlink(const char *path) {
 
 static bool package_direct_file(const char *package_root, const char *relative,
                                 char *out_path, size_t out_size) {
-    if (!relative || !is_valid_portable_path(relative)) return false;
+    if (!relative || !is_valid_artifact_path(relative)) return false;
     char joined[NK_MAX_PATH * 2];
     if (!package_join_path(joined, sizeof(joined), package_root, relative) ||
         !nk_platform_file_exists(joined) ||
@@ -2317,6 +2624,9 @@ typedef struct {
 
 static void package_identity_update_u64(NkSha256 *ctx, uint64_t value);
 static void package_identity_finish(NkSha256 *ctx, char out_hex[65]);
+static bool package_local_identity_file(const char *user_data_root,
+                                       const char *disc_id,
+                                       char out_path[NK_MAX_PATH * 2]);
 
 static bool package_file_identity_equal(const PackageFileIdentity *left,
                                         const PackageFileIdentity *right) {
@@ -2333,6 +2643,8 @@ typedef struct {
     char title_id[64];
     char identity_digest[65];
     char status_identity_digest[65];
+    char current_input_identity_digest[65];
+    char disc_version[32];
     NkRuntimePackageInfo info;
 } PackageValidationCache;
 
@@ -2402,6 +2714,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
+    const char *current_disc_version,
     uint32_t player_abi_version,
     char out_identity[65]
 ) {
@@ -2433,6 +2746,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     package_cache_identity_update_text(&identity_ctx, normalized);
     package_cache_identity_update_text(&identity_ctx, title_id);
     package_cache_identity_update_text(&identity_ctx, selected_executable);
+    package_cache_identity_update_text(&identity_ctx, current_disc_version);
     package_identity_update_u64(&identity_ctx, is_experimental ? 1u : 0u);
     package_identity_update_u64(&identity_ctx, player_abi_version);
     package_identity_update_u64(&identity_ctx, s_catalog_epoch);
@@ -2441,6 +2755,18 @@ bool nk_title_manifest_aot_package_cache_identity(
     package_cache_identity_update_file(&identity_ctx,
                                        NK_AOT_COMPLETION_MANIFEST,
                                        completion_path);
+    char input_identity_path[NK_MAX_PATH * 2];
+    char input_identity_digest[65];
+    if (package_local_identity_file(user_data_root, normalized,
+                                    input_identity_path) &&
+        package_hash_file(input_identity_path, input_identity_digest)) {
+        package_cache_identity_update_text(&identity_ctx,
+                                           "current-input-identity-present");
+        package_cache_identity_update_text(&identity_ctx, input_identity_digest);
+    } else {
+        package_cache_identity_update_text(&identity_ctx,
+                                           "current-input-identity-unavailable");
+    }
 
     char executable_relative[NK_MAX_PATH] = "";
     char executable_path[NK_MAX_PATH * 2] = "";
@@ -2596,7 +2922,7 @@ static bool package_completion_identity(const char *package_root,
             PackageFileIdentity artifact_identity;
             ok = record && record->type == JSON_OBJECT &&
                  package_string(obj_get(record, "path"), &relative) &&
-                 is_valid_portable_path(relative) &&
+                 is_valid_artifact_path(relative) &&
                  package_direct_file(package_root, relative, artifact_path,
                                      sizeof(artifact_path)) &&
                  package_file_identity(artifact_path, &artifact_identity);
@@ -2612,12 +2938,15 @@ static bool package_validation_cache_get(
     const char *package_root,
     const char *disc_id,
     const char *title_id,
+    const char *current_input_identity_digest,
+    const char *disc_version,
     uint32_t player_abi_version,
     uint64_t catalog_epoch,
     const char *status_identity_digest,
     NkRuntimePackageInfo *out_info
 ) {
-    if (!status_identity_digest || !status_identity_digest[0]) return false;
+    if (!package_root || !disc_id || !title_id || !status_identity_digest ||
+        !status_identity_digest[0] || !out_info) return false;
     PackageValidationCache cached;
     package_validation_cache_lock();
     cached = s_package_validation_cache;
@@ -2627,6 +2956,9 @@ static bool package_validation_cache_get(
         strcmp(cached.package_root, package_root) != 0 ||
         strcmp(cached.disc_id, disc_id) != 0 ||
         strcmp(cached.title_id, title_id) != 0 ||
+        strcmp(cached.current_input_identity_digest,
+               current_input_identity_digest ? current_input_identity_digest : "") != 0 ||
+        strcmp(cached.disc_version, disc_version ? disc_version : "") != 0 ||
         strcmp(cached.status_identity_digest, status_identity_digest) != 0) {
         return false;
     }
@@ -2644,13 +2976,16 @@ static void package_validation_cache_put(
     const char *package_root,
     const char *disc_id,
     const char *title_id,
+    const char *current_input_identity_digest,
+    const char *disc_version,
     uint32_t player_abi_version,
     uint64_t catalog_epoch,
     const char *identity_digest,
     const char *status_identity_digest,
     const NkRuntimePackageInfo *info
 ) {
-    if (!identity_digest || !status_identity_digest || !info) return;
+    if (!package_root || !disc_id || !title_id || !identity_digest ||
+        !status_identity_digest || !info) return;
     package_validation_cache_lock();
     PackageValidationCache *cache = &s_package_validation_cache;
     cache->valid = true;
@@ -2659,6 +2994,11 @@ static void package_validation_cache_put(
     snprintf(cache->package_root, sizeof(cache->package_root), "%s", package_root);
     snprintf(cache->disc_id, sizeof(cache->disc_id), "%s", disc_id);
     snprintf(cache->title_id, sizeof(cache->title_id), "%s", title_id);
+    snprintf(cache->current_input_identity_digest,
+             sizeof(cache->current_input_identity_digest), "%s",
+             current_input_identity_digest ? current_input_identity_digest : "");
+    snprintf(cache->disc_version, sizeof(cache->disc_version), "%s",
+             disc_version ? disc_version : "");
     snprintf(cache->identity_digest, sizeof(cache->identity_digest), "%s",
              identity_digest);
     snprintf(cache->status_identity_digest,
@@ -2713,6 +3053,314 @@ static bool package_check_sha_object(const JsonNode *node, const char *path,
     return true;
 }
 
+static bool package_validate_title_input_identity(const JsonNode *identity,
+                                                  char *error,
+                                                  size_t error_size) {
+    static const char * const root_keys[] = {
+        "format", "schema_version", "manifest", "disc", "param_sfo",
+        "container", "main_executable", "modules", "psp_header", NULL
+    };
+    static const char * const manifest_keys[] = {"id", "schema_version", NULL};
+    static const char * const disc_keys[] = {"id", "region", "disc_version", NULL};
+    static const char * const container_keys[] = {
+        "format", "volume_id", "size_bytes", "pvd_sector", "sector_size", NULL
+    };
+    static const char * const executable_keys[] = {"name", "sha256", NULL};
+    static const char * const module_keys[] = {"name", "sha256", NULL};
+    static const char * const header_keys[] = {"sha256", "magic", NULL};
+    static const char * const sfo_keys[] = {
+        "DISC_ID", "TITLE", "DISC_VERSION", "APP_VER", "PSP_SYSTEM_VER", "CATEGORY", NULL
+    };
+    static const char * const required[] = {
+        "format", "schema_version", "manifest", "disc", "param_sfo",
+        "container", "main_executable", "modules", "psp_header", NULL
+    };
+    const char *value = NULL;
+    if (!package_check_object(identity, "title_input_identity", root_keys, required,
+                              error, error_size) ||
+        !package_string(obj_get(identity, "format"), &value) ||
+        strcmp(value, "nakagawa-title-input-identity") != 0 ||
+        !package_number(obj_get(identity, "schema_version"), 1)) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity format or schema is unsupported");
+        }
+        return false;
+    }
+    const JsonNode *manifest = obj_get(identity, "manifest");
+    if (!package_check_object(manifest, "title_input_identity.manifest",
+                              manifest_keys, manifest_keys, error, error_size) ||
+        !package_string(obj_get(manifest, "id"), NULL) ||
+        !package_number(obj_get(manifest, "schema_version"), 1)) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity manifest record is invalid");
+        }
+        return false;
+    }
+    const JsonNode *disc = obj_get(identity, "disc");
+    if (!package_check_object(disc, "title_input_identity.disc", disc_keys, disc_keys,
+                              error, error_size)) return false;
+    const JsonNode *disc_id = obj_get(disc, "id");
+    const JsonNode *region = obj_get(disc, "region");
+    const JsonNode *disc_version = obj_get(disc, "disc_version");
+    if ((disc_id->type != JSON_NULL &&
+         (disc_id->type != JSON_STRING || !is_valid_disc_id(disc_id->u.str_val))) ||
+        (region->type != JSON_NULL && region->type != JSON_STRING) ||
+        (disc_version->type != JSON_NULL && disc_version->type != JSON_STRING)) {
+        snprintf(error, error_size, "title input identity disc revision record is invalid");
+        return false;
+    }
+    const JsonNode *sfo = obj_get(identity, "param_sfo");
+    if (sfo->type != JSON_NULL) {
+        if (!package_check_object(sfo, "title_input_identity.param_sfo", sfo_keys,
+                                  NULL, error, error_size)) return false;
+        for (size_t i = 0; i < sfo->u.obj.count; i++) {
+            if (sfo->u.obj.members[i].val->type != JSON_STRING) {
+                snprintf(error, error_size, "title input identity PARAM.SFO fact is invalid");
+                return false;
+            }
+        }
+    }
+    const JsonNode *container = obj_get(identity, "container");
+    if (container->type != JSON_NULL) {
+        if (!package_check_object(container, "title_input_identity.container",
+                                  container_keys, container_keys, error, error_size) ||
+            !package_string(obj_get(container, "format"), NULL) ||
+            obj_get(container, "volume_id")->type != JSON_STRING) return false;
+        const char * const number_fields[] = {"size_bytes", "pvd_sector", "sector_size", NULL};
+        for (size_t i = 0; number_fields[i]; i++) {
+            const JsonNode *number = obj_get(container, number_fields[i]);
+            if (!number || number->type != JSON_NUMBER || !number->u.num.is_integer ||
+                number->u.num.int_val < 0) {
+                snprintf(error, error_size, "title input identity container metadata is invalid");
+                return false;
+            }
+        }
+    }
+    const JsonNode *executable = obj_get(identity, "main_executable");
+    if (!package_check_object(executable, "title_input_identity.main_executable",
+                              executable_keys, executable_keys, error, error_size) ||
+        !package_string(obj_get(executable, "name"), NULL) ||
+        !package_sha256(obj_get(executable, "sha256"), NULL)) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity main executable record is invalid");
+        }
+        return false;
+    }
+    const JsonNode *modules = obj_get(identity, "modules");
+    if (!modules || modules->type != JSON_ARRAY) {
+        snprintf(error, error_size, "title input identity modules must be an array");
+        return false;
+    }
+    for (size_t i = 0; i < modules->u.arr.count; i++) {
+        const JsonNode *module = modules->u.arr.items[i];
+        const char *name = NULL;
+        if (!package_check_object(module, "title_input_identity.modules[]",
+                                  module_keys, module_keys, error, error_size) ||
+            !package_string(obj_get(module, "name"), &name) ||
+            !package_sha256(obj_get(module, "sha256"), NULL)) return false;
+        for (size_t j = 0; j < i; j++) {
+            const char *prior = NULL;
+            if (package_string(obj_get(modules->u.arr.items[j], "name"), &prior) &&
+                nk_ascii_casecmp(name, prior) == 0) {
+                snprintf(error, error_size, "title input identity repeats a module name");
+                return false;
+            }
+        }
+    }
+    const JsonNode *header = obj_get(identity, "psp_header");
+    if (header->type != JSON_NULL &&
+        (!package_check_object(header, "title_input_identity.psp_header",
+                               header_keys, header_keys, error, error_size) ||
+         !package_sha256(obj_get(header, "sha256"), NULL) ||
+         (obj_get(header, "magic")->type != JSON_NULL &&
+          obj_get(header, "magic")->type != JSON_STRING))) {
+        if (error && error_size && !error[0]) {
+            snprintf(error, error_size, "title input identity PSP header record is invalid");
+        }
+        return false;
+    }
+    return true;
+}
+
+static const char *package_title_identity_change(const JsonNode *previous,
+                                                const JsonNode *current,
+                                                char *change,
+                                                size_t change_size) {
+    if (!json_nodes_equal(obj_get(previous, "manifest"), obj_get(current, "manifest"))) {
+        return "manifest/profile changed";
+    }
+    const JsonNode *old_disc = obj_get(previous, "disc");
+    const JsonNode *new_disc = obj_get(current, "disc");
+    if (!json_nodes_equal(obj_get(old_disc, "id"), obj_get(new_disc, "id"))) {
+        return "DISC_ID changed";
+    }
+    if (!json_nodes_equal(obj_get(old_disc, "region"), obj_get(new_disc, "region"))) {
+        return "region changed";
+    }
+    const JsonNode *old_sfo = obj_get(previous, "param_sfo");
+    const JsonNode *new_sfo = obj_get(current, "param_sfo");
+    if (!json_nodes_equal(obj_get(old_disc, "disc_version"),
+                          obj_get(new_disc, "disc_version")) ||
+        !json_nodes_equal(obj_get(old_sfo, "DISC_VERSION"),
+                          obj_get(new_sfo, "DISC_VERSION")) ||
+        !json_nodes_equal(obj_get(old_sfo, "APP_VER"), obj_get(new_sfo, "APP_VER"))) {
+        return "SFO revision changed";
+    }
+    if (!json_nodes_equal(old_sfo, new_sfo)) return "PARAM.SFO facts changed";
+    const JsonNode *old_exe = obj_get(previous, "main_executable");
+    const JsonNode *new_exe = obj_get(current, "main_executable");
+    if (!json_nodes_equal(obj_get(old_exe, "sha256"), obj_get(new_exe, "sha256")) ||
+        !json_nodes_equal(obj_get(old_exe, "name"), obj_get(new_exe, "name"))) {
+        return "main executable changed";
+    }
+    const JsonNode *old_modules = obj_get(previous, "modules");
+    const JsonNode *new_modules = obj_get(current, "modules");
+    for (size_t i = 0; i < old_modules->u.arr.count; i++) {
+        const JsonNode *old_module = old_modules->u.arr.items[i];
+        const char *name = NULL;
+        const char *old_hash = NULL;
+        (void)package_string(obj_get(old_module, "name"), &name);
+        (void)package_sha256(obj_get(old_module, "sha256"), &old_hash);
+        bool found = false;
+        for (size_t j = 0; j < new_modules->u.arr.count; j++) {
+            const JsonNode *new_module = new_modules->u.arr.items[j];
+            const char *new_name = NULL;
+            const char *new_hash = NULL;
+            if (package_string(obj_get(new_module, "name"), &new_name) &&
+                strcmp(name, new_name) == 0 &&
+                package_sha256(obj_get(new_module, "sha256"), &new_hash) &&
+                strcmp(old_hash, new_hash) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (change && change_size) snprintf(change, change_size, "module %s changed", name);
+            return change && change_size ? change : "guest module changed";
+        }
+    }
+    for (size_t i = 0; i < new_modules->u.arr.count; i++) {
+        const JsonNode *new_module = new_modules->u.arr.items[i];
+        const char *name = NULL;
+        (void)package_string(obj_get(new_module, "name"), &name);
+        bool found = false;
+        for (size_t j = 0; j < old_modules->u.arr.count; j++) {
+            const char *old_name = NULL;
+            if (package_string(obj_get(old_modules->u.arr.items[j], "name"), &old_name) &&
+                strcmp(name, old_name) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (change && change_size) snprintf(change, change_size, "module %s changed", name);
+            return change && change_size ? change : "guest module changed";
+        }
+    }
+    if (!json_nodes_equal(obj_get(previous, "container"), obj_get(current, "container"))) {
+        return "container metadata changed";
+    }
+    if (!json_nodes_equal(obj_get(previous, "psp_header"), obj_get(current, "psp_header"))) {
+        return "PSP header changed";
+    }
+    return NULL;
+}
+
+static bool package_local_identity_file(const char *user_data_root,
+                                       const char *disc_id,
+                                       char out_path[NK_MAX_PATH * 2]) {
+    char relative[NK_MAX_DISC_ID_LEN + 96];
+    int written = snprintf(relative, sizeof(relative),
+        "title-input-identities/%s/title-input-identity.json", disc_id);
+    return written > 0 && (size_t)written < sizeof(relative) &&
+           package_direct_file(user_data_root, relative, out_path,
+                               NK_MAX_PATH * 2);
+}
+
+static bool package_validate_current_identity(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    const char *current_disc_version,
+    const JsonNode *package_identity,
+    char out_file_digest[65],
+    char *error,
+    size_t error_size
+) {
+    const JsonNode *package_disc = obj_get(package_identity, "disc");
+    const JsonNode *package_disc_id = obj_get(package_disc, "id");
+    if (package_disc_id->type == JSON_NULL) {
+        out_file_digest[0] = '\0';
+        return true;
+    }
+    const char *identity_disc_id = NULL;
+    if (!package_string(package_disc_id, &identity_disc_id) ||
+        strcmp(identity_disc_id, disc_id) != 0) {
+        snprintf(error, error_size,
+                 "Title input identity mismatch: DISC_ID changed; rebuild the package from the current inputs.");
+        return false;
+    }
+    char identity_path[NK_MAX_PATH * 2];
+    if (!package_local_identity_file(user_data_root, disc_id, identity_path)) {
+        snprintf(error, error_size,
+                 "Title input identity record is missing; rebuild the package from the current inputs.");
+        return false;
+    }
+    if (!package_hash_file(identity_path, out_file_digest)) {
+        snprintf(error, error_size,
+                 "Title input identity record is unreadable; rebuild the package from the current inputs.");
+        return false;
+    }
+    char *identity_text = NULL;
+    size_t identity_length = 0;
+    if (!package_read_json(identity_path, NK_MANIFEST_MAX_BYTES, &identity_text,
+                           &identity_length, error, error_size)) {
+        snprintf(error, error_size,
+                 "Title input identity record is unreadable; rebuild the package from the current inputs.");
+        return false;
+    }
+    JsonNode *current = json_parse(identity_text, identity_length, error, error_size);
+    free(identity_text);
+    if (!current || !package_validate_title_input_identity(current, error, error_size)) {
+        if (current) json_free(current);
+        snprintf(error, error_size,
+                 "Title input identity record is invalid; rebuild the package from the current inputs.");
+        return false;
+    }
+    const JsonNode *current_manifest = obj_get(current, "manifest");
+    const JsonNode *current_disc = obj_get(current, "disc");
+    const char *current_title_id_value = NULL;
+    const char *recorded_disc_version = NULL;
+    if (!package_string(obj_get(current_manifest, "id"), &current_title_id_value) ||
+        strcmp(current_title_id_value, title_id) != 0) {
+        json_free(current);
+        snprintf(error, error_size,
+                 "Title input identity mismatch: manifest/profile changed; rebuild the package from the current inputs.");
+        return false;
+    }
+    if (current_disc_version && *current_disc_version &&
+        package_string(obj_get(current_disc, "disc_version"), &recorded_disc_version) &&
+        strcmp(current_disc_version, recorded_disc_version) != 0) {
+        json_free(current);
+        snprintf(error, error_size,
+                 "Title input identity mismatch: SFO revision changed; rebuild the package from the current inputs.");
+        return false;
+    }
+    const char *change = NULL;
+    char module_change[192] = "";
+    if (!json_nodes_equal(package_identity, current)) {
+        change = package_title_identity_change(package_identity, current,
+                                               module_change, sizeof(module_change));
+        snprintf(error, error_size,
+                 "Title input identity mismatch: %s; rebuild the package from the current inputs.",
+                 change ? change : "identity record changed");
+        json_free(current);
+        return false;
+    }
+    json_free(current);
+    return true;
+}
+
 static bool package_cache_text(const JsonNode *node) {
     return node && node->type == JSON_STRING;
 }
@@ -2727,7 +3375,8 @@ static bool package_validate_cache(const JsonNode *package,
     static const char * const key_keys[] = {"schema_version", "aot", "native", NULL};
     static const char * const aot_keys[] = {"digest", "components", NULL};
     static const char * const aot_component_keys[] = {
-        "executable_sha256", "manifest_sha256", "modules_sha256", "psp_header_sha256",
+        "executable_sha256", "manifest_sha256", "modules_sha256",
+        "title_input_identity_sha256", "psp_header_sha256",
         "analyzer_codegen_epoch", "analyzer_sha256", "codegen_sha256",
         "codegen_options_sha256", "generated_code_abi_epoch", "runtime_abi_epoch", NULL
     };
@@ -2752,6 +3401,7 @@ static bool package_validate_cache(const JsonNode *package,
     const char *manifest_digest = NULL;
     const char *codegen_options_digest = NULL;
     const char *modules_digest = NULL;
+    const char *identity_digest = NULL;
     char computed_digest[65];
     if (!package_check_object(cache, "$.cache", cache_keys, cache_keys, error, error_size) ||
         !package_check_object(key, "$.cache.key", key_keys, key_keys, error, error_size) ||
@@ -2773,7 +3423,7 @@ static bool package_validate_cache(const JsonNode *package,
         !package_number(obj_get(obj_get(cache, "runtime_abi_compatibility"), "current_epoch"),
                         NK_AOT_RUNTIME_ABI_EPOCH) ||
         obj_get(obj_get(cache, "runtime_abi_compatibility"), "generated_code_reusable")->type != JSON_BOOL) {
-        snprintf(error, error_size, "package cache metadata does not match the v1 cache contract");
+        snprintf(error, error_size, "package cache metadata does not match the v2 cache contract");
         return false;
     }
     if (!inputs || inputs->type != JSON_OBJECT ||
@@ -2791,6 +3441,9 @@ static bool package_validate_cache(const JsonNode *package,
         !package_sha256(obj_get(components, "modules_sha256"), &modules_digest) ||
         !package_hash_json_node(obj_get(inputs, "modules"), computed_digest) ||
         strcmp(computed_digest, modules_digest) != 0 ||
+        !package_sha256(obj_get(components, "title_input_identity_sha256"), &identity_digest) ||
+        !package_hash_json_node(obj_get(package, "title_input_identity"), computed_digest) ||
+        strcmp(computed_digest, identity_digest) != 0 ||
         !package_string(obj_get(components, "analyzer_codegen_epoch"), NULL) ||
         !package_sha256(obj_get(components, "analyzer_sha256"), NULL) ||
         !package_sha256(obj_get(components, "codegen_sha256"), NULL) ||
@@ -2840,8 +3493,9 @@ static bool package_validate_contract(const JsonNode *package,
                                       const char **input_exe_hash,
                                       char *error, size_t error_size) {
     static const char * const root_keys[] = {
-        "format", "schema_version", "title", "inputs", "runtime", "executable", "cache",
-        "generated_objects", "required_local_assets", "build_report", NULL
+        "format", "schema_version", "title", "inputs", "title_input_identity",
+        "runtime", "executable", "cache", "generated_objects",
+        "required_local_assets", "build_report", NULL
     };
     static const char * const title_keys[] = {
         "id", "display_name", "kind", "manifest_sha256", "protected_digest", NULL
@@ -2866,8 +3520,8 @@ static bool package_validate_contract(const JsonNode *package,
     const char *value = NULL;
     if (!package_check_object(package, "$", root_keys, root_keys, error, error_size)) return false;
     if (!package_string(obj_get(package, "format"), &value) || strcmp(value, "nakagawa-aot-package") != 0 ||
-        !package_number(obj_get(package, "schema_version"), 1)) {
-        snprintf(error, error_size, "package format or schema_version is not v1");
+        !package_number(obj_get(package, "schema_version"), NK_AOT_PACKAGE_SCHEMA_VERSION)) {
+        snprintf(error, error_size, "package format or schema_version is not v2");
         return false;
     }
 
@@ -2891,6 +3545,8 @@ static bool package_validate_contract(const JsonNode *package,
 
     const JsonNode *inputs = obj_get(package, "inputs");
     if (!package_check_object(inputs, "$.inputs", inputs_keys, inputs_required, error, error_size)) return false;
+    const JsonNode *title_input_identity = obj_get(package, "title_input_identity");
+    if (!package_validate_title_input_identity(title_input_identity, error, error_size)) return false;
     const JsonNode *manifest_input = obj_get(inputs, "manifest");
     const JsonNode *executable_input = obj_get(inputs, "executable");
     const char *manifest_hash = NULL;
@@ -2898,6 +3554,15 @@ static bool package_validate_contract(const JsonNode *package,
         !package_check_sha_object(executable_input, "$.inputs.executable", input_exe_hash, error, error_size)) return false;
     if (strcmp(manifest_hash, obj_get(title, "manifest_sha256")->u.str_val) != 0) {
         snprintf(error, error_size, "package manifest hash disagrees with its title record");
+        return false;
+    }
+    const JsonNode *identity_manifest = obj_get(title_input_identity, "manifest");
+    const JsonNode *identity_executable = obj_get(title_input_identity, "main_executable");
+    if (!package_string(obj_get(identity_manifest, "id"), &value) ||
+        strcmp(value, obj_get(title, "id")->u.str_val) != 0 ||
+        !package_sha256(obj_get(identity_executable, "sha256"), &value) ||
+        strcmp(value, *input_exe_hash) != 0) {
+        snprintf(error, error_size, "title input identity does not match the manifest/profile");
         return false;
     }
     const JsonNode *modules = obj_get(inputs, "modules");
@@ -2917,9 +3582,47 @@ static bool package_validate_contract(const JsonNode *package,
             return false;
         }
     }
+    const JsonNode *identity_modules = obj_get(title_input_identity, "modules");
+    if (identity_modules->u.arr.count != modules->u.arr.count) {
+        snprintf(error, error_size, "title input identity does not match its module inputs");
+        return false;
+    }
+    for (size_t i = 0; i < identity_modules->u.arr.count; i++) {
+        const JsonNode *identity_module = identity_modules->u.arr.items[i];
+        const char *identity_name = NULL;
+        const char *identity_sha = NULL;
+        bool matched = false;
+        (void)package_string(obj_get(identity_module, "name"), &identity_name);
+        (void)package_sha256(obj_get(identity_module, "sha256"), &identity_sha);
+        for (size_t j = 0; j < modules->u.arr.count; j++) {
+            const JsonNode *input_module = modules->u.arr.items[j];
+            const char *input_name = NULL;
+            const char *input_sha = NULL;
+            if (package_string(obj_get(input_module, "name"), &input_name) &&
+                package_sha256(obj_get(input_module, "sha256"), &input_sha) &&
+                strcmp(identity_name, input_name) == 0 &&
+                strcmp(identity_sha, input_sha) == 0) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            snprintf(error, error_size, "title input identity does not match its module inputs");
+            return false;
+        }
+    }
     const JsonNode *psp_header = obj_get(inputs, "psp_header");
     if (psp_header->type != JSON_NULL &&
         !package_check_sha_object(psp_header, "$.inputs.psp_header", NULL, error, error_size)) return false;
+    const JsonNode *identity_header = obj_get(title_input_identity, "psp_header");
+    if ((psp_header->type == JSON_NULL && identity_header->type != JSON_NULL) ||
+        (psp_header->type != JSON_NULL &&
+         (identity_header->type != JSON_OBJECT ||
+          !json_nodes_equal(obj_get(psp_header, "sha256"),
+                            obj_get(identity_header, "sha256"))))) {
+        snprintf(error, error_size, "title input identity does not match the PSP header input");
+        return false;
+    }
     if (!package_validate_cache(package, *input_exe_hash, error, error_size)) return false;
 
     const JsonNode *runtime = obj_get(package, "runtime");
@@ -2942,7 +3645,7 @@ static bool package_validate_contract(const JsonNode *package,
     const JsonNode *executable = obj_get(package, "executable");
     if (!package_check_object(executable, "$.executable", executable_keys, executable_required, error, error_size)) return false;
     if (!package_string(obj_get(executable, "path"), exe_relative) ||
-        !is_valid_portable_path(*exe_relative) ||
+        !is_valid_artifact_path(*exe_relative) ||
         !package_sha256(obj_get(executable, "sha256"), exe_hash) ||
         !package_string(obj_get(executable, "guest_entry"), NULL)) {
         snprintf(error, error_size, "package executable path/hash is invalid or escapes its package");
@@ -2957,7 +3660,7 @@ static bool package_validate_contract(const JsonNode *package,
     for (size_t i = 0; i < objects->u.arr.count; i++) {
         const JsonNode *object = objects->u.arr.items[i];
         if (!package_check_object(object, "$.generated_objects[]", object_keys, object_required, error, error_size) ||
-            !package_string(obj_get(object, "path"), &value) || !is_valid_portable_path(value) ||
+            !package_string(obj_get(object, "path"), &value) || !is_valid_artifact_path(value) ||
             !package_sha256(obj_get(object, "sha256"), NULL)) {
             if (error && error_size && !error[0]) snprintf(error, error_size, "$.generated_objects contains an invalid record");
             return false;
@@ -2986,7 +3689,7 @@ static bool package_validate_contract(const JsonNode *package,
             return false;
         }
         if ((strcmp(kind, "title-data-root") == 0 || strcmp(kind, "runtime-resource-locator") == 0) &&
-            (!package_string(obj_get(asset, "path"), &value) || !is_valid_portable_path(value) ||
+            (!package_string(obj_get(asset, "path"), &value) || !is_valid_artifact_path(value) ||
              !package_string(obj_get(asset, "provisioning"), NULL))) {
             snprintf(error, error_size, "local data asset record is invalid");
             return false;
@@ -3110,10 +3813,12 @@ static bool package_validate_completion(const char *package_root,
                                         char out_identity_digest[65],
                                         char *error, size_t error_size) {
     static const char * const allowed_keys[] = {
-        "format", "schema_version", "status", "cache_key", "artifacts", "backends", "limits", NULL
+        "format", "schema_version", "status", "cache_key", "title_input_identity",
+        "artifacts", "backends", "limits", NULL
     };
     static const char * const required_keys[] = {
-        "format", "schema_version", "status", "cache_key", "artifacts", NULL
+        "format", "schema_version", "status", "cache_key", "title_input_identity",
+        "artifacts", NULL
     };
     static const char * const artifact_keys[] = {"path", "sha256", NULL};
     char completion_path[NK_MAX_PATH * 2];
@@ -3158,10 +3863,14 @@ static bool package_validate_completion(const char *package_root,
                               error, error_size) ||
         !package_string(obj_get(completion, "format"), &value) ||
         strcmp(value, "nakagawa-aot-cache-completion") != 0 ||
-        !package_number(obj_get(completion, "schema_version"), 1) ||
+        !package_number(obj_get(completion, "schema_version"), NK_AOT_COMPLETION_SCHEMA_VERSION) ||
         !package_string(obj_get(completion, "status"), &value) ||
         strcmp(value, "complete") != 0 ||
-        !json_nodes_equal(obj_get(completion, "cache_key"), obj_get(package_cache, "key"))) {
+        !json_nodes_equal(obj_get(completion, "cache_key"), obj_get(package_cache, "key")) ||
+        !package_validate_title_input_identity(obj_get(completion, "title_input_identity"),
+                                               error, error_size) ||
+        !json_nodes_equal(obj_get(completion, "title_input_identity"),
+                          obj_get(package, "title_input_identity"))) {
         snprintf(error, error_size, "Runtime package completion manifest does not match the cache key.");
         json_free(completion);
         return false;
@@ -3189,7 +3898,7 @@ static bool package_validate_completion(const char *package_root,
         if (!package_check_object(record, "completion-manifest.artifacts[]", artifact_keys,
                                   artifact_keys, error, error_size) ||
             !package_string(obj_get(record, "path"), &relative) ||
-            !is_valid_portable_path(relative) ||
+            !is_valid_artifact_path(relative) ||
             !package_sha256(obj_get(record, "sha256"), &expected_hash)) {
             if (error && error_size && !error[0]) snprintf(error, error_size,
                 "Runtime package completion manifest contains an invalid artifact path near '%s'.",
@@ -3369,6 +4078,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     const char *title_id,
     bool is_experimental,
     const char *selected_executable,
+    const char *current_disc_version,
     uint32_t player_abi_version,
     NkRuntimePackageInfo *out_info,
     char *reason,
@@ -3424,22 +4134,31 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     snprintf(package_root, sizeof(package_root), "%s", resolved_package_root);
-    if (!is_experimental) {
-        char status_identity_digest[65] = "";
-        if (nk_title_manifest_aot_package_cache_identity(
-                user_data_root, normalized, title_id, false,
-                selected_executable, player_abi_version,
-                status_identity_digest) &&
-            package_validation_cache_get(
-                package_root, normalized, title_id, player_abi_version,
-                s_catalog_epoch, status_identity_digest, &resolved_info)) {
-            if (out_info) *out_info = resolved_info;
-            if (reason && reason_size) {
-                snprintf(reason, reason_size,
-                         "Runtime package v1 is valid for %s.", normalized);
-            }
-            return NK_RUNTIME_PACKAGE_OK;
+    char current_identity_file_digest[65] = "";
+    char current_identity_path[NK_MAX_PATH * 2];
+    if (package_local_identity_file(user_data_root, normalized,
+                                    current_identity_path) &&
+        !package_hash_file(current_identity_path, current_identity_file_digest)) {
+        current_identity_file_digest[0] = '\0';
+    }
+    char status_identity_digest[65] = "";
+    bool status_identity_valid = !is_experimental &&
+        nk_title_manifest_aot_package_cache_identity(
+            user_data_root, normalized, title_id, false, selected_executable,
+            current_disc_version, player_abi_version, status_identity_digest);
+    if (status_identity_valid &&
+        package_validation_cache_get(package_root, normalized, title_id,
+                                     current_identity_file_digest,
+                                     current_disc_version,
+                                     player_abi_version, s_catalog_epoch,
+                                     status_identity_digest,
+                                     &resolved_info)) {
+        if (out_info) *out_info = resolved_info;
+        if (reason && reason_size) {
+            snprintf(reason, reason_size,
+                     "Runtime package v2 is valid for %s.", normalized);
         }
+        return NK_RUNTIME_PACKAGE_OK;
     }
     if (!package_direct_file(package_root, "package.json", package_path,
                              sizeof(package_path))) {
@@ -3480,6 +4199,19 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     if (!package_validate_completion(package_root, package, obj_get(package, "cache"),
                                      exe_relative, exe_hash, package_identity_digest,
                                      parse_error, sizeof(parse_error))) {
+        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        json_free(package);
+        return NK_RUNTIME_PACKAGE_STALE;
+    }
+
+    char validated_identity_file_digest[65] = "";
+    if (!package_validate_current_identity(
+            user_data_root, normalized, title_id, current_disc_version,
+            obj_get(package, "title_input_identity"),
+            validated_identity_file_digest, parse_error, sizeof(parse_error)) ||
+        strcmp(validated_identity_file_digest, current_identity_file_digest) != 0) {
+        if (!parse_error[0]) snprintf(parse_error, sizeof(parse_error),
+            "Title input identity changed during validation; rebuild the package from the current inputs.");
         package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
         json_free(package);
         return NK_RUNTIME_PACKAGE_STALE;
@@ -3578,12 +4310,14 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
             char status_identity_digest[65] = "";
             if (nk_title_manifest_aot_package_cache_identity(
                     user_data_root, normalized, title_id, false,
-                    selected_executable, player_abi_version,
-                    status_identity_digest)) {
+                    selected_executable, current_disc_version,
+                    player_abi_version, status_identity_digest)) {
                 package_validation_cache_put(
-                    package_root, normalized, title_id, player_abi_version,
-                    s_catalog_epoch, package_identity_digest,
-                    status_identity_digest, &resolved_info);
+                    package_root, normalized, title_id,
+                    validated_identity_file_digest, current_disc_version,
+                    player_abi_version, s_catalog_epoch,
+                    package_identity_digest, status_identity_digest,
+                    &resolved_info);
             }
         }
     }

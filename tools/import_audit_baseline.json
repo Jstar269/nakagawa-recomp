@@ -169,6 +169,12 @@
     "name": "memset",
     "status": "complete"
   },
+  "0x1181e963": {
+    "classification": "dedicated",
+    "handler": "h_DelaySysClockThreadCB",
+    "name": "sceKernelDelaySysClockThreadCB",
+    "status": "unreviewed"
+  },
   "0x132f1eca": {
     "classification": "dedicated",
     "handler": "h_AtracReinit",
@@ -411,7 +417,7 @@
     "classification": "dedicated",
     "handler": "h_DisplaySetFrameBuf",
     "name": "sceDisplaySetFrameBuf",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x28a8e98a": {
     "classification": "controlled_unsupported",
@@ -570,6 +576,12 @@
     "name": "sceKernelSetCompiledSdkVersion600_602",
     "status": "complete"
   },
+  "0x358ca1bb": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion606",
+    "status": "complete"
+  },
   "0x35dbd746": {
     "classification": "dedicated",
     "handler": "h_IoWaitAsyncCB",
@@ -628,6 +640,12 @@
     "classification": "dedicated",
     "handler": "h_ReferVplStatus",
     "name": "sceKernelReferVplStatus",
+    "status": "unreviewed"
+  },
+  "0x3a622550": {
+    "classification": "dedicated",
+    "handler": "h_CtrlPeekBufferPositive",
+    "name": "sceCtrlPeekBufferPositive",
     "status": "unreviewed"
   },
   "0x3ad58b8c": {
@@ -754,6 +772,12 @@
     "classification": "dedicated",
     "handler": "h_UmdCheckMedium",
     "name": "sceUmdCheckMedium",
+    "status": "unreviewed"
+  },
+  "0x46f186c3": {
+    "classification": "dedicated",
+    "handler": "h_DisplayWaitVblankStartCB",
+    "name": "sceDisplayWaitVblankStartCB",
     "status": "unreviewed"
   },
   "0x46f61f8b": {
@@ -982,6 +1006,12 @@
     "classification": "dedicated",
     "handler": "h_MpegQueryStreamSize",
     "name": "sceMpegQueryStreamSize",
+    "status": "unreviewed"
+  },
+  "0x616403ba": {
+    "classification": "dedicated",
+    "handler": "h_TerminateThread",
+    "name": "sceKernelTerminateThread",
     "status": "unreviewed"
   },
   "0x617f3fe6": {
@@ -1430,6 +1460,12 @@
     "name": "sceMpegGetPcmAu",
     "status": "controlled_unsupported"
   },
+  "0x8eb9ec49": {
+    "classification": "dedicated",
+    "handler": "h_DisplayWaitVblankCB",
+    "name": "sceDisplayWaitVblankCB",
+    "status": "unreviewed"
+  },
   "0x8ef08fce": {
     "classification": "dedicated",
     "handler": "h_UmdWaitDriveStat",
@@ -1447,6 +1483,12 @@
     "handler": "h_CancelSema",
     "name": "sceKernelCancelSema",
     "status": "unreviewed"
+  },
+  "0x91de343c": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion500_505",
+    "status": "complete"
   },
   "0x91e4f6a7": {
     "classification": "dedicated",
@@ -1531,7 +1573,7 @@
     "classification": "dedicated",
     "handler": "h_DisplayWaitVblankStart",
     "name": "sceDisplayWaitVblankStart",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x99944089": {
     "classification": "dedicated",
@@ -1741,7 +1783,7 @@
     "classification": "dedicated",
     "handler": "h_GeListEnQueue",
     "name": "sceGeListEnQueue",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xace946e8": {
     "classification": "dedicated",
@@ -1885,6 +1927,12 @@
     "classification": "dedicated",
     "handler": "h_SasGetGrain",
     "name": "__sceSasGetGrain",
+    "status": "unreviewed"
+  },
+  "0xbd123d9e": {
+    "classification": "dedicated",
+    "handler": "h_DelaySysClockThread",
+    "name": "sceKernelDelaySysClockThread",
     "status": "unreviewed"
   },
   "0xbea46419": {
@@ -2159,6 +2207,12 @@
     "name": "sceKernelTryLockLwMutex",
     "status": "unreviewed"
   },
+  "0xdc93cfef": {
+    "classification": "dedicated",
+    "handler": "h_GeGetCmd",
+    "name": "sceGeGetCmd",
+    "status": "unreviewed"
+  },
   "0xdcc80c2f": {
     "classification": "dedicated",
     "handler": "h_FontGetCharInfo",
@@ -2296,6 +2350,12 @@
     "handler": "h_PowerSetClockFrequency350",
     "name": "scePowerSetClockFrequency350",
     "status": "unreviewed"
+  },
+  "0xebd5c3e6": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion395",
+    "status": "complete"
   },
   "0xec0a693f": {
     "classification": "dedicated",

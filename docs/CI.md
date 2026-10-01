@@ -19,15 +19,14 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 | Event/change | Jobs that run | Jobs intentionally skipped |
 | --- | --- | --- |
-| Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and `CI required` | only jobs irrelevant to the changed paths |
-| Ready pull request, docs-only | classification, hygiene/security, Markdown, `CI required` | Python/native, Windows, dashboard |
-| Ready pull request, `interface/**` | classification, hygiene/security, dashboard, `CI required` | Python/native, Windows |
-| Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, `CI required` | dashboard |
-| Ready pull request, ordinary `tools/*.py` | classification, hygiene/security, Python tooling, `CI required` | native/translation, Windows, dashboard |
-| Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, dashboard, `CI required` | none of the substantive public gates |
-| Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, `CI required` | Python/native, Windows, dashboard |
-| Mixed dashboard/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, dashboard, `CI required` | none of the applicable product gates |
-| Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, `CI required` | expensive platform matrix; the merged PR carried it |
+| Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
+| Ready pull request, docs-only | classification, hygiene/security, Markdown, CI required | Python/native, Windows |
+| Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
+| Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
+| Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
+| Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
+| Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
+| Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, CI required | expensive platform matrix; the merged PR carried it |
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
 
@@ -47,14 +46,13 @@ otherwise incomplete. A failed hygiene/security job is never hidden by the
 aggregate. Python/native jobs also wait for hygiene, so an early full-tree
 failure does not spend additional runner time on dependent expensive gates.
 
-The full-tree pre-commit run retains the publication audit and the separate
-Betterleaks current-tree scan. Hygiene then runs an explicit Betterleaks
-reachable-history scan and the synthetic canary gate. Markdown linting is
-separate so documentation changes do not pay for a dashboard install. Dashboard
-dependency changes run the clean `npm ci`,
-test, lint, type-check, build, and standalone-output leakage checks. Native and
-Windows jobs remain synthetic/public-input gates; no private game input is put in
-Actions.
+The full-tree pre-commit run retains the publication audit and the Betterleaks
+current-tree scan; the hook runs Betterleaks in directory mode over the files it
+is given (every tracked file under `--all-files`, the staged files at the commit
+stage). The hook is commit-stage only: at pre-push pre-commit supplies no file
+names, which would turn directory mode into a whole-working-tree scan. Hygiene then runs an explicit Betterleaks reachable-history
+scan in git mode and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
 SDL3, and Vulkan environment. That target generates its PSP-shaped input from committed source,
@@ -81,6 +79,20 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit and installs
+Vulkan development headers. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
+runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
+archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
+SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
+source-owned showcase packages with dummy SDL video and audio drivers, then passes the generated
+TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requires
+`STAGING_RESULT status=PASS`. This is build, test, and headless staging evidence for the named
+synthetic fixtures. The CMake player is configured with CMake's default, unoptimized build type, so
+the gate covers only that configuration: an optimized Release configuration fails under the global
+`-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
+job does not claim that configuration builds. Consumer ISO compatibility remains in the works
+(#306); these checks do not establish PSP hardware acceptance or interactive desktop presentation.
+
 ## Local readiness before opening a pull request
 
 Discover the available build and verification surfaces first:
@@ -96,20 +108,30 @@ the strict authority-bound gate:
 mingw32-make --no-print-directory check
 ```
 
-`check` covers documentation and policy checks, both publication-audit legs,
-the native host-core tests, and a fast Python subset. It does not replace
-`make readiness`: readiness additionally verifies the exact candidate against
-the external detailed ledger and therefore remains `BLOCKED` when
-`NK_TRUSTED_LEDGER` is unavailable. `make provenance-refresh` is the single
-local command for regenerating the tracked public controls. It calls the same
-`generate_ephemeral_controls()` implementation as the hosted provenance
-attestation, reads the trusted public ledger from the exact base commit, and
-requires the external detailed ledger through `NK_TRUSTED_LEDGER`. Stage the
-intended candidate changes first. The target stages the generated controls and
-the profile when `--apply-policy` is requested; it does not stage the rest of
-the worktree. It writes a refresh audit block for
-the changed existing public paths and computes the export from those generated
-ledger bytes in the same invocation, so a second pass is not needed.
+`check` covers documentation and policy checks, the provenance record and
+disposition gap check, both publication-audit legs, the native host-core tests,
+and a fast Python subset. It does not replace `make readiness`: readiness
+additionally verifies the exact candidate against the external detailed ledger
+and therefore remains `BLOCKED` when `NK_TRUSTED_LEDGER` is unavailable.
+`make provenance-refresh` is the single local command for regenerating the
+tracked public controls. It calls the same `generate_ephemeral_controls()`
+implementation as the hosted provenance attestation, reads the trusted public
+ledger from the exact base commit, and requires the external detailed ledger
+through `NK_TRUSTED_LEDGER`. Stage the intended candidate changes first. The
+target stages the generated controls and the profile when `--apply-policy` is
+requested; it does not stage the rest of the worktree. The committed ledger
+stays a per-path document (no `refresh` audit block), and the export is computed
+from those generated ledger bytes in the same invocation, so a second pass is
+not needed.
+
+The `provenance_record_gap.py --check` gate (`make provenance-record-gap-check`)
+enforces that every upstream-derived production code path (under `src/` or
+`tools/`, excluding `.md`/`.txt` notice and format documents) has an explicit
+disposition in [`docs/INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md). Paths with
+`status=missing` fail closed. A reviewed baseline (`KNOWN_DISPOSITION_GAPS`)
+allows existing gaps to shrink but never grow; stale baseline entries fail
+closed. The check is wired into `make check`, `make readiness`, pre-commit, and
+hosted CI (`native_tools` and `main_smoke`).
 
 The base defaults to `merge-base(HEAD, origin/main)`. When the pull request's
 exact base differs, set `PROVENANCE_BASE_SHA` to its full 40-character commit
@@ -135,6 +157,7 @@ at the first failure. Prefer it to assembling the checklist by hand.
 ```bash
 python tools/policy_sync.py
 python tools/lint_docs.py
+python tools/provenance_record_gap.py --check
 python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha>     --require-immutable-revisions --trusted-ledger <external detailed ledger>     --workdir <scratch outside the repo>
@@ -293,7 +316,7 @@ belongs to a new subsystem.
 GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
 workflow therefore gates the Windows runner behind the cheaper Linux hygiene and
 native gates, cancels superseded PR runs, and avoids repeating the full matrix on
-ordinary main pushes. The workflow uses dependency/tool caches only (pip and npm);
+ordinary main pushes. The workflow uses dependency/tool caches only (pip);
 compiled runtime objects and generated shader/code output are not cached, so the
 repository's content-addressed invalidation and freshness checks remain the
 source of truth. No volatile dollar figure is part of the repository contract.
@@ -301,7 +324,7 @@ source of truth. No volatile dollar figure is part of the repository contract.
 Hosted GitHub Actions execution is active. The `main` ruleset requires `CI required`,
 `OSV Vulnerability Scan`, `dependency-review`, `Hygiene and security`, and
 `CodeQL` on exact pull-request heads. Path-gated workflows also run the applicable
-classifier, Markdown, native/translation, dashboard, main-smoke, Python, and
+classifier, Markdown, native/translation, main-smoke, Python, and
 Windows gates. A green public-safe run proves only the paths it executes; it is
 not a complete private-title gameplay route, and local verification remains
 local-only.
@@ -324,7 +347,7 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `dashboard`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
+| Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
 | `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
 | Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
 
@@ -335,6 +358,55 @@ precede the inherited Windows `PATH`, so `python` remains the UCRT64 CPython and
 only `pwsh` resolves from the runner image. No hosted step relies on undeclared
 PATH order.
 
+That same MSYS2 shell has no `git` on `PATH`, so the Makefile cannot resolve a
+revision there. `windows_runtime` therefore sets `SR_SOURCE_COMMIT` to
+`github.sha` for every step: the identity the binaries of that job record
+(flight recorder `build.build_id`, #532) is the revision `actions/checkout`
+actually checked out, and the build never depends on finding `git`. The Linux
+jobs run with `git` on `PATH` and resolve the same revision themselves, through
+one guarded resolution that yields an empty identity -- and no build-log noise --
+on a host that has none. A build with no identity is not a silent pass:
+`tools/flight_diff.py` refuses such a bundle fail closed.
+
+### Comparator comparability contract (#320)
+
+`tools/flight_diff.py` compares two flight-recorder bundles under an explicit
+comparability contract, so a MATCH is only ever printed for two captures that
+can actually vouch for each other. The CLI verdicts map to exit codes
+`MATCH` 0, `DIVERGENCE` 1, error 2 (unchanged), and `INCOMPARABLE` 3:
+
+- **Comparable and matching (MATCH):** every compared field agrees. Build
+  identity (`build_id`, `source_date_epoch`, `compiler`, `pointer_bits`) and
+  the recorder limit never block a comparison; both identity lines are printed
+  on stdout, because comparing different builds is a legitimate use.
+- **Incomparable (INCOMPARABLE):** differing bundle schema versions, runtime
+  blocks, enabled event classes, or armed trigger policies; any dropped event
+  on either side (the ring slides, so a divergence inside the dropped window
+  is invisible).
+- **Divergent (DIVERGENCE):** the first differing event (sequence or class
+  alignment), then the terminal reason/sequence/kind/arg0. Same retained
+  events with a different terminal outcome is a divergence, not a MATCH. A
+  terminal difference is never an incomparability: a `running` terminal is a
+  mid-run cut rather than a ring overflow, so over a complete window it hides
+  no events and stays an ordinary compared value.
+- **Malformed (error):** a bundle that fails schema validation, sanitization,
+  or the recorder truncation invariants (retained sequences exactly
+  `dropped+1..recorded`, `dropped == recorded - min(recorded, limit)`) exits 2
+  on stderr as before.
+
+MATCH is a statement about the capture, never about the whole program. It
+certifies exactly two things: that the two runs agree on every event retained
+for the enabled classes over a complete window that dropped nothing, and that
+both reached the same terminal outcome. It does not certify behaviour outside
+the enabled classes, where a class one side never recorded is silence rather
+than agreement; behaviour before the recorded window; or behaviour the recorder
+does not model at all. Two builds that MATCH here can still differ anywhere the
+recorder was not looking, so the CLI prints the enabled class list that bounds
+the verdict next to the two identity lines.
+
+A bundle that records any dropped event can never produce a MATCH against any
+other bundle; re-capture with a larger limit when a comparison is the goal.
+
 ## Public release-path gates (#294)
 
 The hosted matrix now exercises the same public, source-owned release path a
@@ -342,7 +414,20 @@ developer runs locally, without private inputs:
 
 - `windows_runtime` links the native player (`mingw32-make player`), runs the
   complete platform ladder (`mingw32-make --no-print-directory platform-ladder`),
-  and runs the production smoke with its executable staged into a fresh
+  and runs `profile-zero-e2e` for the two profile-zero manifests. That gate
+  validates the guest ProgramImage, generates a public AOT package, launches it
+  through the headless production runtime, and checks all seven named
+  guest-service cases for each manifest. It runs in the existing 25-minute
+  `windows_runtime` job and took about 123 seconds locally for both package
+  builds and runtime launches. The guest bytes are the committed
+  `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
+  fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),
+  so hosted runners with no PSPDEV execute the whole route instead of
+  reporting a toolchain `SKIP`; where PSPDEV is installed, the gate rebuilds
+  the fixture first and fails if any byte differs from `SHA256SUMS`. Public
+  runtime link dependencies remain external; when they are unavailable, the
+  test reports an explicit `SKIP` with the printed missing-dependency reason.
+  The job also runs the production smoke with its executable staged into a fresh
   directory outside the build tree (`production-smoke-staged`).
 - `hygiene`'s "Exercise public-export generation and candidate audit" step runs
   on `security_publication` changes and every manual `workflow_dispatch`. One
@@ -356,7 +441,7 @@ developer runs locally, without private inputs:
 
 ## Dependabot policy
 
-`.github/dependabot.yml` checks GitHub Actions, dashboard npm, root pip, and
+`.github/dependabot.yml` checks GitHub Actions and root pip and
 pre-commit ecosystems monthly. Minor and patch updates are grouped per ecosystem;
 major updates remain standalone because they can change APIs, runners, or build
 semantics. Security updates remain enabled and are not suppressed by the routine

@@ -260,6 +260,28 @@ jobs:
             "${policy_args[@]}" \
             | tee "${RUNNER_TEMP}/verify/report.txt"
 
+      # The first thing the pull-request author reads. The verdict itself is
+      # unchanged -- this job still fails closed -- but a failure that only
+      # means "a maintainer must admit this path" is now said in one sentence
+      # instead of a bare FAIL. The explanation is produced by the verifier that
+      # produced the verdict, from the same file, so the two cannot disagree.
+      - name: Explain the verdict in plain words
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -s "${RUNNER_TEMP}/verify/verdict.json" ]; then
+            python tools/provenance_attest_verify.py \
+              --explain-verdict "${RUNNER_TEMP}/verify/verdict.json" \
+              >> "${GITHUB_STEP_SUMMARY}"
+            echo >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo '### Provenance: no verdict was produced' >> "${GITHUB_STEP_SUMMARY}"
+            echo '' >> "${GITHUB_STEP_SUMMARY}"
+            echo 'The attestation did not run to completion. That is a gate failure, not a pass.' \
+              >> "${GITHUB_STEP_SUMMARY}"
+            echo '' >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       # Runs on failure too, so a maintainer reads the finding codes in the pull
       # request rather than opening the log. Only the public report is copied,
       # and it is copied as a file rather than interpolated into the script.

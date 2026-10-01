@@ -487,7 +487,62 @@ int main(int argc, char **argv) {{
         printf("ENTRY:0x%08x\\n", session.entry_point);
         return 0;
     }}
+
+    if (strcmp(mode, "boot_roundtrip") == 0) {{
+        if (argc < 5) return 1;
+        NkLibrary lib;
+        NkResult load_result = nk_library_load(&lib, argv[2]);
+        printf("LOAD_RESULT:%d\\n", (int)load_result);
+        if (load_result != NK_OK) return 0;
+        const NkGameEntry *entry = nk_library_find_by_disc_id(&lib, "TEST00001");
+        if (!entry) return 2;
+        printf("BOOT_LENGTH:%u\\n", (unsigned)strlen(entry->boot_executable));
+        NkResult save_result = nk_library_save(&lib, argv[3]);
+        printf("SAVE_RESULT:%d\\n", (int)save_result);
+        if (save_result != NK_OK) return 0;
+        NkLibrary saved_lib;
+        NkResult saved_load_result = nk_library_load(&saved_lib, argv[3]);
+        const NkGameEntry *saved_entry = saved_load_result == NK_OK
+            ? nk_library_find_by_disc_id(&saved_lib, "TEST00001") : NULL;
+        printf("SAVE_BOOT_MATCH:%d\\n",
+               saved_entry && strcmp(entry->boot_executable,
+                                     saved_entry->boot_executable) == 0);
+        NkLaunchSession session;
+        NkResult session_result = nk_launch_prepare_session(&session, entry, argv[4]);
+        printf("SESSION_RESULT:%d\\n", (int)session_result);
+        printf("SESSION_BOOT_MATCH:%d\\n",
+               strcmp(entry->boot_executable, session.boot_executable) == 0);
+        return 0;
+    }}
+
+    if (strcmp(mode, "boot_session_unterminated") == 0) {{
+        NkGameEntry game;
+        NkLaunchSession session;
+        memset(&game, 0, sizeof(game));
+        memset(&session, 0, sizeof(session));
+        snprintf(game.disc_id, sizeof(game.disc_id), "TEST00001");
+        snprintf(game.title_id, sizeof(game.title_id), "synthetic-allegrex-v1");
+        memset(game.boot_executable, 'X', sizeof(game.boot_executable));
+        NkResult result = nk_launch_prepare_session(&session, &game, ".");
+        printf("SESSION_RESULT:%d\\n", (int)result);
+        printf("ERROR:%s\\n", session.last_error);
+        return 0;
+    }}
 #endif
+
+    if (strcmp(mode, "boot_save_unterminated") == 0) {{
+        if (argc < 3) return 1;
+        NkLibrary lib;
+        NkGameEntry game;
+        memset(&game, 0, sizeof(game));
+        nk_library_init(&lib);
+        snprintf(game.disc_id, sizeof(game.disc_id), "TEST00001");
+        memset(game.boot_executable, 'X', sizeof(game.boot_executable));
+        assert(nk_library_add_or_update(&lib, &game) == NK_OK);
+        NkResult result = nk_library_save(&lib, argv[2]);
+        printf("SAVE_RESULT:%d\\n", (int)result);
+        return 0;
+    }}
 
     if (strcmp(mode, "reader_test") == 0) {{
         if (argc < 3) return 1;
@@ -542,6 +597,7 @@ int main(int argc, char **argv) {{
             "-I", str(ROOT / "src" / "core" / "generated"),
             str(cls.harness_c),
         ] + [str(s) for s in core_srcs] + [
+            *(["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []),
             "-o", str(cls.exe_path),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
@@ -834,7 +890,8 @@ int main(int argc, char **argv) {{
         cli_executable = next(check for check in cli_checks
                               if check["code"] == "EXECUTABLE")
         self.assertIn(str(decrypted_dir), cli_executable["message"])
-        self.assertIn("in the works", cli_executable["message"])
+        self.assertIn("matching local key file", cli_executable["message"])
+        self.assertNotIn("automatic decryption is in the works", cli_executable["message"].lower())
         self.assertIn("#295", cli_executable["message"])
 
         decrypted_dir.mkdir(parents=True)
@@ -847,6 +904,8 @@ int main(int argc, char **argv) {{
                              if check["code"] == "EXECUTABLE")
         self.assertEqual(invalid_check["status"], "UNSUPPORTED")
         self.assertIn("invalid", invalid_check["message"].lower())
+        self.assertNotIn("in the works", invalid_check["message"].lower())
+        self.assertEqual(invalid_check["issues"], [])
 
         eboot.write_bytes(build_plain_mips_elf())
         valid = inspect_compatibility_preflight(
@@ -912,12 +971,16 @@ int main(int argc, char **argv) {{
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
             module_path = Path(command[command.index("--module-dir") + 1])
+            identity = json.loads(Path(
+                command[command.index("--title-input-identity-file") + 1]
+            ).read_text(encoding="utf-8"))
             cache_key = nk_cli._current_package_cache_key(
                 manifest,
                 Path(command[1]),
                 hashlib.sha256(eboot_bytes).hexdigest(),
                 module_path,
                 None,
+                identity,
             )
             executable = build_dir / "synthetic.exe"
             image = build_dir / "synthetic_image.bin"
@@ -930,6 +993,8 @@ int main(int argc, char **argv) {{
                 nk_cli._package_codegen_options(manifest, os.environ),
             )
             package = {
+                "format": "nakagawa-aot-package",
+                "schema_version": 2,
                 "cache": cache,
                 "title": {"id": title_id},
                 "inputs": {
@@ -942,6 +1007,7 @@ int main(int argc, char **argv) {{
                     }],
                     "psp_header": None,
                 },
+                "title_input_identity": identity,
                 "executable": {
                     "path": executable.name,
                     "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
@@ -958,7 +1024,9 @@ int main(int argc, char **argv) {{
             (build_dir / "build-report.json").write_text(
                 json.dumps(report), encoding="utf-8"
             )
-            nk_cli.package_cache.write_completion_manifest(build_dir, cache_key)
+            nk_cli.package_cache.write_completion_manifest(
+                build_dir, cache_key, title_input_identity=identity
+            )
             return subprocess.CompletedProcess(command, 0, "", "")
 
         args = type("BuildArgs", (), {
@@ -1064,7 +1132,7 @@ int main(int argc, char **argv) {{
                     "backends": "public" if public else "private",
                     "limits": [
                         "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                        "PGD-protected data: unavailable (#295)",
+                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
                     ] if public else [],
                 }),
                 encoding="utf-8",
@@ -1091,13 +1159,13 @@ int main(int argc, char **argv) {{
             self.assertEqual(report.get("backends"), "public")
             self.assertEqual(report.get("limits"), [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ])
             completion = json.loads((user_root / "packages" / disc_id / "completion-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(completion.get("backends"), "public")
             self.assertEqual(completion.get("limits"), [
                 "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable (#295)",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
             ])
 
         # Test private mode when private backends are present
@@ -1353,6 +1421,84 @@ int main(int argc, char **argv) {{
         res = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Library test failed: {res.stderr}")
         self.assertIn("LIBRARY_TEST_PASSED", res.stdout)
+
+    def test_native_boot_executable_byte_limit_round_trip_and_overflow_refusal(self) -> None:
+        root = self.temp_dir / "boot-limit-root"
+        root.mkdir()
+
+        def write_library(name: str, boot_executable: str) -> Path:
+            path = self.temp_dir / name
+            path.write_text(json.dumps({
+                "schema_version": 1,
+                "games": [{
+                    "disc_id": "TEST00001",
+                    "title_name": "Synthetic",
+                    "title_id": "synthetic-allegrex-v1",
+                    "iso_path": "synthetic.iso",
+                    "selected_executable": "EBOOT.BIN",
+                    "boot_executable": boot_executable,
+                }],
+            }, ensure_ascii=False), encoding="utf-8")
+            return path
+
+        overlong = write_library("boot-overlong.json", "X" * 256)
+        rejected_save = self.temp_dir / "boot-rejected-save.json"
+        rejected_save_run = subprocess.run(
+            [str(self.exe_path), "boot_save_unterminated", str(rejected_save)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(rejected_save_run.returncode, 0, rejected_save_run.stderr)
+        self.assertIn("SAVE_RESULT:-12", rejected_save_run.stdout)
+        self.assertFalse(rejected_save.exists())
+
+        rejected = subprocess.run(
+            [str(self.exe_path), "boot_roundtrip", str(overlong),
+             str(self.temp_dir / "must-not-be-saved.json"), str(root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(rejected.returncode, 0, rejected.stderr)
+        self.assertIn("LOAD_RESULT:-12", rejected.stdout)
+
+        valid_name = '"' * 255
+        self.assertEqual(len(valid_name.encode("utf-8")), 255)
+        valid = write_library("boot-valid.json", valid_name)
+        saved = self.temp_dir / "boot-valid-saved.json"
+        roundtrip = subprocess.run(
+            [str(self.exe_path), "boot_roundtrip", str(valid), str(saved), str(root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(roundtrip.returncode, 0, roundtrip.stderr)
+        self.assertIn("LOAD_RESULT:0", roundtrip.stdout)
+        self.assertIn("BOOT_LENGTH:255", roundtrip.stdout)
+        self.assertIn("SAVE_BOOT_MATCH:1", roundtrip.stdout)
+        self.assertIn("SESSION_BOOT_MATCH:1", roundtrip.stdout)
+        self.assertEqual(json.loads(saved.read_text(encoding="utf-8"))["games"][0]["boot_executable"], valid_name)
+
+        utf8_name = "é" * 127 + "A"
+        self.assertEqual(len(utf8_name.encode("utf-8")), 255)
+        utf8_input = write_library("boot-valid-utf8.json", utf8_name)
+        utf8_saved = self.temp_dir / "boot-valid-utf8-saved.json"
+        utf8_roundtrip = subprocess.run(
+            [str(self.exe_path), "boot_roundtrip", str(utf8_input),
+             str(utf8_saved), str(root)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(utf8_roundtrip.returncode, 0, utf8_roundtrip.stderr)
+        self.assertIn("BOOT_LENGTH:255", utf8_roundtrip.stdout)
+        self.assertIn("SAVE_BOOT_MATCH:1", utf8_roundtrip.stdout)
+        self.assertIn("SESSION_BOOT_MATCH:1", utf8_roundtrip.stdout)
+        self.assertEqual(
+            json.loads(utf8_saved.read_text(encoding="utf-8"))["games"][0]["boot_executable"],
+            utf8_name,
+        )
+
+        unterminated_session = subprocess.run(
+            [str(self.exe_path), "boot_session_unterminated"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(unterminated_session.returncode, 0, unterminated_session.stderr)
+        self.assertIn("SESSION_RESULT:-12", unterminated_session.stdout)
+        self.assertIn("boot_executable", unterminated_session.stdout)
 
     def test_native_launch_plan(self) -> None:
         """Native launch resolution is identity-bound to the selected title.

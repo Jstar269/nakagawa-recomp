@@ -35,12 +35,19 @@
 # Usage: imports.py <prx-elf> <base-hex> [--toml out.toml]
 
 import json
+import os
 import struct
 import sys
 
+# The Windows embeddable Python runtime uses a fixed ``._pth`` search path and
+# may omit the directory containing this script. Keep sibling tool imports
+# available when Make launches this script from that runtime.
+_TOOLS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TOOLS_DIRECTORY)
+
 import build_profile
 
-sys.path.insert(0, __file__.rsplit("/", 1)[0] if "/" in __file__ else ".")
 from analyze import Elf
 
 
@@ -156,7 +163,10 @@ def _import_model(elf):
         name_ptr, nidData, firstSym = rebase(name_ptr), rebase(nidData), rebase(firstSym)
         if numFuncs > 0 and nidData == 0:
             raise ValueError(f"import entry at 0x{pos:08x}: {numFuncs} functions but null NID table pointer")
-        libname = _read_guest_cstr(elf, name_ptr) if name_ptr else "(null)"
+        # A zero-function window claims no import stubs, so its library name is
+        # never used by the codegen map. Some stripped retail inputs leave this
+        # optional pointer stale; do not dereference it for an empty window.
+        libname = _read_guest_cstr(elf, name_ptr) if name_ptr and numFuncs else "(null)"
         windows.append((libname, numFuncs, nidData, firstSym))
         step = size * 4
         if step <= 0 or pos + step > 0xFFFFFFFF:

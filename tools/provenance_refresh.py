@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -177,46 +176,39 @@ def generate_controls(
         base_tree=controls.base_tree,
         authorized_policy_delta=controls.policy_delta,
     )
-    candidate_ledger = controls.candidate_blobs.get(LEDGER)
-    if candidate_ledger != verifier._canonical_json_bytes(reconciled):
-        audit = {
-            "workflow": "refresh-reviewed",
-            "trusted_tree": controls.base_tree,
-            "candidate_tree": controls.candidate_tree,
-            "refreshed_paths": changed,
-        }
-        if controls.policy_delta is not None:
-            audit["policy_delta"] = controls.policy_delta
-            audit["blessed_candidate_policy_sha256"] = hashlib.sha256(
-                controls.candidate_policy_raw
-            ).hexdigest()
-        declared = dict(controls.generated_ledger)
-        declared["refresh"] = audit
-        candidate_blobs = dict(controls.candidate_blobs)
-        candidate_blobs[LEDGER] = verifier._canonical_json_bytes(declared)
-        reconciled = verifier._reconcile_refresh_audit(
-            generated=controls.generated_ledger,
-            candidate_blobs=candidate_blobs,
-            base_blobs=controls.base_blobs,
-            base_tree=controls.base_tree,
-            authorized_policy_delta=controls.policy_delta,
-        )
-        if reconciled.get("refresh") != audit:
-            raise verifier.VerifyError(
-                "REFRESH_AUDIT_INVALID", "generated refresh metadata did not pass attestation reconciliation",
-            )
+    # The committed ledger is a per-path document and stops there.  It never
+    # carries the candidate's ``refresh`` audit block.  That block is one slot
+    # holding the trusted base tree, the candidate tree and the refreshed path
+    # list, so every landing rewrote the same lines, two independent refreshes
+    # conflicted on them, and a block written against an earlier base can never
+    # reconcile against a later one -- which is what made one landing force a
+    # control resync on every other open change.  Dropping it grants nothing
+    # away: ``_reconcile_refresh_audit`` recomputes the changed set from the
+    # trusted base and the candidate blobs and still refuses an inherited block
+    # that does not describe exactly this candidate, the checks above still
+    # refuse any changed path without qualifying exact authority, and the
+    # hosted verifier still recomputes the same entries and hashes.  The
+    # block's ``candidate_tree`` named the pre-commit scratch tree, which does
+    # not survive the commit that carries it.  The audit trail is the commit,
+    # the hosted verdict, and the external authority document.
+    reconciled = {key: value for key, value in reconciled.items() if key != "refresh"}
     ledger_bytes = verifier._canonical_json_bytes(reconciled)
     export = verifier._generate_ephemeral_export(
         candidate_blobs=controls.candidate_blobs,
         candidate_policy=controls.candidate_policy,
         ledger_bytes=ledger_bytes,
     )
+    # ``generated_export`` is the full recomputation used for verification;
+    # only its control form is written into the repository, so an unrelated
+    # merge cannot turn into a conflict in every open pull request.  The
+    # verifier recomputes the tree-wide fields and refuses any declared value
+    # that disagrees, so nothing is lost.
     return replace(
         controls,
         generated_ledger=reconciled,
         generated_ledger_bytes=ledger_bytes,
         generated_export=export,
-        generated_export_bytes=verifier._canonical_json_bytes(export),
+        generated_export_bytes=controls.generated_export_bytes,
     )
 
 

@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 import json
 from pathlib import Path, PurePath
@@ -165,6 +165,72 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(publish_audit._forbidden_path("tools/vfpu_words.txt"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
+
+    def test_prohibited_extension_passes_only_as_a_pinned_approved_binary(self):
+        # #557: project-authored PSPDEV build output may carry a guest-executable
+        # suffix, but only as a reviewed release-manifest binary with matching bytes.
+        rel = "fixtures/profile_zero/prebuilt/profile_zero_guest.prx"
+        reason = publish_audit._forbidden_path(rel)
+        self.assertIsNotNone(reason)
+        pinned = "ab" * 32
+        comp = {"disposition": "approved_binary", "hashes": {"sha256": pinned}}
+        self.assertTrue(publish_audit._approved_binary_matches(
+            reason, "approved_binary", comp, pinned))
+        # A different file under the approved name is still a finding.
+        self.assertFalse(publish_audit._approved_binary_matches(
+            reason, "approved_binary", comp, "cd" * 32))
+        # No manifest approval, or no pinned hash, keeps the finding.
+        self.assertFalse(publish_audit._approved_binary_matches(reason, "included", comp, pinned))
+        self.assertFalse(publish_audit._approved_binary_matches(
+            reason, "approved_binary", {"disposition": "approved_binary"}, pinned))
+        # Only the extension rule can be approved; private-path rules never are.
+        self.assertFalse(publish_audit._approved_binary_matches(
+            "private/generated path", "approved_binary", comp, pinned))
+
+    def test_local_only_keystore_path_class_fails_closed(self):
+        # Issue #295: a key file can never be committed or packaged, under
+        # any directory, whatever it is called.
+        for path in (
+            "assets/psp-keyfile.json",
+            "keys/psp-keyfile.json",
+            "docs/example_keystore.json",
+            "tools/backup.keys",
+            "my_key_file",
+            "keys.json",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNotNone(publish_audit._forbidden_path(path))
+        # Outside the forbidden-prefix class, the key-file class names itself.
+        self.assertEqual(
+            publish_audit._forbidden_path("assets/psp-keyfile.json"),
+            "local-only key file (issue #295)",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("docs/example_keystore.json"),
+            "local-only key file (issue #295)",
+        )
+        # Engine sources and docs may carry the vocabulary without being key files.
+        for path in (
+            "src/core/nk_psp_keystore.c",
+            "src/core/nk_psp_keystore.h",
+            "tools/nk_core/decrypt_boundary.py",
+            "docs/SETUP.md",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(publish_audit._forbidden_path(path))
+
+    def test_keystore_content_class_covers_any_data_file(self):
+        # A loadable KeyStore always names its format; tracked under any
+        # non-source name it would ship key material, so it fails closed.
+        keystores = '{\n  "format": "nakagawa-psp-keystore-1",\n  "entries": {}\n}\n'
+        self.assertTrue(publish_audit.is_keystore_content("assets/notes.json", keystores))
+        self.assertTrue(publish_audit.is_keystore_content("assets/backup.dat", keystores))
+        # Source and prose files may name the format without carrying keys.
+        self.assertFalse(publish_audit.is_keystore_content("src/core/nk_psp_keystore.c", keystores))
+        self.assertFalse(publish_audit.is_keystore_content("tools/test_psp_decrypt.py", keystores))
+        self.assertFalse(publish_audit.is_keystore_content("docs/SETUP.md", keystores))
+        # Unrelated data without the marker stays allowed.
+        self.assertFalse(publish_audit.is_keystore_content("assets/manifest.json", '{"id": "x"}\n'))
 
     def test_direct_private_key_assignment_is_detected_without_storing_the_value(self):
         source = "VKEY = bytes.fromhex('0123456789abcdef' * 2)\n"
@@ -673,7 +739,7 @@ class TestPublishAudit(unittest.TestCase):
     def test_provenance_audit_requires_project_license_for_project_authored_source(self):
         cases = (
             ("src/project.c", b"/* SPDX-License-Identifier: GPL-2.0-or-later */\nint project;\n"),
-            ("interface/src/project.tsx", b"// SPDX-License-Identifier: GPL-2.0-or-later\nint project;\n"),
+            ("src/project.tsx", b"// SPDX-License-Identifier: GPL-2.0-or-later\nint project;\n"),
             ("CMakeLists.txt", b"# SPDX-License-Identifier: GPL-2.0-or-later\nproject(test)\n"),
             ("fixtures/Makefile", b"# SPDX-License-Identifier: GPL-2.0-or-later\ntest:\n\ttrue\n"),
         )
@@ -713,58 +779,6 @@ class TestPublishAudit(unittest.TestCase):
         removed = b"int imported;\n"
         findings = self._spdx_provenance_findings(
             source_path, removed, "upstream_derived", "LGPL-2.1-or-later"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
-
-    def test_provenance_audit_preserves_inherited_dashboard_spdx_declaration(self):
-        source_path = "interface/src/components/ui/button.tsx"
-        valid = b"// SPDX-License-Identifier: MIT\nexport const button = true;\n"
-        valid_findings = self._spdx_provenance_findings(
-            source_path, valid, "upstream_derived", "MIT"
-        )
-        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
-
-        bare_gpl = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const button = true;\n"
-        gpl_findings = self._spdx_provenance_findings(
-            source_path, bare_gpl, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in gpl_findings), gpl_findings)
-
-        dual_on_verbatim = b"// SPDX-License-Identifier: MIT AND GPL-3.0-or-later\nexport const button = true;\n"
-        dual_findings = self._spdx_provenance_findings(
-            source_path, dual_on_verbatim, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in dual_findings), dual_findings)
-
-        removed = b"export const button = true;\n"
-        findings = self._spdx_provenance_findings(
-            source_path, removed, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
-
-    def test_provenance_audit_requires_dual_license_for_modified_dashboard_source(self):
-        source_path = "interface/src/hooks/use-mobile.ts"
-        valid = b"// SPDX-License-Identifier: MIT AND GPL-3.0-or-later\nexport const useMobile = true;\n"
-        valid_findings = self._spdx_provenance_findings(
-            source_path, valid, "upstream_derived", "MIT"
-        )
-        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in valid_findings), valid_findings)
-
-        bare_gpl = b"// SPDX-License-Identifier: GPL-3.0-or-later\nexport const useMobile = true;\n"
-        gpl_findings = self._spdx_provenance_findings(
-            source_path, bare_gpl, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in gpl_findings), gpl_findings)
-
-        bare_mit = b"// SPDX-License-Identifier: MIT\nexport const useMobile = true;\n"
-        mit_findings = self._spdx_provenance_findings(
-            source_path, bare_mit, "upstream_derived", "MIT"
-        )
-        self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in mit_findings), mit_findings)
-
-        removed = b"export const useMobile = true;\n"
-        findings = self._spdx_provenance_findings(
-            source_path, removed, "upstream_derived", "MIT"
         )
         self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
 
@@ -2145,20 +2159,16 @@ class TestPrivateRootDetection(unittest.TestCase):
         findings = publish_audit._debt_budget_findings(publish_audit.ROOT)
         self.assertEqual(findings, [], f"Debt budget findings on current repo: {findings}")
 
-    def test_debt_budgets_fail_on_increase(self):
-        """Issue #188 Finding 11 (O-11): gate fails when any debt surface count increases."""
+    def test_debt_budgets_fail_on_ruff_increase(self):
+        """Issue #188 Finding 11 (O-11): Ruff rule-family growth fails the debt gate."""
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
-            (repo / "interface").mkdir()
-            eslint_lines = ["// test"] + [f'  "rule_{i}": "off",' for i in range(30)]
-            (repo / "interface" / "eslint.config.mjs").write_text("rules: {\n" + "\n".join(eslint_lines) + "\n}", encoding="utf-8")
             (repo / "pyproject.toml").write_text("[tool.ruff.lint]\nselect = ['E9', 'F63', 'F7', 'F82', 'F811']\n", encoding="utf-8")
 
             findings = publish_audit._debt_budget_findings(repo, paths=[])
             debt_codes = {f.code for f in findings}
             self.assertIn("DEBT_BUDGET", debt_codes)
             details = " ".join(f.detail for f in findings)
-            self.assertIn("ESLint disabled rules count 30 exceeds debt ceiling 29", details)
             self.assertIn("Ruff select rule families count 5 exceeds debt ceiling 4", details)
 
     def test_workspace_topology_conformance(self):

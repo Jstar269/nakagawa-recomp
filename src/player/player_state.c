@@ -10,6 +10,9 @@
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_psp_container.h"
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +22,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #include <io.h>
+#include <process.h>
 #else
 #include <unistd.h>
 #endif
@@ -33,6 +37,16 @@ uint64_t player_app_ui_test_validation_calls(void) {
 
 static const char *player_runtime_root(const PlayerApp *app) {
     return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
+}
+
+static bool player_app_data_root(const PlayerApp *app, char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (app && app->runtime_root[0]) {
+        int n = snprintf(out, out_size, "%s", app->runtime_root);
+        return n > 0 && (size_t)n < out_size;
+    }
+    return nk_platform_get_app_data_dir(out, out_size);
 }
 
 bool player_game_is_showcase(const GameRecord *game) {
@@ -166,7 +180,7 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     if (!root) {
         if (!nk_platform_get_app_data_dir(default_root, sizeof(default_root))) {
             if (reason && reason_size) snprintf(reason, reason_size,
-                "Per-user data directory is unavailable; package discovery cannot run.");
+                "DATA_DIR_UNAVAILABLE: the Windows Local AppData known folder, LOCALAPPDATA, or APPDATA could not be resolved; package discovery cannot run.");
             return NK_RUNTIME_PACKAGE_MISSING;
         }
         root = default_root;
@@ -279,6 +293,36 @@ bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming)
     return merged;
 }
 
+int player_app_ttf_library_candidates(const char *exe_dir,
+                                      char out[][MAX_PATH_LEN], int max_out) {
+    if (!out || max_out <= 0) return 0;
+
+#if defined(_WIN32) || defined(_WIN64)
+    static const char *kLibs[] = { "SDL3_ttf.dll", NULL };
+#elif defined(__APPLE__)
+    static const char *kLibs[] = { "libSDL3_ttf.0.dylib", "libSDL3_ttf.dylib", NULL };
+#else
+    static const char *kLibs[] = { "libSDL3_ttf.so.0", "libSDL3_ttf.so", NULL };
+#endif
+
+    int count = 0;
+    /* 1. Beside the executable: a user can drop the library next to the player
+     *    (the release does not ship it), and that beats any PATH hit. */
+    if (exe_dir && exe_dir[0] && count < max_out) {
+        size_t len = strlen(exe_dir);
+        bool has_sep = exe_dir[len - 1] == '/' || exe_dir[len - 1] == '\\';
+        snprintf(out[count], MAX_PATH_LEN, "%s%s%s", exe_dir, has_sep ? "" : "/", kLibs[0]);
+        count++;
+    }
+    /* 2. Bare names: the platform loader's default search (PATH on Windows,
+     *    the loader path elsewhere). */
+    for (int i = 0; kLibs[i] && count < max_out; i++) {
+        snprintf(out[count], MAX_PATH_LEN, "%s", kLibs[i]);
+        count++;
+    }
+    return count;
+}
+
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
     if (!app || !executable_directory || !executable_directory[0]) return false;
     int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
@@ -360,6 +404,13 @@ int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id) {
     return -1;
 }
 
+const char *player_app_selected_disc_id(const PlayerApp *app) {
+    if (!app) return NULL;
+    if (app->selected_game_index < 0 || app->selected_game_index >= app->game_count) return NULL;
+    if (!app->games[app->selected_game_index].disc_id[0]) return NULL;
+    return app->games[app->selected_game_index].disc_id;
+}
+
 int player_app_visible_library_cards(const PlayerApp *app) {
     if (!app) return 1;
     /* Cards are 260 wide on a 280 pitch, inset 32 from the left edge and given
@@ -377,9 +428,10 @@ int player_app_focus_count(const PlayerApp *app) {
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
-                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, then the
-                 * paging stops when the library overflows. The unavailable
-                 * pill is never a stop. */
+                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, the
+                 * per-title controller mapping choice, then the paging stops
+                 * when the library overflows. The unavailable pill is never a
+                 * stop. */
                 int count = 0;
                 const GameRecord *game = (app->selected_game_index >= 0 &&
                                           app->selected_game_index < app->game_count)
@@ -397,11 +449,19 @@ int player_app_focus_count(const PlayerApp *app) {
                                   pkg_status == NK_RUNTIME_PACKAGE_STALE);
                 if (game && (game_ready || app->is_game_running || can_build)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
+                count += game ? 1 : 0; /* global / this-game controller mapping */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
                 return count < 1 ? 1 : count;
             }
         case VIEW_BUILDING_PACKAGE:
+        case VIEW_PREREQ_PROGRESS:
             return 1;
+        case VIEW_PREREQ_CONSENT:
+            return 2;
+        case VIEW_PREREQ_ABOUT:
+            return app->prerequisites.item_count > 0 ? 2 : 1;
+        case VIEW_CONFIRM_REMOVE_TOOLS:
+            return 2;
         case VIEW_INSPECTING:
             return 1;
         case VIEW_SUPPORTED_TITLE:
@@ -412,10 +472,11 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREPARING:
             return 1;
         case VIEW_SETTINGS:
-            /* Resolution (4) + frame cap (3) + display toggles (3: vsync,
-             * fullscreen, reduce-motion) + volume stepper (2) + controller settings (1) + close (1),
-             * in draw order. */
-            return 14;
+            /* Resolution (3) + frame cap (3) + game display toggles (3: vsync,
+             * fullscreen, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
+             * controller settings (1) + notices and remove-tools controls (2) + close (1),
+             * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
+            return 16;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -430,8 +491,9 @@ int player_app_focus_count(const PlayerApp *app) {
             }
             /* 14 digital controls rebind buttons + deadzone [-]/[+] (2) +
              * trigger threshold [-]/[+] (2) + guided calibration (1) + save (1) + reset (1) + back (1),
-             * in draw order. */
-            return 22;
+             * in draw order, plus the global / this-game mapping choice when a
+             * library disc is available to name. */
+            return player_app_selected_disc_id(app) ? 23 : 22;
         case VIEW_ERROR:
             return 1;
         case VIEW_SETUP_WIZARD:
@@ -478,36 +540,28 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count) {
 
 void player_app_settings_init_default(PlayerSettings *settings) {
     if (!settings) return;
-    settings->resolution_scale = 4; /* 1080p modern default */
+    settings->resolution_scale = 1; /* native 480x272: the verified path; upscaling is opt-in */
     settings->fullscreen = false;
+    settings->launcher_fullscreen = false;
     settings->vsync = true;
     settings->fps_cap = 60;
     settings->master_volume = 80;
     settings->reduce_motion = false;
+    settings->launcher_window_maximized = false;
+    settings->launcher_window_position_valid = false;
+    settings->launcher_window_x = 0;
+    settings->launcher_window_y = 0;
+    settings->launcher_window_width = 1280;
+    settings->launcher_window_height = 720;
     settings->controller_name[0] = '\0';
     settings->controller_connected = false;
-    snprintf(settings->save_directory, sizeof(settings->save_directory), "savedata");
 }
 
 static bool resolution_scale_valid(int scale) {
-    return scale == 1 || scale == 2 || scale == 3 || scale == 4 || scale == 8;
-}
-
-/* Settings paths come from the per-user config directory, which is UTF-8 and
- * may contain non-ASCII characters; the narrow CRT fopen would misread them on
- * Windows, so open through the wide API there. */
-static FILE *settings_fopen(const char *path, const char *mode) {
-#if defined(_WIN32) || defined(_WIN64)
-    WCHAR wpath[32768];
-    WCHAR wmode[16];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 32768) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wmode, 16) <= 0) {
-        return NULL;
-    }
-    return _wfopen(wpath, wmode);
-#else
-    return fopen(path, mode);
-#endif
+    /* The GPU rasterizer supports at most 4x (ge_gpu MAX_SCALE); 8x was never
+       honoured by any consumer, so a persisted 8 falls back to the default
+       instead of pretending. */
+    return scale == 1 || scale == 2 || scale == 3 || scale == 4;
 }
 
 static bool fps_cap_valid(int cap) {
@@ -548,7 +602,10 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         return NK_OK;
     }
 
-    FILE *f = settings_fopen(target, "rb");
+    /* Settings, decrypted-module, font and key paths all come from the
+     * per-user data directory, which is UTF-8 and may hold non-ASCII
+     * characters; the narrow CRT would misread them on Windows. */
+    FILE *f = nk_fopen_utf8(target, "rb");
     if (!f) {
         player_app_settings_init_default(&app->settings);
         snprintf(app->settings_notice, sizeof(app->settings_notice),
@@ -628,6 +685,49 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.fullscreen = fs_val;
     }
 
+    NkJsonNode *launcher_fs_node = nk_json_obj_get(root, "launcher_fullscreen");
+    bool launcher_fs_val = false;
+    if (launcher_fs_node && nk_json_get_bool(launcher_fs_node, &launcher_fs_val)) {
+        app->settings.launcher_fullscreen = launcher_fs_val;
+    }
+
+    NkJsonNode *launcher_max_node = nk_json_obj_get(root, "launcher_window_maximized");
+    bool launcher_max_val = false;
+    if (launcher_max_node && nk_json_get_bool(launcher_max_node, &launcher_max_val)) {
+        app->settings.launcher_window_maximized = launcher_max_val;
+    }
+
+    NkJsonNode *window_x_node = nk_json_obj_get(root, "launcher_window_x");
+    NkJsonNode *window_y_node = nk_json_obj_get(root, "launcher_window_y");
+    NkJsonNode *window_w_node = nk_json_obj_get(root, "launcher_window_width");
+    NkJsonNode *window_h_node = nk_json_obj_get(root, "launcher_window_height");
+    NkJsonNode *window_position_valid_node =
+        nk_json_obj_get(root, "launcher_window_position_valid");
+    bool window_position_valid = false;
+    int64_t window_x = 0;
+    int64_t window_y = 0;
+    int64_t window_w = 0;
+    int64_t window_h = 0;
+    if (window_position_valid_node &&
+        nk_json_get_bool(window_position_valid_node, &window_position_valid) &&
+        window_position_valid && window_x_node && window_y_node &&
+        nk_json_get_int64(window_x_node, &window_x) &&
+        nk_json_get_int64(window_y_node, &window_y) &&
+        window_x >= -131072 && window_x <= 131072 &&
+        window_y >= -131072 && window_y <= 131072) {
+        app->settings.launcher_window_x = (int)window_x;
+        app->settings.launcher_window_y = (int)window_y;
+        app->settings.launcher_window_position_valid = true;
+    }
+    if (window_w_node && nk_json_get_int64(window_w_node, &window_w) &&
+        window_w >= 320 && window_w <= 16384) {
+        app->settings.launcher_window_width = (int)window_w;
+    }
+    if (window_h_node && nk_json_get_int64(window_h_node, &window_h) &&
+        window_h >= 240 && window_h <= 16384) {
+        app->settings.launcher_window_height = (int)window_h;
+    }
+
     NkJsonNode *rm_node = nk_json_obj_get(root, "reduce_motion");
     bool rm_val = false;
     if (rm_node && nk_json_get_bool(rm_node, &rm_val)) {
@@ -688,7 +788,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
         if (!nk_platform_dir_exists(parent)) nk_platform_mkdir_p(parent);
     }
 
-    FILE *f = settings_fopen(tmp_path, "wb");
+    FILE *f = nk_fopen_utf8(tmp_path, "wb");
     if (!f) return NK_ERROR_IO;
 
     fprintf(f, "{\n");
@@ -697,13 +797,23 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"fps_cap\": %d,\n", app->settings.fps_cap);
     fprintf(f, "  \"vsync\": %s,\n", app->settings.vsync ? "true" : "false");
     fprintf(f, "  \"fullscreen\": %s,\n", app->settings.fullscreen ? "true" : "false");
+    fprintf(f, "  \"launcher_fullscreen\": %s,\n",
+            app->settings.launcher_fullscreen ? "true" : "false");
+    fprintf(f, "  \"launcher_window_maximized\": %s,\n",
+            app->settings.launcher_window_maximized ? "true" : "false");
+    fprintf(f, "  \"launcher_window_position_valid\": %s,\n",
+            app->settings.launcher_window_position_valid ? "true" : "false");
+    fprintf(f, "  \"launcher_window_x\": %d,\n", app->settings.launcher_window_x);
+    fprintf(f, "  \"launcher_window_y\": %d,\n", app->settings.launcher_window_y);
+    fprintf(f, "  \"launcher_window_width\": %d,\n", app->settings.launcher_window_width);
+    fprintf(f, "  \"launcher_window_height\": %d,\n", app->settings.launcher_window_height);
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
     if (fflush(f) != 0) {
         fclose(f);
-        remove(tmp_path);
+        nk_remove_utf8(tmp_path);
         return NK_ERROR_IO;
     }
 
@@ -720,7 +830,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     WCHAR wtmp[32768], wtarget[32768];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 32768) <= 0 ||
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, target, -1, wtarget, 32768) <= 0) {
-        DeleteFileA(tmp_path);
+        nk_remove_utf8(tmp_path);
         return NK_ERROR_IO;
     }
 
@@ -756,12 +866,13 @@ void player_app_set_resolution_scale(PlayerApp *app, int scale) {
 
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
     if (!app) return;
-    /* UI offers 1/2/4/8. Scale 3 stays accepted for forward compatibility
+    /* UI offers 1/2/4: the GPU rasterizer caps at 4x (ge_gpu MAX_SCALE), so
+     * scale 8 is not selectable. Scale 3 stays accepted for forward compatibility
      * (resolution_label knows it) but is skipped by the stepper. */
-    static const int kOrder[] = { 1, 2, 4, 8 };
+    static const int kOrder[] = { 1, 2, 4 };
     int current = app->settings.resolution_scale;
     int at = 0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         if (kOrder[i] == current) {
             at = i;
             break;
@@ -769,9 +880,9 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
         if (kOrder[i] < current) at = i;
     }
     if (direction < 0) {
-        at = (at + 3) % 4;
+        at = (at + 2) % 3;
     } else {
-        at = (at + 1) % 4;
+        at = (at + 1) % 3;
     }
     app->settings.resolution_scale = kOrder[at];
     maybe_persist_settings(app);
@@ -807,6 +918,167 @@ void player_app_toggle_fullscreen(PlayerApp *app) {
     if (!app) return;
     app->settings.fullscreen = !app->settings.fullscreen;
     maybe_persist_settings(app);
+}
+
+void player_app_toggle_launcher_fullscreen(PlayerApp *app) {
+    if (!app) return;
+    app->settings.launcher_fullscreen = !app->settings.launcher_fullscreen;
+    maybe_persist_settings(app);
+}
+
+PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
+                                              bool user_confirmed) {
+    if (app && app->is_game_running && !user_confirmed) {
+        return PLAYER_CLOSE_CONFIRM_REQUIRED;
+    }
+    return PLAYER_CLOSE_QUIT;
+}
+
+bool player_app_close_request_batch_claim(bool *close_request_handled) {
+    if (!close_request_handled || *close_request_handled) return false;
+    *close_request_handled = true;
+    return true;
+}
+
+void player_app_note_close_confirmation_failure(PlayerApp *app) {
+    if (!app) return;
+    app->close_confirmation_pending = true;
+}
+
+bool player_app_take_close_confirmation_fallback(PlayerApp *app) {
+    if (!app || !app->close_confirmation_pending) return false;
+    app->close_confirmation_pending = false;
+    return true;
+}
+
+bool player_settings_uses_two_columns(int window_width, int window_height) {
+    float width = (float)window_width;
+    float card_width = width - 64.0f;
+    if (card_width < 340.0f) {
+        card_width = width > 32.0f ? width - 32.0f : width;
+    }
+    if (card_width > 1216.0f) card_width = 1216.0f;
+    /* The wide settings controls reserve 220 px plus a 310 px button in the
+       first column and the right column starts at
+       player_settings_second_column_offset(), which never sits inside them,
+       so the two columns are disjoint from the first card width the layout
+       can hold (980 px). The single-column flow needs far more height than
+       the narrow windows that reach it, so it must stay the exception. The
+       management row sits below the launcher toggle; 620 px is the first raw
+       client height where the compressed card keeps those rows disjoint. */
+    return card_width >= 980.0f && window_height >= 620;
+}
+
+float player_settings_second_column_offset(float card_width) {
+    /* The launcher control and its hint end 562 px into the card; keep a
+       24 px gutter before the right column, which otherwise starts at half
+       the card. */
+    float half = card_width * 0.5f;
+    return half > 586.0f ? half : 586.0f;
+}
+
+bool player_app_boot_event_is_window_ready(const char *line) {
+    return line && (strstr(line, "BOOT_EVENT phase=window_ready") != NULL ||
+                    strstr(line, "BOOT_EVENT phase=first_frame") != NULL);
+}
+
+bool player_app_child_window_ready(PlayerApp *app) {
+    if (!app || app->child_window_ready || !app->boot_event_file_path[0]) {
+        return app && app->child_window_ready;
+    }
+
+    FILE *file = nk_fopen_utf8(app->boot_event_file_path, "rb");
+    if (!file) return false;
+
+    char events[8192];
+    size_t length = fread(events, 1, sizeof(events) - 1, file);
+    fclose(file);
+    events[length] = '\0';
+
+    char *line = events;
+    while (*line) {
+        char *next = strchr(line, '\n');
+        if (next) *next = '\0';
+        if (player_app_boot_event_is_window_ready(line)) {
+            app->child_window_ready = true;
+            break;
+        }
+        if (!next) break;
+        line = next + 1;
+    }
+    return app->child_window_ready;
+}
+
+bool player_window_fit_to_display(PlayerWindowRect requested,
+                                  PlayerWindowRect usable,
+                                  PlayerWindowFrame frame,
+                                  bool requested_position_valid,
+                                  PlayerWindowRect *out) {
+    if (!out || usable.width <= 0 || usable.height <= 0) return false;
+
+    int left = frame.left > 0 ? frame.left : 0;
+    int right = frame.right > 0 ? frame.right : 0;
+    int top = frame.top > 0 ? frame.top : 0;
+    int bottom = frame.bottom > 0 ? frame.bottom : 0;
+
+    /* The fitted rectangle is a CLIENT rectangle: SDL_SetWindowSize and
+       SDL_SetWindowPosition both address the client area, and the geometry the
+       launcher persists (SDL_GetWindowSize/SDL_GetWindowPosition) is a client
+       rectangle too, so a saved rect round-trips without a frame conversion.
+       Clamping therefore happens against the display's client area -- the
+       usable bounds reduced by the window frame. Clamping against the raw
+       usable bounds instead placed the frame outside the display: on a real
+       3840x2160 display a saved window at (0,0) was measured at a Win32 outer
+       rect of (-11,-45), putting the title bar off-screen. */
+    int64_t min_x = (int64_t)usable.x + left;
+    int64_t min_y = (int64_t)usable.y + top;
+    int64_t area_width = (int64_t)usable.width - left - right;
+    int64_t area_height = (int64_t)usable.height - top - bottom;
+    if (area_width <= 0 || area_height <= 0) return false;
+
+    int requested_width = requested.width > 0 ? requested.width : 1280;
+    int requested_height = requested.height > 0 ? requested.height : 720;
+    double scale = 1.0;
+    if ((double)area_width / requested_width < scale) {
+        scale = (double)area_width / requested_width;
+    }
+    if ((double)area_height / requested_height < scale) {
+        scale = (double)area_height / requested_height;
+    }
+
+    int width = (int)(requested_width * scale);
+    int height = (int)(requested_height * scale);
+    if (width < 1 || height < 1) return false;
+    /* Rounding must never produce a client rectangle larger than the area. */
+    if ((int64_t)width > area_width) width = (int)area_width;
+    if ((int64_t)height > area_height) height = (int)area_height;
+
+    int64_t max_x = min_x + area_width - width;
+    int64_t max_y = min_y + area_height - height;
+    int64_t x = requested.x;
+    int64_t y = requested.y;
+
+    bool intersects = requested_position_valid &&
+        x < min_x + area_width &&
+        x + width > min_x &&
+        y < min_y + area_height &&
+        y + height > min_y;
+    if (!intersects) {
+        x = min_x + (area_width - width) / 2;
+        y = min_y + (area_height - height) / 2;
+    } else {
+        if (x < min_x) x = min_x;
+        if (x > max_x) x = max_x;
+        if (y < min_y) y = min_y;
+        if (y > max_y) y = max_y;
+    }
+
+    if (x < INT_MIN || x > INT_MAX || y < INT_MIN || y > INT_MAX) return false;
+    out->x = (int)x;
+    out->y = (int)y;
+    out->width = width;
+    out->height = height;
+    return true;
 }
 
 void player_app_toggle_vsync(PlayerApp *app) {
@@ -934,12 +1206,93 @@ void player_app_populate_sample_games(PlayerApp *app) {
     }
 }
 
+/* One formatter for the per-process boot-event marker pathname. The launch
+ * sequence is process state, so the pathname is derived from a shared helper
+ * rather than rebuilt by each caller. */
+static int player_format_boot_event_path(char *out, size_t out_size,
+                                         unsigned int sequence) {
+    if (!out || out_size == 0) return 0;
+
+    char cache_dir[MAX_PATH_LEN];
+    if (!nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir))) {
+        out[0] = '\0';
+        return 0;
+    }
+
+#if defined(_WIN32) || defined(_WIN64)
+    unsigned long process_id = (unsigned long)_getpid();
+#else
+    unsigned long process_id = (unsigned long)getpid();
+#endif
+    int written = snprintf(out, out_size, "%s%cplayer-boot-%lu-%u.events",
+                           cache_dir, nk_platform_path_separator(),
+                           process_id, sequence);
+    if (written <= 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return 0;
+    }
+    return written;
+}
+
+/* Per-process launch sequence for the boot-event marker pathname. Single
+ * shared state: the next-pathname query must predict the sequence the next
+ * launch really consumes. */
+static unsigned int player_boot_event_sequence;
+
+void player_app_next_boot_event_path(char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+
+    if (!player_format_boot_event_path(out, out_size,
+                                       player_boot_event_sequence + 1u)) {
+        out[0] = '\0';
+    }
+}
+
+static bool player_prepare_boot_event_file(PlayerApp *app) {
+    if (!app) return false;
+
+    ++player_boot_event_sequence;
+    if (!player_format_boot_event_path(app->boot_event_file_path,
+                                       sizeof(app->boot_event_file_path),
+                                       player_boot_event_sequence)) {
+        app->boot_event_file_path[0] = '\0';
+        return false;
+    }
+
+    int removal_result = remove(app->boot_event_file_path);
+    /* An absent marker is the only expected remove() failure. Any other
+       filesystem error leaves the handoff path unproven and must not let a
+       stale readable marker authorize launcher minimization. Recheck both
+       regular-file and directory paths so a concurrent replacement also
+       fails closed. */
+    if ((removal_result != 0 && errno != ENOENT) ||
+        nk_platform_file_exists(app->boot_event_file_path) ||
+        nk_platform_dir_exists(app->boot_event_file_path)) {
+        app->boot_event_file_path[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+bool player_app_should_attempt_window_handoff(bool interactive_window,
+                                              bool game_running,
+                                              bool handoff_attempted,
+                                              bool child_window_ready) {
+    /* The handoff is attempted at most once per launch. A real
+     * SDL_MinimizeWindow failure leaves the launcher visible, which is the
+     * intended fail-closed result, but the attempt must not be retried every
+     * frame: each retry would rewrite the launcher's settings. */
+    return interactive_window && game_running && !handoff_attempted &&
+           child_window_ready;
+}
+
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
-    /* A launch initiated by the player always requests a GUI child, even if
+    app->close_confirmation_pending = false;
+    /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
 
     char package_error[2048] = "";
     NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
@@ -956,13 +1309,32 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         return false;
     }
 
+    app->child_window_ready = false;
+    app->launch_session.boot_event_file_path[0] = '\0';
+    if (app->enable_focus_handoff) {
+        if (!player_prepare_boot_event_file(app)) {
+            player_app_set_error(
+                app,
+                "WINDOW_HANDOFF_UNAVAILABLE",
+                "Window Handoff Unavailable",
+                "Nakagawa could not prepare the boot-event handoff file. "
+                "The game was not launched; check the per-user cache directory and retry.",
+                "Return to Library",
+                VIEW_LIBRARY
+            );
+            return false;
+        }
+    } else {
+        app->boot_event_file_path[0] = '\0';
+    }
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
     NkResult res = nk_launch_prepare_session(&app->launch_session, game,
                                               player_package_root(app, game));
     /* nk_launch defaults gui_mode to false for headless harnesses. */
-    app->launch_session.config.gui_mode = true;
+    app->launch_session.config.gui_mode = !app->launch_headless;
     if (res != NK_OK) {
+        if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
         printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
         const char *err_title = "Recompiled Binary Not Available";
@@ -988,15 +1360,19 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     }
 
     /* Apply user settings via typed runtime configuration */
-    app->launch_session.config.resolution_scale = app->settings.resolution_scale;
-    app->launch_session.config.fps_cap = app->settings.fps_cap;
-    app->launch_session.config.vsync = app->settings.vsync;
-    app->launch_session.config.fullscreen = app->settings.fullscreen;
+    player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
+    player_app_apply_input_profile_to_session(app, game);
+    if (app->boot_event_file_path[0]) {
+        snprintf(app->launch_session.boot_event_file_path,
+                 sizeof(app->launch_session.boot_event_file_path), "%s",
+                 app->boot_event_file_path);
+    }
 
     printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", app->launch_session.executable_path, app->launch_session.iso_path);
 
     NkResult start_res = nk_launch_start(&app->launch_session);
     if (start_res != NK_OK) {
+        if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
         printf("[PLAYER] Runtime process spawn failed: %s\n", app->launch_session.last_error);
         player_app_set_error(
             app,
@@ -1041,10 +1417,106 @@ bool player_app_register_staged_game(PlayerApp *app) {
 }
 
 void player_app_stop_game(PlayerApp *app) {
-    if (!app || !app->is_game_running) return;
+    if (!app) return;
+    if (!app->is_game_running) {
+        app->close_confirmation_pending = false;
+        return;
+    }
     printf("[PLAYER] Stopping active game session...\n");
     nk_launch_stop(&app->launch_session);
     app->is_game_running = false;
+    app->close_confirmation_pending = false;
+    app->child_window_ready = false;
+    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+}
+
+void player_app_apply_settings_to_session(const PlayerSettings *settings,
+                                          NkRuntimeConfig *config) {
+    if (!settings || !config) return;
+    config->resolution_scale = settings->resolution_scale;
+    config->fps_cap = settings->fps_cap;
+    config->vsync = settings->vsync;
+    config->fullscreen = settings->fullscreen;
+    config->master_volume = settings->master_volume;
+}
+
+NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRecord *game) {
+    if (!app) return NK_ERROR_GENERIC;
+    app->input_profile_notice[0] = '\0';
+    if (!game || !game->disc_id[0]) return NK_ERROR_GENERIC;
+
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
+    if (!input_settings_has_title_mapping(&app->input_settings, game->disc_id)) {
+        /* No per-title entry: the disc runs the global mapping, which is the
+         * file the player already owns and the runtime already resolves. */
+        if (app->input_settings.profile_path[0]) {
+            snprintf(app->launch_session.config.input_profile_path,
+                     sizeof(app->launch_session.config.input_profile_path), "%s",
+                     app->input_settings.profile_path);
+        }
+        return NK_OK;
+    }
+
+    char path[NK_MAX_PATH] = {0};
+    char reason[96] = {0};
+    NkResult res = input_settings_write_disc_profile(&app->input_settings, game->disc_id,
+                                                     path, sizeof(path), diag, sizeof(diag));
+    if (res != NK_OK) {
+        snprintf(reason, sizeof(reason), "%.95s", diag);
+        snprintf(app->input_profile_notice, sizeof(app->input_profile_notice),
+                 "Mapping for %s could not be handed to the game (%.48s); it starts on the global mapping (#520).",
+                 game->disc_id, reason[0] ? reason : "unknown reason");
+        printf("[PLAYER] %s\n", app->input_profile_notice);
+        return res;
+    }
+
+    snprintf(app->launch_session.config.input_profile_path,
+             sizeof(app->launch_session.config.input_profile_path), "%s", path);
+    return NK_OK;
+}
+
+bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
+    if (!app || !app->is_game_running) return false;
+    if (app->launch_time_ms == 0) {
+        app->launch_time_ms = now_ms;
+    }
+    if (nk_launch_is_running(&app->launch_session)) {
+        return false;
+    }
+    uint64_t elapsed_ms = now_ms >= app->launch_time_ms
+        ? (now_ms - app->launch_time_ms) : 0;
+    int code = nk_launch_wait(&app->launch_session, 0);
+    app->is_game_running = false;
+    app->close_confirmation_pending = false;
+    /* The child has exited and been reaped: release its process and job
+       handles before the session is reused. The natural-exit path used to
+       drop them on the floor; the next launch's nk_launch_prepare_session
+       memset silently discarded the stale handle, leaking one process and
+       one job handle per finished game in the long-lived player (#511). */
+    nk_launch_stop(&app->launch_session);
+    app->child_window_ready = false;
+    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+    printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
+           (unsigned long long)elapsed_ms);
+
+    if (elapsed_ms < 500) {
+        char err_msg[512];
+        snprintf(err_msg, sizeof(err_msg),
+                 "Child runtime exited prematurely after %llu ms (exit code %d).\n"
+                 "Process terminated before initialization or scheduler loop could start.",
+                 (unsigned long long)elapsed_ms, code);
+        player_app_set_error(app, "RUNTIME_PREMATURE_EXIT", "Child Process Terminated Early",
+                             err_msg, "Return to Library", VIEW_LIBRARY);
+    } else if (code != 0) {
+        char err_msg[512];
+        snprintf(err_msg, sizeof(err_msg),
+                 "Child runtime process exited abnormally with code %d.\n"
+                 "Check runtime log files for crash traceback or missing symbol details.",
+                 code);
+        player_app_set_error(app, "RUNTIME_ERROR_EXIT", "Child Process Error Exit",
+                             err_msg, "Return to Library", VIEW_LIBRARY);
+    }
+    return true;
 }
 
 bool player_app_start_package_build(PlayerApp *app, int game_index) {
@@ -1053,33 +1525,77 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
 
-    char python_path[NK_MAX_PATH];
-    if (!package_builder_find_python(python_path, sizeof(python_path))) {
-        player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
-                             "Python 3.14 was not found on PATH or in the MSYS2 toolchain.\n"
-                             "Install it (see docs/SETUP.md) or set the PYTHON environment variable.",
-                             "Return to Library", VIEW_LIBRARY);
-        return false;
-    }
-
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        char cli_guidance[512];
+        package_builder_describe_cli_not_found(app->install_root,
+                                               cli_guidance, sizeof(cli_guidance));
         player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
-                             "tools/nk_cli.py could not be located in the current workspace or install root.",
+                             cli_guidance,
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
 
-    /* Build into the same per-user root that package validation reads. */
+    /* Keep downloaded tools and packages under the same app-data root, while
+       still allowing a caller to supply an isolated user-data root. */
     char user_data_root[NK_MAX_PATH];
     if (app->runtime_root[0]) {
         snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root);
     } else if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) {
         player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
-                             "The per-user data directory is unavailable, so there is nowhere to build the package.",
+                             "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA before building the package or installing tools.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
+
+    /* Toolchain preflight: fail here with the missing tool named instead of
+     * deep inside the build when gcc or mingw32-make is not on PATH. */
+    char gcc_path[NK_MAX_PATH];
+    char make_path[NK_MAX_PATH];
+    char python_path[NK_MAX_PATH];
+    bool have_python = package_builder_find_python_in_root(user_data_root,
+                                                            python_path, sizeof(python_path));
+    bool have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
+                                                       gcc_path, sizeof(gcc_path));
+    bool have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
+                                                        make_path, sizeof(make_path));
+    bool missing_toolchain = !have_gcc || !have_make;
+    if (!have_python || missing_toolchain) {
+#if !defined(_WIN32) && !defined(_WIN64)
+        player_app_set_error(app, "PREREQUISITE_PLATFORM_UNSUPPORTED",
+                             "Build Tools Not Available on This Platform",
+                             "Automatic prerequisite installation currently supports Windows x64 with UCRT64. Linux build-tool installation is in the works (#306).",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+#else
+        PackagePrerequisiteList list;
+        char manifest_error[512];
+        if (!package_builder_load_prerequisites(cli_path, &list,
+                                                manifest_error, sizeof(manifest_error))) {
+            player_app_set_error(app, "PREREQUISITE_MANIFEST_INVALID",
+                                 "Pinned Build Tools Could Not Be Loaded",
+                                 manifest_error,
+                                 "Return to Library", VIEW_LIBRARY);
+            return false;
+        }
+        if (!player_app_prereq_begin(app, game_index, !have_python,
+                                     missing_toolchain)) return false;
+        app->prerequisites.items = list;
+        app->prerequisites.item_count = (int)list.count;
+        app->prerequisites.total_bytes = list.total_bytes;
+        app->prerequisites.bootstrap_python = !have_python;
+        return true;
+#endif
+    }
+
+    if (!have_python) {
+        player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
+                             "Python 3.14 was not found and the pinned bootstrap is unavailable.",
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    /* Build into the same per-user root that package validation reads. */
     char log_dir[NK_MAX_PATH];
     snprintf(log_dir, sizeof(log_dir), "%.490s%clogs", user_data_root, nk_platform_path_separator());
     nk_platform_mkdir_p(log_dir);
@@ -1099,6 +1615,181 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 void player_app_cancel_package_build(PlayerApp *app) {
     if (!app) return;
     package_builder_cancel(&app->build_session);
+}
+
+bool player_app_prereq_begin(PlayerApp *app, int game_index,
+                             bool python_missing, bool toolchain_missing) {
+    if (!app || game_index < 0 || game_index >= app->game_count ||
+        (!python_missing && !toolchain_missing)) return false;
+    memset(&app->prerequisites, 0, sizeof(app->prerequisites));
+    app->prerequisites.phase = PLAYER_PREREQ_CONSENT;
+    app->prerequisites.game_index = game_index;
+    app->prerequisites.bootstrap_python = python_missing;
+    app->prerequisite_job_started = false;
+    app->prerequisite_fetcher_started = false;
+    app->prerequisite_bootstrap_ready = false;
+    app->prerequisite_cancel_sent = false;
+    app->active_view = VIEW_PREREQ_CONSENT;
+    app->focus_index = 0;
+    return true;
+}
+
+void player_app_prereq_accept(PlayerApp *app, bool bootstrap_python) {
+    if (!app || app->prerequisites.phase != PLAYER_PREREQ_CONSENT) return;
+    app->prerequisite_cancel_sent = false;
+    app->prerequisites.phase = bootstrap_python
+        ? PLAYER_PREREQ_BOOTSTRAP : PLAYER_PREREQ_DOWNLOAD;
+    app->active_view = VIEW_PREREQ_PROGRESS;
+    app->focus_index = 0;
+}
+
+void player_app_prereq_update_progress(PlayerApp *app, const char *item,
+                                       uint64_t item_received,
+                                       uint64_t item_total,
+                                       uint64_t total_received,
+                                       uint64_t total_bytes) {
+    if (!app || (app->prerequisites.phase != PLAYER_PREREQ_BOOTSTRAP &&
+                 app->prerequisites.phase != PLAYER_PREREQ_DOWNLOAD)) return;
+    snprintf(app->prerequisites.current_item, sizeof(app->prerequisites.current_item),
+             "%s", item ? item : "");
+    app->prerequisites.item_total_bytes = item_total;
+    app->prerequisites.item_received_bytes = item_received > item_total
+        ? item_total : item_received;
+    app->prerequisites.total_bytes = total_bytes;
+    app->prerequisites.total_received_bytes = total_received > total_bytes
+        ? total_bytes : total_received;
+}
+
+void player_app_prereq_complete(PlayerApp *app) {
+    if (!app || (app->prerequisites.phase != PLAYER_PREREQ_BOOTSTRAP &&
+                 app->prerequisites.phase != PLAYER_PREREQ_DOWNLOAD)) return;
+    app->prerequisites.phase = PLAYER_PREREQ_INSTALLED;
+    app->prerequisites.resume_build_pending = true;
+    app->prerequisite_job_started = false;
+    app->prerequisite_fetcher_started = false;
+    app->prerequisite_bootstrap_ready = false;
+    app->prerequisite_cancel_sent = false;
+    app->active_view = VIEW_LIBRARY;
+}
+
+void player_app_prereq_fail(PlayerApp *app, const char *code,
+                            const char *message) {
+    if (!app) return;
+    snprintf(app->prerequisites.error_code, sizeof(app->prerequisites.error_code),
+             "%s", code && code[0] ? code : "PREREQUISITE_INSTALL_FAILED");
+    snprintf(app->prerequisites.error_message, sizeof(app->prerequisites.error_message),
+             "%s", message && message[0] ? message :
+             "The prerequisite could not be installed. Check the connection and free disk space, then retry.");
+    app->prerequisites.phase = PLAYER_PREREQ_FAILED;
+    player_app_set_error(app, app->prerequisites.error_code,
+                         "Build Prerequisite Could Not Be Installed",
+                         app->prerequisites.error_message,
+                         "Retry Download", VIEW_PREREQ_CONSENT);
+}
+
+void player_app_prereq_retry(PlayerApp *app) {
+    if (!app || app->prerequisites.phase != PLAYER_PREREQ_FAILED ||
+        app->last_error.return_view != VIEW_PREREQ_CONSENT) return;
+    app->prerequisites.phase = PLAYER_PREREQ_CONSENT;
+    app->prerequisites.cancel_requested = false;
+    app->prerequisite_cancel_sent = false;
+    player_app_set_view(app, VIEW_PREREQ_CONSENT);
+}
+
+void player_app_prereq_cancel(PlayerApp *app) {
+    if (!app) return;
+    app->prerequisites.cancel_requested = true;
+    app->prerequisites.resume_build_pending = false;
+    if (app->prerequisites.phase == PLAYER_PREREQ_CONSENT) {
+        player_app_prereq_finish_cancel(app);
+    }
+}
+
+void player_app_prereq_finish_cancel(PlayerApp *app) {
+    if (!app) return;
+    app->prerequisites.cancel_requested = false;
+    app->prerequisites.resume_build_pending = false;
+    app->prerequisites.phase = PLAYER_PREREQ_CANCELLED;
+    app->prerequisite_job_started = false;
+    app->prerequisite_fetcher_started = false;
+    app->prerequisite_bootstrap_ready = false;
+    app->prerequisite_cancel_sent = false;
+    app->active_view = VIEW_LIBRARY;
+    app->focus_index = 0;
+}
+
+bool player_app_prereq_take_resume(PlayerApp *app) {
+    if (!app || !app->prerequisites.resume_build_pending) return false;
+    app->prerequisites.resume_build_pending = false;
+    return true;
+}
+
+bool player_app_open_prerequisite_about(PlayerApp *app) {
+    if (!app) return false;
+    char data_root[NK_MAX_PATH];
+    char cli_path[NK_MAX_PATH];
+    char error[512];
+    PackagePrerequisiteList list;
+    if (!player_app_data_root(app, data_root, sizeof(data_root))) {
+        player_app_set_error(app, "DATA_DIR_UNAVAILABLE", "Per-User Data Unavailable",
+                             "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA before inspecting installed tools.",
+                             "Return to Settings", VIEW_SETTINGS);
+        return false;
+    }
+    if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
+        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
+                             "The packaged source/tools folder could not be located, so the prerequisite manifest is unavailable.",
+                             "Return to Settings", VIEW_SETTINGS);
+        return false;
+    }
+    if (!package_builder_load_prerequisites(cli_path, &list, error, sizeof(error))) {
+        player_app_set_error(app, "PREREQUISITE_MANIFEST_INVALID",
+                             "Pinned Build Tools Could Not Be Loaded", error,
+                             "Return to Settings", VIEW_SETTINGS);
+        return false;
+    }
+    package_builder_mark_prerequisites_installed(&list, data_root);
+    app->prerequisites.items = list;
+    app->prerequisites.item_count = 0;
+    for (size_t i = 0; i < list.count; i++) {
+        if (list.items[i].installed) app->prerequisites.item_count++;
+    }
+    app->requested_open_path[0] = '\0';
+    player_app_set_view(app, VIEW_PREREQ_ABOUT);
+    return true;
+}
+
+void player_app_remove_prerequisites(PlayerApp *app) {
+    if (!app) return;
+    if (app->prerequisite_job_started || app->prerequisite_fetcher_started ||
+        app->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP ||
+        app->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD) {
+        player_app_set_error(app, "TOOLS_IN_USE", "Build Tools Are In Use",
+                             "Wait for the prerequisite operation to finish or cancel it before removing downloaded tools.",
+                             "Return to Settings", VIEW_SETTINGS);
+        return;
+    }
+    char data_root[NK_MAX_PATH];
+    char code[48];
+    char message[512];
+    if (!player_app_data_root(app, data_root, sizeof(data_root))) {
+        snprintf(code, sizeof(code), "DATA_DIR_UNAVAILABLE");
+        snprintf(message, sizeof(message), "DATA_DIR_UNAVAILABLE: Windows could not resolve Local AppData. Set LOCALAPPDATA or APPDATA. No files were removed.");
+    } else if (package_builder_remove_downloaded_tools(data_root, code, sizeof(code),
+                                                       message, sizeof(message))) {
+        for (size_t i = 0; i < app->prerequisites.items.count; i++)
+            app->prerequisites.items.items[i].installed = false;
+        app->prerequisites.item_count = 0;
+        app->prerequisites.phase = PLAYER_PREREQ_IDLE;
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Downloaded build tools removed from app data.");
+        player_app_set_view(app, VIEW_SETTINGS);
+        return;
+    }
+    player_app_set_error(app, code[0] ? code : "TOOLS_REMOVE_FAILED",
+                         "Downloaded Build Tools Could Not Be Removed",
+                         message[0] ? message : "Close applications using the tools and retry.",
+                         "Return to Settings", VIEW_SETTINGS);
 }
 
 void player_app_set_build_error(
@@ -1408,7 +2099,7 @@ static bool player_decrypted_eboot_paths(const char *runtime_root,
 
 static bool player_is_usable_mips_elf32(const char *path) {
     unsigned char header[52];
-    FILE *file = fopen(path, "rb");
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return false;
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
@@ -1491,11 +2182,497 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
                                       directory_size, elf_path, elf_path_size)) {
         return PLAYER_DECRYPTED_EBOOT_PATH_INVALID;
     }
-    FILE *file = fopen(elf_path, "rb");
+    FILE *file = nk_fopen_utf8(elf_path, "rb");
     if (!file) return PLAYER_DECRYPTED_EBOOT_MISSING;
     fclose(file);
     return player_is_usable_mips_elf32(elf_path)
         ? PLAYER_DECRYPTED_EBOOT_VALID : PLAYER_DECRYPTED_EBOOT_INVALID;
+}
+
+/* Issue #295: built-in decryption boundary.  The player holds no key
+ * material: a local-only key file at <user data>/keys/psp-keyfile.json (or
+ * $NAKAGAWA_PSP_KEY_FILE) unlocks the boundary, which unwraps the disc's
+ * encrypted executable and encrypted PRX modules into the private per-title
+ * folder only, staged to a temporary name and renamed into place. */
+typedef enum {
+    PLAYER_BOUNDARY_OK = 0,
+    PLAYER_BOUNDARY_NO_KEYFILE = 1,
+    PLAYER_BOUNDARY_FAILED = 2
+} PlayerBoundaryStatus;
+
+static PlayerBoundaryStatus player_try_builtin_decrypt_member(
+    const char *runtime_root, const char *iso_path, const char *disc_rel_path,
+    const char *decrypt_dir, const char *out_name, const char *out_path,
+    char *detail, size_t detail_size) {
+    char key_path[NK_MAX_PATH + 64];
+    char stage_dir[NK_MAX_PATH + 32];
+    char stage_in[NK_MAX_PATH + 320];
+    char stage_out[NK_MAX_PATH + 320];
+    const char *env_override = getenv("NAKAGAWA_PSP_KEY_FILE");
+    char keystore_error[256];
+    NkKeystore *ks;
+    NkPspCtx ctx;
+    u8 *input = NULL;
+    u8 *plain = NULL;
+    size_t plain_size = 0;
+    size_t input_size = 0;
+    long file_size;
+    FILE *file;
+    int rc;
+
+    if (env_override != NULL && env_override[0] != '\0') {
+        snprintf(key_path, sizeof(key_path), "%s", env_override);
+    } else {
+        snprintf(key_path, sizeof(key_path), "%s/keys/psp-keyfile.json",
+                 runtime_root);
+    }
+    file = nk_fopen_utf8(key_path, "rb");
+    if (!file) return PLAYER_BOUNDARY_NO_KEYFILE;
+    fclose(file);
+
+    snprintf(stage_dir, sizeof(stage_dir), "%s/cache/decrypted", runtime_root);
+    if (!nk_platform_dir_exists(stage_dir) && !nk_platform_mkdir_p(stage_dir)) {
+        snprintf(detail, detail_size, "the private user-data cache is unavailable");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    snprintf(stage_in, sizeof(stage_in), "%s/%s.in.stage", stage_dir, out_name);
+    snprintf(stage_out, sizeof(stage_out), "%s/%s.stage", stage_dir, out_name);
+    nk_remove_utf8(stage_in);
+    nk_remove_utf8(stage_out);
+
+    if (nk_iso_extract_file(iso_path, disc_rel_path, stage_in) != NK_OK) {
+        snprintf(detail, detail_size, "the disc copy could not be extracted");
+        nk_remove_utf8(stage_in);
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    file = nk_fopen_utf8(stage_in, "rb");
+    if (file == NULL) {
+        snprintf(detail, detail_size, "the disc copy could not be read");
+        nk_remove_utf8(stage_in);
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    if (fseek(file, 0, SEEK_END) != 0 || (file_size = ftell(file)) <= 0 ||
+        file_size > (long)(64u * 1024u * 1024u) || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        nk_remove_utf8(stage_in);
+        snprintf(detail, detail_size, "the disc copy has an implausible size");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    input_size = (size_t)file_size;
+    input = (u8 *)malloc(input_size);
+    if (input == NULL || fread(input, 1, input_size, file) != input_size) {
+        fclose(file);
+        free(input);
+        nk_remove_utf8(stage_in);
+        snprintf(detail, detail_size, "the disc copy could not be buffered");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    fclose(file);
+    nk_remove_utf8(stage_in);
+
+    ks = nk_keystore_create();
+    if (ks == NULL) {
+        free(input);
+        snprintf(detail, detail_size, "out of memory loading the key file");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    if (nk_keystore_load_file(ks, key_path, keystore_error,
+                              sizeof(keystore_error)) != NK_PSP_OK) {
+        snprintf(detail, detail_size, "the key file is invalid: %.180s",
+                 keystore_error);
+        nk_keystore_free(ks);
+        free(input);
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    nk_psp_ctx_init(&ctx, ks);
+    rc = nk_container_decrypt(&ctx, input, input_size, &plain, &plain_size);
+    nk_keystore_free(ks);
+    free(input);
+    if (rc != NK_PSP_OK) {
+        snprintf(detail, detail_size, "%s",
+                 ctx.message[0] != '\0' ? ctx.message
+                                         : "the container could not be decrypted");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+
+    if (!nk_platform_dir_exists(decrypt_dir) &&
+        !nk_platform_mkdir_p(decrypt_dir)) {
+        free(plain);
+        snprintf(detail, detail_size, "the per-title decrypted folder is unavailable");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    file = nk_fopen_utf8(stage_out, "wb");
+    if (file == NULL || fwrite(plain, 1, plain_size, file) != plain_size) {
+        if (file != NULL) fclose(file);
+        free(plain);
+        nk_remove_utf8(stage_out);
+        snprintf(detail, detail_size, "the decrypted image could not be written");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    fclose(file);
+    free(plain);
+    nk_remove_utf8(out_path);
+    if (nk_rename_utf8(stage_out, out_path) != 0) {
+        nk_remove_utf8(stage_out);
+        snprintf(detail, detail_size, "the decrypted image could not be moved into place");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    if (!player_is_usable_mips_elf32(out_path)) {
+        nk_remove_utf8(out_path);
+        snprintf(detail, detail_size, "the decrypted image is not a usable MIPS ELF32");
+        return PLAYER_BOUNDARY_FAILED;
+    }
+    return PLAYER_BOUNDARY_OK;
+}
+
+/* Issue #295 guest-module boundary: the disc's own PRX modules are resolved
+   through the same per-title folder and built-in boundary as the executable,
+   one module at a time and fail closed per module.  CFW patch-module exclusion
+   stays the intake route's named job; this reports decryption readiness. */
+#define PLAYER_MAX_GUEST_MODULES 32
+
+typedef struct {
+    char name[256];
+    char rel_path[320];
+    uint32_t lba;
+    uint32_t size;
+    bool encrypted;
+} PlayerModuleCandidate;
+
+static bool player_name_equals_ignore_case(const char *a, const char *b) {
+    while (*a != '\0' && *b != '\0') {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static bool player_name_has_suffix_ignore_case(const char *name,
+                                               const char *suffix) {
+    size_t name_len = strlen(name);
+    size_t suffix_len = strlen(suffix);
+    return name_len >= suffix_len &&
+           player_name_equals_ignore_case(name + (name_len - suffix_len), suffix);
+}
+
+/* A disc directory entry names a file the boundary writes under the private
+ * per-title folder, and a crafted image controls those bytes. Accept only the
+ * rule the tooling applies (tools/title_manifest.py FILENAME_RE and
+ * WINDOWS_RESERVED): an alphanumeric first character, then [A-Za-z0-9._-],
+ * at most 128 characters, no trailing dot, no reserved Windows device name. So
+ * "..\\x.prx", "a/b.prx" or "CON.prx" can never leave or alias that folder. */
+bool player_module_name_is_safe(const char *name) {
+    static const char *const reserved[] = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+    size_t len = strlen(name);
+    if (len == 0 || len > 128 || name[len - 1] == '.') return false;
+    if (!isalnum((unsigned char)name[0])) return false;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (!isalnum(c) && c != '.' && c != '_' && c != '-') return false;
+    }
+    size_t base_len = strcspn(name, ".");
+    for (size_t r = 0; r < sizeof(reserved) / sizeof(reserved[0]); r++) {
+        if (strlen(reserved[r]) != base_len) continue;
+        size_t k = 0;
+        while (k < base_len &&
+               toupper((unsigned char)name[k]) == (unsigned char)reserved[r][k]) k++;
+        if (k == base_len) return false;
+    }
+    return true;
+}
+
+static bool player_module_name_is_executable(const char *name,
+                                             const char *selected_name) {
+    return player_name_equals_ignore_case(name, "EBOOT.BIN") ||
+           player_name_equals_ignore_case(name, "BOOT.BIN") ||
+           player_name_equals_ignore_case(name, "EBOOT.OLD") ||
+           (selected_name != NULL && selected_name[0] != '\0' &&
+            player_name_equals_ignore_case(name, selected_name));
+}
+
+static bool player_prx_header_supported(const unsigned char *header,
+                                        uint32_t header_size) {
+    if (header_size < 0x64 || header[0x27] < 1 || header[0x27] > 4) return false;
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < header[0x27]; i++) {
+        uint32_t value = player_read_le32(header + 0x54 + i * 4);
+        if (value == 0 || value > 64u * 1024u * 1024u) return false;
+        total += value;
+    }
+    return total <= 64u * 1024u * 1024u;
+}
+
+/* The bounded MIPS ELF32 envelope check for a module still inside the ISO. */
+static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
+                                         uint32_t size) {
+    unsigned char header[52];
+    unsigned char ph[32];
+    if (size < sizeof(header) ||
+        nk_iso_reader_read(reader, lba, 0, header, sizeof(header)) !=
+            (int)sizeof(header)) {
+        return false;
+    }
+    if (memcmp(header, "\x7f" "ELF", 4) != 0 ||
+        header[4] != 1 || header[5] != 1 || header[6] != 1) {
+        return false;
+    }
+    uint16_t e_type = player_read_le16(header + 16);
+    uint16_t machine = player_read_le16(header + 18);
+    uint32_t version = player_read_le32(header + 20);
+    uint32_t entry = player_read_le32(header + 24);
+    uint32_t phoff = player_read_le32(header + 28);
+    uint32_t shoff = player_read_le32(header + 32);
+    uint16_t ehsize = player_read_le16(header + 40);
+    uint16_t phentsize = player_read_le16(header + 42);
+    uint16_t phnum = player_read_le16(header + 44);
+    uint16_t shentsize = player_read_le16(header + 46);
+    uint16_t shnum = player_read_le16(header + 48);
+    bool valid = (e_type == 1 || e_type == 2 || e_type == 3 || e_type == 0xffa0) &&
+                 machine == 8 && version == 1 && ehsize == sizeof(header) &&
+                 phentsize == 32 && phnum >= 1 && phnum <= 128 &&
+                 phoff >= ehsize &&
+                 (uint64_t)phoff + (uint64_t)phentsize * phnum <= (uint64_t)size;
+    if (valid && shnum != 0) {
+        valid = shentsize == 40 && shoff >= ehsize &&
+                (uint64_t)shoff + (uint64_t)shentsize * shnum <= (uint64_t)size;
+    } else if (valid && shoff != 0) {
+        valid = false;
+    }
+    bool have_load = false;
+    bool entry_executable = false;
+    for (uint16_t i = 0; valid && i < phnum; i++) {
+        uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
+        if (nk_iso_reader_read(reader, lba, offset, ph, sizeof(ph)) !=
+            (int)sizeof(ph)) {
+            valid = false;
+            break;
+        }
+        uint32_t type = player_read_le32(ph);
+        uint32_t p_offset = player_read_le32(ph + 4);
+        uint32_t vaddr = player_read_le32(ph + 8);
+        uint32_t filesz = player_read_le32(ph + 16);
+        uint32_t memsz = player_read_le32(ph + 20);
+        uint32_t flags = player_read_le32(ph + 24);
+        uint32_t align = player_read_le32(ph + 28);
+        uint64_t memory_end = (uint64_t)vaddr + memsz;
+        if ((uint64_t)p_offset + filesz > (uint64_t)size) {
+            valid = false;
+            break;
+        }
+        if (type != 1) continue;
+        if (memsz < filesz || memory_end > 0x100000000ULL ||
+            (align > 1 && ((align & (align - 1u)) != 0 ||
+                           p_offset % align != vaddr % align))) {
+            valid = false;
+            break;
+        }
+        have_load = true;
+        if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
+            entry_executable = true;
+        }
+    }
+    return valid && have_load && entry_executable;
+}
+
+static size_t player_scan_disc_modules(const char *iso_path,
+                                       const char *selected_name,
+                                       PlayerModuleCandidate *modules,
+                                       size_t max_modules) {
+    static const char * const directories[] = {
+        "PSP_GAME/SYSDIR", "PSP_GAME/SYSDIR/PRX",
+        "PSP_GAME/USRDIR", "PSP_GAME/USRDIR/PRX"
+    };
+    size_t count = 0;
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    if (reader == NULL) return 0;
+    for (size_t d = 0;
+         d < sizeof(directories) / sizeof(directories[0]) && count < max_modules;
+         d++) {
+        for (uint32_t index = 0; count < max_modules; index++) {
+            NkIsoDirEntry entry;
+            unsigned char header[0x64];
+            uint32_t header_size;
+            bool encrypted = false;
+            if (nk_iso_reader_list(reader, directories[d], index, &entry) != 1) break;
+            if (entry.is_directory) continue;
+            if (!player_module_name_is_safe(entry.name)) continue;
+            if (!player_name_has_suffix_ignore_case(entry.name, ".prx") &&
+                !player_name_has_suffix_ignore_case(entry.name, ".elf")) continue;
+            if (player_module_name_is_executable(entry.name, selected_name)) continue;
+            if (entry.size == 0 || entry.size > 64u * 1024u * 1024u) continue;
+            header_size = entry.size < (uint32_t)sizeof(header)
+                              ? entry.size : (uint32_t)sizeof(header);
+            if (nk_iso_reader_read(reader, entry.lba, 0, header, header_size) !=
+                (int)header_size) {
+                continue;
+            }
+            if (memcmp(header, "\x7f" "ELF", 4) == 0) {
+                if (!player_iso_elf32_mips_usable(reader, entry.lba, entry.size)) {
+                    continue;
+                }
+            } else if (memcmp(header, "~PSP", 4) == 0) {
+                if (!player_prx_header_supported(header, header_size)) continue;
+                encrypted = true;
+            } else if (memcmp(header, "~SCE", 4) == 0) {
+                encrypted = true;
+            } else {
+                continue;
+            }
+            memset(&modules[count], 0, sizeof(modules[count]));
+            snprintf(modules[count].name, sizeof(modules[count].name), "%s",
+                     entry.name);
+            snprintf(modules[count].rel_path, sizeof(modules[count].rel_path),
+                     "%s/%s", directories[d], entry.name);
+            modules[count].lba = entry.lba;
+            modules[count].size = entry.size;
+            modules[count].encrypted = encrypted;
+            count++;
+        }
+    }
+    nk_iso_reader_close(reader);
+    return count;
+}
+
+static void player_check_guest_modules(PlayerApp *app,
+                                       PlayerCompatibilityPreflight *preflight,
+                                       const char *runtime_root) {
+    PlayerModuleCandidate modules[PLAYER_MAX_GUEST_MODULES];
+    char decrypted_dir[NK_MAX_PATH * 2];
+    char decrypted_elf[NK_MAX_PATH * 2];
+    char key_path[NK_MAX_PATH + 64];
+    char first_name[256];
+    char first_detail[320];
+    char message[1024];
+    char more[40];
+    size_t total, ready = 0, not_ready = 0;
+    bool first_encrypted = false;
+    bool first_boundary = false;
+    const char *env_override;
+    if (!app->inspecting_game.iso_path[0] || !app->inspecting_game.disc_id[0]) {
+        return;
+    }
+    if (!player_decrypted_eboot_paths(runtime_root, app->inspecting_game.disc_id,
+                                      decrypted_dir, sizeof(decrypted_dir),
+                                      decrypted_elf, sizeof(decrypted_elf))) {
+        return;
+    }
+    total = player_scan_disc_modules(
+        app->inspecting_game.iso_path, app->inspecting_game.selected_executable,
+        modules, PLAYER_MAX_GUEST_MODULES);
+    if (total == 0) return;
+    env_override = getenv("NAKAGAWA_PSP_KEY_FILE");
+    if (env_override != NULL && env_override[0] != '\0') {
+        snprintf(key_path, sizeof(key_path), "%s", env_override);
+    } else {
+        snprintf(key_path, sizeof(key_path), "%s/keys/psp-keyfile.json",
+                 runtime_root);
+    }
+    first_name[0] = '\0';
+    first_detail[0] = '\0';
+    for (size_t i = 0; i < total; i++) {
+        PlayerModuleCandidate *module = &modules[i];
+        char module_path[NK_MAX_PATH * 2 + 320];
+        int written = snprintf(module_path, sizeof(module_path), "%s%c%s",
+                               decrypted_dir, nk_platform_path_separator(),
+                               module->name);
+        FILE *existing;
+        char detail[320];
+        PlayerBoundaryStatus status;
+        if (written < 0 || (size_t)written >= sizeof(module_path)) {
+            not_ready++;
+            if (first_name[0] == '\0') {
+                snprintf(first_name, sizeof(first_name), "%.200s", module->name);
+                snprintf(first_detail, sizeof(first_detail),
+                         "the module path is too long");
+            }
+            continue;
+        }
+        /* A user-supplied plain module always wins and is never overwritten. */
+        existing = nk_fopen_utf8(module_path, "rb");
+        if (existing != NULL) {
+            fclose(existing);
+            if (player_is_usable_mips_elf32(module_path)) {
+                ready++;
+                continue;
+            }
+            not_ready++;
+            if (first_name[0] == '\0') {
+                snprintf(first_name, sizeof(first_name), "%.200s", module->name);
+                snprintf(first_detail, sizeof(first_detail),
+                         "the supplied copy is not a usable plain module");
+            }
+            continue;
+        }
+        if (!module->encrypted) {
+            ready++;
+            continue;
+        }
+        detail[0] = '\0';
+        status = player_try_builtin_decrypt_member(
+            runtime_root, app->inspecting_game.iso_path, module->rel_path,
+            decrypted_dir, module->name, module_path, detail, sizeof(detail));
+        if (status == PLAYER_BOUNDARY_OK) {
+            ready++;
+            continue;
+        }
+        not_ready++;
+        if (first_name[0] == '\0') {
+            snprintf(first_name, sizeof(first_name), "%.200s", module->name);
+            if (status == PLAYER_BOUNDARY_NO_KEYFILE) {
+                first_encrypted = true;
+            } else {
+                first_boundary = true;
+                snprintf(first_detail, sizeof(first_detail), "%s", detail);
+            }
+        }
+    }
+    if (not_ready == 0) {
+        snprintf(message, sizeof(message),
+                 "Guest modules: %u of %u ready.",
+                 (unsigned)ready, (unsigned)total);
+        player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_OK, message,
+                             NULL, 0);
+        return;
+    }
+    more[0] = '\0';
+    if (not_ready > 1) {
+        snprintf(more, sizeof(more), " (%u more not ready)",
+                 (unsigned)(not_ready - 1));
+    }
+    {
+        static const unsigned int issues[] = { 295 };
+        if (first_encrypted) {
+            snprintf(message, sizeof(message),
+                     "Guest modules: %u of %u ready; %.200s is encrypted%s. "
+                     "Supply decrypted modules at %.220s (#295), or a local key "
+                     "file at %.170s to enable the built-in boundary.",
+                     (unsigned)ready, (unsigned)total, first_name, more,
+                     decrypted_dir, key_path);
+            player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_MISSING,
+                                 message, issues, 1);
+        } else if (first_boundary) {
+            snprintf(message, sizeof(message),
+                     "Guest modules: %u of %u ready; %.200s could not be "
+                     "decrypted (%.190s)%s. Supply decrypted modules at %.220s "
+                     "(#295), or add the missing entry to your local key file.",
+                     (unsigned)ready, (unsigned)total, first_name, first_detail,
+                     more, decrypted_dir);
+            player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
+                                 message, issues, 1);
+        } else {
+            snprintf(message, sizeof(message),
+                     "Guest modules: %u of %u ready; %.200s is not ready "
+                     "(%.190s)%s. Supply decrypted modules at %.220s (#295).",
+                     (unsigned)ready, (unsigned)total, first_name, first_detail,
+                     more, decrypted_dir);
+            player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
+                                 message, issues, 1);
+        }
+    }
 }
 
 void player_app_build_compatibility_preflight(
@@ -1557,21 +2734,54 @@ void player_app_build_compatibility_preflight(
             char message[512];
             snprintf(message, sizeof(message),
                 "Encrypted executable: EBOOT.elf is not a usable MIPS ELF32; "
-                "supply decrypted modules at %.300s (#295). Automatic decryption is in the works.",
+                "replace it with a valid decrypted EBOOT.elf at %.300s.",
                 decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                                 message, issues, 1);
+                                 message, NULL, 0);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
+            char boundary_detail[320] = "";
+            char key_path[NK_MAX_PATH + 64];
+            const char *env_override = getenv("NAKAGAWA_PSP_KEY_FILE");
+            PlayerBoundaryStatus boundary = player_try_builtin_decrypt_member(
+                runtime_root, app->inspecting_game.iso_path,
+                "PSP_GAME/SYSDIR/EBOOT.BIN", decrypted_dir, "EBOOT.elf",
+                decrypted_elf, boundary_detail, sizeof(boundary_detail));
+            if (env_override != NULL && env_override[0] != '\0') {
+                snprintf(key_path, sizeof(key_path), "%s", env_override);
+            } else {
+                snprintf(key_path, sizeof(key_path),
+                         "%s/keys/psp-keyfile.json", runtime_root);
+            }
+            if (boundary == PLAYER_BOUNDARY_OK) {
+                player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
+                    "The built-in decryption boundary produced a usable MIPS ELF32 and it is selected for analysis.",
+                    NULL, 0);
+            } else if (boundary == PLAYER_BOUNDARY_FAILED) {
+                char message[512];
+                snprintf(message, sizeof(message),
+                    "Encrypted executable: the built-in decryption boundary failed "
+                    "(%.190s); supply decrypted modules at %.190s (#295).",
+                    boundary_detail, decrypted_dir);
+                player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                                     message, issues, 1);
+            } else {
+                char message[512];
+                snprintf(message, sizeof(message),
+                    "Encrypted executable: supply decrypted modules at %.220s (#295), "
+                    "or a local key file at %.170s to enable the built-in boundary.",
+                    decrypted_dir, key_path);
+                player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                                     message, issues, 1);
+            }
+        } else {
+            static const unsigned int path_issues[] = { 308 };
             char message[512];
             snprintf(message, sizeof(message),
-                "Encrypted executable: supply decrypted modules at %.360s (#295). "
-                "Automatic decryption is in the works.", decrypted_dir);
+                "Encrypted executable: the per-title decrypted-data path could "
+                "not be resolved safely. Correct the user-data path and retry; "
+                "broader ISO-to-Play support is in the works (#308).");
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                                 message, issues, 1);
-        } else {
-            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                "Encrypted executable. Decryption support is in the works (#295).",
-                issues, 1);
+                                 message, path_issues, 1);
         }
     } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
@@ -1581,6 +2791,10 @@ void player_app_build_compatibility_preflight(
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "Unknown/malformed executable boundary; broader title support is in the works (#308).",
                              issues, 1);
+    }
+
+    if (disc_readable) {
+        player_check_guest_modules(app, preflight, runtime_root);
     }
 
     if (!app->inspecting_game.title_id[0]) {

@@ -16,7 +16,7 @@ Classification (per the wave-1 portability lane contract):
                                (scheduler, HLE, GE, memory, analysis surfaces)
   BACKEND_EXPECTED             host-services/backend code (GPU, audio, media,
                                OSK, input, driver, capture, third-party decoders)
-  BUILD_TOOL_ONLY              Make/tooling/CI/dashboard code
+  BUILD_TOOL_ONLY              Make/tooling/CI code
   TEST_ONLY                    selftest/unit-test code
   PRIVATE_MANAGER_ONLY         PowerShell title-manager orchestration
 
@@ -94,7 +94,7 @@ def classify_file(path: str) -> tuple[str, str]:
         return "TOOLS", "BUILD_TOOL_ONLY"
     if p.name in ("nk_manager.ps1", "nk.ps1"):
         return "MANAGER", "CANONICAL_MANAGER"
-    if p.name in ("Makefile", "copy_build_assets.ps1"):
+    if p.name == "Makefile":
         return "TOOLS", "BUILD_TOOL_ONLY"
     if parts[:2] == ("mk",):
         return "TOOLS", "BUILD_TOOL_ONLY"
@@ -208,7 +208,6 @@ def scan() -> list[dict]:
         ROOT / "Makefile",
         ROOT / "nk_manager.ps1",
         ROOT / "nk.ps1",
-        ROOT / "copy_build_assets.ps1",
     ]
     for root in roots:
         if not root.exists():

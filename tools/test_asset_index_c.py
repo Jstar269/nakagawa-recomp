@@ -138,11 +138,14 @@ class TestAssetIndexSelftestC(unittest.TestCase):
         self.assertIn("pgf_open_w", hle)
         self.assertNotIn('pgf_open("font/', hle)
 
-    def test_production_data_root_is_wide_and_executable_anchored(self):
+    def test_production_data_root_is_wide_and_configured(self):
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
-        self.assertIn("sr_wide_module_data_root(&root_wide)", hle)
+        # Issue #289: generic HLE no longer infers a data root beside the executable; the
+        # title manifest / launcher must configure SR_DATAROOT, and its absence is refused.
+        self.assertNotIn("sr_wide_module_data_root(&root_wide)", hle)
+        self.assertNotIn("host_data: executable-relative data root could not be resolved", hle)
+        self.assertIn("host_data: extracted-data census requires a configured SR_DATAROOT", hle)
         self.assertIn("host_data: SR_DATAROOT is configured but is not a valid absolute path", hle)
-        self.assertIn("host_data: executable-relative data root could not be resolved", hle)
         self.assertIn("sr_wide_env_alloc(L\"SR_DATAROOT\"", hle)
         self.assertIn("sr_wide_configured_root_wide_alloc(configured_root", hle)
         self.assertIn("sr_utf8_env_alloc(L\"SR_FSDIR\"", hle)
@@ -164,10 +167,16 @@ class TestAssetIndexSelftestC(unittest.TestCase):
 
         ``guest_cstr`` initializes only through the terminator; indexing the
         remainder of a short path would inspect uninitialized stack bytes.
+
+        The compare itself is spelled ``sr_vfs_strnicmp``, the project's own
+        per-host case-insensitive compare (vfs_path.h maps it to ``_strnicmp``
+        on Windows and ``strncasecmp`` elsewhere), so the same line compiles on
+        every host. The pin is the bounds guard in front of the fixed-width
+        compare, not one host's CRT spelling.
         """
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn(
-            "if (guest_key_length >= 8u && _strnicmp(p, \"data_\", 5) == 0",
+            "if (guest_key_length >= 8u && sr_vfs_strnicmp(p, \"data_\", 5) == 0",
             hle,
         )
 

@@ -4,9 +4,8 @@
 // watchpoints_file.h — bounded parser for the derived `watchpoints.json`
 // runtime artifact (issue #188).
 //
-// The dashboard (interface/src/lib/recompiler/watchpoint-file.mjs) writes a
-// versioned envelope and the database is canonical; this parser is the runtime
-// consumer side of that contract. It accepts:
+// The versioned envelope is the canonical persisted watchpoint format; this
+// parser is its runtime consumer. It accepts:
 //
 //   1. the title-neutral versioned envelope:
 //        { "format": "nk-watchpoints", "version": 1, ..., "watchpoints": [...] }

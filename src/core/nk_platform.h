@@ -26,6 +26,28 @@ typedef enum {
 int nk_fseek64(FILE *f, int64_t offset, int whence);
 int64_t nk_ftell64(FILE *f);
 
+/* UTF-8 file primitives. A per-user profile directory holding non-ASCII
+ * characters (an accented given name, a Japanese user name) is a legal path
+ * that the narrow CRT reinterprets in the active ANSI code page, so the
+ * file opens, removals and renames the player and the shared core make on
+ * user-data and install paths go through these, or through an equivalent
+ * wide-character open local to a translation unit that is built without this
+ * platform layer (the decrypt tool, and the file-local copies in nk_iso.c,
+ * nk_xb.c, nk_title_manifest.c, nk_library.c and nk_input_profile.c). Code that
+ * opens such a path must not use the narrow fopen/remove/rename on Win32.
+ * Win32 converts strictly (invalid UTF-8 fails rather than opening a path
+ * where the bad bytes became U+FFFD); POSIX file names are already UTF-8 bytes,
+ * so these are the plain system calls.
+ *
+ * nk_remove_utf8 removes a FILE only: it fails on a directory on every host
+ * (DeleteFileW cannot remove one; POSIX uses unlink rather than remove). One
+ * difference remains by design of the host: a read-only file is removed on
+ * POSIX but fails on Win32 until the caller clears the attribute, so callers
+ * must not depend on removing read-only files. */
+FILE *nk_fopen_utf8(const char *path, const char *mode);
+int nk_remove_utf8(const char *path);
+int nk_rename_utf8(const char *from, const char *to);
+
 /* Filesystem and path utilities (all paths in UTF-8) */
 char nk_platform_path_separator(void);
 bool nk_platform_file_exists(const char *path);
@@ -46,8 +68,24 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode);
 /* Structured path routing */
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);
 
-/* Get canonical user data directory for Nakagawa (APPDATA on Win32, XDG on Linux, AppSupport on macOS) */
+/* Resolve the canonical per-user data directory without creating it. */
+bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len);
+/* Get/create the canonical per-user data directory. */
 bool nk_platform_get_app_data_dir(char *out_path, size_t max_len);
+/* Resolve the pre-canonical Windows profile location used by older builds.
+ * Returns false on non-Windows hosts or when USERPROFILE is unavailable. */
+bool nk_platform_get_legacy_app_data_dir(char *out_path, size_t max_len);
+#if defined(_WIN32) || defined(_WIN64)
+/* Unit-testable Windows base selection: LOCALAPPDATA, Known Folder, APPDATA.
+ * USERPROFILE is deliberately not a candidate. */
+bool nk_platform_resolve_windows_data_base(
+    const char *known_local_app_data,
+    const char *local_app_data,
+    const char *roaming_app_data,
+    char *out_base,
+    size_t max_len
+);
+#endif
 
 /* Resolve `path` to an absolute path in `out_path`.
  *

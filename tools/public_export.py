@@ -8,6 +8,18 @@ The export is deterministic evidence derived from the canonical policy and the
 exact bytes supplied by the caller.  ``PUBLIC_EXPORT.json`` is excluded from
 its own content digest to avoid a self-referential hash; the exclusion is
 explicitly recorded and enforced by ``publish_audit.py``.
+
+Two shapes come out of this module.  :func:`build_document` produces the full
+document, which is what the release export and every verification-time
+recomputation use.  :func:`build_control_document` produces the *committed*
+control written into the repository: the same document with the tree-wide
+fields removed.  Those fields describe the whole tree at one instant -- the
+included-content digest, the per-file counts, the digest of the ledger blob --
+so committing them makes every unrelated merge rewrite the same line, and every
+open pull request conflict on it.  They are recomputed and compared by
+``provenance_attest_verify.py`` and ``publish_audit.py`` instead, so nothing is
+weakened: a declared tree-derived field that does not match the recomputation
+is still refused, and omitting one is the normal committed shape.
 """
 
 from __future__ import annotations
@@ -25,7 +37,51 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 EXPORT_PATH = "PUBLIC_EXPORT.json"
 PROVENANCE_LEDGER_PATH = "assets/public_provenance_ledger.json"
-EXPORT_SCHEMA_VERSION = "2.0.0"
+EXPORT_SCHEMA_VERSION = "3.0.0"
+
+#: Fields whose value depends on the whole tree rather than on the policy alone.
+#: They are recomputed at verification time instead of being committed, which is
+#: what lets two pull requests that touch different paths merge without a
+#: conflict.  The list is part of the document itself, so a candidate cannot
+#: reclassify a security-relevant field as "tree-derived" to escape the check.
+EXPORT_TREE_DERIVED_FIELDS = (
+    "excluded_file_count",
+    "excluded_present_paths",
+    "exported_file_count",
+    "included_content_sha256",
+    "included_file_count",
+    "manifest_sha256",
+    "provenance_ledger_sha256",
+    "tracked_file_count",
+)
+
+
+#: Fields the committed control also omits: the advisory tree identifiers.
+#: They are never verified -- the verdict binds the candidate tree through Git
+#: objects -- and committing a commit id would put one more line in the same
+#: every-merge-rewrites-it category.
+EXPORT_CONTROL_OMITTED_FIELDS = EXPORT_TREE_DERIVED_FIELDS + ("candidate_tree", "source_tree")
+
+
+def build_control_document(document: dict) -> dict:
+    """Return the committed form of a full export document.
+
+    Only the tree-wide and commit-bound fields are dropped.  Everything the
+    policy decides -- the profile, the policy version and digest, the complete
+    exclusion disposition, the schema version -- stays, because those are the
+    fields a human decision can move, and moving them must still conflict
+    visibly in review.
+    """
+    return {
+        key: value
+        for key, value in document.items()
+        if key not in EXPORT_CONTROL_OMITTED_FIELDS
+    }
+
+
+def is_control_document(document: dict) -> bool:
+    """True when *document* omits at least one tree-derived field."""
+    return any(field not in document for field in EXPORT_TREE_DERIVED_FIELDS)
 
 
 def content_digest(files: list[tuple[str, bytes]]) -> str:
@@ -61,12 +117,15 @@ def build_document(
         "generated_evidence": (
             "Generated from the canonical publication policy and exact source bytes. "
             "Evidence is not authorization to publish. PUBLIC_EXPORT.json is excluded "
-            "from its own included-content digest to avoid a self-reference."
+            "from its own included-content digest to avoid a self-reference. The fields "
+            "named in tree_derived_fields are recomputed at verification time; the "
+            "committed control omits them so unrelated merges do not conflict."
         ),
         "profile": policy.name,
         "policy_version": policy.profile_version,
         "policy_sha256": policy.digest,
-        "audit_tool_version": "0.4.0",
+        "audit_tool_version": "0.5.0",
+        "tree_derived_fields": list(EXPORT_TREE_DERIVED_FIELDS),
         "tracked_file_count": len(source_files),
         "included_file_count": len(included),
         "exported_file_count": len(included),
@@ -94,6 +153,11 @@ def build_document(
     if candidate_tree:
         document["candidate_tree"] = candidate_tree
     return document
+
+
+def write_control_document(path: Path, document: dict) -> None:
+    """Write the committed control: the full document minus tree-wide fields."""
+    write_document(path, build_control_document(document))
 
 
 def write_document(path: Path, document: dict) -> None:

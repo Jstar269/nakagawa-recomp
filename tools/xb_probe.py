@@ -10,7 +10,7 @@ The command-line interface prints metadata only, so pointing it at a private
 archive does not dump private contents into a terminal or log by default.
 
 The format constants and compression algorithms follow the public libxb source
-audit recorded in ``docs/ISSUE196_DIRECT_XB.md``.  The implementation here is
+audit recorded in ``docs/archive/ISSUE196_DIRECT_XB.md``.  The implementation here is
 source-owned and adds bounds, path containment, duplicate detection, and
 per-entry span checks that are intentionally stricter than the reference
 extractor.

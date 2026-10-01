@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the psp-recomp authors
 
 """Structural entry-role classification regressions (issue #51).
@@ -118,7 +118,7 @@ class WordImage:
             struct.pack("<I", value & 0xFFFFFFFF) for value in data_pointers
         )
         self.sections = (
-            [dict(nm=".rodata", typ=1, addr=0, off=0, size=len(self.data))]
+            [dict(nm=".rodata", typ=1, flags=2, addr=0, off=0, size=len(self.data))]
             if self.data else []
         )
 

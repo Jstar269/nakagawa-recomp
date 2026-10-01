@@ -99,6 +99,19 @@ void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
 void sr_perf_guest_idle_wait(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vblank(void) {}
+/* Display-source service-cadence attribution (perf.c owns the real counters). */
+void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) { (void)gap_us; (void)periods; (void)masked; }
+void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (void)periods; }
+void sr_perf_vblank_coalesced(void) {}
+void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
+void sr_perf_phase_report(int force) { (void)force; }
+int sr_rt_phase;
+uint32_t sr_rt_nid;
+uint32_t (*sr_rt_pc_fn)(void);
+uint32_t (*sr_rt_uid_fn)(void);
+const char *const sr_rt_phase_name[SR_RT_PHASE_COUNT] = {
+    "other", "aot", "interp", "syscall", "ge", "host_wait", "sched", "present",
+};
 void sr_perf_sched_state(SrPerfSchedState state, uint32_t uid) { (void)state; (void)uid; }
 void sr_perf_sched_switch(uint32_t from_uid, uint32_t to_uid) { (void)from_uid; (void)to_uid; }
 
@@ -173,7 +186,7 @@ static void reset_sched(void) {
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
     g_launcher_uid = SR_ROLE_UID_NONE;
-    g_master_reent = 0x002cf338u;
+    g_master_reent = 0x00300000u;
     s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
@@ -181,6 +194,8 @@ static void reset_sched(void) {
     s_interrupts_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_pending_vblanks = 0;          /* owed VBLANK episodes, since the count change */
+    s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
     s_vbl_next_us = 0;
     s_vbl_count = 0;
@@ -724,28 +739,31 @@ static void test_title_config_configured_roles_act(void) {
     }
 }
 
-/* One delivered VBLANK increments exactly the configured counter pair, and touches no
- * other candidate word. A generic build must write neither. */
-static void test_title_config_vblank_counters(void) {
+/* A delivered VBLANK writes no guest memory of its own. The only code that may advance a
+ * guest's frame or vsync words is the guest's own VBLANK handler; a runtime that also
+ * incremented a title-named pair counted every VBLANK twice for a guest whose handler
+ * maintains the same words, so a frame loop gated on "two VBLANKs elapsed" passed after
+ * one and the guest ran at twice its intended rate. Whether or not the build names the
+ * pair, no candidate word may change, and the pair a build does name must stay zero too. */
+static void test_delivered_vblank_writes_no_guest_memory(void) {
     reset_sched();
     uint32_t frame = 0, vsync = 0;
     int configured = sr_title_config_vblank_counters(&frame, &vsync);
     expect(configured == (cfg_has(SR_TITLE_CFG_VBLANK_COUNTERS) ? 1 : 0),
-           "vblank counter availability matches the configured validity bit");
+           "the retired counter binding is still carried and matches its validity bit");
     for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
         MEM_W32(k_candidate_counters[i], 0u);
     }
     if (configured) { MEM_W32(frame, 0u); MEM_W32(vsync, 0u); }
     deliver_vblank();
+    deliver_vblank();
     if (configured) {
-        expect(MEM_R32(frame) == 1u, "the configured frame counter advanced once");
-        expect(MEM_R32(vsync) == 1u, "the configured vsync counter advanced once");
+        expect(MEM_R32(frame) == 0u, "a delivered VBLANK leaves the configured frame word alone");
+        expect(MEM_R32(vsync) == 0u, "a delivered VBLANK leaves the configured vsync word alone");
     }
     for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
-        uint32_t addr = k_candidate_counters[i];
-        if (configured && (addr == frame || addr == vsync)) continue;
-        expect(MEM_R32(addr) == 0u,
-               "an unconfigured counter word is untouched by a delivered VBLANK");
+        expect(MEM_R32(k_candidate_counters[i]) == 0u,
+               "a candidate counter word is untouched by a delivered VBLANK");
     }
 }
 
@@ -847,12 +865,20 @@ static void test_historical_launcher_uid_is_ordinary_when_unconfigured(void) {
     uint32_t state_ptr = t->k0_init + 0x10u;
     /* Launcher-only path: skipped guest-hash registration. An ordinary thread is
      * registered, so its slot must be findable. */
-    uint32_t bucket = uid % 32u;
-    uint32_t found = MEM_R32(0x0030aa88u + 0x84u + bucket * 4u) == uid
-                         ? MEM_R32(0x0030aa88u + 0x04u + bucket * 4u)
-                         : 0u;
-    expect(found == state_ptr,
-           "UID 0x111 is registered in the guest reent hash like any ordinary thread");
+    SrTitleReentBindings reent_bindings;
+    if (sr_title_config_reent_bindings(&reent_bindings)) {
+        uint32_t bucket = uid % 32u;
+        uint32_t found = MEM_R32(reent_bindings.guest_thread_table_addr +
+                                 0x84u + bucket * 4u) == uid
+                             ? MEM_R32(reent_bindings.guest_thread_table_addr +
+                                       0x04u + bucket * 4u)
+                             : 0u;
+        expect(found == state_ptr,
+               "UID 0x111 is registered in the configured guest reent hash");
+    } else {
+        expect(MEM_R32(state_ptr + 0x37cu) == uid,
+               "unconfigured guest reent bindings leave the ordinary thread UID intact");
+    }
     /* Launcher-only path: keeping an independently-initialized reent. An ordinary
      * thread inherits the master reent instead. */
     expect(MEM_R32(state_ptr) == 0xFEEDFACEu,
@@ -1592,8 +1618,15 @@ static void test_pending_interrupts_progress_and_resume(void) {
     sched_resume_interrupts(outer);
     expect(sched_interrupts_enabled(),
            "restoring the outer token re-enables interrupts");
-    expect(g_test_vblank_delivered == 1u,
-           "resume delivers one coalesced pending VBLANK");
+    /* Two episodes, and the count is the whole point.  The period whose deadline
+     * was already due when the fixture started elapsed with the I-bit SET, so the
+     * PSP would have taken it before the mask: the mask must not destroy it.  The
+     * one period the mask itself covered collapses to the single coalesced
+     * delivery the hardware probe measured.  The old expectation was 1, which is
+     * the flagship's delivered-rate defect in miniature: a title that masks around
+     * every allocation paid one period per mask. */
+    expect(g_test_vblank_delivered == 2u,
+           "resume delivers the pre-mask backlog plus one coalesced masked episode");
     expect((sched_pending_interrupts() & SCHED_INTR_VBLANK) == 0u,
            "delivered VBLANK is removed from the pending set");
     expect((sched_pending_interrupts() & SCHED_INTR_GE) != 0u,
@@ -1606,7 +1639,7 @@ static void test_pending_interrupts_progress_and_resume(void) {
     sched_resume_interrupts(inner);
     expect(!sched_interrupts_enabled(),
            "a later inner token can disable interrupts again");
-    expect(g_test_vblank_delivered == 1u,
+    expect(g_test_vblank_delivered == 2u,
            "re-disabling after service does not redeliver the same VBLANK");
 }
 
@@ -1831,9 +1864,13 @@ static void test_paced_vblank_has_one_authority(void) {
     expect(s_vbl_count - vbl0 == 12u,
            "200 ms of host time delivers exactly 12 paced VBLANKs (origin + 11)");
 
-    /* Coalescing is intentional and survives: a host jump across many periods
-     * advances the source timeline past all of them but delivers ONE event -- the
-     * pending set is a bit, not a queue. */
+    /* A host jump across many periods delivers ONE EPISODE PER PERIOD, not one
+     * episode for the whole burst.  The PSP's IF/IE pair is a level that is
+     * re-asserted for every edge that arrives while the CPU is still inside the
+     * previous handler, so a guest that spends N periods without a service point
+     * is owed N handler calls; the source timeline still advances past all of
+     * them.  Coalescing to one was the delivered-rate defect (55.0 Hz against a
+     * 59.94 Hz source on a vblank-paced title). */
     reset_sched();
     begin_clock_fixture(1, 0u);
     vbl0 = s_vbl_count;
@@ -1844,10 +1881,149 @@ static void test_paced_vblank_has_one_authority(void) {
     set_host_us(1000000u);                  /* one host second later, no service between */
     s_tcb[spinner].state = TH_RUNNING; s_cur = spinner;
     sr_yield(&g_cpu_store);
-    expect(s_vbl_count - vbl0 == 2u,
-           "a multi-period host jump coalesces into one delivered VBLANK");
+    expect(s_vbl_count - vbl0 == rational_vblanks_through(1000000u),
+           "a multi-period host jump delivers one episode per elapsed period");
     expect(s_vbl_next_us > 1000000u && s_vbl_next_us <= 1016683u,
-           "coalescing still advances the source timeline past every missed period");
+           "the source timeline still advances past every period the jump covered");
+    s_host_ns_fn = NULL;
+}
+
+/* A busy guest must observe EVERY display period, at the full 60000/1001 rate,
+ * however long it holds the CPU between service points.
+ *
+ * This is the public failing-before regression for the delivered-rate defect: a
+ * title whose frame work ran longer than one display period was served one
+ * VBLANK episode for the whole burst (measured 55.0 Hz against a 59.94 Hz
+ * source, with guest VCOUNT exactly right throughout, so nothing else showed
+ * it).  A hardware interrupt is recognized for every edge that arrives while the
+ * CPU is still busy with the previous one, so the owed episode count grows with
+ * the elapsed periods and every one of them is delivered.
+ *
+ * Driven with the controlled host clock the selftest already owns, so the
+ * expectation is an exact period count over a fixed host-time window rather
+ * than a wall-clock rate.  The guest is a RUNNING thread that yields only once
+ * per step and is stepped far more coarsely than a display period (37 ms = 2.2
+ * periods), which is the shape of the defect: the service-point spacing, not the
+ * guest's intent, decided how many periods the guest heard about. */
+static void test_busy_guest_observes_every_display_period(void) {
+    enum { WINDOW_US = 2000000, STEP_US = 37000 };
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    g_test_vblank_delivered = 0;
+    const uint64_t vbl0 = s_vbl_count;
+    int spinner = mk(0x30au, TH_RUNNING, 40);
+    s_cur = spinner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    int sequence_ok = 1;
+    int first_bad = 0;
+    for (uint64_t t_us = STEP_US; t_us <= (uint64_t)WINDOW_US; t_us += STEP_US) {
+        set_host_us(t_us);
+        s_tcb[spinner].state = TH_RUNNING;
+        s_cur = spinner;
+        sr_yield(&g_cpu_store);            /* the guest's only service point in this step */
+        if (s_vbl_count - vbl0 != rational_vblanks_through(t_us)) {
+            sequence_ok = 0;
+            if (!first_bad) first_bad = (int)(t_us / 1000u);
+        }
+    }
+    expect(sequence_ok,
+           "a busy guest is served every display period it spent CPU without a service point");
+    if (!sequence_ok)
+        fprintf(stderr, "  first divergence at %d ms\n", first_bad);
+    expect(g_test_vblank_delivered == s_vbl_count - vbl0,
+           "the guest handler ran once per delivered period");
+    /* 2 s at 60000/1001 Hz is 119.88 edges, so 120 including the origin.  A
+     * coalescing delivery loses at least one per step and lands far below it. */
+    expect(s_vbl_count - vbl0 == 120u,
+           "the delivered count is 120 periods in 2 s (the 60000/1001 schedule), not fewer");
+    s_host_ns_fn = NULL;
+}
+
+/* A masked window must not destroy the periods that elapsed with the I-bit SET.
+ *
+ * This is the flagship's delivered-rate defect in miniature.  Two display periods
+ * pass inside one guest stretch with interrupts ENABLED and no service point (the
+ * shape a long syscall or a long frame has), the guest then brackets an allocation
+ * with sceKernelCpuSuspendIntr/sceKernelCpuResumeIntr, and one more period elapses
+ * while the bit is clear.  The PSP owes the guest three handler episodes: the two
+ * enabled ones are taken before the mask, and the masked window collapses to the
+ * single coalesced delivery the display-mask-vcount probe measured (12/12 trials at
+ * 4/16.7/30/50 ms: +1 however many periods the window covered, never N).
+ *
+ * The old sched_enter_masked() clamped the owed count to one at the mask, so the two
+ * enabled periods were destroyed and the guest heard two episodes instead of three.  A/B
+ * on the flagship, one build and 480 s runs: with the clamp 1,337 episodes owed and never
+ * delivered over 419 presenting seconds (3.19 Hz) and a delivered rate of 56.73 Hz
+ * against the 59.94 Hz source; without it, 59.86/59.93/59.94 Hz over three runs with
+ * dropped=0.  sceKernelCpuSuspendIntr is the clamp's only caller, so masking around every
+ * allocation paid the whole cost.
+ *
+ * MUTANT: restore `if (s_pending_vblanks) s_pending_vblanks = 1;` in
+ * sched_enter_masked(): the backlog assertion fails (1 != 2) and the delivery count
+ * is 2, not 3. */
+static void test_masked_window_keeps_the_enabled_backlog(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    int owner = mk(0x41au, TH_RUNNING, 40);
+    s_cur = owner;
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+
+    /* Two periods with the I-bit set and no service point in between (the
+     * fixture's origin deadline is due at t=0, so 25 ms covers exactly two). */
+    set_host_us(25000u);
+    vtime_refresh();
+    expect(s_pending_vblanks == 2u,
+           "two periods elapsed with the I-bit set are owed two episodes");
+    expect(g_test_vblank_delivered == 0u,
+           "nothing is delivered without a service point");
+
+    uint32_t token = sched_suspend_interrupts();
+    expect(token == 1u, "the mask returns the enabled token");
+    expect(s_pending_vblanks == 2u,
+           "a masked window does not destroy the periods that elapsed enabled");
+
+    /* One more period, this time entirely inside the window. */
+    set_host_us(45000u);
+    vtime_refresh();
+    expect(s_vblank_masked_pending,
+           "a period that elapses under the mask raises the coalesced pending level");
+    expect(s_pending_vblanks == 2u,
+           "a period under the mask adds no episode of its own");
+
+    sched_resume_interrupts(token);
+    expect(g_test_vblank_delivered == 3u,
+           "resume delivers the enabled backlog plus the one coalesced masked episode");
+    expect(s_pending_vblanks == 0u, "the batch is fully delivered at resume");
+    s_host_ns_fn = NULL;
+}
+
+/* An unrepresentable elapsed-period count is a named collapse, not a replay storm.
+ *
+ * The owed count has to stay a count the runtime can deliver.  A saturated guest
+ * timeline (the state test_clock_reads_are_observational asserts for the SOURCE
+ * deadline) makes the elapsed-period computation meaningless -- it asks for 1.1e15
+ * periods -- and the owed count then saturates to UINT32_MAX, so the delivery loop
+ * would run four billion handler episodes.  The saturated timeline cannot name the
+ * periods it crossed, so it collapses them into the one episode the overflow can
+ * name, and both halves of the loss are counted (sr_perf_vblank_collapse) rather than
+ * queued.
+ *
+ * MUTANT: delete the saturation branch in scheduler_latch_due_events: the owed count
+ * saturates to UINT32_MAX, this assertion fails, and the delivery below runs four
+ * billion handler episodes instead of one. */
+static void test_saturated_source_owes_one_deliverable_episode(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0u);
+    s_vbl_next_us = 0;
+    s_vtime_us = UINT64_MAX;                 /* a timeline that can no longer count */
+    scheduler_latch_due_events();
+    expect(s_vbl_next_us == UINT64_MAX, "the source deadline saturates");
+    expect(s_pending_vblanks == 1u,
+           "a saturated source owes one coalesced episode, not an unrepresentable count");
+    scheduler_service_pending();
+    expect(g_test_vblank_delivered == 1u,
+           "the collapsed episode is deliverable, so the source cannot wedge the loop");
     s_host_ns_fn = NULL;
 }
 
@@ -2677,7 +2853,7 @@ int main(void) {
     test_role_uid_capture();
     test_title_config_foreign_entries_are_inert();
     test_title_config_configured_roles_act();
-    test_title_config_vblank_counters();
+    test_delivered_vblank_writes_no_guest_memory();
     test_historical_launcher_uid_is_ordinary_when_unconfigured();
     test_historical_worker_uid_is_ordinary_when_unconfigured();
     test_configured_entry_captures_whatever_uid_it_gets();
@@ -2699,6 +2875,9 @@ int main(void) {
     test_interrupt_frame_is_restored();
     test_paced_vtime_is_host_anchored();
     test_paced_vblank_has_one_authority();
+    test_busy_guest_observes_every_display_period();
+    test_masked_window_keeps_the_enabled_backlog();
+    test_saturated_source_owes_one_deliverable_episode();
     test_expired_timed_wait_enters_strict_priority();
     test_liveness_semaphore_handoff();
     test_liveness_event_flag_handoff();

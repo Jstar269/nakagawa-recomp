@@ -242,14 +242,10 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
  * A long play session that streams and discards similarly-sized assets would
  * otherwise exhaust the arena via monotonic bump growth with no reuse; the free
  * list lets freed blocks satisfy later allocations of the same or smaller size. */
-/* Arena placement (2026-07-16): [0x0a000008, 0x0c000000) -- 32 MB in the top of the
- * flat guest arena, above everything else: image+BSS end 0x0034c480, user partition
- * [0x0034d000, 0x0a000000), VRAM [0x04000000, 0x08000000), thread stacks 0x09exxxxx,
- * interrupt stack 0x09df0000. The previous home [0x03000008, 0x04000000) gave only
- * ~16 MB and the boot working set genuinely exceeds it (the game budgets 0x1340000 =
- * 20.25 MB for its own UserSbrk pool); before 2026-07-16 the end was 0x08000000, which
- * silently let heap blocks alias guest VRAM once the carve crossed 16 MB. SR_PHYS
- * masks to [0, 0x0c000000), so this region is fully addressable and calloc-zeroed. */
+/* Arena placement: 32 MB in the top of the flat guest arena, disjoint from the compiled
+ * image, user partition, VRAM, thread stacks, and interrupt stack. The previous 16 MB
+ * placement could silently alias guest VRAM once the allocation grew past its boundary.
+ * SR_PHYS masks this whole range into the calloc-zeroed arena. */
 #define SR_HEAP_BASE 0x0a000008u
 #define SR_HEAP_END  0x0c000000u  /* exclusive: end of the guest arena */
 /* The nested host->guest call frames (src/rt/nested_frames.c) reserve the 1 MiB
@@ -1310,62 +1306,259 @@ RecompFn sr_lookup(uint32_t addr) {
     return fn && sr_exec_span_owns_fetch(addr) ? fn : NULL;
 }
 
-/* ---- dispatch hook table ---- */
+#if defined(SR_STACK_CENSUS_ENABLED)
+/* The stack census is enabled only by the opt-in codegen flag. The expected
+ * address vector is generated, sorted, and immutable for the process lifetime;
+ * binary search keeps the diagnostic path bounded even for large images. */
+static atomic_flag s_stack_census_lock = ATOMIC_FLAG_INIT;
+static const uint32_t *s_stack_census_expected;
+static unsigned char *s_stack_census_observed_expected;
+static uint32_t s_stack_census_expected_count;
+static uint32_t s_stack_census_unobserved;
+static uint64_t s_stack_census_entries;
+static uint64_t s_stack_census_returns;
+static uint64_t s_stack_census_excluded;
+static uint64_t s_stack_census_unexpected;
+static uint64_t s_stack_census_mismatches;
+static uint32_t s_stack_census_first_mismatch_entry;
+static uint32_t s_stack_census_first_mismatch_expected_sp;
+static uint32_t s_stack_census_first_mismatch_actual_sp;
+static uint32_t s_stack_census_first_mismatch_flow;
+static int s_stack_census_has_mismatch;
+static int s_stack_census_invalid_expected;
+static int s_stack_census_tracking_unavailable;
+static int s_stack_census_unobserved_known;
+static int s_stack_census_armed;
+static int s_stack_census_atexit_registered;
+static int s_stack_census_reported;
 
-typedef int (*HookResult)(CpuState *s, uint32_t target);
-/* return 0 = consumed (early return), 1 = fall through to sr_lookup */
+static void sr_stack_census_lock(void) {
+    while (atomic_flag_test_and_set_explicit(
+        &s_stack_census_lock, memory_order_acquire)) {
+    }
+}
 
-typedef struct {
-    uint32_t key;
-    uint32_t mask;   /* 0xFFFFFFFFu for single-address; range mask otherwise */
-    const char *name;
-    HookResult fn;
-} DispatchHook;
+static void sr_stack_census_unlock(void) {
+    atomic_flag_clear_explicit(&s_stack_census_lock, memory_order_release);
+}
 
-/* --- exact-match hook handlers --- */
+static int sr_stack_census_expected_matches(const uint32_t *entries,
+                                           uint32_t count) {
+    if (count != s_stack_census_expected_count
+        || (count != 0u && (entries == NULL || s_stack_census_expected == NULL))) {
+        return 0;
+    }
+    for (uint32_t i = 0u; i < count; i++) {
+        if (entries[i] != s_stack_census_expected[i]) return 0;
+    }
+    return 1;
+}
 
-static int hook_log_alloc_req(CpuState *s, uint32_t target) {
-    (void)target;
-    static int trace = -1;
-    if (trace < 0) trace = getenv("SR_ALLOC_TRACE") ? 1 : 0;
-    if (trace) {
-        fprintf(stderr, "ALLOC_REQ: size=%u from ra=0x%x\n", s->r[4], s->r[31]);
-        fprintf(stderr, "  args a0=0x%x a1=0x%x a2=0x%x a3=0x%x sp=0x%08x\n",
-                s->r[4], s->r[5], s->r[6], s->r[7], s->r[29]);
-        uint32_t cpc = s->r[31] ? (s->r[31] - 4u) & ~1u : 0;
-        if (cpc) fprintf(stderr, "  caller_pc=0x%08x insn=0x%08x\n", cpc, MEM_R32(cpc));
-        for (int i = 0; i < 6; i++) fprintf(stderr, "  sp[%d]=0x%08x\n", i, MEM_R32(s->r[29] + (uint32_t)i*4u));
+static uint32_t sr_stack_census_expected_index(uint32_t entry) {
+    uint32_t lo = 0u;
+    uint32_t hi = s_stack_census_expected_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        uint32_t value = s_stack_census_expected[mid];
+        if (value < entry) lo = mid + 1u;
+        else hi = mid;
+    }
+    return lo < s_stack_census_expected_count
+        && s_stack_census_expected[lo] == entry ? lo : UINT32_MAX;
+}
+
+void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_count) {
+    sr_stack_census_lock();
+    if (s_stack_census_armed) {
+        /* Generated registration can run once per cosim case. Preserve the
+         * accumulated observations; a changed entry set is uncertainty, not
+         * permission to silently restart the census. */
+        if (!sr_stack_census_expected_matches(expected_entries, expected_count)) {
+            s_stack_census_invalid_expected = 1;
+        }
+        sr_stack_census_unlock();
+        return;
+    }
+    s_stack_census_expected = expected_entries;
+    s_stack_census_expected_count = expected_count;
+    s_stack_census_observed_expected = NULL;
+    s_stack_census_unobserved = expected_count;
+    s_stack_census_unobserved_known = 1;
+    s_stack_census_entries = 0u;
+    s_stack_census_returns = 0u;
+    s_stack_census_excluded = 0u;
+    s_stack_census_unexpected = 0u;
+    s_stack_census_mismatches = 0u;
+    s_stack_census_has_mismatch = 0;
+    s_stack_census_invalid_expected =
+        (expected_count != 0u && expected_entries == NULL);
+    for (uint32_t i = 0u; !s_stack_census_invalid_expected && i < expected_count; i++) {
+        if ((expected_entries[i] & 3u) != 0u
+            || (i != 0u && expected_entries[i - 1u] >= expected_entries[i])) {
+            s_stack_census_invalid_expected = 1;
+        }
+    }
+    if (s_stack_census_invalid_expected) {
+        s_stack_census_unobserved_known = 0;
+    } else if (expected_count != 0u) {
+        s_stack_census_observed_expected = calloc(
+            expected_count, sizeof(*s_stack_census_observed_expected));
+        if (s_stack_census_observed_expected == NULL) {
+            s_stack_census_tracking_unavailable = 1;
+            s_stack_census_unobserved_known = 0;
+        }
+    }
+    s_stack_census_armed = 1;
+    s_stack_census_reported = 0;
+    int register_atexit = !s_stack_census_atexit_registered;
+    sr_stack_census_unlock();
+
+    if (register_atexit && atexit(sr_stack_census_report) == 0) {
+        sr_stack_census_lock();
+        s_stack_census_atexit_registered = 1;
+        sr_stack_census_unlock();
+    } else if (register_atexit) {
+        sr_stack_census_lock();
+        s_stack_census_invalid_expected = 1;
+        sr_stack_census_unlock();
+    }
+}
+
+void sr_stack_census_enter(uint32_t entry) {
+    sr_stack_census_lock();
+    if (s_stack_census_armed) {
+        s_stack_census_entries++;
+        uint32_t expected_index = s_stack_census_invalid_expected
+            ? UINT32_MAX : sr_stack_census_expected_index(entry);
+        if (expected_index == UINT32_MAX) {
+            s_stack_census_unexpected++;
+        } else if (!s_stack_census_tracking_unavailable
+                   && s_stack_census_observed_expected[expected_index] == 0u) {
+            s_stack_census_observed_expected[expected_index] = 1u;
+            s_stack_census_unobserved--;
+        }
+    }
+    sr_stack_census_unlock();
+}
+
+void sr_stack_census_exit(uint32_t entry, uint32_t expected_sp,
+                          uint32_t actual_sp, uint32_t flow_kind) {
+    sr_stack_census_lock();
+    if (s_stack_census_armed) {
+        /* `unexpected` is counted once per invocation, at enter. */
+        s_stack_census_returns++;
+        if (flow_kind != 0u) {
+            /* Exception/ERET/fatal exits do not have a proven ordinary return
+             * contract. Preserve that uncertainty as PARTIAL, never PASS. */
+            s_stack_census_excluded++;
+        } else if (expected_sp != actual_sp) {
+            if (!s_stack_census_has_mismatch) {
+                s_stack_census_has_mismatch = 1;
+                s_stack_census_first_mismatch_entry = entry;
+                s_stack_census_first_mismatch_expected_sp = expected_sp;
+                s_stack_census_first_mismatch_actual_sp = actual_sp;
+                s_stack_census_first_mismatch_flow = flow_kind;
+            }
+            s_stack_census_mismatches++;
+        }
+    }
+    sr_stack_census_unlock();
+}
+
+static SrStackCensusStatus sr_stack_census_status_locked(void) {
+    if (!s_stack_census_armed
+        || (s_stack_census_entries == 0u && s_stack_census_returns == 0u)) {
+        return SR_STACK_CENSUS_NOT_OBSERVED;
+    } else if (s_stack_census_mismatches != 0u) {
+        return SR_STACK_CENSUS_FAILED;
+    } else if (s_stack_census_invalid_expected
+        || s_stack_census_tracking_unavailable
+        || !s_stack_census_unobserved_known
+        || s_stack_census_unobserved != 0u
+        || s_stack_census_unexpected != 0u
+        || s_stack_census_excluded != 0u
+        || s_stack_census_entries != s_stack_census_returns) {
+        return SR_STACK_CENSUS_PARTIAL;
+    }
+    return SR_STACK_CENSUS_COMPLETE;
+}
+
+void sr_stack_census_snapshot(SrStackCensusSummary *summary) {
+    if (summary == NULL) return;
+    sr_stack_census_lock();
+    summary->status = sr_stack_census_status_locked();
+    summary->unobserved = s_stack_census_unobserved;
+    summary->unobserved_known = s_stack_census_unobserved_known;
+    summary->entries = s_stack_census_entries;
+    summary->returns = s_stack_census_returns;
+    summary->excluded = s_stack_census_excluded;
+    summary->unexpected = s_stack_census_unexpected;
+    summary->mismatches = s_stack_census_mismatches;
+    summary->first_mismatch_entry = s_stack_census_first_mismatch_entry;
+    summary->first_mismatch_expected_sp = s_stack_census_first_mismatch_expected_sp;
+    summary->first_mismatch_actual_sp = s_stack_census_first_mismatch_actual_sp;
+    summary->first_mismatch_flow = s_stack_census_first_mismatch_flow;
+    summary->has_mismatch = s_stack_census_has_mismatch;
+    sr_stack_census_unlock();
+}
+
+SrStackCensusStatus sr_stack_census_status(void) {
+    SrStackCensusSummary summary;
+    sr_stack_census_snapshot(&summary);
+    return summary.status;
+}
+
+void sr_stack_census_report(void) {
+    uint64_t entries, returns, excluded, unexpected, mismatches;
+    uint32_t unobserved;
+    uint32_t mismatch_entry, mismatch_expected_sp, mismatch_actual_sp, mismatch_flow;
+    int has_mismatch, unobserved_known;
+    SrStackCensusStatus status;
+    sr_stack_census_lock();
+    if (!s_stack_census_armed || s_stack_census_reported) {
+        sr_stack_census_unlock();
+        return;
+    }
+    s_stack_census_reported = 1;
+    unobserved = s_stack_census_unobserved;
+    unobserved_known = s_stack_census_unobserved_known;
+    entries = s_stack_census_entries;
+    returns = s_stack_census_returns;
+    excluded = s_stack_census_excluded;
+    unexpected = s_stack_census_unexpected;
+    mismatches = s_stack_census_mismatches;
+    has_mismatch = s_stack_census_has_mismatch;
+    mismatch_entry = s_stack_census_first_mismatch_entry;
+    mismatch_expected_sp = s_stack_census_first_mismatch_expected_sp;
+    mismatch_actual_sp = s_stack_census_first_mismatch_actual_sp;
+    mismatch_flow = s_stack_census_first_mismatch_flow;
+    status = sr_stack_census_status_locked();
+    sr_stack_census_unlock();
+
+    const char *name = status == SR_STACK_CENSUS_COMPLETE ? "COMPLETE"
+        : status == SR_STACK_CENSUS_PARTIAL ? "PARTIAL"
+        : status == SR_STACK_CENSUS_FAILED ? "FAILED" : "NOT_OBSERVED";
+    fprintf(stderr,
+        "STACK_CENSUS status=%s entries=%llu returns=%llu excluded=%llu "
+        "unexpected=%llu mismatches=%llu unobserved=",
+        name, (unsigned long long)entries, (unsigned long long)returns,
+        (unsigned long long)excluded, (unsigned long long)unexpected,
+        (unsigned long long)mismatches);
+    if (unobserved_known) {
+        fprintf(stderr, "%u\n", unobserved);
+    } else {
+        fprintf(stderr, "unknown\n");
+    }
+    fflush(stderr);
+    if (has_mismatch) {
+        fprintf(stderr,
+            "STACK_CENSUS first_mismatch entry=0x%08x expected_sp=0x%08x "
+            "actual_sp=0x%08x flow=%u\n",
+            mismatch_entry, mismatch_expected_sp, mismatch_actual_sp, mismatch_flow);
         fflush(stderr);
     }
-    return 1;  /* fall through */
 }
-
-static int hook_log_free_req(CpuState *s, uint32_t target) {
-    (void)target;
-    if (getenv("SR_ALLOC_TRACE")) {
-        fprintf(stderr, "FREE_REQ: ptr=0x%08x from ra=0x%x\n", s->r[4], s->r[31]);
-        fflush(stderr);
-    }
-    return 1;  /* fall through */
-}
-
-static int hook_hash_fill_trace(CpuState *s, uint32_t target) {
-    /* f_0001b584: hash_fill — outer loop calling f_0001b6c4 per entry.
-     * Diagnostic trace only (issue #362): this helper never looks the target up
-     * itself and never consumes it. Returning 1 lets the ordinary dispatch path
-     * below perform the single authoritative sr_lookup — a registered body
-     * executes exactly once there, and an unregistered key keeps its poisoned
-     * state and reaches the interpreter/fail-closed floor instead of being
-     * blessed as apparent success. */
-    (void)target;
-    static int hfd = 0;
-    if (hfd < 4) {
-        uint32_t ht = s->r[4], src = s->r[5];
-        fprintf(stderr, "HFILL[%d]: htable=0x%08x cap=%u src=0x%08x count=%u\n",
-                hfd++, ht, ht ? MEM_R32(ht+4) : 0, src, src ? MEM_R32(src+4) : 0);
-    }
-    return 1;  /* fall through — diagnostic only */
-}
+#endif
 
 /* Recover the guest address of the call instruction that reached dispatch().
  *
@@ -1383,150 +1576,6 @@ __attribute__((unused))  /* documented diagnostic helper; no caller yet */
 static uint32_t sr_dispatch_call_site(const CpuState *s) {
     return s->r[31] >= 8u ? s->r[31] - 8u : 0u;
 }
-
-/* Module-table/data-pointer misses deliberately use the ordinary miss path so
- * data cannot become a successful call target. */
-/* The libfont fake-vtable dispatch path (0x0B0002xx trampolines + the 0x5fc4cb66 "garbage"
- * hook) was removed in F2: F1 proved it never fires (0 hits) — the sceFont library layer is now
- * HLE'd natively in src/rt/hle.c (real FontLibrary/Font structs from the game's allocator), so
- * there is no synthetic guest vtable to trampoline through. */
-
-static int hook_fmt_trace(CpuState *s, uint32_t target) {
-    /* Format parser integer handler: diagnostic trace only (issue #362).
-     * The ordinary dispatch path below owns the single authoritative lookup,
-     * so this helper neither resolves nor consumes the target. */
-    (void)target;
-    static unsigned long long fmt_count = 0;
-    static uint32_t last_r19 = 0;
-    fmt_count++;
-    if (fmt_count <= 5 || fmt_count == 10 || (fmt_count & 0xFF) == 0) {
-        uint32_t r19 = s->r[19];
-        uint32_t flags = MEM_R32(s->r[29] + 0x228);
-        fprintf(stderr, "FMT[%llu]: uid=0x%x r19=0x%08x flags=0x%08x ra=0x%08x\n",
-                fmt_count, sched_current_uid(), r19, flags, s->r[31]);
-        if (r19 != last_r19) {
-            fprintf(stderr, "  str: \"");
-            for (int i = 0; i < 64 && MEM_R8(r19 + i) != 0; i++)
-                fputc(MEM_R8(r19 + i), stderr);
-            fprintf(stderr, "\"\n");
-        }
-        last_r19 = r19;
-        fflush(stderr);
-    }
-    return 1;  /* fall through — diagnostic only */
-}
-
-static int hook_thunk_call_trace(CpuState *s, uint32_t target) {
-    /* Log thunk dispatches (function pointer calls through 0xec0/0xee4) */
-    uint32_t fptr = MEM_R32(0x2CED08u);
-    fprintf(stderr, "THUNK_CALL: tgt=0x%x fptr_at_2CED08=0x%x uid=0x%x ra=0x%x\n",
-            target, fptr, sched_current_uid(), s->r[31]);
-    fflush(stderr);
-    return 1;  /* fall through — does NOT return early */
-}
-
-/* --- exact-match dispatch table (single-address hooks) --- */
-
-/* f_000008d8 — table/resource walker (31 caller sites: init_array walk, libfont
- * init, resource array walk, security_array_walk, modtable walk...).
- *
- * The walker loop at L_00000940 dispatches to sub-routines via f_000008d8's
- * own dispatch slot (lines 9525/9566/9646). Because f_000008d8 is registered
- * in sr_register, dispatch goals land back in the walker body at L_00000940,
- * which loops while `r[4] < r[18]`. The per-iteration cap (0x0000095c /
- * WALKER_CAP) fires after at most 2048 iterations and forces exit by setting
- * `r[2]=0`, but each iteration yields once; the scheduler keeps returning to
- * the same worker just to reach the next yield site, creating an enormous
- * busy-spin at `pc=0x000008d8` that starves frame-present progress.
- *
- * In every known caller context the result is used as a count: the caller
- * tests `r[2] <= 0` to decide whether to enter a follow-up loop. Returning 0
- * is therefore semantically equivalent to "walker completed, nothing to do"
- * and is exactly what the WALKER_CAP exit state would have signalled after
- * the 2048 iterations. Bypassing the walker body cuts the 2048-iteration,
- * 2048-yield spin to a single tick.
- *
- * Fix: set r2=0 and return to the caller directly. Logged once via
- * WALKER_SKIP so the bypass is visible in SR_DEBUG output.
- */
-
-/* f_0000d62c — config-load tokenizer wrapper (calls f_00016178 → f_00015fb4
- * to scan a CSV/offsets buffer for a terminator byte). The config loop at
- * L_00047f48 (f_00047d7c / Config_LoadGameSettings) polls this function:
- *   r2 = f_0000d62c();
- *   r2 += 0x7ff;
- *   if (r2 < 0) loop;   // exit when signed-non-negative
- *
- * The PSP tokenizer scans a real loaded file; in HLE it never finds the
- * expected terminator state and keeps returning negative, so the loop spins
- * forever. The worker is exclusively stuck at this pc=0x0000d62c busy-wait
- * (confirmed by SR_THLOG). Fake "end of tokens" (r2=0) so the loop exits,
- * letting the worker reach the frame-present path. */
-
- /* f_00049200 — "device operation complete?" poll used by the display/GE
- * completion checks (f_000491cc, f_00049194, ...). Reads device
- * state (MEM[0x311140] / MEM[0x2d0738]) and returns 1 when complete. In HLE
- * the PSP ME never drives these devices, so it can never become complete and
- * any poll loop spins forever (the frame-1+ stall at pc=0x000491cc). Fake
- * completion so the frame loop can advance. */
-
-/* f_000487f4 — "display/vblank device ready" predicate used by the per-frame
- * render-wait loop (L_00046dec in the worker's main loop: issues render, polls
- * f_000487f4, spins via SR_YIELD until it returns true, then flips).
- *
- * It reads MEM[0x34B328] and several other PSP-ME kernel device pointers that
- * are normally seeded by the PSP Media Engine at boot — our HLE never seeds
- * them, so the predicate can never become true and the loop spins forever
- * (exactly the "one frame presented, then watchdog abort" symptom).
- *
- * Fix: call the real function; if it reports NOT ready (0), fake readiness so
- * the frame loop can proceed. Real behavior is preserved when the device
- * state ever is seeded. */
-
-/* f_0004f6b4 — render command-format lookup (string-match + 0x240-entry
- * halfword format-scan dispatcher). It houses the local label L_0004f7dc and
- * the inner scan loop at L_0004f834. The original f_0004f7dc interception was DEAD
- * code: f_0004f7dc only exists as a local label inside this function, so the
- * linker never intercepted it. This wrap targets the real exported function.
- *
- * Background: on real PSP a display-driver background thread seeds the format
- * table and an interrupt wakes the caller; our HLE has no such thread, so the
- * scan can't find a valid entry. (Codegen's self-loop guard already caps the
- * 0x4f834 beq $0,$0,-1 at 4 iterations, so it is no longer an infinite spin —
- * but bypassing the whole scan here is faster and removes any ambiguity.)
- *
- * Fix: return slot index 0 in r2 (the renderer only needs a valid non-(-1)
- * slot) and return via the caller's RA so the render path proceeds. Logged
- * once via RENDERFMT_SKIP so the skip is visible in SR_DEBUG output. */
-
-/* 0x0000100c — unresolved PLT targets are deliberately not a success hook.
- * The miss path below records the target and sends it through the ordinary
- * interpreter/fail-closed disposition. A missing import is a linkage error,
- * not a generic no-op. */
-static int hook_plt_walk(CpuState *s, uint32_t target) {
-    (void)s;
-    (void)target;
-    return 1; /* fall through — walker loop continues to next entry */
-}
-
-static const DispatchHook g_exact_hooks[] = {
-    { 0x000104b0u, 0xFFFFFFFFu, "ALLOC_REQ",        hook_log_alloc_req },
-    { 0x000104e0u, 0xFFFFFFFFu, "FREE_REQ",         hook_log_free_req },
-    { 0x0001b584u, 0xFFFFFFFFu, "HFILL",            hook_hash_fill_trace },
-    { 0x00018130u, 0xFFFFFFFFu, "FMT_TRACE",        hook_fmt_trace },
-{ 0x00000ec0u, 0xFFFFFFFFu, "THUNK_A", hook_thunk_call_trace },
-{ 0x00000ee4u, 0xFFFFFFFFu, "THUNK_B", hook_thunk_call_trace },
-{ 0x00102e1cu, 0xFFFFFFFFu, "PLT_WALK_1", hook_plt_walk },
-{ 0x001030b0u, 0xFFFFFFFFu, "PLT_WALK_2", hook_plt_walk },
-{ 0, 0, NULL, NULL } /* sentinel */
-};
-
-/* --- range-match dispatch table (address-range hooks) --- */
-/* Range hooks manage their own address predicates internally; key/mask are
- * documentation-only. The dispatch loop calls every entry unconditionally. */
-static const DispatchHook g_range_hooks[] = {
-    { 0, 0, NULL, NULL }  /* sentinel: no generic target-pattern swallowing */
-};
 
 #define MISS_HASH_SIZE 128
 typedef struct { uint32_t target; uint32_t pc; uint32_t ra; } DispatchMissEntry;
@@ -1557,6 +1606,20 @@ static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
     const SrGuestInterpCallBoundary *call_boundary);
+
+static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
+    switch (result) {
+    case SR_GUEST_INTERP_NOT_EXECUTABLE: return "target-not-executable";
+    case SR_GUEST_INTERP_MISALIGNED_PC: return "misaligned-control-target";
+    case SR_GUEST_INTERP_FETCH_BOUNDARY: return "incomplete-executable-span";
+    case SR_GUEST_INTERP_UNSUPPORTED: return "unsupported-interpreter-form";
+    case SR_GUEST_INTERP_MEMORY_FAULT: return "invalid-guest-memory-access";
+    case SR_GUEST_INTERP_MISALIGNED_DATA: return "misaligned-guest-memory-access";
+    case SR_GUEST_INTERP_FLOW_FATAL: return "invalid-control-flow";
+    default: return "interpreter-rejection";
+    }
+}
+
 static int dispatch_run_interp(
     CpuState *s,
     uint32_t target,
@@ -1580,13 +1643,49 @@ static int dispatch_run_interp(
             "opcode=%s0x%08x address=0x%08x\n",
             target, sr_guest_interp_result_name(interp_result), fault.pc,
             fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
+    fprintf(stderr, "  SEMANTIC_BOUNDARY: %s; in the works: #285\n",
+            dispatch_semantic_boundary_name(interp_result));
+    dump_dispatch_trace();
     return (int)interp_result;
 }
 
-static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target) {
+static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
+                             int has_returning_call_boundary) {
+    uint32_t callee_saved[9];
+    /* Only a title configuration that declares the #363 debt restores callee-saved
+     * registers; every other title keeps the callee's architectural writes. */
+    has_returning_call_boundary = has_returning_call_boundary &&
+                                  sr_title_config_preserve_callee_saved_at_calls();
+    if (has_returning_call_boundary) {
+        for (unsigned reg = 16u; reg <= 23u; reg++)
+            callee_saved[reg - 16u] = s->r[reg];
+        callee_saved[8] = s->r[30];
+    }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
     fn(s);
+    /* Exception/ERET transfers are not returns and keep their architectural
+     * register changes. Tail dispatch has no return edge. */
+    if (has_returning_call_boundary && s->flow_kind == SR_FLOW_NONE) {
+        for (unsigned reg = 16u; reg <= 23u; reg++)
+            s->r[reg] = callee_saved[reg - 16u];
+        s->r[30] = callee_saved[8];
+    }
     if (sr_perf_enabled) sr_perf_aot_end();
+}
+
+static int dispatch_after_aot(
+    CpuState *s,
+    const SrGuestInterpCallBoundary *call_boundary) {
+    if (s->flow_kind == SR_FLOW_EXCEPTION || s->flow_kind == SR_FLOW_ERET) {
+        uint32_t flow_target = s->flow_target;
+        sr_cpu_clear_flow(s);
+        return dispatch_try_with_boundary(s, flow_target, call_boundary);
+    }
+    /* Fatal and currently unhandled flow kinds must not become a successful AOT
+     * handoff. Leave the metadata intact for the fail-closed caller boundary. */
+    if (s->flow_kind != SR_FLOW_NONE)
+        return SR_GUEST_INTERP_FLOW_FATAL;
+    return SR_GUEST_INTERP_AOT_HANDOFF;
 }
 
 static int dispatch_try_with_boundary(
@@ -1604,20 +1703,9 @@ static int dispatch_try_with_boundary(
         int vfpu_result = sr_vfpu_interp(s,op);
         if (perf_started) sr_perf_vfpu(op, perf_started, vfpu_result);
         if (vfpu_result==SR_VFPU_OTHER) {
-            fprintf(stderr,
-                    "VFPU_FALLBACK_OTHER: pc=0x%08x op=0x%08x target=0x%08x caller_pc=0x%08x ra=0x%08x sp=0x%08x "
-                    "a0=0x%08x a1=0x%08x a2=0x%08x obj_vptr=0x%08x vslot0c=0x%08x "
-                    "font_tbl=0x%08x font_vec=0x%08x font_slot0=0x%08x\n",
-                    pc, op, target, s->pc, s->r[31], s->r[29], s->r[4], s->r[5], s->r[6],
-                    s->r[4] < 0x0c000000u ? MEM_R32(s->r[4]) : 0xdeadu,
-                    (s->r[4] < 0x0c000000u && MEM_R32(s->r[4]) < 0x0c000000u)
-                        ? MEM_R32(MEM_R32(s->r[4]) + 0x0cu)
-                        : 0xdeadu,
-                    MEM_R32(0x034a84cu),
-                    MEM_R32(0x034a84cu) < 0x0c000000u ? MEM_R32(MEM_R32(0x034a84cu) + 4u) : 0xdeadu,
-                    (MEM_R32(0x034a84cu) < 0x0c000000u && MEM_R32(MEM_R32(0x034a84cu) + 4u) < 0x0c000000u)
-                        ? MEM_R32(MEM_R32(MEM_R32(0x034a84cu) + 4u))
-                        : 0xdeadu);
+            fprintf(stderr, "VFPU_FALLBACK_OTHER: pc=0x%08x op=0x%08x target=0x%08x "
+                    "caller_pc=0x%08x ra=0x%08x sp=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x\n",
+                    pc, op, target, s->pc, s->r[31], s->r[29], s->r[4], s->r[5], s->r[6]);
             sr_unimplemented(pc,"VFPU runtime interpreter returned SR_VFPU_OTHER");
         }
         s->pc=pc+4;
@@ -1652,7 +1740,6 @@ static int dispatch_try_with_boundary(
         }
         return SR_GUEST_INTERP_AOT_HANDOFF;
     }
-    static int plt_miss_streak = 0;  /* PLT consecutive-miss counter for force-terminate */
     /* The entry guard above (`if (s->pc == 0)`, near the top of this function) already
      * catches s->pc==0 unconditionally and returns before anything else runs, so a second
      * "saved PC of 0" check here — gated on the same s->pc with no intervening write to it —
@@ -1713,19 +1800,6 @@ static int dispatch_try_with_boundary(
     if (s_displog)
         fprintf(stderr, "DISPATCH 0x%08x from 0x%08x (ra=0x%08x)\n", target, s->pc, s->r[31]);
 
-    /* Table-driven dispatch hooks (exact-match, preserves source order) */
-    for (const DispatchHook *h = g_exact_hooks; h->fn; h++) {
-        if (h->mask == 0xFFFFFFFFu ? target == h->key
-                                   : (target & h->mask) == (h->key & h->mask)) {
-            extern int g_hle_depth;
-            g_hle_depth++;
-            int rc = h->fn(s, target);
-            g_hle_depth--;
-            if (rc == 0) return SR_GUEST_INTERP_AOT_HANDOFF;  /* consumed */
-            /* rc == 1: fall through (trace-only hook) */
-        }
-    }
-
     /* Configured dispatch aliases.
      *
      * A computed call can land on an address codegen never registered separately -- a
@@ -1737,51 +1811,16 @@ static int dispatch_try_with_boundary(
      * aliased body is not registered either, the call falls through to the normal miss
      * path unchanged. An unconfigured build has no aliases, so every such address stays
      * an ordinary miss. Placed after the exact-hook loop so runtime policy hooks keep
-     * precedence over a title redirect, and before the range hooks and the lookup
-     * fixups so an aliased target reaches the same code the direct target would. */
+     * before the lookup fixups so an aliased target reaches the same code the direct
+     * target would. */
     {
         uint32_t alias_target = 0u;
         if (sr_title_config_dispatch_alias(target, &alias_target)) {
             RecompFn aliased = sr_lookup(alias_target);
             if (aliased) {
-                dispatch_call_aot(aliased, s, alias_target);
-                return SR_GUEST_INTERP_AOT_HANDOFF;
+                dispatch_call_aot(aliased, s, alias_target, call_boundary != NULL);
+                return dispatch_after_aot(s, call_boundary);
             }
-        }
-    }
-
-    /* Table-driven dispatch hooks (range/predicate, self-filtering) */
-    for (const DispatchHook *h = g_range_hooks; h->fn; h++) {
-        extern int g_hle_depth;
-        g_hle_depth++;
-        int rc = h->fn(s, target);
-        g_hle_depth--;
-        if (rc == 0) return SR_GUEST_INTERP_AOT_HANDOFF;  /* consumed */
-    }
-
-    /* Diagnostic: the launcher's init-array walker (f_00000fa0, dispatch site 0x00000fdc)
-     * iterates an array of function pointers at r4[0..r5) calling each via dispatch. When
-     * those targets miss, the array is unpopulated/corrupt. Log the walk parameters to
-     * identify the gap. */
-    if (s->pc == 0x00000fdcu) {
-        static int initarr_n = 0;
-        if (initarr_n < 50) {
-            initarr_n++;
-            fprintf(stderr, "INIT_ARRAY_WALK: base=0x%08x count=0x%08x idx=0x%08x target=0x%08x\n",
-                    s->r[4], s->r[5], s->r[16], target);
-            fflush(stderr);
-        }
-    }
-
-    /* Diagnostic: identify who invokes the launcher's init-array walker (f_00000fa0) with a
-     * (possibly bogus) base/count. Match any MIPS segment form (kuseg/kseg0/kseg1/reloc). */
-    if ((target & 0x0FFFFFFFu) == 0x00000fa0u) {
-        static int fa0_n = 0;
-        if (fa0_n < 30) {
-            fa0_n++;
-            fprintf(stderr, "CALL_F_00000FA0: caller_pc=0x%08x ra=0x%08x r4=0x%08x r5=0x%08x r6=0x%08x r7=0x%08x\n",
-                    s->pc, s->r[31], s->r[4], s->r[5], s->r[6], s->r[7]);
-            fflush(stderr);
         }
     }
 
@@ -1828,8 +1867,8 @@ static int dispatch_try_with_boundary(
      * A miss that survives the reloc/kseg fixups above is usually a call into a
      * runtime-loaded module (dynamic import stub, e.g. launcher pc 0x0000efec) whose
      * export table was populated after static codegen. Ask the late-import registry:
-     *   - a rebased guest export address: patch the dispatch table so every future
-     *     lookup of this target hits directly, then continue on the normal hit path;
+     *   - a rebased guest export address: resolve the current body for this call,
+     *     then continue on the normal hit path;
      *   - SR_HLE_LATE_BUILTIN: the id is a built-in HLE handler — trap into sr_syscall
      *     with the standard HLE return convention (v0 = result, pc = ra);
      *   - 0: unresolved — fall through to the existing miss handling unchanged. */
@@ -1854,14 +1893,13 @@ static int dispatch_try_with_boundary(
                 fn = sr_lookup(resolved);
             }
             if (fn) {
-                /* Patch the runtime table: alias the missed target to the resolved
-                 * body so subsequent dispatches skip the registry walk entirely. */
-                sr_register(target, fn);
-                static int late_patch_n = 0;
-                if (late_patch_n < 20) {
-                    fprintf(stderr, "LATE_IMPORT_PATCH: target=0x%08x -> 0x%08x (table patched)\n",
+                /* The registry owns this binding's lifetime. A persistent table
+                 * alias would bypass unload and same-address reload (#593). */
+                static int late_resolve_n = 0;
+                if (late_resolve_n < 20) {
+                    fprintf(stderr, "LATE_IMPORT_RESOLVE: target=0x%08x -> 0x%08x\n",
                             target, resolved);
-                    late_patch_n++;
+                    late_resolve_n++;
                 }
                 target = resolved;  /* use resolved target for logging below */
             } else {
@@ -1875,10 +1913,6 @@ static int dispatch_try_with_boundary(
             }
         }
     }
-    /* Diagnostic note: the launcher's init-array walker (f_00000fa0) is INLINED into its
-     * callers, so it is never entered via dispatch() — do not add a dispatch-entry probe for
-     * it. Its loop body dispatches from pc 0x00000fdc; see INIT_ARRAY_WALK / INIT_ARRAY_DUMP
-     * below for the instrumentation that actually fires. */
     if (fn) {
         /* TD-27 stale redirect: the registered AOT body was translated from
          * bytes the guest has since overwritten (see src/rt/stale_code.h).
@@ -1889,24 +1923,6 @@ static int dispatch_try_with_boundary(
             sr_perf_interp_set_reason(SR_PERF_INTERP_STALE_BLOCK);
             return dispatch_run_interp(s, target, call_boundary);
         }
-        if (target == 0x00000214u) {
-            fprintf(stderr, "DISPATCH_EXIT: target=0x214 fn=%p ra=0x%x uid=0x%x\n",
-                    (void*)fn, s->r[31], sched_current_uid());
-            fflush(stderr);
-        }
-        /* The init-array walker (f_00000f98/f_00000fa0) uses s->r[16] (callee-saved s0
-         * in MIPS convention) as its loop pointer over the function-pointer table. The
-         * generated code saves r[16] at function entry but reads it back from the
-         * CPUState struct — not from a local — so the dispatch targets below can and
-         * do clobber it by writing to s->r[16] (a.k.a. s0). Once corrupted, the walker
-         * reads MIPS instruction words from code addresses instead of function pointers,
-         * triggering dispatch misses for the rest of the ~55 MB range it tries to walk.
-         *
-         * Save/restore r[16] around the call whenever the dispatch originates from
-         * inside the walker's loop (pc == 0x00000fdc) or from the first-entry path
-         * (pc == 0x00000f98, set by SR_YIELD at function entry). Without this the
-         * very first init function called by the walker corrupts r[16] and the loop
-         * spins to watchdog. */
         uint64_t start_ns = 0;
         SrProfEntry *prof_entry = NULL;
         if (g_prof_enabled) {
@@ -1917,24 +1933,12 @@ static int dispatch_try_with_boundary(
             start_ns = SDL_GetTicksNS();
         }
 
-        if (s->pc == 0x00000f98u || s->pc == 0x00000fdcu) {
-            uint32_t saved_r16 = s->r[16];
-            if (s_displog) {
-                fprintf(stderr, "  [INIT_WALKER_GUARD] saving r[16]=0x%08x before dispatch 0x%08x\n",
-                        saved_r16, target);
-            }
-            dispatch_call_aot(fn, s, target);
-            s->r[16] = saved_r16;
-            if (s_displog) {
-                fprintf(stderr, "  [INIT_WALKER_GUARD] restored r[16]=0x%08x (was 0x%08x after call)\n",
-                        saved_r16, s->r[16]);
-            }
-        } else {
-            if (s_displog) {
-                fprintf(stderr, "  -> calling fn %p for 0x%08x, s->r[29]=0x%08x sr_timeslice=%d\n", (void*)fn, target, s->r[29], atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
-            }
-            dispatch_call_aot(fn, s, target);
+        if (s_displog) {
+            fprintf(stderr, "  -> calling fn %p for 0x%08x, s->r[29]=0x%08x sr_timeslice=%d\n",
+                    (void*)fn, target, s->r[29],
+                    atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
         }
+        dispatch_call_aot(fn, s, target, call_boundary != NULL);
 
         if (g_prof_enabled && prof_entry) {
             prof_entry->duration_ns += (SDL_GetTicksNS() - start_ns);
@@ -1942,21 +1946,6 @@ static int dispatch_try_with_boundary(
 
         if (s_displog) {
             fprintf(stderr, "  <- returned from fn %p for 0x%08x, s->r[29]=0x%08x sr_timeslice=%d\n", (void*)fn, target, s->r[29], atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
-        }
-        /* Log walker dispatch return values — these virtual method calls should
-         * return string pointers; small values indicate corruption */
-        if (s->pc >= 0x000650e0u && s->pc <= 0x000651b0u && s->r[2] < 0x10000u) {
-            static int wlog_n = 0;
-            if (wlog_n < 12) {
-                fprintf(stderr, "WALKER_RET: caller=0x%08x target=0x%08x v0=0x%08x r4=0x%08x uid=0x%x\n",
-                        s->pc, target, s->r[2], s->r[4], sched_current_uid());
-                wlog_n++;
-            }
-        }
-        if (s->flow_kind == SR_FLOW_EXCEPTION || s->flow_kind == SR_FLOW_ERET) {
-            uint32_t flow_target = s->flow_target;
-            sr_cpu_clear_flow(s);
-            return dispatch_try_with_boundary(s, flow_target, call_boundary);
         }
     } else {
         {
@@ -1983,93 +1972,6 @@ static int dispatch_try_with_boundary(
             }
             (void)found;
         }
-        if (s->pc == 0x00000fdcu) {
-            static int wt_dump = 0;
-            if (wt_dump < 3) { wt_dump++; fprintf(stderr, "WALKER_BAD_MISS target=0x%08x\n", target); dump_dispatch_trace(); }
-        }
-        /* Suppress per-miss detail logging unless SR_DISPLOG is set — the unique miss
-         * tracker above captures the important information without flooding stderr. */
-        static int s_displog_miss = -1;
-        if (s_displog_miss < 0) s_displog_miss = getenv("SR_DISPLOG") ? 1 : 0;
-        if (s_displog_miss) {
-            fprintf(stderr, "dispatch miss at 0x%08x from 0x%08x (ra=0x%08x) uid=0x%x\n",
-                    target, s->pc, s->r[31], sched_current_uid());
-            fprintf(stderr, "  r[2]=0x%08x r[4]=0x%08x r[5]=0x%08x r[6]=0x%08x r[7]=0x%08x\n",
-                    s->r[2], s->r[4], s->r[5], s->r[6], s->r[7]);
-            fprintf(stderr, "  r[16]=0x%08x r[17]=0x%08x r[18]=0x%08x r[19]=0x%08x\n",
-                    s->r[16], s->r[17], s->r[18], s->r[19]);
-        }
-        /* f_002919d4 is a generic worker launcher: a1 points at an object pointer and
-         * object+8 contains the three-word descriptor consumed by the 0x100c PSP PLT
-         * resolver.  On a resolver miss the generated function has already overwritten
-         * t9 with the final target, so reconstruct the inputs here while guest memory is
-         * still live.  This is opt-in and does not alter resolution or thread state. */
-        static int s_pltlog = -1;
-        if (s_pltlog < 0) s_pltlog = getenv("SR_PLTLOG") ? 1 : 0;
-        if (s->pc == 0x0000100cu && s_pltlog) {
-            static int plt_detail_n = 0;
-            if (plt_detail_n++ < 16) {
-                uint32_t argp = s->r[5];
-                uint32_t object = MEM_R32(argp);
-                uint32_t key = MEM_R32(object + 4u);
-                uint32_t d0 = MEM_R32(object + 8u);
-                uint32_t d1 = MEM_R32(object + 12u);
-                uint32_t d2 = MEM_R32(object + 16u);
-                uint32_t adjusted = key + d0;
-                uint32_t table = (int32_t)d1 < 0 ? 0u : MEM_R32(adjusted + d2);
-                uint32_t resolved = (int32_t)d1 < 0 ? d2 : MEM_R32(table + d1);
-                fprintf(stderr,
-                        "  PLT_DETAIL: argp=0x%08x object=0x%08x key=0x%08x "
-                        "descriptor=[0x%08x,0x%08x,0x%08x] adjusted=0x%08x "
-                        "table=0x%08x resolved=0x%08x\n",
-                        argp, object, key, d0, d1, d2, adjusted, table, resolved);
-            }
-        }
-        /* Dump the fn-pointer array the launcher's init walker (0x00000fdc) is reading,
-         * to tell an unpopulated/unrelocated table from a codegen pointer bug. */
-        if (s->pc == 0x00000fdcu) {
-            static int dump_n = 0;
-            if (dump_n < 2) {
-                dump_n++;
-                uint32_t a0 = s->r[16] & ~0xfu;
-                fprintf(stderr, "  INIT_ARRAY_DUMP @0x%08x:\n", a0);
-                for (uint32_t o = 0; o < 16u * 4u; o += 4u) {
-                    uint32_t w = MEM_R32(a0 + o);
-                    fprintf(stderr, "    0x%08x: 0x%08x%s\n", a0 + o, w,
-                            (w == target) ? "  <== current" : "");
-                }
-            }
-        }
-        /* Phase 2.3: PLT trampolines live in [0x00001000..0x000010FF]. They resolve import
-         * targets via GOT tables, but PSP kernel import resolution never ran, so GOT
-         * entries produce garbage targets. Legitimate PLT dispatches succeed via sr_lookup
-         * above; only garbage targets reach here. Return 0 (failure) so the caller sees
-         * an honest linkage failure instead of a phantom success at address 0x1.
-         * Narrowed range: original check was s->pc < 0x10000 which was too broad. */
-        if (s->pc >= 0x00001000u && s->pc <= 0x000010FFu) {
-            static int plt_miss_n = 0;
-            plt_miss_streak++;
-            if (plt_miss_n < 8) {
-                fprintf(stderr, "  PLT_MISS: caller=0x%08x target=0x%08x ra=0x%08x — returning 0\n",
-                        s->pc, target, s->r[31]);
-                plt_miss_n++;
-            }
-            /* After 5000 consecutive PLT misses, the caller is almost certainly
-             * an infinite table-walk loop whose GOT was never resolved. Force
-             * terminate by setting the iterator (sp+0x24) so the loop's exit
-             * check (iterator+4 == sentinel at sp+0x20) fires immediately. */
-            if (plt_miss_streak == 5000) {
-                uint32_t sp = s->r[29];
-                uint32_t sentinel = MEM_R32(sp + 0x20u);
-                MEM_W32(sp + 0x24u, sentinel - 4u);
-                fprintf(stderr, "  PLT_MISS: force-terminated loop at streak 5000 "
-                        "(sentinel=0x%08x, sp=0x%08x)\n", sentinel, sp);
-            }
-            s->r[2] = 0u;  /* Honest failure: import not resolved */
-            s->pc = s->r[31];
-            return SR_GUEST_INTERP_AOT_HANDOFF;
-        }
-        plt_miss_streak = 0;  /* Reset on any non-PLT dispatch */
         /* A valid executable miss is not a fabricated success. Only bytes inside an
          * explicitly registered executable span may execute; the interpreter itself
          * stops at a registered AOT destination. Every rejection leaves the rejected
@@ -2079,7 +1981,7 @@ static int dispatch_try_with_boundary(
         sr_perf_interp_set_reason(SR_PERF_INTERP_DISPATCH_MISS);
         return dispatch_run_interp(s, target, call_boundary);
     }
-    return SR_GUEST_INTERP_AOT_HANDOFF;
+    return dispatch_after_aot(s, call_boundary);
 }
 
 static int dispatch_try(CpuState *s, uint32_t target) {
@@ -2154,6 +2056,10 @@ void sr_trace_close(void) {
 
 void sr_begin_impl(CpuState *s, uint32_t pc, uint32_t op) {
     if (!s_fp) return;
+    /* An armed SR_TRACE_PC window gates the snapshot, not the other way round: the
+     * gate costs one range compare per guest instruction and the snapshot runs only
+     * for in-window instructions. With no window this test is a single load. */
+    if (sr_trace_window_armed() && !sr_trace_window_begin_instruction(pc)) return;
     memcpy(s_r, s->r, sizeof(s_r));
     memcpy(s_fi, s->fi, sizeof(s_fi));
     memcpy(s_vi, s->v, sizeof(s_vi));
@@ -2163,6 +2069,7 @@ void sr_begin_impl(CpuState *s, uint32_t pc, uint32_t op) {
 
 void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
     if (!s_fp) return;
+    if (sr_trace_window_armed() && !sr_trace_window_begin_instruction(s_pc)) return;
     char line[4096];
     size_t n = 0;
     n = sr_buf_append(line, sizeof(line), n, "%llu pc=0x%08x op=0x%08x",
@@ -2201,8 +2108,24 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
         n = sr_buf_append(line, sizeof(line), n, " m32[0x%08x]=0x%08x",
                           mem_addr, MEM_R32(mem_addr));
     if (n >= sizeof(line)) n = sizeof(line) - 1;
-    line[n] = '\n';
-    fwrite(line, 1, n + 1, s_fp);
+    if (sr_trace_window_armed()) {
+        /* A windowed record carries the canonical line plus the ABSOLUTE value of the
+         * registers the operator named, because the diff alone cannot show a value
+         * that was written before the window opened. */
+        const SrTraceWindowIndices *idx = sr_trace_window_indices();
+        char rec[2048];
+        size_t m = sr_buf_append(rec, sizeof(rec), 0, "%.*s", (int)n, line);
+        for (unsigned i = 0; idx && i < idx->vn; i++)
+            m = sr_buf_append(rec, sizeof(rec), m, " abs v%u=0x%08x", idx->v[i], s->vi[idx->v[i]]);
+        for (unsigned i = 0; idx && i < idx->fn; i++)
+            m = sr_buf_append(rec, sizeof(rec), m, " abs f%u=0x%08x", idx->f[i], s->fi[idx->f[i]]);
+        if (m >= sizeof(rec)) m = sizeof(rec) - 1;
+        rec[m] = '\0';
+        sr_trace_window_record(s_pc, rec);
+    } else {
+        line[n] = '\n';
+        fwrite(line, 1, n + 1, s_fp);
+    }
     s_step++;
     if (s_step > 50000000ULL) {
         fprintf(stderr, "sr_end: trace exceeded 50M steps\n");

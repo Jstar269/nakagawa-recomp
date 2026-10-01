@@ -19,16 +19,68 @@
  * save, which is the whole point of the assertion.
  */
 
+/* Feature-test macro first: POSIX tests use setenv, fchmod, and fileno. */
+#if !defined(_WIN32) && !defined(_WIN64)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "player_state.h"
 #include "iso_reader.h"
 #include "nk_font.h"
 #include "nk_platform.h"
+#include "../../src/rt/recomp.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <direct.h>
+#include <process.h>
+#define test_rmdir _rmdir
+#define nk_ps_chdir _chdir
+#define nk_ps_getcwd _getcwd
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define test_rmdir rmdir
+#define nk_ps_chdir chdir
+#define nk_ps_getcwd getcwd
+#endif
+
+/* Set (value non-NULL) or clear (value NULL) a process environment variable
+ * for the duration of a probe, restored by the caller. */
+static void nk_ps_set_env(const char *key, const char *value) {
+    size_t len = strlen(key) + (value ? strlen(value) : 0) + 2;
+    char *pair = (char *)malloc(len);
+    assert(pair != NULL);
+    if (value) snprintf(pair, len, "%s=%s", key, value);
+    else snprintf(pair, len, "%s=", key);
+#if defined(_WIN32) || defined(_WIN64)
+    /* _putenv may retain the pointer, so the string outlives this call. */
+    _putenv(pair);
+#else
+    if (value) setenv(key, value, 1); /* setenv copies */
+    else unsetenv(key);
+    free(pair);
+#endif
+}
+
+static void count_gui_foreground_request(void *context) {
+    int *count = (int *)context;
+    ++*count;
+}
+
+/* Copy an environment value out before any mutation invalidates getenv's pointer. */
+static void nk_ps_copy_env(const char *key, char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    const char *live = getenv(key);
+    if (live && live[0]) snprintf(out, out_size, "%s", live);
+}
 
 static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name) {
     memset(entry, 0, sizeof(*entry));
@@ -51,6 +103,163 @@ static void write_text_file(const char *path, const char *text) {
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
     assert(fclose(file) == 0);
+}
+
+/* Seed a fixture executable with real bytes (a self-copy of this test binary
+ * standing in for a recompiled runtime). The stub path keeps writing the
+ * historical "fixture" payload, whose digest is FIXTURE_SHA256 below. */
+static void copy_executable_file(const char *source_path,
+                                 const char *destination_path) {
+    FILE *source = fopen(source_path, "rb");
+    FILE *destination = fopen(destination_path, "wb");
+    assert(source != NULL);
+    assert(destination != NULL);
+    uint8_t buffer[16384];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) != 0) {
+        assert(fwrite(buffer, 1, count, destination) == count);
+    }
+    assert(!ferror(source));
+#if !defined(_WIN32) && !defined(_WIN64)
+    assert(fchmod(fileno(destination), S_IRUSR | S_IWUSR | S_IXUSR) == 0);
+#endif
+    assert(fclose(destination) == 0);
+    assert(fclose(source) == 0);
+}
+
+static void set_environment_value(const char *name, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, value) == 0);
+#else
+    assert(setenv(name, value, 1) == 0);
+#endif
+}
+
+static void restore_environment_value(const char *name, const char *value,
+                                      bool was_set) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, was_set ? value : "") == 0);
+#else
+    if (was_set) assert(setenv(name, value, 1) == 0);
+    else assert(unsetenv(name) == 0);
+#endif
+}
+
+static char *capture_environment_value(const char *name, bool *was_set) {
+    const char *current = getenv(name);
+    *was_set = current != NULL;
+    if (!current) return NULL;
+    size_t length = strlen(current);
+    char *copy = (char *)malloc(length + 1);
+    assert(copy != NULL);
+    memcpy(copy, current, length + 1);
+    return copy;
+}
+
+static bool path_prefix_equal(const char *a, const char *b, size_t n) {
+#if defined(_WIN32) || defined(_WIN64)
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ca = (unsigned char)a[i];
+        unsigned char cb = (unsigned char)b[i];
+        if (ca == '/') ca = '\\';
+        if (cb == '/') cb = '\\';
+        if (tolower(ca) != tolower(cb)) return false;
+    }
+    return true;
+#else
+    return strncmp(a, b, n) == 0;
+#endif
+}
+
+static bool path_is_within(const char *child, const char *parent) {
+    size_t parent_length = strlen(parent);
+    if (!path_prefix_equal(child, parent, parent_length)) return false;
+    return child[parent_length] == '\0' || child[parent_length] == '/' ||
+           child[parent_length] == '\\';
+}
+
+static bool get_working_directory(char *out, size_t size) {
+#if defined(_WIN32) || defined(_WIN64)
+    return _getcwd(out, (int)size) != NULL;
+#else
+    return getcwd(out, size) != NULL;
+#endif
+}
+
+/* Repository cleanliness gate (#511): the launch runs must not change any
+ * repository-tracked file. Uses the shell's redirection because the platform
+ * spawn API offers no stdout capture; reports false when git is unavailable
+ * so the caller can print an explicit SKIP rather than a silent pass. */
+static bool git_status_snapshot(const char *out_path) {
+    char command[1200];
+    int written = snprintf(command, sizeof(command),
+                           "git status --porcelain > \"%s\" 2>&1", out_path);
+    if (written <= 0 || (size_t)written >= sizeof(command)) return false;
+    return system(command) == 0;
+}
+
+static bool files_identical(const char *left, const char *right) {
+    FILE *a = fopen(left, "rb");
+    FILE *b = fopen(right, "rb");
+    if (!a || !b) {
+        if (a) fclose(a);
+        if (b) fclose(b);
+        return false;
+    }
+    bool equal = true;
+    for (;;) {
+        int ca = fgetc(a);
+        int cb = fgetc(b);
+        if (ca != cb) {
+            equal = false;
+            break;
+        }
+        if (ca == EOF) break;
+    }
+    fclose(a);
+    fclose(b);
+    return equal;
+}
+
+typedef struct {
+    char memstick[1024];
+    bool marker_present;
+    bool valid;
+} RepeatLaunchReport;
+
+static RepeatLaunchReport read_repeat_launch_report(const char *path) {
+    RepeatLaunchReport report;
+    memset(&report, 0, sizeof(report));
+    FILE *file = fopen(path, "rb");
+    if (!file) return report;
+    char line[2048];
+    while (fgets(line, sizeof(line), file)) {
+        size_t length = strlen(line);
+        while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r')) {
+            line[--length] = '\0';
+        }
+        if (strncmp(line, "SR_MEMSTICK=", 12) == 0) {
+            snprintf(report.memstick, sizeof(report.memstick), "%s", line + 12);
+        } else if (strcmp(line, "MARKER_PRESENT=1") == 0) {
+            report.marker_present = true;
+            report.valid = true;
+        } else if (strcmp(line, "MARKER_PRESENT=0") == 0) {
+            report.marker_present = false;
+            report.valid = true;
+        }
+    }
+    fclose(file);
+    return report;
+}
+
+static void assert_session_released(const NkLaunchSession *session) {
+    /* nk_platform_close_process ran: nothing from the finished child is
+       still held by the session (a leaked Win32 process/job handle would
+       survive here across relaunches). */
+    assert(session->process.native_handle == NULL);
+    assert(session->process.job_handle == NULL);
+    assert(session->process.process_id == 0);
+    assert(session->process.is_active == false);
 }
 
 typedef struct {
@@ -238,12 +447,13 @@ static void write_runtime_package_fixture(const char *user_root,
                                           const char *title_id,
                                           uint32_t abi_version,
                                           const char *executable_relative_path,
-                                          const char *input_executable_sha256) {
+                                          const char *input_executable_sha256,
+                                          const char *seed_executable_path) {
     char packages[768], package_dir[896], executable[1100], image[1100];
     char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
-    char aot_components_json[2048], native_components_json[2048];
-    char aot_hash_input[2050], native_hash_input[2050];
-    char aot_digest[65], native_digest[65], modules_digest[65];
+    char aot_components_json[2048], native_components_json[2048], identity_json[2048];
+    char aot_hash_input[2050], native_hash_input[2050], identity_hash_input[2050];
+    char aot_digest[65], native_digest[65], modules_digest[65], identity_digest[65];
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
     snprintf(packages, sizeof(packages), "%s%cpackages", user_root,
@@ -255,8 +465,42 @@ static void write_runtime_package_fixture(const char *user_root,
              nk_platform_path_separator(), title_id);
     snprintf(image, sizeof(image), "%s%c%s_image.bin", package_dir,
              nk_platform_path_separator(), title_id);
-    write_file(executable);
+    if (seed_executable_path) {
+        copy_executable_file(seed_executable_path, executable);
+    } else {
+        write_file(executable);
+    }
     write_file(image);
+    /* package.json must carry the digest of the bytes actually on disk: the
+       validator compares it against the file ("Package executable hash is
+       stale"). For the stub payload this is exactly FIXTURE_SHA256. */
+    char executable_hash[65];
+    fixture_sha_file(executable, executable_hash);
+
+    const char *region = strncmp(disc_id, "UL", 2) == 0 ? "NA" : "TEST";
+    int identity_length = snprintf(identity_json, sizeof(identity_json),
+        "{\"container\":null,\"disc\":{\"disc_version\":null,\"id\":\"%s\","
+        "\"region\":\"%s\"},\"format\":\"nakagawa-title-input-identity\","
+        "\"main_executable\":{\"name\":\"EBOOT.BIN\",\"sha256\":\"%s\"},"
+        "\"manifest\":{\"id\":\"%s\",\"schema_version\":1},"
+        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":1}",
+        disc_id, region, input_executable_sha256, title_id);
+    assert(identity_length > 0 && (size_t)identity_length < sizeof(identity_json));
+    int identity_hash_length = snprintf(identity_hash_input,
+        sizeof(identity_hash_input), "%s\n", identity_json);
+    assert(identity_hash_length > 0 &&
+           (size_t)identity_hash_length < sizeof(identity_hash_input));
+    fixture_sha_bytes(identity_hash_input, (size_t)identity_hash_length, identity_digest);
+
+    char identities[768], identity_dir[896], identity_path[1100];
+    snprintf(identities, sizeof(identities), "%s%ctitle-input-identities", user_root,
+             nk_platform_path_separator());
+    snprintf(identity_dir, sizeof(identity_dir), "%s%c%s", identities,
+             nk_platform_path_separator(), disc_id);
+    assert(nk_platform_mkdir_p(identity_dir));
+    snprintf(identity_path, sizeof(identity_path), "%s%ctitle-input-identity.json",
+             identity_dir, nk_platform_path_separator());
+    write_text_file(identity_path, identity_json);
 
     fixture_sha_bytes("[]\n", 3, modules_digest);
     int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
@@ -265,8 +509,9 @@ static void write_runtime_package_fixture(const char *user_root,
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
         "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1}",
-        0, codegen_options_digest, 0, input_executable_sha256, 0, modules_digest);
+        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, input_executable_sha256, 0, modules_digest,
+        identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
         "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
@@ -281,12 +526,12 @@ static void write_runtime_package_fixture(const char *user_root,
     fixture_sha_bytes(aot_hash_input, (size_t)aot_hash_length, aot_digest);
     fixture_sha_bytes(native_hash_input, (size_t)native_hash_length, native_digest);
     int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
-        "{\"schema_version\":1,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
+        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
         "\"native\":{\"digest\":\"%s\",\"components\":%s}}",
         aot_digest, aot_components_json, native_digest, native_components_json);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
-        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":1,\"key\":%s,"
+        "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
         "\"current_epoch\":1,\"generated_code_reusable\":true}}",
         cache_key_json);
@@ -307,12 +552,13 @@ static void write_runtime_package_fixture(const char *user_root,
     write_text_file(report_path, report_json);
 
     int package_length = snprintf(package_json, sizeof(package_json),
-        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":1,\"cache\":%s,"
+        "{\"format\":\"nakagawa-aot-package\",\"schema_version\":2,\"cache\":%s,"
         "\"title\":{\"id\":\"%s\",\"display_name\":\"Synthetic fixture\","
         "\"kind\":\"retail\",\"manifest_sha256\":\"%064d\","
         "\"protected_digest\":\"%064d\"},"
         "\"inputs\":{\"manifest\":{\"sha256\":\"%064d\"},"
         "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
+        "\"title_input_identity\":%s,"
         "\"runtime\":{\"abi\":\"CpuState\",\"abi_version\":%u,"
         "\"abi_header_sha256\":\"%064d\",\"run_entry\":\"0x00000000\","
         "\"runtime_contract\":null,\"runtime_bindings\":{},"
@@ -320,18 +566,17 @@ static void write_runtime_package_fixture(const char *user_root,
         "\"executable\":{\"path\":\"%s\",\"sha256\":\"%s\","
         "\"guest_entry\":\"0x00000000\"},\"generated_objects\":[],"
         "\"required_local_assets\":[],\"build_report\":\"build-report.json\"}\n",
-        cache_json, title_id, 0, 0, 0, input_executable_sha256, (unsigned)abi_version,
-        0, executable_relative_path, FIXTURE_SHA256);
+        cache_json, title_id, 0, 0, 0, input_executable_sha256, identity_json,
+        (unsigned)abi_version, 0, executable_relative_path, executable_hash);
     assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
     char package_path[1100];
     snprintf(package_path, sizeof(package_path), "%s%cpackage.json", package_dir,
              nk_platform_path_separator());
     write_text_file(package_path, package_json);
 
-    char package_hash[65], report_hash[65], executable_hash[65], image_hash[65];
+    char package_hash[65], report_hash[65], image_hash[65];
     fixture_sha_file(package_path, package_hash);
     fixture_sha_file(report_path, report_hash);
-    fixture_sha_file(executable, executable_hash);
     fixture_sha_file(image, image_hash);
     char image_relative[256];
     const char *extension = strrchr(executable_relative_path, '.');
@@ -341,13 +586,13 @@ static void write_runtime_package_fixture(const char *user_root,
              (int)stem_length, executable_relative_path);
     char completion_json[4096];
     int completion_length = snprintf(completion_json, sizeof(completion_json),
-        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":1,"
-        "\"status\":\"complete\",\"cache_key\":%s,\"artifacts\":["
+        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":2,"
+        "\"status\":\"complete\",\"cache_key\":%s,\"title_input_identity\":%s,\"artifacts\":["
         "{\"path\":\"package.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"build-report.json\",\"sha256\":\"%s\"},"
         "{\"path\":\"%s\",\"sha256\":\"%s\"},"
         "{\"path\":\"%s\",\"sha256\":\"%s\"}]}\n",
-        cache_key_json, package_hash, report_hash, executable_relative_path,
+        cache_key_json, identity_json, package_hash, report_hash, executable_relative_path,
         executable_hash, image_relative, image_hash);
     assert(completion_length > 0 && (size_t)completion_length < sizeof(completion_json));
     char completion_path[1100];
@@ -409,7 +654,77 @@ static const char *runtime_package_status_name(NkRuntimePackageStatus status) {
     }
 }
 
+/* Fake-runtime child mode for the repeat-launch subtest (#511): spawned by
+ * nk_launch_start as `--image <path> ...`. Observes the save root the session
+ * handed over (SR_MEMSTICK), reports what it saw BEFORE writing, then leaves
+ * one line of savedata behind for the next launch to observe. Exit code is
+ * scripted through NK_REPEAT_LAUNCH_EXIT_CODE so early-failure handling can
+ * be exercised deterministically. */
+static int repeat_launch_child_mode(void) {
+    const char *report_path = getenv("NK_REPEAT_LAUNCH_REPORT_FILE");
+    if (!report_path || !*report_path) return 2;
+    int exit_code = 0;
+    const char *code_text = getenv("NK_REPEAT_LAUNCH_EXIT_CODE");
+    if (code_text && *code_text) {
+        char *end = NULL;
+        long parsed = strtol(code_text, &end, 10);
+        if (!end || *end || parsed < 0 || parsed > 125) return 2;
+        exit_code = (int)parsed;
+    }
+    const char *memstick = getenv("SR_MEMSTICK");
+    char marker[NK_MAX_PATH * 2];
+    marker[0] = '\0';
+    bool marker_present = false;
+    if (memstick && *memstick) {
+        snprintf(marker, sizeof(marker), "%s%cf511_repeat.marker", memstick,
+                 nk_platform_path_separator());
+        FILE *existing = fopen(marker, "rb");
+        if (existing) {
+            marker_present = true;
+            fclose(existing);
+        }
+    }
+    FILE *report = fopen(report_path, "wb");
+    if (!report) return 3;
+    int ok = fprintf(report, "SR_MEMSTICK=%s\nMARKER_PRESENT=%d\n",
+                     (memstick && *memstick) ? memstick : "<unset>",
+                     marker_present ? 1 : 0) >= 0;
+    if (fclose(report) != 0) ok = 0;
+    if (!ok) return 4;
+    if (marker[0]) {
+        FILE *save = fopen(marker, "ab");
+        if (!save) return 5;
+        ok = fputs("run\n", save) >= 0;
+        if (fclose(save) != 0) ok = 0;
+        if (!ok) return 5;
+    }
+    return exit_code;
+}
+
+/* Launch through the player-owned session path, let the child reach a
+ * bounded exit, then settle the session at `settle_tick`. Pins the repeat
+ * contract: identical save root, no stuck running state, no retained child
+ * handle, and no new structured error on a clean exit. */
+static void repeat_launch_and_settle(PlayerApp *app, int game_index,
+                                     uint64_t launch_tick, uint64_t settle_tick,
+                                     const char *expected_memstick) {
+    char error_before[32];
+    snprintf(error_before, sizeof(error_before), "%s", app->last_error.error_code);
+    assert(player_app_launch_game(app, game_index));
+    assert(app->is_game_running);
+    assert(strcmp(app->launch_session.memstick_root, expected_memstick) == 0);
+    app->launch_time_ms = launch_tick;
+    assert(nk_launch_wait(&app->launch_session, 10000) == 0);
+    assert(player_app_monitor_game_session(app, settle_tick));
+    assert(!app->is_game_running);
+    assert_session_released(&app->launch_session);
+    assert(strcmp(app->last_error.error_code, error_before) == 0);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--image") == 0) {
+        return repeat_launch_child_mode();
+    }
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);
@@ -638,7 +953,7 @@ int main(int argc, char **argv) {
     snprintf(fixture_report, sizeof(fixture_report), "%s%cbuild-report.json",
              fixture_package_dir, nk_platform_path_separator());
     write_runtime_package_fixture(fixture_root, "TEST00006", "display-smoke-v1", 2,
-                                  "display-smoke-v1.exe", FIXTURE_SHA256);
+                                  "display-smoke-v1.exe", FIXTURE_SHA256, NULL);
     player_app_set_runtime_root(fresh, fixture_root);
 
     player_app_populate_sample_games(fresh);
@@ -701,6 +1016,10 @@ int main(int argc, char **argv) {
     assert(settings->settings.resolution_scale == 4);
     player_app_cycle_resolution_scale(settings, -1);
     assert(settings->settings.resolution_scale == 2);
+    /* 8x is no longer offered: the GPU rasterizer caps at 4x, so the setter
+       refuses it instead of letting the UI claim an unsupported preset. */
+    player_app_set_resolution_scale(settings, 8);
+    assert(settings->settings.resolution_scale == 2);
 
     player_app_set_fps_cap(settings, 30);
     assert(settings->settings.fps_cap == 30);
@@ -734,6 +1053,117 @@ int main(int argc, char **argv) {
     player_app_adjust_volume(settings, -2000);
     assert(settings->settings.master_volume == 0);
     free(settings);
+
+    /* 9b. The launch-relevant settings map onto the session's runtime config;
+     * reduce_motion is launcher-UI state and must not leak into the child. */
+    printf("[PLAYER_STATE_TEST] Subtest 9b: settings apply to the launch session\n");
+    fflush(stdout);
+    {
+        PlayerSettings applied;
+        memset(&applied, 0, sizeof(applied));
+        player_app_settings_init_default(&applied);
+        applied.resolution_scale = 2;
+        applied.fps_cap = 30;
+        applied.vsync = false;
+        applied.fullscreen = true;
+        applied.master_volume = 55;
+        applied.reduce_motion = true;
+
+        NkRuntimeConfig cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.gui_mode = true;
+        player_app_apply_settings_to_session(&applied, &cfg);
+        assert(cfg.resolution_scale == 2);
+        assert(cfg.fps_cap == 30);
+        assert(cfg.vsync == false);
+        assert(cfg.fullscreen == true);
+        assert(cfg.master_volume == 55);
+        assert(cfg.gui_mode == true);   /* untouched by the mapping */
+        /* NULL arguments are safe no-ops. */
+        player_app_apply_settings_to_session(NULL, &cfg);
+        player_app_apply_settings_to_session(&applied, NULL);
+        assert(cfg.master_volume == 55);
+    }
+
+    /* 9c. The host input mapping the launched runtime receives is the one the
+     * selected disc asked for: its own per-title mapping when it has one, the
+     * global profile otherwise (#520). */
+    printf("[PLAYER_STATE_TEST] Subtest 9c: per-title mapping reaches the launch session\n");
+    fflush(stdout);
+    {
+        PlayerApp *mapped = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(mapped != NULL);
+        nk_library_init(&mapped->library);
+        input_settings_init(&mapped->input_settings);
+        /* Scratch root: CMake points NK_TEST_SCRATCH_DIR into its binary tree so
+         * an out-of-source build never depends on <source>/build existing; the
+         * Makefile target runs from the source tree, where build/ is the
+         * conventional scratch directory. */
+        const char *scratch_dir = getenv("NK_TEST_SCRATCH_DIR");
+        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = "build";
+        char global_profile[NK_MAX_PATH];
+        snprintf(global_profile, sizeof(global_profile),
+                 "%s/test_launch_global_profile.json", scratch_dir);
+        assert(nk_platform_mkdir_p(scratch_dir));
+        snprintf(mapped->input_settings.profile_path,
+                 sizeof(mapped->input_settings.profile_path),
+                 "%s", global_profile);
+
+        GameRecord tennis;
+        memset(&tennis, 0, sizeof(tennis));
+        snprintf(tennis.disc_id, sizeof(tennis.disc_id), "UCUS98701");
+        snprintf(tennis.title_name, sizeof(tennis.title_name), "Mapping Fixture");
+
+        /* No per-title entry: the disc runs the global profile. */
+        assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path,
+                      global_profile) == 0);
+        assert(mapped->input_profile_notice[0] == '\0');
+
+        /* Give that disc its own mapping. */
+        assert(input_settings_set_scope(&mapped->input_settings, "UCUS98701"));
+        NkBindingSource left_stick;
+        left_stick.type = NK_BINDING_HOST_BUTTON;
+        left_stick.index = NK_HOST_BUTTON_LEFT_STICK;
+        assert(input_settings_assign_binding(&mapped->input_settings,
+                                             INPUT_CONTROL_BTN_CROSS, left_stick));
+        assert(input_settings_save(&mapped->input_settings, NULL) == NK_OK);
+
+        /* The session now names a profile file of its own for that disc, and the
+         * file the child would load is the disc's mapping, not the global one. */
+        assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
+        const char *profile_path = mapped->launch_session.config.input_profile_path;
+        assert(strstr(profile_path, "UCUS98701") != NULL);
+        assert(strcmp(profile_path, global_profile) != 0);
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+        NkInputProfile handed;
+        assert(nk_input_profile_load(&handed, profile_path, diag, sizeof(diag)) == NK_OK);
+        assert(handed.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+        assert(handed.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == NK_INPUT_DEFAULT_DEADZONE_INNER);
+
+        /* Another disc still gets the global profile: two mappings, one session. */
+        GameRecord boxing;
+        memset(&boxing, 0, sizeof(boxing));
+        snprintf(boxing.disc_id, sizeof(boxing.disc_id), "ULUS10041");
+        assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path,
+                      global_profile) == 0);
+
+        /* A disc ID the document has no entry for is not an error, and NULL
+         * arguments are safe no-ops that change nothing. */
+        char before[NK_MAX_PATH];
+        snprintf(before, sizeof(before), "%s",
+                 mapped->launch_session.config.input_profile_path);
+        assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path, before) == 0);
+        assert(player_app_apply_input_profile_to_session(mapped, NULL) != NK_OK);
+        assert(player_app_apply_input_profile_to_session(NULL, &tennis) != NK_OK);
+        assert(strcmp(mapped->launch_session.config.input_profile_path, before) == 0);
+
+        remove(profile_path);
+        remove(global_profile);
+        free(mapped);
+    }
 
     /* 10. Focus clamps into range so keyboard/gamepad activation can never
      * target a control the view no longer draws. */
@@ -813,26 +1243,26 @@ int main(int argc, char **argv) {
         stops->games[0] = entry;
         stops->game_count = 1;
         stops->selected_game_index = 0;
-        assert(player_app_focus_count(stops) == 2); /* incompatible package: add + remove */
+        assert(player_app_focus_count(stops) == 3); /* incompatible package: add + remove + mapping */
 
         stops->games[0].is_prepared = true;
-        assert(player_app_focus_count(stops) == 2); /* no validated package: add + remove */
+        assert(player_app_focus_count(stops) == 3); /* no validated package: add + remove + mapping */
 
         stops->is_game_running = true;
-        assert(player_app_focus_count(stops) == 3); /* stop + add + remove */
+        assert(player_app_focus_count(stops) == 4); /* stop + add + remove + mapping */
 
         /* Overflow adds the two paging stops. */
         stops->is_game_running = false;
         stops->window_width = 640;
         assert(player_app_visible_library_cards(stops) == 2);
         stops->game_count = 1;
-        assert(player_app_focus_count(stops) == 2);
+        assert(player_app_focus_count(stops) == 3); /* add + remove + mapping */
         seed_entry(&entry, "FCS00002", "Second");
         stops->games[1] = entry;
         seed_entry(&entry, "FCS00003", "Third");
         stops->games[2] = entry;
         stops->game_count = 3;
-        assert(player_app_focus_count(stops) == 4);
+        assert(player_app_focus_count(stops) == 5); /* + both paging stops */
 
         /* A title with missing package offers the BUILD PACKAGE button */
         stops->window_width = 1280;
@@ -840,7 +1270,7 @@ int main(int argc, char **argv) {
         seed_entry(&entry, "ULUS10041", "Street Supremacy");
         snprintf(entry.title_id, sizeof(entry.title_id), "ulus-10041");
         stops->games[0] = entry;
-        assert(player_app_focus_count(stops) == 3); /* build package + add + remove */
+        assert(player_app_focus_count(stops) == 4); /* build package + add + remove + mapping */
 
         stops->active_view = VIEW_BUILDING_PACKAGE;
         assert(player_app_focus_count(stops) == 1); /* cancel build */
@@ -854,9 +1284,20 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 14);
+        assert(player_app_focus_count(stops) == 16); /* launcher fullscreen; 8x preset absent */
+        stops->active_view = VIEW_PREREQ_CONSENT;
+        assert(player_app_focus_count(stops) == 2);
+        stops->active_view = VIEW_PREREQ_PROGRESS;
+        assert(player_app_focus_count(stops) == 1);
+        stops->active_view = VIEW_PREREQ_ABOUT;
+        stops->prerequisites.item_count = 0;
+        assert(player_app_focus_count(stops) == 1);
+        stops->prerequisites.item_count = 1;
+        assert(player_app_focus_count(stops) == 2);
+        stops->active_view = VIEW_CONFIRM_REMOVE_TOOLS;
+        assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_CONTROLLER_SETTINGS;
-        assert(player_app_focus_count(stops) == 22);
+        assert(player_app_focus_count(stops) == 23); /* + the global / this-game choice */
         stops->input_settings.calib.stage = CALIBRATION_STAGE_REST;
         assert(player_app_focus_count(stops) == 1);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_EXTREMES;
@@ -864,7 +1305,12 @@ int main(int argc, char **argv) {
         stops->input_settings.calib.stage = CALIBRATION_STAGE_RESULT;
         assert(player_app_focus_count(stops) == 2);
         stops->input_settings.calib.stage = CALIBRATION_STAGE_INACTIVE;
+        assert(player_app_focus_count(stops) == 23);
+        /* With no library disc there is nothing to name, so the choice is not a
+         * focus stop and the count is the pre-#520 one. */
+        stops->selected_game_index = -1;
         assert(player_app_focus_count(stops) == 22);
+        stops->selected_game_index = 0;
         stops->active_view = VIEW_ERROR;
         assert(player_app_focus_count(stops) == 1);
 
@@ -1066,7 +1512,7 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_MISSING);
         write_runtime_package_fixture(preflight_root, synthetic_disc_id,
                                       "synthetic-allegrex-v1", 2,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         assert(nk_platform_mkdir_p(font_dir));
         write_file(font_path);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -1115,6 +1561,9 @@ int main(int argc, char **argv) {
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
         assert(strstr(check->message, "not a usable MIPS ELF32") != NULL);
+        assert(strstr(check->message, "replace it with a valid decrypted EBOOT.elf") != NULL);
+        assert(strstr(check->message, "decryption is in the works") == NULL);
+        assert(check->issue_count == 0);
         assert(remove(decrypted_elf) == 0);
 
         wiz->inspecting_game.is_experimental = true;
@@ -1167,7 +1616,7 @@ int main(int argc, char **argv) {
                                            FIXTURE_SHA256);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
-                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_OK);
@@ -1178,26 +1627,27 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "#316") != NULL);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
-                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
                                       "experimental-ulus99998.exe",
-                                      "0000000000000000000000000000000000000000000000000000000000000000");
+                                      "0000000000000000000000000000000000000000000000000000000000000000",
+                                      NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_STALE);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 99,
-                                      "experimental-ulus99998.exe", FIXTURE_SHA256);
+                                      "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
-                                      "../escape.exe", FIXTURE_SHA256);
+                                      "../escape.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
@@ -1377,20 +1827,31 @@ int main(int argc, char **argv) {
         PlayerApp *s_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(s_app != NULL);
         player_app_settings_init_default(&s_app->settings);
-        assert(s_app->settings.resolution_scale == 4);
+        assert(s_app->settings.resolution_scale == 1);
         assert(s_app->settings.fps_cap == 60);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
+        assert(s_app->settings.launcher_fullscreen == false);
         assert(s_app->settings.reduce_motion == false);
         assert(s_app->settings.master_volume == 80);
+        assert(s_app->settings.launcher_window_width == 1280);
+        assert(s_app->settings.launcher_window_height == 720);
+        assert(s_app->settings.launcher_window_position_valid == false);
 
         /* Mutate all settings and round-trip */
         s_app->settings.resolution_scale = 2;
         s_app->settings.fps_cap = 30;
         s_app->settings.vsync = false;
         s_app->settings.fullscreen = true;
+        s_app->settings.launcher_fullscreen = true;
         s_app->settings.reduce_motion = true;
         s_app->settings.master_volume = 55;
+        s_app->settings.launcher_window_maximized = true;
+        s_app->settings.launcher_window_position_valid = true;
+        s_app->settings.launcher_window_x = -1600;
+        s_app->settings.launcher_window_y = 80;
+        s_app->settings.launcher_window_width = 1100;
+        s_app->settings.launcher_window_height = 640;
 
         assert(player_app_save_settings(s_app, test_settings_path) == NK_OK);
 
@@ -1401,14 +1862,234 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.fps_cap == 30);
         assert(s_app2->settings.vsync == false);
         assert(s_app2->settings.fullscreen == true);
+        assert(s_app2->settings.launcher_fullscreen == true);
         assert(s_app2->settings.reduce_motion == true);
         assert(s_app2->settings.master_volume == 55);
+        assert(s_app2->settings.launcher_window_maximized == true);
+        assert(s_app2->settings.launcher_window_position_valid == true);
+        assert(s_app2->settings.launcher_window_x == -1600);
+        assert(s_app2->settings.launcher_window_y == 80);
+        assert(s_app2->settings.launcher_window_width == 1100);
+        assert(s_app2->settings.launcher_window_height == 640);
         assert(s_app2->settings_notice[0] == '\0');
+
+        /* Launcher and game fullscreen are independent persisted settings. */
+        player_app_toggle_launcher_fullscreen(s_app2);
+        assert(s_app2->settings.launcher_fullscreen == false);
+        assert(s_app2->settings.fullscreen == true);
+
+        /* Closing a running child requires explicit confirmation; closing an
+           idle player remains immediate. */
+        assert(player_app_close_decision(s_app2, false) == PLAYER_CLOSE_QUIT);
+        s_app2->is_game_running = true;
+        assert(player_app_close_decision(s_app2, false) ==
+               PLAYER_CLOSE_CONFIRM_REQUIRED);
+        assert(player_app_close_decision(s_app2, true) == PLAYER_CLOSE_QUIT);
+        assert(!player_app_take_close_confirmation_fallback(s_app2));
+        player_app_note_close_confirmation_failure(s_app2);
+        assert(player_app_take_close_confirmation_fallback(s_app2));
+        assert(!player_app_take_close_confirmation_fallback(s_app2));
+
+        /* One host close may enter SDL as both QUIT and WINDOW_CLOSE_REQUESTED.
+           Canceling the first confirmation leaves the child running, but a
+           second close event in that drained batch must not ask again. */
+        bool close_request_handled_in_batch = false;
+        int confirmation_count = 0;
+        for (int event = 0; event < 2; ++event) {
+            if (player_app_close_request_batch_claim(
+                    &close_request_handled_in_batch) &&
+                player_app_close_decision(s_app2, false) ==
+                    PLAYER_CLOSE_CONFIRM_REQUIRED) {
+                ++confirmation_count;
+                /* Cancel keeps s_app2->is_game_running set. */
+            }
+        }
+        assert(confirmation_count == 1);
+        assert(s_app2->is_game_running);
+
+        /* A later close starts a new batch and prompts once again. */
+        close_request_handled_in_batch = false;
+        for (int event = 0; event < 2; ++event) {
+            if (player_app_close_request_batch_claim(
+                    &close_request_handled_in_batch) &&
+                player_app_close_decision(s_app2, false) ==
+                    PLAYER_CLOSE_CONFIRM_REQUIRED) {
+                ++confirmation_count;
+            }
+        }
+        assert(confirmation_count == 2);
+        s_app2->is_game_running = false;
+
+        /* The two-column layout is used from the first card width that can
+           hold it, with the right column pushed clear of the wide launcher
+           control. A window that wide must never fall into the single-column
+           flow, which cannot fit a 720 px client. */
+        assert(!player_settings_uses_two_columns(1043, 720));
+        assert(player_settings_uses_two_columns(1044, 720));
+        assert(player_settings_uses_two_columns(1187, 720));
+        assert(player_settings_uses_two_columns(1188, 720));
+        for (float card = 980.0f; card <= 1216.0f; card += 1.0f) {
+            float offset = player_settings_second_column_offset(card);
+            /* launcher control and hint end 562 px into the card */
+            assert(offset >= 562.0f + 24.0f);
+            /* the right column keeps usable width for the stepper */
+            assert(card - 32.0f - offset >= 300.0f);
+        }
+        assert(player_settings_uses_two_columns(1280, 620));
+        assert(!player_settings_uses_two_columns(1280, 619));
+
+        /* The focus handoff is attempted once per launch, and only on proven
+           evidence. A failed SDL_MinimizeWindow leaves the launcher visible:
+           the contract is that the loop does not retry, because each retry
+           would recapture and rewrite the launcher settings every frame. */
+        assert(player_app_should_attempt_window_handoff(true, true, false, true));
+        assert(player_app_should_attempt_window_handoff(true, true, false, false) == false);
+        assert(player_app_should_attempt_window_handoff(true, false, false, true) == false);
+        assert(player_app_should_attempt_window_handoff(false, true, false, true) == false);
+        assert(player_app_should_attempt_window_handoff(true, true, true, true) == false);
+        assert(player_app_should_attempt_window_handoff(true, true, true, false) == false);
+        /* The same launch is not retried after a failed attempt. */
+        assert(player_app_should_attempt_window_handoff(true, true, true, true) == false);
+        /* A later launch gets a fresh attempt once the loop clears the latch. */
+        assert(player_app_should_attempt_window_handoff(true, true, false, true) == true);
+
+        /* The child requests foreground once only after the launcher handoff
+           marker exists and a visible, non-headless window is available. */
+        {
+            bool request_issued = false;
+            int request_count = 0;
+
+            assert(!sr_gui_request_launcher_foreground_once(
+                NULL, true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", false, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", true, true, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!request_issued && request_count == 0);
+            assert(sr_gui_request_launcher_foreground_once(
+                "boot-events", true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(request_issued && request_count == 1);
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(request_count == 1);
+        }
+
+        assert(player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=window_ready backend=sdl"));
+        assert(player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=first_frame source=cpu"));
+        assert(!player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=guest_start mode=scheduler"));
+
+        /* A 1280x720 request fits the 1024x600 usable area after the window
+           frame is reserved; a saved position on a missing monitor centers
+           safely on the current display. */
+        {
+            PlayerWindowRect fitted;
+            PlayerWindowRect usable = { 0, 0, 1024, 600 };
+            PlayerWindowRect requested = { 0, 0, 1280, 720 };
+            PlayerWindowFrame frame = { 32, 8, 8, 8 };
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                false, &fitted));
+            assert(fitted.width > 0 && fitted.height > 0);
+            assert(fitted.width + frame.left + frame.right <= usable.width);
+            assert(fitted.height + frame.top + frame.bottom <= usable.height);
+
+            usable.x = -1280;
+            usable.y = 40;
+            usable.width = 1280;
+            usable.height = 680;
+            requested.x = 5000;
+            requested.y = 5000;
+            requested.width = 1280;
+            requested.height = 720;
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                true, &fitted));
+            /* The fitted rect is a CLIENT rect, so it is bounded by the
+               display's client area, not by the raw usable bounds. */
+            assert(fitted.x >= usable.x + frame.left);
+            assert(fitted.y >= usable.y + frame.top);
+            assert((int64_t)fitted.x + fitted.width <=
+                   (int64_t)usable.x + usable.width - frame.right);
+            assert((int64_t)fitted.y + fitted.height <=
+                   (int64_t)usable.y + usable.height - frame.bottom);
+
+            /* On a 2x content-scale desktop, a 2x native-coordinate request
+               still fits by clamping against the same SDL screen units. */
+            usable.x = 0;
+            usable.y = 0;
+            usable.width = 3840;
+            usable.height = 2160;
+            frame.top = 64;
+            frame.left = 16;
+            frame.bottom = 16;
+            frame.right = 16;
+            requested.width = 2560;
+            requested.height = 1440;
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                false, &fitted));
+            assert(fitted.width == requested.width);
+            assert(fitted.height == requested.height);
+
+            /* SDL_SetWindowSize and SDL_SetWindowPosition address the CLIENT
+               rectangle, and the persisted launcher geometry is a client
+               rectangle too, so the fitted rectangle must stay inside the
+               display's client area. Clamping against the raw usable bounds
+               instead put the title bar and the top of the window off-screen:
+               on a real 3840x2160 display a saved window at (0,0) was measured
+               at a Win32 outer rect of (-11,-45). */
+            {
+                PlayerWindowRect live_usable = { 0, 0, 3840, 2088 };
+                PlayerWindowFrame live_frame = { 45, 11, 11, 11 };
+                PlayerWindowRect live_requested = { 0, 0, 1280, 720 };
+                int64_t client_x = (int64_t)live_usable.x + live_frame.left;
+                int64_t client_y = (int64_t)live_usable.y + live_frame.top;
+                int64_t client_w = (int64_t)live_usable.width -
+                                   live_frame.left - live_frame.right;
+                int64_t client_h = (int64_t)live_usable.height -
+                                   live_frame.top - live_frame.bottom;
+                assert(player_window_fit_to_display(live_requested, live_usable,
+                                                    live_frame, true, &fitted));
+                assert(fitted.x >= client_x);
+                assert(fitted.y >= client_y);
+                assert((int64_t)fitted.x + fitted.width <= client_x + client_w);
+                assert((int64_t)fitted.y + fitted.height <= client_y + client_h);
+                assert(fitted.width == live_requested.width);
+                assert(fitted.height == live_requested.height);
+
+                /* A saved client rect flush against the right/bottom edge is
+                   pulled back by the frame instead of hanging off the display. */
+                live_requested.x = 3840 - live_requested.width;
+                live_requested.y = 2088 - live_requested.height;
+                assert(player_window_fit_to_display(live_requested, live_usable,
+                                                    live_frame, true, &fitted));
+                assert((int64_t)fitted.x + fitted.width <= client_x + client_w);
+                assert((int64_t)fitted.y + fitted.height <= client_y + client_h);
+
+                /* A window larger than the whole display still resolves to a
+                   client rectangle that fits, and never a negative maximum. */
+                live_requested.x = 0;
+                live_requested.y = 0;
+                live_requested.width = 5000;
+                live_requested.height = 3000;
+                assert(player_window_fit_to_display(live_requested, live_usable,
+                                                    live_frame, true, &fitted));
+                assert(fitted.x >= client_x);
+                assert(fitted.y >= client_y);
+                assert(fitted.width <= client_w);
+                assert(fitted.height <= client_h);
+            }
+        }
 
         /* Corrupt JSON file resets to defaults and produces notice */
         write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
-        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == 60);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
@@ -1419,13 +2100,21 @@ int main(int argc, char **argv) {
         /* Unknown / unsupported schema version resets to defaults and produces notice */
         write_text_file(test_settings_path, "{\"schema_version\": 999, \"resolution_scale\": 8}");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
-        assert(s_app2->settings.resolution_scale == 4);
+        assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings.fps_cap == 60);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
         assert(s_app2->settings.reduce_motion == false);
         assert(s_app2->settings.master_volume == 80);
         assert(strstr(s_app2->settings_notice, "Unsupported settings schema version") != NULL);
+
+        /* A legacy persisted 8x preset is refused at load: the GPU rasterizer
+           caps at 4x, so it falls back to the default instead of pretending. */
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"resolution_scale\": 8}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.resolution_scale == 1);
+        assert(s_app2->settings_notice[0] == '\0');
 
         remove(test_settings_path);
         free(s_app);
@@ -1642,7 +2331,7 @@ int main(int argc, char **argv) {
         assert(nk_platform_mkdir_p(package_dir));
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
 
         NkGameEntry game;
         memset(&game, 0, sizeof(game));
@@ -1678,7 +2367,7 @@ int main(int argc, char **argv) {
 
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo refreshed_info;
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &refreshed_info, reason,
@@ -1698,7 +2387,7 @@ int main(int argc, char **argv) {
 
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256);
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &refreshed_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -1725,6 +2414,524 @@ int main(int argc, char **argv) {
         remove(report_json);
         remove(executable);
         remove(image);
+    }
+
+    /* 20. A prepared package launched TWICE through the player-owned session
+     * path (#511).
+     *
+     * The repeat contract: both launches resolve the same save root outside
+     * the repository working tree, the second launch's child sees the
+     * savedata the first one wrote, early child failures produce the
+     * documented structured errors (RUNTIME_PACKAGE_NOT_READY,
+     * RUNTIME_PREMATURE_EXIT, RUNTIME_ERROR_EXIT) with a recovery action,
+     * every launch after a failure still works -- no stuck running state, no
+     * retained child handle -- and no repository-tracked file changes across
+     * all runs. The staged executable is a self-copy of this test binary
+     * standing in for a recompiled runtime; the package is synthetic. */
+    printf("[PLAYER_STATE_TEST] Subtest 20: repeat launch through the player session path\n");
+    fflush(stdout);
+    {
+        char sep = nk_platform_path_separator();
+        char self_path[NK_MAX_PATH];
+        assert(nk_platform_absolute_path(argv[0], self_path, sizeof(self_path)));
+
+        /* Buffer sizes nest so no path can ever be truncated mid-copy. */
+        char cache_dir[384];
+        char scratch[448];
+        char user_root[700];
+        char iso_path[NK_MAX_PATH];
+        char report_path[760];
+        char git_before[760];
+        char git_after[760];
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+        snprintf(scratch, sizeof(scratch), "%s%cplayer_repeat_launch_511",
+                 cache_dir, sep);
+        snprintf(user_root, sizeof(user_root), "%s%cuser", scratch, sep);
+        assert(nk_platform_mkdir_p(user_root));
+        snprintf(iso_path, sizeof(iso_path), "%s%cgame.iso", scratch, sep);
+        write_text_file(iso_path, "NOT-A-REAL-ISO");
+        snprintf(report_path, sizeof(report_path), "%s%crepeat_report.txt",
+                 scratch, sep);
+        snprintf(git_before, sizeof(git_before), "%s%cgit_before.txt", scratch, sep);
+        snprintf(git_after, sizeof(git_after), "%s%cgit_after.txt", scratch, sep);
+
+        const NkTitleEntry *title =
+            nk_title_catalog_find_by_id("synthetic-allegrex-v1");
+        assert(title && title->primary_disc_id && title->primary_disc_id[0]);
+        const char *disc_id = title->primary_disc_id;
+
+        write_runtime_package_fixture(user_root, disc_id, "synthetic-allegrex-v1",
+                                      2, "synthetic-allegrex-v1.exe",
+                                      FIXTURE_SHA256, self_path);
+        char package_exe[1100];
+        snprintf(package_exe, sizeof(package_exe),
+                 "%s%cpackages%c%s%csynthetic-allegrex-v1.exe", user_root, sep,
+                 sep, disc_id, sep);
+
+        PlayerApp *rep = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(rep != NULL);
+        nk_library_init(&rep->library);
+        NkGameEntry entry;
+        memset(&entry, 0, sizeof(entry));
+        snprintf(entry.disc_id, sizeof(entry.disc_id), "%s", disc_id);
+        snprintf(entry.title_id, sizeof(entry.title_id), "synthetic-allegrex-v1");
+        snprintf(entry.title_name, sizeof(entry.title_name),
+                 "Repeat Launch Fixture");
+        snprintf(entry.selected_executable, sizeof(entry.selected_executable),
+                 "EBOOT.BIN");
+        snprintf(entry.iso_path, sizeof(entry.iso_path), "%s", iso_path);
+        entry.status = NK_STATUS_IDENTIFIED;
+        assert(nk_library_add_or_update(&rep->library, &entry) == NK_OK);
+        player_app_sync_library(rep);
+        assert(rep->game_count == 1);
+        player_app_set_runtime_root(rep, user_root);
+
+        bool had_report_env;
+        bool had_code_env;
+        char *old_report_env =
+            capture_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", &had_report_env);
+        char *old_code_env =
+            capture_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", &had_code_env);
+        set_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", report_path);
+
+        bool git_available = git_status_snapshot(git_before);
+        if (!git_available) {
+            printf("[PLAYER_STATE_TEST] SKIP git-clean check: `git status` is unavailable here.\n");
+            fflush(stdout);
+        }
+
+        char memstick1[NK_MAX_PATH];
+        memstick1[0] = '\0';
+
+        /* The per-disc save slot survives between runs of this test, so clear
+           this fixture's own savedata first: launch 1 must observe an empty
+           save root. Resolving the session here is the same preparation the
+           launch path performs. */
+        {
+            NkLaunchSession probe;
+            assert(nk_launch_prepare_session(&probe, &rep->games[0], user_root) == NK_OK);
+            assert(probe.memstick_root[0] != '\0');
+            snprintf(memstick1, sizeof(memstick1), "%s", probe.memstick_root);
+            nk_launch_stop(&probe);
+            char stale_marker[1200];
+            snprintf(stale_marker, sizeof(stale_marker), "%s%cf511_repeat.marker",
+                     memstick1, sep);
+            remove(stale_marker);
+        }
+
+        /* Launch 1: the child observes an empty save root, writes savedata,
+           and exits cleanly (elapsed >= 500 ms, code 0: no error). */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        {
+            char error_before[32];
+            snprintf(error_before, sizeof(error_before), "%s",
+                     rep->last_error.error_code);
+            assert(player_app_launch_game(rep, 0));
+            assert(rep->is_game_running);
+            assert(rep->launch_session.argv_has_gui == true);
+            assert(rep->launch_session.memstick_root[0] != '\0');
+            assert(strcmp(rep->launch_session.memstick_root, memstick1) == 0);
+            char cwd[NK_MAX_PATH];
+            char resolved_memstick[NK_MAX_PATH];
+            assert(get_working_directory(cwd, sizeof(cwd)));
+            assert(nk_platform_absolute_path(memstick1, resolved_memstick,
+                                             sizeof(resolved_memstick)));
+            /* The save root must live outside the repository working tree
+               the harness runs from (a bare "saves"-style relative root would
+               land inside it). */
+            assert(!path_is_within(resolved_memstick, cwd));
+            rep->launch_time_ms = 1000;
+            assert(nk_launch_wait(&rep->launch_session, 10000) == 0);
+            assert(player_app_monitor_game_session(rep, 1500));
+            assert(!rep->is_game_running);
+            assert_session_released(&rep->launch_session);
+            assert(strcmp(rep->last_error.error_code, error_before) == 0);
+        }
+        {
+            RepeatLaunchReport report = read_repeat_launch_report(report_path);
+            assert(report.valid);
+            assert(report.marker_present == false);
+            assert(strcmp(report.memstick, memstick1) == 0);
+        }
+
+        /* Launch 2 in the same process: same save root, and the child sees
+           the savedata the first launch wrote. */
+        repeat_launch_and_settle(rep, 0, 2000, 2500, memstick1);
+        {
+            RepeatLaunchReport report = read_repeat_launch_report(report_path);
+            assert(report.valid);
+            assert(report.marker_present == true);
+            assert(strcmp(report.memstick, memstick1) == 0);
+        }
+
+        /* Early failure A: the staged executable vanishes. The player must
+           report a structured, actionable error and leave no stuck state. */
+        assert(remove(package_exe) == 0);
+        assert(player_app_launch_game(rep, 0) == false);
+        assert(rep->is_game_running == false);
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
+        assert(rep->last_error.message[0] != '\0');
+        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(rep->last_error.return_view == VIEW_LIBRARY);
+        /* Recovery: restore the executable and launch again. */
+        copy_executable_file(self_path, package_exe);
+        repeat_launch_and_settle(rep, 0, 3000, 3500, memstick1);
+
+        /* Tier-2 regression: an interactive launch must fail closed when the
+           launcher cannot prepare its boot-event handoff file. This exercises
+           player_app_launch_game itself rather than only the path helper. */
+#if defined(_WIN32) || defined(_WIN64)
+        const char *cache_root_env = "LOCALAPPDATA";
+#elif defined(__APPLE__)
+        const char *cache_root_env = "HOME";
+#else
+        const char *cache_root_env = "XDG_CACHE_HOME";
+#endif
+        bool had_cache_root_env;
+        char *old_cache_root_env =
+            capture_environment_value(cache_root_env, &had_cache_root_env);
+        char oversized_cache_root[NK_MAX_PATH * 2];
+        memset(oversized_cache_root, 'x', sizeof(oversized_cache_root) - 1);
+        oversized_cache_root[sizeof(oversized_cache_root) - 1] = '\0';
+        set_environment_value(cache_root_env, oversized_cache_root);
+        rep->enable_focus_handoff = true;
+        assert(!player_app_launch_game(rep, 0));
+        assert(!rep->is_game_running);
+        assert(rep->boot_event_file_path[0] == '\0');
+        assert(rep->launch_session.boot_event_file_path[0] == '\0');
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code,
+                      "WINDOW_HANDOFF_UNAVAILABLE") == 0);
+        assert(strstr(rep->last_error.message, "boot-event") != NULL);
+        assert(strcmp(rep->last_error.recovery_action_label,
+                      "Return to Library") == 0);
+        assert(rep->last_error.return_view == VIEW_LIBRARY);
+        restore_environment_value(cache_root_env, old_cache_root_env,
+                                  had_cache_root_env);
+        free(old_cache_root_env);
+
+        /* A stale marker must not authorize a handoff when its pathname
+           cannot be removed. A nonempty directory at the exact marker path
+           is a portable filesystem failure seam: remove() fails in the real
+           production helper, without mocking the filesystem or player path.
+           The pathname comes from the production formatter, so the seam lands
+           on the sequence the next launch really uses instead of assuming a
+           hardcoded sequence number. */
+        char stale_marker_path[1100];
+        char stale_marker_child[1200];
+        char next_marker_path[1200];
+        player_app_next_boot_event_path(next_marker_path, sizeof(next_marker_path));
+        assert(next_marker_path[0] != '\0');
+        assert(strstr(next_marker_path, "player-boot-") != NULL);
+        assert(strstr(next_marker_path, ".events") != NULL);
+        assert(strchr(next_marker_path, sep) != NULL);
+        if ((size_t)snprintf(stale_marker_path, sizeof(stale_marker_path), "%s",
+                             next_marker_path) >= sizeof(stale_marker_path)) {
+            printf("[PLAYER_STATE_TEST] FAIL stale-marker pathname too long\n");
+            return 1;
+        }
+        assert(nk_platform_mkdir_p(stale_marker_path));
+        snprintf(stale_marker_child, sizeof(stale_marker_child), "%s%crecord",
+                 stale_marker_path, sep);
+        write_text_file(stale_marker_child, "stale marker\n");
+        rep->enable_focus_handoff = true;
+        assert(!player_app_launch_game(rep, 0));
+        assert(!rep->is_game_running);
+        assert(rep->boot_event_file_path[0] == '\0');
+        assert(rep->launch_session.boot_event_file_path[0] == '\0');
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code,
+                      "WINDOW_HANDOFF_UNAVAILABLE") == 0);
+        assert(nk_platform_dir_exists(stale_marker_path));
+        assert(remove(stale_marker_child) == 0);
+        assert(test_rmdir(stale_marker_path) == 0);
+        rep->enable_focus_handoff = false;
+        /* The same prepared package still launches once the cache route is
+           restored, proving the failed attempt did not wedge session state. */
+        repeat_launch_and_settle(rep, 0, 4000, 4500, memstick1);
+
+        /* Early failure B: the child exits non-zero immediately. The
+           documented classification is RUNTIME_PREMATURE_EXIT. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "7");
+        assert(player_app_launch_game(rep, 0));
+        assert(rep->is_game_running);
+        rep->launch_time_ms = 5000;
+        assert(nk_launch_wait(&rep->launch_session, 10000) == 7);
+        assert(player_app_monitor_game_session(rep, 5100));
+        assert(!rep->is_game_running);
+        assert_session_released(&rep->launch_session);
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_PREMATURE_EXIT") == 0);
+        assert(strstr(rep->last_error.message, "exit code 7") != NULL);
+        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(rep->last_error.return_view == VIEW_LIBRARY);
+        /* Recovery after the premature exit. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        repeat_launch_and_settle(rep, 0, 6000, 6500, memstick1);
+
+        /* Failure C: a longer-lived child exiting non-zero is classified as
+           RUNTIME_ERROR_EXIT. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "9");
+        assert(player_app_launch_game(rep, 0));
+        assert(rep->is_game_running);
+        rep->launch_time_ms = 8000;
+        assert(nk_launch_wait(&rep->launch_session, 10000) == 9);
+        assert(player_app_monitor_game_session(rep, 10000));
+        assert(!rep->is_game_running);
+        assert_session_released(&rep->launch_session);
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_ERROR_EXIT") == 0);
+        assert(strstr(rep->last_error.message, "with code 9") != NULL);
+        /* Final recovery launch: the session is never stuck. */
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        repeat_launch_and_settle(rep, 0, 11000, 12000, memstick1);
+
+        /* (d) No repository-tracked file changed across the runs. */
+        if (git_available) {
+            bool after_ok = git_status_snapshot(git_after);
+            if (!after_ok || !files_identical(git_before, git_after)) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] repository-tracked state "
+                                "changed during the repeat-launch runs\n");
+            }
+            assert(after_ok);
+            assert(files_identical(git_before, git_after));
+        }
+
+        restore_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", old_report_env,
+                                  had_report_env);
+        restore_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", old_code_env,
+                                  had_code_env);
+        free(old_report_env);
+        free(old_code_env);
+        free(rep);
+
+        char marker_path[1200];
+        snprintf(marker_path, sizeof(marker_path), "%s%cf511_repeat.marker",
+                 memstick1, sep);
+        remove(marker_path);
+        /* Only removed when this test created it and it is now empty; a
+           pre-existing per-disc save slot is left alone. */
+        test_rmdir(memstick1);
+        remove(report_path);
+        remove(git_before);
+        remove(git_after);
+        remove(iso_path);
+        remove(package_exe);
+        char package_json[1300];
+        char build_report_json[1300];
+        char completion_json[1300];
+        char image_bin[1300];
+        char package_dir[1100];
+        snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s", user_root,
+                 sep, sep, disc_id);
+        snprintf(package_json, sizeof(package_json), "%s%cpackage.json",
+                 package_dir, sep);
+        snprintf(build_report_json, sizeof(build_report_json),
+                 "%s%cbuild-report.json", package_dir, sep);
+        snprintf(completion_json, sizeof(completion_json),
+                 "%s%ccompletion-manifest.json", package_dir, sep);
+        snprintf(image_bin, sizeof(image_bin),
+                 "%s%csynthetic-allegrex-v1_image.bin", package_dir, sep);
+        remove(package_json);
+        remove(build_report_json);
+        remove(completion_json);
+        remove(image_bin);
+        test_rmdir(package_dir);
+        char packages_dir[1100];
+        snprintf(packages_dir, sizeof(packages_dir), "%s%cpackages", user_root, sep);
+        test_rmdir(packages_dir);
+        test_rmdir(user_root);
+        test_rmdir(scratch);
+    }
+    /* 20b. A crafted disc controls module directory names; only plain names
+       may be written under the private per-title folder. */
+    {
+        assert(player_module_name_is_safe("MODULE.PRX"));
+        assert(player_module_name_is_safe("libfont_hv.prx"));
+        assert(player_module_name_is_safe("a-b.1.elf"));
+        assert(!player_module_name_is_safe(""));
+        assert(!player_module_name_is_safe("..\\..\\evil.prx"));
+        assert(!player_module_name_is_safe("../evil.prx"));
+        assert(!player_module_name_is_safe("a/b.prx"));
+        assert(!player_module_name_is_safe("C:evil.prx"));
+        assert(!player_module_name_is_safe(".hidden.prx"));
+        assert(!player_module_name_is_safe("CON.prx"));
+        assert(!player_module_name_is_safe("lpt1.prx"));
+        assert(!player_module_name_is_safe("trailing."));
+        assert(!player_module_name_is_safe("space name.prx"));
+        assert(player_module_name_is_safe("CONSOLE.prx"));
+    }
+    /* 21. Host discovery: build preflight cards and the SDL3_ttf search order. */
+    printf("[PLAYER_STATE_TEST] Subtest 21: build preflight cards and SDL3_ttf search order\n");
+    fflush(stdout);
+    {
+        /* 21a: SDL3_ttf candidates put the executable folder first, then the
+           platform loader's bare names (PATH on Windows). */
+        char with_dir[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        char without_dir[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        char trailing[PLAYER_APP_TTF_MAX_CANDIDATES][MAX_PATH_LEN];
+        int n_with = player_app_ttf_library_candidates("C:/rel/bin", with_dir,
+                                                       PLAYER_APP_TTF_MAX_CANDIDATES);
+        int n_without = player_app_ttf_library_candidates(NULL, without_dir,
+                                                          PLAYER_APP_TTF_MAX_CANDIDATES);
+        int n_trailing = player_app_ttf_library_candidates("C:/rel/bin/", trailing,
+                                                           PLAYER_APP_TTF_MAX_CANDIDATES);
+        assert(n_with == n_without + 1);
+        assert(n_with >= 2);
+        assert(strstr(with_dir[0], "C:/rel/bin") != NULL);
+        assert(strstr(with_dir[0], "SDL3_ttf") != NULL);
+        assert(strcmp(with_dir[1], without_dir[0]) == 0);
+        assert(strchr(with_dir[n_with - 1], '/') == NULL);
+        assert(strchr(with_dir[n_with - 1], '\\') == NULL);
+        assert(n_trailing == n_with);
+        assert(strcmp(trailing[0], with_dir[0]) == 0);
+
+        /* 21b/21c: the two discovery cards a release user can hit. */
+        PlayerApp *capp = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(capp != NULL);
+        nk_library_init(&capp->library);
+        player_app_populate_sample_games(capp);
+        assert(capp->game_count > 0);
+
+        char saved_cwd[NK_MAX_PATH];
+        assert(nk_ps_getcwd(saved_cwd, sizeof(saved_cwd)) != NULL);
+        char probe[NK_MAX_PATH + 64];
+        assert(nk_platform_get_path(NK_PATH_CACHE, probe, sizeof(probe)));
+        size_t probe_len = strlen(probe);
+        snprintf(probe + probe_len, sizeof(probe) - probe_len, "%ccli_card_probe",
+                 nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(probe));
+
+        char prior_override[1024];
+        nk_ps_copy_env("NK_INSTALL_ROOT", prior_override, sizeof(prior_override));
+        nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+        assert(nk_ps_chdir(probe) == 0);
+        snprintf(capp->install_root, sizeof(capp->install_root), "%.*s",
+                 (int)sizeof(capp->install_root) - 1, probe);
+
+        /* CLI_NOT_FOUND: the card must name NK_INSTALL_ROOT and the checkout fix. */
+        assert(!player_app_start_package_build(capp, 0));
+        assert(capp->active_view == VIEW_ERROR);
+        assert(strcmp(capp->last_error.error_code, "CLI_NOT_FOUND") == 0);
+        assert(strstr(capp->last_error.message, "NK_INSTALL_ROOT") != NULL);
+        assert(strstr(capp->last_error.message, "source checkout") != NULL);
+        assert(strstr(capp->last_error.message, "nk_cli.py") != NULL);
+
+        /* 21c: back in the checkout, an empty PATH requests consent before
+           any prerequisite download or child process starts. */
+        assert(nk_ps_chdir(saved_cwd) == 0);
+        snprintf(capp->install_root, sizeof(capp->install_root), "%s", saved_cwd);
+        char prior_path[32768];
+        char prior_python[1024];
+        nk_ps_copy_env("PATH", prior_path, sizeof(prior_path));
+        nk_ps_copy_env("PYTHON", prior_python, sizeof(prior_python));
+#if defined(_WIN32) || defined(_WIN64)
+        nk_ps_set_env("PYTHON", "C:/Windows/notepad.exe");
+#else
+        nk_ps_set_env("PYTHON", "/bin/sh");
+#endif
+        nk_ps_set_env("PATH", "");
+
+#if defined(_WIN32) || defined(_WIN64)
+        assert(player_app_start_package_build(capp, 0));
+        assert(capp->active_view == VIEW_PREREQ_CONSENT);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
+        assert(capp->prerequisites.item_count == 35);
+        assert(capp->prerequisites.total_bytes == UINT64_C(100665604));
+        assert(capp->build_session.is_building == false);
+        /* Consent cancellation has no side effects. */
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+#else
+        /* Automatic installation is Windows x64 only for now: other hosts are
+           refused with the tracking issue, and nothing is downloaded. */
+        assert(!player_app_start_package_build(capp, 0));
+        assert(strstr(capp->last_error.message, "#306") != NULL);
+        assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
+#endif
+        assert(capp->build_session.is_building == false);
+
+        /* The next attempt records consent for this build only and reaches
+           the progress card. */
+        assert(player_app_prereq_begin(capp, 0, true, true));
+        player_app_prereq_accept(capp, true);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_update_progress(capp, "cpython-embed-amd64", 64, 128,
+                                          64, UINT64_C(100665604));
+        assert(strcmp(capp->prerequisites.current_item, "cpython-embed-amd64") == 0);
+        assert(capp->prerequisites.item_received_bytes == 64);
+        assert(capp->prerequisites.total_received_bytes == 64);
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.cancel_requested);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_finish_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+
+        assert(player_app_prereq_begin(capp, 0, false, true));
+        player_app_prereq_accept(capp, false);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_DOWNLOAD);
+        assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+        player_app_prereq_cancel(capp);
+        assert(capp->prerequisites.cancel_requested);
+        player_app_prereq_finish_cancel(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_CANCELLED);
+        assert(capp->active_view == VIEW_LIBRARY);
+
+        assert(player_app_prereq_begin(capp, 0, true, true));
+        player_app_prereq_accept(capp, true);
+        player_app_prereq_fail(capp, "PYTHON_ARCHIVE_EXTRACT_FAILED",
+                               "The verified runtime could not be extracted.");
+        assert(capp->active_view == VIEW_ERROR);
+        assert(strcmp(capp->last_error.error_code, "PYTHON_ARCHIVE_EXTRACT_FAILED") == 0);
+        player_app_prereq_retry(capp);
+        assert(capp->active_view == VIEW_PREREQ_CONSENT);
+        assert(capp->prerequisites.bootstrap_python);
+        player_app_prereq_accept(capp, true);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
+        player_app_prereq_cancel(capp);
+        player_app_prereq_finish_cancel(capp);
+
+        assert(player_app_prereq_begin(capp, 0, false, true));
+        player_app_prereq_accept(capp, false);
+        {
+            static const char *const errors[] = {
+                "OFFLINE_OR_NETWORK_ERROR", "HASH_MISMATCH", "SIZE_MISMATCH",
+                "REDIRECT_REJECTED", "TRUNCATED_BODY", "DISK_FULL",
+                "DESTINATION_WRITE_FAILED", "MANIFEST_INVALID"
+            };
+            for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+                player_app_prereq_fail(capp, errors[i], "Check the connection or free disk space, then retry.");
+                assert(capp->active_view == VIEW_ERROR);
+                assert(capp->prerequisites.phase == PLAYER_PREREQ_FAILED);
+                assert(strcmp(capp->last_error.error_code, errors[i]) == 0);
+                assert(strcmp(capp->last_error.recovery_action_label, "Retry Download") == 0);
+                assert(capp->last_error.return_view == VIEW_PREREQ_CONSENT);
+                player_app_prereq_retry(capp);
+                assert(capp->active_view == VIEW_PREREQ_CONSENT);
+                assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
+                player_app_prereq_accept(capp, false);
+                assert(capp->active_view == VIEW_PREREQ_PROGRESS);
+            }
+        }
+        player_app_prereq_complete(capp);
+        assert(capp->prerequisites.phase == PLAYER_PREREQ_INSTALLED);
+        assert(capp->prerequisites.resume_build_pending);
+        assert(player_app_prereq_take_resume(capp));
+        assert(!player_app_prereq_take_resume(capp));
+
+        /* Restore the process environment before any later probe. */
+        if (prior_path[0]) nk_ps_set_env("PATH", prior_path);
+        else nk_ps_set_env("PATH", "");
+        if (prior_python[0]) nk_ps_set_env("PYTHON", prior_python);
+        else nk_ps_set_env("PYTHON", NULL);
+        if (prior_override[0]) nk_ps_set_env("NK_INSTALL_ROOT", prior_override);
+        else nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+
+        free(capp);
     }
 
     free(app);

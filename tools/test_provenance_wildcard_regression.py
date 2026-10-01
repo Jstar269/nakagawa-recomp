@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 """Regression: tools/test_* paths must classify through the canonical
@@ -58,8 +58,12 @@ class TestWildcardBackedClassificationRepair(unittest.TestCase):
         entries = {e["path"]: e for e in self._ledger()["entries"]}
         self.assertIn(PATH, entries)
         entry = entries[PATH]
-        self.assertEqual(entry["classification"], "synthetic_fixture")
-        self.assertNotIn("record_id", entry["evidence"])
+        # Either the record-free deterministic census entry, or an EXACT
+        # path-specific record admitted later -- never the wildcard record.
+        if entry["classification"] == "synthetic_fixture":
+            self.assertNotIn("record_id", entry["evidence"])
+        else:
+            self.assertIn("record_id", entry["evidence"])
         for forbidden in FORBIDDEN_WILDCARD_RECORDS:
             self.assertNotEqual(entry["evidence"].get("record_id"), forbidden)
             self.assertNotIn(forbidden, json.dumps(entry["evidence"]))

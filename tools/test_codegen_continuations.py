@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from pathlib import Path
 import sys
@@ -134,6 +134,35 @@ class ContinuationFlowTests(unittest.TestCase):
         restore = text.index("s->r[29] = _sp_entry; /* synthetic boundary", boundary)
         self.assertLess(boundary, restore)
         self.assertIn("goto _sr_cont_00001010;", text)
+
+    def test_stack_census_keeps_synthetic_boundary_annotation(self):
+        elf = FakeElf(
+            {
+                0x1000: 0x27BDFFF0,  # addiu sp, sp, -16
+                0x1004: 0xAFBF0000,  # sw ra, 0(sp)
+                0x1008: jal(0x2000),
+                0x100C: 0x24040001,  # addiu a0, zero, 1 (delay slot)
+                0x1010: 0x00041823,  # foreign adjacent entry
+                0x1014: 0x03E00008,
+                0x1018: 0x00000000,
+                0x2000: 0x03E00008,
+                0x2004: 0x00000000,
+            }
+        )
+        known = {0x1000, 0x1010, 0x2000}
+        text = "\n".join(
+            codegen.emit_function(
+                elf, 0x1000, [(0x1000, 0x2008)], known, stack_census=True,
+            )
+        )
+        boundary = text.index("f_00001010(s);")
+        # The census wrapper owns SP restoration, so the boundary is a bare
+        # return, but the generated source must still mark it as synthetic.
+        self.assertIn(
+            "return; /* synthetic boundary: restore the owning entry frame */",
+            text[boundary:],
+        )
+        self.assertNotIn("s->r[29] = _sp_entry; /* synthetic boundary", text)
 
     def test_dense_linear_entries_chain_instead_of_truncating(self):
         elf = FakeElf(

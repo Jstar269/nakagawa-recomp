@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Title #2 slice 1: ``--profile=none`` must inherit no HST behavior.
@@ -98,8 +98,8 @@ def _addiu_sp(imm: int) -> int:
 
 # --- the address-coupled inventory, taken from codegen's own tables ---------
 
-HST_BOOT_PROBES = (0x0003D828, 0x0003DFD0, 0x000705B0, 0x001026B8, 0x001039D8)
-HST_INLINE_PROBES = (0x000160E8, 0x000705E4)
+# The SR_BOOT_DIAG entry and inline probes were retired with the generic-runtime
+# HST cleanup (#285); codegen no longer emits them in either profile.
 HST_DIAG_PROBES = (0x0010433C, 0x0006E9BC)
 HST_FASTPATHS = (0x0006EA1C, 0x00108630)
 HST_ABORT = (0x00000A1C,)
@@ -115,9 +115,7 @@ HST_SIMPLE_STUB_ADDRS = tuple(sorted(HST_SIMPLE_STUBS))
 # Bodies whose emission differs between the two profiles.  These are the pairs
 # the differential compares.
 BODY_COUPLED = (
-    HST_BOOT_PROBES
-    + HST_INLINE_PROBES
-    + HST_DIAG_PROBES
+    HST_DIAG_PROBES
     + HST_FASTPATHS
     + HST_ABORT
     + HST_CUSTOM_STUBS
@@ -449,9 +447,6 @@ class ProfileHstLegacyTests(unittest.TestCase):
             "ARRSHIFT_FASTPATH",
             "GUEST_ABORT",
             "_Exit(9)",
-            "sr_boot_probe(s, 0x0003d828u);",
-            "sr_boot_probe(s, 0x000160e8u);",
-            "sr_boot_probe(s, 0x000705e4u);",
             "bypass loop 0x10950",
             "s->r[16] = s->r[3];",
             "_c = 1u;",
@@ -468,6 +463,8 @@ class ProfileHstLegacyTests(unittest.TestCase):
         # under hst, which is the production default this slice must not change.
         self.assertNotIn("TOKENSCAN_DIAG", self.combined)
         self.assertNotIn("F3G_ENTRY", self.combined)
+        # The SR_BOOT_DIAG probes were retired with the generic-runtime HST cleanup (#285).
+        self.assertNotIn("sr_boot_probe", self.combined)
 
 
 # ---------------------------------------------------------------------------

@@ -18,8 +18,13 @@
 *.[iI][sS][oO]
 *.[pP][rR][xX]
 *.[pP][bB][pP]
+# Source-owned profile-zero fixture (#557): committed PSPDEV build output that
+# profile-zero-e2e consumes on hosts without PSPDEV. Project-authored bytes from
+# fixtures/profile_zero/{main.c,Makefile}, never retail game data.
+!/fixtures/profile_zero/prebuilt/*.prx
+!/fixtures/profile_zero/prebuilt/*.PBP
 # Firmware font payloads: the runtime loads sceFont glyphs from SR_FONTDIR or from the
-# executable's sibling `font` directory, and copy_build_assets.ps1 stages this directory next to
+# executable's sibling `font` directory, and tools/copy_build_assets.ps1 stages this directory next to
 # the binary on every build, so font/ is the operator's drop point. The payloads are never
 # redistributed with the public source (see font/README.md), so they must never be committed.
 /font/*.pgf
@@ -75,6 +80,8 @@ tools/vfpu_game_*.txt
 
 # Runtime state, logs, captures, and reports
 /logs/
+# Private flagship verifier outputs written at the worktree root; never tracked.
+/logs_*.txt
 /fs/
 /memstick/
 *.log
@@ -88,11 +95,13 @@ tex_*.pgm
 # of this section -- never commit it.
 nidseq_mine.txt
 # tools/capture_native_screenshots.py defaults to writing into docs/ui-baseline,
-# a TRACKED documentation directory, and it photographs whatever library the
-# developer actually has. On a maintainer's machine that is the real library, so
-# the captures show retail disc ids and title names. They are runtime captures of
-# private input, not documentation assets; docs/ui-baseline/README.md records
-# that they are retained internally and never published. They must not be
+# a documentation output directory with no tracked assets (the dated inventory
+# lives at docs/archive/ui-baseline/README.md), and it photographs whatever
+# library the developer actually has. On a maintainer's machine that is the real
+# library, so the captures show retail disc ids and title names. They are
+# runtime captures of private input, not documentation assets;
+# docs/archive/ui-baseline/README.md records that they are retained internally
+# and never published. They must not be
 # stageable by an ordinary `git add -A`, which is a documented step of the
 # provenance refresh. publish_audit does reject them as POLICY_UNCLASSIFIED if
 # they are ever staged, but that is the last line of defence, not the first.
@@ -108,7 +117,6 @@ nidseq_mine.txt
 
 # Superseded investigations and local scratch
 /Archive/
-/docs/archive/
 /scratch/
 /tmp/
 /nul
@@ -129,21 +137,6 @@ htmlcov/
 .venv/
 venv/
 
-# JavaScript/dashboard local state
-node_modules/
-interface/.env
-interface/.env.*
-!interface/.env.example
-interface/.next/
-interface/out/
-interface/coverage/
-interface/prisma/*.db*
-interface/db/
-interface/tool-results/
-interface/*.tsbuildinfo
-interface/next-env.d.ts
-interface/src/generated/prisma/
-.eslintcache
 
 # IDE/editor and OS metadata
 /.vs/

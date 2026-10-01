@@ -263,7 +263,7 @@ class TrackedMachinePathTests(unittest.TestCase):
     inventory of their fixture paths lives in the issue rather than here.
     """
 
-    THIRD_PARTY_PREFIXES = ("src/rt/atrac3p/", "interface/node_modules/", "font/")
+    THIRD_PARTY_PREFIXES = ("src/rt/atrac3p/", "font/")
 
     #: Files allowed to name a user-profile/workspace root, with the reason the
     #: path is first-party-acceptable.
@@ -320,7 +320,7 @@ class TrackedMachinePathTests(unittest.TestCase):
     def _is_explicit_test_or_fixture(rel: str) -> bool:
         parts = rel.split("/")
         name = parts[-1]
-        if any(part in parts for part in ("tests", "fixtures", "node_modules")):
+        if any(part in parts for part in ("tests", "fixtures")):
             return True
         if name.startswith("test_") or name.endswith(("_test.py", "_test.ps1")):
             return True

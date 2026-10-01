@@ -64,8 +64,11 @@ PRIVATE_REPO_URL = re.compile(
     r"github\.com/" + r"Jstar269/" + r"nakagawa-recomp-" + r"history-private",
     re.IGNORECASE,
 )
+# A plain title file name (for example a data archive's name) is a publishable fact under
+# the maintainer's 2026-09-25 legal posture, so it is not vocabulary here; key material
+# names and private save/trace/dump evidence still are.
 PRIVATE_OPERATIONAL_VOCABULARY = re.compile(
-    r"(?:GAMEDATA\." + r"BDL|HST" + r"_PGD_VKEY(?:_HEX)?|"
+    r"(?:HST" + r"_PGD_VKEY(?:_HEX)?|"
     r"private[_ -](?:save|trace|dump)\s*(?:baseline|identity|path|location|hash|capture|evidence)\b)",
     re.IGNORECASE,
 )
@@ -376,14 +379,61 @@ def audit_large_blobs(repo_root: Path = ROOT, size_threshold: int = 500 * 1024) 
     return sorted(large_blobs, key=lambda b: b["size"], reverse=True)
 
 
-def generate_full_history_audit_report(repo_root: Path = ROOT) -> dict:
+REVIEWED_FINDINGS_PATH = ROOT / "assets" / "history_audit_reviewed.json"
+
+
+def load_reviewed_findings(path: Path = REVIEWED_FINDINGS_PATH) -> list[dict]:
+    """Maintainer-reviewed historical findings: an exact (blob, code, path) triple each.
+
+    A blob id names immutable content, so an entry can never excuse different bytes;
+    any new blob with the same problem is still a finding. Each entry must say why it
+    was accepted. A malformed file fails closed.
+    """
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        raise ValueError(f"{path}: expected schema_version 1")
+    entries = data.get("reviewed")
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: 'reviewed' must be a list")
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: reviewed[{index}] must be an object")
+        blob = entry.get("blob")
+        if not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{40}", blob):
+            raise ValueError(f"{path}: reviewed[{index}].blob must be a full 40-hex blob id")
+        for key in ("code", "path", "reason"):
+            if not isinstance(entry.get(key), str) or not entry[key].strip():
+                raise ValueError(f"{path}: reviewed[{index}].{key} must be a non-empty string")
+    return entries
+
+
+def _is_reviewed(finding: HistoryFinding, reviewed: list[dict]) -> dict | None:
+    for entry in reviewed:
+        if (finding.commit == "blob:" + entry["blob"][:12] and finding.code == entry["code"]
+                and finding.path == entry["path"]):
+            return entry
+    return None
+
+
+def generate_full_history_audit_report(repo_root: Path = ROOT,
+                                       reviewed_path: Path = REVIEWED_FINDINGS_PATH) -> dict:
     baseline = get_repository_baseline(repo_root)
     tree_findings = audit_history_tree_paths(repo_root)
     metadata_findings = audit_history_commit_metadata(repo_root)
     blob_findings = audit_history_blob_contents(repo_root)
     large_blobs = audit_large_blobs(repo_root)
+    reviewed = load_reviewed_findings(reviewed_path)
 
-    all_findings = tree_findings + metadata_findings + blob_findings
+    all_findings: list[HistoryFinding] = []
+    reviewed_findings: list[dict] = []
+    for finding in tree_findings + metadata_findings + blob_findings:
+        entry = _is_reviewed(finding, reviewed)
+        if entry is None:
+            all_findings.append(finding)
+        else:
+            reviewed_findings.append({**finding.to_dict(redact=True), "reason": entry["reason"]})
 
     category_counts: dict[str, int] = {}
     for f in all_findings:
@@ -396,7 +446,9 @@ def generate_full_history_audit_report(repo_root: Path = ROOT) -> dict:
             "total_findings": len(all_findings),
             "category_counts": category_counts,
             "large_blobs_over_500kb": len(large_blobs),
+            "reviewed_findings": len(reviewed_findings),
         },
+        "reviewed_findings": reviewed_findings,
         "large_blobs": large_blobs[:10],  # Top 10 largest blobs
         "findings": [f.to_dict(redact=True) for f in all_findings],
     }
@@ -427,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Reachable Refs:    {report['baseline']['total_refs']}")
     print(f"Status:            {report['status']}")
     print(f"Total Findings:    {report['summary']['total_findings']}")
+    print(f"Reviewed (accepted historical blobs): {report['summary']['reviewed_findings']}")
     print("Category Breakdown:")
     for cat, count in report['summary']['category_counts'].items():
         print(f"  - {cat}: {count}")

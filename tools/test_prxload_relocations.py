@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Regression tests for Prx._apply's R_MIPS_HI16/LO16 pairing.
 

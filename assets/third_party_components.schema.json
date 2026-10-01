@@ -4,7 +4,7 @@
   "title": "Nakagawa Recomp third-party component inventory",
   "description": "Machine-readable source of truth for every third-party component that can enter a release artifact. tools/test_third_party_notices.py fails closed when a recorded component lacks an SPDX identifier, a license text in the tree, or a recorded Python license.",
   "type": "object",
-  "required": ["name", "schema_version", "native", "python_packages", "dashboard"],
+  "required": ["name", "schema_version", "native", "python_packages"],
   "additionalProperties": true,
   "properties": {
     "$schema": { "type": "string" },
@@ -63,42 +63,6 @@
               "version": { "type": "string" },
               "spdx_id": { "type": "string" },
               "recorded_from": { "type": "string" }
-            },
-            "additionalProperties": true
-          }
-        }
-      },
-      "additionalProperties": true
-    },
-    "dashboard": {
-      "type": "object",
-      "required": ["lockfile", "license_obligations"],
-      "properties": {
-        "lockfile": { "type": "string" },
-        "notices_target": { "type": "string" },
-        "generator": { "type": "string" },
-        "note": { "type": "string" },
-        "license_obligations": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "required": ["obligation", "resolved"],
-            "properties": {
-              "applies_to": { "type": "array", "items": { "type": "string" } },
-              "obligation": { "type": "string" },
-              "resolved": { "type": "boolean" }
-            },
-            "additionalProperties": true
-          }
-        },
-        "project_attribution": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["file", "covers"],
-            "properties": {
-              "file": { "type": "string" },
-              "covers": { "type": "string" }
             },
             "additionalProperties": true
           }

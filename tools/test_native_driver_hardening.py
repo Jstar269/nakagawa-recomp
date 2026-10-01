@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
 """Malformed-input regression tests for the native runtime driver (src/rt/driver.c)."""
@@ -43,6 +43,11 @@ uint8_t *g_mem = g_mock_ram + 0x08000000;
 static int g_mem_init_calls = 0;
 static int g_segment_loads = 0;
 static int g_check_all_or_nothing = 0;
+static unsigned g_mock_alloc_calls = 0;
+static uint32_t g_module_start_arglen = 0;
+static uint32_t g_module_start_argp = 0;
+static char g_module_start_arg[128];
+static int g_direct_stack_below_args = 0;
 
 uint32_t g_sr_debug = 0;
 int sr_hit_hle = 0;
@@ -57,7 +62,15 @@ uint32_t sched_current_uid(void) {{ return 0; }}
 void sr_debug_init_watches(void) {{}}
 void sr_profile_init(void) {{}}
 void sr_register_all(void) {{}}
-static void dummy_recomp_fn(CpuState *s) {{ (void)s; }}
+static void synthetic_module_start(uint32_t args, uint32_t argp);
+static void dummy_recomp_fn(CpuState *s) {{
+    const char *boot_path = getenv("SR_BOOT_PATH");
+    if (!boot_path || !boot_path[0] || s->r[29] < 16u) return;
+    uint32_t prologue_sp = s->r[29] - 16u;
+    g_direct_stack_below_args = prologue_sp + 16u <= s->r[5];
+    for (uint32_t i = 0; i < 16u; i++) *(SR_HOST(prologue_sp + i)) = 0xa5u;
+    synthetic_module_start(s->r[4], s->r[5]);
+}}
 RecompFn sr_lookup(uint32_t addr) {{
     if (addr == 0x08000010u || addr == (0x08000010u & 0x01ffffffu)) return dummy_recomp_fn;
     return NULL;
@@ -65,8 +78,25 @@ RecompFn sr_lookup(uint32_t addr) {{
 int sr_trace_open(const char *path, const char *title, uint32_t entry) {{ (void)path; (void)title; (void)entry; return 0; }}
 void sr_trace_close(void) {{}}
 void gui_init(const char *title) {{ (void)title; }}
-void sched_init(CpuState *cpu) {{ (void)cpu; }}
-void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {{ (void)entry; (void)arglen; (void)argp; }}
+uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {{
+    (void)guest_ra;
+    if (size > sizeof(g_module_start_arg)) return 0;
+    g_mock_alloc_calls++;
+    return 0x0a000010u;
+}}
+void sched_init(CpuState *cpu) {{ s_cpu = cpu; }}
+static void synthetic_module_start(uint32_t args, uint32_t argp) {{
+    g_module_start_arglen = args;
+    g_module_start_argp = argp;
+    if (args == 0 || argp == 0 || args > sizeof(g_module_start_arg)) return;
+    for (uint32_t i = 0; i < args; i++) {{
+        g_module_start_arg[i] = (char)MEM_R8(argp + i);
+        if (g_module_start_arg[i] == '\\0') return;
+    }}
+}}
+void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {{
+    if (entry == 0x08000010u) synthetic_module_start(arglen, argp);
+}}
 /* Extracted-data preparation seam: this harness links driver.c without hle.c,
  * so the headless stub records that boot called it exactly once and reports a
  * terminal DISABLED state. */
@@ -300,6 +330,38 @@ int main(int argc, char **argv) {{
         return driver_main(7, argv_fake);
     }}
 
+    if (strcmp(mode, "image_boot_args") == 0) {{
+        if (argc < 3) return 108;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none", "--sched"
+        }};
+        int result = driver_main(8, argv_fake);
+        if (result != 0) return result;
+        uint32_t expected_arglen = strlen("disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN") + 1u;
+        uint32_t expected_argp = 0x09f00000u - ((expected_arglen + 15u) & ~15u);
+        if (g_module_start_arglen != expected_arglen) return 109;
+        if (g_module_start_argp != expected_argp || g_mock_alloc_calls != 0u) return 110;
+        if (strcmp(g_module_start_arg, "disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN") != 0) return 111;
+        return 0;
+    }}
+
+    if (strcmp(mode, "image_boot_args_direct") == 0) {{
+        if (argc < 3) return 112;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none"
+        }};
+        int result = driver_main(7, argv_fake);
+        if (result != 0) return result;
+        uint32_t expected_arglen = strlen("disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN") + 1u;
+        uint32_t expected_argp = 0x09f00000u - ((expected_arglen + 15u) & ~15u);
+        if (!g_direct_stack_below_args) return 113;
+        if (g_module_start_arglen != expected_arglen || g_module_start_argp != expected_argp)
+            return 114;
+        if (strcmp(g_module_start_arg, "disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN") != 0)
+            return 115;
+        return 0;
+    }}
+
     if (strcmp(mode, "image_expect_valid") == 0) {{
         if (argc < 3) return 100;
         char *argv_fake[] = {{
@@ -473,6 +535,23 @@ int main(int argc, char **argv) {{
             # 6. Valid --image load
             valid_img = subprocess.run([str(exe), "image_valid", str(sample_img)], capture_output=True, text=True)
             self.assertEqual(valid_img.returncode, 0, valid_img.stderr + valid_img.stdout)
+
+            boot_args_env = os.environ.copy()
+            boot_args_env["SR_BOOT_PATH"] = "disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN"
+            boot_args = subprocess.run(
+                [str(exe), "image_boot_args", str(sample_img)],
+                capture_output=True, text=True, env=boot_args_env,
+            )
+            self.assertEqual(boot_args.returncode, 0, boot_args.stderr + boot_args.stdout)
+
+            direct_boot_args = subprocess.run(
+                [str(exe), "image_boot_args_direct", str(sample_img)],
+                capture_output=True, text=True, env=boot_args_env,
+            )
+            self.assertEqual(
+                direct_boot_args.returncode, 0,
+                direct_boot_args.stderr + direct_boot_args.stdout,
+            )
 
             expected_img = subprocess.run(
                 [str(exe), "image_expect_valid", str(sample_img)], capture_output=True, text=True

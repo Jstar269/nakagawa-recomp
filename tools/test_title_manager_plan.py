@@ -105,8 +105,9 @@ class TitleManagerPlanTests(unittest.TestCase):
     def test_synthetic_plan_uses_generic_profile_and_clears_hst_span(self) -> None:
         plan = self.synthetic_plan(game_elf=Path("build/fixtures/synthetic.elf"))
         self.assertEqual(plan["title_kind"], "synthetic")
+        # The runnable #309 manifest carries the real PSPDEV PRX entry, not the load base.
         self.assertEqual(plan["game_base"], 0x08800000)
-        self.assertEqual(plan["game_entry"], 0x08800000)
+        self.assertEqual(plan["game_entry"], 0x088000EC)
         self.assertEqual(plan["codegen_profile"], "none")
         self.assertEqual(plan["environment"]["TITLE_EXTRA_SPANS"], "")
         self.assertNotIn("HST_EXTRA_SPANS", plan["environment"])

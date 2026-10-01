@@ -18,6 +18,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include "fp_convert.h"
@@ -30,6 +31,7 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 
 /* Debug framework — included early so sr_w32() can call sr_check_mem_watch(). */
 #include "debug.h"
+#include "flight_recorder.h"
 #include "perf.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector (declarations only) */
 
@@ -327,30 +329,12 @@ static inline void sr_log_store_context(uint32_t addr, uint32_t value,
     fflush(stderr);
 }
 
-static inline void sr_check_metadata_watch(uint32_t addr, uint32_t val, int write, int width, uint32_t pc) {
-    if (__builtin_expect(g_sr_metadata_watch, 0)) {
-        /* Use uint64_t to prevent wrap-around when addr is near UINT32_MAX: a
-         * 32-bit addr + width - 1 can wrap to a small value and falsely match
-         * the monitored window.  The comparison against 32-bit constants is safe
-         * because both sides are widened before the comparison. */
-        uint64_t end = (uint64_t)addr + (uint32_t)width - 1ULL;
-        if ((uint64_t)addr <= 0x0030a0bfULL && end >= 0x0030a040ULL) {
-            extern uint32_t sched_current_uid(void);
-            fprintf(stderr, "METADATA_WATCH: %s addr=0x%08x width=%d val=0x%08x pc=0x%08x thread_uid=0x%x caller=%s\n",
-                    write ? "WRITE" : "READ",
-                    addr, width, val, pc, sched_current_uid(),
-                    ((g_hle_depth > 0) || (sched_current_uid() == 0)) ? "host/HLE" : "guest");
-        }
-    }
-}
-
 void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc);
 void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc);
 
 static inline uint8_t  sr_r8 (uint32_t a) {
     if (sr_inrange(a)) {
         uint8_t v = *(uint8_t  *)SR_HOST(a);
-        sr_check_metadata_watch(a, v, 0, 1, s_cpu ? s_cpu->pc : 0);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -358,7 +342,6 @@ static inline uint8_t  sr_r8 (uint32_t a) {
 static inline uint16_t sr_r16(uint32_t a) {
     if (sr_inrange_n(a, 2)) {
         uint16_t v; memcpy(&v, SR_HOST(a), sizeof v);
-        sr_check_metadata_watch(a, v, 0, 2, s_cpu ? s_cpu->pc : 0);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -370,7 +353,6 @@ static inline uint32_t sr_r32(uint32_t a) {
     }
     if (sr_inrange_n(a, 4)) {
         uint32_t v; memcpy(&v, SR_HOST(a), sizeof v);
-        sr_check_metadata_watch(a, v, 0, 4, s_cpu ? s_cpu->pc : 0);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -379,25 +361,31 @@ static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 1u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 1u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
-    sr_check_metadata_watch(a, v, 1, 1, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 1u, v, pc);
-    if (sr_inrange(a)) *(uint8_t *)SR_HOST(a) = v; else sr_oor(a, v, 1);
+    if (sr_inrange(a)) {
+        *(uint8_t *)SR_HOST(a) = v;
+        SR_WATCH_STORE_IF_ARMED(pc, a, v, 1u);
+    } else sr_oor(a, v, 1);
 }
 static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 2u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 2u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
-    sr_check_metadata_watch(a, v, 1, 2, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 2u, v, pc);
-    if (sr_inrange_n(a, 2)) memcpy(SR_HOST(a), &v, sizeof v); else sr_oor(a, v, 1);
+    if (sr_inrange_n(a, 2)) {
+        memcpy(SR_HOST(a), &v, sizeof v);
+        SR_WATCH_STORE_IF_ARMED(pc, a, v, 2u);
+    } else sr_oor(a, v, 1);
 }
 static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 4u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 4u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
-    sr_check_metadata_watch(a, v, 1, 4, pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 4u, v, pc);
-    if (sr_inrange_n(a, 4)) memcpy(SR_HOST(a), &v, sizeof v); else sr_oor(a, v, 1);
+    if (sr_inrange_n(a, 4)) {
+        memcpy(SR_HOST(a), &v, sizeof v);
+        SR_WATCH_STORE_IF_ARMED(pc, a, v, 4u);
+    } else sr_oor(a, v, 1);
 }
 static inline void sr_w8 (uint32_t a, uint8_t v) { sr_w8_pc(a, v, 0); }
 static inline void sr_w16(uint32_t a, uint16_t v) { sr_w16_pc(a, v, 0); }
@@ -440,6 +428,11 @@ uint32_t sr_bitrev(uint32_t x);
 
 /* PSP-EABI bridge used by the generated guest sprintf entry. */
 void sr_guest_sprintf(CpuState *s);
+/* Format the guest string at `fmt` with variadic words starting in register
+ * `first_reg` into a bounded host buffer (NUL-terminated; never guest-visible).
+ * Returns the full formatted length, as printf does. */
+int sr_guest_format_host(CpuState *s, uint32_t fmt, uint32_t first_reg,
+                         char *buf, int cap);
 
 /* VFPU source/destination prefix application (ARCHITECTURE section 6.4), ported from
  * PPSSPP. sr_vread reads n lanes from physical indices idx[], then applies a source
@@ -468,6 +461,102 @@ float sr_vfpu_exp2(float x);
 #define SR_VFPU_COMPUTE 1
 #define SR_VFPU_STATE   2
 int sr_vfpu_interp(CpuState *s, uint32_t op);
+
+/* ---- SR_NAN_TRAP: opt-in NaN/Inf origin diagnostic (issue #69) -------------
+ *
+ * A guest instruction that turns all-finite operands into a NaN or an Inf is the
+ * place where this implementation and PSP hardware can disagree: the Allegrex
+ * FPU/VFPU kernels return a finite value for arguments the host evaluates the
+ * other way (0/0, rcp(0), sqrt of a negative, an overflowing intermediate), and
+ * everything downstream -- here the skeletal animation math that fills the GE
+ * BONE matrices -- is then finite. Under -DSR_NAN_TRAP every FPU and VFPU result
+ * write, in generated code and in the interpreter alike, is followed by a check
+ * that prints the first SR_NAN_TRAP_LIMIT of them (default 20) to stderr:
+ *
+ *   NAN_TRAP pc=0x00001234 op=add.s dst=f4 vbl=1180 in=[1,2] out=[nan]
+ *   NAN_TRAP pc=0x0000123c op=vrcp.s dst=v0 vbl=1180 in=[0] out=[inf]
+ *
+ * The check fires only when the result is non-finite AND every input was finite,
+ * so an instruction that merely propagates an existing NaN is not reported: the
+ * report names the origin, not the echo. It is a diagnostic and never a semantic
+ * gate -- no result is altered on any path.
+ *
+ * `in=` lists EVERY operand the instruction consumed, in operand order, so a
+ * report can be read lane by lane: the scalar forms list their sources, the
+ * lane forms list their source vectors, vmmul lists the S rows then the T rows
+ * (side*side each), and vtfm/vhtfm lists the matrix lanes (side*side, row-major)
+ * then the vector lanes it multiplies by. A form that reported only part of its
+ * operands would classify a propagation as an origin, which is how a vtfm whose
+ * vector lane already carried a NaN was once reported as the instruction that
+ * made it.
+ *
+ * `vbl=` is the guest VBLANK counter -- the same counter the SR_GE_TRANSITION_TRACE
+ * stamps as its `frame` field, so a trap record and the draw that showed its
+ * effect can be placed in the same frame without inference.
+ *
+ * Without the define both macros expand to ((void)0): no call, no symbol, no
+ * branch, no argument evaluated. tools/codegen.py only emits the checks at all
+ * when it is run with --nan-trap, so a default build's generated C is unchanged
+ * byte for byte. Build the two halves together: `make NAN_TRAP=1` passes
+ * --nan-trap to codegen AND -DSR_NAN_TRAP to every translation unit.
+ */
+#ifdef SR_NAN_TRAP
+#define SR_NAN_TRAP_DEFAULT_LIMIT 20
+/* The guest VBLANK count, for the report's `vbl=` field. hle.c keeps this as the
+ * mirror it hands to ge_set_frame(), so the number here is the same frame index
+ * the SR_GE_TRANSITION_TRACE records carry. */
+uint32_t sr_audio_vbl(void);
+void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
+                      float out, const float *in, int nin);
+void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
+                        const float *out, int nout,
+                        const float *in1, int nin1,
+                        const float *in2, int nin2);
+/* One scalar result, as a standalone statement after the destination has
+ * already been written. Inputs are supplied as a braced list of values, which
+ * the macro packs into a compound literal for the call; because they are read
+ * after the store, only use this where the operands were sampled into locals
+ * first. */
+#define SR_NAN_TRAP_F(PC, OP, FD, OUT, ...) \
+    sr_nan_trap_note((PC), (OP), (FD), (OUT), \
+                     (const float[]){__VA_ARGS__}, \
+                     (int)(sizeof((const float[]){__VA_ARGS__}) / sizeof(float)))
+/* One scalar result AND its destination store, for hand-written C that has not
+ * already sampled its operands. The source register indices are separate
+ * parameters (one macro per source count) so the operand list cannot be split
+ * across macro arguments; they are read BEFORE the store, so a destination that
+ * aliases a source still reports what the instruction actually consumed. Without
+ * the define these expand to the plain assignment and to nothing else, which is
+ * why an untrapped interpreter object stays byte-identical. Requires the
+ * CpuState pointer to be named `s`. */
+#define SR_NAN_TRAP_STORE_F1(PC, OP, FD, S0, EXPR)                      \
+    do {                                                                \
+        const float _ntr_in[1] = { s->f[S0] };                          \
+        const float _ntr_res = (EXPR);                                   \
+        sr_nan_trap_note((PC), (OP), (FD), _ntr_res, _ntr_in, 1);       \
+        s->f[FD] = _ntr_res;                                            \
+    } while (0)
+#define SR_NAN_TRAP_STORE_F2(PC, OP, FD, S0, S1, EXPR)                  \
+    do {                                                                \
+        const float _ntr_in[2] = { s->f[S0], s->f[S1] };                \
+        const float _ntr_res = (EXPR);                                   \
+        sr_nan_trap_note((PC), (OP), (FD), _ntr_res, _ntr_in, 2);       \
+        s->f[FD] = _ntr_res;                                            \
+    } while (0)
+/* One vector result with one source vector. */
+#define SR_NAN_TRAP_V(PC, OP, VD, OUT, NOUT, IN, NIN) \
+    sr_nan_trap_note_v((PC), (OP), (VD), (OUT), (NOUT), (IN), (NIN), \
+                       (const float *)0, 0)
+/* One vector result with two source vectors (the usual binary VFPU shape). */
+#define SR_NAN_TRAP_V2(PC, OP, VD, OUT, NOUT, IN1, NIN1, IN2, NIN2) \
+    sr_nan_trap_note_v((PC), (OP), (VD), (OUT), (NOUT), (IN1), (NIN1), (IN2), (NIN2))
+#else
+#define SR_NAN_TRAP_F(PC, OP, FD, OUT, ...) ((void)0)
+#define SR_NAN_TRAP_STORE_F1(PC, OP, FD, S0, EXPR) s->f[FD] = (EXPR)
+#define SR_NAN_TRAP_STORE_F2(PC, OP, FD, S0, S1, EXPR) s->f[FD] = (EXPR)
+#define SR_NAN_TRAP_V(PC, OP, VD, OUT, NOUT, IN, NIN) ((void)0)
+#define SR_NAN_TRAP_V2(PC, OP, VD, OUT, NOUT, IN1, NIN1, IN2, NIN2) ((void)0)
+#endif
 
 /* Codegen tags a per-instruction VFPU fallback address and sends it through dispatch().
  * The tag is outside the PSP physical arena; dispatch reads the original word at the low
@@ -502,6 +591,40 @@ void     sr_exec_span_reset(void);
 int      sr_exec_span_register(uint32_t start, uint32_t end);
 int      sr_exec_span_owns_fetch(uint32_t pc);
 
+#if defined(SR_STACK_CENSUS_ENABLED)
+/* Opt-in dynamic check of guest stack preservation at generated callable
+ * boundaries. Codegen supplies its sorted callable-entry set. Resume entries
+ * share an existing callable frame and are deliberately not counted. */
+typedef enum SrStackCensusStatus {
+    SR_STACK_CENSUS_NOT_OBSERVED = 0,
+    SR_STACK_CENSUS_COMPLETE = 1,
+    SR_STACK_CENSUS_PARTIAL = 2,
+    SR_STACK_CENSUS_FAILED = 3
+} SrStackCensusStatus;
+typedef struct SrStackCensusSummary {
+    SrStackCensusStatus status;
+    uint32_t unobserved;
+    int unobserved_known;
+    uint64_t entries;
+    uint64_t returns;
+    uint64_t excluded;
+    uint64_t unexpected;
+    uint64_t mismatches;
+    uint32_t first_mismatch_entry;
+    uint32_t first_mismatch_expected_sp;
+    uint32_t first_mismatch_actual_sp;
+    uint32_t first_mismatch_flow;
+    int has_mismatch;
+} SrStackCensusSummary;
+void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_count);
+void sr_stack_census_enter(uint32_t entry);
+void sr_stack_census_exit(uint32_t entry, uint32_t expected_sp,
+                          uint32_t actual_sp, uint32_t flow_kind);
+void sr_stack_census_snapshot(SrStackCensusSummary *summary);
+SrStackCensusStatus sr_stack_census_status(void);
+void sr_stack_census_report(void);
+#endif
+
 #define SR_HAS_GUEST_CALL_BOUNDARY 1
 void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume boundary */
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
@@ -513,6 +636,8 @@ void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
  * reports before its delay slot. */
 int  sr_trace_open(const char *path, const char *target, uint32_t start_pc);
 void sr_trace_close(void);
+/* The SR_TRACE_PC address window over this trace is declared in flight_recorder.h and
+ * implemented in src/rt/flight_recorder.c, with the runtime's other opt-in diagnostics. */
 /* Throughput: the generated chunks emit an sr_begin/sr_end pair around *every* guest
  * instruction (~1.5M call sites total). Since those huge files must compile at -O0, the
  * release build removes the hooks in the preprocessor. TRACE=1 retains a predicted-false
@@ -562,18 +687,43 @@ uint32_t sr_alloc_uid(void);
 uint32_t ge_run_list(uint32_t addr, int resume);
 extern uint32_t g_ge_stall_addr;
 uint32_t ge_framebuffer(void);
+/* Last word written for GE command `cmd` (0..0xFF). Callers validate the index first
+ * (sceGeGetCmd returns SCE_KERNEL_ERROR_INVALID_VALUE); an out-of-range index yields 0,
+ * which is indistinguishable from a stored GE_NOP word. */
+uint32_t ge_get_cmd(uint32_t cmd);
 
-/* Interactive window front-end (src/rt/gui.c, Win32). gui_init opens the window; gui_present is
- * called from sceDisplaySetFrameBuf to show a frame, pump messages, and sample the keyboard;
- * gui_buttons returns the live PSP pad state; gui_on reports whether the window is active. */
+/* Host presenter front-end (src/rt/gui.c). gui_init selects the interactive window or the
+ * explicit offscreen sink; gui_present is called from sceDisplaySetFrameBuf to accept a frame,
+ * pump messages, and sample live input on interactive routes. */
 #define SR_APP_TITLE "Nakagawa Recomp"   /* canonical window caption; see also gpu_sdl3vk/sdl3vk.c */
+/* Shared one-shot gate used by the visible GDI and SDL/Vulkan presenters.
+ * The boot-event file is the launcher's handoff marker; headless presenters
+ * and already-serviced launches never invoke the supplied window operation. */
+typedef void (*SrGuiForegroundRequestFn)(void *context);
+static inline bool sr_gui_request_launcher_foreground_once(
+    const char *boot_event_file,
+    bool window_visible,
+    bool headless_presenter,
+    bool *request_issued,
+    void *context,
+    SrGuiForegroundRequestFn raise_window
+) {
+    if (!boot_event_file || !boot_event_file[0] || !window_visible ||
+        headless_presenter || !request_issued || *request_issued || !raise_window) {
+        return false;
+    }
+    *request_issued = true;
+    raise_window(context);
+    return true;
+}
 void     gui_init(const char *title);
 int      gui_on(void);
 uint32_t gui_buttons(void);
 void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sample */
 void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128=centre) */
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
-void     gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
+/* Returns 1 only when the selected presenter accepted the validated frame. */
+int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
 
 typedef uint32_t (*HleFn)(CpuState *s);
 void     sr_hle_register(uint32_t nid, const char *name, HleFn fn);
@@ -600,9 +750,6 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid);
 extern int     sr_sched_on;
 extern atomic_int_least32_t sr_timeslice;
 void sr_yield(CpuState *s);
-/* Environment-gated, bounded guest-function probe used by boot diagnostics.
- * Codegen emits calls only at explicitly reviewed function boundaries. */
-void sr_boot_probe(CpuState *s, uint32_t guest_pc);
 /* Returns 1 if the host wall-clock has crossed the vblank quantum since the last vblank
  * delivery. Defined in sched.c; safe to call from anywhere reactive. Used by SR_YIELD to
  * force a premature slice expiry when the recomp-emitted yield cadence is too sparse to
@@ -675,11 +822,12 @@ int      sched_current_has_pending_wakeup(void);        /* banked sceKernelWakeu
 int      sched_current_join_result_pending(uint32_t uid); /* non-consuming join-result peek */
 void     sched_raise_interrupt(uint32_t source);     /* latch source; delivery occurs at a scheduler boundary */
 uint32_t sched_pending_interrupts(void);             /* source bits not yet serviced */
-void     sched_delay_current(uint32_t usec);        /* block current thread for usec */
+void     sched_delay_current(uint64_t usec);        /* block current thread for usec */
 void     sched_preempt(void);                       /* yield now if a higher-priority thread is ready */
 void     sched_block_on(uint32_t obj);              /* block current thread until sched_wake(obj) */
 void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart: always block to the next vblank start edge */
 int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */
+int      sched_wait_vblank_cb(int wait_start);       /* callback-aware display wait; wait_start selects WaitVblankStart semantics */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
 void     sched_wake_with_result(uint32_t obj, uint32_t result); /* sched_wake + a wait result */

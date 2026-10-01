@@ -134,10 +134,11 @@ static void add_pes_ex(Buf *b, uint8_t sid, int pts_dts, uint32_t hdr_len,
         need = 0;
     } else {
         if (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH) {
-            uint8_t p[5]; put_pts(p, pts, 0x21); raw(b, p, 5); written += 5u;
+            uint8_t p[5]; put_pts(p, pts, pts_dts == PES_TS_BOTH ? 0x31u : 0x21u);
+            raw(b, p, 5); written += 5u;
         }
         if (pts_dts == PES_TS_BOTH) {
-            uint8_t p[5]; put_pts(p, dts, 0x31); raw(b, p, 5); written += 5u;
+            uint8_t p[5]; put_pts(p, dts, 0x11u); raw(b, p, 5); written += 5u;
         }
     }
     if (hdr_len > written) bytes(b, 0xffu, hdr_len - written);
@@ -185,13 +186,14 @@ static void check_pes_wellformed(const uint8_t *s, uint32_t at, int pts_dts, uin
     int has_pts = fields_present && (pts_dts == PES_TS_PTS || pts_dts == PES_TS_BOTH);
     int has_dts = fields_present && pts_dts == PES_TS_BOTH;
     if (has_pts) {
-        CHECK((s[9] & 0xf0u) == 0x20u, "PTS field carries the '0010' prefix");
+        CHECK((s[9] & 0xf0u) == (has_dts ? 0x30u : 0x20u),
+              "PTS field carries the prefix for the PTS/DTS combination");
         CHECK((s[9] & 1u) != 0u && (s[11] & 1u) != 0u && (s[13] & 1u) != 0u,
               "PTS field carries all three marker bits");
         CHECK(read_pts(s + 9) == pts, "the PTS field encodes the value the builder declared");
     }
     if (has_dts) {
-        CHECK((s[14] & 0xf0u) == 0x30u, "DTS field carries the '0011' prefix");
+        CHECK((s[14] & 0xf0u) == 0x10u, "DTS field carries the '0001' prefix");
         CHECK((s[14] & 1u) != 0u && (s[16] & 1u) != 0u && (s[18] & 1u) != 0u,
               "DTS field carries all three marker bits");
         CHECK(read_pts(s + 14) == dts, "the DTS field encodes the value the builder declared");
@@ -706,10 +708,10 @@ static void test_lifecycle_and_source_failure(void) {
 }
 
 static void test_malformed(void) {
-    struct { int variant; const char *text; } cases[] = {
-        {1, "impossible declared PES length fails closed"},
-        {2, "unsupported stream id fails closed"},
-        {3, "audio payload shorter than the sub-header fails closed"},
+    struct { int variant; const char *text; const char *reason; } cases[] = {
+        {1, "impossible declared PES length fails closed", NULL},
+        {2, "unsupported stream id fails closed", "unknown-start-code"},
+        {3, "audio payload shorter than the sub-header fails closed", "audio-payload-truncated"},
     };
     for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
         uint32_t size = 0;
@@ -722,6 +724,17 @@ static void test_malformed(void) {
             for (int i = 0; i < 200 && !sr_psmf_producer_eof(p); i++) sr_psmf_producer_pump(p, 4);
             SrPsmfProducerStats st; sr_psmf_producer_stats(p, &st);
             CHECK(st.failed && st.parser_failures > 0, cases[c].text);
+            /* A rejection the consumer can only report as "playback stopped" is a
+             * mystery; the parser therefore names the element it refused. */
+            CHECK(sr_psmf_producer_failed(p) != 0 &&
+                      st.failed == (int)sr_psmf_producer_failed(p),
+                  "the failed query mirrors the terminal state the stats report");
+            CHECK(sr_psmf_producer_fail_reason(p) != NULL,
+                  "a rejected stream names the refused element");
+            if (cases[c].reason) {
+                CHECK(strcmp(sr_psmf_producer_fail_reason(p), cases[c].reason) == 0,
+                      cases[c].reason);
+            }
             SrPsmfAu au;
             while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) sr_psmf_au_release(&au);
             while (sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au)) sr_psmf_au_release(&au);
@@ -729,6 +742,44 @@ static void test_malformed(void) {
         }
         free(bytes);
     }
+    CHECK(sr_psmf_producer_failed(NULL) == 0 && sr_psmf_producer_fail_reason(NULL) == NULL,
+          "no producer reports no failure and no reason");
+}
+
+/* Table 2-21 requires prefix 0010 for a PTS-only packet, so the 0011 field below is the
+ * refusal a real disc produces.  This is the rejection the runtime has to name in the
+ * product, and this is the case that pins the name, the terminal state, and the fact that
+ * a rejected stream is not end-of-stream. */
+static void test_rejection_reason_contract(void) {
+    static const uint8_t bad_pts_prefix[] = {
+        0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+        0x31, 0x00, 0x05, 0xBF, 0x21,
+        0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+    };
+    uint8_t bytes[2048u + sizeof(bad_pts_prefix)];
+    memset(bytes, 0, 2048u);
+    bytes[0] = 'P'; bytes[1] = 'S'; bytes[2] = 'M'; bytes[3] = 'F';
+    be32(bytes + 8, 2048u);
+    be32(bytes + 12, (uint32_t)sizeof(bad_pts_prefix));
+    memcpy(bytes + 2048u, bad_pts_prefix, sizeof(bad_pts_prefix));
+    MemSource mem = {bytes, (uint32_t)sizeof(bytes), 0, 0};
+    SrPsmfSource source = {mem_read, &mem, (uint32_t)sizeof(bytes)};
+    SrPsmfProducer *p = sr_psmf_producer_open(&source, 90000);
+    CHECK(p != NULL, "a stream whose only element is malformed still opens");
+    if (!p) return;
+    CHECK(sr_psmf_producer_fail_reason(p) == NULL, "an accepted stream has no rejection reason");
+    sr_psmf_producer_pump(p, 4);
+    CHECK(sr_psmf_producer_failed(p), "the malformed timestamp is a terminal rejection");
+    CHECK(sr_psmf_producer_eof(p) == 0, "a rejected stream is not reported as end of stream");
+    CHECK(sr_psmf_producer_fail_reason(p) != NULL &&
+              strcmp(sr_psmf_producer_fail_reason(p), "pes-timestamp-field") == 0,
+          "the rejection names the malformed PES timestamp field");
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p, &st);
+    CHECK(st.fail_offset == 2048u, "the refusal offset is the element that was refused");
+    sr_psmf_producer_reset(p);
+    CHECK(!sr_psmf_producer_failed(p) && sr_psmf_producer_fail_reason(p) == NULL,
+          "a reset stream forgets the rejection so the next one can be named");
+    sr_psmf_producer_close(p);
 }
 
 static void test_rejects_bad_containers(void) {
@@ -904,6 +955,30 @@ static const uint8_t corpus_video_pts_dts[] = {
 };
 
 /* ISO/IEC 13818-1 offsets: 0-3 PES_start_code_prefix; 4-5 PES_packet_length; 6 marker; 7 PTS_DTS_flags=00; 8 header_data_length; 9-11 optional bytes; 12-18 payload. */
+/* ISO/IEC 13818-1:2018 2.4.3.6 Table 2-21: PTS_DTS_flags=10
+ * requires prefix 0010. These independent literal bytes deliberately carry 0011. */
+static const uint8_t corpus_video_pts_bad_prefix[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+    0x31, 0x00, 0x05, 0xBF, 0x21,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* Table 2-21 requires PTS prefix 0011 when PTS_DTS_flags=11. */
+static const uint8_t corpus_video_pts_dts_bad_pts_prefix[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x14, 0x80, 0xC0, 0x0A,
+    0x21, 0x00, 0x05, 0xBF, 0x21,
+    0x11, 0x00, 0x05, 0xEE, 0x0D,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
+/* Table 2-21 requires DTS prefix 0001 when PTS_DTS_flags=11. */
+static const uint8_t corpus_video_pts_dts_bad_dts_prefix[] = {
+    0x00, 0x00, 0x01, 0xE0, 0x00, 0x14, 0x80, 0xC0, 0x0A,
+    0x31, 0x00, 0x05, 0xBF, 0x21,
+    0x21, 0x00, 0x05, 0xEE, 0x0D,
+    0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+};
+
 static const uint8_t corpus_video_no_pts_optional[] = {
     0x00, 0x00, 0x01, 0xE0, 0x00, 0x0D, 0x80, 0x00, 0x03,
     0xDE, 0xAD, 0xBE,
@@ -1352,6 +1427,26 @@ static void test_conformance_corpus(void) {
           .pts_prefix = 0x30, .dts_prefix = 0x10, .pts_markers = 0x07, .dts_markers = 0x07,
           .pts = 90000, .dts = 96006, .has_pts = 1, .has_dts = 1,
           .data_at = 19, .data_size = 7, .stream_id = 0xE0, .read_limit = CORPUS_NO_POS },
+        { .name = "PTS-only rejects paired-timestamp prefix", .data = corpus_video_pts_bad_prefix, .size = sizeof(corpus_video_pts_bad_prefix),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .pes_at = 0, .pes_length = 0x000F, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0x80, .pes_header_length = 5,
+          .pts_at = 9, .dts_at = CORPUS_NO_POS, .pts_prefix = 0x30, .pts_markers = 0x07,
+          .pts = 90000, .fail_at = 0, .read_limit = sizeof(corpus_video_pts_bad_prefix) },
+        { .name = "PTS and DTS reject PTS-only prefix", .data = corpus_video_pts_dts_bad_pts_prefix, .size = sizeof(corpus_video_pts_dts_bad_pts_prefix),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .pes_at = 0, .pes_length = 0x0014, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0xC0, .pes_header_length = 10,
+          .pts_at = 9, .dts_at = 14, .pts_prefix = 0x20, .dts_prefix = 0x10,
+          .pts_markers = 0x07, .dts_markers = 0x07, .pts = 90000, .dts = 96006,
+          .fail_at = 0, .read_limit = sizeof(corpus_video_pts_dts_bad_pts_prefix) },
+        { .name = "PTS and DTS reject DTS prefix", .data = corpus_video_pts_dts_bad_dts_prefix, .size = sizeof(corpus_video_pts_dts_bad_dts_prefix),
+          .tail = corpus_follow_video, .tail_size = sizeof(corpus_follow_video), .tail_in_stream = 1,
+          .outcome = CORPUS_FAILURE, .pes_at = 0, .pes_length = 0x0014, .pes_sid = 0xE0,
+          .pes_flags1 = 0x80, .pes_flags2 = 0xC0, .pes_header_length = 10,
+          .pts_at = 9, .dts_at = 14, .pts_prefix = 0x30, .dts_prefix = 0x20,
+          .pts_markers = 0x07, .dts_markers = 0x07, .pts = 90000, .dts = 96006,
+          .fail_at = 0, .read_limit = sizeof(corpus_video_pts_dts_bad_dts_prefix) },
         { .name = "no PTS with optional header", .data = corpus_video_no_pts_optional, .size = sizeof(corpus_video_no_pts_optional),
           .outcome = CORPUS_ACCEPT, .kind = SR_PSMF_AU_VIDEO, .pes = 1, .video_pes = 1,
           .pes_at = 0, .pes_length = 0x000D, .pes_sid = 0xE0, .pes_flags1 = 0x80,
@@ -1447,6 +1542,7 @@ int main(int argc, char **argv) {
     test_no_aud_at_buffer_limit();
     test_lifecycle_and_source_failure();
     test_malformed();
+    test_rejection_reason_contract();
     test_rejects_bad_containers();
     test_timestamp_flags();
     test_mpeg1_pack_does_not_read_past_stream();

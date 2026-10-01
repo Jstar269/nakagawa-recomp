@@ -15,7 +15,9 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | --- | --- |
 | Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) |
 | Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
+| Run the source-owned showcase demos right now | [`SHOWCASE.md`](SHOWCASE.md) |
 | Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
+| Audit user-supplied parser limits and hostile-input evidence | [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — per-boundary evidence for #319; an inventory is not issue completion |
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
@@ -37,7 +39,23 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
   states, semantic boundaries, and tracking issues.
 - [`SMOKE_TEST.md`](SMOKE_TEST.md) — numbered pass/fail release smoke test for the
   native player.
+- [`SHOWCASE.md`](SHOWCASE.md) — the source-owned showcase demos: sources, packaging,
+  player discovery, and their profile-zero acceptance status (#309).
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
+- [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
+  runtime and supported tooling parser boundaries, including every native and Python
+  JSON consumer (title manifest, runtime package, library, cache/identity, font cache,
+  input profile, player settings and package-builder documents) plus performance
+  summaries, frame-dump and other tooling readers; each row carries resource limits, deterministic
+  regression/mutation status, sanitizer availability, and unresolved gaps (#319).
+  Every source anchor is a stable `path:symbol` reference checked against current
+  definitions by `tools/test_parse_fuzz.py`; line-number anchors are rejected.
+  Python methods use `Class.method` where needed, and anchors must resolve to one
+  definition (including supported constants). The checker rejects a `never reaches`
+  claim when a listed Python test has a syntactic call path to that reader, and a
+  row may only call a route untested when it names the kind of test that is missing.
+  The document is `schema_version` 4: `arithmetic.safe` remains a string status
+  rather than a boolean, and `schema_notes` records both changes.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
@@ -69,12 +87,14 @@ with explicit target and unbuilt boundaries.
 - [`TITLE_PROFILE_ARCHITECTURE.md`](TITLE_PROFILE_ARCHITECTURE.md) — why no
   title id, address, or disc id may be hardcoded into generic code. The rule is
   machine-enforced by `tools/test_generic_title_planning_proof.py`.
-- [`TITLE_MANAGER_DECOUPLING.md`](TITLE_MANAGER_DECOUPLING.md) — roadmap for
-  decoupling the primary build orchestrator from legacy title defaults.
 - [`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md) — the
-  functional checklist a native player slice is measured against.
+  authoritative per-capability disposition of every former web-dashboard and
+  diagnostic capability, with each row's owning test path or tracking issue, plus
+  the functional checklist a native player slice is measured against. The table is
+  machine-enforced by `tools/lint_docs.py`.
 - [`NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md`](NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md)
-  — per-capability web-to-native parity, with the gaps named.
+  — the native implementation narrative and the launch-path evidence; per-capability
+  status is maintained in the matrix above, not here.
 - [`NATIVE_PLAYER_ARCHITECTURE.md`](NATIVE_PLAYER_ARCHITECTURE.md),
   [`AOT_PRODUCTIZATION_ARCHITECTURE.md`](AOT_PRODUCTIZATION_ARCHITECTURE.md),
   [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md),
@@ -82,16 +102,34 @@ with explicit target and unbuilt boundaries.
   productization target and the routes evaluated for it. All four are CURRENT
   maintained records; each marks unbuilt behavior inline, so CURRENT does not mean
   the target pipeline exists.
-- [`WEB_UI_MIGRATION.md`](WEB_UI_MIGRATION.md) — CURRENT inventory and migration
-  record for the `interface/` prototype and the native migration derived from it.
-- [`WEB_UI_RETIREMENT.md`](WEB_UI_RETIREMENT.md) — retirement plan and parity
-  audit for the `interface/` localhost web dashboard in favor of the native player and CLI.
-- [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md),
-  [`PREVIEW_RELEASE_NOTES.md`](PREVIEW_RELEASE_NOTES.md) — proposed scope and
-  copy for an early preview. Both are proposals: creating a tag or release is a
+- [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md) — proposed scope and packaging
+  specification for an early preview. It is a proposal: creating a tag or release is a
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
 - [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — draft release notes
-  for the v0.0.1 public build. Status: DRAFT; releases are maintainer-published.
+  for the v0.0.1 public build, including the proposed preview copy it superseded.
+  Status: DRAFT; releases are maintainer-published.
+
+## Archive
+
+Superseded, retired and dated records live in [`archive/`](archive/). They are
+kept for provenance, are not maintained, and are never current guidance:
+history lives in git, so nothing is deleted.
+
+- [`archive/IMPORT_AUDIT.md`](archive/IMPORT_AUDIT.md) — pre-republication
+  import-coverage/fake-success audit (tracker item #71); the method is current,
+  the snapshot example is superseded.
+- [`archive/ISSUE196_DIRECT_XB.md`](archive/ISSUE196_DIRECT_XB.md) — superseded
+  direct-XB hypothesis with a scope banner; the measured comparison boundary is
+  retained as historical evidence.
+- [`archive/TITLE_MANAGER_DECOUPLING.md`](archive/TITLE_MANAGER_DECOUPLING.md) —
+  the completed decoupling of `nk_manager` from legacy HST entry points
+  (issues #196/#338, both closed).
+- [`archive/TOOLCHAIN_BASELINE_2026-08.md`](archive/TOOLCHAIN_BASELINE_2026-08.md) —
+  dated August 2026 toolchain capture; live manifests, `SETUP.md` and the
+  environment doctor are authoritative for current versions.
+- [`archive/ui-baseline/README.md`](archive/ui-baseline/README.md) — the retired
+  web dashboard's visual/functional inventory and migration proposals, kept as
+  historical evidence; the native player is the only UI (#522).
 
 ## Provenance and publication
 
@@ -109,9 +147,11 @@ with explicit target and unbuilt boundaries.
   runtime PSP module (PRX) loader for clean-room rewrite unit G3.
 - [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
   PGF reader for clean-room rewrite unit G4. The public reader built from it
-  landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs;
-  the remaining composite-glyph and spec-variant boundaries are named in that
-  specification's §4.
+  landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs,
+  including composite row-order-3 glyphs and the supported revision and
+  shadow-map variants ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521));
+  the remaining composite, revision, and hardware-confirmation boundaries are
+  named in that specification's §4.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
@@ -126,19 +166,19 @@ counsel/incident work product. Unknown paths fail closed in the machine policy.
 
 ## Document status taxonomy
 
-Every substantial document carries one status. No physical moves are proposed
-in this slice; classification comes first, directory moves separately.
+Every substantial document carries one status.
 
 | Path | Status | Authority / scope |
 | --- | --- | --- |
 | `ARCHITECTURE.md` | CURRENT | Implementation behavior (source/tests remain authoritative) |
 | `ARCHIVE_VFS.md` | CURRENT | Read-only archive-backed VFS: XB mounts, member lookup and loose-content routes (#298) |
-| `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims |
+| `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims, including the optional local symbol reference (`FindSymbol`) |
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
 | `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
 | `SHOWCASE.md` | CURRENT | Source-owned showcase demos: sources, packaging, player discovery and notices (#309) |
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
+| `PARSER_SAFETY_INVENTORY.json` | CURRENT | Per-boundary hostile-input/resource and campaign inventory (#319); does not establish issue completion |
 | `DEBUGGING.md` | CURRENT | Diagnostics and safe local troubleshooting |
 | `PORTING.md` | CURRENT | Title-manifest/codegen boundaries; second-title readiness record |
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
@@ -154,25 +194,20 @@ in this slice; classification comes first, directory moves separately.
 | `PROJECT_MODEL.md` | CURRENT | Repository and project model |
 | `WORKSPACE_DOCTOR.md` | CURRENT | Doctor checks and host contract |
 | `DCO_POLICY.md` | CURRENT | Sign-off governance |
-| `SYMBOL_REFERENCE.md` | CURRENT | Symbol reference scope |
 | `DECOMPME_INTEGRATION.md` | CURRENT | Forward-looking integration plan (not built work) |
 | `AI_USAGE.md` | CURRENT | AI-assistance and review boundaries |
 | `PSPDEV_LOCAL_VERIFICATION.md` | CURRENT | PSPDEV local-verification boundary |
 | `LLE_FIDELITY_ARCHITECTURE.md` | CURRENT | Fidelity doctrine; ranks correctness above convenience |
 | `HLE_AND_WORKAROUND_INVENTORY.md` | CURRENT | The tier doctrine and HLE budget. The per-item inventory inside it is capture-time; live counts come from `tools/test_compat_manifest.py` |
 | `TITLE_PROFILE_ARCHITECTURE.md` | CURRENT | No-hardcoded-title rule, enforced by `tools/test_generic_title_planning_proof.py` |
-| `TITLE_MANAGER_DECOUPLING.md` | CURRENT | Orchestrator decoupling and nk_manager transition plan |
-| `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Native slice functional checklist |
-| `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Web-to-native parity per capability; PARTIAL rows name what is absent |
+| `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Authoritative capability disposition table plus the native slice functional checklist |
+| `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
-| `PREVIEW_RELEASE_NOTES.md` | CURRENT | Proposed preview copy, same proposal-only scope |
-| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build |
+| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build; carries the proposed preview copy |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202) and the library's build-package → validate → launch route exists (PR #487), while module decryption, retail-disc hash validation, and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; the zero-toolchain recommended routes remain unimplemented |
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and one-click end-user preparation remain unbuilt |
 | `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and the remaining retail-preparation stages are distinguished inline |
-| `WEB_UI_MIGRATION.md` | CURRENT | Maintained `interface/` inventory and native migration record; the wizard staging slice landed (PR #202), while web retirement and full parity remain unbuilt |
-| `WEB_UI_RETIREMENT.md` | DRAFT | Web dashboard retirement plan and native parity audit |
 | `provenance/HST_PUBLIC_CENSUS.md` | CURRENT | Title-specific vs generic/synthetic classification |
 | `provenance/INDEPENDENCE_MODEL.md` | CURRENT | Independence model |
 | `INDEPENDENCE_CAMPAIGN.md` | DRAFT | Independence route plan; read for intent, never cite as built state |
@@ -181,15 +216,19 @@ in this slice; classification comes first, directory moves separately.
 | `cleanroom/PGF_SPEC.md` | DRAFT | Runtime PGF reader clean-room behaviour spec (G4); read for intent, never cite as shipped behaviour |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
 | `provenance/FONT_ORIGINS.md` | CURRENT | PGF replacement-font origin evidence and route decision |
-| `TOOLCHAIN_BASELINE_2026-08.md` | REFERENCE | Dated capture; live manifests/SETUP authoritative |
+| `archive/IMPORT_AUDIT.md` | ARCHIVED | Pre-republication import-coverage audit; method current, snapshot superseded |
+| `archive/ISSUE196_DIRECT_XB.md` | ARCHIVED | Superseded hypothesis preserved with scope banner |
+| `archive/TITLE_MANAGER_DECOUPLING.md` | ARCHIVED | Completed orchestrator decoupling campaign (issues #196/#338) |
+| `archive/TOOLCHAIN_BASELINE_2026-08.md` | ARCHIVED | Dated capture; live manifests/SETUP authoritative |
+| `archive/ui-baseline/README.md` | ARCHIVED | Retired web-dashboard inventory; historical, not current capabilities |
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `PSP_INTR_WAITS_CENSUS.md` | CURRENT | Generated registration census for the waits matrix; regenerate with `tools/waits_census.py` |
-| `IMPORT_AUDIT.md` | HISTORICAL | Method current, snapshot example superseded |
-| `ISSUE196_DIRECT_XB.md` | HISTORICAL | Superseded hypothesis preserved with scope banner |
 | `provenance/MODIFIED_FILE_NOTICES.md` | HISTORICAL | Retained notice contract, capture-time scope |
 
 Meanings: CURRENT is maintained contract — update it with the change.
+ARCHIVED is superseded, retired or dated material moved to `archive/` — preserve
+it, never cite it as status or current guidance.
 REFERENCE is dated evidence — read it, do not restate it as current.
 HISTORICAL is pre-republication evidence — preserve, do not cite as status.
 SUPERSEDED applies to rows/sections inside a file (marked inline with a

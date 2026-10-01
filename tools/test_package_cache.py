@@ -34,6 +34,20 @@ class PackageCacheTests(unittest.TestCase):
             "modules": [],
             "psp_header": None,
         }
+        self.identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container={
+                "format": "iso9660", "volume_id": "CACHE_TEST",
+                "size_bytes": 2048, "pvd_sector": 16, "sector_size": 2048,
+            },
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -41,6 +55,7 @@ class PackageCacheTests(unittest.TestCase):
     def key(self, **overrides):
         values = {
             "input_hashes": self.inputs,
+            "title_input_identity": self.identity,
             "codegen_options": {"profile": "none", "funcs_per_chunk": 2000},
             "analyzer_sha256": "3" * 64,
             "codegen_sha256": "4" * 64,
@@ -53,6 +68,17 @@ class PackageCacheTests(unittest.TestCase):
         values.update(overrides)
         return package_cache.build_cache_key(**values)
 
+    def test_retail_input_identity_cannot_be_written_inside_checkout(self) -> None:
+        with self.assertRaisesRegex(
+            title_codegen_plan.PackageRouteError, "per-user data root"
+        ):
+            title_codegen_plan._ensure_private_identity_output(
+                {"kind": "retail"}, ROOT / "build" / "local-package"
+            )
+        title_codegen_plan._ensure_private_identity_output(
+            {"kind": "synthetic"}, ROOT / "build" / "synthetic-package"
+        )
+
     def test_cache_decision_names_each_invalidation_tier(self) -> None:
         current = self.key()
         self.assertEqual(package_cache.compare_cache_keys(current, current).action, "reuse")
@@ -64,6 +90,37 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertEqual(executable_change.action, "aot-regenerate")
         self.assertIn("aot:executable_sha256", executable_change.reasons)
+
+        changed_module = {"name": "fixture.prx", "sha256": "6" * 64}
+        changed_modules = [changed_module]
+        changed_module_identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=changed_modules,
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container=self.identity["container"],
+        )
+        changed_module_inputs = dict(self.inputs, modules=[{
+            "name": "fixture.prx", "load_address": "0x08810000", "sha256": "6" * 64,
+        }])
+        module_change = package_cache.compare_cache_keys(
+            current,
+            self.key(
+                input_hashes=changed_module_inputs,
+                title_input_identity=changed_module_identity,
+            ),
+        )
+        self.assertEqual(module_change.action, "aot-regenerate")
+        self.assertIn("aot:modules_sha256", module_change.reasons)
+        self.assertIn("aot:title_input_identity_sha256", module_change.reasons)
+        self.assertEqual(
+            package_cache.title_input_identity_changes(self.identity, changed_module_identity),
+            ("module fixture.prx changed",),
+        )
 
         options_change = package_cache.compare_cache_keys(
             current, self.key(codegen_options={"profile": "none", "funcs_per_chunk": 1})
@@ -143,6 +200,12 @@ class PackageCacheTests(unittest.TestCase):
             "2" * 64,
             None,
             None,
+            package_cache.build_title_input_identity(
+                manifest={"id": "synthetic-cache-test", "schema_version": 1},
+                executable_name="EBOOT.BIN",
+                executable_sha256="2" * 64,
+                modules=[],
+            ),
             public_safe=True,
         )
         cli_key_priv = nk_cli._current_package_cache_key(
@@ -151,6 +214,12 @@ class PackageCacheTests(unittest.TestCase):
             "2" * 64,
             None,
             None,
+            package_cache.build_title_input_identity(
+                manifest={"id": "synthetic-cache-test", "schema_version": 1},
+                executable_name="EBOOT.BIN",
+                executable_sha256="2" * 64,
+                modules=[],
+            ),
             public_safe=False,
         )
         self.assertNotEqual(
@@ -172,6 +241,13 @@ class PackageCacheTests(unittest.TestCase):
             key, {"profile": "none", "funcs_per_chunk": 2000}
         )
         package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
             "cache": cache,
             "inputs": self.inputs,
             "executable": {
@@ -195,6 +271,7 @@ class PackageCacheTests(unittest.TestCase):
         user_root = self.root / "user-data"
         published = user_root / "packages" / "TEST00001"
         shutil.copytree(package_dir, published)
+        package_cache.write_local_title_input_identity(user_root, self.identity)
         report = Report(self.root, "products")
         check_runtime_package_cache(
             report,
@@ -204,6 +281,21 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertTrue(any(result.detail and "native:compiler_identity" in result.detail
                             for result in report.results))
+
+        changed_identity = dict(self.identity)
+        changed_identity["main_executable"] = {
+            "name": "EBOOT.BIN", "sha256": "9" * 64,
+        }
+        package_cache.write_local_title_input_identity(user_root, changed_identity)
+        mismatch_report = Report(self.root, "products")
+        check_runtime_package_cache(mismatch_report, user_root, "TEST00001")
+        mismatch = next(
+            item for item in mismatch_report.results
+            if item.code == "RUNTIME_PACKAGE_CACHE"
+        )
+        self.assertEqual(mismatch.status, "FAIL")
+        self.assertIn("main executable changed", mismatch.detail or "")
+        self.assertIn("built from different local inputs", mismatch.detail or "")
 
         completion_path = package_dir / package_cache.COMPLETION_MANIFEST
         completion = json.loads(completion_path.read_text(encoding="utf-8"))
@@ -227,6 +319,86 @@ class PackageCacheTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("unreadable", reason)
 
+    def test_completion_manifest_accepts_gcc_runtime_dll_artifact_names(self) -> None:
+        # Host runtime closure DLLs ship inside packages and GCC/MSYS2 library
+        # names contain '+' (libstdc++-6.dll). The artifact rule must mirror
+        # is_valid_artifact_path() in src/core/nk_title_manifest.c so the
+        # completion manifest never records what the native validator rejects.
+        package_dir = self.root / "package"
+        package_dir.mkdir()
+        executable = package_dir / "synthetic.exe"
+        image = package_dir / "synthetic_image.bin"
+        generated = package_dir / "synthetic_recomp.o"
+        runtime_dll = package_dir / "libstdc++-6.dll"
+        notices = package_dir / "THIRD_PARTY_LICENSES"
+        notices.mkdir()
+        notice = notices / "Sdl3_ttf-zlib.txt"
+        executable.write_bytes(b"native")
+        image.write_bytes(b"image")
+        generated.write_bytes(b"object")
+        runtime_dll.write_bytes(b"dll")
+        notice.write_text("licence text\n", encoding="utf-8")
+        key = self.key()
+        cache = package_cache.cache_metadata(
+            key, {"profile": "none", "funcs_per_chunk": 2000}
+        )
+        package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
+            "cache": cache,
+            "inputs": self.inputs,
+            "executable": {
+                "path": executable.name,
+                "sha256": package_cache.sha256_file(executable),
+            },
+            "generated_objects": [{
+                "path": generated.name,
+                "sha256": package_cache.sha256_file(generated),
+            }],
+        }
+        (package_dir / "package.json").write_text(
+            package_cache.canonical_json(package), encoding="utf-8"
+        )
+        (package_dir / "build-report.json").write_text(
+            package_cache.canonical_json({"cache": cache}), encoding="utf-8"
+        )
+        package_cache.write_completion_manifest(package_dir, key)
+        valid, reason, _ = package_cache.validate_completion_manifest(
+            package_dir, expected_key=key
+        )
+        self.assertTrue(valid, reason)
+        manifest = json.loads(
+            (package_dir / package_cache.COMPLETION_MANIFEST).read_text(
+                encoding="utf-8"
+            )
+        )
+        recorded = {record["path"] for record in manifest["artifacts"]}
+        self.assertIn("libstdc++-6.dll", recorded)
+        self.assertIn("THIRD_PARTY_LICENSES/Sdl3_ttf-zlib.txt", recorded)
+
+        for good in ("libstdc++-6.dll", "libSDL3_ttf.so.0", "dir/libc++.so"):
+            self.assertEqual(package_cache._safe_relative(good), good)
+        for bad in (
+            "..",
+            "dir/../escape.dll",
+            "back\\slash.dll",
+            "C:/abs.dll",
+            "/abs.dll",
+            "CON.dll",
+            "dir//empty.dll",
+            "trailing.",
+            "spa ce.dll",
+            "semi;colon.dll",
+        ):
+            with self.subTest(path=bad):
+                with self.assertRaises(package_cache.PackageCacheError):
+                    package_cache._safe_relative(bad)
+
     def test_cli_and_planner_compute_the_same_key(self) -> None:
         manifest = json.loads(
             (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
@@ -248,6 +420,12 @@ class PackageCacheTests(unittest.TestCase):
         input_hashes = title_codegen_plan._hash_package_inputs(
             manifest_path, elf_path, [], {}, None
         )
+        identity = package_cache.build_title_input_identity(
+            manifest=manifest,
+            executable_name="synthetic.elf",
+            executable_sha256=executable_hash,
+            modules=[],
+        )
         environment = dict(os.environ)
         for mode in (None, True, False):
             with mock.patch.object(
@@ -255,9 +433,11 @@ class PackageCacheTests(unittest.TestCase):
             ):
                 cli_key = nk_cli._current_package_cache_key(
                     manifest, manifest_path, executable_hash, None, None, public_safe=mode
+                    , title_input_identity=identity
                 )
             planner_key = title_codegen_plan._cache_key_for_build(
                 input_hashes=input_hashes,
+                title_input_identity=identity,
                 plan=plan,
                 selected_optional=set(),
                 funcs_per_chunk=2000,
@@ -360,6 +540,291 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertTrue(findings)
         self.assertTrue(any(finding.code in {"UNRESOLVED_PUBLIC", "POLICY_UNCLASSIFIED"} for finding in findings))
+class BoundedJsonArtifactTests(unittest.TestCase):
+    """#319: externally supplied package/cache JSON must fail closed and bounded.
+
+    Every malformed case targets a production entry point and expects the
+    named controlled error (BoundedJsonError, or the entry point's own named
+    failure that embeds it) -- never a parser-implementation exception.
+    """
+
+    def _pkg(self, tmp: Path, name: str, payload: str) -> Path:
+        package_dir = Path(tmp) / name
+        package_dir.mkdir(parents=True)
+        (package_dir / "package.json").write_text(payload, encoding="utf-8")
+        return package_dir
+
+    def _deep_text(self, depth: int, payload: str = '1') -> str:
+        return '{"format": "nakagawa-aot-package", "n": ' + '{"n":' * depth + payload + '}' * depth + '}'
+
+    def test_object_separators_are_diagnosed_as_separators(self) -> None:
+        with self.assertRaisesRegex(package_cache.BoundedJsonError, "comma separators"):
+            package_cache.bounded_json_loads(
+                '{"a":{"b":1,"c":2},"d":3}', max_members=10, max_items=1,
+            )
+
+    def test_nonfinite_numbers_fail_on_the_production_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "numbers.json"
+            for number in ("NaN", "Infinity", "-Infinity", "1e400", "-1e400"):
+                with self.subTest(number=number):
+                    path.write_text('{"value":' + number + '}', encoding="utf-8")
+                    with self.assertRaisesRegex(package_cache.BoundedJsonError, "finite"):
+                        package_cache.read_bounded_json(path)
+
+    def test_oversized_integer_has_a_named_bounded_diagnosis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "integer.json"
+            path.write_text('{"value":' + "9" * 4301 + '}', encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "integer.*digit") as caught:
+                package_cache.read_bounded_json(path)
+            self.assertLess(len(str(caught.exception)), 256)
+
+    def test_integer_ceiling_is_independent_of_python_global_settings(self) -> None:
+        # Disabling Python's optional global guard must not unbound this reader.
+        with mock.patch.object(package_cache, "int", return_value=1, create=True) as conversion:
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "integer.*digit"):
+                package_cache.bounded_json_loads("9" * 4301)
+            conversion.assert_not_called()
+
+    def test_supported_numeric_values_preserve_their_types(self) -> None:
+        result = package_cache.bounded_json_loads('[0,-12,1.25,1e2,1e-2]')
+        self.assertEqual(result, [0, -12, 1.25, 100.0, 0.01])
+        self.assertEqual([type(item) for item in result], [int, int, float, float, float])
+
+    def test_integer_at_digit_ceiling_is_accepted_with_either_sign(self) -> None:
+        digits = "9" * package_cache.MAX_CACHE_JSON_INTEGER_DIGITS
+        for sign in ("", "-"):
+            with self.subTest(sign=sign):
+                self.assertEqual(package_cache.bounded_json_loads(sign + digits), int(sign + digits))
+
+    def test_valid_package_at_exact_byte_limit_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "at_limit"
+            package_dir.mkdir()
+            base = '{"format": "nakagawa-aot-package", "schema_version": 2, "pad": "'
+            text = base + "A" * (package_cache.MAX_CACHE_JSON_BYTES - len(base) - 2) + '"}'
+            self.assertEqual(len(text.encode("utf-8")), package_cache.MAX_CACHE_JSON_BYTES)
+            (package_dir / "package.json").write_text(text, encoding="utf-8")
+            (package_dir / "build-report.json").write_text("{}", encoding="utf-8")
+            # Valid JSON at the exact ceiling parses; validation fails on contract
+            # fields only, with no byte-limit or parse complaint.
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertNotIn("limit", reason)
+            self.assertNotIn("unreadable", reason)
+
+    def test_one_byte_over_limit_is_rejected_with_named_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = '{"format": "nakagawa-aot-package", "pad": "'
+            pad = package_cache.MAX_CACHE_JSON_BYTES + 1 - len(prefix) - 2
+            package_dir = self._pkg(tmp, "over", prefix + "A" * pad + '"}')
+            size = (package_dir / "package.json").stat().st_size
+            self.assertEqual(size, package_cache.MAX_CACHE_JSON_BYTES + 1)
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("byte", reason)
+
+    def test_growing_file_during_read_cannot_bypass_the_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "growing.json"
+            path.write_text("{}", encoding="utf-8")
+            limit = package_cache.MAX_CACHE_JSON_BYTES
+
+            def growing_read(fd: int, amount: int) -> bytes:
+                # Simulate the file growing past the ceiling while the handle
+                # is open, after fstat saw the small size: the kernel returns
+                # more data than fstat accounted for.
+                return b"x" * (limit + 1)
+
+            with mock.patch.object(package_cache.os, "read", side_effect=growing_read):
+                with self.assertRaisesRegex(package_cache.BoundedJsonError, "grew past"):
+                    package_cache.read_bounded_json(path)
+
+    def test_deep_package_json_fails_closed_with_named_error(self) -> None:
+        # 100k levels stays under the byte ceiling so the depth gate is the
+        # one that fires.
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._pkg(tmp, "deep", self._deep_text(100_000))
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("nesting", reason)
+
+    def test_read_bounded_json_depth_and_counts_have_named_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "deep.json"
+            path.write_text(self._deep_text(33), encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "nesting exceeds 32"):
+                package_cache.read_bounded_json(path)
+            path.write_text(
+                '{"a":' + '[' * 33 + ']' * 33 + '}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "nesting exceeds 32"):
+                package_cache.read_bounded_json(path)
+
+    def test_excessive_member_count_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "members.json"
+            members = ",".join(f'"k{i}": 1' for i in range(package_cache.MAX_CACHE_JSON_MEMBERS + 1))
+            path.write_text("{" + members + "}", encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "object members"):
+                package_cache.read_bounded_json(path)
+
+    def test_excessive_node_count_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nodes.json"
+            items = ",".join("1" for _ in range(package_cache.MAX_CACHE_JSON_NODES + 1))
+            path.write_text("[" + items + "]", encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "structural nodes"):
+                package_cache.read_bounded_json(path)
+
+    def test_duplicate_keys_are_rejected_with_named_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dup.json"
+            path.write_text('{"format": "a", "format": "b"}', encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "duplicate JSON field: format"):
+                package_cache.read_bounded_json(path)
+
+    def test_malformed_utf8_is_a_named_controlled_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_utf8.json"
+            path.write_bytes(b'{"format": "\xff\xfe"}')
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "not valid UTF-8"):
+                package_cache.read_bounded_json(path)
+
+    def test_invalid_json_is_a_named_controlled_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "invalid.json"
+            path.write_text("{not json", encoding="utf-8")
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "not valid JSON"):
+                package_cache.read_bounded_json(path)
+
+    def test_wrong_top_level_type_fails_the_cache_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = self._pkg(tmp, "wrong_top", "[1, 2, 3]")
+            (package_dir / "build-report.json").write_text("{}", encoding="utf-8")
+            valid, reason = package_cache.validate_package_cache(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("JSON objects", reason)
+
+    def test_oversize_completion_manifest_fails_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "big_completion"
+            package_dir.mkdir()
+            (package_dir / "completion-manifest.json").write_text(
+                '{"format": "x", "pad": "' + "A" * package_cache.MAX_CACHE_JSON_BYTES + '"}',
+                encoding="utf-8",
+            )
+            valid, reason, _ = package_cache.validate_completion_manifest(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("unreadable", reason)
+
+    def test_deep_completion_manifest_fails_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "deep_completion"
+            package_dir.mkdir()
+            (package_dir / "completion-manifest.json").write_text(
+                self._deep_text(100_000), encoding="utf-8"
+            )
+            valid, reason, _ = package_cache.validate_completion_manifest(package_dir)
+            self.assertFalse(valid)
+            self.assertIn("unreadable", reason)
+
+    def test_duplicate_key_diagnosis_does_not_echo_attacker_bulk(self) -> None:
+        """#319: rejection stays named, but a hostile key is not quoted back.
+
+        Bounding the artifact does not bound the message it produces. A
+        duplicate key under the byte ceiling is attacker-chosen text that would
+        otherwise land verbatim in an exception and in whatever log captures
+        it, so only a short prefix is echoed. The rejection itself is
+        unchanged: still a named BoundedJsonError, not a silent last-wins.
+        """
+        bulk = "A" * 400_000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dup.json"
+            # Two copies of the bulk key stay under MAX_CACHE_JSON_BYTES, so
+            # this is a duplicate-key rejection, not a byte-ceiling rejection.
+            text = '{"%s": 1, "%s": 2}' % (bulk, bulk)
+            self.assertLess(len(text.encode("utf-8")), package_cache.MAX_CACHE_JSON_BYTES)
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaises(package_cache.BoundedJsonError) as caught:
+                package_cache.read_bounded_json(path)
+            message = str(caught.exception)
+            self.assertIn("duplicate JSON field", message)
+            self.assertIn("...[truncated]", message)
+            self.assertLess(len(message), 256)
+            self.assertNotIn(bulk, message)
+
+    def test_node_counter_never_undercounts_any_scalar_or_trailing_string(self) -> None:
+        """#319: the structural node count is a true lower bound, not a leaky one.
+
+        Two ways the counter used to lose a node: a document whose final node
+        was a string closer finished past the ceiling, because the in-string
+        branch continues before the per-character test and there was no
+        post-loop test; and the "was the previous character numeric" seed was
+        the empty string, which is a substring of every string, so a document
+        that *starts* with a digit had its leading number skipped entirely.
+        """
+        one_node = ["1", "-2", "1.5", "1e5", "-1.5e-3", "true", "false",
+                    "null", '"s"', '""', "{}", "[]"]
+        for text in one_node:
+            with self.subTest(text=text):
+                # Zero nodes is below any document, so it must be rejected.
+                with self.assertRaises(package_cache.BoundedJsonError):
+                    package_cache._bounded_json_scan(
+                        text, max_depth=32, max_members=1 << 20,
+                        max_items=1 << 20, max_nodes=0,
+                    )
+                # One node is exactly the document, so it must be accepted.
+                package_cache._bounded_json_scan(
+                    text, max_depth=32, max_members=1 << 20,
+                    max_items=1 << 20, max_nodes=1,
+                )
+        # A document whose last node is a string closer: 2 nodes, not 1.
+        with self.assertRaises(package_cache.BoundedJsonError):
+            package_cache._bounded_json_scan(
+                '["a"]', max_depth=32, max_members=1 << 20,
+                max_items=1 << 20, max_nodes=1,
+            )
+        package_cache._bounded_json_scan(
+            '["a"]', max_depth=32, max_members=1 << 20,
+            max_items=1 << 20, max_nodes=2,
+        )
+
+    def test_read_loop_is_bounded_even_if_a_read_returns_more_than_requested(self) -> None:
+        """#319: the reader must terminate and fail closed, not loop.
+
+        A real read never returns more than it was asked for, but the loop
+        condition is written so that an over-long read short-circuits instead
+        of driving the counter negative and re-entering os.read.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "short.json"
+            path.write_text('{"a": 1}', encoding="utf-8")
+            real_read = os.read
+
+            def overlong_read(fd: int, n: int) -> bytes:
+                return real_read(fd, n) + b"A" * (package_cache.MAX_CACHE_JSON_BYTES + 1)
+
+            with mock.patch.object(package_cache.os, "read", side_effect=overlong_read):
+                with self.assertRaises(package_cache.BoundedJsonError) as caught:
+                    package_cache.read_bounded_json(path)
+            self.assertIn("grew past", str(caught.exception))
+
+    def test_bounded_echo_truncates_strings_and_bounds_field_samples(self) -> None:
+        """#319: untrusted text is quoted as a prefix, untrusted lists as a sample."""
+        self.assertEqual(package_cache.bounded_echo("short"), "short")
+        self.assertEqual(
+            package_cache.bounded_echo("A" * 200),
+            "A" * package_cache.MAX_JSON_ECHO_CHARS + "...[truncated]",
+        )
+        # Non-strings are rendered but still truncated, so a huge nested value
+        # cannot be quoted whole either.
+        self.assertEqual(package_cache.bounded_echo(7), "7")
+        self.assertLess(len(package_cache.bounded_echo(["B" * 5000])), 256)
+        many = package_cache.bounded_echo_fields({"f%03d" % i for i in range(500)})
+        self.assertIn("(+492 more)", many)
+        self.assertLess(len(many), 8 * (package_cache.MAX_JSON_ECHO_CHARS + 2) + 64)
 
 
 if __name__ == "__main__":

@@ -61,7 +61,10 @@ or a human legal decision.
    `included_content_sha256`, both deterministic for a given source index.
 4. **History and object audit.** `tools/history_audit.py` scans every reachable
    commit, tree path, ref, and blob content in the proposed history. A clean tip
-   is not sufficient.
+   is not sufficient. Published history is never rewritten; a historical blob the
+   maintainer has reviewed and accepted is listed by its exact blob id, finding
+   code, path and reason in `assets/history_audit_reviewed.json`, and is reported
+   separately instead of failing the audit. Any other blob is still a finding.
 5. **Supply-chain inventory.** The release manifest and SBOM cover the expected
    provenance families (sal063, PPSSPP, PSPSDK, FFmpeg/ATRAC3+, SDL3, Vulkan,
    shadcn/ui, and VFPU) with synchronized notices and lock data.
@@ -172,6 +175,7 @@ the submitted tree is internally coherent and remains within that authority.
 | Path authority | may this path be published, and as what class? | `records` in the trusted detailed ledger, plus the deterministic classifier | `TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED` |
 | Content binding | does the public ledger describe the actual candidate bytes? | candidate Git objects and regenerated ledger/export | `CONTENT_MISMATCH`, `EXPORT_FIELD_MISMATCH` |
 | Scope and policy | did the candidate hide or newly expose protected content? | trusted base policy/tree and the trusted verifier | `TRUSTED_SCOPE_VIOLATION`, `POLICY_SUBSTITUTION` |
+| Declared coverage | does every path the profile publishes still resolve to a tracked file? | candidate tree against the candidate policy's `include_paths` | `INCLUDED_PATH_UNTRACKED` |
 
 An exact implementation record authorizes a path across ordinary revisions. A
 routine edit therefore needs no second private approval: it updates the public
@@ -233,18 +237,27 @@ mingw32-make --no-print-directory provenance-refresh
 
 Stage the intended candidate changes first. This command calls the same
 `generate_ephemeral_controls()` implementation as hosted attestation, reads the
-public ledger from the exact base commit, records the changed existing public
-paths in the refresh audit block, and generates both controls in one pass. It
+public ledger from the exact base commit, checks every changed existing public
+path against the trusted authority, and generates both controls in one pass. It
 stages the generated ledger and export, plus the profile when `--apply-policy`
-is selected. If `PROVENANCE_BASE_SHA` is omitted,
-the command uses `merge-base(HEAD, origin/main)`.
+is selected. The committed ledger stays a per-path document: it never carries
+the tree-wide `refresh` audit block, because one slot holding the base tree,
+the candidate tree and the changed path list was rewritten by every landing and
+conflicted between two independent refreshes, so landing one reviewed change
+forced a control resync on every other open one. The refresh audit lives in the
+commit, the hosted verdict, and the external authority document. A ledger that
+still carries a block is accepted only when the block exactly describes this
+candidate against this base; any other block is refused. If `PROVENANCE_BASE_SHA` is
+omitted, the command uses `merge-base(HEAD, origin/main)`.
 When the candidate publication profile changed, also supply the external
 `PROVENANCE_TRUSTED_CANDIDATE_POLICY` and
 `PROVENANCE_POLICY_DELTA_AUTHORITY` inputs; the command stops if either is
 missing.
 
 The lower-level exact-path API remains available for narrowly scoped refresh
-operations and is useful for testing the underlying path checks:
+operations and is useful for testing the underlying path checks. It is a legacy
+route that still writes the `refresh` block, so prefer `make provenance-refresh`
+for pull requests:
 
 ```text
 python tools/provenance_ledger.py refresh-reviewed \
@@ -289,7 +302,7 @@ Two consequences are worth stating plainly, because both look like tool faults:
 * An implementation path whose public entry exists but which has **no record in the
   detailed ledger** cannot be refreshed by anyone, and fails with `TRUSTED_PATH_MISSING`.
   Such entries exist: they were minted by the retired `tools/*` wildcard expansion and
-  the `interface/` configuration prefix, and the fail-closed rules deliberately refuse to
+  the former per-directory configuration override, and the fail-closed rules deliberately refuse to
   carry them onto new bytes. Editing one of those paths blocks the publication gate until
   a genuine record is authored for it. Authoring that record is a maintainer attestation
   about who wrote the code; an agent must stop with `PROVENANCE_UNRESOLVED` instead.
@@ -344,11 +357,11 @@ The resulting ledger and `PUBLIC_EXPORT.json` are mechanical outputs, not
 authorization. The release process must copy the refreshed ledger to its
 trusted location, run `publish_audit.py` against that external copy and the
 trusted manifest, and then run the non-attesting
-`--provenance-self-consistency` tripwire. A dashboard source file such as
-`interface/src/components/studio/test-lab-panel.tsx` cannot use a
+`--provenance-self-consistency` tripwire. An implementation file such as
+`tools/new_feature.py` cannot use a
 `reviewed_configuration` record; it remains blocked until a maintainer creates
 or confirms an exact trusted implementation record. The refresh command does
-not merge or otherwise authorize an unrelated dashboard change.
+not merge or otherwise authorize an unrelated source change.
 
 ## Reviewed refresh across an exact publication-policy delta
 

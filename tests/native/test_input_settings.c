@@ -26,6 +26,8 @@ static void test_setenv(const char *name, const char *val) {
 }
 #else
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 static void test_setenv(const char *name, const char *val) {
     if (val) {
         setenv(name, val, 1);
@@ -493,7 +495,333 @@ static void test_guided_calibration_and_resting_extremes(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 9 PASSED!\n");
 }
 
+/* -----------------------------------------------------------------------------
+ * 10. Per-Title Mapping Scope, Global Isolation, and Atomic Persistence
+ * -------------------------------------------------------------------------- */
+static void test_per_title_scope_and_atomic_save(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 10: per-title scope, global isolation, atomic save...\n");
+
+    const char *file_path = "build/test_per_title_settings.json";
+    remove(file_path);
+
+    /* A fresh state edits the global mapping and owns no per-title entry. */
+    InputSettingsState state;
+    input_settings_init(&state);
+    assert(!input_settings_is_title_scope(&state));
+    assert(strcmp(input_settings_scope_label(&state), "Global mapping") == 0);
+    assert(state.file.title_count == 0);
+    assert(!input_settings_has_title_mapping(&state, "UCUS98701"));
+
+    /* A distinctive global binding to prove the per-title edit cannot touch it. */
+    NkBindingSource guide;
+    guide.type = NK_BINDING_HOST_BUTTON;
+    guide.index = NK_HOST_BUTTON_GUIDE;
+    assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_CROSS, guide));
+    assert(input_settings_save(&state, file_path) == NK_OK);
+
+    /* Choosing a disc's own mapping seeds it from the global mapping, so the
+     * first edit in that scope starts from what the user already had. */
+    assert(input_settings_set_scope(&state, "UCUS98701"));
+    assert(input_settings_is_title_scope(&state));
+    assert(strcmp(input_settings_scope_label(&state), "UCUS98701") == 0);
+    assert(input_settings_has_title_mapping(&state, "UCUS98701"));
+    assert(state.file.title_count == 1);
+    assert(state.profile.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
+    assert(state.file.global.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
+
+    /* Editing in the per-title scope changes only that disc. */
+    NkBindingSource left_stick;
+    left_stick.type = NK_BINDING_HOST_BUTTON;
+    left_stick.index = NK_HOST_BUTTON_LEFT_STICK;
+    assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_CROSS, left_stick));
+    input_settings_set_deadzone(&state, NK_PSP_AXIS_ANALOG_X, 5000);
+    assert(state.profile.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+    assert(state.file.global.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
+    assert(state.file.global.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == NK_INPUT_DEFAULT_DEADZONE_INNER);
+
+    /* The global scope still shows the global mapping, unchanged. */
+    assert(input_settings_set_scope(&state, NULL));
+    assert(!input_settings_is_title_scope(&state));
+    assert(state.profile.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == NK_INPUT_DEFAULT_DEADZONE_INNER);
+
+    /* Toggling flips between the two, which is what the library card and
+     * Controller Settings do. Going back to the global mapping drops the disc's
+     * own entry, so that disc's next launch uses the global profile. */
+    assert(input_settings_toggle_scope(&state, "UCUS98701"));
+    assert(input_settings_is_title_scope(&state));
+    assert(state.profile.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+    assert(state.profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 5000);
+    assert(input_settings_toggle_scope(&state, "UCUS98701"));
+    assert(!input_settings_is_title_scope(&state));
+    assert(!input_settings_has_title_mapping(&state, "UCUS98701"));
+    assert(state.file.title_count == 0);
+
+    /* A disc ID that cannot name a file is refused and the scope is kept. */
+    assert(!input_settings_set_scope(&state, "../escape"));
+    assert(!input_settings_is_title_scope(&state));
+
+    /* Saving writes both mappings: the global one the user edited before, and
+     * the per-title one edited after. */
+    assert(input_settings_set_scope(&state, "UCUS98701"));
+    NkBindingSource rebind;
+    rebind.type = NK_BINDING_HOST_BUTTON;
+    rebind.index = NK_HOST_BUTTON_LEFT_STICK;
+    assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_CROSS, rebind));
+    input_settings_set_deadzone(&state, NK_PSP_AXIS_ANALOG_X, 5000);
+    assert(input_settings_save(&state, file_path) == NK_OK);
+    assert(input_settings_save(&state, file_path) == NK_OK); /* atomic overwrite */
+
+    InputSettingsState reloaded;
+    assert(input_settings_load(&reloaded, file_path) == NK_OK);
+    assert(reloaded.file.title_count == 1);
+    assert(reloaded.file.global.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
+    assert(reloaded.file.global.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == NK_INPUT_DEFAULT_DEADZONE_INNER);
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+    const NkInputProfile *resolved =
+        input_settings_resolve_for_disc(&reloaded, "UCUS98701", diag, sizeof(diag));
+    assert(resolved != NULL);
+    assert(resolved->psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+    assert(resolved->axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 5000);
+    resolved = input_settings_resolve_for_disc(&reloaded, "ULUS10041", diag, sizeof(diag));
+    assert(resolved == &reloaded.file.global);
+
+    /* An interrupted write leaves the previous file intact: the temporary file
+     * cannot be opened, so the rename never happens and the saved document on
+     * disk is still the one that was there. */
+    char blocker[64];
+    snprintf(blocker, sizeof(blocker), "%s.tmp", file_path);
+#if defined(_WIN32) || defined(_WIN64)
+    assert(CreateDirectoryA(blocker, NULL) != 0);
+#else
+    assert(mkdir(blocker, 0777) == 0);
+#endif
+    assert(input_settings_set_scope(&state, "UCUS98701"));
+    state.profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner = 1234;
+    assert(input_settings_save(&state, file_path) != NK_OK);
+    assert(state.has_save_diagnostic);
+    assert(state.save_diagnostic[0] != '\0');
+    InputSettingsState after_failed;
+    assert(input_settings_load(&after_failed, file_path) == NK_OK);
+    assert(after_failed.file.title[0].axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 5000);
+#if defined(_WIN32) || defined(_WIN64)
+    assert(RemoveDirectoryA(blocker) != 0);
+#else
+    assert(rmdir(blocker) == 0);
+#endif
+    assert(input_settings_save(&state, file_path) == NK_OK);
+    assert(input_settings_load(&after_failed, file_path) == NK_OK);
+    assert(after_failed.file.title[0].axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 1234);
+
+    /* The file the launched runtime is handed carries the effective mapping for
+     * that disc and nothing else. */
+    char path[NK_MAX_PATH] = {0};
+    assert(input_settings_write_disc_profile(&after_failed, "UCUS98701", path, sizeof(path),
+                                             diag, sizeof(diag)) == NK_OK);
+    assert(strstr(path, "UCUS98701") != NULL);
+    NkInputProfile handed;
+    assert(nk_input_profile_load(&handed, path, diag, sizeof(diag)) == NK_OK);
+    assert(handed.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
+    assert(handed.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 1234);
+
+    /* An unsafe disc ID never produces a path at all. */
+    char bad_path[NK_MAX_PATH];
+    bad_path[0] = 'x';
+    assert(input_settings_write_disc_profile(&after_failed, "../escape", bad_path, sizeof(bad_path),
+                                             diag, sizeof(diag)) != NK_OK);
+    assert(bad_path[0] == '\0');
+    assert(strstr(diag, "disc ID") != NULL);
+
+    /* A config directory that cannot hold the file is an error with a reason,
+     * not a silently global launch. Point the per-user config location at a
+     * regular file so creating the profile directory cannot succeed. */
+    {
+        const char *blocker_file = "build/test_config_blocker";
+        FILE *bf = fopen(blocker_file, "wb");
+        assert(bf != NULL);
+        fputs("not a directory\n", bf);
+        fclose(bf);
+#if defined(_WIN32) || defined(_WIN64)
+        const char *saved = getenv("LOCALAPPDATA");
+        char saved_copy[1024];
+        if (saved) snprintf(saved_copy, sizeof(saved_copy), "%s", saved);
+        test_setenv("LOCALAPPDATA", blocker_file);
+#else
+        const char *saved = getenv("XDG_CONFIG_HOME");
+        char saved_copy[1024];
+        if (saved) snprintf(saved_copy, sizeof(saved_copy), "%s", saved);
+        test_setenv("XDG_CONFIG_HOME", blocker_file);
+#endif
+        char blocked_path[NK_MAX_PATH];
+        blocked_path[0] = 'x';
+        assert(input_settings_write_disc_profile(&after_failed, "UCUS98701", blocked_path,
+                                                 sizeof(blocked_path), diag, sizeof(diag)) != NK_OK);
+        assert(blocked_path[0] == '\0');
+        assert(diag[0] != '\0');
+        if (saved) {
+#if defined(_WIN32) || defined(_WIN64)
+            test_setenv("LOCALAPPDATA", saved_copy);
+#else
+            test_setenv("XDG_CONFIG_HOME", saved_copy);
+#endif
+        } else {
+#if defined(_WIN32) || defined(_WIN64)
+            test_setenv("LOCALAPPDATA", NULL);
+#else
+            test_setenv("XDG_CONFIG_HOME", NULL);
+#endif
+        }
+        remove(blocker_file);
+    }
+
+    /* The document the player writes is bounded: a full table refuses another
+     * disc rather than dropping one. */
+    for (int i = 0; after_failed.file.title_count < NK_INPUT_MAX_PER_TITLE; i++) {
+        char disc_id[NK_MAX_DISC_ID_LEN];
+        snprintf(disc_id, sizeof(disc_id), "FILL%05d", i);
+        assert(input_settings_set_scope(&after_failed, disc_id));
+    }
+    assert(!input_settings_set_scope(&after_failed, "ONET00TOOMANY"));
+    assert(!input_settings_is_title_scope(&after_failed) ||
+           strcmp(after_failed.editing_disc_id, "ONET00TOOMANY") != 0);
+
+    remove(path);
+    remove(file_path);
+    printf("[INPUT_SETTINGS_TEST] Subtest 10 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
+ * 11. Hostile Profile Files Through The Player Loader
+ * -------------------------------------------------------------------------- */
+static void test_hostile_profile_files(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 11: hostile files leave the player at defaults...\n");
+
+    /* A file the user can edit is a file the user can break. Every shape here
+     * has to leave the settings screen on the safe default mapping with the
+     * diagnostic on screen, never with half a mapping the pad cannot see. */
+    static const char *const kHostileFiles[] = {
+        "",                                                                     /* empty */
+        "   \n",                                                                /* blank */
+        "{",                                                                    /* cut short */
+        "{\"schema_version\": 2, \"device\": {\"guid\": \"g\"},",                  /* cut mid-object */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[{\"control\":\"cross\"}],\"navigation_bindings\":[]}", /* unbound control */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":99999,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[]}",                       /* out of range */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\xFF\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[]}",                       /* invalid UTF-8 */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[],"
+        "\"per_title\":[{\"disc_id\":\"NUL\",\"profile\":{}}]}",                  /* reserved name */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[],"
+        "\"per_title\":[{\"disc_id\":\"../../escape\",\"profile\":{}}]}",         /* traversal */
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\"},"
+        "\"calibration\":{\"trigger_threshold\":8192,"
+        "\"analog_x\":{\"host_axis\":\"leftx\",\"deadzone_inner\":1000},"
+        "\"analog_y\":{\"host_axis\":\"lefty\",\"deadzone_inner\":1000}},"
+        "\"psp_bindings\":[],\"navigation_bindings\":[]} TRAILING",               /* garbage */
+    };
+    static const char *const kRawNulFile =
+        "{\"schema_version\":2,\"device\":{\"guid\":\"g\0h\"}}";
+    size_t hostile_count = sizeof(kHostileFiles) / sizeof(kHostileFiles[0]);
+    const char *path = "build/test_hostile_settings.json";
+
+    assert(nk_platform_mkdir_p("build"));
+
+    for (size_t i = 0; i < hostile_count; i++) {
+        InputSettingsState state;
+        FILE *f = fopen(path, "wb");
+        assert(f != NULL);
+        assert(fwrite(kHostileFiles[i], 1, strlen(kHostileFiles[i]), f) ==
+               strlen(kHostileFiles[i]));
+        assert(fclose(f) == 0);
+
+        NkResult res = input_settings_load(&state, path);
+        if (res == NK_OK || !state.has_load_diagnostic || state.load_diagnostic[0] == '\0') {
+            printf("  hostile file %zu: expected a refusal with a diagnostic, got res=%d\n",
+                   i, (int)res);
+            assert(0 && "hostile profile file was not refused with a diagnostic");
+        }
+        assert(state.loaded_from_file);
+        assert(state.profile.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
+        assert(state.profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner ==
+               NK_INPUT_DEFAULT_DEADZONE_INNER);
+        assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_CROSS].primary.type !=
+               NK_BINDING_NONE);
+        assert(state.file.title_count == 0);
+        assert(state.editing_disc_id[0] == '\0');
+        assert(!input_settings_is_title_scope(&state));
+        assert(!input_settings_has_conflicts(&state));
+        /* A refused document leaves the player usable: a save from here writes
+         * the defaults, and that file loads back. */
+        if (i == 0 || i == 2) {
+            assert(input_settings_save(&state, path) == NK_OK);
+            assert(!state.has_save_diagnostic);
+            InputSettingsState reloaded;
+            assert(input_settings_load(&reloaded, path) == NK_OK);
+            assert(!reloaded.has_load_diagnostic);
+            assert(reloaded.file.title_count == 0);
+        }
+    }
+
+    /* A NUL byte inside the file is data, not an end of file. */
+    {
+        InputSettingsState state;
+        FILE *f = fopen(path, "wb");
+        assert(f != NULL);
+        assert(fwrite(kRawNulFile, 1, strlen(kRawNulFile) + 1, f) == strlen(kRawNulFile) + 1);
+        assert(fclose(f) == 0);
+        assert(input_settings_load(&state, path) != NK_OK);
+        assert(state.has_load_diagnostic);
+        assert(state.file.title_count == 0);
+    }
+
+    /* A disc ID the whitelist refuses never becomes a file name: the write is
+     * refused before the profile directory is touched. */
+    {
+        static const char *const kUnusableIds[] = {
+            "", "..", "../escape", "a/b", "NUL", "nul.json", "COM1", "LPT9", "AUX"
+        };
+        size_t n_ids = sizeof(kUnusableIds) / sizeof(kUnusableIds[0]);
+        for (size_t i = 0; i < n_ids; i++) {
+            InputSettingsState state;
+            char out_path[NK_MAX_PATH];
+            char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+            input_settings_init(&state);
+            out_path[0] = 'X';
+            diag[0] = '\0';
+            assert(input_settings_write_disc_profile(&state, kUnusableIds[i], out_path,
+                                                    sizeof(out_path), diag, sizeof(diag)) != NK_OK);
+            assert(out_path[0] == '\0');
+            assert(strstr(diag, "disc ID") != NULL);
+        }
+    }
+
+    remove(path);
+    printf("[INPUT_SETTINGS_TEST] Subtest 11 PASSED!\n");
+}
+
 int main(void) {
+    /* Unbuffered: a failing case names itself on stdout, and the harness reads
+     * that line even when the run aborts on the assert that follows. */
+    setbuf(stdout, NULL);
+
     printf("=================================================================\n");
     printf("Starting Nakagawa Native Player Input Settings Test Suite\n");
     printf("=================================================================\n");
@@ -507,6 +835,8 @@ int main(void) {
     test_save_load_roundtrip();
     test_sr_padscript_semantics_untouched();
     test_guided_calibration_and_resting_extremes();
+    test_per_title_scope_and_atomic_save();
+    test_hostile_profile_files();
 
     printf("=================================================================\n");
     printf("ALL INPUT SETTINGS TESTS PASSED SUCCESSFULLY!\n");
