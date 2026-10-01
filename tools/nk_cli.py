@@ -40,6 +40,7 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
+from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
     MAX_LIBRARY_JSON_BYTES,
@@ -603,6 +604,11 @@ def _load_library_entry(user_root: Path, disc_id: str) -> dict:
             raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building (#297).")
     if not isinstance(entry.get("selected_executable", ""), str):
         raise PackageBuildError(f"Library entry {disc_id} has an invalid selected_executable (#297).")
+    boot_executable = entry.get("boot_executable", "")
+    if not isinstance(boot_executable, str) or (
+        boot_executable and _psp_boot_path(boot_executable) is None
+    ):
+        raise PackageBuildError(f"Library entry {disc_id} has an invalid boot_executable.")
     if type(entry.get("is_experimental", False)) is not bool:
         raise PackageBuildError(f"Library entry {disc_id} has an invalid experimental marker.")
     return entry
@@ -1993,7 +1999,8 @@ def _bringup_human_summary(report: dict) -> str:
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
-                           selected: str, is_experimental: bool) -> None:
+                           selected: str, is_experimental: bool,
+                           boot_executable: str = "") -> None:
     library_path = user_root / "library.json"
     games = []
     if library_path.exists():
@@ -2020,6 +2027,7 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         "title_id": title_id,
         "iso_path": str(iso_path),
         "selected_executable": selected,
+        "boot_executable": boot_executable,
         "is_experimental": is_experimental,
     })
     if len(games) > MAX_LIBRARY_GAMES:
@@ -2384,6 +2392,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
+    boot_path = _psp_boot_path(preflight.get("selected_executable_source"))
+    if boot_path is None:
+        _fail_bringup(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
     _set_bringup_stage(report, "inspect", "PASS", int((time.perf_counter() - started) * 1000))
 
     started = time.perf_counter()
@@ -2552,7 +2567,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
         library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
         _write_bringup_library(
-            user_root, iso_path, metadata, title_id, library_executable, is_experimental
+            user_root, iso_path, metadata, title_id, library_executable,
+            is_experimental, str(preflight["selected_executable_source"]),
         )
     except Exception as exc:
         failure = "EXPERIMENTAL_IMPORT_FAILED"
@@ -2704,6 +2720,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "SR_VIDEO": "offscreen",
             "PSP_ISO": str(iso_path),
             "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
+            "SR_BOOT_PATH": boot_path,
         })
         flight_output: Path | None = None
         try:

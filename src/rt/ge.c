@@ -3589,6 +3589,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     }
     static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
     uint32_t list_addr=addr;
+    const int flight_ge_enabled = sr_flight_class_enabled(SR_FLIGHT_CLASS_GE);
     ge_capture_configure();
     if (!s_capture_done && !ge_capture_active() && s_ge_frame >= s_capture_frame &&
         s_ge_frame <= s_capture_frame_end) {
@@ -3912,6 +3913,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_PRIM: {
                 uint64_t profile_started = ge_cpu_profile_begin();
                 uint32_t prim_cmd = addr - 4;   /* op word address (addr already advanced) */
+                if (flight_ge_enabled)
+                    sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
+                                     list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
                 prims++; draw_prim(op, prims, list_addr, prim_cmd);
                 if (s_cpu_profile) {
                     s_cpu_profile_stats.primitive_commands++;
@@ -3950,7 +3954,12 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                  * SR_GESIGNALLOG reports each behavior a bounded number of times while the
                  * command-flow implementation is being validated against real game lists. */
                 pending_signal=1; pending_signal_op=op; break;
-            case GE_FINISH: pending_signal=0; break;  /* END that follows terminates the list */
+            case GE_FINISH:
+                if (flight_ge_enabled)
+                    sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_FINISH_COMMAND,
+                                     list_addr, addr - 4u, data, 0u);
+                pending_signal=0;
+                break;  /* END that follows terminates the list */
             case GE_END:
                 if (pending_signal) {
                     static unsigned char signal_seen[256];
