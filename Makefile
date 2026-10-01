@@ -614,7 +614,7 @@ EXE_EXT             := .exe
 # its own executable-anchored root, so the step is absent rather than emulated
 # by a second copy script. A missing asset is reported by the runtime itself
 # (font_load / data walk), never silently ignored here.
-ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
+ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=

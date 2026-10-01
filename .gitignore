@@ -24,7 +24,7 @@
 !/fixtures/profile_zero/prebuilt/*.prx
 !/fixtures/profile_zero/prebuilt/*.PBP
 # Firmware font payloads: the runtime loads sceFont glyphs from SR_FONTDIR or from the
-# executable's sibling `font` directory, and copy_build_assets.ps1 stages this directory next to
+# executable's sibling `font` directory, and tools/copy_build_assets.ps1 stages this directory next to
 # the binary on every build, so font/ is the operator's drop point. The payloads are never
 # redistributed with the public source (see font/README.md), so they must never be committed.
 /font/*.pgf
