@@ -509,15 +509,24 @@ def validate_meta(regs: list[dict]) -> None:
             for ev in evidence:
                 if not isinstance(ev, str) or not ev.strip():
                     raise ManifestError(f"handler {handler!r} has empty evidence entry")
-                candidate_path = ev.split(":")[0].strip()
-                if (
+                candidate_path, _, anchor = (part.strip() for part in ev.partition(":"))
+                if not (
                     candidate_path == "Makefile"
                     or candidate_path.startswith(("src/", "tools/", "fixtures/"))
-                ) and not (ROOT / candidate_path).exists():
+                ):
+                    continue
+                if not (ROOT / candidate_path).exists():
                     raise ManifestError(
                         f"handler {handler!r} cites non-existent evidence file {candidate_path!r}"
                     )
-        elif status in ("partial", "compatibility"):
+                if anchor and not _evidence_anchor_present(ROOT / candidate_path, anchor):
+                    raise ManifestError(
+                        f"handler {handler!r} cites evidence anchor {anchor!r} that "
+                        f"{candidate_path!r} does not define"
+                    )
+        # Independent of evidence: a partial or compatibility handler must always
+        # name its limitation, whether or not it also cites evidence.
+        if status in ("partial", "compatibility"):
             limitation = meta.HANDLER_LIMITATIONS.get(handler)
             if not limitation or not isinstance(limitation, str) or not limitation.strip():
                 raise ManifestError(
@@ -525,6 +534,23 @@ def validate_meta(regs: list[dict]) -> None:
                     "every partial and compatibility entry must carry a non-empty limitation "
                     "(state a factual limitation from code or 'limitation not yet reviewed (#341)')"
                 )
+
+
+def _evidence_anchor_present(path: Path, anchor: str) -> bool:
+    """Whether ``path`` defines the symbol an evidence entry cites after ``:``.
+
+    A Makefile anchor must be a target rule; any other anchor is a dotted name
+    (``Class.method`` or ``function``) whose every component must appear as a
+    whole word, so a renamed target, test or function fails the citation.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if path.name == "Makefile":
+        return re.search(rf"^{re.escape(anchor)}\s*:", text, re.MULTILINE) is not None
+    return all(
+        re.search(rf"\b{re.escape(part)}\b", text) is not None
+        for part in anchor.split(".")
+        if part
+    )
 
 
 def compute_findings(regs: list[dict]) -> list[dict]:
@@ -1491,6 +1517,13 @@ def main(argv: list[str]) -> int:
         help="emit the Markdown summary table of the HLE status census",
     )
     ap.add_argument(
+        "--census-heading-level",
+        type=int,
+        choices=range(1, 5),
+        default=1,
+        help="top heading level for --census-markdown (the inventory doc embeds level 3)",
+    )
+    ap.add_argument(
         "--triage-top",
         type=int,
         default=30,
@@ -1530,7 +1563,7 @@ def main(argv: list[str]) -> int:
                 f"{len(s['by_family'])} families) -> {args.census}"
             )
         if args.census_markdown is not None:
-            md_text = render_census_markdown(census)
+            md_text = render_census_markdown(census, heading_level=args.census_heading_level)
             args.census_markdown.parent.mkdir(parents=True, exist_ok=True)
             args.census_markdown.write_text(md_text, encoding="utf-8")
             print(f"hle_manifest: census markdown -> {args.census_markdown}")

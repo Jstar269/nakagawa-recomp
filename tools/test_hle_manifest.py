@@ -1140,35 +1140,20 @@ class CensusTests(unittest.TestCase):
         self.assertGreaterEqual(len(census_handlers), 350)
         self.assertEqual(self.census["summary"]["total_dedicated_handlers"], len(expected_handlers))
 
-    def test_census_pins_current_registration_and_semantic_status_counts(self) -> None:
+    def test_census_totals_are_internally_consistent(self) -> None:
+        # Invariants rather than pinned totals: adding a registration must not need
+        # a hand edit here (the generated inventory block guards the published counts).
         summary = self.census["summary"]
-        expected = {
-            "total_registrations": 422,
-            "registration_classification": {
-                "controlled_unsupported": 19,
-                "dedicated": 400,
-                "fake_success": 3,
-            },
-            "total_dedicated_handlers": 365,
-            "total_dedicated_registrations": 406,
-            "by_status": {
-                "complete": 6,
-                "partial": 24,
-                "compatibility": 1,
-                "controlled_unsupported": 2,
-                "unreviewed": 332,
-            },
-            "by_status_registrations": {
-                "complete": 13,
-                "partial": 24,
-                "compatibility": 1,
-                "controlled_unsupported": 6,
-                "unreviewed": 362,
-            },
-        }
-        for key, value in expected.items():
-            with self.subTest(summary_field=key):
-                self.assertEqual(summary[key], value)
+        self.assertEqual(sum(summary["registration_classification"].values()),
+                         summary["total_registrations"])
+        self.assertEqual(summary["total_registrations"], len(self.manifest["registrations"]))
+        self.assertEqual(sum(summary["by_status"].values()), summary["total_dedicated_handlers"])
+        self.assertEqual(sum(summary["by_status_registrations"].values()),
+                         summary["total_dedicated_registrations"])
+        self.assertEqual(set(summary["by_status"]), set(summary["by_status_registrations"]))
+        for status, handlers in summary["by_status"].items():
+            with self.subTest(status=status):
+                self.assertLessEqual(handlers, summary["by_status_registrations"][status])
 
     def test_partial_census_entries_preserve_named_route_evidence(self) -> None:
         by_handler = {entry["handler"]: entry for entry in self.census["handlers"]}
@@ -1202,7 +1187,10 @@ class CensusTests(unittest.TestCase):
             raise AssertionError(f"{path} has no {name!r} import constant")
         return resolve(assignments[name])
 
-    def test_public_profile_zero_smoke_imports_are_not_unreviewed(self) -> None:
+    def test_public_smoke_route_imports_are_not_unreviewed(self) -> None:
+        # Covers the production-smoke and display-smoke guests only. The
+        # profile-zero guest's imports (audio, controller, I/O, threads) still
+        # route to unreviewed handlers; that gate is open work under #341.
         production_nid = self._fixture_constant(
             ROOT / "fixtures" / "production_smoke" / "generate.py", "NID"
         )
@@ -1227,7 +1215,7 @@ class CensusTests(unittest.TestCase):
         self.assertEqual(
             unreviewed,
             [],
-            "public profile-zero smoke imports must have a reviewed semantic status",
+            "public production/display smoke imports must have a reviewed semantic status",
         )
 
     def test_documented_hle_census_matches_generated_source(self) -> None:
@@ -1248,6 +1236,36 @@ class CensusTests(unittest.TestCase):
             "HLE inventory census is stale; regenerate it from tools/hle_manifest.py",
         )
 
+    def test_partial_with_evidence_still_needs_a_limitation(self) -> None:
+        with mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DisplaySetFrameBuf": ""}):
+            self.assertTrue(meta.HANDLER_EVIDENCE.get("h_DisplaySetFrameBuf"))
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("has no named limitation", str(ctx.exception))
+
+    def test_evidence_anchor_must_exist_in_the_cited_file(self) -> None:
+        for bogus in ("Makefile:display-smoke-run-renamed",
+                      "fixtures/display_smoke/generate.py:verify_renamed",
+                      "tools/test_sched_invariants.py:test_no_such_test_341"):
+            with self.subTest(evidence=bogus):
+                with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DisplaySetFrameBuf": [bogus]}):
+                    with self.assertRaises(ManifestError) as ctx:
+                        hle_manifest.validate_meta(self.raw_regs)
+                self.assertIn("does not define", str(ctx.exception))
+
+    def test_documented_regeneration_command_reproduces_the_inventory_block(self) -> None:
+        import tempfile
+        text = (ROOT / "docs" / "HLE_AND_WORKAROUND_INVENTORY.md").read_text(encoding="utf-8")
+        block = text.split("<!-- BEGIN GENERATED HLE STATUS CENSUS -->", 1)[1]
+        block = block.split("<!-- END GENERATED HLE STATUS CENSUS -->", 1)[0].strip("\r\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "hle_census.md"
+            manifest_out = Path(tmp) / "hle_manifest.json"
+            rc = hle_manifest.main(["--out", str(manifest_out), "--census-markdown", str(out),
+                                    "--census-heading-level", "3"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(out.read_text(encoding="utf-8").strip("\r\n"), block)
+
     def test_complete_without_evidence_is_rejected(self) -> None:
         with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": []}):
             with self.assertRaises(ManifestError) as ctx:
@@ -1260,7 +1278,7 @@ class CensusTests(unittest.TestCase):
         ):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
-                self.assertIn("cites non-existent evidence file", str(ctx.exception))
+            self.assertIn("cites non-existent evidence file", str(ctx.exception))
 
     def test_partial_with_nonexistent_evidence_file_is_rejected(self) -> None:
         with mock.patch.dict(
