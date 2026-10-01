@@ -2245,7 +2245,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e6fac27fdb425b5604aded036ee8aae18872450fdcc7078349fea44cf59e046b"
+      "sha256": "b6b46eedca0e13db6674fdbbe02192a5b1fde81f4ba33967a4f5c1ce14a626b8"
     },
     {
       "path": "pyproject.toml",
@@ -2974,7 +2974,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b1029cca5d430d468d9bdab7373c1dd7fa02d5c1f6397e0c31da457b93945353"
+      "sha256": "a36789f58b391fbf93ecb80fb00cf735fde73a26be6d015257194b615bbb7acf"
     },
     {
       "path": "src/ref/interp.h",
@@ -6163,7 +6163,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4223d29ce07b19254da0ca0819761986bf7695864598ce948e9bad3f1ea2eb2f"
+      "sha256": "b051da986783f5078e45d87ce1229f8ceb1bcadf0506515e586c529bcd277312"
     },
     {
       "path": "tools/modified_file_notice_audit.py",
@@ -8713,7 +8713,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c95c3bb1f015987ca5b22c2272e716e50b41cf6a0ec57d2418835ba6206acccf"
+      "sha256": "33f28ad9ce712a73c1eb5ff4b9e1d7f9e9d57d7106c8dbe3b6247b646d564c9f"
     },
     {
       "path": "tools/test_release_manifest.py",
@@ -9074,7 +9074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1f9c02ee486073498ab7ddf0800d95bd9a56ccfd3c67eea5f88db2ffeca47472"
+      "sha256": "e4b515c58d4f240e8d1144f576d5c1fe6d636060195b6103fef122d4016aff58"
     },
     {
       "path": "tools/test_tree_lint.py",
@@ -9399,7 +9399,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b7592aace67dffd0c0f9dc374f2cbfbda1f24d0c8a87ea48873b8fecf0cb8d49"
+      "sha256": "0c7b815064b56a16e6e9770a33a95f5d0528e57bc6c89f93ac5dc4b2147da048"
     },
     {
       "path": "tools/tree_lint.py",
