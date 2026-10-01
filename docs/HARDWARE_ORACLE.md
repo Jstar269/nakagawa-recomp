@@ -41,7 +41,12 @@ proposals. Each claim covers only the exact fixture named:
   order. These were two fresh USBHostFS/PSPLink sessions of that single probe
   (no multi-fixture campaign identifier applies); both returned
   byte-identical records, and the raw captures and the PRX digest stay
-  private. The project's shared runtime `vasin` helper (`sr_vfpu_asin`)
+  private. `FIXTURE_BUILD_ID` names the source fixture, not the built PRX: this
+  probe's `NAKAGAWA_PSP_META` record still carries the all-zero binary and
+  commit placeholders (unlike `fixtures/psp_oracle/probe.c`, which refuses to
+  build without a commit), so this is a documented-run measurement of these
+  exact words, not a device-bound capture, and the PSP oracle runner would
+  classify it `IDENTITY_NOT_BOUND` / not acceptance-eligible. The project's shared runtime `vasin` helper (`sr_vfpu_asin`)
   returns the signed invalid signaling NaN that the PSP returned for every
   sampled out-of-domain word, and the endpoints return themselves. Do not
   clamp these NaNs in VASIN: downstream handling is required, and both
