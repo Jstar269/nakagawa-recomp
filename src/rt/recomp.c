@@ -1312,7 +1312,9 @@ RecompFn sr_lookup(uint32_t addr) {
  * binary search keeps the diagnostic path bounded even for large images. */
 static atomic_flag s_stack_census_lock = ATOMIC_FLAG_INIT;
 static const uint32_t *s_stack_census_expected;
+static unsigned char *s_stack_census_observed_expected;
 static uint32_t s_stack_census_expected_count;
+static uint32_t s_stack_census_unobserved;
 static uint64_t s_stack_census_entries;
 static uint64_t s_stack_census_returns;
 static uint64_t s_stack_census_excluded;
@@ -1324,6 +1326,8 @@ static uint32_t s_stack_census_first_mismatch_actual_sp;
 static uint32_t s_stack_census_first_mismatch_flow;
 static int s_stack_census_has_mismatch;
 static int s_stack_census_invalid_expected;
+static int s_stack_census_tracking_unavailable;
+static int s_stack_census_unobserved_known;
 static int s_stack_census_armed;
 static int s_stack_census_atexit_registered;
 static int s_stack_census_reported;
@@ -1338,7 +1342,19 @@ static void sr_stack_census_unlock(void) {
     atomic_flag_clear_explicit(&s_stack_census_lock, memory_order_release);
 }
 
-static int sr_stack_census_expected_contains(uint32_t entry) {
+static int sr_stack_census_expected_matches(const uint32_t *entries,
+                                           uint32_t count) {
+    if (count != s_stack_census_expected_count
+        || (count != 0u && (entries == NULL || s_stack_census_expected == NULL))) {
+        return 0;
+    }
+    for (uint32_t i = 0u; i < count; i++) {
+        if (entries[i] != s_stack_census_expected[i]) return 0;
+    }
+    return 1;
+}
+
+static uint32_t sr_stack_census_expected_index(uint32_t entry) {
     uint32_t lo = 0u;
     uint32_t hi = s_stack_census_expected_count;
     while (lo < hi) {
@@ -1348,19 +1364,7 @@ static int sr_stack_census_expected_contains(uint32_t entry) {
         else hi = mid;
     }
     return lo < s_stack_census_expected_count
-        && s_stack_census_expected[lo] == entry;
-}
-
-static int sr_stack_census_expected_matches(const uint32_t *entries,
-                                           uint32_t count) {
-    if (count != s_stack_census_expected_count
-        || (count != 0u && entries == NULL)) {
-        return 0;
-    }
-    for (uint32_t i = 0u; i < count; i++) {
-        if (entries[i] != s_stack_census_expected[i]) return 0;
-    }
-    return 1;
+        && s_stack_census_expected[lo] == entry ? lo : UINT32_MAX;
 }
 
 void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_count) {
@@ -1377,6 +1381,9 @@ void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_c
     }
     s_stack_census_expected = expected_entries;
     s_stack_census_expected_count = expected_count;
+    s_stack_census_observed_expected = NULL;
+    s_stack_census_unobserved = expected_count;
+    s_stack_census_unobserved_known = 1;
     s_stack_census_entries = 0u;
     s_stack_census_returns = 0u;
     s_stack_census_excluded = 0u;
@@ -1389,6 +1396,16 @@ void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_c
         if ((expected_entries[i] & 3u) != 0u
             || (i != 0u && expected_entries[i - 1u] >= expected_entries[i])) {
             s_stack_census_invalid_expected = 1;
+        }
+    }
+    if (s_stack_census_invalid_expected) {
+        s_stack_census_unobserved_known = 0;
+    } else if (expected_count != 0u) {
+        s_stack_census_observed_expected = calloc(
+            expected_count, sizeof(*s_stack_census_observed_expected));
+        if (s_stack_census_observed_expected == NULL) {
+            s_stack_census_tracking_unavailable = 1;
+            s_stack_census_unobserved_known = 0;
         }
     }
     s_stack_census_armed = 1;
@@ -1411,9 +1428,14 @@ void sr_stack_census_enter(uint32_t entry) {
     sr_stack_census_lock();
     if (s_stack_census_armed) {
         s_stack_census_entries++;
-        if (s_stack_census_invalid_expected
-            || !sr_stack_census_expected_contains(entry)) {
+        uint32_t expected_index = s_stack_census_invalid_expected
+            ? UINT32_MAX : sr_stack_census_expected_index(entry);
+        if (expected_index == UINT32_MAX) {
             s_stack_census_unexpected++;
+        } else if (!s_stack_census_tracking_unavailable
+                   && s_stack_census_observed_expected[expected_index] == 0u) {
+            s_stack_census_observed_expected[expected_index] = 1u;
+            s_stack_census_unobserved--;
         }
     }
     sr_stack_census_unlock();
@@ -1450,6 +1472,9 @@ static SrStackCensusStatus sr_stack_census_status_locked(void) {
     } else if (s_stack_census_mismatches != 0u) {
         return SR_STACK_CENSUS_FAILED;
     } else if (s_stack_census_invalid_expected
+        || s_stack_census_tracking_unavailable
+        || !s_stack_census_unobserved_known
+        || s_stack_census_unobserved != 0u
         || s_stack_census_unexpected != 0u
         || s_stack_census_excluded != 0u
         || s_stack_census_entries != s_stack_census_returns) {
@@ -1462,6 +1487,8 @@ void sr_stack_census_snapshot(SrStackCensusSummary *summary) {
     if (summary == NULL) return;
     sr_stack_census_lock();
     summary->status = sr_stack_census_status_locked();
+    summary->unobserved = s_stack_census_unobserved;
+    summary->unobserved_known = s_stack_census_unobserved_known;
     summary->entries = s_stack_census_entries;
     summary->returns = s_stack_census_returns;
     summary->excluded = s_stack_census_excluded;
@@ -1483,8 +1510,9 @@ SrStackCensusStatus sr_stack_census_status(void) {
 
 void sr_stack_census_report(void) {
     uint64_t entries, returns, excluded, unexpected, mismatches;
+    uint32_t unobserved;
     uint32_t mismatch_entry, mismatch_expected_sp, mismatch_actual_sp, mismatch_flow;
-    int has_mismatch;
+    int has_mismatch, unobserved_known;
     SrStackCensusStatus status;
     sr_stack_census_lock();
     if (!s_stack_census_armed || s_stack_census_reported) {
@@ -1492,6 +1520,8 @@ void sr_stack_census_report(void) {
         return;
     }
     s_stack_census_reported = 1;
+    unobserved = s_stack_census_unobserved;
+    unobserved_known = s_stack_census_unobserved_known;
     entries = s_stack_census_entries;
     returns = s_stack_census_returns;
     excluded = s_stack_census_excluded;
@@ -1510,10 +1540,15 @@ void sr_stack_census_report(void) {
         : status == SR_STACK_CENSUS_FAILED ? "FAILED" : "NOT_OBSERVED";
     fprintf(stderr,
         "STACK_CENSUS status=%s entries=%llu returns=%llu excluded=%llu "
-        "unexpected=%llu mismatches=%llu\n",
+        "unexpected=%llu mismatches=%llu unobserved=",
         name, (unsigned long long)entries, (unsigned long long)returns,
         (unsigned long long)excluded, (unsigned long long)unexpected,
         (unsigned long long)mismatches);
+    if (unobserved_known) {
+        fprintf(stderr, "%u\n", unobserved);
+    } else {
+        fprintf(stderr, "unknown\n");
+    }
     fflush(stderr);
     if (has_mismatch) {
         fprintf(stderr,

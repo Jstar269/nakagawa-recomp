@@ -30,9 +30,10 @@ TITLE_CONFIG_TOOL = ROOT / "tools" / "title_runtime_config.py"
 CODEGEN_TOOL = ROOT / "tools" / "codegen.py"
 
 
-def _write_minimal_elf(path: Path, words: tuple[int, ...]) -> None:
+def _write_minimal_elf(
+    path: Path, words: tuple[int, ...], *, base: int = 0x1000,
+) -> None:
     """Write a source-owned ELF32 fixture with one executable load span."""
-    base = 0x1000
     payload_off = 52 + 32
     filesz = len(words) * 4
     blob = bytearray(payload_off + filesz)
@@ -53,7 +54,7 @@ def _write_minimal_elf(path: Path, words: tuple[int, ...]) -> None:
 def _build_and_run_stack_census(
     words: tuple[int, ...], expected_status: str, *,
     codegen_args: tuple[str, ...] = (), expected_final_sp: int = 0x2000,
-    post_call_probe: str = "",
+    post_call_probe: str = "", extra_words: tuple[int, ...] | None = None,
 ) -> tuple[int, str, int, str]:
     """Generate and execute a real codegen entry wrapper against recomp.c."""
     assert CC is not None
@@ -62,11 +63,16 @@ def _build_and_run_stack_census(
         elf = work / "fixture.elf"
         _write_minimal_elf(elf, words)
         generated = work / "census.c"
+        extra_codegen_args = []
+        if extra_words is not None:
+            extra_elf = work / "extra.elf"
+            _write_minimal_elf(extra_elf, extra_words, base=0)
+            extra_codegen_args.append(f"--extra-elf={extra_elf}@0x2000")
         codegen = subprocess.run(
             [
                 sys.executable, str(CODEGEN_TOOL), str(elf), str(generated),
                 "--base=0", "--profile=none", "--funcs-per-chunk=2000",
-                "--stack-census", *codegen_args,
+                "--stack-census", *codegen_args, *extra_codegen_args,
             ],
             cwd=ROOT, capture_output=True, text=True,
         )
@@ -382,6 +388,20 @@ class StackCensusPipelineTests(unittest.TestCase):
             "STACK_CENSUS status=PARTIAL entries=2 returns=2 excluded=0 unexpected=1",
             run_output,
         )
+
+    def test_unobserved_generated_callable_reports_partial(self):
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x03E00008, 0x00000000),
+            "SR_STACK_CENSUS_PARTIAL",
+            extra_words=(0x03E00008, 0x00000000),
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn(
+            "STACK_CENSUS status=PARTIAL entries=1 returns=1 excluded=0 unexpected=0",
+            run_output,
+        )
+        self.assertIn("unobserved=1", run_output)
 
 
 if __name__ == "__main__":
