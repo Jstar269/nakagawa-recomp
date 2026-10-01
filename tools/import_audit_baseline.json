@@ -1783,7 +1783,7 @@
     "classification": "dedicated",
     "handler": "h_GeListEnQueue",
     "name": "sceGeListEnQueue",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xace946e8": {
     "classification": "dedicated",

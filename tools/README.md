@@ -169,7 +169,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `boot_gate.py` | Summarize machine-readable native boot milestones from a runtime log. |
 | `soak_audit.py` | Judge one soak run from the telemetry the runtime already writes. |
 | `verify_vfpu_provenance.py` | Verify the checked-in VFPU data against its pinned provenance manifest. |
-| `vfpu_coverage_report.py` | Generate the deterministic VFPU compatibility census. |
+| `vfpu_coverage_report.py` | Generate the deterministic VFPU compatibility census; classify an encounter word list (`--encodings`) or the VFPU words a generated AOT route emits (`--route`), failing nonzero on Unsupported/OTHER words. |
 | `vfpu_fuzz_gen.py` | VFPU differential-fuzz case generator. |
 | `vfpu_overlap_diff_gen.py` | Generate the overlap-differential cases header for the VFPU selftest. |
 | `vfpu_synth_gen.py` | Deterministic synthetic VFPU instruction corpus generator. |
@@ -334,7 +334,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | Module | Purpose |
 | --- | --- |
 | `test_vfpu_addressing.py` | VFPU vector-register addressing: hardware agreement and cross-implementation identity. |
-| `test_vfpu_coverage_census.py` | VFPU coverage census schema, decoder coverage and deterministic output. |
+| `test_vfpu_coverage_census.py` | VFPU coverage census schema, decoder coverage, deterministic output and the `--route` emitted-word census. |
 | `test_vfpu_domain_boundary.py` | Contract tests for the out-of-domain transcendental boundary. |
 | `test_vfpu_interp_guards.py` | VFPU interpreter guards: register width rejection and overlap-scan limits. |
 | `test_vfpu_nan_payload.py` | Contract tests for the VFPU NaN/Inf probe fixture. |

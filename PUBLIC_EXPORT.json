@@ -4,7 +4,7 @@
   "generated_evidence": "Generated from the canonical publication policy and exact source bytes. Evidence is not authorization to publish. PUBLIC_EXPORT.json is excluded from its own included-content digest to avoid a self-reference. The fields named in tree_derived_fields are recomputed at verification time; the committed control omits them so unrelated merges do not conflict.",
   "profile": "public-safe-v1",
   "policy_version": "2.0.0",
-  "policy_sha256": "b442c0c9e403cbd343b7f87331e978e61b1566427400acb06f07e89ccfc0d6ac",
+  "policy_sha256": "e16d0baf5b1aa689e4c72ad18b8e2cece82195ec8d5f9ffa21414244f48696b8",
   "audit_tool_version": "0.5.0",
   "tree_derived_fields": [
     "excluded_file_count",

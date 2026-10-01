@@ -95,18 +95,6 @@ jobs:
       - name: Enforce tracked-tree reference ratchet
         run: python tools/tree_lint.py --check
 
-      - name: Scan the current tracked tree with Betterleaks
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The pinned Betterleaks pre-commit hook scans the staged diff. Build an
-          # empty-index diff so this CI step covers every tracked file in the
-          # current revision rather than only files changed by this PR.
-          git read-tree --empty
-          git add -A
-          trap 'git reset --mixed HEAD >/dev/null 2>&1 || true' EXIT
-          pre-commit run betterleaks --all-files --show-diff-on-failure
-
       - name: Locate the pinned Betterleaks binary
         shell: bash
         run: |
@@ -329,8 +317,35 @@ jobs:
       - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
         run: make CC=gcc native-core-tests
 
+      - name: Configure, build, and test CMake Linux player
+        run: |
+          player_build="$RUNNER_TEMP/nakagawa-cmake-player"
+          cmake -S . -B "$player_build" -G Ninja \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_PREFIX_PATH=/usr/local \
+            -DBUILD_PLAYER=ON
+          cmake --build "$player_build" --parallel 2
+          ctest --test-dir "$player_build" --output-on-failure
+          help_output=$(SDL_VIDEODRIVER=offscreen "$player_build/nakagawa_player" --help)
+          printf '%s\n' "$help_output"
+          grep -Fq "Usage: nakagawa_player" <<<"$help_output"
+
       - name: Build and run the Linux showcase headlessly
-        run: make CC=gcc showcase-linux
+        run: |
+          export NK_SHOWCASE_BUILD_ROOT="$RUNNER_TEMP/showcase-build"
+          export NK_SHOWCASE_DEMO_ROOT="$RUNNER_TEMP/showcase-demo"
+          make CC=gcc showcase-linux
+
+      - name: Smoke the CMake Linux player headlessly
+        run: |
+          player_build="$RUNNER_TEMP/nakagawa-cmake-player"
+          iso="$RUNNER_TEMP/showcase-build/showcase-scene-v1/TEST00007.iso"
+          test -f "$iso"
+          mkdir -p "$RUNNER_TEMP/player-smoke-data"
+          stage_output=$(XDG_DATA_HOME="$RUNNER_TEMP/player-smoke-data" \
+            SDL_VIDEODRIVER=offscreen timeout 60s \
+            "$player_build/nakagawa_player" "--iso=$iso" --stage-only)
+          printf '%s\n' "$stage_output"
+          grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
 
       - name: Run selftest (C++ interpreter unit tests under UBSan)
         run: |
