@@ -14,6 +14,7 @@ import tempfile
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import codegen_gate
 import microtest_gate
+import tracediff
 import verify_gates
 
 class TestGateExitResolution(unittest.TestCase):
@@ -544,8 +545,13 @@ class TestVerifyGateEvidence(unittest.TestCase):
     def test_codegen_oracle_reports_header_tier_instead_of_collapsing_sources(self):
         psp = self.trace("psp.trace", source_tier="PSP_HARDWARE")
         ppsspp = self.trace("ppsspp.trace", source_tier="PPSSPP_CORROBORATIVE")
-        _, psp_output, _ = self.capture_main(psp)
+        psp_result, psp_output, psp_call = self.capture_main(psp)
         _, ppsspp_output, _ = self.capture_main(ppsspp)
+        # The comparator must still run for a v2 hardware-tier oracle. The overall
+        # status is 1 only because the microtest inputs are absent in this fixture.
+        self.assertIsNotNone(psp_call, psp_output)
+        self.assertTrue(str(psp_call.args[0][1]).endswith("codegen_gate.py"), psp_call)
+        self.assertEqual(psp_result, 1, psp_output)
 
         self.assertIn("source_tier=PSP_HARDWARE", psp_output)
         self.assertIn("CORROBORATIVE_ONLY: CODEGEN_ORACLE", ppsspp_output)
@@ -581,7 +587,42 @@ class TestVerifyGateEvidence(unittest.TestCase):
         self.assertEqual(result, 0, output)
         self.assertIn("source_tier=PSP_HARDWARE", output)
         self.assertIn("source_tier=LOCAL_COSIM", output)
-        self.assertIn("HARDWARE_MEASURED", output)
+        self.assertIn("STRICT_V2_AGREEMENT", output)
+        self.assertIn("not device-attested", output)
+        self.assertNotIn("HARDWARE_MEASURED", output)
+
+    def test_main_without_a_hardware_pair_can_still_pass(self):
+        """The hardware pair is opt-in: the existing gates must be able to report success."""
+        oracle = self.trace("oracle.trace", source_tier="PPSSPP_CORROBORATIVE")
+        result, output, call_args = self.capture_main(oracle)
+        self.assertIsNotNone(call_args)
+        self.assertIn("hardware_trace_gate", output)
+        self.assertIn("NOT_RUN: optional gate", output)
+        # codegen passes (mocked) but microtest inputs are absent, which stays a failure
+        self.assertEqual(result, 1, output)
+
+    def test_header_only_tier_read_does_not_need_the_whole_stream(self):
+        psp = self.trace("psp.trace", source_tier="PSP_HARDWARE")
+        with open(psp, "a", encoding="utf-8") as handle:
+            handle.write("this is not a step record" + chr(10))
+        self.assertEqual(tracediff.read_source_tier(psp), "PSP_HARDWARE")
+        with self.assertRaises(tracediff.HardwareTraceError):
+            tracediff._load_hardware(psp)
+
+    def test_v1_oracle_with_any_leading_comment_still_runs_the_gate(self):
+        legacy = self.dir / "freeform-v1.trace"
+        legacy.write_text("# capture provenance note" + chr(10) + "0 08804000 00000000" + chr(10),
+                          encoding="utf-8")
+        result, output, call_args = self.capture_main(str(legacy))
+        self.assertIsNotNone(call_args, output)
+        self.assertIn("legacy v1 trace", output)
+
+    def test_malformed_v2_header_never_degrades_to_legacy(self):
+        broken = self.dir / "broken-v2.trace"
+        broken.write_text("# psp-recomp trace v2 source_tier=" + chr(10), encoding="utf-8")
+        result, output, call_args = self.capture_main(str(broken))
+        self.assertIsNone(call_args, output)
+        self.assertIn("BLOCKED: CODEGEN_ORACLE tier unavailable", output)
 
 
 if __name__ == "__main__":

@@ -492,7 +492,7 @@ SDL3 gamepads use the south/east/west/north face buttons as Cross/Circle/Square/
 Short presses are latched until one PSP controller sample consumes them, so normal taps work
 even while a frame is slow.
 
-The full `make verify` command needs external trace data that is not in the repository. Missing `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` inputs report `NOT_RUN` with a non-zero result. The hardware differential gate needs both `PSP_HARDWARE_TRACE` and `LOCAL_COSIM_TRACE`; without either it also reports `NOT_RUN` and cannot pass. Legacy v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
+The full `make verify` command needs external trace data that is not in the repository. Missing `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` inputs report `NOT_RUN` with a non-zero result. The hardware differential gate is optional: with neither `PSP_HARDWARE_TRACE` nor `LOCAL_COSIM_TRACE` it reports `NOT_RUN` without changing the result, supplying only one fails, and a matching pair reports `STRICT_V2_AGREEMENT` from the traces' own tier metadata, which is not device attestation. Legacy v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
 
 ### Public synthetic verification routes
 

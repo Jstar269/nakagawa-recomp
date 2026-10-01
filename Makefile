@@ -535,7 +535,9 @@ CODEGEN_PROFILE_MANIFEST := $(BUILD_DIR)/codegen_profile.json
 #     CODEGEN_ORACLE=oracle/eboot.trace \
 #     MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace \
 #     PSP_HARDWARE_TRACE=oracle/psp-hardware.trace LOCAL_COSIM_TRACE=oracle/local-cosim.trace
-# When an input is absent the corresponding gate reports NOT_RUN with a non-zero signal.
+# When a codegen/microtest input is absent that gate reports NOT_RUN with a non-zero signal.
+# The hardware pair is optional: with neither trace set it reports NOT_RUN without failing
+# the target, so `make verify` can still succeed; setting only one of the two fails.
 CODEGEN_ORACLE   ?=
 MICROTEST_MODULE ?=
 MICROTEST_ORACLE ?=

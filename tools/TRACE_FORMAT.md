@@ -80,9 +80,10 @@ two inputs. This permits a PSP capture to be compared with a source-owned
 `LOCAL_COSIM` trace while keeping the evidence tier visible. `verify_gates.py`
 reports the validated v2 tier from the strict loader. A
 `PPSSPP_CORROBORATIVE` trace is reported as `CORROBORATIVE_ONLY` and cannot
-satisfy the hardware gate. That gate reports `HARDWARE_MEASURED` only after a
-`PSP_HARDWARE` + `LOCAL_COSIM` pair passes `strict_hardware_diff`; missing pair
-inputs are `NOT_RUN`. The PSP-side v2 trace producer is in the works under
+satisfy the hardware gate. That gate reports `STRICT_V2_AGREEMENT` (not a hardware
+measurement) when a `PSP_HARDWARE` + `LOCAL_COSIM` pair passes `strict_hardware_diff`;
+with no pair supplied it is an optional gate reported as `NOT_RUN`, and with only one
+trace supplied it fails. The PSP-side v2 trace producer is in the works under
 issue #312 and is not provided by this verifier change.
 
 A strict match proves that the two complete, identically identified streams

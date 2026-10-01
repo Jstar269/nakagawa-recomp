@@ -19,8 +19,14 @@ import tracediff
 _LEGACY_V1_TIER = "LEGACY_V1"
 
 
-def _has_v1_trace_header(path: str) -> bool:
-    """Recognize the legacy format so it remains usable by non-hardware gates."""
+def _declares_v2_header(path: str) -> bool:
+    """Whether the first comment line claims the v2 format (valid or not).
+
+    Everything else is read the way the v1 comparator reads it: its header is
+    whatever the first comment is and its step lines are what matter, so a stream
+    that does not claim v2 stays usable by the non-hardware gates. A stream that
+    claims v2 but fails validation never degrades to legacy.
+    """
 
     with open(path, "r", encoding="utf-8") as handle:
         for raw in handle:
@@ -28,21 +34,20 @@ def _has_v1_trace_header(path: str) -> bool:
             if not line.strip():
                 continue
             if line.startswith("#"):
-                return line.split()[:4] == ["#", "psp-recomp", "trace", "v1"]
+                return line[1:].split()[:3] == ["psp-recomp", "trace", "v2"]
             return False
     return False
 
 
 def trace_source_tier(path: str) -> str:
-    """Read the evidence tier through tracediff's validated v2 loader."""
+    """Read the evidence tier from the trace header (cheap, header-only)."""
 
     try:
-        header, _ = tracediff._load_hardware(path)
+        return tracediff.read_source_tier(path)
     except tracediff.HardwareTraceError:
-        if _has_v1_trace_header(path):
-            return _LEGACY_V1_TIER
-        raise
-    return header["source_tier"]
+        if _declares_v2_header(path):
+            raise
+        return _LEGACY_V1_TIER
 
 
 def report_trace_tier(label: str, path: str, *, hardware_gate: bool = False) -> str:
@@ -115,7 +120,8 @@ def run_hardware_trace_gate(psp_trace: str, cosim_trace: str) -> int:
         return 1
     if divergence is None:
         print(
-            "  HARDWARE_MEASURED: PSP_HARDWARE matches LOCAL_COSIM under strict v2 comparison",
+            "  STRICT_V2_AGREEMENT: PSP_HARDWARE == LOCAL_COSIM under strict v2 comparison "
+            "(tiers come from trace metadata; not device-attested, not a hardware measurement)",
             flush=True,
         )
         return 0
@@ -214,10 +220,21 @@ def main() -> int:
         )
         status = 1
 
-    status |= run_hardware_trace_gate(
-        args.psp_hardware_trace,
-        args.local_cosim_trace,
-    ) != 0
+    if args.psp_hardware_trace or args.local_cosim_trace:
+        status |= run_hardware_trace_gate(
+            args.psp_hardware_trace,
+            args.local_cosim_trace,
+        ) != 0
+    else:
+        # The hardware pair is an opt-in additional gate: leaving it out must not
+        # make the existing codegen/microtest route unable to pass. It is still
+        # reported, never silent.
+        print("[verify] hardware_trace_gate: PSP_HARDWARE_TRACE + LOCAL_COSIM_TRACE", flush=True)
+        print(
+            "  NOT_RUN: optional gate; set both PSP_HARDWARE_TRACE and LOCAL_COSIM_TRACE to run it",
+            flush=True,
+        )
+        print("  PSP_HARDWARE_TRACE producer: in the works (issue #312)", flush=True)
 
     print("[verify] done.", flush=True)
     return int(status != 0)
