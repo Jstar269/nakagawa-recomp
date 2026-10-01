@@ -116,6 +116,18 @@ HANDLER_METADATA = {
         ],
         "limitation": "display-smoke covers ordinary guest-thread waits; interrupt-context behavior and callback wait variants remain outside this route (#341)",
     },
+    # sceGeListEnQueue is reached by the display-smoke route with one bounded,
+    # unstalled list (PRIM, FINISH, END) that the host GE runs to completion at
+    # enqueue. The flight recorder pins that single production path.
+    "h_GeListEnQueue": {
+        "status": "partial",
+        "evidence": [
+            "Makefile:display-smoke-run",
+            "fixtures/display_smoke/generate.py:flight_smoke",
+            "src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events",
+        ],
+        "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)",
+    },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
     # decoder actually produced: the video getter validates the caller's stride
@@ -143,11 +155,11 @@ HANDLER_METADATA = {
     },
     "h_MpegAvcInitYCbCr": {
         "status": "partial",
-        "limitation": "Init accepts only the documented 4:2:0 allocation shape and makes guest bytes deterministic; the firmware-owned header and cache contract are not measured (#302)",
+        "limitation": "Init zeroes a modeled guest allocation; its plane bytes are not asserted to match the PSP header/plane layout (#302)",
     },
     "h_MpegAvcDecodeYCbCr": {
         "status": "partial",
-        "limitation": "Decode produces only a backend-delivered picture and reports delayed/no-data states; the hardware EOS and cache-coherency observations are still required (#302)",
+        "limitation": "Decode marks decoded pictures ready; guest plane bytes remain modeled zeroes, not the PSP layout, while Csc writes the retained decoded picture (#302)",
     },
     "h_MpegAvcDecodeStopYCbCr": {
         "status": "partial",
@@ -155,11 +167,11 @@ HANDLER_METADATA = {
     },
     "h_MpegAvcCopyYCbCr": {
         "status": "partial",
-        "limitation": "Copy handles matching initialized allocations and rejects overlap; the firmware layout and overlap result still need a physical PSP oracle (#302)",
+        "limitation": "Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)",
     },
     "h_MpegAvcCsc": {
         "status": "partial",
-        "limitation": "CSC preflights dynamic source/range/stride geometry and pixel formats; clipping, range conversion, and destination coherency remain hardware-oracle work (#302)",
+        "limitation": "Csc writes the retained decoded picture; guest plane bytes are modeled, not the PSP layout, and range/coherency behavior remains open (#302)",
     },
     "h_MpegQueryPcmEsSize": {
         "status": "partial",

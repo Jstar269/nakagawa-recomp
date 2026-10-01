@@ -1396,6 +1396,44 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertFalse(self.last_build_arguments.instruction_trace)
         nk_cli.validate_bringup_report(report)
 
+    def test_invalid_selected_boot_sources_write_schema_valid_unsupported_report(self):
+        invalid_sources = (".", "..", "BAD/NAME", "BAD\x01NAME", "A" * 256)
+        for index, source in enumerate(invalid_sources):
+            with self.subTest(source=repr(source)):
+                case_root = self.root / f"invalid-boot-source-{index}"
+                report_path = case_root / "bringup.json"
+                args = argparse.Namespace(
+                    iso=str(self.iso),
+                    work_dir=str(case_root / "work"),
+                    report=str(report_path),
+                    launch_timeout=1,
+                    instruction_trace=False,
+                )
+                preflight = {
+                    "checks": [
+                        {"code": "DISC_SFO", "status": "OK", "issues": []},
+                        {"code": "EXECUTABLE", "status": "OK", "issues": []},
+                    ],
+                    "selected_executable": "EBOOT.BIN",
+                    "selected_executable_source": source,
+                    "modified_dump_cfw_loader": False,
+                }
+                with (
+                    mock.patch.object(
+                        nk_cli, "inspect_compatibility_preflight", return_value=preflight
+                    ),
+                    mock.patch("builtins.print"),
+                ):
+                    status = nk_cli.cmd_bringup(args)
+
+                self.assertEqual(status, 1)
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                nk_cli.validate_bringup_report(report)
+                self.assertEqual(report["reached_stage"], "inspect")
+                self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
+                self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
+                self.assertEqual(report["issue_numbers"], [285])
+
     def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
         output = (
             "BOOT_EVENT phase=window_ready backend=offscreen t_ns=100\n"
@@ -1866,6 +1904,11 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         self.assertEqual(preflight["selected_executable_source"], "EBOOT.OLD")
         self.assertEqual(preflight["selected_executable"], "EBOOT.elf")
+        self.assertEqual(
+            nk_cli._psp_boot_path(preflight["selected_executable_source"]),
+            "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD",
+        )
+        self.assertIsNone(nk_cli._psp_boot_path("../outside.elf"))
         cfw_check = next(
             check for check in preflight["checks"]
             if check["code"] == "MODIFIED_DUMP_CFW_LOADER"
@@ -1894,6 +1937,12 @@ class TestSanitizedBringup(unittest.TestCase):
             summary,
         )
         self.assertIn("in the works (#308)", summary)
+        library = json.loads(
+            (work_root / "work" / "user-data" / "library.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(library["games"][0]["selected_executable"], "EBOOT.BIN")
+        self.assertEqual(library["games"][0]["boot_executable"], "EBOOT.OLD")
         nk_cli.validate_bringup_report(report)
 
     def test_relocatable_main_entry_is_rebased_to_guest_address(self):

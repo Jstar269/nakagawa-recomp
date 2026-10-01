@@ -637,7 +637,12 @@ installs that script into a user `Scripts/` directory that is frequently absent 
 Windows, so the bare form fails with "command not found" immediately after a successful install.
 The module form works regardless of `PATH`.
 
-These hooks install their own pinned Ruff and Betterleaks environments. C formatting is defined by
+These hooks install their own pinned Ruff and Betterleaks environments. The
+Betterleaks hook runs at the commit stage in directory mode over the staged files, which works the
+same on Windows and Linux; it is not a pre-push hook, because pre-commit passes no file names at
+that stage and directory mode would then scan the whole working tree, including the private input
+directories (the pushed history is scanned in hosted CI); its upstream git mode sets `GIT_CONFIG_GLOBAL=NUL`,
+which Git for Windows rejects, so that mode scanned nothing on Windows. C formatting is defined by
 `.clang-format` but is not currently an automatic pre-commit hook. A mypy configuration remains in
 `pyproject.toml`, but mypy is **not** a shared gate while the pre-existing Python typing baseline is being corrected. Do not describe a known-failing type check as a required
 contributor hook. These tools are not core runtime dependencies.

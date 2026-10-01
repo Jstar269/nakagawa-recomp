@@ -494,13 +494,29 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
         ]
         self.assertEqual(len(media_links), 1, media_links)
         number, link = media_links[0]
-        self.assertIn(
-            "src/rt/flight_recorder.c",
-            link,
+        # The recipe either names the implementation or links the filtered
+        # runtime object set, which carries flight_recorder.o unless the filter
+        # removes it.
+        supplied = "src/rt/flight_recorder.c" in link or (
+            "$(PSMF_MEDIA_RUNTIME_OBJS)" in link
+            and "flight_recorder.o" not in _psmf_media_filtered_out(makefile)
+        )
+        self.assertTrue(
+            supplied,
             "Makefile:%d links psmf_media_selftest.exe with SR_FLIGHT_RECORDER_LINKED, "
             "but omits the implementation that defines sr_watch_store and "
             "g_sr_watch_enabled:\n%s" % (number, link.strip()),
         )
+
+
+def _psmf_media_filtered_out(makefile: str) -> str:
+    """The objects PSMF_MEDIA_RUNTIME_OBJS removes from RT_OBJS (its filter-out list)."""
+    match = re.search(
+        r"(?m)^PSMF_MEDIA_RUNTIME_OBJS\s*:=\s*\$\(filter-out\s+([^,]*),\s*\$\(RT_OBJS\)\)",
+        makefile,
+    )
+    assert match is not None, "PSMF_MEDIA_RUNTIME_OBJS must stay a filter-out of RT_OBJS"
+    return match.group(1)
 
 
 NESTED_FRAMES_C = "src/rt/nested_frames.c"
@@ -512,6 +528,9 @@ NESTED_FRAMES_BUNDLES = (
     "$(RT_OBJS)",
     "$(PORTABLE_CORE_SRCS)",
     "$(PORTABLE_CORE_OBJS)",
+    # RT_OBJS minus a fixed filter-out list; test_psmf_runtime_objs_keep_nested_frames
+    # fails if that list ever removes nested_frames.o.
+    "$(PSMF_MEDIA_RUNTIME_OBJS)",
 )
 
 
@@ -645,6 +664,11 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
         callers = _nested_frame_callers()
         for expected in ("src/rt/hle.c", "src/rt/mpeg.c", "src/rt/sched.c"):
             self.assertIn(expected, callers)
+
+    def test_psmf_runtime_objs_keep_nested_frames(self) -> None:
+        removed = _psmf_media_filtered_out(self.makefile)
+        self.assertNotIn("nested_frames.o", removed)
+        self.assertIn("src/rt/nested_frames.c", self.makefile.split("RT_SRCS    :=", 1)[1])
 
     def test_every_link_of_a_caller_also_supplies_the_module(self) -> None:
         callers = _nested_frame_callers()
