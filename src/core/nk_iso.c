@@ -1579,7 +1579,7 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
     uint64_t source_offset = (uint64_t)entry->lba * SECTOR_SIZE;
     if (nk_fseek64(stage->iso, (int64_t)source_offset, SEEK_SET) != 0) {
         fclose(out);
-        remove(host_path);
+        nk_remove_utf8(host_path);
         return false;
     }
     uint8_t buffer[64 * 1024];
@@ -1609,7 +1609,7 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
     }
     int close_failed = fclose(out) != 0;
     if (!okay || remaining != 0 || close_failed) {
-        remove(host_path);
+        nk_remove_utf8(host_path);
         return false;
     }
     stage->files_complete++;
@@ -1780,7 +1780,7 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
         size_t read_count = fread(eboot_buffer, 1, requested, iso);
         if (read_count == 0 || fwrite(eboot_buffer, 1, read_count, eboot_out) != read_count) {
             fclose(eboot_out);
-            remove(eboot_path);
+            nk_remove_utf8(eboot_path);
             fclose(iso);
             return NK_ERROR_IO;
         }
@@ -1790,14 +1790,14 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
                                                stage.bytes_total, 0, stage.total_files,
                                                stage.progress_userdata)) {
             fclose(eboot_out);
-            remove(eboot_path);
+            nk_remove_utf8(eboot_path);
             fclose(iso);
             return NK_ERROR_CANCELLED;
         }
     }
     int eboot_close_failed = fclose(eboot_out) != 0;
     if (eboot_close_failed) {
-        remove(eboot_path);
+        nk_remove_utf8(eboot_path);
         fclose(iso);
         return NK_ERROR_IO;
     }
