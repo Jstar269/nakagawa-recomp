@@ -226,6 +226,29 @@ def _decode_trace_lines(handle, path):
         _hardware_error(path, None, f"trace is not valid UTF-8 text: {exc}")
 
 
+def read_source_tier(path):
+    """Return the ``source_tier`` declared by a v2 trace header, reading only the header.
+
+    The header is validated exactly as the strict loader validates it, but no step
+    record is parsed, so asking a large oracle for its tier stays cheap. The tier is
+    the trace's own metadata: it is not attested by this function or by the strict
+    comparison. Raises HardwareTraceError when the stream has no valid v2 header.
+    """
+
+    try:
+        handle = open(path, "r", encoding="utf-8")
+    except OSError as exc:
+        raise HardwareTraceError(f"{path}: cannot read trace: {exc}") from exc
+    with handle:
+        for lineno, line in _decode_trace_lines(handle, path):
+            if line.strip() == "":
+                continue
+            if not line.startswith("#"):
+                _hardware_error(path, lineno, "step record appears before the v2 header")
+            return _parse_hardware_header(line, path, lineno)["source_tier"]
+    _hardware_error(path, None, "missing required v2 hardware trace header")
+
+
 def _load_hardware(path):
     """Load and completely validate one v2 stream before comparing it."""
 
