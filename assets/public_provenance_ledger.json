@@ -721,7 +721,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1a91bb0eb3549eebe08c1598e9f8e0ea7bda6a6838add844b9f843bdc69624e6"
+      "sha256": "08b6bc39d5851a3d5ae32fe078004c1774afa450f651aa60620e48e7178dc7db"
     },
     {
       "path": "assets/titles/README.md",
@@ -1066,7 +1066,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "62a45eaa9833a41d2d4ad09716c8a499e18a6d9144a86fee7fa2eb79caec2709"
+      "sha256": "8c8d3f7abf27b935e9c369953eabbe763136a1f80df248b500268da56a8acda0"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2feaf14e62bd326cf56b9346a73bc8e167955e18020ff545b4773c55893bc6bd"
+      "sha256": "a0acd85c3bec9c8230fa5786c08e379fb928cb79677ea81300f0274a78c26f34"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1150,7 +1150,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "911f13c7156f999c536d6fd7a356298c003802bffec620b367c0d5a63f119d7e"
+      "sha256": "3937b1d04ee39db71f020b254897b6fafb5253df12f051a15f70ed7055da6038"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
@@ -1195,7 +1195,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "18e906977d73c79fdd8933c43d8e9ae709ce7d736f8df00ee5c4b19479f355b6"
+      "sha256": "bc47dad72d096f1dfa675cffd001b18a2e8a6c895971999ac6b700934a7b9fde"
     },
     {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
@@ -1225,7 +1225,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "92f54fd8b14ed4446ac5c3ef044f81e8878e22ac6a2fada0f87c0bb265543fc0"
+      "sha256": "ca59858a2746a5b5e2477037305521efee44d47fcf3960c94dadf86945f80e36"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a4f932db844e1ee3a1a30c375adf35538a17149b7cf9e6b492fceaa80d17b39c"
+      "sha256": "86520daec2a9df8c86526f28450dc736ec80a061ded8c56ededa006c8e64c125"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1399,7 +1399,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ef04b881ed264f1a9339bbfcac975351ca360aa85e47bc550845948693ff72df"
+      "sha256": "7ac86dd23e7050e417afb6313d8abf4f215f83e0093527ae16d5614f4d5d9daa"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -4531,7 +4531,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "dd96cb12f272c461b8a56a5760507092ed871804b9372f383fb2ede0b666a7ac"
+      "sha256": "d4219fa2dfbafca0c455418937c37b846325422c120fff0920dbc41dd82d4129"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4569,7 +4569,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3d2eb858c0e907b458aea3d28d71927ea62e62c492b8a8a759685264b080220f"
+      "sha256": "3b964e6cf2d18baa16099e3389e8086c8e09195e00ff2ee32c41a58c5b4dfd7b"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5056,7 +5056,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "79ac2e90179ec1f58396a9a04e688c0330c1279f33015a48760798343ead7805"
+      "sha256": "d2ea1798a80d40e640696c4eb512d4d1b393cf25c09a35cd1eacef57c6c1e88c"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -5691,7 +5691,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f938fe7b1ea7a88182d0ea850fa0b23b95b8f53258bf1eccf266f0579da682bc"
+      "sha256": "3d852d56bd808773a0d521a12debf570ffcde39be02e5d4224f54cde8575ac25"
     },
     {
       "path": "tools/contrib_check.py",
@@ -7789,7 +7789,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ecc2cc15bb10374fb5bea17277783e7e8b4fa950949d023d5a02f482026052b2"
+      "sha256": "57d1223e74349d12a71fa3fe397215475f16048266c4dceb2389b84ffcaad391"
     },
     {
       "path": "tools/test_hle_title_isolation.py",
