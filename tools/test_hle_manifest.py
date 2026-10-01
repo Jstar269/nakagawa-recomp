@@ -607,6 +607,17 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
         self.assertIn("hle_devctl_refusal_first(device, command)", source)
         self.assertIn("HLE: compatibility exception: %s (NID 0x%08x)", source)
         self.assertIn("atexit(hle_unsupported_summary)", source)
+        # A stream the demuxer refuses is a product boundary, not a debug line: the named
+        # reason and its tracking issue must survive any refactor of the emitting helper.
+        self.assertIn(
+            'PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s ',
+            source,
+        )
+        self.assertIn(
+            "at source offset %llu; no further access unit is decoded and the player keeps ",
+            source,
+        )
+        self.assertIn("its current status; in the works (#288)", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):
@@ -742,6 +753,173 @@ class EvidenceTierTests(unittest.TestCase):
     def test_a_hardware_probe_outranks_host_coverage(self) -> None:
         tier, _ = hle_manifest.evidence_tier(self._entry(oracle=["PSP-SMOKE-001"]))
         self.assertEqual(tier, "HARDWARE_MEASURED")
+
+    def test_capture_without_accepted_run_does_not_promote_api(self) -> None:
+        manifest = {
+            "tests": [{
+                "id": "PSP-TRANSPORT-001",
+                "status": "implemented",
+                "hardware_evidence": "CAPTURED",
+                "apis": ["sceIoOpen"],
+            }],
+        }
+        oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
+        tier, _ = hle_manifest.evidence_tier(
+            self._entry(oracle=oracle_apis.get("sceIoOpen", ()))
+        )
+        self.assertNotEqual(tier, "HARDWARE_MEASURED")
+
+    def test_missing_hardware_evidence_defaults_to_not_run(self) -> None:
+        self.assertEqual(
+            hle_manifest.oracle_exercised_apis({
+                "tests": [{"id": "PSP-LEGACY-001", "status": "implemented", "apis": ["sceIoOpen"]}],
+            }),
+            {},
+        )
+
+    def test_unknown_hardware_evidence_fails_closed(self) -> None:
+        for evidence in ("accepted", None):
+            with self.subTest(hardware_evidence=evidence):
+                with self.assertRaisesRegex(ManifestError, "unknown hardware_evidence"):
+                    hle_manifest.oracle_exercised_apis({
+                        "tests": [{"id": "PSP-UNKNOWN-001", "hardware_evidence": evidence}],
+                    })
+
+    @staticmethod
+    def _measured_row(**overrides) -> dict:
+        """A MEASURED row citing a committed section that really names its case."""
+        row = {
+            "id": "PSP-CITED-001",
+            "status": "implemented",
+            "hardware_evidence": "MEASURED",
+            "apis": ["sceDisplayGetAccumulatedHcount"],
+            "case_ids": ["display-ge-mask"],
+            "evidence_ref": "docs/ARCHITECTURE.md#clocks",
+            "evidence_cases": ["display-ge-mask", "sceDisplayGetAccumulatedHcount"],
+        }
+        row.update(overrides)
+        return row
+
+    def test_a_resolvable_citation_promotes_the_apis_it_names(self) -> None:
+        oracle_apis = hle_manifest.oracle_exercised_apis({"tests": [self._measured_row()]})
+        self.assertEqual(oracle_apis, {"sceDisplayGetAccumulatedHcount": ["PSP-CITED-001"]})
+
+    def test_an_api_the_citation_does_not_name_is_not_promoted(self) -> None:
+        # A citation of one case must not stand for every API the row lists.
+        row = self._measured_row(apis=["sceDisplayGetAccumulatedHcount", "sceGeSetCallback"])
+        oracle_apis = hle_manifest.oracle_exercised_apis({"tests": [row]})
+        self.assertEqual(oracle_apis, {"sceDisplayGetAccumulatedHcount": ["PSP-CITED-001"]})
+
+    def test_every_case_id_is_cited_or_explicitly_uncited(self) -> None:
+        row = self._measured_row(case_ids=["display-ge-mask", "display-mask-duty"])
+        with self.assertRaisesRegex(ManifestError, "neither cited in evidence_cases nor listed"):
+            hle_manifest.oracle_exercised_apis({"tests": [row]})
+        row["uncited_cases"] = ["display-mask-duty"]
+        self.assertIn("sceDisplayGetAccumulatedHcount",
+                      hle_manifest.oracle_exercised_apis({"tests": [row]}))
+        for bad, message in (
+            (["not-a-case"], "are not its case_ids"),
+            (["display-ge-mask", "display-mask-duty"], "in both evidence_cases and uncited_cases"),
+            ("display-mask-duty", "must be a list"),
+        ):
+            with self.subTest(uncited=bad):
+                row["uncited_cases"] = bad
+                with self.assertRaisesRegex(ManifestError, message):
+                    hle_manifest.oracle_exercised_apis({"tests": [row]})
+
+    def test_citations_resolve_headings_the_way_github_renders_them(self) -> None:
+        text = "\n".join([
+            "# Doc",
+            "## Clocks",
+            "first-clocks-body",
+            "```sh",
+            "# not a heading",
+            "fenced-body",
+            "```",
+            "## Clocks",
+            "second-clocks-body",
+            "",
+        ])
+        policy = mock.Mock()
+        policy.resolve.return_value = mock.Mock(disposition="included", rule="include_paths")
+        with mock.patch.object(hle_manifest.publication_policy, "load_policy", return_value=policy), \
+                mock.patch.object(hle_manifest.Path, "read_text", return_value=text):
+            first = hle_manifest._cited_section("docs/X.md#clocks", "T")
+            second = hle_manifest._cited_section("docs/X.md#clocks-1", "T")
+            with self.assertRaisesRegex(ManifestError, "names no heading"):
+                hle_manifest._cited_section("docs/X.md#not-a-heading", "T")
+        self.assertIn("first-clocks-body", first)
+        self.assertIn("fenced-body", first)
+        self.assertNotIn("second-clocks-body", first)
+        self.assertIn("second-clocks-body", second)
+        self.assertNotIn("first-clocks-body", second)
+
+    def test_measured_without_a_citation_fails_closed(self) -> None:
+        for missing in ("evidence_ref", "evidence_cases"):
+            with self.subTest(missing=missing):
+                row = self._measured_row()
+                del row[missing]
+                with self.assertRaisesRegex(ManifestError, missing):
+                    hle_manifest.oracle_exercised_apis({"tests": [row]})
+
+    def test_measured_citation_must_resolve_to_a_public_section(self) -> None:
+        cases = {
+            "docs/ARCHITECTURE.md": "must be a repo-relative",
+            "docs/ARCHITECTURE.md#no-such-heading": "names no heading",
+            "docs/../secrets.md#clocks": "must be a repo-relative",
+            "docs/PSP_HARDWARE_ORACLE.md#hardware-oracle-plan-a-real-psp-as-an-external-verification-source": "resolves as excluded",
+            "docs/UNCOMMITTED_EVIDENCE.md#clocks": "resolves as unclassified",
+        }
+        for ref, message in cases.items():
+            with self.subTest(ref=ref):
+                with self.assertRaisesRegex(ManifestError, message):
+                    hle_manifest.oracle_exercised_apis({
+                        "tests": [self._measured_row(evidence_ref=ref)],
+                    })
+
+    def test_measured_citation_must_exist_in_the_tree(self) -> None:
+        policy = mock.Mock()
+        policy.resolve.return_value = mock.Mock(
+            disposition="included", rule="include_paths"
+        )
+        with mock.patch.object(
+            hle_manifest.publication_policy, "load_policy", return_value=policy
+        ):
+            with self.assertRaisesRegex(ManifestError, "not readable"):
+                hle_manifest.oracle_exercised_apis({
+                    "tests": [self._measured_row(evidence_ref="docs/GONE.md#clocks")],
+                })
+
+    def test_measured_evidence_cases_must_belong_to_the_row(self) -> None:
+        with self.assertRaisesRegex(ManifestError, "neither its case_ids nor its apis"):
+            hle_manifest.oracle_exercised_apis({
+                "tests": [self._measured_row(evidence_cases=["display-mask-vcount"])],
+            })
+
+    def test_measured_evidence_cases_must_be_named_by_the_citation(self) -> None:
+        with self.assertRaisesRegex(ManifestError, "does not name"):
+            hle_manifest.oracle_exercised_apis({
+                "tests": [self._measured_row(
+                    case_ids=["ge-mask-primary-masked-release"],
+                    evidence_cases=["ge-mask-primary-masked-release"],
+                )],
+            })
+
+    def test_the_committed_manifest_only_promotes_cited_measured_rows(self) -> None:
+        document = json.loads(
+            hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8")
+        )
+        promoted = hle_manifest.oracle_exercised_apis(document)
+        self.assertEqual(
+            sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
+            ["PSP-DISPLAY-001", "PSP-DMAC-001", "PSP-EXCEPTION-001"],
+        )
+        self.assertIn("sceDmacTryMemcpy", promoted)
+        rows = {t["id"]: t for t in document["tests"]}
+        for api, test_ids in promoted.items():
+            for test_id in test_ids:
+                self.assertIn(api, rows[test_id]["apis"])
+                self.assertEqual(rows[test_id]["hardware_evidence"], "MEASURED")
 
     def test_executable_coverage_of_a_dedicated_handler_is_host_tested(self) -> None:
         tier, _ = hle_manifest.evidence_tier(self._entry(selftest=True))
