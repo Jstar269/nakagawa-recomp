@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "92352b9ec70cdf793e02f396b05a350f12772a4587e308d4d0394cf5d8f87c61"
+      "sha256": "0e8fe4c8053f25aea6b8bd0299c0ddf465bf39a8b233423948fdb00b1fa2f356"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4794,7 +4794,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "87b43da5c44db97ed936d83af06b82b5a687e65d936e0567b6e6b43e5afde53f"
+      "sha256": "b7c129f80ae6031b45b2ba24afdb00b46574d0be69a1532763869beb264413b6"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -4806,7 +4806,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4a0660d0dcd0650f00e84a4ac4bcc5c519c231b78f4a96d2b7ae1ae070443d69"
+      "sha256": "ec93f1e26cc43f00fca7c9d9d6da5d35748c76dc005019493c1e5c3d51499855"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -4818,7 +4818,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "45dfcefa26c0ee2768c53e04b5c65f7373dd22eea9fed328c1b663bf0ca925d8"
+      "sha256": "0a51ec28b823022f9619a852d1ae5fa74257c5f221380c1c57868324ebba3ebe"
     },
     {
       "path": "src/rt/psmf_producer_selftest.c",
