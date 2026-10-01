@@ -35,7 +35,7 @@
     {"issue": 308, "primary_state": "future_work", "depends_on": [278, 280, 283, 285, 286, 289, 293, 294, 295, 296, 297, 298, 299, 300, 304, 306], "note": "This umbrella intentionally follows component routes and release gates."},
     {"issue": 309, "primary_state": "implementation", "depends_on": [294], "note": "Profile-zero production proof is public and needs hosted coverage."},
     {"issue": 310, "primary_state": "implementation", "note": "Checked-in routing metadata replaces silent issue-number fallbacks."},
-    {"issue": 311, "primary_state": "hardware", "depends_on": [310], "oracle_groups": ["audio", "io", "system"], "note": "IO and audio remain planned; system scope needs reconciliation and qualification."},
+    {"issue": 311, "primary_state": "hardware", "depends_on": [310], "oracle_groups": ["audio", "cache", "cpu", "io", "system"], "note": "IO and audio remain planned; system scope needs reconciliation and qualification; the cpu group covers the measured exception-entry campaign and the not-yet-run fpu-vector cells, and cache covers the not-yet-run cache-alias cells."},
     {"issue": 312, "primary_state": "hardware", "note": "Real-PSP instruction traces are required for first-divergence evidence."},
     {"issue": 313, "primary_state": "implementation", "note": "The open-font converter is public work with recorded license provenance."},
     {"issue": 314, "primary_state": "future_work", "note": "Web retirement is a later consolidation after runtime seams stabilize."},

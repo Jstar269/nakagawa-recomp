@@ -47,6 +47,20 @@ class CiPathClassificationTests(unittest.TestCase):
         self.assertEqual(result["run_native"], "false")
         self.assertEqual(result["run_windows"], "false")
 
+    def test_tools_readme_runs_the_python_gate_that_guards_it(self) -> None:
+        """tools/README.md is Markdown, but tools/test_lint_docs.py compares its module
+        index against the tracked tools/ set. Routing the file that can break that
+        check to the docs gate only meant the hosted ``python_tests`` job was skipped
+        for exactly the edit that breaks it."""
+        result = classify(["tools/README.md"])
+        self.assertEqual(result["run_python"], "true")
+        self.assertEqual(result["markdown"], "true")
+        self.assertEqual(result["docs_only"], "true")
+        # Narrow, not a blanket Markdown routing: ordinary documentation keeps skipping
+        # the Python matrix, including the other Markdown file under tools/.
+        self.assertEqual(classify(["docs/CI.md"])["run_python"], "false")
+        self.assertEqual(classify(["tools/TRACE_FORMAT.md"])["run_python"], "false")
+
     def test_generated_public_metadata_is_recognised_and_preserves_docs_only(self) -> None:
         """Issue #188 Finding 13 (O-13): generated public metadata must not trigger force_full."""
         result = classify([
