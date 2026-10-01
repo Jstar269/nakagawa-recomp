@@ -118,6 +118,16 @@ class StrictLocalTraceCoverageTests(unittest.TestCase):
         self.assertEqual(rc, 2, output)
         self.assertIn("captured 1", output)
 
+    def test_unequal_lengths_are_rejected_without_a_stated_length(self):
+        a, _ = self.complete_pair()
+        short = self.write("short-unstated.trace",
+                           HEADER + "0 pc=0x08900000 op=0x24080001 r8=0x00000001\n")
+        for first, second in ((a, short), (short, a)):
+            with self.subTest(first=first.name, second=second.name):
+                rc, output = self.run_tool(first, second)
+                self.assertEqual(rc, 2, output)
+                self.assertIn("step count differs", output)
+
     def test_over_long_stream_is_rejected_when_length_is_stated(self):
         a, b = self.complete_pair()
         rc, output = self.run_tool(a, b, expect_steps=2)
@@ -242,6 +252,18 @@ class GateRequiredCoverageTests(unittest.TestCase):
             any("--strict-local" in command
                 and command[-2:] == ["--expect-steps", "3"]
                 for command in commands), commands)
+
+    def test_microtest_gate_names_a_runner_stop_before_the_budget(self):
+        oracle = self.write_oracle("microtest-fault.trace", (0, 1, 2, 3), exit_index=3)
+        faulted = subprocess.CompletedProcess(args=[], returncode=4, stdout="", stderr="")
+        with mock.patch.object(microtest_gate, "find_exit_syscall_pc",
+                               return_value=0x0890000C),              mock.patch.object(microtest_gate.subprocess, "run",
+                               return_value=faulted) as runner:
+            rc = microtest_gate.main(["microtest_gate.py", "run_elf.exe", "m.elf",
+                                      str(oracle), self.dir])
+        self.assertEqual(rc, 2)
+        # The comparator never runs on a reference trace the runner did not finish.
+        self.assertEqual(runner.call_count, 1)
 
     def test_microtest_gate_refuses_a_zero_pre_exit_fixture(self):
         oracle = self.write_oracle("microtest-zero.trace", (0,), exit_index=0)

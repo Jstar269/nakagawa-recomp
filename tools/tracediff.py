@@ -510,7 +510,12 @@ def strict_local_diff(path_a, path_b, expect_steps=None):
         _local_error(path_a, None,
                      f"trace identity start_pc differs: A={start_a!r} B={start_b!r}")
     # _load_local proved both streams are contiguous from index 0 and, when a
-    # required length was stated, exactly that long, so records align by position.
+    # required length was stated, exactly that long. Without a stated length the
+    # two streams must still cover the same steps, or the comparison proves nothing
+    # about the records only one side carries.
+    if len(a) != len(b):
+        _local_error(path_b, None,
+                     f"step count differs: A has {len(a)} records, B has {len(b)}")
     for i in range(len(a)):
         _, pc_a, op_a, writes_a = a[i]
         _, pc_b, op_b, writes_b = b[i]

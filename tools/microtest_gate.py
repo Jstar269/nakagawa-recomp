@@ -86,8 +86,15 @@ def main(argv):
     # This route deliberately runs for exactly the pre-exit budget, so the runner must
     # be told that a bounded stop is the expected outcome: a bounded run is not a guest
     # exit, and the runner now fails any stop the caller did not declare.
-    subprocess.run([run_elf, module, oracle, mine, str(syscall_step),
-                    "--expect-stop=step-limit"], check=True)
+    runner = subprocess.run([run_elf, module, oracle, mine, str(syscall_step),
+                             "--expect-stop=step-limit"])
+    if runner.returncode != 0:
+        # The runner has already printed its `run_elf: stop_reason=... executed=...`
+        # line to stderr; name the gate failure instead of raising out of main().
+        sys.stderr.write(
+            f"ERROR: reference runner stopped before the {syscall_step}-instruction "
+            f"pre-exit budget (run_elf exit {runner.returncode}); see its stop_reason line\n")
+        return 2
 
     here = os.path.dirname(os.path.abspath(__file__))
     result = subprocess.run([sys.executable, os.path.join(here, "tracediff.py"),

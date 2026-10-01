@@ -501,8 +501,9 @@ StepResult Run(CpuState *s, Memory *mem, unsigned long long max_steps, TraceSink
 		mem->ClearFault();
 		uint32_t pc = s->pc;
 		uint32_t op = mem->Read32(pc);
+		// The fetch faulted, so the instruction at pc never executed.
 		if (mem->last_fault())
-			return {StopReason::kMemoryFault, pc, op, i + 1};
+			return {StopReason::kMemoryFault, pc, op, i};
 
 		uint32_t store_addr = 0;
 		int store_size = 0;

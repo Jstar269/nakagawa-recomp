@@ -246,6 +246,8 @@ class TestReferenceRunnerTerminationContract(unittest.TestCase):
         self.assertEqual(proc.returncode, 4, proc.stderr)
         self.assertEqual(meta.get("stop_reason"), "memory-fault", proc.stderr)
         self.assertEqual(meta.get("pc"), "0x20000000", proc.stderr)
+        # jr ra and its delay slot ran; the faulting fetch did not execute.
+        self.assertEqual(meta.get("executed"), "2", proc.stderr)
 
     def test_break_stop_is_nonzero_and_distinct(self) -> None:
         elf = self.write_elf("break.elf", [self.OPCODE_BREAK])

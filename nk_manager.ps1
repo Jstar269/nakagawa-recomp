@@ -790,8 +790,17 @@ try {
         # recipe always leaves Make with its own exit status, which would turn a child
         # SKIP (77) into a failure.
         $a = $makeBaseArgs + @("gpu-selftest-status", "--no-print-directory")
-        $gpuLog = (& $makeExe @a 2>&1 | Out-String)
-        $gpuExit = $LASTEXITCODE
+        # The GPU self-tests print SKIP on stderr. Under the script-wide "Stop"
+        # preference a redirected stderr line could terminate the suite before the
+        # SKIP is classified, so this one capture runs under "Continue".
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $gpuLog = (& $makeExe @a 2>&1 | Out-String)
+            $gpuExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $savedPreference
+        }
         Write-Host $gpuLog
         $gpuGates = @("gpu-coherence-selftest", "gpu-capture-selftest")
         $gpuStatus = Resolve-GpuSelftestStatus -Results (Get-GpuSelftestResults -Log $gpuLog) `
