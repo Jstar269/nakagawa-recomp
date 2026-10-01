@@ -739,28 +739,29 @@ static void test_title_config_configured_roles_act(void) {
     }
 }
 
-/* One delivered VBLANK increments exactly the configured counter pair, and touches no
- * other candidate word. A generic build must write neither. */
-static void test_title_config_vblank_counters(void) {
+/* A delivered VBLANK writes no guest memory of its own. The only code that may advance a
+ * guest's frame or vsync words is the guest's own VBLANK handler; a runtime that also
+ * incremented a title-named pair counted every VBLANK twice for a guest whose handler
+ * maintains the same words, so a frame loop gated on "two VBLANKs elapsed" passed after
+ * one and the guest ran at twice its intended rate. Whether or not the build names the
+ * pair, no candidate word may change, and the pair a build does name must stay zero too. */
+static void test_delivered_vblank_writes_no_guest_memory(void) {
     reset_sched();
     uint32_t frame = 0, vsync = 0;
     int configured = sr_title_config_vblank_counters(&frame, &vsync);
-    expect(configured == (cfg_has(SR_TITLE_CFG_VBLANK_COUNTERS) ? 1 : 0),
-           "vblank counter availability matches the configured validity bit");
     for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
         MEM_W32(k_candidate_counters[i], 0u);
     }
     if (configured) { MEM_W32(frame, 0u); MEM_W32(vsync, 0u); }
     deliver_vblank();
+    deliver_vblank();
     if (configured) {
-        expect(MEM_R32(frame) == 1u, "the configured frame counter advanced once");
-        expect(MEM_R32(vsync) == 1u, "the configured vsync counter advanced once");
+        expect(MEM_R32(frame) == 0u, "a delivered VBLANK leaves the configured frame word alone");
+        expect(MEM_R32(vsync) == 0u, "a delivered VBLANK leaves the configured vsync word alone");
     }
     for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
-        uint32_t addr = k_candidate_counters[i];
-        if (configured && (addr == frame || addr == vsync)) continue;
-        expect(MEM_R32(addr) == 0u,
-               "an unconfigured counter word is untouched by a delivered VBLANK");
+        expect(MEM_R32(k_candidate_counters[i]) == 0u,
+               "a candidate counter word is untouched by a delivered VBLANK");
     }
 }
 
@@ -2850,7 +2851,7 @@ int main(void) {
     test_role_uid_capture();
     test_title_config_foreign_entries_are_inert();
     test_title_config_configured_roles_act();
-    test_title_config_vblank_counters();
+    test_delivered_vblank_writes_no_guest_memory();
     test_historical_launcher_uid_is_ordinary_when_unconfigured();
     test_historical_worker_uid_is_ordinary_when_unconfigured();
     test_configured_entry_captures_whatever_uid_it_gets();

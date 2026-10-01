@@ -1345,16 +1345,12 @@ static void deliver_vblank(void) {
     s_vbl_last_us = s_vtime_us;   /* start edge: the vblank interval runs from here */
     sr_perf_vblank();
 
-    /* Increment the guest-side frame/vsync counter words when -- and only when -- the
-     * build's title configuration names them. An unconfigured build touches no guest
-     * memory here; there is no generic address for these words. */
-    {
-        uint32_t frame_addr = 0, vsync_addr = 0;
-        if (sr_title_config_vblank_counters(&frame_addr, &vsync_addr)) {
-            MEM_W32(vsync_addr, MEM_R32(vsync_addr) + 1);
-            MEM_W32(frame_addr, MEM_R32(frame_addr) + 1);
-        }
-    }
+    /* A delivered VBLANK writes NO guest memory. The guest's own VBLANK sub-interrupt
+     * handler (dispatched below) is the only thing that advances a guest's frame or
+     * vsync words; on the PSP nothing else does. An earlier build also added one to a
+     * title-named pair of words here, which counted every VBLANK twice for a guest whose
+     * handler maintains the same words, so a frame loop gated on "two VBLANKs elapsed"
+     * passed after one and the guest's logic ran at twice its intended rate. */
 
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
