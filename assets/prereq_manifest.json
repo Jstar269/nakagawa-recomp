@@ -849,7 +849,7 @@
     "additional_packages_required_by_build_package": [],
     "locked_developer_tools_not_required_by_consumer_build": {
       "compiledb": "0.10.7",
-      "ruff": "0.16.8",
+      "ruff": "0.16.9",
       "click": "8.5.0",
       "bashlex": "0.18"
     }
