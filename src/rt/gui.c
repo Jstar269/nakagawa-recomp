@@ -36,20 +36,34 @@
 
 #define PSP_W 480
 #define PSP_H 272
+#define PSP_SCANOUT_RATE_NUMERATOR 60000ull
+#define PSP_SCANOUT_RATE_DENOMINATOR 1001ull
+#define PSP_SCANOUT_PERIOD_NS \
+    ((PSP_SCANOUT_RATE_DENOMINATOR * 1000000000ull + PSP_SCANOUT_RATE_NUMERATOR / 2u) / \
+     PSP_SCANOUT_RATE_NUMERATOR)
+
+enum {
+    PRESENT_CAP_ENV_UNRESOLVED = -1,
+    PRESENT_CAP_SCANOUT = -2
+};
 
 static int      s_on = 0;
+#ifdef SR_SDL3VK
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
+#endif
 #ifdef _WIN32
 static HWND     s_hwnd;
 static BITMAPINFO s_bmi;
 #endif
+#if defined(SR_SDL3VK) || defined(_WIN32)
 static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for the presenters */
+#endif
 static uint32_t s_buttons = 0;
 static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
 static int      s_pad_present = 0;         /* a controller is currently connected */
 static uint64_t s_last_ns;             /* fallback frame-pacing deadline */
-static uint64_t s_present_next_ns;      /* 30 Hz output cap; never delays guest execution */
-static int      s_present_cap = -1;
+static uint64_t s_present_next_ns;      /* host output cap; never delays guest execution */
+static int      s_present_cap = PRESENT_CAP_ENV_UNRESOLVED;
 
 /* Keep boot milestones observable to the parent player without depending on
  * whether the platform process backend inherits stderr. The file is opt-in and
@@ -83,23 +97,33 @@ static void sr_gui_boot_event(const char *format, ...) {
     fclose(file);
 }
 
-/* Hot Shots Tennis is a 30 FPS title on a ~59.94 Hz PSP display. The guest can call
- * sceDisplaySetFrameBuf repeatedly within one scanout interval; presenting every call
- * wastes GPU/WSI work and produced 90+ host presents/s in the title path. Drop only
- * calls that arrive before the next output slot. Input still gets pumped by the caller,
- * and a scene already below the cap is never delayed. SR_FPS_CAP=0 disables this for
- * diagnostics; other positive values are accepted for controlled experiments. */
+/* A guest may call sceDisplaySetFrameBuf several times during one scanout interval;
+ * presenting more often than the display refresh wastes GPU/WSI work. The default
+ * period uses the same 60000/1001 Hz scanout rate as the scheduler. */
+static int present_cap_from_value(const char *value) {
+    if (!value) return PRESENT_CAP_SCANOUT;
+    int cap = atoi(value);
+    if (cap < 0) return 0;
+    if (cap > 240) return 240;
+    return cap;
+}
+
+static uint64_t present_period_for_cap(int cap) {
+    if (cap == PRESENT_CAP_SCANOUT) return PSP_SCANOUT_PERIOD_NS;
+    return cap ? 1000000000ull / (uint64_t)cap : 0;
+}
+
+static uint64_t present_period_ns(void) {
+    if (s_present_cap == PRESENT_CAP_ENV_UNRESOLVED)
+        s_present_cap = present_cap_from_value(getenv("SR_FPS_CAP"));
+    return present_period_for_cap(s_present_cap);
+}
+
 static int present_slot_due(void) {
-    if (s_present_cap < 0) {
-        const char *value = getenv("SR_FPS_CAP");
-        s_present_cap = value ? atoi(value) : 30;
-        if (s_present_cap < 0) s_present_cap = 0;
-        if (s_present_cap > 240) s_present_cap = 240;
-    }
-    if (s_present_cap == 0) return 1;
+    uint64_t period = present_period_ns();
+    if (!period) return 1;
 
     uint64_t now = SDL_GetTicksNS();
-    uint64_t period = 1000000000ull / (uint64_t)s_present_cap;
     if (s_present_next_ns && now < s_present_next_ns) return 0;
     if (!s_present_next_ns || now > s_present_next_ns + period * 4u) {
         s_present_next_ns = now + period;
@@ -147,6 +171,9 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 #endif /* _WIN32: the keyboard fallback and the window class are Win32-only */
 
 void gui_init(const char *title) {
+#if !defined(SR_SDL3VK) && !defined(_WIN32)
+    (void)title;
+#endif
 #ifdef SR_SDL3VK
     /* SDL3+Vulkan presenter (src/rt/gpu_sdl3vk, Phase 0): default in this build;
      * SR_VIDEO=gdi falls back to the classic Win32/GDI window below. */
@@ -236,6 +263,7 @@ void gui_consume_button_pulses(void) {
 /* Present a framebuffer at guest address fbaddr. fmt: 0=5650, 1=5551, 2=4444, 3=8888.
  * stride is in pixels (PSP buffer width, typically 512). */
 /* Convert the guest framebuffer to the BGRA words both presenters consume. */
+#if defined(SR_SDL3VK) || defined(_WIN32)
 static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     for (int y = 0; y < PSP_H; y++) {
         for (int x = 0; x < PSP_W; x++) {
@@ -292,6 +320,7 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
         }
     }
 }
+#endif
 
 void gui_pump(void) {
     if (!s_on) return;
@@ -314,6 +343,11 @@ void gui_pump(void) {
 }
 
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
+#if !defined(SR_SDL3VK) && !defined(_WIN32)
+    (void)fbaddr;
+    (void)fmt;
+    (void)stride;
+#endif
     if (!s_on) return;
     if (stride == 0) stride = 512;
 
@@ -397,3 +431,21 @@ pace:
         SDL_DelayPrecise(period_ns - (now_ns - s_last_ns));
     s_last_ns = SDL_GetTicksNS();
 }
+
+#ifdef SR_GUI_PRESENT_SELFTEST
+#include <assert.h>
+
+int main(void) {
+    s_present_cap = present_cap_from_value(NULL);
+    assert(PSP_SCANOUT_PERIOD_NS == 16683333ull);
+    assert(present_period_ns() == PSP_SCANOUT_PERIOD_NS);
+    assert(present_period_ns() != 1000000000ull / 30u);
+
+    s_present_cap = present_cap_from_value("0");
+    assert(present_slot_due());
+
+    s_present_cap = present_cap_from_value("30");
+    assert(present_period_ns() == 1000000000ull / 30u);
+    return 0;
+}
+#endif

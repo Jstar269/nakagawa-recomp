@@ -480,9 +480,11 @@ dumps its summary at exit; use it as a second run because the instrumentation it
 The manager also takes `-GuestProfilePeriod N` (default 3,600 vblanks) to control bounded periodic
 captures for duration-limited runs; `0` disables periodic dumps.
 
-Host presentation is capped at 30 FPS by default (`SR_FPS_CAP=30`). The scheduler and
-PSP vblank continue at ~59.94 Hz, and scenes below 30 FPS are not delayed. Set
-`SR_FPS_CAP=0` only for uncapped diagnostics or A/B measurement.
+Host presentation is capped to the PSP's 60000/1001 Hz display scanout by default,
+preventing repeated guest framebuffer submissions within one scanout from doing
+unnecessary GPU/WSI work. The scheduler and PSP vblank continue at that rate, and
+scenes below the cap are not delayed. Set `SR_FPS_CAP=0` for uncapped diagnostics or
+A/B measurement; a positive value selects that explicit host presentation cap.
 
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
 
