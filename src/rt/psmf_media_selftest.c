@@ -39,6 +39,23 @@
 
 static int checks, failures;
 #define CHECK(x, text) do { checks++; if (!(x)) { failures++; fprintf(stderr, "FAIL: %s\n", text); } } while (0)
+
+static void check_media_conservation(const char *track, uint64_t decoded,
+                                    uint64_t delivered, uint64_t held,
+                                    uint64_t eos_drained, uint64_t rejected) {
+    uint64_t accounted = delivered + held + eos_drained + rejected;
+    checks++;
+    if (decoded != accounted) {
+        failures++;
+        fprintf(stderr,
+                "FAIL: %s disposition conservation: decoded=%llu delivered=%llu "
+                "held=%llu eos_drained=%llu rejected=%llu accounted=%llu\n",
+                track, (unsigned long long)decoded, (unsigned long long)delivered,
+                (unsigned long long)held, (unsigned long long)eos_drained,
+                (unsigned long long)rejected, (unsigned long long)accounted);
+    }
+}
+
 /* Bounded diagnostics for the acceptance runs: SR_PSMF_MEDIA_DEBUG=1 prints the counters that
  * say where a media chain stopped, without making the normal run noisy. */
 #define MEDIA_DEBUG(...) do { if (getenv("SR_PSMF_MEDIA_DEBUG")) fprintf(stderr, __VA_ARGS__); } while (0)
@@ -591,6 +608,106 @@ static void test_demux_and_au_contract(void) {
     free(bytes);
 }
 
+/* The generated stream feeds a deterministic consumer-stage model so both video and audio
+ * accounting can cover warm-up hold, normal delivery, rejection, and EOS disposition even on
+ * platforms whose real media backend is unavailable. Real H.264 output accounting is checked
+ * separately below. */
+static void test_media_disposition_conservation(void) {
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint32_t size = 0;
+    uint8_t *bytes = build_psmf(&size, au_off, au_len);
+    if (!bytes) { CHECK(0, "disposition fixture allocated"); return; }
+    MemSource mem;
+    SrPsmfProducer *p = open_fixture(bytes, size, &mem, 512u);
+    CHECK(p != NULL, "producer opens for disposition accounting");
+    if (!p) { free(bytes); return; }
+
+    uint64_t video_aus = 0, audio_aus = 0;
+    for (int guard = 0; guard < 4096 && !sr_psmf_producer_eof(p); guard++) {
+        sr_psmf_producer_pump(p, 4);
+        SrPsmfAu au;
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_SUBMITTED);
+            video_aus++;
+            sr_psmf_au_release(&au);
+        }
+        while (sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au)) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_SUBMITTED);
+            audio_aus++;
+            sr_psmf_au_release(&au);
+        }
+    }
+    CHECK(sr_psmf_producer_eof(p), "disposition fixture reaches EOS");
+    CHECK(video_aus == FIX_PICTURES, "disposition fixture submits each picture once");
+    CHECK(audio_aus >= 2, "disposition fixture submits interleaved audio blocks");
+
+    for (uint64_t i = 0; i < video_aus; i++) {
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO, SR_PSMF_MEDIA_DECODED);
+        if (i == 0) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_WARMUP_HELD);
+        } else if (i + 1 == video_aus) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_EOS_DRAINED);
+        } else {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_DELIVERED);
+        }
+    }
+    for (uint64_t i = 0; i < audio_aus; i++) {
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO, SR_PSMF_MEDIA_DECODED);
+        if (i == 0) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_WARMUP_HELD);
+        } else if (i + 1 == audio_aus) {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_REJECTED);
+        } else {
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_AUDIO,
+                                         SR_PSMF_MEDIA_DELIVERED);
+        }
+    }
+
+    SrPsmfProducerStats st;
+    sr_psmf_producer_stats(p, &st);
+    CHECK(st.video_warmup_held == 1 && st.audio_warmup_held == 1,
+          "warm-up outputs remain explicitly accounted while held");
+    for (int call = 0; call < 3; call++) {
+        /* The first three synthetic getter calls return NO_DATA without changing a held output. */
+        CHECK(st.video_warmup_held == 1 && st.audio_warmup_held == 1,
+              "warm-up getter keeps decoded outputs held");
+    }
+    CHECK(sr_psmf_producer_resolve_warmup_hold(p, SR_PSMF_AU_VIDEO,
+                                                SR_PSMF_MEDIA_DELIVERED),
+          "video warm-up output transitions to delivery");
+    CHECK(sr_psmf_producer_resolve_warmup_hold(p, SR_PSMF_AU_AUDIO,
+                                                SR_PSMF_MEDIA_DELIVERED),
+          "audio warm-up output transitions to delivery");
+    sr_psmf_producer_stats(p, &st);
+
+    check_media_conservation("video", st.video_decoded, st.video_delivered,
+                             st.video_warmup_held, st.video_eos_drained,
+                             st.video_rejected);
+    check_media_conservation("audio", st.audio_decoded, st.audio_delivered,
+                             st.audio_warmup_held, st.audio_eos_drained,
+                             st.audio_rejected);
+    CHECK(st.video_submitted == video_aus && st.video_decoded == video_aus,
+          "video submission and decode counters are exact");
+    CHECK(st.video_delivered == video_aus - 1 && st.video_eos_drained == 1 &&
+              st.video_rejected == 0 && st.video_warmup_held == 0,
+          "video dispositions classify warm-up and EOS outputs");
+    CHECK(st.audio_submitted == audio_aus && st.audio_decoded == audio_aus,
+          "audio submission and decode counters are exact");
+    CHECK(st.audio_delivered == audio_aus - 1 && st.audio_rejected == 1 &&
+              st.audio_eos_drained == 0 && st.audio_warmup_held == 0,
+          "audio dispositions classify warm-up delivery and rejection");
+
+    sr_psmf_producer_close(p);
+    free(bytes);
+}
+
 /* One decoder, the producer's own access units, the guest display buffer. */
 static void test_real_decode_into_guest_buffer(void) {
     uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
@@ -628,19 +745,32 @@ static void test_real_decode_into_guest_buffer(void) {
                 CHECK(au.pts >= last_pts, "known video timestamps remain ordered");
                 last_pts = au.pts;
             }
-            sr_h264_submit_au(dec, au.data, au.size);
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_SUBMITTED);
+            int submit_rc = sr_h264_submit_au(dec, au.data, au.size);
+            CHECK(submit_rc == 0, "a complete picture is accepted by the decoder");
             sr_psmf_au_release(&au);
             aus++;
         }
         int r = sr_h264_frame_ex(dec, 0, &target, &info);
         CHECK(r >= 0, "decoding a fed access unit never fails");
         if (r > 0) {
-            CHECK(info.width == 64 && info.height == 64, "decoded frame reports the fixture dimensions");
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         SR_PSMF_MEDIA_DECODED);
+            int valid = info.width == 64 && info.height == 64 &&
+                        info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                        info.delivered_format == SR_H264_PIXEL_8888 &&
+                        info.stride == 64 * 4;
+            CHECK(info.width == 64 && info.height == 64,
+                  "decoded frame reports the fixture dimensions");
             CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
                   "decoder-native format remains explicit");
             CHECK(info.delivered_format == SR_H264_PIXEL_8888,
                   "guest delivery format remains explicit");
             CHECK(info.stride == 64 * 4, "guest delivery stride is explicit");
+            sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                         valid ? SR_PSMF_MEDIA_DELIVERED :
+                                                 SR_PSMF_MEDIA_REJECTED);
             frames_before_eos++;
             flight_media_test_milestone(SR_FLIGHT_MEDIA_TEST_FRAME_READY,
                                         (uint32_t)frames_before_eos,
@@ -658,6 +788,16 @@ static void test_real_decode_into_guest_buffer(void) {
         int r = sr_h264_drain(dec, &target, &info);
         CHECK(r >= 0, "end-of-stream drain never fails");
         if (r <= 0) break;
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                     SR_PSMF_MEDIA_DECODED);
+        int valid = info.width == 64 && info.height == 64 &&
+                    info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                    info.delivered_format == SR_H264_PIXEL_8888 &&
+                    info.stride == 64 * 4;
+        CHECK(valid, "EOS-drained frame satisfies the fixture contract");
+        sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
+                                     valid ? SR_PSMF_MEDIA_EOS_DRAINED :
+                                             SR_PSMF_MEDIA_REJECTED);
         frames_after_eos++;
     }
     CHECK(frames_before_eos + frames_after_eos == FIX_PICTURES,
@@ -668,6 +808,19 @@ static void test_real_decode_into_guest_buffer(void) {
     int extra = 0;
     for (int i = 0; i < 8; i++) if (sr_h264_drain(dec, &target, &info) > 0) extra++;
     CHECK(extra == 0, "a drained decoder produces no further pictures");
+    SrPsmfProducerStats st;
+    sr_psmf_producer_stats(p, &st);
+    check_media_conservation("real H.264 video", st.video_decoded,
+                             st.video_delivered, st.video_warmup_held,
+                             st.video_eos_drained, st.video_rejected);
+    CHECK(st.video_submitted == (uint64_t)aus,
+          "real H.264 submission counter matches accepted pictures");
+    CHECK(st.video_decoded == (uint64_t)(frames_before_eos + frames_after_eos),
+          "real H.264 decode counter matches output pictures");
+    CHECK(st.video_delivered == (uint64_t)frames_before_eos &&
+              st.video_eos_drained == (uint64_t)frames_after_eos &&
+              st.video_warmup_held == 0 && st.video_rejected == 0,
+          "real H.264 outputs have exact getter and EOS dispositions");
     sr_h264_destroy(dec);
     sr_psmf_producer_close(p);
     free(bytes);
@@ -1365,6 +1518,7 @@ int main(int argc, char **argv) {
     memset(arena, 0, sizeof(arena));
 
     test_demux_and_au_contract();
+    test_media_disposition_conservation();
     test_multistream_selection();
     test_track_independence();
     test_real_decode_into_guest_buffer();
