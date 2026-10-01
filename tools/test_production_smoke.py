@@ -1165,7 +1165,11 @@ class TestFlightSmokeProjection(unittest.TestCase):
         """Both runs are gated before the host-paced count is zeroed for the comparison."""
         source = DISPLAY_GENERATOR_PATH.read_text(encoding="utf-8")
         body = source[source.index("def flight_smoke("):source.index("def run_player(")]
+        loop = body.index('for label, bundle in (("first", first), ("second", second)):')
         gate = body.index("_require_vblank_progress(bundle, label)")
+        self.assertLess(loop, gate)
+        # The gate is inside the loop over both runs: nothing but loop body lies between.
+        self.assertNotIn("\n        kind_counts", body[loop:gate])
         self.assertLess(gate, body.index("_without_host_present_events(source)"))
 
 

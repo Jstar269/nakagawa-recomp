@@ -968,7 +968,7 @@ def _require_vblank_progress(bundle: dict, label: str) -> None:
         raise RuntimeError(f"{label} flight bundle has no SetFrameBuf events")
     if any(later < earlier for earlier, later in zip(counts, counts[1:], strict=False)):
         raise RuntimeError(f"{label} flight bundle: SetFrameBuf VBLANK counts went backwards: {counts}")
-    # A single SetFrameBuf cannot show progress; the frame-count check above owns that case.
+    # A single SetFrameBuf cannot show progress; flight_smoke's kind-count check owns that case.
     if len(counts) > 1 and counts[-1] <= counts[0]:
         raise RuntimeError(f"{label} flight bundle: VBLANK count never advanced ({counts[0]} throughout)")
 
