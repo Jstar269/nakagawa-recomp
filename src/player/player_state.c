@@ -866,11 +866,22 @@ bool player_settings_uses_two_columns(int window_width, int window_height) {
     }
     if (card_width > 1216.0f) card_width = 1216.0f;
     /* The wide settings controls reserve 220 px plus a 310 px button in the
-       first column. The right column begins at half the card, so 1124 px is
-       the first card width that leaves the columns disjoint. The management
-       row sits below the launcher toggle; 620 px is the first raw client
-       height where the compressed card keeps those rows disjoint. */
-    return card_width >= 1124.0f && window_height >= 620;
+       first column and the right column starts at
+       player_settings_second_column_offset(), which never sits inside them,
+       so the two columns are disjoint from the first card width the layout
+       can hold (980 px). The single-column flow needs far more height than
+       the narrow windows that reach it, so it must stay the exception. The
+       management row sits below the launcher toggle; 620 px is the first raw
+       client height where the compressed card keeps those rows disjoint. */
+    return card_width >= 980.0f && window_height >= 620;
+}
+
+float player_settings_second_column_offset(float card_width) {
+    /* The launcher control and its hint end 562 px into the card; keep a
+       24 px gutter before the right column, which otherwise starts at half
+       the card. */
+    float half = card_width * 0.5f;
+    return half > 586.0f ? half : 586.0f;
 }
 
 bool player_app_boot_event_is_window_ready(const char *line) {

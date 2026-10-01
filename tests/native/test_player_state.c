@@ -1910,11 +1910,21 @@ int main(int argc, char **argv) {
         assert(confirmation_count == 2);
         s_app2->is_game_running = false;
 
-        /* Settings stay single-column until the wide launcher control and the
-           save-directory column have disjoint horizontal space. */
-        assert(!player_settings_uses_two_columns(1044, 720));
-        assert(!player_settings_uses_two_columns(1187, 720));
+        /* The two-column layout is used from the first card width that can
+           hold it, with the right column pushed clear of the wide launcher
+           control. A window that wide must never fall into the single-column
+           flow, which cannot fit a 720 px client. */
+        assert(!player_settings_uses_two_columns(1043, 720));
+        assert(player_settings_uses_two_columns(1044, 720));
+        assert(player_settings_uses_two_columns(1187, 720));
         assert(player_settings_uses_two_columns(1188, 720));
+        for (float card = 980.0f; card <= 1216.0f; card += 1.0f) {
+            float offset = player_settings_second_column_offset(card);
+            /* launcher control and hint end 562 px into the card */
+            assert(offset >= 562.0f + 24.0f);
+            /* the right column keeps usable width for the stepper */
+            assert(card - 32.0f - offset >= 300.0f);
+        }
         assert(player_settings_uses_two_columns(1280, 620));
         assert(!player_settings_uses_two_columns(1280, 619));
 

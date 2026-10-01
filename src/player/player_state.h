@@ -400,6 +400,12 @@ int player_app_visible_library_cards(const PlayerApp *app);
  * independently of SDL and the renderer cannot drift from the layout contract. */
 bool player_settings_uses_two_columns(int window_width, int window_height);
 
+/* Horizontal offset, from the card's left edge, where the settings right
+ * column begins. It is never left of the end of the launcher fullscreen
+ * control plus a gutter, so the columns cannot overlap at any card width the
+ * two-column layout accepts. */
+float player_settings_second_column_offset(float card_width);
+
 /* Whether the event loop should attempt the launcher-to-game focus handoff on
  * this frame. Pure state logic so the once-per-launch contract is tested
  * without SDL: a failed SDL_MinimizeWindow keeps the launcher visible, and

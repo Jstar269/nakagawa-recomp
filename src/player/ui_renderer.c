@@ -1212,11 +1212,12 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
             draw_badge(ren, w - 480.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
         }
     } else if (w >= 760.0f) {
-        if (app->settings.controller_connected) {
-            draw_badge(ren, w - 300.0f, 20.0f, "PAD OK", COLOR_LIME);
-        } else {
-            draw_badge(ren, w - 300.0f, 20.0f, "KEYBOARD", COLOR_TEXT_DIM);
-        }
+        /* Right-align against the BUILD TOOLS button (w - 278) with an 8 px
+         * gutter, whatever the label's width, so the compact badge clears the
+         * action group by construction. */
+        const char *compact_label = app->settings.controller_connected ? "PAD OK" : "KEYBOARD";
+        draw_badge(ren, w - 278.0f - 8.0f - badge_width(compact_label), 20.0f, compact_label,
+                   app->settings.controller_connected ? COLOR_LIME : COLOR_TEXT_DIM);
     }
 
     /* Settings Button. Mouse-driven; keyboard/gamepad users press S/START
@@ -2041,7 +2042,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                          0.9f, card_w - 64.0f, COLOR_TEXT_DIM);
 
     float col1_x = card_x + 32.0f;
-    float col2_x = two_col ? card_x + card_w * 0.5f : col1_x;
+    float col2_x = two_col ? card_x + player_settings_second_column_offset(card_w) : col1_x;
     float row_y = card_y + 128.0f;
     int focus = 0;
 

@@ -251,8 +251,10 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_settings_layout_avoids_launcher_save_overlap_at_client_widths(self) -> None:
         cases = (
-            (1044, 900, "0"),
-            (1187, 900, "0"),
+            (1044, 900, "1"),
+            (1187, 900, "1"),
+            (1043, 900, "0"),
+            (800, 720, "0"),
             (1188, 619, "0"),
             (1188, 620, "1"),
         )
