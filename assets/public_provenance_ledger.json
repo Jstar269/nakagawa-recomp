@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a9a8c05c35e322508d9971c09d24513bc32d7550ed614580c9b310ad30dc500c"
+      "sha256": "738bb1344e9cbf67bd6c14be9770a6fa90072c3e67dc0dea6dd951b5bb8c0943"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -5373,6 +5373,18 @@
       "sha256": "105d7c24481c8d8ec6d871ba0720b4cf47c5eb5df6cc0c4cfffa803f2a51862f"
     },
     {
+      "path": "tests/native/test_pgf_writer_roundtrip.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgf-writer-core-313",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "210b73afadcd662dc1d119ee6ef01bfc49130800d35294ce54bbf2d2b3d91d18"
+    },
+    {
       "path": "tests/native/test_player_state.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5519,7 +5531,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be5acd8213ecf03c42ff0f16abb13592c27c3d05cfd0cb971ca6195eb85171d8"
+      "sha256": "f436f0160a07b821c450b4a6f0d2dd7611dfa165d5c6c055b997ac520851ac63"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6477,6 +6489,18 @@
         "upstream_attribution": null
       },
       "sha256": "bd191ef14b3483bb6c10b9f230bf4bee0285e50241e457a75e139b5aae6527df"
+    },
+    {
+      "path": "tools/pgf_writer.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgf-writer-core-313",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "81c12aa722dd2b61eb2898e5d3ea114ffc9889c5b0a745dd25d06bac801a3f1f"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8198,6 +8222,18 @@
         "upstream_attribution": null
       },
       "sha256": "b37113f300d1d68a2438b190ffdc348e23ac3daa8dc4ad914418e46a47d3cd41"
+    },
+    {
+      "path": "tools/test_pgf_writer.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pgf-writer-core-313",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "d1c5021ce284e7efd7e24fdf6a565910bad6db7e2bc05dea3ca03c70f209bd3e"
     },
     {
       "path": "tools/test_platform_ladder.py",
