@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f4b4260da99d12ab7c4287b36a518a0be270cc7be84d9000ea7646b4b9416e2c"
+      "sha256": "ea272b6ec2f7da93fb31dd80f7b6354d78fa60aa73644b7e496890d559bc0855"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1144,7 +1144,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "735328a44ed67293d1b1f27d4287b8c9b94426959d60959eb2203a42fed9ba13"
+      "sha256": "6f31eb300ad0be9a17b7d29829f6a045ecb5813d465bf49e14628ebd09a3cdb7"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -6568,7 +6568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "663bdc6b3d00b2a37af496cde083ee54924a7c618798fc4508419660d90e39a6"
+      "sha256": "6fbd7873bb7d9333c12b8e925576c2c84759f6b85d0ee7487f69dbd0fbd3e2a9"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -8371,7 +8371,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a26985afc15ca086f4128c66cbd692d628515c2d23f5bc56fedf107f9aeecfcf"
+      "sha256": "ee67f881305621eafceb06dc9df78bb4f83c302631cdafdf79aed832c9183092"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
