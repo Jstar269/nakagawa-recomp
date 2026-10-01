@@ -1135,7 +1135,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f8dfbc473bf32b4366499054e2ff5ee29a749294e3c2826a9b771f7c8e4e024a"
+      "sha256": "dc3830072b07a122316cc084069a8775e6fc03ecd9e9671852d50b99e0fa285f"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1645,7 +1645,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ec41e4d2063499c6f5a2fcb34d0dc8b47ed744f2c0003f06414753864e0e6e61"
+      "sha256": "0c32b397b8f0c906e4b755ec99a3eed81d0e527f19fc1695ee3554fb1a84e7a6"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
@@ -5987,7 +5987,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b801bdc5eadfa8e197391053264cea6ecf79317f7939024015d8a86bc65be037"
+      "sha256": "42ed9e87f3f5734b17af7dd8e86a2065404fa86628c1e9996b7488dc7a6cd159"
     },
     {
       "path": "tools/host_stubs.py",
@@ -6035,7 +6035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea61b213f6ad197380c810f6834fd23cb46172198d49986fad0fd3c4a967d148"
+      "sha256": "dbdc4e784ab4ad0563d2bc60e5c3a7501bb9a1ca76ca9daf404f181e20bfcf01"
     },
     {
       "path": "tools/import_audit_gate.py",
