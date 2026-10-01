@@ -255,6 +255,26 @@ class PgfWriterRefusalTests(unittest.TestCase):
         ]
         self.assert_refused("metric-table-overflow", glyphs=glyphs)
 
+    def test_metric_table_at_the_one_byte_limit_is_refused_by_name(self):
+        # 256 distinct advances cannot be counted in the one-byte header field.
+        glyphs = [
+            Glyph(code=0x41 + index, width=1, height=1, samples=(0,), advance_x=index)
+            for index in range(256)
+        ]
+        self.assert_refused("metric-table-overflow", glyphs=glyphs)
+
+    def test_non_contiguous_code_points_are_refused_by_name(self):
+        glyphs = [
+            Glyph(code=0x41, width=1, height=1, samples=(0,)),
+            Glyph(code=0x50, width=1, height=1, samples=(0,)),
+        ]
+        self.assert_refused("non-contiguous-code-points", glyphs=glyphs)
+
+    def test_firmware_font_names_are_refused_with_their_extension(self):
+        for name in ("jpn0.pgf", "LTN15.PGF", "kr0"):
+            with self.subTest(name=name):
+                self.assert_refused("font-field-invalid", font_name=name)
+
     def test_cli_refusal_names_the_reason_and_writes_nothing(self):
         with tempfile.TemporaryDirectory(prefix="pgf_writer_") as tmp:
             glyph_set = Path(tmp) / "glyphs.json"

@@ -52,7 +52,8 @@ MAX_IMAGE_SIZE = 16 * 1024 * 1024
 MAX_COUNT = 1 << 20
 MAX_EDGE = 127
 #: A metric-group index occupies one byte, so a deduplicated table holds 256 entries.
-MAX_TABLE_ENTRIES = 256
+# The header stores each metric table's entry count in one byte (0x0102..0x0105).
+MAX_TABLE_ENTRIES = 255
 MAX_REPEAT_RUN = 8
 MAX_LITERAL_RUN = 8
 POINTS = 64
@@ -306,7 +307,10 @@ def _font_field(value: object, label: str) -> bytes:
 
 def _validate_font_name(value: object) -> bytes:
     encoded = _font_field(value, "font name")
-    if isinstance(value, str) and value.lower() in RESERVED_FONT_NAMES:
+    stem = value.lower() if isinstance(value, str) else ""
+    if stem.endswith(".pgf"):
+        stem = stem[: -len(".pgf")]
+    if stem in RESERVED_FONT_NAMES:
         raise _refuse("font-field-invalid", f"{value!r} is a PSP firmware font name and must not be claimed")
     return encoded
 
@@ -321,7 +325,8 @@ def _build_metric_tables(plans: list[_Planned]) -> tuple[list[bytes], list[list[
         if len(pairs) > MAX_TABLE_ENTRIES:
             raise _refuse(
                 "metric-table-overflow",
-                f"{names[table]} table needs {len(pairs)} entries; a group index is one byte",
+                f"{names[table]} table needs {len(pairs)} entries; the header count is one byte "
+            f"(at most {MAX_TABLE_ENTRIES})",
             )
         position = {pair: index for index, pair in enumerate(pairs)}
         tables.append(b"".join(struct.pack("<ii", first, second) for first, second in pairs))
@@ -406,6 +411,16 @@ def build_pgf(
         raise _refuse(
             "character-map-too-large",
             f"codes U+{first_glyph:04X}..U+{last_glyph:04X} need {char_map_count} map entries",
+        )
+
+    if glyph_count != char_map_count:
+        # PGF_SPEC section 3.1: the public reader requires one glyph record per code point
+        # in first..last, so a gap would produce a file that reader refuses.
+        missing = next(code for code in range(first_glyph, last_glyph + 1) if code not in seen)
+        raise _refuse(
+            "non-contiguous-code-points",
+            f"codes U+{first_glyph:04X}..U+{last_glyph:04X} need a glyph for every code point; "
+            f"U+{missing:04X} is missing",
         )
 
     tables, table_indexes = _build_metric_tables(plans)
