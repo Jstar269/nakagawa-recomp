@@ -1878,6 +1878,10 @@ static uint32_t h_ReadSysClockDelay(uint32_t addr, uint64_t *usec_out) {
     return 0;
 }
 
+/* Public PSPSDK pspthreadman.h: int sceKernelDelaySysClockThread(SceKernelSysClock *delay)
+ * and int sceKernelDelaySysClockThreadCB(SceKernelSysClock *delay). The only argument is
+ * the pointer in $a0; the SceKernelSysClock it names (low word, high word) is the delay in
+ * microseconds, so $a1 is not an argument of either call. */
 static uint32_t h_DelaySysClockThread(CpuState *s) {
     (void)s;
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
@@ -13624,14 +13628,15 @@ static uint32_t h_DisplayWaitVblank(CpuState *s) {
 static uint32_t h_DisplayWaitVblankStartCB(CpuState *s) {
     (void)s;
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    (void)sched_wait_vblank_cb(1);
-    return 0;
+    int result = sched_wait_vblank_cb(1);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : 0u;
 }
 
 static uint32_t h_DisplayWaitVblankCB(CpuState *s) {
     (void)s;
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    return (uint32_t)sched_wait_vblank_cb(0);
+    int result = sched_wait_vblank_cb(0);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : (uint32_t)result;
 }
 static uint32_t h_DisplayGetMode(CpuState *s) {
     if (A0) MEM_W32(A0, 0);  /* mode 0 */

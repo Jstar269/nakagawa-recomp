@@ -1003,7 +1003,13 @@ int sched_wait_vblank(void) {
 int sched_wait_vblank_cb(int wait_start) {
     extern int sr_thread_has_pending_callbacks(uint32_t thread_uid);
     extern int sr_thread_dispatch_callbacks(void);
-    if (s_cur < 0 || s_cur >= s_ntcb) return 0;
+    if (s_cur < 0 || s_cur >= s_ntcb) {
+        /* No current thread means no waiter exists; report it instead of a
+         * synthesized "waited and returned 0". Callers map this to CAN_NOT_WAIT. */
+        fprintf(stderr, "SCHED: display CB wait without a current thread (s_cur=%d); "
+                        "refusing instead of reporting a completed wait\n", s_cur);
+        return -1;
+    }
 
     uint32_t uid = s_tcb[s_cur].uid;
     uint64_t target_vblank = s_vbl_count + 1u;

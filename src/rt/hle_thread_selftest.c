@@ -14336,7 +14336,8 @@ static void check_coroutine_lifecycle(void) {
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
-                 "+ 1 issue #339 joiner + 2 sysclock delay bodies + 1 vblank CB waiter "
+                 "+ 1 issue #339 joiner + 1 completed sysclock delay body "
+                 "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
@@ -17272,7 +17273,6 @@ static void test_issue339_terminate_waiting_thread(void) {
            "terminated target remains deletable through DeleteThread");
     expect(selftest_mbx_delete(mbx_uid) == 0,
            "issue #339 termination mailbox deletes cleanly");
-    if (joiner->coro) sr_coro_destroy(joiner->coro);
 }
 
 static void test_issue339_sysclock_delay_dispatch(void) {
@@ -17449,6 +17449,16 @@ static void test_issue339_callback_wait_dispatch(void) {
     s_oracle_mode = saved_oracle_mode;
 }
 
+static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
+    reset_fixture();
+    s_cur = -1;
+    uint64_t before = s_vbl_count;
+    expect(sched_wait_vblank_cb(0) < 0 && sched_wait_vblank_cb(1) < 0,
+           "display CB waits refuse when no current thread exists");
+    expect(s_vbl_count == before,
+           "a refused display CB wait does not advance the vblank count");
+}
+
 static void test_issue339_wait_nids_production_dispatch(void) {
     reset_fixture();
     sr_hle_init();
@@ -17464,6 +17474,7 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_terminate_waiting_thread();
     test_issue339_sysclock_delay_dispatch();
     test_issue339_callback_wait_dispatch();
+    test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
 int main(int argc, char **argv) {
