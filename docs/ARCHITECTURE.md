@@ -110,8 +110,10 @@ also requires the CFG gate and wraps generated callable entries to compare guest
 `$sp` at entry and host return. Continuation entries share their callable's census;
 flow exits are reported as excluded and keep the result `PARTIAL`, while an
 ordinary unexplained stack delta reports `FAILED`. An unobserved workload reports
-`NOT_OBSERVED`. These diagnostics are source-owned runtime evidence and make no
-physical PSP correctness claim. The cosimulation harness classifies its source-owned
+`NOT_OBSERVED`; a balanced workload that misses generated callable entries reports
+`PARTIAL` with `unobserved=N`, so `COMPLETE` requires observing every expected entry.
+These diagnostics are source-owned runtime evidence and make no physical PSP
+correctness claim. The cosimulation harness classifies its source-owned
 `spleak` cell as a positive control and passes only when that cell is the sole observed
 mismatch, with its declared 32-byte delta; every other entry must balance. Neither
 report is an optimizing IR or a production HST switch.

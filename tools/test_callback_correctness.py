@@ -52,7 +52,7 @@ def function_body(source, name):
 class CallbackCorrectnessTests(unittest.TestCase):
     def test_callback_waits_pump_callbacks(self):
         for source, name in (
-            (HLE_SOURCE, "h_DelayThreadCB"),
+            (HLE_SOURCE, "h_DelayThreadCBForUsec"),
             (HLE_SOURCE, "h_WaitSemaCB"),
             (HLE_SOURCE, "h_WaitEventFlagCB"),
             (HLE_SOURCE, "h_WaitThreadEndCB"),
@@ -61,6 +61,14 @@ class CallbackCorrectnessTests(unittest.TestCase):
         ):
             body = strip_comments(function_body(source, name))
             self.assertIn("sr_thread_dispatch_callbacks", body)
+
+    def test_callback_delay_entry_points_share_the_pumping_helper(self):
+        # DelayThreadCB and DelaySysClockThreadCB both delegate to the one helper
+        # that pumps callbacks, so neither can drift into a non-pumping delay.
+        for name in ("h_DelayThreadCB", "h_DelaySysClockThreadCB"):
+            with self.subTest(handler=name):
+                body = strip_comments(function_body(HLE_SOURCE, name))
+                self.assertIn("h_DelayThreadCBForUsec(", body)
 
     def test_vblank_does_not_dispatch_generic_callbacks(self):
         body = strip_comments(function_body(HLE_SOURCE, "sr_vblank_dispatch_registered"))

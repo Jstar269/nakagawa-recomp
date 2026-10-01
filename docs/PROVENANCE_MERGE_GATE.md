@@ -50,7 +50,7 @@ it agree with every other artifact.
 | T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` unless an external blessed policy and exact policy-delta authority authorize that precise `exclude_removed` entry; scope may otherwise tighten, never loosen |
 | T13 | Edit the ledger without regenerating the export | `EXPORT_FIELD_MISMATCH` |
 | T14 | Replay a green result from an earlier head | the verdict is bound to the candidate commit and tree, and the run fails closed if the fetched head is not the head the event named |
-| T15 | Merge on a stale base | the ruleset's `strict_required_status_checks_policy` requires the head to be up to date, and the ratchet is evaluated against the base branch tip |
+| T15 | Merge on a stale base | **partial:** the verifier refuses `MERGE_BASE_STALE` when the head is behind its base and evaluates the ratchet against the base tip, but the `main-minimal` ruleset's `strict_required_status_checks_policy` is `false`, so GitHub does not require the head to be up to date at merge time (see Merge-tree identity) |
 | T16 | Add a symlink whose "content" is a path string | `TREE_INVALID` — provenance is only defined over regular file content |
 | T17 | Replace an existing file's implementation bytes, update the public hash coherently, and inherit the claim already recorded for that path | `CONTENT_UNATTESTED` — grandfathering requires the bytes to be frozen too |
 | T18 | Rename or copy an attested file so the new path inherits the old path's record | `TRUSTED_RECORD_UNRESOLVED` + `CLAIM_UNBACKED` — records name paths, and a new path is new |
@@ -258,8 +258,12 @@ refuses `MERGE_BASE_STALE` when the head is behind its base.
 That makes head-tree attestation sufficient **for the verifier's side**. It is
 not a complete merge-time guarantee: nothing stops base from advancing between
 verification and the merge button. Closing that needs
-`strict_required_status_checks_policy`, which only takes effect once a required
-check exists — and enforcement is deliberately still off. Hence PARTIAL.
+`strict_required_status_checks_policy: true`. The `main-minimal` ruleset already
+requires five checks (`CI required`, `OSV Vulnerability Scan`,
+`dependency-review`, `Hygiene and security`, `CodeQL`), but its
+`strict_required_status_checks_policy` is `false` (live value, 2026-09-30), so
+GitHub does not require an up-to-date head. Changing it is a maintainer decision
+(#364, #373). Hence PARTIAL.
 
 **Tier C — reported, never fatal.** Paths where both halves are frozen and the
 claim still disagrees with authority. Each carries a `backing` value naming
@@ -472,9 +476,10 @@ Until then, adding `{"context": "Trusted provenance attestation",
 "integration_id": 15368}` to the ruleset would create the *appearance* of
 enforcement without the property. Do not do it.
 
-When the day comes, the ruleset already carries
-`strict_required_status_checks_policy: true`, a `pull_request` rule,
-`required_linear_history`, and an empty `bypass_actors` list. Whatever context
+When the day comes, the ruleset already carries a `pull_request` rule,
+`required_linear_history`, and an empty `bypass_actors` list; its
+`strict_required_status_checks_policy` is `false` today (live value, 2026-09-30)
+and would have to be set to `true`. Whatever context
 is eventually required inherits all of that; do not relax any of it.
 
 ## Required-check identity: what GitHub can and cannot enforce here

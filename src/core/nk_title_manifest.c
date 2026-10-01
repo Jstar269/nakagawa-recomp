@@ -3091,18 +3091,18 @@ static bool package_validate_current_identity(
     if (!package_string(package_disc_id, &identity_disc_id) ||
         strcmp(identity_disc_id, disc_id) != 0) {
         snprintf(error, error_size,
-                 "Title input identity mismatch: DISC_ID changed; this revision boundary is in the works (#315).");
+                 "Title input identity mismatch: DISC_ID changed; rebuild the package from the current inputs.");
         return false;
     }
     char identity_path[NK_MAX_PATH * 2];
     if (!package_local_identity_file(user_data_root, disc_id, identity_path)) {
         snprintf(error, error_size,
-                 "Title input identity record is missing; exact revision binding is in the works (#315).");
+                 "Title input identity record is missing; rebuild the package from the current inputs.");
         return false;
     }
     if (!package_hash_file(identity_path, out_file_digest)) {
         snprintf(error, error_size,
-                 "Title input identity record is unreadable; exact revision binding is in the works (#315).");
+                 "Title input identity record is unreadable; rebuild the package from the current inputs.");
         return false;
     }
     char *identity_text = NULL;
@@ -3110,7 +3110,7 @@ static bool package_validate_current_identity(
     if (!package_read_json(identity_path, NK_MANIFEST_MAX_BYTES, &identity_text,
                            &identity_length, error, error_size)) {
         snprintf(error, error_size,
-                 "Title input identity record is unreadable; exact revision binding is in the works (#315).");
+                 "Title input identity record is unreadable; rebuild the package from the current inputs.");
         return false;
     }
     JsonNode *current = json_parse(identity_text, identity_length, error, error_size);
@@ -3118,7 +3118,7 @@ static bool package_validate_current_identity(
     if (!current || !package_validate_title_input_identity(current, error, error_size)) {
         if (current) json_free(current);
         snprintf(error, error_size,
-                 "Title input identity record is invalid; exact revision binding is in the works (#315).");
+                 "Title input identity record is invalid; rebuild the package from the current inputs.");
         return false;
     }
     const JsonNode *current_manifest = obj_get(current, "manifest");
@@ -3129,7 +3129,7 @@ static bool package_validate_current_identity(
         strcmp(current_title_id_value, title_id) != 0) {
         json_free(current);
         snprintf(error, error_size,
-                 "Title input identity mismatch: manifest/profile changed; this revision boundary is in the works (#315).");
+                 "Title input identity mismatch: manifest/profile changed; rebuild the package from the current inputs.");
         return false;
     }
     if (current_disc_version && *current_disc_version &&
@@ -3137,7 +3137,7 @@ static bool package_validate_current_identity(
         strcmp(current_disc_version, recorded_disc_version) != 0) {
         json_free(current);
         snprintf(error, error_size,
-                 "Title input identity mismatch: SFO revision changed; this revision boundary is in the works (#315).");
+                 "Title input identity mismatch: SFO revision changed; rebuild the package from the current inputs.");
         return false;
     }
     const char *change = NULL;
@@ -3146,7 +3146,7 @@ static bool package_validate_current_identity(
         change = package_title_identity_change(package_identity, current,
                                                module_change, sizeof(module_change));
         snprintf(error, error_size,
-                 "Title input identity mismatch: %s; this revision boundary is in the works (#315).",
+                 "Title input identity mismatch: %s; rebuild the package from the current inputs.",
                  change ? change : "identity record changed");
         json_free(current);
         return false;
@@ -3999,7 +3999,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
             validated_identity_file_digest, parse_error, sizeof(parse_error)) ||
         strcmp(validated_identity_file_digest, current_identity_file_digest) != 0) {
         if (!parse_error[0]) snprintf(parse_error, sizeof(parse_error),
-            "Title input identity changed during validation; exact revision binding is in the works (#315).");
+            "Title input identity changed during validation; rebuild the package from the current inputs.");
         package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
         json_free(package);
         return NK_RUNTIME_PACKAGE_STALE;
