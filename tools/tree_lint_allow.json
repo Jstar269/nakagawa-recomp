@@ -16,7 +16,7 @@
     },
     {
       "path": ".github/workflows/osv-scanner.yml",
-      "reason": "GitHub Actions runs a workflow by filename; this one is additionally absent from docs/CI.md, which is a documentation gap rather than a dead file."
+      "reason": "GitHub Actions runs a workflow by filename, so the file is live even though no tracked file spells its path."
     },
     {
       "path": "Makefile",

@@ -48,9 +48,10 @@ read once, split into path-shaped tokens, and every token is looked up in one ta
 Nothing here calls ``git grep`` per candidate, so the cost is linear in the size of
 the tree rather than quadratic in the number of candidates.
 
-Exit status is 0 for the reporting default, whatever the tree contains, and 1 only
+Exit status is 0 for the reporting default, whatever the tree contains; 1 only
 under ``--check`` when at least one tracked file lacks an unambiguous reference and is
-not allowlisted.  The Makefile target runs the reporting form so a local inspection
+not allowlisted; and 2 when the tree or the allowlist cannot be read or validated
+(a tracked tree that cannot be read is an error, never an empty report).  The Makefile target runs the reporting form so a local inspection
 never fails solely because it found candidates.  The always-on CI hygiene job runs
 ``--check``: each candidate must be removed or receive a reviewed, checkable allowlist
 reason before the change can land.
@@ -63,7 +64,7 @@ import json
 import re
 import sys
 from collections.abc import Collection
-from fnmatch import fnmatch
+from fnmatch import fnmatchcase
 from itertools import groupby
 from pathlib import Path, PurePosixPath
 
@@ -83,8 +84,11 @@ GENERATED_INVENTORIES = frozenset({
     "docs/provenance/MODIFIED_FILE_NOTICES.json",
 })
 
-#: A path-shaped token: the character set git permits in a tracked path.  The
-#: repetition is greedy, so ``tools/codegen.py`` arrives as one token, not three.
+#: A path-shaped token over the character subset this tree's paths use (letters,
+#: digits, ``_ . + -`` and ``/``).  Git permits more (``@``, ``#``, ``~``, spaces, ...):
+#: a path with such a character would be split into fragments and reported
+#: unreferenced, a false positive, until this class is widened.  The repetition is
+#: greedy, so ``tools/codegen.py`` arrives as one token, not three.
 TOKEN_RE = re.compile(r"[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
 
 #: Outcome classes.  ``REFERENCED`` is the only one that means a file is in use.
@@ -275,9 +279,25 @@ def load_allowlist(path: Path) -> dict[str, str]:
     return allowed
 
 
+def _pattern_matches(path: str, pattern: str) -> bool:
+    """Match segment by segment, case-sensitively, so ``*`` never crosses ``/``.
+
+    ``fnmatch`` translates ``*`` to ``.*`` (crossing directory separators) and
+    normalises case on Windows, which would let ``tools/*/__init__.py`` excuse
+    ``tools/a/b/__init__.py`` or ``Makefile`` excuse ``makefile``.
+    """
+    if "*" not in pattern:
+        return path == pattern
+    path_parts = path.split("/")
+    pattern_parts = pattern.split("/")
+    return len(path_parts) == len(pattern_parts) and all(
+        fnmatchcase(part, expected) for part, expected in zip(path_parts, pattern_parts, strict=True)
+    )
+
+
 def _allowing_pattern(path: str, allowed: dict[str, str]) -> str | None:
     for pattern in allowed:
-        if fnmatch(path, pattern) if "*" in pattern else path == pattern:
+        if _pattern_matches(path, pattern):
             return pattern
     return None
 

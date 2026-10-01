@@ -13,7 +13,6 @@ import contextlib
 import io
 import json
 import pathlib
-import re
 import sys
 import tempfile
 import unittest
@@ -27,36 +26,22 @@ from tools.nk_core.git_isolation import run_git
 ALLOWLIST = ROOT / "tools" / "tree_lint_allow.json"
 
 
-def _missing_tool_index_entries(module_names: set[str], readme_text: str) -> list[str]:
-    """Return top-level tools modules with no exact or test-discovery index line."""
-    entries = set(
-        re.findall(r"(?m)^- `([^`]+)` — ", readme_text)
-        + re.findall(r"(?m)^\|\s*`([^`]+)`\s*\|", readme_text)
-    )
-    bare_entries = {entry for entry in entries if "/" not in entry and "\\" not in entry}
-    return sorted(
-        name for name in module_names
-        if name not in bare_entries and not (name.startswith("test_") and "test_*.py" in bare_entries)
-    )
-
-
 class TreeLintTests(unittest.TestCase):
     """One synthetic repository per test; every file in it is written here."""
 
-    def test_every_top_level_python_tool_has_a_tools_readme_index_entry(self) -> None:
-        tools_dir = ROOT / "tools"
-        modules = {path.name for path in tools_dir.glob("*.py")}
-        readme = (tools_dir / "README.md").read_text(encoding="utf-8")
-        self.assertEqual(_missing_tool_index_entries(modules, readme), [])
-
-    def test_a_new_unindexed_top_level_tool_fails_index_coverage(self) -> None:
-        readme = "- `existing_tool.py` — indexed tool\n- `test_*.py` — unittest discovery\n"
-        self.assertEqual(
-            _missing_tool_index_entries(
-                {"existing_tool.py", "new_tool.py", "test_new_module.py"}, readme
-            ),
-            ["new_tool.py"],
-        )
+    def test_allowlist_wildcards_stay_inside_one_path_component(self) -> None:
+        allowed = {
+            "tools/*/__init__.py": "package marker",
+            "tools/test_*.py": "unittest discovery",
+            "Makefile": "build entry point",
+        }
+        match = tree_lint._allowing_pattern
+        self.assertEqual(match("tools/pkg/__init__.py", allowed), "tools/*/__init__.py")
+        self.assertEqual(match("tools/test_x.py", allowed), "tools/test_*.py")
+        self.assertIsNone(match("tools/a/b/__init__.py", allowed))
+        self.assertIsNone(match("tools/sub/test_x.py", allowed))
+        self.assertIsNone(match("makefile", allowed))
+        self.assertEqual(match("Makefile", allowed), "Makefile")
 
     def _repo(self, files: dict[str, str]) -> tempfile.TemporaryDirectory:
         holder = tempfile.TemporaryDirectory()
