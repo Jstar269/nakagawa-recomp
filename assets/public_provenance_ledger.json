@@ -2245,7 +2245,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e518dbb77da3f753b0677685d73fe53b704b07c10d0ede08f36befafed9a94ad"
+      "sha256": "69ac1b658ba3fb6073e9d9b1f623458e17446973afe6d253b7580b322b8119fd"
     },
     {
       "path": "pyproject.toml",
@@ -4569,7 +4569,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8136ee561bf37c911663c3e2b399f7337e808af493955ecf7182e32b920ab9a"
+      "sha256": "3d2eb858c0e907b458aea3d28d71927ea62e62c492b8a8a759685264b080220f"
     },
     {
       "path": "src/rt/intr_conformance.h",
