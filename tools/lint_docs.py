@@ -475,7 +475,7 @@ def _capability_row_cells(line: str) -> list[str] | None:
     if not stripped.startswith("|"):
         return None
     cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", stripped)[1:-1]]
-    if not cells or all(re.fullmatch(r"[\s:\-]+", cell) for cell in cells):
+    if not cells or all(re.fullmatch(r"[-:\s]+", cell) for cell in cells):
         return None
     return cells
 
