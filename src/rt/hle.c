@@ -1840,9 +1840,8 @@ static uint32_t h_DelayThread(CpuState *s) {
     sched_delay_current(A0);
     return 0;
 }
-static uint32_t h_DelayThreadCB(CpuState *s) {
+static uint32_t h_DelayThreadCBForUsec(uint64_t usec) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;  /* L6/L7 */
-    uint32_t usec = A0;
     uint32_t thread_uid = sched_current_uid();
     sched_vtime_refresh();
     uint64_t end_time = sched_vtime_deadline_after(usec);
@@ -1855,11 +1854,51 @@ static uint32_t h_DelayThreadCB(CpuState *s) {
         }
         uint64_t remaining = end_time - sched_vtime_us();
         sched_set_current_cb_wait(1);
-        sched_delay_current((uint32_t)remaining);
+        sched_delay_current(remaining);
         sched_set_current_cb_wait(0);
         sched_vtime_refresh();
     }
     return 0;
+}
+static uint32_t h_DelayThreadCB(CpuState *s) {
+    return h_DelayThreadCBForUsec(A0);
+}
+
+/* PSP's public pspkerror.h names ILLEGAL_ADDR as 0x800200D3 for kernel APIs.
+ * Keep it distinct from the subsystem-specific 0x80000103 memory error used by
+ * several HLE objects below. */
+#define SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR 0x800200d3u
+
+static uint32_t h_ReadSysClockDelay(uint32_t addr, uint64_t *usec_out) {
+    if (!addr || !usec_out || !sr_guest_span_readable(addr, 8u))
+        return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
+    uint64_t low = MEM_R32(addr);
+    uint64_t high = MEM_R32(addr + 4u);
+    *usec_out = low | (high << 32);
+    return 0;
+}
+
+/* Public PSPSDK pspthreadman.h: int sceKernelDelaySysClockThread(SceKernelSysClock *delay)
+ * and int sceKernelDelaySysClockThreadCB(SceKernelSysClock *delay). The only argument is
+ * the pointer in $a0; the SceKernelSysClock it names (low word, high word) is the delay in
+ * microseconds, so $a1 is not an argument of either call. */
+static uint32_t h_DelaySysClockThread(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    sched_delay_current(usec);
+    return 0;
+}
+
+static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    return h_DelayThreadCBForUsec(usec);
 }
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
@@ -1869,6 +1908,12 @@ static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
     return sched_delete_thread(A0);
+}
+static uint32_t h_TerminateThread(CpuState *s) {
+    /* DORMANT and invalid/self targets have distinct public PSPSDK error
+     * classes; sched_terminate_thread supplies ILLEGAL_THID/UNKNOWN_THID. */
+    if (sched_is_dormant(A0)) return 0x800201a2u; /* SCE_KERNEL_ERROR_DORMANT */
+    return sched_terminate_thread(A0);
 }
 static uint32_t h_DeleteThread(CpuState *s) {
     return sched_delete_thread(A0);
@@ -2877,6 +2922,10 @@ typedef struct {
     uint32_t videoFramesOut, audioBlocksOut, videoErrors, audioErrors;
     uint32_t audioUpmixBlocks, audioFormatRejects;
     int videoDrained;
+    /* The demuxer refusal has already been named on stderr for this stream.  Latched
+     * with the same lifetime as the producer's own failure state, so one rejected
+     * element produces exactly one message and a reset stream can report the next one. */
+    int rejectNamed;
     char path[512]; SrPsmfQueue q[PSMF_TRACKS][PSMF_Q_STAGES];
 } SrPsmfPlayer;
 static SrPsmfPlayer s_psmf_players[4];
@@ -2922,12 +2971,35 @@ static int64_t psmf_be_timestamp(const uint8_t *p) {
 }
 static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEGLOG") ? 1 : 0; return v; }
 
+/* A rejected stream is a product boundary, not a debug event.  The producer fails closed
+ * and never reaches EOF, so without a named boundary the consumer only sees the picture
+ * freeze with nothing in the log: the one thing this runtime must not do.  The message is
+ * always on (SR_MPEGLOG is for counters, not for the reason playback stopped), once per
+ * stream, and it states the guest-visible consequence instead of hiding it.  The same edge
+ * goes to the flight recorder so a bring-up or library sweep can classify the run from a
+ * structured record rather than by scraping text. */
+static void psmf_name_rejection(SrPsmfPlayer *p) {
+    if (!p || !p->producer || p->rejectNamed) return;
+    if (!sr_psmf_producer_failed(p->producer)) return;
+    p->rejectNamed = 1;
+    const char *reason = sr_psmf_producer_fail_reason(p->producer);
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+    fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
+            "at source offset %llu; no further access unit is decoded and the player keeps "
+            "its current status; in the works (#288)\n",
+            reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
+                           (uint32_t)st.fail_offset,
+                           (uint32_t)(st.fail_offset >> 32), 0u, 0u);
+}
+
 /* Move access units from the producer into the player's per-track queues.  The producer's
  * own bounded queue is the only place work is throttled: an AU is never dropped here, a full
  * player queue simply leaves the next access unit upstream until the decoder drains it. */
 static void psmf_produce(SrPsmfPlayer *p) {
     if (!p || !p->producer) return;
     sr_psmf_producer_pump(p->producer, 16);
+    psmf_name_rejection(p);
     for (unsigned track = 0; track < PSMF_TRACKS; track++) {
         SrPsmfQueue *q = &p->q[track][PSMF_Q_AU];
         while (q->count < PSMF_Q_DEPTH) {
@@ -2956,6 +3028,8 @@ static void psmf_produce(SrPsmfPlayer *p) {
              * run instead of guessed from it.  vpts is the last displaypts delivered. */
             fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
                     " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
+                    " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
                     " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
                     " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
                     (unsigned)sr_audio_vbl(),
@@ -2967,6 +3041,18 @@ static void psmf_produce(SrPsmfPlayer *p) {
                     (unsigned long long)st.audio_resync_bytes,
                     p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
                     p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
+                    (unsigned long long)st.video_submitted,
+                    (unsigned long long)st.video_decoded,
+                    (unsigned long long)st.video_delivered,
+                    (unsigned long long)st.video_warmup_held,
+                    (unsigned long long)st.video_eos_drained,
+                    (unsigned long long)st.video_rejected,
+                    (unsigned long long)st.audio_submitted,
+                    (unsigned long long)st.audio_decoded,
+                    (unsigned long long)st.audio_delivered,
+                    (unsigned long long)st.audio_warmup_held,
+                    (unsigned long long)st.audio_eos_drained,
+                    (unsigned long long)st.audio_rejected,
                     (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
                     p->videoErrors, p->audioErrors,
                     (long long)p->videoClock, (long long)p->audioClock,
@@ -3000,6 +3086,9 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
     p->displayPts = 0; p->videoDrained = 0;
     p->videoFramesOut = p->audioBlocksOut = p->videoErrors = p->audioErrors = 0;
     p->audioUpmixBlocks = p->audioFormatRejects = 0;
+    /* Every caller resets or replaces the producer in the same breath, so the named
+     * boundary goes with it: a fresh stream may be rejected, and may say so once. */
+    p->rejectNamed = 0;
 }
 
 /* Presentation time of one submitted picture.  A packet that carried a PTS sets the clock;
@@ -3033,11 +3122,18 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             }
         }
         if (p->h264 >= 0) {
-            if (slot->hostData && slot->bytes &&
-                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes) < 0)
-                p->videoErrors++;
-            else
+            if (slot->hostData && slot->bytes) {
+                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                             SR_PSMF_MEDIA_SUBMITTED);
+                if (sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData,
+                                      slot->bytes) < 0) {
+                    p->videoErrors++;
+                } else {
+                    psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+                }
+            } else {
                 psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+            }
         }
         free(slot->hostData);
         slot->hostData = NULL;
@@ -3063,9 +3159,13 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
                   sr_h264_frame_ex(p->h264, 0, &target, &info);
     if (r < 0) { p->videoErrors++; return -1; }
     if (r == 0) { if (eos) p->videoDrained = 1; return 0; }
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 SR_PSMF_MEDIA_DECODED);
     if (info.width <= 0 || info.height <= 0 || info.stride <= 0 ||
         info.delivered_format < SR_H264_PIXEL_5650 ||
         info.delivered_format > SR_H264_PIXEL_8888) {
+        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                     SR_PSMF_MEDIA_REJECTED);
         p->videoErrors++;
         return -1;
     }
@@ -3078,6 +3178,9 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
     if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
     p->displayPts = value;
     *pts_out = value;
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 eos ? SR_PSMF_MEDIA_EOS_DRAINED :
+                                       SR_PSMF_MEDIA_DELIVERED);
     p->videoFramesOut++;
     return 1;
 }
@@ -3115,10 +3218,19 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                                                         PSMF_AUDIO_SAMPLES * sizeof(int16_t));
                     if (p->atrac && p->audioPcm) {
                         int samples = 0;
+                        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                     SR_PSMF_MEDIA_SUBMITTED);
                         int rc = atrac3p_bridge_decode(p->atrac, frame + 8, (int)data,
                                                        p->audioPcm, &samples);
-                        if (rc == 0 && samples == PSMF_AUDIO_SAMPLES) {
-                            if (channels == 2) {
+                        if (rc == 0) {
+                            sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                         SR_PSMF_MEDIA_DECODED);
+                            p->audioPcmSampleCount = 0;
+                            if (samples != PSMF_AUDIO_SAMPLES) {
+                                p->audioFormatRejects++;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
+                            } else if (channels == 2) {
                                 p->audioPcmSampleCount = samples;
                             } else if (channels == 1) {
                                 /* The PSP block is stereo; a mono stream is duplicated into both
@@ -3133,6 +3245,8 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                             } else {
                                 p->audioFormatRejects++;
                                 p->audioPcmSampleCount = 0;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
                             }
                             if (p->audioPcmSampleCount == PSMF_AUDIO_SAMPLES) {
                                 if (slot->flags & 1u) { p->audioClock = slot->pts; p->audioClockValid = 1; }
@@ -3229,7 +3343,8 @@ static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
  * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
  * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
- * public PSP player contract. */
+ * public PSP player contract. Its initial NO_DATA gate precedes decode, so no decoded picture
+ * enters the warm-up-held disposition on this path. */
 static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
 /* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
  * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
@@ -3243,6 +3358,8 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     if(!psmf_audio_fill(p)){sched_delay_current(10000);return PSMF_ERR_NO_DATA;}
     const uint8_t*src=(const uint8_t*)p->audioPcm;
     for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                 SR_PSMF_MEDIA_DELIVERED);
     p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
     sched_delay_current(30000);
     return 0;}
@@ -7219,7 +7336,7 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
  * the settle, fire the UMD-ready signal so any waiting thread and the registered callback fire. */
 static uint32_t h_UmdActivate(CpuState *s) {
     (void)s;
-    extern void sched_delay_current(uint32_t);
+    extern void sched_delay_current(uint64_t);
     /* 30 ms virtual delay keeps the loader's stat-read interleaving realistic. */
     sched_delay_current(30000);
     sr_umd_signal_ready();
@@ -7319,10 +7436,12 @@ void sr_callback_unregister_owner(uint32_t thread_uid) {
 }
 
 extern void sr_mutex_release_thread(uint32_t thread_uid);
+static void mbx_remove_thread_waiters(uint32_t thread_uid);
 
 void sr_hle_release_thread_resources(uint32_t thread_uid) {
     sr_mutex_release_thread(thread_uid);
     if (thread_uid) {
+        mbx_remove_thread_waiters(thread_uid);
         for (int i = 0; i < FPL_MAX; i++) {
             if (s_fpls[i].used) fpl_remove_waiter(&s_fpls[i], thread_uid);
         }
@@ -13496,9 +13615,8 @@ static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t str
  * sceDisplayWaitVblank succeeds with 1 (L323) while sceDisplayWaitVblankStart
  * returns ILLEGAL_CONTEXT (L325). Those cells are `NOT RUN` against this runtime
  * in docs/PSP_INTR_WAITS_MATRIX.md and belong to the interrupt-context work.
- * The CB variants (0x46f186c3, 0xdba6c4c4's neighbours) remain unregistered
- * until the callback-aware wait transaction lands; splitting these two handlers
- * does not change that. */
+ * The callback variants below use the same measured wait split, while the
+ * scheduler keeps servicing callbacks until a delivered VBLANK satisfies it. */
 static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
     (void)s;
     if (ge_log_on()) fprintf(stderr, "HLE: WaitVblankStart (vcount=%u)\n", s_vcount);
@@ -13513,6 +13631,20 @@ static uint32_t h_DisplayWaitVblank(CpuState *s) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     /* 1 when the caller was already inside the interval and did not block. */
     return (uint32_t)sched_wait_vblank();
+}
+
+static uint32_t h_DisplayWaitVblankStartCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(1);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : 0u;
+}
+
+static uint32_t h_DisplayWaitVblankCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(0);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : (uint32_t)result;
 }
 static uint32_t h_DisplayGetMode(CpuState *s) {
     if (A0) MEM_W32(A0, 0);  /* mode 0 */
@@ -15297,6 +15429,12 @@ static void mbx_remove_waiter(Mbx *m, uint32_t thid) {
             m->nwaiters--;
             break;
         }
+    }
+}
+
+static void mbx_remove_thread_waiters(uint32_t thread_uid) {
+    for (int i = 0; i < MBX_MAX; i++) {
+        if (s_mbx[i].used) mbx_remove_waiter(&s_mbx[i], thread_uid);
     }
 }
 
@@ -17133,9 +17271,14 @@ static void hle_register_selftest_oracle_handlers(void) {
 static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xceadeb47, "sceKernelDelayThread", h_DelayThread);
     sr_hle_register(0x68da9e36, "sceKernelDelayThreadCB", h_DelayThreadCB);
+    sr_hle_register(0xbd123d9e, "sceKernelDelaySysClockThread", h_DelaySysClockThread);
+    sr_hle_register(0x1181e963, "sceKernelDelaySysClockThreadCB", h_DelaySysClockThreadCB);
+    sr_hle_register(0x616403ba, "sceKernelTerminateThread", h_TerminateThread);
     sr_hle_register(0x82826f70, "sceKernelSleepThreadCB", h_SleepThreadCB);
     sr_hle_register(0x36cdfade, "sceDisplayWaitVblank", h_DisplayWaitVblank);
     sr_hle_register(0x984c27e7, "sceDisplayWaitVblankStart", h_DisplayWaitVblankStart);
+    sr_hle_register(0x8eb9ec49, "sceDisplayWaitVblankCB", h_DisplayWaitVblankCB);
+    sr_hle_register(0x46f186c3, "sceDisplayWaitVblankStartCB", h_DisplayWaitVblankStartCB);
     sr_hle_register(0x4e3a1105, "sceKernelWaitSema", h_WaitSema);
     sr_hle_register(0x6d212bac, "sceKernelWaitSemaCB", h_WaitSemaCB);
     sr_hle_register(0x55c20a00, "sceKernelCreateEventFlag", h_CreateEventFlag);
@@ -17494,6 +17637,27 @@ static void hle_register_impose_handlers(void) {
     sr_hle_register(0x24fd7bcf, "sceImposeGetLanguageMode", h_ImposeGetLanguageMode);
 }
 
+/* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
+ * implemented here; decoder output remains a separate fail-closed stage.  One definition,
+ * called by both registry branches, so the executable harness dispatches the production
+ * mapping and the named media boundaries are reachable from a production-path test. */
+static void hle_register_psmf_player_handlers(void) {
+    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
+    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
+    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
+    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
+    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
+    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
+    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
+    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
+    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
+    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
+    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
+    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
+    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
+    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -17531,6 +17695,7 @@ void sr_hle_init(void) {
     hle_register_power_lock_handlers();
     hle_register_gpi_gpo_handlers();
     hle_register_mpeg_shared_handlers();
+    hle_register_psmf_player_handlers();
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
@@ -17643,20 +17808,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xf8dcb679, "sceMpegQueryAtracEsSize", h_MpegQueryAtracEsSize);
     /* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
      * implemented here; decoder output remains a separate fail-closed stage. */
-    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
-    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
-    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
-    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
-    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
-    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
-    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
-    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
-    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
-    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
-    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
-    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
-    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
-    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+    hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
     sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
     sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);

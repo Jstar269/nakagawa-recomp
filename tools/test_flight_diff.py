@@ -361,9 +361,9 @@ class GePresentFlightTests(unittest.TestCase):
     def _display_bundle(self):
         bundle = make_bundle(
             [
-                event(1, "ge", kind=24, arg0=0x08900000, arg1=0x08900018,
+                event(1, "ge", kind=25, arg0=0x08900000, arg1=0x08900018,
                       arg2=6, arg3=2, version=4),
-                event(2, "present", kind=28, arg0=0x04000000, arg1=3,
+                event(2, "present", kind=29, arg0=0x04000000, arg1=3,
                       arg2=512, arg3=4, version=4),
             ],
             version=4,
@@ -388,7 +388,7 @@ class GePresentFlightTests(unittest.TestCase):
         self.assertIn("DIVERGENCE: sequence 1", result.stdout)
         self.assertIn("event index 0", result.stdout)
         self.assertIn("class=ge", result.stdout)
-        self.assertIn("kind=ge-draw (24)", result.stdout)
+        self.assertIn("kind=ge-draw (25)", result.stdout)
         self.assertIn("arg3", result.stdout)
 
     def test_first_present_framebuffer_divergence_names_event_and_field(self):
@@ -400,7 +400,7 @@ class GePresentFlightTests(unittest.TestCase):
         self.assertIn("DIVERGENCE: sequence 2", result.stdout)
         self.assertIn("event index 1", result.stdout)
         self.assertIn("class=present", result.stdout)
-        self.assertIn("kind=present-frame (28)", result.stdout)
+        self.assertIn("kind=present-frame (29)", result.stdout)
         self.assertIn("arg0", result.stdout)
 
     def test_different_ge_present_coverage_is_incomparable(self):

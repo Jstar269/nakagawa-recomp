@@ -80,7 +80,7 @@
           "schema_version": {"enum": [1, 2, 3, 4]},
           "sequence": {"type": "integer", "minimum": 1},
           "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]},
-          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kinds 19-26 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 27-28 are SetFrameBuf and successful present."},
+          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kind 19 is a refused media stream. Kinds 20-27 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 28-29 are SetFrameBuf and successful present."},
           "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: list address; GE list operations: list id; SetFrameBuf/present: framebuffer address."},
           "arg1": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: command address; enqueue: stall address; SetFrameBuf/present: pixel format."},
           "arg2": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: primitive type; SetFrameBuf/present: stride."},

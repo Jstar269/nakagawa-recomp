@@ -94,6 +94,28 @@ HANDLER_METADATA = {
         ],
         "description": "Writes measured 60000/1001 float refresh rate (59.9400599f) into $f0 under unified display clock.",
     },
+    # These two handlers are reached by the source-owned display-smoke route.
+    # Its fixed 8888 framebuffer flip and ordinary guest-thread vblank wait
+    # establish that narrow production path, while the API edges below remain
+    # explicitly outside the route's evidence (#341).
+    "h_DisplaySetFrameBuf": {
+        "status": "partial",
+        "evidence": [
+            "Makefile:display-smoke-run",
+            "fixtures/display_smoke/generate.py:verify",
+            "fixtures/display_smoke/generate.py:run",
+        ],
+        "limitation": "display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)",
+    },
+    "h_DisplayWaitVblankStart": {
+        "status": "partial",
+        "evidence": [
+            "Makefile:display-smoke-run",
+            "fixtures/display_smoke/generate.py:run",
+            "tools/test_sched_invariants.py:test_the_two_display_nids_have_separate_handlers",
+        ],
+        "limitation": "display-smoke covers ordinary guest-thread waits; interrupt-context behavior and callback wait variants remain outside this route (#341)",
+    },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
     # decoder actually produced: the video getter validates the caller's stride

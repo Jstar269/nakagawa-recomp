@@ -756,12 +756,12 @@ def flight_smoke(build_dir: Path) -> int:
 
         kind_counts = Counter((event["class"], event["kind"]) for event in first["events"])
         expected = {
-            ("ge", 19): 1,   # enqueue
-            ("ge", 24): 1,   # bounded PRIM event
-            ("ge", 25): 1,   # list completed
-            ("ge", 26): 1,   # FINISH command
-            ("present", 27): frames,
-            ("present", 28): frames // 2,
+            ("ge", 20): 1,   # enqueue
+            ("ge", 25): 1,   # bounded PRIM event
+            ("ge", 26): 1,   # list completed
+            ("ge", 27): 1,   # FINISH command
+            ("present", 28): frames,
+            ("present", 29): frames // 2,
         }
         if kind_counts != expected:
             raise RuntimeError(f"unexpected GE/present event counts: {dict(kind_counts)}")
@@ -775,7 +775,7 @@ def flight_smoke(build_dir: Path) -> int:
             raise RuntimeError(f"identical flight runs did not match: {match.stdout}{match.stderr}")
 
         draw = next(event for event in second["events"]
-                    if event["class"] == "ge" and event["kind"] == 24)
+                    if event["class"] == "ge" and event["kind"] == 25)
         draw["arg3"] += 1
         mutated_path.write_text(json.dumps(second, sort_keys=True), encoding="utf-8")
         divergence = subprocess.run(
@@ -783,7 +783,7 @@ def flight_smoke(build_dir: Path) -> int:
             capture_output=True, text=True, check=False,
         )
         if (divergence.returncode != 1 or f"DIVERGENCE: sequence {draw['sequence']}" not in divergence.stdout
-                or "class=ge kind=ge-draw (24)" not in divergence.stdout
+                or "class=ge kind=ge-draw (25)" not in divergence.stdout
                 or "arg3:" not in divergence.stdout):
             raise RuntimeError(
                 f"mutated draw count was not localized: {divergence.stdout}{divergence.stderr}"

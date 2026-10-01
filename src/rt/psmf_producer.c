@@ -102,6 +102,10 @@ struct SrPsmfProducer {
     int64_t presentation_base;
     uint32_t packet_count;
     int eof, failed;
+    /* First reason the stream stopped being parseable, or NULL while it is accepted.
+     * The string is a compile-time literal owned by this file, so a caller can name
+     * the rejection in a diagnostic without owning any parser state. */
+    const char *fail_reason;
     Track track[2];
     AuQueue queue[2];
     SrPsmfProducerStats stats;
@@ -155,6 +159,16 @@ static int read_exact(SrPsmfProducer *p, uint64_t off, void *dst, uint32_t n) {
         done += got;
     }
     return 1;
+}
+
+/* Record why the stream stopped being parseable and return the failure code every
+ * reject site already returned.  The first reason wins: a rejected stream never
+ * resumes, so the earliest site is the cause and a later one cannot be.  Setting the
+ * failure itself stays with the sites that own it (the pump, emit_au, extract_track),
+ * so this helper never becomes a second writer of the terminal state. */
+static int reject(SrPsmfProducer *p, const char *reason) {
+    if (p && !p->fail_reason) p->fail_reason = reason;
+    return -1;
 }
 
 static int queue_push(AuQueue *q, SrPsmfAu *au) {
@@ -365,10 +379,15 @@ static int emit_au(SrPsmfProducer *p, SrPsmfAuKind kind, uint32_t len) {
     au.raw_dts = m && m->has_dts ? m->dts : au.raw_pts;
     au.pts = au.raw_pts - p->presentation_base;
     au.dts = au.raw_dts - p->presentation_base;
-    if (len > SR_PSMF_MAX_AU_BYTES || !(au.data = (uint8_t *)malloc(len))) {
+    if (len > SR_PSMF_MAX_AU_BYTES) {
         p->stats.parser_failures++;
         p->failed = 1;
-        return -1;
+        return reject(p, "access-unit-too-large");
+    }
+    if (!(au.data = (uint8_t *)malloc(len))) {
+        p->stats.parser_failures++;
+        p->failed = 1;
+        return reject(p, "access-unit-allocation-failed");
     }
     memcpy(au.data, track_ptr(t), len);
     au.size = len;
@@ -415,7 +434,7 @@ static int extract_track(SrPsmfProducer *p, SrPsmfAuKind kind) {
             uint32_t skip = 0, len = 0;
             int rc = audio_frame_at_head(t, &skip, &len);
             if (rc == 0) return emitted;
-            if (rc == -1) { p->stats.parser_failures++; p->failed = 1; return emitted; }
+            if (rc == -1) { p->stats.parser_failures++; (void)reject(p, "audio-frame-header-invalid"); p->failed = 1; return emitted; }
             if (rc == 2) {                          /* unclassifiable bytes: resync */
                 p->stats.audio_resync_bytes += skip;
                 track_consume(t, skip);
@@ -496,8 +515,8 @@ static int parse_one(SrPsmfProducer *p) {
     uint8_t h[32];
     if (p->cursor >= p->stream_end) { p->eof = 1; return 0; }
     uint64_t left = p->stream_end - p->cursor;
-    if (left < 4 || !read_exact(p, p->cursor, h, 4)) return -1;
-    if (h[0] != 0 || h[1] != 0 || h[2] != 1) return -1;
+    if (left < 4 || !read_exact(p, p->cursor, h, 4)) return reject(p, "start-code-truncated");
+    if (h[0] != 0 || h[1] != 0 || h[2] != 1) return reject(p, "start-code-prefix");
     uint8_t sid = h[3];
     if (sid == 0xB9u) {                 /* program_end_code terminates the program */
         p->cursor += 4u;
@@ -506,26 +525,26 @@ static int parse_one(SrPsmfProducer *p) {
     }
     if (sid == 0xBAu) {
         uint32_t total;
-        if (left < 12 || !read_exact(p, p->cursor + 4, h + 4, 8)) return -1;
+        if (left < 12 || !read_exact(p, p->cursor + 4, h + 4, 8)) return reject(p, "pack-header-truncated");
         if ((h[4] & 0xc0u) == 0x40u) {
-            if (left < 14 || !read_exact(p, p->cursor + 12, h + 12, 2)) return -1;
+            if (left < 14 || !read_exact(p, p->cursor + 12, h + 12, 2)) return reject(p, "pack-header-truncated");
             total = 14u + (h[13] & 7u);
         } else if ((h[4] & 0xF0u) == 0x20u) {
             total = 12u;
         } else {
-            return -1;
+            return reject(p, "pack-header-unsupported");
         }
-        if (left < total) return -1;
+        if (left < total) return reject(p, "pack-header-past-stream-end");
         p->cursor += total;
         p->stats.packs++;
         return 1;
     }
     if (sid == 0xBBu || sid == 0xBEu || sid == 0xBFu ||
         sid == 0xF0u || sid == 0xF1u || sid == 0xFFu) {
-        if (left < 6 || !read_exact(p, p->cursor + 4, h + 4, 2)) return -1;
+        if (left < 6 || !read_exact(p, p->cursor + 4, h + 4, 2)) return reject(p, "system-header-truncated");
         uint32_t len = be16(h + 4);
         uint64_t total;
-        if (!add_u64(6u, len, &total) || total > left) return -1;
+        if (!add_u64(6u, len, &total) || total > left) return reject(p, "system-header-past-stream-end");
         p->cursor += total;
         if (sid == 0xBBu) p->stats.packs++;
         return 1;
@@ -533,7 +552,7 @@ static int parse_one(SrPsmfProducer *p) {
     if ((sid >= 0xE0u && sid <= 0xEFu) || sid == 0xBDu) {
         int is_video = (sid >= 0xE0u && sid <= 0xEFu);
         SrPsmfAuKind kind = is_video ? SR_PSMF_AU_VIDEO : SR_PSMF_AU_AUDIO;
-        if (left < 9 || !read_exact(p, p->cursor + 4, h + 4, 5)) return -1;
+        if (left < 9 || !read_exact(p, p->cursor + 4, h + 4, 5)) return reject(p, "pes-header-truncated");
         uint32_t len = be16(h + 4);
         /* h[4..5] PES length, h[6] flags1 (its top two bits are the mandatory '10'
          * MPEG-2 marker), h[7] flags2 (PTS_DTS_flags are its top two bits),
@@ -542,19 +561,19 @@ static int parse_one(SrPsmfProducer *p) {
          * presentation time on packets that carry none and loses the DTS of every
          * packet that has one.  Each byte is asserted where it belongs. */
         uint8_t flags1 = h[6], flags2 = h[7], hdr_len = h[8];
-        if ((flags1 & 0xc0u) != 0x80u) return -1;   /* not MPEG-2 PES: fail closed */
+        if ((flags1 & 0xc0u) != 0x80u) return reject(p, "pes-not-mpeg2");   /* not MPEG-2 PES: fail closed */
         unsigned pts_dts = (unsigned)((flags2 >> 6) & 0x3u);
-        if (pts_dts == 1u) return -1;               /* '01' is reserved */
+        if (pts_dts == 1u) return reject(p, "pts-dts-flags-reserved");   /* '01' is reserved */
         uint64_t total;
         if (len < 3u || (uint32_t)3u + hdr_len > len ||
-            !add_u64(6u, len, &total) || total > left) return -1;
+            !add_u64(6u, len, &total) || total > left) return reject(p, "pes-length-inconsistent");
         uint32_t payload_len = len - 3u - hdr_len;
         uint64_t payload_off = p->cursor + 9u + hdr_len;
-        if (payload_len > SR_PSMF_MAX_AU_BYTES) return -1;
+        if (payload_len > SR_PSMF_MAX_AU_BYTES) return reject(p, "access-unit-too-large");
         uint8_t *payload = payload_len ? (uint8_t *)malloc(payload_len) : NULL;
-        if (payload_len && !payload) return -1;
+        if (payload_len && !payload) return reject(p, "access-unit-allocation-failed");
         if (payload_len && !read_exact(p, payload_off, payload, payload_len)) {
-            free(payload); return -1;
+            free(payload); return reject(p, "access-unit-truncated");
         }
         /* PTS_DTS_flags is the packet's own statement about which timestamps follow,
          * and a packet that declares none is left with none: the consumer extrapolates
@@ -563,15 +582,18 @@ static int parse_one(SrPsmfProducer *p) {
          * so it fails closed instead of reading payload bytes as a time. */
         int has_pts = pts_dts == 2u || pts_dts == 3u;
         int has_dts = pts_dts == 3u;
-        if (hdr_len == 0u && pts_dts != 0u) { free(payload); return -1; }
-        if (has_pts && hdr_len < 5u) { free(payload); return -1; }
-        if (has_dts && hdr_len < 10u) { free(payload); return -1; }
+        if (hdr_len == 0u && pts_dts != 0u) { free(payload); return reject(p, "timestamp-field-missing"); }
+        if (has_pts && hdr_len < 5u) { free(payload); return reject(p, "timestamp-field-truncated"); }
+        if (has_dts && hdr_len < 10u) { free(payload); return reject(p, "timestamp-field-truncated"); }
         int64_t pts = 0, dts = 0;
         uint32_t optional = p->cursor + 9u;
-        if (has_pts && !read_exact(p, optional, h + 9, 5)) { free(payload); return -1; }
-        if (has_pts && !parse_pts(h + 9, has_dts ? 0x30u : 0x20u, &pts)) { free(payload); return -1; }
-        if (has_dts && !read_exact(p, optional + 5u, h + 14, 5)) { free(payload); return -1; }
-        if (has_dts && !parse_pts(h + 14, 0x10u, &dts)) { free(payload); return -1; }
+        if (has_pts && !read_exact(p, optional, h + 9, 5)) { free(payload); return reject(p, "timestamp-field-truncated"); }
+        /* One reason for the whole five-byte field: the 4-bit prefix and the three
+         * marker bits are the same malformed-timestamp field, and a consumer that is
+         * told the field is wrong is not told a sub-reason this layer cannot separate. */
+        if (has_pts && !parse_pts(h + 9, has_dts ? 0x30u : 0x20u, &pts)) { free(payload); return reject(p, "pes-timestamp-field"); }
+        if (has_dts && !read_exact(p, optional + 5u, h + 14, 5)) { free(payload); return reject(p, "timestamp-field-truncated"); }
+        if (has_dts && !parse_pts(h + 14, 0x10u, &dts)) { free(payload); return reject(p, "pes-timestamp-field"); }
         p->cursor += total;
         p->stats.pes_packets++;
         if (is_video) p->stats.video_pes++; else p->stats.audio_pes++;
@@ -580,10 +602,10 @@ static int parse_one(SrPsmfProducer *p) {
         uint32_t skip = 0;
         uint8_t actual_id = sid;
         if (!is_video) {
-            if (payload_len < 4u) { free(payload); return -1; }
+            if (payload_len < 4u) { free(payload); return reject(p, "audio-payload-truncated"); }
             actual_id = payload[0];
             skip = ps1_header_bytes(actual_id);
-            if (skip > payload_len) { free(payload); return -1; }
+            if (skip > payload_len) { free(payload); return reject(p, "audio-substream-header"); }
         }
 
         int selected = is_video ? is_selected_video_stream(p, sid)
@@ -596,10 +618,10 @@ static int parse_one(SrPsmfProducer *p) {
         int ok = track_append(&p->track[kind], payload + skip, payload_len - skip, actual_id,
                               has_pts, has_dts, pts, dts);
         free(payload);
-        if (!ok) { p->stats.parser_failures++; p->failed = 1; return -1; }
+        if (!ok) { p->stats.parser_failures++; return reject(p, "access-unit-append-failed"); }
         return 1;
     }
-    return -1; /* unknown start-code stream is rejected rather than skipped blindly */
+    return reject(p, "unknown-start-code"); /* unknown start-code stream is rejected rather than skipped blindly */
 }
 
 SrPsmfProducer *sr_psmf_producer_open(const SrPsmfSource *source,
@@ -686,6 +708,7 @@ void sr_psmf_producer_reset(SrPsmfProducer *p) {
         p->track[i].video_have_aud = 0;
     }
     p->cursor = p->stream_start; p->eof = p->failed = 0;
+    p->fail_reason = NULL;
     memset(&p->stats, 0, sizeof(p->stats));
 }
 
@@ -734,12 +757,65 @@ int sr_psmf_producer_pop(SrPsmfProducer *p, SrPsmfAuKind kind, SrPsmfAu *out) {
 
 int sr_psmf_producer_eof(const SrPsmfProducer *p) { return p ? p->eof : 0; }
 
+int sr_psmf_producer_failed(const SrPsmfProducer *p) { return p ? p->failed : 0; }
+
+const char *sr_psmf_producer_fail_reason(const SrPsmfProducer *p) {
+    return p ? p->fail_reason : 0;
+}
+
 void sr_psmf_producer_stats(const SrPsmfProducer *p, SrPsmfProducerStats *out) {
     if (!out) return;
     if (!p) { memset(out, 0, sizeof(*out)); return; }
     *out = p->stats;
     out->eof = p->eof;
     out->failed = p->failed;
+}
+
+static uint64_t *media_stage_counter(SrPsmfProducerStats *st,
+                                     SrPsmfAuKind kind,
+                                     SrPsmfMediaStage stage) {
+    if (!st) return NULL;
+    if (kind == SR_PSMF_AU_VIDEO) {
+        switch (stage) {
+            case SR_PSMF_MEDIA_SUBMITTED: return &st->video_submitted;
+            case SR_PSMF_MEDIA_DECODED: return &st->video_decoded;
+            case SR_PSMF_MEDIA_DELIVERED: return &st->video_delivered;
+            case SR_PSMF_MEDIA_WARMUP_HELD: return &st->video_warmup_held;
+            case SR_PSMF_MEDIA_EOS_DRAINED: return &st->video_eos_drained;
+            case SR_PSMF_MEDIA_REJECTED: return &st->video_rejected;
+        }
+    } else if (kind == SR_PSMF_AU_AUDIO) {
+        switch (stage) {
+            case SR_PSMF_MEDIA_SUBMITTED: return &st->audio_submitted;
+            case SR_PSMF_MEDIA_DECODED: return &st->audio_decoded;
+            case SR_PSMF_MEDIA_DELIVERED: return &st->audio_delivered;
+            case SR_PSMF_MEDIA_WARMUP_HELD: return &st->audio_warmup_held;
+            case SR_PSMF_MEDIA_EOS_DRAINED: return &st->audio_eos_drained;
+            case SR_PSMF_MEDIA_REJECTED: return &st->audio_rejected;
+        }
+    }
+    return NULL;
+}
+
+void sr_psmf_producer_media_stage(SrPsmfProducer *p, SrPsmfAuKind kind,
+                                  SrPsmfMediaStage stage) {
+    if (!p) return;
+    uint64_t *counter = media_stage_counter(&p->stats, kind, stage);
+    if (counter) (*counter)++;
+}
+
+int sr_psmf_producer_resolve_warmup_hold(SrPsmfProducer *p,
+                                         SrPsmfAuKind kind,
+                                         SrPsmfMediaStage disposition) {
+    if (!p || (disposition != SR_PSMF_MEDIA_DELIVERED &&
+               disposition != SR_PSMF_MEDIA_EOS_DRAINED &&
+               disposition != SR_PSMF_MEDIA_REJECTED)) return 0;
+    uint64_t *held = media_stage_counter(&p->stats, kind, SR_PSMF_MEDIA_WARMUP_HELD);
+    uint64_t *terminal = media_stage_counter(&p->stats, kind, disposition);
+    if (!held || !terminal || *held == 0) return 0;
+    (*held)--;
+    (*terminal)++;
+    return 1;
 }
 
 int sr_psmf_producer_select_streams(SrPsmfProducer *p, uint32_t vs, uint32_t as) {
