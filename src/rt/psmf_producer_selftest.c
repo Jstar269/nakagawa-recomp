@@ -708,10 +708,10 @@ static void test_lifecycle_and_source_failure(void) {
 }
 
 static void test_malformed(void) {
-    struct { int variant; const char *text; } cases[] = {
-        {1, "impossible declared PES length fails closed"},
-        {2, "unsupported stream id fails closed"},
-        {3, "audio payload shorter than the sub-header fails closed"},
+    struct { int variant; const char *text; const char *reason; } cases[] = {
+        {1, "impossible declared PES length fails closed", NULL},
+        {2, "unsupported stream id fails closed", "unknown-start-code"},
+        {3, "audio payload shorter than the sub-header fails closed", "audio-payload-truncated"},
     };
     for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
         uint32_t size = 0;
@@ -724,6 +724,17 @@ static void test_malformed(void) {
             for (int i = 0; i < 200 && !sr_psmf_producer_eof(p); i++) sr_psmf_producer_pump(p, 4);
             SrPsmfProducerStats st; sr_psmf_producer_stats(p, &st);
             CHECK(st.failed && st.parser_failures > 0, cases[c].text);
+            /* A rejection the consumer can only report as "playback stopped" is a
+             * mystery; the parser therefore names the element it refused. */
+            CHECK(sr_psmf_producer_failed(p) != 0 &&
+                      st.failed == (int)sr_psmf_producer_failed(p),
+                  "the failed query mirrors the terminal state the stats report");
+            CHECK(sr_psmf_producer_fail_reason(p) != NULL,
+                  "a rejected stream names the refused element");
+            if (cases[c].reason) {
+                CHECK(strcmp(sr_psmf_producer_fail_reason(p), cases[c].reason) == 0,
+                      cases[c].reason);
+            }
             SrPsmfAu au;
             while (sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au)) sr_psmf_au_release(&au);
             while (sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au)) sr_psmf_au_release(&au);
@@ -731,6 +742,44 @@ static void test_malformed(void) {
         }
         free(bytes);
     }
+    CHECK(sr_psmf_producer_failed(NULL) == 0 && sr_psmf_producer_fail_reason(NULL) == NULL,
+          "no producer reports no failure and no reason");
+}
+
+/* Table 2-21 requires prefix 0010 for a PTS-only packet, so the 0011 field below is the
+ * refusal a real disc produces.  This is the rejection the runtime has to name in the
+ * product, and this is the case that pins the name, the terminal state, and the fact that
+ * a rejected stream is not end-of-stream. */
+static void test_rejection_reason_contract(void) {
+    static const uint8_t bad_pts_prefix[] = {
+        0x00, 0x00, 0x01, 0xE0, 0x00, 0x0F, 0x80, 0x80, 0x05,
+        0x31, 0x00, 0x05, 0xBF, 0x21,
+        0x00, 0x00, 0x01, 0x09, 0x11, 0x11, 0x11
+    };
+    uint8_t bytes[2048u + sizeof(bad_pts_prefix)];
+    memset(bytes, 0, 2048u);
+    bytes[0] = 'P'; bytes[1] = 'S'; bytes[2] = 'M'; bytes[3] = 'F';
+    be32(bytes + 8, 2048u);
+    be32(bytes + 12, (uint32_t)sizeof(bad_pts_prefix));
+    memcpy(bytes + 2048u, bad_pts_prefix, sizeof(bad_pts_prefix));
+    MemSource mem = {bytes, (uint32_t)sizeof(bytes), 0, 0};
+    SrPsmfSource source = {mem_read, &mem, (uint32_t)sizeof(bytes)};
+    SrPsmfProducer *p = sr_psmf_producer_open(&source, 90000);
+    CHECK(p != NULL, "a stream whose only element is malformed still opens");
+    if (!p) return;
+    CHECK(sr_psmf_producer_fail_reason(p) == NULL, "an accepted stream has no rejection reason");
+    sr_psmf_producer_pump(p, 4);
+    CHECK(sr_psmf_producer_failed(p), "the malformed timestamp is a terminal rejection");
+    CHECK(sr_psmf_producer_eof(p) == 0, "a rejected stream is not reported as end of stream");
+    CHECK(sr_psmf_producer_fail_reason(p) != NULL &&
+              strcmp(sr_psmf_producer_fail_reason(p), "pes-timestamp-field") == 0,
+          "the rejection names the malformed PES timestamp field");
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p, &st);
+    CHECK(st.fail_offset == 2048u, "the refusal offset is the element that was refused");
+    sr_psmf_producer_reset(p);
+    CHECK(!sr_psmf_producer_failed(p) && sr_psmf_producer_fail_reason(p) == NULL,
+          "a reset stream forgets the rejection so the next one can be named");
+    sr_psmf_producer_close(p);
 }
 
 static void test_rejects_bad_containers(void) {
@@ -1493,6 +1542,7 @@ int main(int argc, char **argv) {
     test_no_aud_at_buffer_limit();
     test_lifecycle_and_source_failure();
     test_malformed();
+    test_rejection_reason_contract();
     test_rejects_bad_containers();
     test_timestamp_flags();
     test_mpeg1_pack_does_not_read_past_stream();
