@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b8d1c4946f54fe2b5db7689c4cefdb4138b3ba0bb103ed498a07688ea5ff9e9b"
+      "sha256": "393783949b7658f01620c7524010983f942a1ef776e686b21d98dbd497addf51"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -5519,7 +5519,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7c21b36ef15289e05232d29370cb61616496815603e41680df134e66ba37f292"
+      "sha256": "2d8235251500bbd862d3913093236c2c4f0134a5380abacecc309c16abc9ac5d"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5692,6 +5692,18 @@
         "upstream_attribution": null
       },
       "sha256": "f938fe7b1ea7a88182d0ea850fa0b23b95b8f53258bf1eccf266f0579da682bc"
+    },
+    {
+      "path": "tools/compiler_compare.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "compiler-compare-317",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "17f6be3e99f214af4dab4d2511c8724dadd0b56067915031bb0f2d99a619f1c9"
     },
     {
       "path": "tools/contrib_check.py",
@@ -6971,7 +6983,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d5fe50563e9d72b31b0aedaaba88f8c45a7db53dc24005a1643260fe7e8fadd3"
+      "sha256": "dd5608e436c813b1e99d9f3f3ed9ac51598c62e4aa7f30ebb5eee1d4de2725ac"
     },
     {
       "path": "tools/shader_embed.py",
@@ -7321,6 +7333,18 @@
         "upstream_attribution": null
       },
       "sha256": "b7f86e1e95b9fca677f65cab6fa57574f55b1577e6b5d0638c0dc79600ecedbd"
+    },
+    {
+      "path": "tools/test_compiler_compare.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "compiler-compare-317-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "20998f3f9a01dc98825e04a22da10310eb351d2adffd59d48a58a1f33adfd337"
     },
     {
       "path": "tools/test_contrib_check.py",
