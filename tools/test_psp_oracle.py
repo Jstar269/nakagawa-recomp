@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -16,6 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import hle_manifest
 from psp_oracle.protocol import (
     ProtocolError,
     compare_texts,
@@ -43,6 +45,8 @@ META = (
 
 MEASURED_SHA = "a" * 64
 MEASURED_COMMIT = "b" * 40
+STAGED_PRX = b"synthetic PSP oracle probe"
+STAGED_SHA = hashlib.sha256(STAGED_PRX).hexdigest()
 
 
 def stream(source: str, result: str = "0x1") -> str:
@@ -104,6 +108,37 @@ def measured_stream(source: str, result: str = "0x1") -> str:
     ) + ("NAKAGAWA_PSP_TEST schema=1 test_id=SMOKE case_id=one status=PASS result=" + result + "\n")
 
 
+def device_identity_stream(*, binary: str, commit: str | None) -> str:
+    """A complete DMAC stream with a controlled device META identity."""
+
+    text = dmac_matrix_stream()
+    first_line, remainder = text.split("\n", 1)
+    first_line = first_line.replace(f"binary_sha256={MEASURED_SHA}", f"binary_sha256={binary}")
+    if commit is None:
+        first_line = re.sub(r" source_commit=[^ ]+", "", first_line)
+    else:
+        first_line = first_line.replace(
+            f"source_commit={MEASURED_COMMIT}", f"source_commit={commit}"
+        )
+    return first_line + "\n" + remainder
+
+
+def identity_args(tmp: Path, **overrides: object) -> SimpleNamespace:
+    binary = tmp / "probe.prx"
+    binary.write_bytes(STAGED_PRX)
+    args = SimpleNamespace(
+        validate_dmac_size_matrix=True,
+        binary=binary,
+        source_commit=MEASURED_COMMIT,
+        model="PSP-3000",
+        firmware="6.61-ARK",
+        model_code=None,
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
 class PspOracleProtocolTests(unittest.TestCase):
     def test_pspsdk_model_ordinal_three_is_psp3000_generation_04g(self) -> None:
         self.assertEqual(decode_psp_model_code(3), ("04g", "PSP-3000"))
@@ -135,6 +170,17 @@ class PspOracleProtocolTests(unittest.TestCase):
     def test_malformed_hex_is_rejected(self) -> None:
         with self.assertRaises(ProtocolError):
             parse_output(stream("psp", "not-hex"))
+
+    def test_source_commit_requires_a_full_40_or_64_digit_object_id(self) -> None:
+        for length in (12, 41, 63):
+            with self.subTest(length=length):
+                text = measured_stream("psp").replace(
+                    f"source_commit={MEASURED_COMMIT}",
+                    f"source_commit={'b' * length}",
+                    1,
+                )
+                with self.assertRaises(ProtocolError):
+                    parse_output(text)
 
 
 class PspDmacProtocolTests(unittest.TestCase):
@@ -286,6 +332,143 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
             r"setup_ok\s*&&\s*high_started\s*&&\s*g_dwp\.iters\s*==\s*DWP_ITERS",
         )
         self.assertIn("if (!low_started)", body)
+
+
+class PspOracleDeviceIdentityTests(unittest.TestCase):
+    """The capture must bind the device's own identity, not a host rewrite."""
+
+    def _report(
+        self, tmp: Path, *, binary: str, commit: str | None
+    ) -> dict[str, object]:
+        return _validate_host0_capture(
+            device_identity_stream(binary=binary, commit=commit), identity_args(tmp)
+        )
+
+    def test_matching_device_identity_is_eligible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-match-") as name:
+            report = self._report(Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT)
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertEqual(report["BINARY_SHA256_BINDING"], "MATCH")
+        self.assertEqual(report["DEVICE_IDENTITY_STATUS"], "MATCH")
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_device_source_commit_mismatch_is_not_overwritten(self) -> None:
+        mismatch = "d" * 40
+        with tempfile.TemporaryDirectory(prefix="identity-mismatch-") as name:
+            report = self._report(Path(name), binary=STAGED_SHA, commit=mismatch)
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MISMATCH")
+        self.assertEqual(report["metadata"]["source_commit"], mismatch)
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("IDENTITY_MISMATCH", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_device_binary_digest_mismatch_is_not_overwritten(self) -> None:
+        mismatch = "d" * 64
+        with tempfile.TemporaryDirectory(prefix="identity-digest-") as name:
+            report = self._report(Path(name), binary=mismatch, commit=MEASURED_COMMIT)
+        self.assertEqual(report["BINARY_SHA256_BINDING"], "MISMATCH")
+        self.assertEqual(report["metadata"]["binary_sha256"], mismatch)
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("IDENTITY_MISMATCH", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_zero_or_absent_device_commit_is_not_bound(self) -> None:
+        for commit, expected_status in (("0" * 40, "PLACEHOLDER"), (None, "NOT_REPORTED")):
+            with self.subTest(commit=commit):
+                with tempfile.TemporaryDirectory(prefix="identity-unbound-") as name:
+                    report = self._report(Path(name), binary=STAGED_SHA, commit=commit)
+                self.assertEqual(report["SOURCE_COMMIT_BINDING"], expected_status)
+                self.assertFalse(report["acceptance_eligible"])
+                self.assertIn(
+                    "IDENTITY_NOT_BOUND",
+                    " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]),
+                )
+
+    def test_short_commit_prefix_never_satisfies_binding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-short-") as name:
+            report = self._report(
+                Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT[:12]
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "NOT_BOUND")
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("short prefix never binds", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_full_64_digit_commit_is_supported(self) -> None:
+        full_commit = "c" * 64
+        with tempfile.TemporaryDirectory(prefix="identity-sha256-") as name:
+            report = _validate_host0_capture(
+                device_identity_stream(binary=STAGED_SHA, commit=full_commit),
+                identity_args(Path(name), source_commit=full_commit),
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_uppercase_full_device_commit_matches_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-uppercase-") as name:
+            report = self._report(
+                Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT.upper()
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertEqual(report["metadata"]["source_commit"], MEASURED_COMMIT)
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_partial_provenance_keeps_device_placeholders_visible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-partial-") as name:
+            args = identity_args(
+                Path(name), binary=None, source_commit=None, model="PSP-3000"
+            )
+            report = _validate_host0_capture(
+                device_identity_stream(binary="0" * 64, commit="0" * 40), args
+            )
+        self.assertEqual(report["metadata"]["source_commit"], "0" * 40)
+        self.assertEqual(report["metadata"]["binary_sha256"], "0" * 64)
+        self.assertFalse(report["acceptance_eligible"])
+
+    def test_makefile_rejects_unbound_or_dirty_probe_builds(self) -> None:
+        makefile = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "Makefile"
+        ).read_text(encoding="utf-8")
+        self.assertIn("git rev-parse --verify HEAD", makefile)
+        self.assertIn("git status --porcelain --untracked-files=normal", makefile)
+        self.assertIn("PROBE_BUILD_COMMIT_FULL", makefile)
+        self.assertIn("PROBE_BUILD_COMMIT must match the clean checkout HEAD", makefile)
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if make is None:
+            self.skipTest("GNU Make is unavailable")
+        makefile_path = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        )
+        missing = subprocess.run(
+            [make, "-C", str(makefile_path), "PROBE_BUILD_COMMIT_FULL="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn(
+            "PROBE_BUILD_COMMIT could not be determined",
+            missing.stdout + missing.stderr,
+        )
+        # git status never lists an empty directory, so the scratch directory
+        # needs a file for the checkout to read as dirty.
+        with tempfile.TemporaryDirectory(
+            prefix="probe-build-dirty-", dir=makefile_path
+        ) as scratch:
+            (Path(scratch) / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            completed = subprocess.run(
+                [make, "-C", str(makefile_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("source tree is dirty", completed.stdout + completed.stderr)
+
+    def test_probe_emits_build_commit_macro_not_a_zero_placeholder(self) -> None:
+        probe = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"source_commit=" PROBE_BUILD_COMMIT', probe)
+        self.assertIn("#error \"PROBE_BUILD_COMMIT must be the full git object id", probe)
+        self.assertNotIn("source_commit=0000000000000000000000000000000000000000", probe)
 
 
 class PspOracleRunnerTests(unittest.TestCase):
@@ -678,15 +861,121 @@ class PspDmacProbeTests(unittest.TestCase):
                 open_guards.append(line_number)
         self.assertEqual(open_guards, [], f"unclosed #if at lines {open_guards}")
 
-    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
-        manifest = json.loads(
+    def _oracle_manifest(self) -> dict:
+        return json.loads(
             (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
                 encoding="utf-8"
             )
         )
-        system = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-SYSTEM-001")
+
+    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
+        system = next(
+            entry for entry in self._oracle_manifest()["tests"] if entry["id"] == "PSP-SYSTEM-001"
+        )
         self.assertEqual(system["status"], "implemented")
+        self.assertEqual(system["hardware_evidence"], "CAPTURED")
         self.assertEqual(system["case_ids"], ["model-profile"])
+
+    def test_implemented_status_alone_is_not_accepted_hardware_evidence(self) -> None:
+        """`status: implemented` is probe-source prose, never hardware evidence."""
+        manifest = self._oracle_manifest()
+        oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
+        for test_id in ("PSP-TRANSPORT-001", "PSP-SYSTEM-001"):
+            entry = next(item for item in manifest["tests"] if item["id"] == test_id)
+            self.assertEqual(entry["status"], "implemented")
+            self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+            for api in entry["apis"]:
+                self.assertNotIn(
+                    api,
+                    oracle_apis,
+                    f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
+                )
+
+    def test_fpu_and_cache_probe_families_are_named_as_not_run(self) -> None:
+        manifest = self._oracle_manifest()
+        by_id = {entry["id"]: entry for entry in manifest["tests"]}
+        for test_id in ("PSP-FPU-001", "PSP-CACHE-001"):
+            self.assertEqual(by_id[test_id]["status"], "planned")
+            self.assertEqual(by_id[test_id]["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(len(by_id), len(manifest["tests"]))
+
+    def test_manifest_hardware_evidence_uses_closed_vocabulary(self) -> None:
+        manifest = self._oracle_manifest()
+        vocabulary = {"NOT_RUN", "CAPTURED", "MEASURED"}
+        for entry in manifest["tests"]:
+            with self.subTest(test_id=entry["id"]):
+                self.assertIn("hardware_evidence", entry)
+                self.assertIsInstance(entry["hardware_evidence"], str)
+                self.assertIn(entry["hardware_evidence"], vocabulary)
+
+    def test_only_documented_measured_groups_claim_hardware_evidence(self) -> None:
+        manifest = self._oracle_manifest()
+        evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "MEASURED"},
+            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001"},
+        )
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
+            {"PSP-KERNEL-001", "PSP-TRANSPORT-001", "PSP-SYSTEM-001"},
+        )
+
+    def test_measured_rows_cite_a_public_document_and_the_cases_it_measures(self) -> None:
+        """A MEASURED row must name publication-eligible evidence and its own cases."""
+        include_paths = set(
+            json.loads(
+                (self.root / "assets" / "public_source_profile.json").read_text(
+                    encoding="utf-8"
+                )
+            )["include_paths"]
+        )
+        measured = [
+            entry
+            for entry in self._oracle_manifest()["tests"]
+            if entry["hardware_evidence"] == "MEASURED"
+        ]
+        self.assertTrue(measured)
+        for entry in measured:
+            with self.subTest(test_id=entry["id"]):
+                match = re.fullmatch(
+                    r"(docs/[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)", entry["evidence_ref"]
+                )
+                self.assertIsNotNone(match, "evidence_ref must be 'docs/....md#section'")
+                self.assertIn(match.group(1), include_paths)
+                cases = entry["evidence_cases"]
+                self.assertTrue(cases)
+                self.assertTrue(
+                    set(cases) <= set(entry.get("case_ids", [])) | set(entry["apis"])
+                )
+                self.assertTrue(entry["measurement_note"].strip())
+
+    def test_rows_without_measured_evidence_say_why(self) -> None:
+        for entry in self._oracle_manifest()["tests"]:
+            if entry["hardware_evidence"] == "MEASURED":
+                continue
+            with self.subTest(test_id=entry["id"]):
+                self.assertTrue(
+                    entry.get("evidence_note", "").strip(),
+                    "an unmeasured row must state why it is not measured",
+                )
+
+    def test_exception_campaign_is_named_with_its_buildable_cases(self) -> None:
+        entry = next(
+            item
+            for item in self._oracle_manifest()["tests"]
+            if item["id"] == "PSP-EXCEPTION-001"
+        )
+        self.assertEqual(entry["hardware_evidence"], "MEASURED")
+        makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        for case_id in entry["case_ids"]:
+            with self.subTest(case_id=case_id):
+                self.assertIn(f"else ifeq ($(CASE),{case_id})", makefile)
+        # exception-a2 is measured as run PSP-A2-01, but the cited section names
+        # its fixture only inside the range `exception-a1`..`exception-a3`.
+        self.assertIn("exception-a2", entry["case_ids"])
+        self.assertNotIn("exception-a2", entry["evidence_cases"])
 
     def test_manifest_routes_issue_23_to_dedicated_scalar_probe(self) -> None:
         manifest = json.loads(
@@ -696,6 +985,7 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
+        self.assertEqual(dmac["hardware_evidence"], "MEASURED")
         self.assertEqual(len(dmac["case_ids"]), 23)
         self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])

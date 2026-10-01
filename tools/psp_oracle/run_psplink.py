@@ -80,6 +80,9 @@ SHELL_VERIFICATION_ATTEMPTS = 3
 SHELL_VERIFICATION_ATTEMPT_TIMEOUT = 15.0
 DEFAULT_SHELL_VERIFICATION_TIMEOUT = 45.0
 HOST0_MTIME_TOLERANCE_NS = 1_000_000_000
+_FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+_FULL_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+_ALL_ZERO_RE = re.compile(r"0+")
 
 
 class UnsafeHost0OutputError(OSError):
@@ -337,10 +340,60 @@ def _campaign_stream_complete(text: str, case_id: str) -> bool:
     if _campaign_completeness_contract(case_id) == "unregistered-no-completion-contract":
         return False
     try:
-        parsed = _parse_campaign_records(text, case_id)
+        parsed = _parse_campaign_records(_normalise_unbound_identity_fields(text), case_id)
     except (ProtocolError, OSError, UnicodeError, ValueError):
         return False
     return bool(parsed.results)
+
+
+def _normalise_unbound_identity_fields(text: str) -> str:
+    """Make absent or abbreviated device identity parseable without binding it.
+
+    The raw values remain available to the envelope's identity comparison. This
+    schema-only view replaces unusable identity fields with valid placeholders,
+    allowing the strict result-completion gate to validate the actual records.
+    """
+
+    lines = text.splitlines()
+    metadata_indices = [
+        index for index, line in enumerate(lines)
+        if line.startswith("NAKAGAWA_PSP_META ")
+    ]
+    if len(metadata_indices) != 1:
+        return text
+
+    index = metadata_indices[0]
+    tokens = lines[index].split()
+    fields: list[str] = []
+    seen: set[str] = set()
+    for token in tokens[1:]:
+        key, separator, value = token.partition("=")
+        if key not in {"source_commit", "binary_sha256"}:
+            fields.append(token)
+            continue
+        if not separator or key in seen:
+            return text
+        seen.add(key)
+        if key == "source_commit":
+            value = (
+                value.lower()
+                if _FULL_COMMIT_RE.fullmatch(value) and not _ALL_ZERO_RE.fullmatch(value)
+                else "0" * 40
+            )
+        else:
+            value = (
+                value.lower()
+                if _FULL_SHA256_RE.fullmatch(value) and not _ALL_ZERO_RE.fullmatch(value)
+                else "0" * 64
+            )
+        fields.append(f"{key}={value}")
+
+    if "source_commit" not in seen:
+        fields.append(f"source_commit={'0' * 40}")
+    if "binary_sha256" not in seen:
+        fields.append(f"binary_sha256={'0' * 64}")
+    lines[index] = tokens[0] + " " + " ".join(fields)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 def _campaign_completeness_contract(case_id: str) -> str:
@@ -915,6 +968,14 @@ class PsplinkCampaignRunner:
 
         host0_parsed = None
         stdout_parsed = None
+        identity: dict[str, object] = {
+            "DEVICE_REPORTED_SOURCE_COMMIT": None,
+            "DEVICE_REPORTED_BINARY_SHA256": None,
+            "SOURCE_COMMIT_BINDING": _IDENTITY_NOT_REPORTED,
+            "BINARY_SHA256_BINDING": _IDENTITY_NOT_REPORTED,
+            "DEVICE_IDENTITY_STATUS": _IDENTITY_NOT_REPORTED,
+            "DEVICE_IDENTITY_BLOCKERS": [],
+        }
         canonical = host0_record_text
         parsed_ok = False
         if host0_text:
@@ -925,8 +986,12 @@ class PsplinkCampaignRunner:
                 firmware=self.firmware,
                 source_commit=self.source_commit,
             )
+            identity = _device_identity(host0_text, metadata_args)
+            blockers.extend(identity["DEVICE_IDENTITY_BLOCKERS"])
             try:
-                host0_parsed = _parse_campaign_records(host0_text, case.case_id)
+                host0_parsed = _parse_campaign_records(
+                    _normalise_unbound_identity_fields(host0_text), case.case_id
+                )
                 canonical = _canonicalize_psp(host0_text, metadata_args)
                 canonical_parsed = _parse_campaign_records(canonical, case.case_id)
                 parsed_ok = bool(canonical_parsed.results) and all(
@@ -948,13 +1013,18 @@ class PsplinkCampaignRunner:
 
         if stdout_record_text:
             try:
-                stdout_parsed = _parse_campaign_records(stdout_record_text, case.case_id)
+                stdout_parsed = _parse_campaign_records(
+                    _normalise_unbound_identity_fields(stdout_record_text), case.case_id
+                )
             except ProtocolError:
                 disqualify("stdout schema records failed strict protocol validation")
             else:
                 if host0_parsed is not None and (
                     stdout_parsed.metadata != host0_parsed.metadata
                     or stdout_parsed.results != host0_parsed.results
+                    or not _device_metadata_equal(
+                        _device_metadata(stdout_record_text), _device_metadata(host0_text)
+                    )
                 ):
                     disqualify("stdout and host0 schema records disagree")
 
@@ -975,6 +1045,12 @@ class PsplinkCampaignRunner:
             "FW": self.firmware or "NOT_CAPTURED",
             "TRANSPORT_PROFILE": "standalone-psplink-usbhostfs-host0",
             "SOURCE_COMMIT": self.source_commit,
+            "DEVICE_REPORTED_SOURCE_COMMIT": identity["DEVICE_REPORTED_SOURCE_COMMIT"],
+            "DEVICE_REPORTED_BINARY_SHA256": identity["DEVICE_REPORTED_BINARY_SHA256"],
+            "SOURCE_COMMIT_BINDING": identity["SOURCE_COMMIT_BINDING"],
+            "BINARY_SHA256_BINDING": identity["BINARY_SHA256_BINDING"],
+            "DEVICE_IDENTITY_STATUS": identity["DEVICE_IDENTITY_STATUS"],
+            "DEVICE_IDENTITY_BLOCKERS": list(identity["DEVICE_IDENTITY_BLOCKERS"]),
             "SOURCE_TREE_STATUS": "CLEAN_COMMITTED" if not self.source_tree_problem else "UNQUALIFIED",
             "SOURCE_TREE_PROBLEM": self.source_tree_problem,
             "BINARY_SHA256": binary_sha,
@@ -991,7 +1067,12 @@ class PsplinkCampaignRunner:
             "RECOVERY_EVENTS": list(self.recovery_events),
             "QUALIFICATION_STATUS": "QUALIFIED" if case_qualified else "UNQUALIFIED",
             "QUALIFICATION_BLOCKERS": qualification_blockers,
-            "SESSION_QUALIFICATION_STATUS": "QUALIFIED" if self.state == "READY" else "LOST",
+            # The envelope is built while the case is still RUN_CASE (READY is restored only
+            # after it is appended); a recovery that succeeded restores READY. Any other state
+            # means the session was lost during this case.
+            "SESSION_QUALIFICATION_STATUS": (
+                "QUALIFIED" if self.state in ("RUN_CASE", "READY") else "LOST"
+            ),
             "EVIDENCE_CLASS": "PSP_HARDWARE" if acceptance_eligible else "UNQUALIFIED_CAPTURE",
             "ACCEPTANCE_ELIGIBLE": acceptance_eligible,
             "ACCEPTANCE_BLOCKERS": blockers,
@@ -1315,13 +1396,15 @@ def _validate_host0_capture(text: str, args: argparse.Namespace) -> dict[str, ob
 
     parsed = validate_dmac_size_matrix(_canonicalize_psp(text, args))
     metadata = parsed.metadata_dict()
-    blockers = list(provenance_issues(metadata))
+    identity = _device_identity(text, args)
+    blockers = list(provenance_issues(metadata)) + list(identity["DEVICE_IDENTITY_BLOCKERS"])
     return {
         "classification": "PASS" if all(result.status == "PASS" for result in parsed.results) else "FAIL",
         "test_record_count": len(parsed.results),
         "metadata": metadata,
         "acceptance_eligible": not blockers,
         "acceptance_blockers": blockers,
+        **identity,
     }
 
 
@@ -1358,28 +1441,195 @@ def annotate_terminal_outcome(
 PROVENANCE_FLAGS = ("binary", "source_commit", "model", "firmware")
 
 
-def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
-    """Replace fixture placeholders with host-measured provenance metadata.
+_IDENTITY_MATCH = "MATCH"
+_IDENTITY_MISMATCH = "MISMATCH"
+_IDENTITY_PLACEHOLDER = "PLACEHOLDER"
+_IDENTITY_NOT_REPORTED = "NOT_REPORTED"
+_IDENTITY_NOT_BOUND = "NOT_BOUND"
+_IDENTITY_PARTIAL = "PARTIAL"
 
-    When no provenance is supplied the fixture placeholders are left in place on
-    purpose: the comparison then reports ``acceptance_eligible: false`` rather
-    than silently looking like a measured hardware result.
-    """
 
-    if not any(getattr(args, flag) for flag in PROVENANCE_FLAGS):
-        return text
+def _is_measured_identity(value: str | None, value_re: re.Pattern[str]) -> bool:
+    return bool(
+        value
+        and value_re.fullmatch(value)
+        and not _ALL_ZERO_RE.fullmatch(value)
+    )
+
+
+def _host_binary_sha256(binary: Path) -> str:
+    """Hash the staged PRX as a host measurement."""
+
     digest = hashlib.sha256()
-    with args.binary.open("rb") as stream:
+    with binary.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    model_fields = f"model={args.model}"
-    if args.model_code is not None:
-        generation, _retail = decode_psp_model_code(args.model_code)
-        model_fields += f" model_code=0x{args.model_code:02x} model_generation={generation}"
+    return digest.hexdigest()
+
+
+def _device_metadata(text: str) -> dict[str, str]:
+    """Read the first raw META record without treating it as host evidence."""
+
+    for line in text.splitlines():
+        if not line.startswith("NAKAGAWA_PSP_META "):
+            continue
+        fields: dict[str, str] = {}
+        for token in line.split()[1:]:
+            key, separator, value = token.partition("=")
+            if separator:
+                fields[key] = value
+        return fields
+    return {}
+
+
+def _device_metadata_equal(left: dict[str, str], right: dict[str, str]) -> bool:
+    if left.keys() != right.keys():
+        return False
+    return all(
+        left[key].casefold() == right[key].casefold()
+        if key in {"source_commit", "binary_sha256"}
+        else left[key] == right[key]
+        for key in left
+    )
+
+
+def _identity_binding(
+    reported: str | None,
+    expected: str | None,
+    field: str,
+    value_re: re.Pattern[str],
+    full_shape: str,
+) -> tuple[str, list[str]]:
+    """Classify one device-reported field against the full host expectation."""
+
+    if expected is None:
+        return _IDENTITY_NOT_BOUND, []
+    if not _is_measured_identity(expected, value_re):
+        return _IDENTITY_NOT_BOUND, [
+            f"IDENTITY_NOT_BOUND: host-expected {field} is not a full {full_shape} value"
+        ]
+    if reported is None:
+        return _IDENTITY_NOT_REPORTED, [
+            f"IDENTITY_NOT_BOUND: the device reported no {field}, so the capture "
+            "is not bound to the host-expected build"
+        ]
+    if _ALL_ZERO_RE.fullmatch(reported):
+        return _IDENTITY_PLACEHOLDER, [
+            f"IDENTITY_NOT_BOUND: the device did not report its own build identity; "
+            f"{field} is the all-zero placeholder"
+        ]
+    if not value_re.fullmatch(reported):
+        return _IDENTITY_NOT_BOUND, [
+            f"IDENTITY_NOT_BOUND: device {field} {reported!r} must be a full "
+            f"{full_shape}; a short prefix never binds"
+        ]
+    if reported.casefold() != expected.casefold():
+        return _IDENTITY_MISMATCH, [
+            f"IDENTITY_MISMATCH: device {field} {reported!r} does not match the "
+            f"host-expected {expected!r}"
+        ]
+    return _IDENTITY_MATCH, []
+
+
+def _combine_identity(commit_status: str, digest_status: str) -> str:
+    if _IDENTITY_MISMATCH in (commit_status, digest_status):
+        return _IDENTITY_MISMATCH
+    if commit_status in {
+        _IDENTITY_NOT_BOUND,
+        _IDENTITY_NOT_REPORTED,
+        _IDENTITY_PLACEHOLDER,
+    }:
+        return commit_status
+    if commit_status == _IDENTITY_MATCH and digest_status == _IDENTITY_MATCH:
+        return _IDENTITY_MATCH
+    return _IDENTITY_PARTIAL
+
+
+def _device_identity(text: str, args: argparse.Namespace) -> dict[str, object]:
+    """Compare raw device identity before host canonicalization."""
+
+    device = _device_metadata(text)
+    binary = getattr(args, "binary", None)
+    try:
+        expected_digest = _host_binary_sha256(binary) if isinstance(binary, Path) else None
+    except OSError:
+        expected_digest = None
+    expected_commit = getattr(args, "source_commit", None)
+    commit_status, commit_problems = _identity_binding(
+        device.get("source_commit"),
+        expected_commit,
+        "source_commit",
+        _FULL_COMMIT_RE,
+        "40- or 64-digit hexadecimal object id",
+    )
+    digest_status, digest_problems = _identity_binding(
+        device.get("binary_sha256"),
+        expected_digest,
+        "binary_sha256",
+        _FULL_SHA256_RE,
+        "64-digit hexadecimal digest",
+    )
+    blockers = list(commit_problems) if expected_commit is not None else []
+    if digest_status == _IDENTITY_MISMATCH:
+        blockers.extend(digest_problems)
+    return {
+        "DEVICE_REPORTED_SOURCE_COMMIT": device.get("source_commit"),
+        "DEVICE_REPORTED_BINARY_SHA256": device.get("binary_sha256"),
+        "SOURCE_COMMIT_BINDING": commit_status,
+        "BINARY_SHA256_BINDING": digest_status,
+        "DEVICE_IDENTITY_STATUS": _combine_identity(commit_status, digest_status),
+        "DEVICE_IDENTITY_BLOCKERS": blockers,
+    }
+
+
+def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
+    """Fill unmeasured fields while preserving any device identity claim.
+
+    Full device object ids are compared case-insensitively after validating that
+    they contain exactly 40 or 64 hexadecimal digits. Abbreviated prefixes never
+    match. An all-zero or absent device commit may be replaced in the parsed view
+    by the host expectation, but ``_device_identity`` records that it was not
+    device-bound and closes acceptance.
+    """
+
+    if not any(getattr(args, flag, None) for flag in PROVENANCE_FLAGS):
+        return text
+    metadata_lines = [
+        line for line in text.splitlines() if line.startswith("NAKAGAWA_PSP_META ")
+    ]
+    if len(metadata_lines) != 1:
+        return text
+
+    device = _device_metadata(text)
+    model = getattr(args, "model", None) or device.get("model", "unknown")
+    firmware = getattr(args, "firmware", None) or device.get("firmware", "unknown")
+    model_fields = f"model={model}"
+    model_code = getattr(args, "model_code", None)
+    if model_code is not None:
+        generation, _retail = decode_psp_model_code(model_code)
+        model_fields += f" model_code=0x{model_code:02x} model_generation={generation}"
+
+    reported_commit = device.get("source_commit")
+    if _is_measured_identity(reported_commit, _FULL_COMMIT_RE):
+        source_commit = reported_commit.lower()
+    else:
+        source_commit = getattr(args, "source_commit", None) or reported_commit or ""
+
+    reported_digest = device.get("binary_sha256")
+    if _is_measured_identity(reported_digest, _FULL_SHA256_RE):
+        binary_sha256 = reported_digest.lower()
+    else:
+        binary = getattr(args, "binary", None)
+        binary_sha256 = (
+            _host_binary_sha256(binary)
+            if isinstance(binary, Path)
+            else reported_digest or ""
+        )
+
     metadata = (
         "NAKAGAWA_PSP_META schema=1 source=psp "
-        f"{model_fields} firmware={args.firmware} "
-        f"binary_sha256={digest.hexdigest()} source_commit={args.source_commit}"
+        f"{model_fields} firmware={firmware} "
+        f"binary_sha256={binary_sha256} source_commit={source_commit}"
     )
     records = [line for line in text.splitlines() if not line.startswith("NAKAGAWA_PSP_META ")]
     return metadata + "\n" + "\n".join(records) + "\n"
@@ -1495,8 +1745,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("campaign mode cannot be combined with single-capture or annotation options")
         if not args.host0_root or not args.model or not args.source_commit:
             parser.error("campaign mode requires --host0-root, --model/--model-code, and --source-commit")
-        if not re.fullmatch(r"[0-9a-fA-F]{40}", args.source_commit):
-            parser.error("--source-commit must be a full 40-digit commit id")
+        if not _FULL_COMMIT_RE.fullmatch(args.source_commit):
+            parser.error("--source-commit must be a full 40- or 64-digit object id")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,48}", args.model):
             parser.error("--model must be a non-identifying label using letters, digits, dot, _ or -")
         if not math.isfinite(args.timeout) or args.timeout <= 0:
