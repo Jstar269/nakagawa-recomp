@@ -5501,7 +5501,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf4fb660ba277571f6a8f84a6c4752e4790d5b590f38fd8c2f50544a589c3d7f"
+      "sha256": "b4f4d26fdf630bead03d10acde31ba297a2615a2a9ab735756b2174a67997ffe"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6568,7 +6568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ffb275816f5ffb3943da78ce1802a282d17ef9abe65c850d0617e40c7ebc1c3"
+      "sha256": "663bdc6b3d00b2a37af496cde083ee54924a7c618798fc4508419660d90e39a6"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -8371,7 +8371,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b727fd2b14f91cf79fd710da15983f681c04308fd1627459243be24a23ccf586"
+      "sha256": "a26985afc15ca086f4128c66cbd692d628515c2d23f5bc56fedf107f9aeecfcf"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
