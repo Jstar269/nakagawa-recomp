@@ -1642,7 +1642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f48bf2e2d016ce82e97124e78fa708acaedb51ceb9e2452152ecaeb6bac5f27c"
+      "sha256": "6f2a5c057b1c32d4b1dc72e7f43c912e652a8c35a989cbfe38c83f172b28a762"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
@@ -8329,7 +8329,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b5732f6fc05c3f258dc461742fb5d1f943df2c0b220ecbaa943ce6fd9adc5447"
+      "sha256": "b9a9c173b4019eb00f6253acec6ad49c67cc7339ab7d2d308f46f3a715b6e21b"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
