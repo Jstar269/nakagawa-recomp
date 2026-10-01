@@ -5519,7 +5519,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f436f0160a07b821c450b4a6f0d2dd7611dfa165d5c6c055b997ac520851ac63"
+      "sha256": "7c21b36ef15289e05232d29370cb61616496815603e41680df134e66ba37f292"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5993,7 +5993,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57c7fd3830a8cafab819dfed9cad38d8be854943cb81edee51be91125b63ba2c"
+      "sha256": "aabca982bcd17371d094fedcaccdda2d032c75aba3a1490524f0cf59734fa153"
     },
     {
       "path": "tools/history_audit.py",
@@ -7849,7 +7849,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9663e1fc7c8da946228b37d22860617e68d4ac09947794ed0113a510dc0c0cf9"
+      "sha256": "5ad72cb1f12388cf0cf168c5845e720fb057fa17dbe18e1f3529249400b53afe"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -7873,7 +7873,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "063f65b66ae1621eeafac3bca6aeaafbf747f1ff77ccf20ab1246d9cd767f5f0"
+      "sha256": "d9de4101de4805c89212ee3ea99b99f90171069337bd9eade2f127e95ee02dac"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
