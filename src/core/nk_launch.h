@@ -67,7 +67,8 @@ typedef struct {
     char memstick_root[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
-    char selected_executable[NK_MAX_EXECUTABLE_PATH];
+    char boot_executable[NK_MAX_EXECUTABLE_PATH];
+    char selected_executable[NK_MAX_SELECTED_EXECUTABLE_PATH];
     uint32_t base_address;
     uint32_t entry_point;
     bool package_launch;
