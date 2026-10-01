@@ -1059,8 +1059,17 @@ static uint64_t host_now_ns(void) {
 
 static void pace_setup(void) {
     if (s_pace_on >= 0) return;
-    s_pace_on = getenv("SR_NOVBPACE") ? 0 : 1;
-    fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s)\n", s_pace_on, getenv("SR_NOVBPACE"));
+    const char *e = getenv("SR_NOVBPACE");
+    if (!e || e[0] == '\0' || strcmp(e, "0") == 0) {
+        s_pace_on = 1;
+    } else if (strcmp(e, "1") == 0) {
+        s_pace_on = 0;
+    } else {
+        fprintf(stderr, "SR_NOVBPACE: invalid value '%s'; must be unset, empty, '0' (paced), or '1' (turbo)\n", e);
+        fflush(stderr);
+        exit(1);
+    }
+    fprintf(stderr, "pace_setup: s_pace_on = %d (SR_NOVBPACE = %s)\n", s_pace_on, e ? e : "<unset>");
     fflush(stderr);
     s_clock_epoch_ns = host_now_ns();
     s_vbl_next_ns = s_clock_epoch_ns;

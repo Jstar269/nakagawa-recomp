@@ -69,6 +69,7 @@ class HstManagerManifestTests(unittest.TestCase):
         for helper in (
             "nk_safety.ps1",
             "vulkan_sdk.ps1",
+            "gpu_selftest_status.ps1",
             "title_manager_plan.ps1",
             "title_codegen_plan.py",
             "title_manifest.py",

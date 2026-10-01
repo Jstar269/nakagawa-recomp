@@ -197,18 +197,109 @@ const char *ReasonName(StopReason r) {
 	return "?";
 }
 
+// Process statuses. A successful exit means the observed stop matched what the
+// caller declared; unsupported execution, a memory fault and a break each get a
+// distinct nonzero status so an automation caller cannot confuse them with an
+// expected guest exit or an expected bounded run.
+enum ExitStatus {
+	kExitExpected = 0,
+	kExitUnexpectedStop = 1,
+	kExitUsage = 2,
+	kExitUnimplemented = 3,
+	kExitMemoryFault = 4,
+	kExitBreak = 5,
+};
+
+int ExitForUnexpectedStop(StopReason r) {
+	switch (r) {
+		case StopReason::kUnimplemented: return kExitUnimplemented;
+		case StopReason::kMemoryFault: return kExitMemoryFault;
+		case StopReason::kBreak: return kExitBreak;
+		default: return kExitUnexpectedStop;
+	}
+}
+
+bool IsStopReasonName(const char *name) {
+	if (name == nullptr) return false;
+	for (const char *known : {"syscall", "unimplemented", "memory-fault", "break", "step-limit"}) {
+		if (std::strcmp(name, known) == 0) return true;
+	}
+	return false;
+}
+
+// Validate the instruction budget instead of trusting strtoull: "abc", "-1", "0"
+// and an oversized value must be named errors, not a silent zero-step or wrapped run.
+bool ParseMaxSteps(const char *text, unsigned long long *out) {
+	if (text == nullptr || *text == '\0') return false;
+	for (const char *p = text; *p != '\0'; p++) {
+		if (*p < '0' || *p > '9') return false;
+	}
+	if (std::strlen(text) > 20) return false;
+	unsigned long long value = 0;
+	for (const char *p = text; *p != '\0'; p++) {
+		unsigned long long digit = static_cast<unsigned long long>(*p - '0');
+		if (value > (0xFFFFFFFFFFFFFFFFULL - digit) / 10ULL) return false;
+		value = value * 10ULL + digit;
+	}
+	if (value == 0) return false;
+	*out = value;
+	return true;
+}
+
+void PrintUsage() {
+	fprintf(stderr,
+	        "usage: run_elf <elf> <oracle-trace> <out-trace> [max_steps] "
+	        "[--expect-stop=<reason>]\n"
+	        "  max_steps      positive decimal instruction budget (default 2000000)\n"
+	        "  --expect-stop  syscall|unimplemented|memory-fault|break|step-limit\n"
+	        "exit 0 only when the observed stop matches the expectation; without\n"
+	        "--expect-stop only a guest syscall exit succeeds.\n");
+}
+
 }  // namespace
 
 #ifndef SR_SELFTEST_ONLY
 int main(int argc, char **argv) {
-	if (argc < 4) {
-		fprintf(stderr, "usage: run_elf <elf> <oracle-trace> <out-trace> [max_steps]\n");
-		return 2;
+	const char *expect_reason = nullptr;
+	const char *positional[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+	int positional_count = 0;
+	for (int i = 1; i < argc; i++) {
+		const char *arg = argv[i];
+		if (std::strncmp(arg, "--expect-stop=", 14) == 0) {
+			expect_reason = arg + 14;
+		} else if (std::strcmp(arg, "--expect-stop") == 0 && i + 1 < argc) {
+			expect_reason = argv[++i];
+		} else if (std::strncmp(arg, "--", 2) == 0) {
+			fprintf(stderr, "unknown option %s\n", arg);
+			PrintUsage();
+			return kExitUsage;
+		} else {
+			if (positional_count >= 5) {
+				PrintUsage();
+				return kExitUsage;
+			}
+			positional[positional_count++] = arg;
+		}
 	}
-	const char *elf_path = argv[1];
-	const char *oracle_trace = argv[2];
-	const char *out_path = argv[3];
-	unsigned long long max_steps = argc > 4 ? strtoull(argv[4], nullptr, 10) : 2000000ULL;
+	if (expect_reason != nullptr && !IsStopReasonName(expect_reason)) {
+		fprintf(stderr, "unknown --expect-stop value '%s'\n", expect_reason);
+		PrintUsage();
+		return kExitUsage;
+	}
+	if (positional_count < 3 || positional_count > 4) {
+		PrintUsage();
+		return kExitUsage;
+	}
+	const char *elf_path = positional[0];
+	const char *oracle_trace = positional[1];
+	const char *out_path = positional[2];
+	unsigned long long max_steps = 2000000ULL;
+	if (positional_count == 4 && !ParseMaxSteps(positional[3], &max_steps)) {
+		fprintf(stderr,
+		        "invalid max_steps '%s': expected a positive decimal instruction budget\n",
+		        positional[3]);
+		return kExitUsage;
+	}
 
 	Memory mem;
 	std::vector<uint8_t> elf = ReadFile(elf_path);
@@ -217,12 +308,12 @@ int main(int argc, char **argv) {
 	CpuState s;
 	if (!SeedFromInit(oracle_trace, &s)) {
 		fprintf(stderr, "no '# init' line in %s; rebuild oracle trace with init dump\n", oracle_trace);
-		return 2;
+		return kExitUsage;
 	}
 	s.pc = entry;
 
 	FILE *out = fopen(out_path, "wb");
-	if (!out) { fprintf(stderr, "cannot open %s for write\n", out_path); return 2; }
+	if (!out) { fprintf(stderr, "cannot open %s for write\n", out_path); return kExitUsage; }
 	TraceSink sink(out);
 	sink.Header("hello", entry);
 	sink.InitDump(&s);
@@ -250,8 +341,31 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	fprintf(stderr, "stopped: reason=%s pc=0x%08x op=0x%08x\n", ReasonName(res.reason), res.pc, res.op);
+	const char *observed = ReasonName(res.reason);
+	fprintf(stderr, "stopped: reason=%s pc=0x%08x op=0x%08x\n", observed, res.pc, res.op);
+	// Structured stop metadata: the process status alone cannot distinguish a run that
+	// stopped because the caller's budget ran out from one where the guest exited, so
+	// callers assert both the declared expectation and the executed instruction count.
+	fprintf(stderr,
+	        "run_elf: stop_reason=%s pc=0x%08x op=0x%08x executed=%llu expected=%s\n",
+	        observed, res.pc, res.op, static_cast<unsigned long long>(res.executed),
+	        expect_reason != nullptr ? expect_reason : "none");
 
-	return 0;
+	if (expect_reason != nullptr) {
+		if (std::strcmp(observed, expect_reason) != 0) {
+			fprintf(stderr, "run_elf: UNEXPECTED_STOP expected=%s observed=%s\n",
+			        expect_reason, observed);
+			return kExitUnexpectedStop;
+		}
+		return kExitExpected;
+	}
+	if (res.reason != StopReason::kSyscall) {
+		fprintf(stderr,
+		        "run_elf: UNEXPECTED_STOP expected=syscall observed=%s; pass "
+		        "--expect-stop=<reason> to assert a bounded or faulting stop\n",
+		        observed);
+		return ExitForUnexpectedStop(res.reason);
+	}
+	return kExitExpected;
 }
 #endif

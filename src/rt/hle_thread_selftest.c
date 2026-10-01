@@ -3230,6 +3230,27 @@ static void test_rtc_conversion_errors_and_full_range(void) {
            "GetCurrentClock returns success for -600000 minutes (rtc.expected)");
 }
 
+static void test_unix_time_to_filetime_ticks(void) {
+    extern uint64_t sr_unix_time_to_filetime_ticks(int64_t sec, long nsec);
+    const uint64_t rtc_filetime_epoch_tick = 50491123200000000ull;
+    const uint64_t rtc_unix_epoch_tick = 62135596800000000ull;
+    /* Unix 0 (1970-01-01 00:00:00 UTC) -> 116444736000000000 100ns ticks since 1601 */
+    expect(sr_unix_time_to_filetime_ticks(0, 0) == 116444736000000000ull,
+           "Unix epoch (1970-01-01) converts to 11644473600 s in FILETIME ticks");
+    /* Exactly 1601-01-01 00:00:00 UTC -> -11644473600 s -> 0 ticks */
+    expect(sr_unix_time_to_filetime_ticks(-11644473600LL, 0) == 0ull,
+           "1601-01-01 converts to FILETIME 0 ticks");
+    /* Before 1601 clamps to 0 */
+    expect(sr_unix_time_to_filetime_ticks(-11644473601LL, 0) == 0ull,
+           "Pre-1601 time clamps to 0");
+    /* Known timestamp: Unix 1133395200 (2005-12-01 00:00:00 UTC), 500ns */
+    expect(sr_unix_time_to_filetime_ticks(1133395200LL, 500L) == 127778688000000005ull,
+           "2005-12-01 with 500ns converts accurately");
+    /* Alignment with RTC_FILETIME_EPOCH_TICK and RTC_UNIX_EPOCH_TICK */
+    expect(rtc_filetime_epoch_tick + sr_unix_time_to_filetime_ticks(0, 0) / 10u == rtc_unix_epoch_tick,
+           "Unix epoch FILETIME offset matches RTC epoch difference exactly");
+}
+
 /* #80 bulk-stability regression: 10000 reads of every guest-visible time API
  * at one unchanged emulated timestamp must be side-effect free -- identical
  * values and the scheduler timeline left exactly where it was.  Time moves
@@ -17982,6 +18003,7 @@ int main(int argc, char **argv) {
     test_delay_advances_unified_timeline();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
+    test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
     test_vcount_tracks_elapsed_source_periods();
