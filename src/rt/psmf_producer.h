@@ -30,6 +30,15 @@ typedef enum {
     SR_PSMF_AU_AUDIO = 1,
 } SrPsmfAuKind;
 
+typedef enum {
+    SR_PSMF_MEDIA_SUBMITTED = 0,
+    SR_PSMF_MEDIA_DECODED,
+    SR_PSMF_MEDIA_DELIVERED,
+    SR_PSMF_MEDIA_WARMUP_HELD,
+    SR_PSMF_MEDIA_EOS_DRAINED,
+    SR_PSMF_MEDIA_REJECTED,
+} SrPsmfMediaStage;
+
 typedef struct {
     SrPsmfAuKind kind;
     uint8_t stream_id;
@@ -52,6 +61,13 @@ typedef struct {
     uint64_t audio_pes;
     uint64_t video_aus;
     uint64_t audio_aus;
+    /* Consumer-side media census. delivered excludes outputs returned by the EOS-drain
+     * path, and rejected counts decoded output refused by the consumer. warmup_held is
+     * the current outstanding count; resolve_warmup_hold() moves it to a terminal bucket. */
+    uint64_t video_submitted, video_decoded, video_delivered;
+    uint64_t video_warmup_held, video_eos_drained, video_rejected;
+    uint64_t audio_submitted, audio_decoded, audio_delivered;
+    uint64_t audio_warmup_held, audio_eos_drained, audio_rejected;
     /* Candidate four-byte start positions examined while locating video AUDs. */
     uint64_t video_aud_scan_candidates;
     uint64_t parser_failures;
@@ -108,6 +124,15 @@ const char *sr_psmf_producer_fail_reason(const SrPsmfProducer *producer);
 
 void sr_psmf_producer_stats(const SrPsmfProducer *producer,
                             SrPsmfProducerStats *out);
+
+/* Record one exact consumer-side stage event. Decoded outputs must eventually be
+ * delivered, explicitly held for warm-up, drained at EOS, or rejected. A held output
+ * remains in the conservation total until resolve_warmup_hold() classifies it. */
+void sr_psmf_producer_media_stage(SrPsmfProducer *producer, SrPsmfAuKind kind,
+                                  SrPsmfMediaStage stage);
+int sr_psmf_producer_resolve_warmup_hold(SrPsmfProducer *producer,
+                                         SrPsmfAuKind kind,
+                                         SrPsmfMediaStage disposition);
 
 #define SR_PSMF_STREAM_NONE ((uint32_t)-1)
 
