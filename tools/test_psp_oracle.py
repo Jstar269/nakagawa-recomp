@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import hle_manifest
 from psp_oracle.protocol import (
     ProtocolError,
     compare_texts,
@@ -860,15 +861,121 @@ class PspDmacProbeTests(unittest.TestCase):
                 open_guards.append(line_number)
         self.assertEqual(open_guards, [], f"unclosed #if at lines {open_guards}")
 
-    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
-        manifest = json.loads(
+    def _oracle_manifest(self) -> dict:
+        return json.loads(
             (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
                 encoding="utf-8"
             )
         )
-        system = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-SYSTEM-001")
+
+    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
+        system = next(
+            entry for entry in self._oracle_manifest()["tests"] if entry["id"] == "PSP-SYSTEM-001"
+        )
         self.assertEqual(system["status"], "implemented")
+        self.assertEqual(system["hardware_evidence"], "CAPTURED")
         self.assertEqual(system["case_ids"], ["model-profile"])
+
+    def test_implemented_status_alone_is_not_accepted_hardware_evidence(self) -> None:
+        """`status: implemented` is probe-source prose, never hardware evidence."""
+        manifest = self._oracle_manifest()
+        oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
+        for test_id in ("PSP-TRANSPORT-001", "PSP-SYSTEM-001"):
+            entry = next(item for item in manifest["tests"] if item["id"] == test_id)
+            self.assertEqual(entry["status"], "implemented")
+            self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+            for api in entry["apis"]:
+                self.assertNotIn(
+                    api,
+                    oracle_apis,
+                    f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
+                )
+
+    def test_fpu_and_cache_probe_families_are_named_as_not_run(self) -> None:
+        manifest = self._oracle_manifest()
+        by_id = {entry["id"]: entry for entry in manifest["tests"]}
+        for test_id in ("PSP-FPU-001", "PSP-CACHE-001"):
+            self.assertEqual(by_id[test_id]["status"], "planned")
+            self.assertEqual(by_id[test_id]["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(len(by_id), len(manifest["tests"]))
+
+    def test_manifest_hardware_evidence_uses_closed_vocabulary(self) -> None:
+        manifest = self._oracle_manifest()
+        vocabulary = {"NOT_RUN", "CAPTURED", "MEASURED"}
+        for entry in manifest["tests"]:
+            with self.subTest(test_id=entry["id"]):
+                self.assertIn("hardware_evidence", entry)
+                self.assertIsInstance(entry["hardware_evidence"], str)
+                self.assertIn(entry["hardware_evidence"], vocabulary)
+
+    def test_only_documented_measured_groups_claim_hardware_evidence(self) -> None:
+        manifest = self._oracle_manifest()
+        evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "MEASURED"},
+            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001"},
+        )
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
+            {"PSP-KERNEL-001", "PSP-TRANSPORT-001", "PSP-SYSTEM-001"},
+        )
+
+    def test_measured_rows_cite_a_public_document_and_the_cases_it_measures(self) -> None:
+        """A MEASURED row must name publication-eligible evidence and its own cases."""
+        include_paths = set(
+            json.loads(
+                (self.root / "assets" / "public_source_profile.json").read_text(
+                    encoding="utf-8"
+                )
+            )["include_paths"]
+        )
+        measured = [
+            entry
+            for entry in self._oracle_manifest()["tests"]
+            if entry["hardware_evidence"] == "MEASURED"
+        ]
+        self.assertTrue(measured)
+        for entry in measured:
+            with self.subTest(test_id=entry["id"]):
+                match = re.fullmatch(
+                    r"(docs/[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)", entry["evidence_ref"]
+                )
+                self.assertIsNotNone(match, "evidence_ref must be 'docs/....md#section'")
+                self.assertIn(match.group(1), include_paths)
+                cases = entry["evidence_cases"]
+                self.assertTrue(cases)
+                self.assertTrue(
+                    set(cases) <= set(entry.get("case_ids", [])) | set(entry["apis"])
+                )
+                self.assertTrue(entry["measurement_note"].strip())
+
+    def test_rows_without_measured_evidence_say_why(self) -> None:
+        for entry in self._oracle_manifest()["tests"]:
+            if entry["hardware_evidence"] == "MEASURED":
+                continue
+            with self.subTest(test_id=entry["id"]):
+                self.assertTrue(
+                    entry.get("evidence_note", "").strip(),
+                    "an unmeasured row must state why it is not measured",
+                )
+
+    def test_exception_campaign_is_named_with_its_buildable_cases(self) -> None:
+        entry = next(
+            item
+            for item in self._oracle_manifest()["tests"]
+            if item["id"] == "PSP-EXCEPTION-001"
+        )
+        self.assertEqual(entry["hardware_evidence"], "MEASURED")
+        makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        for case_id in entry["case_ids"]:
+            with self.subTest(case_id=case_id):
+                self.assertIn(f"else ifeq ($(CASE),{case_id})", makefile)
+        # exception-a2 is measured as run PSP-A2-01, but the cited section names
+        # its fixture only inside the range `exception-a1`..`exception-a3`.
+        self.assertIn("exception-a2", entry["case_ids"])
+        self.assertNotIn("exception-a2", entry["evidence_cases"])
 
     def test_manifest_routes_issue_23_to_dedicated_scalar_probe(self) -> None:
         manifest = json.loads(
@@ -878,6 +985,7 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
+        self.assertEqual(dmac["hardware_evidence"], "MEASURED")
         self.assertEqual(len(dmac["case_ids"]), 23)
         self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])
