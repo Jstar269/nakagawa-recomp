@@ -20,7 +20,7 @@
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 6
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 7
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
@@ -127,8 +127,6 @@ static const SrTitleRuntimeConfig s_config = {
     SR_TITLE_CONFIG_FALLBACK_ENTRY,
     SR_TITLE_CONFIG_WORKER_THREAD_ENTRY,
     SR_TITLE_CONFIG_LAUNCHER_THREAD_ENTRY,
-    SR_TITLE_CONFIG_VBLANK_FRAME_COUNTER_ADDR,
-    SR_TITLE_CONFIG_VBLANK_VSYNC_COUNTER_ADDR,
     SR_TITLE_CONFIG_LIBFONT_READY_FLAG_ADDR,
     SR_TITLE_CONFIG_FRAME_READY_LATCH_ADDR,
     {
@@ -179,13 +177,6 @@ int sr_title_config_is_worker_entry(uint32_t entry) {
 int sr_title_config_is_launcher_entry(uint32_t entry) {
     return (s_config.valid & SR_TITLE_CFG_LAUNCHER_ENTRY) != 0u &&
            entry == s_config.launcher_thread_entry;
-}
-
-int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr) {
-    if (!(s_config.valid & SR_TITLE_CFG_VBLANK_COUNTERS)) return 0;
-    if (frame_addr) *frame_addr = s_config.vblank_frame_counter_addr;
-    if (vsync_addr) *vsync_addr = s_config.vblank_vsync_counter_addr;
-    return 1;
 }
 
 int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
