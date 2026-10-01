@@ -1276,7 +1276,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "235ef530991422ccb3e81e2156d075256233bdecab796b03979ae80746641977"
+      "sha256": "15e92b6e7f871141973c50068bea81fd511bdf6b833e11be67df433bef0615ff"
     },
     {
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0e8fe4c8053f25aea6b8bd0299c0ddf465bf39a8b233423948fdb00b1fa2f356"
+      "sha256": "68199e612eedc35ba36edcde27ccce81214be83787af9be1959d017dfb06085a"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4563,7 +4563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a53d715fa882bf9161eddedf74a03d36484b2f804af945d0bd2ac80880e925ad"
+      "sha256": "043c87104af9295e2c5c38da55c7bd1298c6abe2ff013d8323d64daec17f0eb0"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4856,7 +4856,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2a6f6f857d89051b3f68a814266217f31531b39ee56c485ec74b4515ca0a7984"
+      "sha256": "bda0774d128631cc643d02715dc50549fabc72f5c899374819260b1daabe3b00"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4882,7 +4882,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0657bbb5adc9f79c39d0e4026410ac74226c7016ec76b2136127e8e4f08ae055"
+      "sha256": "06db002ff4270b3652ab75d6b2afabedbfbf71f0ed5dc9cfdaf28610908dbd61"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -6035,7 +6035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2402a280b8a8fbae06e40fc18e8296059b3e280ac1402507b5e1337514fa6ebf"
+      "sha256": "fa26f46847b0c0d02e0141f02d87a3216dcc5865e8a8966d1b4cb168f3a10401"
     },
     {
       "path": "tools/import_audit_gate.py",
