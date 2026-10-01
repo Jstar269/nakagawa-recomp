@@ -29,7 +29,25 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # valid, so the parser accepts them; they must never be promoted into acceptance
 # evidence.  ``provenance_issues`` is the programmatic form of that boundary.
 _ALL_ZERO_RE = re.compile(r"^0+$")
-UNMEASURED_TOKENS = frozenset({"unknown", "unset", "placeholder", "none", "n/a", "na", "tbd"})
+# Tokens are compared after ``_placeholder_key`` folds case and drops separators,
+# so "n/a", "Not-Measured" and "un measured" all match.  A label with no letter or
+# digit ("?", "-") names nothing and is a placeholder too.
+UNMEASURED_TOKENS = frozenset({
+    "unknown", "unset", "placeholder", "none", "na", "tbd", "tbc", "unmeasured",
+    "notmeasured", "unverified", "unavailable", "unspecified", "missing", "null", "nil",
+    "empty", "todo", "fixme", "dummy", "fake",
+})
+_PLACEHOLDER_SEPARATORS_RE = re.compile(r"[\s._/-]+")
+
+
+def _placeholder_key(value: str) -> str:
+    return _PLACEHOLDER_SEPARATORS_RE.sub("", value.strip().lower())
+
+
+def is_unmeasured(value: str) -> bool:
+    """Return True when a provenance label is a placeholder, not a measurement."""
+    key = _placeholder_key(value)
+    return not any(ch.isalnum() for ch in key) or key in UNMEASURED_TOKENS
 EXPECTED_SOURCE = {"psp": "psp", "nakagawa": "nakagawa"}
 DMAC_SIZE_MATRIX_SIZES = (0xBFFF, 0xC000, 0xC001, 0xD000, 0xF000, 0xFFFF, 0x10000, 0x100000)
 DMAC_SIZE_MATRIX_TRIALS = 3
@@ -63,6 +81,8 @@ PSP_GENERATION_TO_RETAIL = {
     "11g": "PSP-E1000",
 }
 
+PSP_MODEL_INTERPRETATION_RULE = "PSPSDK_PMODEL_ORDINAL_V1"
+
 
 def decode_psp_model_code(raw_code: int) -> tuple[str, str]:
     """Decode a PSPSDK ``PspModel`` ordinal into generation and retail family.
@@ -79,6 +99,68 @@ def decode_psp_model_code(raw_code: int) -> tuple[str, str]:
     except KeyError as exc:
         raise ValueError(f"unknown PSPSDK model code {raw_code}") from exc
     return generation, PSP_GENERATION_TO_RETAIL[generation]
+
+
+def model_identity_fields(
+    physical_model_label: str | None,
+    software_model_raw_value: str | int | None,
+    *,
+    rule_id: str = PSP_MODEL_INTERPRETATION_RULE,
+) -> dict[str, str]:
+    """Return separated model identity fields without normalizing the raw value.
+
+    ``software_model_raw_value`` is copied into the returned field exactly as
+    supplied (integer inputs use their decimal representation). An unknown rule
+    or raw code affects only the derived family and agreement fields.
+    """
+
+    if software_model_raw_value is None:
+        raw_value = "NOT_CAPTURED"
+    elif isinstance(software_model_raw_value, bool):
+        raw_value = str(software_model_raw_value)
+    else:
+        raw_value = str(software_model_raw_value)
+
+    physical_label = physical_model_label or "NOT_CAPTURED"
+    interpreted_family = "UNKNOWN"
+    agreement = "UNKNOWN"
+    if rule_id == PSP_MODEL_INTERPRETATION_RULE and raw_value != "NOT_CAPTURED":
+        try:
+            if re.fullmatch(r"0[xX][0-9a-fA-F]+", raw_value):
+                raw_code = int(raw_value, 16)
+            elif re.fullmatch(r"[0-9]+", raw_value):
+                raw_code = int(raw_value, 10)
+            else:
+                raise ValueError("raw model value is not an integer")
+            _generation, interpreted_family = decode_psp_model_code(raw_code)
+        except ValueError:
+            interpreted_family = "UNKNOWN"
+
+        normalized_physical = re.sub(r"[^a-z0-9]", "", physical_label.lower())
+        physical_family = next(
+            (
+                family
+                for prefix, family in (
+                    ("pspn1000", "PSP-N1000"),
+                    ("pspe1000", "PSP-E1000"),
+                    ("psp1000", "PSP-1000"),
+                    ("psp2000", "PSP-2000"),
+                    ("psp3000", "PSP-3000"),
+                )
+                if normalized_physical.startswith(prefix)
+            ),
+            None,
+        )
+        if interpreted_family != "UNKNOWN" and physical_family is not None:
+            agreement = "AGREES" if physical_family == interpreted_family else "DISAGREES"
+
+    return {
+        "PHYSICAL_MODEL_LABEL": physical_label,
+        "SOFTWARE_MODEL_RAW_VALUE": raw_value,
+        "INTERPRETED_MODEL_FAMILY": interpreted_family,
+        "MODEL_INTERPRETATION_RULE": rule_id,
+        "MODEL_IDENTITY_AGREEMENT": agreement,
+    }
 
 
 class ProtocolError(ValueError):
@@ -142,8 +224,10 @@ def _validate_metadata(metadata: dict[str, str], *, line_number: int) -> None:
         raise ProtocolError(f"line {line_number}: unsupported source {metadata['source']!r}")
     if not _SHA256_RE.fullmatch(metadata["binary_sha256"]):
         raise ProtocolError(f"line {line_number}: binary_sha256 must be lowercase SHA-256")
-    if not re.fullmatch(r"[0-9a-f]{40,64}", metadata["source_commit"]):
-        raise ProtocolError(f"line {line_number}: source_commit must be a git object id")
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", metadata["source_commit"]):
+        raise ProtocolError(
+            f"line {line_number}: source_commit must be a full 40- or 64-digit git object id"
+        )
 
 
 def provenance_issues(metadata: dict[str, str]) -> tuple[str, ...]:
@@ -159,7 +243,7 @@ def provenance_issues(metadata: dict[str, str]) -> tuple[str, ...]:
         value = metadata.get(field)
         if value is None:
             problems.append(f"{field} is absent")
-        elif value.strip().lower() in UNMEASURED_TOKENS:
+        elif is_unmeasured(value):
             problems.append(f"{field} is the fixture placeholder {value!r}")
     digest = metadata.get("binary_sha256")
     if digest is None:

@@ -37,7 +37,7 @@ class PublicCiWiringTests(unittest.TestCase):
         lock = json.loads((ROOT / "assets" / "upstream" / "pspdev.lock.json").read_text())
         evidence = json.loads((ROOT / "assets" / "upstream" / "pspdev.evidence.json").read_text())
         self.assertIn("Build pinned SDL3 for headless Linux runtime", ci)
-        self.assertIn("d9d5536704d585616d4db3c8ba3c4ff6fc2757e1", ci)
+        self.assertIn("fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", ci)
         self.assertIn("libvulkan-dev", ci)
         self.assertIn("SDL_UNIX_CONSOLE_BUILD=ON", ci)
         self.assertIn("pspdev.lock.json", ci)
@@ -49,6 +49,92 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", ci)
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("showcase-linux", docs)
+
+    def test_linux_cmake_player_gate_reuses_pinned_sdl_and_is_required(self) -> None:
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        native_start = ci.index("  native_tools:\n")
+        native_end = ci.index("\n  windows_runtime:\n", native_start)
+        native_tools = ci[native_start:native_end]
+
+        self.assertIn("Configure, build, and test CMake Linux player", native_tools)
+        self.assertIn("Build and run the Linux showcase headlessly", native_tools)
+        self.assertIn("Smoke the CMake Linux player headlessly", native_tools)
+        sdl_step = native_tools.index("Build pinned SDL3 for headless Linux runtime")
+        player_step = native_tools.index("Configure, build, and test CMake Linux player")
+        showcase_step = native_tools.index("Build and run the Linux showcase headlessly")
+        stage_step = native_tools.index("Smoke the CMake Linux player headlessly")
+        self.assertLess(sdl_step, player_step)
+        self.assertLess(showcase_step, stage_step)
+        self.assertIn("-DBUILD_PLAYER=ON", native_tools)
+        self.assertIn('cmake --build "$player_build" --parallel 2', native_tools)
+        self.assertIn('ctest --test-dir "$player_build" --output-on-failure', native_tools)
+        self.assertIn('"$player_build/nakagawa_player" --help', native_tools)
+        self.assertIn('grep -Fq "Usage: nakagawa_player"', native_tools)
+        self.assertIn("showcase-scene-v1/TEST00007.iso", native_tools)
+        self.assertIn("timeout 60s", native_tools)
+        self.assertIn('"$player_build/nakagawa_player" "--iso=$iso" --stage-only', native_tools)
+        self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', native_tools)
+        self.assertIn("SDL3_VERSION=3.4.16", native_tools)
+        self.assertIn("SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", native_tools)
+
+        required_start = ci.index("  ci_required:\n")
+        required_job = ci[required_start:]
+        self.assertIn("needs: [classify, hygiene, markdown, python_tools, native_tools,", required_job)
+        self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required_job)
+        self.assertIn("RUN_NATIVE: ${{ needs.classify.outputs.run_native }}", required_job)
+        required = (ROOT / "tools" / "ci_required.py").read_text(encoding="utf-8")
+        self.assertIn('(\"native-tools\", \"NATIVE_RESULT\", \"RUN_NATIVE\")', required)
+
+    def test_xb_parser_cmake_target_includes_runtime_headers(self) -> None:
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        target = cmake.split("add_executable(test_xb_parser", 1)[1].split(
+            "add_test(NAME xb_parser_test", 1
+        )[0]
+        self.assertIn("${CMAKE_CURRENT_SOURCE_DIR}/src/rt", target)
+        self.assertIn("src/rt/archive_vfs.c", target)
+
+    def test_cmake_ctest_creates_its_binary_tree_scratch_directory(self) -> None:
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn(
+            'file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")', cmake
+        )
+        # The test runs from the source tree (it reads a source-relative
+        # fixture) but writes its scratch files into the binary tree, so an
+        # out-of-source build never depends on <source>/build existing.
+        self.assertIn("set_tests_properties(player_state_test PROPERTIES", cmake)
+        self.assertIn("WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}", cmake)
+        self.assertIn(
+            'ENVIRONMENT "NK_TEST_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/build"', cmake
+        )
+        state_test = (ROOT / "tests" / "native" / "test_player_state.c").read_text(
+            encoding="utf-8")
+        self.assertIn('getenv("NK_TEST_SCRATCH_DIR")', state_test)
+        self.assertNotIn('"build/test_launch_global_profile.json"', state_test)
+
+    def test_sdl3_pin_is_consistent_across_ci_cmake_and_docs(self) -> None:
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        version = re.search(r"^\s*SDL3_VERSION=(\d+\.\d+\.\d+)$", ci, re.MULTILINE)
+        commit = re.search(r"^\s*SDL3_COMMIT=([0-9a-f]{40})$", ci, re.MULTILINE)
+        self.assertIsNotNone(version, "ci.yml must name the pinned SDL3 version")
+        self.assertIsNotNone(commit, "ci.yml must pin SDL3 to a full commit id")
+        pinned = version.group(1)
+        self.assertIn('test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"', ci)
+
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        url = re.search(
+            r"releases/download/release-(\d+\.\d+\.\d+)/SDL3-(\d+\.\d+\.\d+)\.tar\.gz", cmake)
+        self.assertIsNotNone(url, "CMakeLists.txt must bootstrap an official SDL3 release")
+        self.assertEqual({url.group(1), url.group(2)}, {pinned})
+        self.assertRegex(cmake, r"URL_HASH SHA256=[0-9a-f]{64}\b")
+        self.assertIn(f"pinned official release SDL3 {pinned}", cmake)
+
+        for doc in ("CI.md", "SETUP.md", "LINUX_DEVELOPMENT.md"):
+            text = (ROOT / "docs" / doc).read_text(encoding="utf-8")
+            with self.subTest(doc=doc):
+                named = set(re.findall(r"SDL3 (\d+\.\d+\.\d+)|pinned (\d+\.\d+\.\d+)", text))
+                versions = {v for pair in named for v in pair if v}
+                self.assertTrue(versions, f"docs/{doc} names no SDL3 version")
+                self.assertEqual(versions, {pinned})
 
     def test_windows_vfpu_ci_uses_pregenerated_public_mode(self) -> None:
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")

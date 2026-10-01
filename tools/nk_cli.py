@@ -39,6 +39,7 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
+from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
     MAX_LIBRARY_JSON_BYTES,
@@ -383,6 +384,11 @@ def _load_library_entry(user_root: Path, disc_id: str) -> dict:
             raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building (#297).")
     if not isinstance(entry.get("selected_executable", ""), str):
         raise PackageBuildError(f"Library entry {disc_id} has an invalid selected_executable (#297).")
+    boot_executable = entry.get("boot_executable", "")
+    if not isinstance(boot_executable, str) or (
+        boot_executable and _psp_boot_path(boot_executable) is None
+    ):
+        raise PackageBuildError(f"Library entry {disc_id} has an invalid boot_executable.")
     if type(entry.get("is_experimental", False)) is not bool:
         raise PackageBuildError(f"Library entry {disc_id} has an invalid experimental marker.")
     return entry
@@ -1016,8 +1022,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 f"Unqualified revision (SFO DISC_VERSION {metadata.version}): this manifest requires "
                 "an explicit local compatibility record. Rebuild with "
-                "--register-local-compatibility-record after reviewing the selected local inputs; "
-                "revision qualification is in the works (#315)."
+                "--register-local-compatibility-record after reviewing the selected local inputs."
             )
         if (requires_local_identity and recorded_identity is not None and
             recorded_identity["disc"]["disc_version"] != metadata.version and
@@ -1025,7 +1030,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 f"Unqualified revision (SFO DISC_VERSION {metadata.version}): the local compatibility "
                 "record names a different SFO revision. Review and register this revision explicitly "
-                "with --register-local-compatibility-record; revision qualification is in the works (#315)."
+                "with --register-local-compatibility-record."
             )
         reporter.report("preflight", "PASS", "Library entry and manifest validated")
         reporter.report("extract", "START", "Extracting executable and guest modules...")
@@ -1092,7 +1097,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         ):
             if module_dir is None or not (module_dir / module["name"]).is_file():
                 raise PackageBuildError(
-                    f"Required guest PRX {module['name']} is unavailable for title identity (#315)."
+                    f"Required guest PRX {module['name']} is unavailable for title identity."
                 )
             identity_modules.append({
                 "name": module["name"],
@@ -1126,7 +1131,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 raise PackageBuildError(
                     "Local compatibility record mismatch: " + ", ".join(identity_changes) +
                     ". Review and register the changed inputs with "
-                    "--register-local-compatibility-record; revision qualification is in the works (#315)."
+                    "--register-local-compatibility-record."
                 )
         identity_path = cache_dir / "title-input-identity.json"
         _write_private_file(
@@ -1483,7 +1488,9 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
-    launcher = RuntimeLauncher()
+    # The CLI's runtime assets belong to its checkout, even when the command is
+    # invoked from another working directory.
+    launcher = RuntimeLauncher(repo_root=ROOT)
     try:
         cmd, env = launcher.build_launch_plan(
             args.game_dir,
@@ -1595,7 +1602,11 @@ def _new_bringup_report() -> dict:
         "unsupported_imports": [],
         "runtime_imports": [],
         "runtime_output_kind": "NOT_RUN",
-        "presentation": {"status": "NOT_RUN", "frame_submissions": 0},
+        "presentation": {
+            "status": "NOT_RUN",
+            "frame_submissions": 0,
+            "backend": "unknown",
+        },
         "process_exit_code": None,
         "counts": {
             "functions": None,
@@ -1701,9 +1712,15 @@ def _bringup_human_summary(report: dict) -> str:
     )
     if report["failure_class"] == "NONE":
         submissions = report["presentation"]["frame_submissions"]
+        backend = report["presentation"].get("backend", "unknown")
+        presenter = (
+            f"{backend} presenter accepted"
+            if backend != "unknown"
+            else "GUI presenter received"
+        )
         return (
             f"{cfw_prefix}Bring-up reached {report['reached_stage']}; launch "
-            f"{report['exit_classification'].lower()}; GUI presenter received "
+            f"{report['exit_classification'].lower()}; {presenter} "
             f"{submissions} frame submission(s). Visual contents are not verified."
         )
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
@@ -1762,7 +1779,8 @@ def _bringup_human_summary(report: dict) -> str:
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
-                           selected: str, is_experimental: bool) -> None:
+                           selected: str, is_experimental: bool,
+                           boot_executable: str = "") -> None:
     library_path = user_root / "library.json"
     games = []
     if library_path.exists():
@@ -1789,6 +1807,7 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         "title_id": title_id,
         "iso_path": str(iso_path),
         "selected_executable": selected,
+        "boot_executable": boot_executable,
         "is_experimental": is_experimental,
     })
     if len(games) > MAX_LIBRARY_GAMES:
@@ -1884,8 +1903,6 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
                     line.strip())
            for line in output.splitlines()):
         return "DISPATCH_MISS"
-    if "no available video device" in folded or "video driver" in folded:
-        return "VIDEO_UNAVAILABLE"
     if "unsupported instruction" in folded or "aot-gap" in folded:
         return "UNSUPPORTED_INSTRUCTION"
     if any(re.match(r"^sr_unimplemented: function 0x[0-9a-f]{8}: ", line.strip())
@@ -1915,6 +1932,10 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
         return "DRIVER_ARGUMENT_FAILURE"
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
+    # SDL's generic dummy-driver diagnostic can accompany a more useful PSP
+    # boundary. Keep it as a fallback so it cannot mask named runtime failures.
+    if "no available video device" in folded or "video driver" in folded:
+        return "VIDEO_UNAVAILABLE"
     return "EMPTY" if not output.strip() else "OTHER"
 
 
@@ -1922,18 +1943,71 @@ _HOST_PRESENT_SUBMITTED = re.compile(
     r"^HOST_PRESENT_SUBMITTED f=\d+ buf=0x[0-9a-fA-F]{8} "
     r"fmt=[0-3] stride=\d+$"
 )
+_OFFSCREEN_FRAME_PRESENT = re.compile(
+    r"^BOOT_EVENT phase=frame_present backend=offscreen frame=\d+"
+    r"(?: t_ns=\d+)?$"
+)
+_WINDOW_READY_BACKEND = re.compile(
+    r"^BOOT_EVENT phase=window_ready backend=([A-Za-z0-9_-]+)"
+    r"(?: t_ns=\d+)?$"
+)
+_PRESENTER_BACKENDS = frozenset({"offscreen", "vulkan", "gdi", "none"})
+_ACCEPTING_PRESENTER_BACKENDS = frozenset({"offscreen"})
 
 
-def _set_bringup_presentation(report: dict, output: str) -> None:
-    """Count validated calls from the runtime into its GUI presenter."""
-    submissions = sum(
-        1 for line in output.splitlines()
-        if _HOST_PRESENT_SUBMITTED.fullmatch(line.strip())
+def _set_bringup_presentation(report: dict, output: str) -> bool:
+    """Record presenter identity and accept only ordered, validated evidence."""
+    lines = [line.strip() for line in output.splitlines()]
+    submission_indices: list[int] = []
+    malformed_submission = False
+    for index, line in enumerate(lines):
+        if not line.startswith("HOST_PRESENT_SUBMITTED "):
+            continue
+        if _HOST_PRESENT_SUBMITTED.fullmatch(line):
+            submission_indices.append(index)
+        else:
+            malformed_submission = True
+
+    frame_indices: list[int] = []
+    malformed_frame = False
+    for index, line in enumerate(lines):
+        if not line.startswith("BOOT_EVENT phase=frame_present backend=offscreen "):
+            continue
+        if _OFFSCREEN_FRAME_PRESENT.fullmatch(line):
+            frame_indices.append(index)
+        else:
+            malformed_frame = True
+
+    backends = {
+        match.group(1)
+        for line in lines
+        if (match := _WINDOW_READY_BACKEND.fullmatch(line))
+    }
+    backend_candidate = next(iter(backends), None)
+    backend = (
+        backend_candidate
+        if len(backends) == 1 and backend_candidate in _PRESENTER_BACKENDS
+        else "unknown"
+    )
+    # cmd_bringup pins SR_VIDEO=offscreen, so a different recognized backend is
+    # still a truthful identity but cannot satisfy this route's host-sink proof.
+    evidence_ok = (
+        backend in _ACCEPTING_PRESENTER_BACKENDS
+        and not malformed_submission
+        and not malformed_frame
+        and bool(frame_indices)
+        and len(frame_indices) == len(submission_indices)
+        and all(
+            frame < submission
+            for frame, submission in zip(frame_indices, submission_indices, strict=True)
+        )
     )
     report["presentation"] = {
-        "status": "FRAME_SUBMITTED" if submissions else "NO_FRAME_SUBMISSIONS",
-        "frame_submissions": submissions,
+        "status": "FRAME_SUBMITTED" if evidence_ok else "NO_FRAME_SUBMISSIONS",
+        "frame_submissions": len(submission_indices) if evidence_ok else 0,
+        "backend": backend,
     }
+    return evidence_ok
 
 
 def _flight_has_hle_import(path: Path | None) -> bool | None:
@@ -2094,6 +2168,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         exec_issues = checks.get("EXECUTABLE", {}).get("issue_numbers", [])
         failure = "EXECUTABLE_UNSUPPORTED" if exec_issues else "INVALID_ISO"
         _fail_bringup(report, "inspect", failure, exec_issues,
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    boot_path = _psp_boot_path(preflight.get("selected_executable_source"))
+    if boot_path is None:
+        _fail_bringup(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -2266,7 +2347,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
         library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
         _write_bringup_library(
-            user_root, iso_path, metadata, title_id, library_executable, is_experimental
+            user_root, iso_path, metadata, title_id, library_executable,
+            is_experimental, str(preflight["selected_executable_source"]),
         )
     except Exception as exc:
         failure = "EXPERIMENTAL_IMPORT_FAILED"
@@ -2410,8 +2492,15 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "SDL_VIDEODRIVER": "dummy",
             "SDL_AUDIO_DRIVER": "dummy",
             "SDL_AUDIODRIVER": "dummy",
+            # Bring-up still uses the production --gui scheduler route so the
+            # display latch and presenter boundary execute. Select the explicit
+            # host-memory sink instead of asking that route to create a window
+            # or a Vulkan-presentable surface. Interactive launches do not use
+            # this policy.
+            "SR_VIDEO": "offscreen",
             "PSP_ISO": str(iso_path),
             "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
+            "SR_BOOT_PATH": boot_path,
         })
         flight_output: Path | None = None
         try:
@@ -2420,7 +2509,10 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
             os.close(flight_fd)
             flight_output = Path(flight_name)
-            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal;4096"
+            # media is in the class list so a named media boundary (for example a PSMF
+            # stream the demuxer refused) is retained as a structured event in the flight
+            # bundle instead of existing only as text in this run's output.
+            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal,media;4096"
             env["SR_FLIGHT_OUTPUT"] = str(flight_output)
         except OSError:
             env.pop("SR_FLIGHT", None)
@@ -2449,7 +2541,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
-            _set_bringup_presentation(report, launch_output)
+            presentation_evidence_ok = _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
             report["runtime_output_kind"] = _runtime_output_kind(
                 launch_output, report["runtime_imports"]
@@ -2483,7 +2575,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                             int((time.perf_counter() - started) * 1000),
                         )
                     else:
-                        if report["presentation"]["frame_submissions"] == 0:
+                        if not presentation_evidence_ok:
                             _fail_bringup(
                                 report, "launch", "NO_FRAME_SUBMISSIONS", [297, 308],
                                 int((time.perf_counter() - started) * 1000),
@@ -2493,10 +2585,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                                                int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
-                if "no available video device" in folded or "video driver" in folded:
-                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
-                    report["exit_classification"] = "HEADLESS_UNAVAILABLE"
-                elif (report["runtime_imports"] or "unknown nid" in folded
+                if (report["runtime_imports"] or "unknown nid" in folded
                       or "unimplemented import" in folded):
                     failure, issues = "UNSUPPORTED_IMPORT", [308]
                 elif (report["runtime_output_kind"] == "UNSUPPORTED_INSTRUCTION"
@@ -2516,6 +2605,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     failure, issues = "NATIVE_RUNTIME_CRASH", [297]
                 elif report["runtime_output_kind"] == "DISPATCH_MISS":
                     failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
+                elif report["runtime_output_kind"] == "VIDEO_UNAVAILABLE":
+                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
+                    report["exit_classification"] = "HEADLESS_UNAVAILABLE"
                 else:
                     failure, issues = "LAUNCH_FAILED", [297]
                 _fail_bringup(report, "launch", failure, issues,

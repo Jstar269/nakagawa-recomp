@@ -18,9 +18,11 @@ enum {
     SR_FLIGHT_CLASS_FAULT = 1u << 4,
     SR_FLIGHT_CLASS_FATAL = 1u << 5,
     SR_FLIGHT_CLASS_MEDIA = 1u << 6,
-    SR_FLIGHT_CLASS_ALL = (1u << 7) - 1u,
+    SR_FLIGHT_CLASS_GE = 1u << 7,
+    SR_FLIGHT_CLASS_PRESENT = 1u << 8,
+    SR_FLIGHT_CLASS_ALL = (1u << 9) - 1u,
     SR_FLIGHT_MAX_EVENTS = 4096u,
-    SR_FLIGHT_SCHEMA_VERSION = 3u
+    SR_FLIGHT_SCHEMA_VERSION = 4u
 };
 
 enum {
@@ -41,7 +43,22 @@ enum {
     SR_FLIGHT_KIND_FATAL_CPU_FLOW = 15u,
     SR_FLIGHT_KIND_FATAL_IMPORT = 16u,
     SR_FLIGHT_KIND_FATAL_HOST = 17u,
-    SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE = 18u
+    SR_FLIGHT_KIND_MEDIA_TEST_MILESTONE = 18u,
+    /* A production media stream the demuxer refused.  arg0/arg1 are the low and high
+     * halves of the source offset of the refused element; the reason itself is named in
+     * the always-on stderr boundary the same code prints.  This is a project-owned
+     * diagnostic label, not a PSP hardware event name. */
+    SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED = 19u,
+    SR_FLIGHT_KIND_GE_LIST_ENQUEUE = 20u,
+    SR_FLIGHT_KIND_GE_LIST_DEQUEUE = 21u,
+    SR_FLIGHT_KIND_GE_LIST_SYNC = 22u,
+    SR_FLIGHT_KIND_GE_DRAW_SYNC = 23u,
+    SR_FLIGHT_KIND_GE_LIST_STALL_UPDATE = 24u,
+    SR_FLIGHT_KIND_GE_DRAW = 25u,
+    SR_FLIGHT_KIND_GE_LIST_FINISH = 26u,
+    SR_FLIGHT_KIND_GE_FINISH_COMMAND = 27u,
+    SR_FLIGHT_KIND_PRESENT_SET_FRAMEBUF = 28u,
+    SR_FLIGHT_KIND_PRESENT_FRAME = 29u
 };
 
 /* Synthetic media-selftest labels only. They describe source-owned fixture

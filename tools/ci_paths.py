@@ -277,6 +277,16 @@ def _is_python_tool(path: str) -> bool:
     # validates these files -- test_hle_manifest asserts the baseline is current
     # and reproducible -- so classifying them here neither skips nor weakens a
     # check that was doing real work.
+    #
+    # `tools/README.md` is Markdown, not Python, but it is the *subject* of a
+    # Python regression: `tools/test_lint_docs.py` compares its module index
+    # against the tracked `tools/` module set and fails closed on drift. Routing
+    # the file whose content can break that test is what makes the check enforced
+    # rather than advisory -- otherwise the hosted `python_tests` job is skipped
+    # for exactly the edit that breaks it, and the check only runs in the change
+    # that introduces it. It is named individually instead of through the
+    # `markdown` flag so every other Markdown-only edit keeps skipping the Python
+    # matrix.
     return (
         path.startswith("tools/")
         and (path.endswith(".py") or path.endswith(".json") or path.endswith(".toml"))
@@ -288,6 +298,7 @@ def _is_python_tool(path: str) -> bool:
             "Pipfile",
             "Pipfile.lock",
             "poetry.lock",
+            "tools/README.md",
         }
     )
 

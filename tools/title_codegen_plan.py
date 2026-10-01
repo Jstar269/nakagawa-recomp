@@ -620,7 +620,7 @@ def _ensure_private_identity_output(manifest: dict[str, Any], output_dir: Path) 
         raise PackageRouteError(
             "PACKAGE_PRIVATE_IDENTITY_PATH",
             "retail title identity contains local executable and module hashes; "
-            "write packages under the per-user data root (#315)",
+            "write packages under the per-user data root",
         )
 
 

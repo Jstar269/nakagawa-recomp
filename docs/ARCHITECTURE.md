@@ -62,12 +62,16 @@ switched to the new adapter wholesale in this wave.
 
 ### ProgramImage v1 and CFG ownership observation v1
 
-**Scope: offline and test-only.** Neither `ProgramImage` nor `CanonicalCfgState` is
-reachable from the production pipeline. Nothing in `tools/codegen.py`,
-`tools/imports.py`, the `Makefile`, or `nk_manager.ps1` imports or constructs
-either type; their only consumers are `tools/prxload.py`, `tools/analyze.py`, and
-their unit tests. That is a checkable property, not an intention, and it is the
-reason this wave makes no production-wiring claim.
+`ProgramImage` and `CanonicalCfgState` remain observation types, not replacements
+for the production analyzer. The legacy `analyze()` path now exposes the
+canonical CFG report through opt-in `analyze.py --cfg-report/--cfg-gate` and
+`codegen.py --cfg-report/--cfg-gate`; ordinary codegen output and analysis are
+unchanged when those flags are absent, and `--cfg-report` alone reports gate-mode
+analysis without changing emitted code. `--cfg-gate` checks the primary image and
+each supplied extra ELF before code emission. This wiring consumes the legacy
+analyzer result. `--cfg-gate` rejects overlapping executable spans and prevents
+direct-jump adjacency from seeding a callable. It does not claim equivalence
+for, or route production through, `ProgramImage` or `CanonicalCfgState`.
 
 **Precondition for any later production wiring.** Before either type may replace a
 production path, it must first be shown *equivalent* to the path it replaces on
@@ -95,8 +99,24 @@ conflicts, jump-table candidates, data spans, padding, unowned executable words,
 spans, and explicitly unmapped entry candidates. `verify_canonical_cfg_report()` checks coverage and
 structural consistency; `cfg_compatibility_findings()` reports differences from a legacy
 entry set without silently selecting a winner. `canonical_cfg_json()` is stable for
-fixtures and build-cache comparisons. Neither report is an optimizing IR or a production
-HST switch.
+fixtures and build-cache comparisons. The CFG gate rejects an owned in-range edge whose
+target has no owner, plus ownership conflicts and unmapped entries. Non-padding words
+outside known control-flow remain listed as unowned; this records uncertainty and does
+not prove that no dynamic entry exists. Dynamic-entry ownership remains in the works
+(issue #291); the gate keeps such words visible as unowned instead of assuming the image
+is complete. File adjacency after an unconditional transfer
+does not make a word a callable. The opt-in `codegen.py --stack-census` flag
+also requires the CFG gate and wraps generated callable entries to compare guest
+`$sp` at entry and host return. Continuation entries share their callable's census;
+flow exits are reported as excluded and keep the result `PARTIAL`, while an
+ordinary unexplained stack delta reports `FAILED`. An unobserved workload reports
+`NOT_OBSERVED`; a balanced workload that misses generated callable entries reports
+`PARTIAL` with `unobserved=N`, so `COMPLETE` requires observing every expected entry.
+These diagnostics are source-owned runtime evidence and make no physical PSP
+correctness claim. The cosimulation harness classifies its source-owned
+`spleak` cell as a positive control and passes only when that cell is the sole observed
+mismatch, with its declared 32-byte delta; every other entry must balance. Neither
+report is an optimizing IR or a production HST switch.
 
 `assets/titles/synthetic.json` and `synthetic-title2.json` carry the source-owned
 `psp-core-v1` / `profile-zero-v1` contract. Their shared PSPDEV fixture points to
@@ -318,11 +338,14 @@ ignored build outputs.
 
 This gate covers two load segments, PSP-header BSS recovery, type-A relocation, import discovery,
 entry/helper analysis, multiple generated chunks, the complete public-safe production link, the
-real driver and registration table, scheduler startup, real NID dispatch in `hle.c`, and a checked
-guest-memory sentinel. It is useful before bringing up another title because it catches generic
+real driver and registration table, scheduler startup, real NID dispatch in `hle.c` (one synthetic
+import plus the sceImpose language setter/getter pair, whose guest-observed round-trip the driver
+asserts), a checked guest-memory sentinel, and the absence of unimplemented-NID dispatch misses.
+It is useful before bringing up another title because it catches generic
 pipeline and composition failures without requiring an ISO: dropped production objects, stale or
 missing chunks, entry discovery regressions, bad relocations/imports, broken scheduler startup,
-guest-to-HLE dispatch failures, and public-safe link drift.
+guest-to-HLE dispatch failures, fake-success handler regressions on the covered NIDs, and
+public-safe link drift.
 
 It does **not** establish commercial-title compatibility or legality, PSP timing, rendering or
 audio correctness, physical UMD behavior, or title-specific runtime bindings. Those remain separate
@@ -331,15 +354,16 @@ private-title, visual/audio, and hardware evidence domains.
 #### AOT-gap dispatch seam
 
 `mingw32-make production-smoke-gap` builds the same source-owned fixture in its `aot-gap` mode:
-identical guest addresses (entry, helper at `0x08804028`, import stub, result slot, sentinel), but
-the mode's build-time codegen choice `--omit-aot=0x08804028` removes the helper from native
+identical guest addresses (entry, helper at `0x08804068`, import stubs, out-slots, result slot,
+sentinel), but
+the mode's build-time codegen choice `--omit-aot=0x08804068` removes the helper from native
 emission/registration only. The guest bytes stay complete in the image inside the ordinary
 executable `.text` extent; region A's direct `jal` therefore compiles to the ordinary production
-`dispatch(s, 0x08804028)` statement — the same mechanism real generated code uses when control
+`dispatch(s, 0x08804068)` statement — the same mechanism real generated code uses when control
 leaves its directly compiled destination set. Generated `sr_register_all()` records the analyzer's
 exact executable ranges before registering native functions; mapped guest RAM outside those ranges
 is never implicit code. The production interpreter executes the omitted helper's source-owned bytes
-and its delay slot, then transfers to registered AOT region B at `0x08804058`. Region B commits the
+and its delay slot, then transfers to registered AOT region B at `0x08804098`. Region B commits the
 interpreted `0x00001235` value before the real HLE path and production-driver assertion. Nothing
 patches generated C after codegen and nothing substitutes host-side helpers.
 

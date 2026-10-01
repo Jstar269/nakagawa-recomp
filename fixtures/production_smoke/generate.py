@@ -50,31 +50,56 @@ ROOT = Path(__file__).resolve().parents[2]
 
 BASE = 0x08804000
 ENTRY = BASE
-HELPER = BASE + 0x28
-REGION_B = BASE + 0x58
-IMPORT_STUB = BASE + 0x78
+# Region A (entry) grew from 10 to 26 words when the on-title impose exercise
+# was added (W4): every address below shifts uniformly in both modes. Nothing
+# stays live in a temporary across a jal: $t0-$t9 are caller-saved, so the slot
+# base is recomputed from immediates after the setter call instead of being
+# carried through it (carrying it once produced garbage out-pointers and the
+# getter's span check correctly refused to write).
+HELPER = BASE + 0x68
+REGION_B = BASE + 0x98
+IMPORT_STUB = BASE + 0xB8
+# The three import stubs are contiguous 8-byte slots, mirroring the NID table
+# order: the historical synthetic import first, then the sceImpose pair whose
+# on-title round-trip this fixture now qualifies (W4).
+STUB_SET = IMPORT_STUB + 8
+STUB_GET = IMPORT_STUB + 16
 DATA_BASE = BASE + 0x1000
-RESULT_POINTER = DATA_BASE + 0x68
-RESULT = DATA_BASE + 0x6C
+RESULT_POINTER = DATA_BASE + 0x70
+RESULT = DATA_BASE + 0x74
+# BSS-head out-slots for the impose getter: zero-initialised by the loader, so
+# the guest pre-fills them with garbage and the driver asserts the round trip.
+SLOT_LANG = DATA_BASE + 0x78
+SLOT_BTN = DATA_BASE + 0x7C
 SENTINEL = 0x13579BDF
 INTERP_STORE = 0x00001234
 INTERP_RESULT = 0x00001235
 NID = 0x7591C7DB
 LIBRARY = "SysMemUserForUser"
+# sceImpose language/confirm-button pair (W4). Synthetic constants, nothing
+# title-derived: 3/0 crosses both runtime defaults (language 0, button 1), so a
+# pass cannot come from untouched memory.
+NID_SET = 0x36AA6E91
+NID_GET = 0x24FD7BCF
+IMPOSE_LANG = 3
+IMPOSE_BTN = 0
+IMPOSE_GARBAGE = 0xDEADBEEF
+assert ((SLOT_LANG - DATA_BASE) & 0xFFFF) + 4 < 0x10000, \
+    "out-slots must share one high half so one lui serves both addresses"
 
 TEXT_FILE_OFFSET = 0x100
-TEXT_FILE_SIZE = 0x80
+TEXT_FILE_SIZE = 0xD0
 DATA_FILE_OFFSET = 0x200
-DATA_FILE_SIZE = 0x70
-DATA_MEMORY_SIZE = 0xB0
+DATA_FILE_SIZE = 0x78
+DATA_MEMORY_SIZE = 0xB8
 BSS_SIZE = DATA_MEMORY_SIZE - DATA_FILE_SIZE
 RELOCATION_FILE_OFFSET = 0x280
 
 # Guest-image extent covered by the .text SECTION header (the PT_LOAD extent is
 # always the full TEXT_FILE_SIZE). The gap layout places region B and the dead
 # discovery anchor inside the section-owned executable area.
-TEXT_SECTION_SIZE_AOT = 0x48
-TEXT_SECTION_SIZE_GAP = 0x78
+TEXT_SECTION_SIZE_AOT = 0x88
+TEXT_SECTION_SIZE_GAP = 0xB8
 
 R_MIPS_NONE = 0
 R_MIPS_32 = 2
@@ -116,14 +141,40 @@ def relocation_info(relocation_type: int, offset_segment: int, target_segment: i
 
 
 def _entry_words() -> list[int]:
-    """Region A. Identical bytes in every mode."""
+    """Region A. Identical bytes in every mode.
+
+    After the historical helper/import calls, region A exercises the sceImpose
+    language pair exactly the way the on-title boot does (W4): pre-fill two
+    BSS out-slots with garbage, set language/button through the setter stub,
+    read them back through the getter stub. The driver asserts the round trip
+    with --expect-u32, so a pass requires the real handlers, not just dispatch.
+    """
     return [
         _i(0x09, 29, 29, -16),          # addiu sp, sp, -16
         _i(0x2B, 29, 31, 12),           # sw ra, 12(sp)
-        _j(0x03, 0x28),                  # jal helper (relocated)
+        _j(0x03, HELPER - BASE),        # jal helper (relocated)
         0,
         _r(2, 0, 4, 0, 0x21),           # addu a0, v0, zero
-        _j(0x03, 0x78),                  # jal import stub (relocated)
+        _j(0x03, IMPORT_STUB - BASE),   # jal import stub (relocated)
+        0,
+        _i(0x0F, 0, 8, 0),              # lui t0, %hi(out_slots)
+        _i(0x09, 8, 8, (SLOT_LANG - DATA_BASE) & 0xFFFF),  # addiu t0, t0, %lo
+        _i(0x0F, 0, 9, IMPOSE_GARBAGE >> 16),
+        _i(0x0D, 9, 9, IMPOSE_GARBAGE & 0xFFFF),
+        _i(0x2B, 8, 9, 0),              # sw garbage, 0(t0)   (lang slot)
+        _i(0x2B, 8, 9, 4),              # sw garbage, 4(t0)   (button slot)
+        _i(0x09, 0, 4, IMPOSE_LANG),    # addiu a0, zero, language
+        _i(0x09, 0, 5, IMPOSE_BTN),     # addiu a1, zero, button
+        _j(0x03, STUB_SET - BASE),      # jal impose setter stub (relocated)
+        0,
+        # Recompute the slot addresses here: t0 is caller-saved and does not
+        # survive the setter call, so carrying it would hand the getter a
+        # garbage pointer (observed: garbage out-slots, span check refuses).
+        _i(0x0F, 0, 4, 0),              # lui a0, %hi(out_slots)
+        _i(0x09, 4, 4, (SLOT_LANG - DATA_BASE) & 0xFFFF),  # addiu a0, a0, %lo
+        _i(0x0F, 0, 5, 0),              # lui a1, %hi(out_slots)
+        _i(0x09, 5, 5, ((SLOT_LANG - DATA_BASE) + 4) & 0xFFFF),  # addiu a1, +4
+        _j(0x03, STUB_GET - BASE),      # jal impose getter stub (relocated)
         0,
         _i(0x23, 29, 31, 12),           # lw ra, 12(sp)
         _r(31, 0, 0, 0, 0x08),          # jr ra
@@ -135,7 +186,7 @@ def _helper_words_aot() -> list[int]:
     """Historical helper: writes the sentinel through the result pointer."""
     return [
         _i(0x0F, 0, 8, 0),              # lui t0, %hi(result_pointer)
-        _i(0x23, 8, 8, 0x68),           # lw t0, %lo(result_pointer)(t0)
+        _i(0x23, 8, 8, (RESULT_POINTER - DATA_BASE) & 0xFFFF),  # lw t0, %lo
         _i(0x0F, 0, 9, SENTINEL >> 16),
         _i(0x0D, 9, 9, SENTINEL),
         _i(0x2B, 8, 9, 0),              # sw t1, 0(t0)
@@ -155,32 +206,32 @@ def _helper_words_gap() -> list[int]:
     remaining architecturally unreachable (the j above is unconditional).
     """
     return [
-        _i(0x0F, 0, 8, 0),              # 0x28 lui t0, %hi(result_pointer)
-        _i(0x23, 8, 8, 0x68),           # 0x2C lw t0, %lo(result_pointer)(t0)
-        _i(0x09, 0, 9, INTERP_STORE),    # 0x30 addiu t1, zero, 0x1234
-        _i(0x2B, 8, 9, 0),              # 0x34 sw t1, 0(t0)
-        _i(0x23, 8, 2, 0),              # 0x38 lw v0, 0(t0)
-        _j(0x02, 0x58),                  # 0x3C j REGION_B     (registered AOT handoff)
-        _i(0x09, 2, 2, 1),              # 0x40 addiu v0, v0, 1 (delay slot)
-        _r(31, 0, 0, 0, 0x08),          # 0x44 jr ra          (dead return path)
-        0,                               # 0x48 nop
-        _j(0x03, 0x58),                  # 0x4C jal REGION_B   (dead discovery anchor)
-        0,                               # 0x50 nop            (its delay slot)
-        0,                               # 0x54 pad
+        _i(0x0F, 0, 8, 0),              # 0x68 lui t0, %hi(result_pointer)
+        _i(0x23, 8, 8, (RESULT_POINTER - DATA_BASE) & 0xFFFF),  # 0x6C lw t0, %lo
+        _i(0x09, 0, 9, INTERP_STORE),    # 0x70 addiu t1, zero, 0x1234
+        _i(0x2B, 8, 9, 0),              # 0x74 sw t1, 0(t0)
+        _i(0x23, 8, 2, 0),              # 0x78 lw v0, 0(t0)
+        _j(0x02, REGION_B - BASE),      # 0x7C j REGION_B     (registered AOT handoff)
+        _i(0x09, 2, 2, 1),              # 0x80 addiu v0, v0, 1 (delay slot)
+        _r(31, 0, 0, 0, 0x08),          # 0x84 jr ra          (dead return path)
+        0,                               # 0x88 nop
+        _j(0x03, REGION_B - BASE),      # 0x8C jal REGION_B   (dead discovery anchor)
+        0,                               # 0x90 nop            (its delay slot)
+        0,                               # 0x94 pad
     ]
 
 
 def _region_b_words() -> list[int]:
     """Registered AOT region B: commits the interpreted value and returns."""
     return [
-        0,                               # 0x58 nop
-        0,                               # 0x5C nop
-        0,                               # 0x60 nop
-        0,                               # 0x64 nop
-        _i(0x2B, 8, 2, 0),              # 0x68 sw v0, 0(t0)
-        _i(0x23, 8, 2, 0),              # 0x6C lw v0, 0(t0)
-        _r(31, 0, 0, 0, 0x08),          # 0x70 jr ra
-        0,                               # 0x74 nop
+        0,                               # 0x98 nop
+        0,                               # 0x9C nop
+        0,                               # 0xA0 nop
+        0,                               # 0xA4 nop
+        _i(0x2B, 8, 2, 0),              # 0xA8 sw v0, 0(t0)
+        _i(0x23, 8, 2, 0),              # 0xAC lw v0, 0(t0)
+        _r(31, 0, 0, 0, 0x08),          # 0xB0 jr ra
+        0,                               # 0xB4 nop
     ]
 
 
@@ -194,21 +245,33 @@ def relocation_records(mode: str = "aot") -> list[tuple[int, int]]:
     records = [
         (0x08, relocation_info(R_MIPS_26, 0, 0)),  # entry -> helper
         (0x14, relocation_info(R_MIPS_26, 0, 0)),  # entry -> import stub
+        # W4 on-title impose exercise (entry-relative offsets into region A).
+        (0x3C, relocation_info(R_MIPS_26, 0, 0)),  # entry -> setter stub
+        (0x54, relocation_info(R_MIPS_26, 0, 0)),  # entry -> getter stub
+        # Each HI16 pairs with the LO16 that follows it in table order (the
+        # loader skips other types between them); keep each pair adjacent.
+        (0x1C, relocation_info(R_MIPS_HI16, 0, 1)),  # prefill pointer hi
+        (0x20, relocation_info(R_MIPS_LO16, 0, 1)),  # prefill pointer lo
+        (0x44, relocation_info(R_MIPS_HI16, 0, 1)),  # lang out-slot hi
+        (0x48, relocation_info(R_MIPS_LO16, 0, 1)),  # lang out-slot lo
+        (0x4C, relocation_info(R_MIPS_HI16, 0, 1)),  # button out-slot hi
+        (0x50, relocation_info(R_MIPS_LO16, 0, 1)),  # button out-slot lo
     ]
+    helper_base = HELPER - BASE
     if mode == "aot":
         records.extend(
             [
-                (0x28, relocation_info(R_MIPS_HI16, 0, 1)),
-                (0x2C, relocation_info(R_MIPS_LO16, 0, 1)),
+                (helper_base, relocation_info(R_MIPS_HI16, 0, 1)),
+                (helper_base + 4, relocation_info(R_MIPS_LO16, 0, 1)),
             ]
         )
     else:
         records.extend(
             [
-                (0x28, relocation_info(R_MIPS_HI16, 0, 1)),
-                (0x2C, relocation_info(R_MIPS_LO16, 0, 1)),
-                (0x3C, relocation_info(R_MIPS_26, 0, 0)),  # j REGION_B
-                (0x4C, relocation_info(R_MIPS_26, 0, 0)),  # dead anchor jal
+                (helper_base, relocation_info(R_MIPS_HI16, 0, 1)),
+                (helper_base + 4, relocation_info(R_MIPS_LO16, 0, 1)),
+                (helper_base + 0x14, relocation_info(R_MIPS_26, 0, 0)),  # j REGION_B
+                (helper_base + 0x24, relocation_info(R_MIPS_26, 0, 0)),  # dead anchor jal
             ]
         )
     records.extend(
@@ -218,7 +281,7 @@ def relocation_records(mode: str = "aot") -> list[tuple[int, int]]:
             (0x50, relocation_info(R_MIPS_32, 1, 1)),  # library name
             (0x5C, relocation_info(R_MIPS_32, 1, 1)),  # NID table
             (0x60, relocation_info(R_MIPS_32, 1, 0)),  # first import stub
-            (0x68, relocation_info(R_MIPS_32, 1, 1)),  # result pointer (load-bearing)
+            (RESULT_POINTER - DATA_BASE, relocation_info(R_MIPS_32, 1, 1)),  # result pointer (load-bearing)
         ]
     )
     return records
@@ -228,10 +291,15 @@ def build_text_segment(mode: str = "aot") -> bytes:
     text = bytearray(TEXT_FILE_SIZE)
     text[0 : len(_entry_words()) * 4] = _words(_entry_words())
     helper = _helper_words_aot() if mode == "aot" else _helper_words_gap()
-    text[0x28 : 0x28 + len(helper) * 4] = _words(helper)
+    helper_off = HELPER - BASE
+    text[helper_off : helper_off + len(helper) * 4] = _words(helper)
     if mode != "aot":
-        text[0x58 : 0x58 + len(_region_b_words()) * 4] = _words(_region_b_words())
-    text[0x78:0x80] = _words([0x03E00008, 0x0000000C])  # jr ra; syscall
+        region_off = REGION_B - BASE
+        text[region_off : region_off + len(_region_b_words()) * 4] = _words(_region_b_words())
+    for stub in (IMPORT_STUB, STUB_SET, STUB_GET):
+        off = stub - BASE
+        text[off : off + 8] = _words([0x03E00008, 0x0000000C])  # jr ra; syscall
+    assert STUB_GET + 8 - BASE <= TEXT_FILE_SIZE, "stub slots exceed the text extent"
     return bytes(text)
 
 
@@ -309,8 +377,12 @@ def _check_jump_targets(image: bytes, mode: str) -> None:
 
 
 def emitted_function_count(mode: str) -> int:
-    """Functions the pipeline emits for one mode (analyzer-discovered minus omitted)."""
-    return 3 if mode == "aot" else 5
+    """Functions the pipeline emits for one mode (analyzer-discovered minus omitted).
+
+    Entry, helper (omitted in gap mode) and one function per import stub: the
+    historical stub plus the W4 sceImpose setter/getter stubs.
+    """
+    return 5 if mode == "aot" else 7
 
 
 def expected_exec_spans(mode: str) -> tuple[tuple[int, int], ...]:
@@ -318,11 +390,11 @@ def expected_exec_spans(mode: str) -> tuple[tuple[int, int], ...]:
     if mode == "aot":
         return (
             (BASE, BASE + TEXT_SECTION_SIZE_AOT),
-            (IMPORT_STUB, IMPORT_STUB + 8),
+            (IMPORT_STUB, STUB_GET + 8),
         )
     # Gap .text ends exactly where .sceStub.text starts, so exec_ranges merges
     # them without granting any intervening data bytes.
-    return ((BASE, IMPORT_STUB + 8),)
+    return ((BASE, STUB_GET + 8),)
 
 
 def build_data_segment() -> bytes:
@@ -343,6 +415,10 @@ def build_data_segment() -> bytes:
     if len(library_name) > 0x50 - 0x34:
         raise AssertionError("synthetic library name no longer fits the fixed layout")
     data[0x34 : 0x34 + len(library_name)] = library_name
+    # One library window covers all three stub slots (positions must match the
+    # NID slots 1:1): the historical synthetic import plus the sceImpose pair.
+    # The window label stays the fixture's synthetic constant; dispatch resolves
+    # by NID, not by label.
     data[0x50:0x64] = struct.pack(
         "<IHHBBHII",
         0x34,
@@ -350,13 +426,17 @@ def build_data_segment() -> bytes:
         0x0009,
         5,
         0,
-        1,
+        3,
         0x64,
-        0x78,
+        IMPORT_STUB - BASE,
     )
     struct.pack_into("<I", data, 0x64, NID)
-    struct.pack_into("<I", data, 0x68, 0x6C)
-    struct.pack_into("<I", data, 0x6C, 0)
+    struct.pack_into("<I", data, 0x68, NID_SET)
+    struct.pack_into("<I", data, 0x6C, NID_GET)
+    # Raw offsets: the load-bearing R_MIPS_32 record adds the data segment
+    # base at load time (packing the full address here would double-add it).
+    struct.pack_into("<I", data, RESULT_POINTER - DATA_BASE, RESULT - DATA_BASE)
+    struct.pack_into("<I", data, RESULT - DATA_BASE, 0)
     return bytes(data)
 
 
@@ -448,17 +528,20 @@ def build_prx(mode: str = "aot") -> bytes:
     sections.extend(
         [
             section(".text", 1, 6, 0, TEXT_FILE_OFFSET, text_section_size, 4),
-            section(".sceStub.text", 1, 6, 0x78, TEXT_FILE_OFFSET + 0x78, 8, 4),
+            section(".sceStub.text", 1, 6, IMPORT_STUB - BASE,
+                    TEXT_FILE_OFFSET + IMPORT_STUB - BASE, 24, 4),
             section(".rodata.sceModuleInfo", 1, 2, 0x1000, DATA_FILE_OFFSET, 52, 4),
             section(".rodata", 1, 2, 0x1034, DATA_FILE_OFFSET + 0x34, 0x1C, 1),
             section(".lib.stub", 1, 2, 0x1050, DATA_FILE_OFFSET + 0x50, 20, 4),
-            section(".rodata.sceNid", 1, 2, 0x1064, DATA_FILE_OFFSET + 0x64, 4, 4),
-            section(".data", 1, 3, 0x1068, DATA_FILE_OFFSET + 0x68, 8, 4),
+            section(".rodata.sceNid", 1, 2, 0x1064, DATA_FILE_OFFSET + 0x64, 12, 4),
+            section(".data", 1, 3, 0x1000 + RESULT_POINTER - DATA_BASE,
+                    DATA_FILE_OFFSET + RESULT_POINTER - DATA_BASE, 8, 4),
             section(
                 ".reloc.sceModuleInfo", SHT_PRX_RELOC, 0, 0,
                 RELOCATION_FILE_OFFSET, len(relocation_bytes), 4, 8,
             ),
-            section(".bss", 8, 3, 0x1070, DATA_FILE_OFFSET + DATA_FILE_SIZE, BSS_SIZE, 16),
+            section(".bss", 8, 3, 0x1000 + DATA_FILE_SIZE,
+                    DATA_FILE_OFFSET + DATA_FILE_SIZE, BSS_SIZE, 16),
             section(".shstrtab", 3, 0, 0, shstr_offset, len(section_names), 1),
         ]
     )
@@ -515,7 +598,7 @@ def manifest_bytes(prx: bytes, psp_header: bytes, mode: str = "aot") -> bytes:
         "bss_size": BSS_SIZE,
         "relocation_count": len(records),
         "load_bearing_relocation_index": len(records) - 1,
-        "load_bearing_relocation_offset": "0x00000068",
+        "load_bearing_relocation_offset": f"0x{RESULT_POINTER - DATA_BASE:08x}",
         "prx_sha256": sha256(prx),
         "psp_header_sha256": sha256(psp_header),
     }
@@ -547,15 +630,23 @@ class ModePlan:
         self.expected_value = expected_value
 
 
+IMPOSE_EXPECT_ARGS = (
+    f"--expect-u32=0x{SLOT_LANG:08x}:0x{IMPOSE_LANG:08x}",
+    f"--expect-u32=0x{SLOT_BTN:08x}:0x{IMPOSE_BTN:08x}",
+)
+
+
 MODES: dict[str, ModePlan] = {
     "aot": ModePlan(
         env={"SR_HLELOG": "1"},
+        extra_driver_args=IMPOSE_EXPECT_ARGS,
     ),
     # The intentional omission reaches the real production dispatcher, executes
     # guest bytes inside an analyzer-owned span, and hands off to region B AOT.
     "aot-gap": ModePlan(
         codegen_args=(f"--omit-aot=0x{HELPER:08x}",),
         env={"SR_HLELOG": "1", "SR_DISPLOG": "1"},
+        extra_driver_args=IMPOSE_EXPECT_ARGS,
         expected_value=INTERP_RESULT,
     ),
 }
@@ -667,16 +758,24 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
             raise RuntimeError(f"AOT omission leaked function 0x{address:08x} into generated C")
     if f"sr_syscall(s, 0x{NID:08x}u)" not in generated_text:
         raise RuntimeError("generated import stub does not call the real HLE dispatcher")
+    for nid, label in ((NID_SET, "impose setter"), (NID_GET, "impose getter")):
+        if f"sr_syscall(s, 0x{nid:08x}u)" not in generated_text:
+            raise RuntimeError(f"generated {label} stub does not call the real HLE dispatcher")
 
     import_text = imports_toml.read_text(encoding="ascii")
     if LIBRARY not in import_text or f"0x{NID:08x}" not in import_text.lower():
         raise RuntimeError("generated import manifest omits the synthetic import")
+    for nid, label in ((NID_SET, "impose setter"), (NID_GET, "impose getter")):
+        if f"0x{nid:08x}" not in import_text.lower():
+            raise RuntimeError(f"generated import manifest omits the {label} NID")
 
     image = image_path.read_bytes()
     result_pointer_offset = RESULT_POINTER - BASE
     result_offset = RESULT - BASE
-    if len(image) != 0x10B0:
-        raise RuntimeError(f"flat image length is 0x{len(image):x}, expected 0x10b0")
+    # Flat image = data extent end (0x1000 + DATA_MEMORY_SIZE): text grew to
+    # 0xD0 but the data extent still dominates. The BSS tail stays zero-filled.
+    if len(image) != 0x10B8:
+        raise RuntimeError(f"flat image length is 0x{len(image):x}, expected 0x10b8")
     if struct.unpack_from("<I", image, result_pointer_offset)[0] != RESULT:
         raise RuntimeError("load-bearing R_MIPS_32 result pointer was not applied")
     if struct.unpack_from("<I", image, result_offset)[0] != 0:
@@ -795,6 +894,20 @@ def assert_gap_runtime_evidence(combined: str, returncode: int) -> None:
         f"GUEST_INTERP_AOT_HANDOFF pc=0x{REGION_B:08x} instructions=7",
         f"DISPATCH 0x{REGION_B:08x} from 0x{REGION_B:08x}",
         f"HLE: calling sceKernelSetCompiledSdkVersion (0x{NID:08x})",
+        f"HLE: calling sceImposeSetLanguageMode (0x{NID_SET:08x})",
+        (
+            f"sceImposeSetLanguageMode: language={IMPOSE_LANG} "
+            f"buttonConfirm={IMPOSE_BTN}"
+        ),
+        f"HLE: calling sceImposeGetLanguageMode (0x{NID_GET:08x})",
+        (
+            f"DRIVER_EXPECT_U32 addr=0x{SLOT_LANG:08x} got=0x{IMPOSE_LANG:08x} "
+            f"expected=0x{IMPOSE_LANG:08x} status=PASS"
+        ),
+        (
+            f"DRIVER_EXPECT_U32 addr=0x{SLOT_BTN:08x} got=0x{IMPOSE_BTN:08x} "
+            f"expected=0x{IMPOSE_BTN:08x} status=PASS"
+        ),
         (
             f"DRIVER_EXPECT_U32 addr=0x{RESULT:08x} got=0x{INTERP_RESULT:08x} "
             f"expected=0x{INTERP_RESULT:08x} status=PASS"
@@ -807,6 +920,7 @@ def assert_gap_runtime_evidence(combined: str, returncode: int) -> None:
         "NONPLT_MISS",
         "INTERP_REJECT",
         "status=FAIL",
+        "HLE: unimplemented nid",
     )
     present = [marker for marker in forbidden if marker in combined]
     if present:
@@ -875,12 +989,30 @@ def run(
             f"DRIVER_EXPECT_U32 addr=0x{RESULT:08x} got=0x{plan.expected_value:08x} "
             f"expected=0x{plan.expected_value:08x} status=PASS"
         ),
+        # W4 on-title impose exercise: dispatch reaches both real handlers, the
+        # setter logs the guest values, and the getter round-trips them into
+        # guest memory where the driver observes them (not just log lines).
+        f"HLE: calling sceImposeSetLanguageMode (0x{NID_SET:08x})",
+        (
+            f"sceImposeSetLanguageMode: language={IMPOSE_LANG} "
+            f"buttonConfirm={IMPOSE_BTN}"
+        ),
+        f"HLE: calling sceImposeGetLanguageMode (0x{NID_GET:08x})",
+        (
+            f"DRIVER_EXPECT_U32 addr=0x{SLOT_LANG:08x} got=0x{IMPOSE_LANG:08x} "
+            f"expected=0x{IMPOSE_LANG:08x} status=PASS"
+        ),
+        (
+            f"DRIVER_EXPECT_U32 addr=0x{SLOT_BTN:08x} got=0x{IMPOSE_BTN:08x} "
+            f"expected=0x{IMPOSE_BTN:08x} status=PASS"
+        ),
     )
     missing = [marker for marker in markers if marker not in combined]
     if missing:
         sys.stderr.write(combined)
         raise RuntimeError("runtime evidence omits: " + ", ".join(missing))
-    forbidden = ("UNKNOWN NID", "NONPLT_MISS", "INTERP_REJECT", "status=FAIL")
+    forbidden = ("UNKNOWN NID", "NONPLT_MISS", "INTERP_REJECT", "status=FAIL",
+                 "HLE: unimplemented nid")
     present = [marker for marker in forbidden if marker in combined]
     if present:
         sys.stderr.write(combined)

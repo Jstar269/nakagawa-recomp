@@ -20,11 +20,16 @@ import json
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
 from typing import Callable
+
+_PACKAGE_PARENT = str(Path(__file__).resolve().parents[1])
+if _PACKAGE_PARENT not in sys.path:
+    sys.path.insert(0, _PACKAGE_PARENT)
 
 try:
     from .protocol import (
@@ -32,21 +37,38 @@ try:
         compare_texts,
         decode_psp_model_code,
         dump_json,
+        model_identity_fields,
         parse_output,
         provenance_issues,
         validate_dmac_size_matrix,
         validate_dmac_size_matrix_size,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
-    from protocol import (  # type: ignore
+    from psp_oracle.protocol import (
         ProtocolError,
         compare_texts,
         decode_psp_model_code,
         dump_json,
+        model_identity_fields,
         parse_output,
         provenance_issues,
         validate_dmac_size_matrix,
         validate_dmac_size_matrix_size,
+    )
+
+try:
+    from .parse_golden import (
+        parse_cache_alias_output,
+        parse_fpu_vector_output,
+        parse_io_matrix_output,
+        parse_mbx_delete_wait_output,
+    )
+except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
+    from psp_oracle.parse_golden import (
+        parse_cache_alias_output,
+        parse_fpu_vector_output,
+        parse_io_matrix_output,
+        parse_mbx_delete_wait_output,
     )
 
 
@@ -60,6 +82,13 @@ SHELL_VERIFICATION_ATTEMPTS = 3
 SHELL_VERIFICATION_ATTEMPT_TIMEOUT = 15.0
 DEFAULT_SHELL_VERIFICATION_TIMEOUT = 45.0
 HOST0_MTIME_TOLERANCE_NS = 1_000_000_000
+_FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+_FULL_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+_ALL_ZERO_RE = re.compile(r"0+")
+
+
+class UnsafeHost0OutputError(OSError):
+    """A host0 result path is not a regular file owned by the scratch root."""
 
 
 def _tool(name: str) -> str | None:
@@ -272,14 +301,142 @@ def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
 
 
 def _parse_campaign_records(text: str, case_id: str):
-    """Apply the stream-specific schema when a campaign case defines one."""
+    """Validate a campaign's known completion contract, then parse its rows."""
 
     if case_id in {"dma-size-matrix", "dmac-size-matrix"}:
         return validate_dmac_size_matrix(text)
     match = re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id)
     if match:
         return validate_dmac_size_matrix_size(text, int(match.group(1), 16))
-    return parse_output(text)
+
+    parsed = parse_output(text)
+    complete_parser = {
+        "fpu-vector": parse_fpu_vector_output,
+        "cache-alias": parse_cache_alias_output,
+        "io-matrix": parse_io_matrix_output,
+        "mbx-delete-wait": parse_mbx_delete_wait_output,
+    }.get(case_id)
+    if complete_parser is not None:
+        complete_parser(text, require_complete=True)
+    else:
+        expected_single = {
+            "transport-write": ("PSP-TRANSPORT-001", "host0-write-readback"),
+            "model-profile": ("PSP-SYSTEM-001", "model-profile"),
+        }.get(case_id)
+        if expected_single is not None:
+            if len(parsed.results) != 1:
+                raise ProtocolError(
+                    f"{case_id} stream must contain exactly one result record"
+                )
+            record = parsed.results[0]
+            if (record.test_id, record.case_id) != expected_single:
+                raise ProtocolError(
+                    f"{case_id} stream must contain {expected_single[0]}/{expected_single[1]}"
+                )
+    return parsed
+
+
+def _campaign_stream_complete(text: str, case_id: str) -> bool:
+    """Return whether a fresh campaign stream satisfies its known completion contract."""
+
+    if _campaign_completeness_contract(case_id) == "unregistered-no-completion-contract":
+        return False
+    try:
+        parsed = _parse_campaign_records(_normalise_unbound_identity_fields(text), case_id)
+    except (ProtocolError, OSError, UnicodeError, ValueError):
+        return False
+    return bool(parsed.results)
+
+
+def _normalise_unbound_identity_fields(text: str) -> str:
+    """Make absent or abbreviated device identity parseable without binding it.
+
+    The raw values remain available to the envelope's identity comparison. This
+    schema-only view replaces unusable identity fields with valid placeholders,
+    allowing the strict result-completion gate to validate the actual records.
+    """
+
+    lines = text.splitlines()
+    metadata_indices = [
+        index for index, line in enumerate(lines)
+        if line.startswith("NAKAGAWA_PSP_META ")
+    ]
+    if len(metadata_indices) != 1:
+        return text
+
+    index = metadata_indices[0]
+    tokens = lines[index].split()
+    fields: list[str] = []
+    seen: set[str] = set()
+    for token in tokens[1:]:
+        key, separator, value = token.partition("=")
+        if key not in {"source_commit", "binary_sha256"}:
+            fields.append(token)
+            continue
+        if not separator or key in seen:
+            return text
+        seen.add(key)
+        if key == "source_commit":
+            value = (
+                value.lower()
+                if _FULL_COMMIT_RE.fullmatch(value) and not _ALL_ZERO_RE.fullmatch(value)
+                else "0" * 40
+            )
+        else:
+            value = (
+                value.lower()
+                if _FULL_SHA256_RE.fullmatch(value) and not _ALL_ZERO_RE.fullmatch(value)
+                else "0" * 64
+            )
+        fields.append(f"{key}={value}")
+
+    if "source_commit" not in seen:
+        fields.append(f"source_commit={'0' * 40}")
+    if "binary_sha256" not in seen:
+        fields.append(f"binary_sha256={'0' * 64}")
+    lines[index] = tokens[0] + " " + " ".join(fields)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _campaign_completeness_contract(case_id: str) -> str:
+    if case_id in {"dma-size-matrix", "dmac-size-matrix"} or re.fullmatch(
+        r"dmac-size-matrix-size-0x[0-9a-f]{8}", case_id
+    ):
+        return "strict-dmac-sequence"
+    if case_id in {"fpu-vector", "cache-alias", "io-matrix", "mbx-delete-wait"}:
+        return "strict-golden-sequence"
+    if case_id in {"transport-write", "model-profile"}:
+        return "exactly-one-known-record"
+    return "unregistered-no-completion-contract"
+
+
+def _model_profile_raw_value(parsed) -> str | None:
+    """Return the exact raw model scalar reported by the model-profile probe."""
+
+    profiles = [
+        item for item in parsed.results
+        if item.test_id == "PSP-SYSTEM-001" and item.case_id == "model-profile"
+    ]
+    if not profiles:
+        return None
+    if len(profiles) != 1:
+        raise ProtocolError("model-profile stream contains duplicate model observations")
+    values = dict(profiles[0].values)
+    raw_value = values.get("out0")
+    result_value = values.get("result")
+    if raw_value is None or result_value is None:
+        raise ProtocolError("model-profile stream is missing its raw model result")
+    if int(raw_value, 0) != int(result_value, 0):
+        raise ProtocolError("model-profile result does not match its raw out0 value")
+    return raw_value
+
+
+def _validate_model_code_expectation(raw_value: str | None, expected: int | None) -> None:
+    if raw_value is not None and expected is not None and int(raw_value, 0) != expected:
+        raise ProtocolError(
+            f"device model-profile out0={raw_value} does not match "
+            f"the supplied raw model value {expected}"
+        )
 
 
 def _render_argv(template: list[str], **values: str) -> list[str]:
@@ -763,36 +920,35 @@ class PsplinkCampaignRunner:
         run_started_ns: int | None,
         run_finished_ns: int,
         host0_log_cleared: bool,
+        captured_host0_text: str | None,
+        captured_host0_mtime_ns: int | None,
+        host0_capture_problem: str | None,
     ) -> dict[str, object]:
-        host0_text = ""
-        host0_mtime_ns: int | None = None
+        host0_text = captured_host0_text or ""
+        host0_mtime_ns = captured_host0_mtime_ns
         host0_fresh = False
-        host0_read_problem: str | None = None
+        host0_read_problem = host0_capture_problem
         if host0_log_path is None:
-            host0_read_problem = "host0 root is unavailable for per-case logs"
+            host0_read_problem = host0_read_problem or "host0 root is unavailable for per-case logs"
         elif not host0_log_cleared:
-            host0_read_problem = "previous host0 log could not be cleared before loading the probe"
-        elif not cleanup_ok:
-            host0_read_problem = "probe unload was not proven; per-case host0 log was not read"
+            host0_read_problem = (
+                host0_read_problem
+                or "previous host0 log could not be cleared before loading the probe"
+            )
+        elif captured_host0_text is None:
+            host0_read_problem = host0_read_problem or (
+                "per-case host0 log was not observed complete before probe unload"
+            )
         else:
-            try:
-                if host0_log_path.is_symlink() or not host0_log_path.is_file():
-                    host0_read_problem = "per-case host0 log is missing or is not a regular file"
-                else:
-                    host0_mtime_ns = host0_log_path.stat().st_mtime_ns
-                    host0_text = host0_log_path.read_text(encoding="utf-8")
-                    # The path was proven absent before launch; keep a small
-                    # boundary margin for host/filesystem timestamp conversion.
-                    host0_fresh = (
-                        run_started_ns is not None
-                        and run_started_ns - HOST0_MTIME_TOLERANCE_NS
-                        <= host0_mtime_ns
-                        <= run_finished_ns + HOST0_MTIME_TOLERANCE_NS
-                    )
-            except FileNotFoundError:
-                host0_read_problem = "per-case host0 log was not produced"
-            except (OSError, UnicodeError) as exc:
-                host0_read_problem = f"per-case host0 log could not be read ({type(exc).__name__})"
+            # Bind the envelope to the stable bytes observed before unload;
+            # never re-read a possibly completed post-unload file here.
+            host0_fresh = (
+                host0_mtime_ns is not None
+                and run_started_ns is not None
+                and run_started_ns - HOST0_MTIME_TOLERANCE_NS
+                <= host0_mtime_ns
+                <= run_finished_ns + HOST0_MTIME_TOLERANCE_NS
+            )
 
         def schema_records(text: str) -> str:
             lines = [
@@ -813,6 +969,11 @@ class PsplinkCampaignRunner:
             if message not in blockers:
                 blockers.append(message)
 
+        if _campaign_completeness_contract(case.case_id) == "unregistered-no-completion-contract":
+            disqualify(
+                f"completion contract for {case.case_id} is unregistered "
+                "(in the works: issue #352)"
+            )
         if result[3] == "TIMEOUT":
             disqualify("per-case timeout; partial output is not a semantic result")
         elif result[0] != 0:
@@ -838,6 +999,15 @@ class PsplinkCampaignRunner:
 
         host0_parsed = None
         stdout_parsed = None
+        device_model_raw_value: str | None = None
+        identity: dict[str, object] = {
+            "DEVICE_REPORTED_SOURCE_COMMIT": None,
+            "DEVICE_REPORTED_BINARY_SHA256": None,
+            "SOURCE_COMMIT_BINDING": _IDENTITY_NOT_REPORTED,
+            "BINARY_SHA256_BINDING": _IDENTITY_NOT_REPORTED,
+            "DEVICE_IDENTITY_STATUS": _IDENTITY_NOT_REPORTED,
+            "DEVICE_IDENTITY_BLOCKERS": [],
+        }
         canonical = host0_record_text
         parsed_ok = False
         if host0_text:
@@ -848,8 +1018,14 @@ class PsplinkCampaignRunner:
                 firmware=self.firmware,
                 source_commit=self.source_commit,
             )
+            identity = _device_identity(host0_text, metadata_args)
+            blockers.extend(identity["DEVICE_IDENTITY_BLOCKERS"])
             try:
-                host0_parsed = _parse_campaign_records(host0_text, case.case_id)
+                host0_parsed = _parse_campaign_records(
+                    _normalise_unbound_identity_fields(host0_text), case.case_id
+                )
+                device_model_raw_value = _model_profile_raw_value(host0_parsed)
+                _validate_model_code_expectation(device_model_raw_value, self.model_code)
                 canonical = _canonicalize_psp(host0_text, metadata_args)
                 canonical_parsed = _parse_campaign_records(canonical, case.case_id)
                 parsed_ok = bool(canonical_parsed.results) and all(
@@ -863,7 +1039,13 @@ class PsplinkCampaignRunner:
                         "captured metadata is not acceptance-eligible: "
                         + "; ".join(metadata_problems)
                     )
-            except (ProtocolError, OSError, UnicodeError, ValueError):
+            except ProtocolError as exc:
+                disqualify(
+                    "host0 schema records failed strict protocol validation: "
+                    + str(exc)
+                )
+                canonical = host0_record_text
+            except (OSError, UnicodeError, ValueError):
                 disqualify("host0 schema records failed strict protocol validation")
                 canonical = host0_record_text
         else:
@@ -871,13 +1053,18 @@ class PsplinkCampaignRunner:
 
         if stdout_record_text:
             try:
-                stdout_parsed = _parse_campaign_records(stdout_record_text, case.case_id)
+                stdout_parsed = _parse_campaign_records(
+                    _normalise_unbound_identity_fields(stdout_record_text), case.case_id
+                )
             except ProtocolError:
                 disqualify("stdout schema records failed strict protocol validation")
             else:
                 if host0_parsed is not None and (
                     stdout_parsed.metadata != host0_parsed.metadata
                     or stdout_parsed.results != host0_parsed.results
+                    or not _device_metadata_equal(
+                        _device_metadata(stdout_record_text), _device_metadata(host0_text)
+                    )
                 ):
                     disqualify("stdout and host0 schema records disagree")
 
@@ -891,13 +1078,21 @@ class PsplinkCampaignRunner:
             blockers.append("transport-write probe did not report a passing host0 round-trip")
         acceptance_eligible = parsed_ok and not blockers
         case_qualified = not qualification_blockers
+        model_raw_value: str | int | None = (
+            device_model_raw_value if device_model_raw_value is not None else self.model_code
+        )
         return {
-            "CONSOLE_MODEL": self.console_model,
+            **model_identity_fields(self.console_model, model_raw_value),
             "MODEL_SOURCE": "operator-recorded label; no serial or MAC stored",
-            "SOFTWARE_MODEL_RAW_VALUE": str(self.model_code) if self.model_code is not None else "NOT_CAPTURED",
             "FW": self.firmware or "NOT_CAPTURED",
             "TRANSPORT_PROFILE": "standalone-psplink-usbhostfs-host0",
             "SOURCE_COMMIT": self.source_commit,
+            "DEVICE_REPORTED_SOURCE_COMMIT": identity["DEVICE_REPORTED_SOURCE_COMMIT"],
+            "DEVICE_REPORTED_BINARY_SHA256": identity["DEVICE_REPORTED_BINARY_SHA256"],
+            "SOURCE_COMMIT_BINDING": identity["SOURCE_COMMIT_BINDING"],
+            "BINARY_SHA256_BINDING": identity["BINARY_SHA256_BINDING"],
+            "DEVICE_IDENTITY_STATUS": identity["DEVICE_IDENTITY_STATUS"],
+            "DEVICE_IDENTITY_BLOCKERS": list(identity["DEVICE_IDENTITY_BLOCKERS"]),
             "SOURCE_TREE_STATUS": "CLEAN_COMMITTED" if not self.source_tree_problem else "UNQUALIFIED",
             "SOURCE_TREE_PROBLEM": self.source_tree_problem,
             "BINARY_SHA256": binary_sha,
@@ -910,10 +1105,16 @@ class PsplinkCampaignRunner:
             "HOST0_RUN_STARTED_NS": run_started_ns,
             "HOST0_RUN_FINISHED_NS": run_finished_ns,
             "HOST0_LOG_FRESH": host0_fresh,
+            "STREAM_COMPLETENESS_CONTRACT": _campaign_completeness_contract(case.case_id),
             "RECOVERY_EVENTS": list(self.recovery_events),
             "QUALIFICATION_STATUS": "QUALIFIED" if case_qualified else "UNQUALIFIED",
             "QUALIFICATION_BLOCKERS": qualification_blockers,
-            "SESSION_QUALIFICATION_STATUS": "QUALIFIED" if self.state == "READY" else "LOST",
+            # The envelope is built while the case is still RUN_CASE (READY is restored only
+            # after it is appended); a recovery that succeeded restores READY. Any other state
+            # means the session was lost during this case.
+            "SESSION_QUALIFICATION_STATUS": (
+                "QUALIFIED" if self.state in ("RUN_CASE", "READY") else "LOST"
+            ),
             "EVIDENCE_CLASS": "PSP_HARDWARE" if acceptance_eligible else "UNQUALIFIED_CAPTURE",
             "ACCEPTANCE_ELIGIBLE": acceptance_eligible,
             "ACCEPTANCE_BLOCKERS": blockers,
@@ -981,6 +1182,9 @@ class PsplinkCampaignRunner:
                             run_started_ns=None,
                             run_finished_ns=time.time_ns(),
                             host0_log_cleared=False,
+                            captured_host0_text=None,
+                            captured_host0_mtime_ns=None,
+                            host0_capture_problem="per-case host0 log was unavailable before launch",
                         )
                     )
                     break
@@ -992,12 +1196,68 @@ class PsplinkCampaignRunner:
                 )
                 uid_match = self._MODULE_UID_RE.search(result[1])
                 module_uid = uid_match.group(1) if uid_match else None
+
+                captured_host0_text: str | None = None
+                captured_host0_mtime_ns: int | None = None
+                host0_capture_problem: str | None = None
+                if case_host0_log is None:
+                    host0_capture_problem = "host0 root is unavailable for per-case logs"
+                elif not host0_log_cleared:
+                    host0_capture_problem = (
+                        "previous host0 log could not be cleared before loading the probe"
+                    )
+                elif result[3] == "PROCESS_EXITED":
+                    try:
+                        capture = _wait_for_host0_output(
+                            case_host0_log,
+                            case.timeout,
+                            not_before_ns=run_started_ns - HOST0_MTIME_TOLERANCE_NS,
+                            ready=lambda text, case_id=case.case_id: _campaign_stream_complete(
+                                text, case_id
+                            ),
+                            include_mtime=True,
+                        )
+                        if not isinstance(capture, tuple):
+                            raise RuntimeError("host0 wait did not return captured metadata")
+                        captured_host0_text, captured_host0_mtime_ns = capture
+                    except TimeoutError:
+                        host0_capture_problem = (
+                            "per-case host0 stream did not become complete before probe unload"
+                        )
+                        partial, partial_mtime_ns, partial_problem = _snapshot_host0_output(
+                            case_host0_log
+                        )
+                        captured_host0_text = partial
+                        captured_host0_mtime_ns = partial_mtime_ns
+                        if partial_problem:
+                            host0_capture_problem += f"; {partial_problem}"
+                    except UnsafeHost0OutputError as exc:
+                        host0_capture_problem = str(exc)
+                    except (OSError, UnicodeError) as exc:
+                        host0_capture_problem = (
+                            "per-case host0 log could not be observed before probe unload "
+                            f"({type(exc).__name__})"
+                        )
+                else:
+                    host0_capture_problem = (
+                        "per-case command timed out before a complete host0 stream was observed"
+                    )
+                    captured_host0_text, captured_host0_mtime_ns, partial_problem = (
+                        _snapshot_host0_output(case_host0_log)
+                    )
+                    if partial_problem:
+                        host0_capture_problem += f"; {partial_problem}"
+
+                host0_roundtrip_ok: bool | None = None
+                if case.case_id == "transport-write":
+                    host0_roundtrip_ok = self._verify_host0_roundtrip()
+
                 cleanup_ok = bool(module_uid and self._unload(module_uid))
                 if not cleanup_ok and self.terminal_reason is None:
                     self._recover(module_uid, f"cleanup after {case.case_id}")
                 run_finished_ns = time.time_ns()
                 if case.case_id == "transport-write":
-                    self.host0_qualified = self._verify_host0_roundtrip()
+                    self.host0_qualified = bool(host0_roundtrip_ok)
                     if not self.host0_qualified:
                         self.state = "STOPPED"
                         self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
@@ -1011,6 +1271,9 @@ class PsplinkCampaignRunner:
                         run_started_ns=run_started_ns,
                         run_finished_ns=run_finished_ns,
                         host0_log_cleared=host0_log_cleared,
+                        captured_host0_text=captured_host0_text,
+                        captured_host0_mtime_ns=captured_host0_mtime_ns,
+                        host0_capture_problem=host0_capture_problem,
                     )
                 )
                 if self.terminal_reason:
@@ -1044,35 +1307,123 @@ def _record_summary(text: str) -> tuple[str, int]:
     return "RESULT_RECORDS", len(statuses)
 
 
+def _host0_file_identity(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _read_host0_file(path: Path) -> tuple[bytes, os.stat_result]:
+    """Read one regular file through a descriptor bound to its checked path."""
+
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise UnsafeHost0OutputError(
+            f"host0 output is not a regular file: {path.name}"
+        )
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _host0_file_identity(before) != _host0_file_identity(opened)
+        ):
+            raise UnsafeHost0OutputError(
+                f"host0 output changed during capture: {path.name}"
+            )
+
+        stream = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        with stream:
+            raw = stream.read()
+            after_read = os.fstat(stream.fileno())
+
+        try:
+            after_path = path.lstat()
+        except FileNotFoundError as exc:
+            raise UnsafeHost0OutputError(
+                f"host0 output changed during capture: {path.name}"
+            ) from exc
+        if (
+            not stat.S_ISREG(after_path.st_mode)
+            or _host0_file_identity(opened) != _host0_file_identity(after_read)
+            or _host0_file_identity(after_read) != _host0_file_identity(after_path)
+        ):
+            raise UnsafeHost0OutputError(
+                f"host0 output changed during capture: {path.name}"
+            )
+        return raw, after_path
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _wait_for_host0_output(
     path: Path,
     timeout: float,
     *,
     not_before_ns: int | None = None,
     ready: Callable[[str], bool],
-) -> str:
+    include_mtime: bool = False,
+) -> str | tuple[str, int]:
     """Read a probe-owned host0 file after its complete stream is available."""
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            stat = path.stat()
+            first, first_stat = _read_host0_file(path)
             if (
-                path.is_file()
-                and stat.st_size > 0
-                and (not_before_ns is None or stat.st_mtime_ns >= not_before_ns)
+                first_stat.st_size > 0
+                and (not_before_ns is None or first_stat.st_mtime_ns >= not_before_ns)
             ):
-                first = path.read_bytes()
                 time.sleep(0.05)
-                second = path.read_bytes()
-                if first == second:
+                second, second_stat = _read_host0_file(path)
+                if _host0_file_identity(first_stat) != _host0_file_identity(second_stat):
+                    raise UnsafeHost0OutputError(
+                        f"host0 output changed during capture: {path.name}"
+                    )
+                if (
+                    first == second
+                    and len(first) == first_stat.st_size
+                    and len(second) == second_stat.st_size
+                    and first_stat.st_size == second_stat.st_size
+                    and first_stat.st_mtime_ns == second_stat.st_mtime_ns
+                ):
                     stable = first.decode("utf-8", errors="replace")
-                    if ready(stable):
+                    if (
+                        (not_before_ns is None or first_stat.st_mtime_ns >= not_before_ns)
+                        and (not_before_ns is None or second_stat.st_mtime_ns >= not_before_ns)
+                        and ready(stable)
+                    ):
+                        if include_mtime:
+                            return stable, second_stat.st_mtime_ns
                         return stable
+        except UnsafeHost0OutputError:
+            raise
         except OSError:
             pass
         time.sleep(0.1)
     raise TimeoutError(f"host0 output did not become complete: {path.name}")
+
+
+def _snapshot_host0_output(path: Path) -> tuple[str | None, int | None, str | None]:
+    """Capture bounded diagnostics without following a link or special file."""
+
+    try:
+        raw, info = _read_host0_file(path)
+    except FileNotFoundError:
+        return None, None, "per-case host0 log was not produced before probe unload"
+    except UnsafeHost0OutputError as exc:
+        return None, None, str(exc)
+    except OSError as exc:
+        return None, None, f"per-case host0 log could not be inspected ({type(exc).__name__})"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as exc:
+        return None, info.st_mtime_ns, (
+            f"per-case host0 log is not valid UTF-8 ({type(exc).__name__})"
+        )
+    return text, info.st_mtime_ns, None
 
 
 def _host0_capture_complete(text: str, args: argparse.Namespace) -> bool:
@@ -1087,13 +1438,15 @@ def _validate_host0_capture(text: str, args: argparse.Namespace) -> dict[str, ob
 
     parsed = validate_dmac_size_matrix(_canonicalize_psp(text, args))
     metadata = parsed.metadata_dict()
-    blockers = list(provenance_issues(metadata))
+    identity = _device_identity(text, args)
+    blockers = list(provenance_issues(metadata)) + list(identity["DEVICE_IDENTITY_BLOCKERS"])
     return {
         "classification": "PASS" if all(result.status == "PASS" for result in parsed.results) else "FAIL",
         "test_record_count": len(parsed.results),
         "metadata": metadata,
         "acceptance_eligible": not blockers,
         "acceptance_blockers": blockers,
+        **identity,
     }
 
 
@@ -1130,28 +1483,212 @@ def annotate_terminal_outcome(
 PROVENANCE_FLAGS = ("binary", "source_commit", "model", "firmware")
 
 
-def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
-    """Replace fixture placeholders with host-measured provenance metadata.
+_IDENTITY_MATCH = "MATCH"
+_IDENTITY_MISMATCH = "MISMATCH"
+_IDENTITY_PLACEHOLDER = "PLACEHOLDER"
+_IDENTITY_NOT_REPORTED = "NOT_REPORTED"
+_IDENTITY_NOT_BOUND = "NOT_BOUND"
+_IDENTITY_PARTIAL = "PARTIAL"
 
-    When no provenance is supplied the fixture placeholders are left in place on
-    purpose: the comparison then reports ``acceptance_eligible: false`` rather
-    than silently looking like a measured hardware result.
-    """
 
-    if not any(getattr(args, flag) for flag in PROVENANCE_FLAGS):
-        return text
+def _is_measured_identity(value: str | None, value_re: re.Pattern[str]) -> bool:
+    return bool(
+        value
+        and value_re.fullmatch(value)
+        and not _ALL_ZERO_RE.fullmatch(value)
+    )
+
+
+def _host_binary_sha256(binary: Path) -> str:
+    """Hash the staged PRX as a host measurement."""
+
     digest = hashlib.sha256()
-    with args.binary.open("rb") as stream:
+    with binary.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    model_fields = f"model={args.model}"
-    if args.model_code is not None:
-        generation, _retail = decode_psp_model_code(args.model_code)
-        model_fields += f" model_code=0x{args.model_code:02x} model_generation={generation}"
+    return digest.hexdigest()
+
+
+def _device_metadata(text: str) -> dict[str, str]:
+    """Read the first raw META record without treating it as host evidence."""
+
+    for line in text.splitlines():
+        if not line.startswith("NAKAGAWA_PSP_META "):
+            continue
+        fields: dict[str, str] = {}
+        for token in line.split()[1:]:
+            key, separator, value = token.partition("=")
+            if separator:
+                fields[key] = value
+        return fields
+    return {}
+
+
+def _device_metadata_equal(left: dict[str, str], right: dict[str, str]) -> bool:
+    if left.keys() != right.keys():
+        return False
+    return all(
+        left[key].casefold() == right[key].casefold()
+        if key in {"source_commit", "binary_sha256"}
+        else left[key] == right[key]
+        for key in left
+    )
+
+
+def _identity_binding(
+    reported: str | None,
+    expected: str | None,
+    field: str,
+    value_re: re.Pattern[str],
+    full_shape: str,
+) -> tuple[str, list[str]]:
+    """Classify one device-reported field against the full host expectation."""
+
+    if expected is None:
+        return _IDENTITY_NOT_BOUND, []
+    if not _is_measured_identity(expected, value_re):
+        return _IDENTITY_NOT_BOUND, [
+            f"IDENTITY_NOT_BOUND: host-expected {field} is not a full {full_shape} value"
+        ]
+    if reported is None:
+        return _IDENTITY_NOT_REPORTED, [
+            f"IDENTITY_NOT_BOUND: the device reported no {field}, so the capture "
+            "is not bound to the host-expected build"
+        ]
+    if _ALL_ZERO_RE.fullmatch(reported):
+        return _IDENTITY_PLACEHOLDER, [
+            f"IDENTITY_NOT_BOUND: the device did not report its own build identity; "
+            f"{field} is the all-zero placeholder"
+        ]
+    if not value_re.fullmatch(reported):
+        return _IDENTITY_NOT_BOUND, [
+            f"IDENTITY_NOT_BOUND: device {field} {reported!r} must be a full "
+            f"{full_shape}; a short prefix never binds"
+        ]
+    if reported.casefold() != expected.casefold():
+        return _IDENTITY_MISMATCH, [
+            f"IDENTITY_MISMATCH: device {field} {reported!r} does not match the "
+            f"host-expected {expected!r}"
+        ]
+    return _IDENTITY_MATCH, []
+
+
+def _combine_identity(commit_status: str, digest_status: str) -> str:
+    if _IDENTITY_MISMATCH in (commit_status, digest_status):
+        return _IDENTITY_MISMATCH
+    if commit_status in {
+        _IDENTITY_NOT_BOUND,
+        _IDENTITY_NOT_REPORTED,
+        _IDENTITY_PLACEHOLDER,
+    }:
+        return commit_status
+    if commit_status == _IDENTITY_MATCH and digest_status == _IDENTITY_MATCH:
+        return _IDENTITY_MATCH
+    return _IDENTITY_PARTIAL
+
+
+def _device_identity(text: str, args: argparse.Namespace) -> dict[str, object]:
+    """Compare raw device identity before host canonicalization."""
+
+    device = _device_metadata(text)
+    binary = getattr(args, "binary", None)
+    try:
+        expected_digest = _host_binary_sha256(binary) if isinstance(binary, Path) else None
+    except OSError:
+        expected_digest = None
+    expected_commit = getattr(args, "source_commit", None)
+    commit_status, commit_problems = _identity_binding(
+        device.get("source_commit"),
+        expected_commit,
+        "source_commit",
+        _FULL_COMMIT_RE,
+        "40- or 64-digit hexadecimal object id",
+    )
+    digest_status, digest_problems = _identity_binding(
+        device.get("binary_sha256"),
+        expected_digest,
+        "binary_sha256",
+        _FULL_SHA256_RE,
+        "64-digit hexadecimal digest",
+    )
+    blockers = list(commit_problems) if expected_commit is not None else []
+    if digest_status == _IDENTITY_MISMATCH:
+        blockers.extend(digest_problems)
+    return {
+        "DEVICE_REPORTED_SOURCE_COMMIT": device.get("source_commit"),
+        "DEVICE_REPORTED_BINARY_SHA256": device.get("binary_sha256"),
+        "SOURCE_COMMIT_BINDING": commit_status,
+        "BINARY_SHA256_BINDING": digest_status,
+        "DEVICE_IDENTITY_STATUS": _combine_identity(commit_status, digest_status),
+        "DEVICE_IDENTITY_BLOCKERS": blockers,
+    }
+
+
+def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
+    """Fill unmeasured fields while preserving any device identity claim.
+
+    Full device object ids are compared case-insensitively after validating that
+    they contain exactly 40 or 64 hexadecimal digits. Abbreviated prefixes never
+    match. An all-zero or absent device commit may be replaced in the parsed view
+    by the host expectation, but ``_device_identity`` records that it was not
+    device-bound and closes acceptance.
+
+    A supplied model code is checked against the model-profile row when present;
+    the row's exact ``out0`` spelling remains authoritative in the metadata.
+    """
+
+    parsed = parse_output(_normalise_unbound_identity_fields(text))
+    device_model_raw_value = _model_profile_raw_value(parsed)
+    model_code = getattr(args, "model_code", None)
+    _validate_model_code_expectation(device_model_raw_value, model_code)
+
+    if not any(getattr(args, flag, None) for flag in PROVENANCE_FLAGS):
+        return text
+    metadata_lines = [
+        line for line in text.splitlines() if line.startswith("NAKAGAWA_PSP_META ")
+    ]
+    if len(metadata_lines) != 1:
+        return text
+
+    device = _device_metadata(text)
+    model = getattr(args, "model", None) or device.get("model", "unknown")
+    firmware = getattr(args, "firmware", None) or device.get("firmware", "unknown")
+    model_fields = f"model={model}"
+    raw_model_code = (
+        device_model_raw_value
+        if device_model_raw_value is not None
+        else str(model_code) if model_code is not None else None
+    )
+    if raw_model_code is not None:
+        model_fields += f" model_code={raw_model_code}"
+        try:
+            generation, _retail = decode_psp_model_code(int(raw_model_code, 0))
+        except ValueError:
+            pass
+        else:
+            model_fields += f" model_generation={generation}"
+
+    reported_commit = device.get("source_commit")
+    if _is_measured_identity(reported_commit, _FULL_COMMIT_RE):
+        source_commit = reported_commit.lower()
+    else:
+        source_commit = getattr(args, "source_commit", None) or reported_commit or ""
+
+    reported_digest = device.get("binary_sha256")
+    if _is_measured_identity(reported_digest, _FULL_SHA256_RE):
+        binary_sha256 = reported_digest.lower()
+    else:
+        binary = getattr(args, "binary", None)
+        binary_sha256 = (
+            _host_binary_sha256(binary)
+            if isinstance(binary, Path)
+            else reported_digest or ""
+        )
+
     metadata = (
         "NAKAGAWA_PSP_META schema=1 source=psp "
-        f"{model_fields} firmware={args.firmware} "
-        f"binary_sha256={digest.hexdigest()} source_commit={args.source_commit}"
+        f"{model_fields} firmware={firmware} "
+        f"binary_sha256={binary_sha256} source_commit={source_commit}"
     )
     records = [line for line in text.splitlines() if not line.startswith("NAKAGAWA_PSP_META ")]
     return metadata + "\n" + "\n".join(records) + "\n"
@@ -1202,13 +1739,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--binary", type=Path, help="source-owned PRX used to replace fixture metadata")
     parser.add_argument("--source-commit", help="exact source commit recorded in the result metadata")
-    parser.add_argument("--model", help="human-recorded PSP model identifier")
+    parser.add_argument("--model", help="operator-declared physical PSP model label")
     parser.add_argument(
         "--model-code",
         type=lambda value: int(value, 0),
         help=(
-            "PSPSDK/kubridge PspModel ordinal; derives the generation and retail family "
-            "(do not use for sceKernelGetModel's original/slim return)"
+            "raw PSPSDK/kubridge PspModel ordinal returned by the device; interpreted "
+            "separately from --model (do not use for sceKernelGetModel's original/slim return)"
         ),
     )
     parser.add_argument("--firmware", help="human-recorded PSP firmware identifier")
@@ -1249,16 +1786,6 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError:
         parser.error("--results-directory must be inside the repository root")
 
-    model_was_derived = args.model_code is not None
-    if model_was_derived:
-        if args.model:
-            parser.error("--model and --model-code are mutually exclusive")
-        try:
-            generation, retail = decode_psp_model_code(args.model_code)
-        except ValueError as exc:
-            parser.error(str(exc))
-        args.model = f"{retail}-{generation}"
-
     if args.campaign_case:
         if (
             args.command or args.annotate_report or args.psp_output or args.nakagawa_output
@@ -1266,9 +1793,9 @@ def main(argv: list[str] | None = None) -> int:
         ):
             parser.error("campaign mode cannot be combined with single-capture or annotation options")
         if not args.host0_root or not args.model or not args.source_commit:
-            parser.error("campaign mode requires --host0-root, --model/--model-code, and --source-commit")
-        if not re.fullmatch(r"[0-9a-fA-F]{40}", args.source_commit):
-            parser.error("--source-commit must be a full 40-digit commit id")
+            parser.error("campaign mode requires --host0-root, operator-declared --model, and --source-commit")
+        if not _FULL_COMMIT_RE.fullmatch(args.source_commit):
+            parser.error("--source-commit must be a full 40- or 64-digit object id")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,48}", args.model):
             parser.error("--model must be a non-identifying label using letters, digits, dot, _ or -")
         if not math.isfinite(args.timeout) or args.timeout <= 0:
@@ -1350,13 +1877,13 @@ def main(argv: list[str] | None = None) -> int:
     supplied = [
         flag
         for flag in PROVENANCE_FLAGS
-        if getattr(args, flag) and not (flag == "model" and model_was_derived)
+        if getattr(args, flag)
     ]
-    required_provenance_count = len(PROVENANCE_FLAGS) - (1 if model_was_derived else 0)
+    required_provenance_count = len(PROVENANCE_FLAGS)
     if supplied and len(supplied) != required_provenance_count:
         missing_flags = [
             flag for flag in PROVENANCE_FLAGS
-            if flag not in supplied and not (flag == "model" and model_was_derived)
+            if flag not in supplied
         ]
         missing = ", ".join("--" + flag.replace("_", "-") for flag in missing_flags)
         parser.error(f"provenance metadata is all-or-nothing; missing {missing}")

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,10 +17,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import hle_manifest
 from psp_oracle.protocol import (
     ProtocolError,
+    PSP_MODEL_INTERPRETATION_RULE,
     compare_texts,
     decode_psp_model_code,
+    model_identity_fields,
     parse_output,
     provenance_issues,
     validate_dmac_size_matrix,
@@ -42,6 +47,8 @@ META = (
 
 MEASURED_SHA = "a" * 64
 MEASURED_COMMIT = "b" * 40
+STAGED_PRX = b"synthetic PSP oracle probe"
+STAGED_SHA = hashlib.sha256(STAGED_PRX).hexdigest()
 
 
 def stream(source: str, result: str = "0x1") -> str:
@@ -103,6 +110,37 @@ def measured_stream(source: str, result: str = "0x1") -> str:
     ) + ("NAKAGAWA_PSP_TEST schema=1 test_id=SMOKE case_id=one status=PASS result=" + result + "\n")
 
 
+def device_identity_stream(*, binary: str, commit: str | None) -> str:
+    """A complete DMAC stream with a controlled device META identity."""
+
+    text = dmac_matrix_stream()
+    first_line, remainder = text.split("\n", 1)
+    first_line = first_line.replace(f"binary_sha256={MEASURED_SHA}", f"binary_sha256={binary}")
+    if commit is None:
+        first_line = re.sub(r" source_commit=[^ ]+", "", first_line)
+    else:
+        first_line = first_line.replace(
+            f"source_commit={MEASURED_COMMIT}", f"source_commit={commit}"
+        )
+    return first_line + "\n" + remainder
+
+
+def identity_args(tmp: Path, **overrides: object) -> SimpleNamespace:
+    binary = tmp / "probe.prx"
+    binary.write_bytes(STAGED_PRX)
+    args = SimpleNamespace(
+        validate_dmac_size_matrix=True,
+        binary=binary,
+        source_commit=MEASURED_COMMIT,
+        model="PSP-3000",
+        firmware="6.61-ARK",
+        model_code=None,
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
 class PspOracleProtocolTests(unittest.TestCase):
     def test_pspsdk_model_ordinal_three_is_psp3000_generation_04g(self) -> None:
         self.assertEqual(decode_psp_model_code(3), ("04g", "PSP-3000"))
@@ -112,6 +150,29 @@ class PspOracleProtocolTests(unittest.TestCase):
         for value in (-1, 8, True, "3"):
             with self.assertRaises(ValueError):
                 decode_psp_model_code(value)  # type: ignore[arg-type]
+
+    def test_model_identity_rule_separates_raw_family_and_agreement(self) -> None:
+        fields = model_identity_fields("psp-3000-series", "0x03")
+        self.assertEqual(fields["PHYSICAL_MODEL_LABEL"], "psp-3000-series")
+        self.assertEqual(fields["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(fields["INTERPRETED_MODEL_FAMILY"], "PSP-3000")
+        self.assertEqual(fields["MODEL_INTERPRETATION_RULE"], PSP_MODEL_INTERPRETATION_RULE)
+        self.assertEqual(fields["MODEL_IDENTITY_AGREEMENT"], "AGREES")
+
+    def test_unknown_model_rule_leaves_the_raw_value_untouched(self) -> None:
+        stored_envelope = {
+            "PHYSICAL_MODEL_LABEL": "PSP-3000",
+            "SOFTWARE_MODEL_RAW_VALUE": "0x03",
+        }
+        fields = model_identity_fields(
+            stored_envelope["PHYSICAL_MODEL_LABEL"],
+            stored_envelope["SOFTWARE_MODEL_RAW_VALUE"],
+            rule_id="PSPSDK_PMODEL_ORDINAL_V2",
+        )
+        self.assertEqual(fields["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(stored_envelope["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(fields["INTERPRETED_MODEL_FAMILY"], "UNKNOWN")
+        self.assertEqual(fields["MODEL_IDENTITY_AGREEMENT"], "UNKNOWN")
 
     def test_parser_requires_metadata_and_orders_records(self) -> None:
         parsed = parse_output(stream("psp"))
@@ -134,6 +195,17 @@ class PspOracleProtocolTests(unittest.TestCase):
     def test_malformed_hex_is_rejected(self) -> None:
         with self.assertRaises(ProtocolError):
             parse_output(stream("psp", "not-hex"))
+
+    def test_source_commit_requires_a_full_40_or_64_digit_object_id(self) -> None:
+        for length in (12, 41, 63):
+            with self.subTest(length=length):
+                text = measured_stream("psp").replace(
+                    f"source_commit={MEASURED_COMMIT}",
+                    f"source_commit={'b' * length}",
+                    1,
+                )
+                with self.assertRaises(ProtocolError):
+                    parse_output(text)
 
 
 class PspDmacProtocolTests(unittest.TestCase):
@@ -287,6 +359,143 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
         self.assertIn("if (!low_started)", body)
 
 
+class PspOracleDeviceIdentityTests(unittest.TestCase):
+    """The capture must bind the device's own identity, not a host rewrite."""
+
+    def _report(
+        self, tmp: Path, *, binary: str, commit: str | None
+    ) -> dict[str, object]:
+        return _validate_host0_capture(
+            device_identity_stream(binary=binary, commit=commit), identity_args(tmp)
+        )
+
+    def test_matching_device_identity_is_eligible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-match-") as name:
+            report = self._report(Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT)
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertEqual(report["BINARY_SHA256_BINDING"], "MATCH")
+        self.assertEqual(report["DEVICE_IDENTITY_STATUS"], "MATCH")
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_device_source_commit_mismatch_is_not_overwritten(self) -> None:
+        mismatch = "d" * 40
+        with tempfile.TemporaryDirectory(prefix="identity-mismatch-") as name:
+            report = self._report(Path(name), binary=STAGED_SHA, commit=mismatch)
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MISMATCH")
+        self.assertEqual(report["metadata"]["source_commit"], mismatch)
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("IDENTITY_MISMATCH", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_device_binary_digest_mismatch_is_not_overwritten(self) -> None:
+        mismatch = "d" * 64
+        with tempfile.TemporaryDirectory(prefix="identity-digest-") as name:
+            report = self._report(Path(name), binary=mismatch, commit=MEASURED_COMMIT)
+        self.assertEqual(report["BINARY_SHA256_BINDING"], "MISMATCH")
+        self.assertEqual(report["metadata"]["binary_sha256"], mismatch)
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("IDENTITY_MISMATCH", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_zero_or_absent_device_commit_is_not_bound(self) -> None:
+        for commit, expected_status in (("0" * 40, "PLACEHOLDER"), (None, "NOT_REPORTED")):
+            with self.subTest(commit=commit):
+                with tempfile.TemporaryDirectory(prefix="identity-unbound-") as name:
+                    report = self._report(Path(name), binary=STAGED_SHA, commit=commit)
+                self.assertEqual(report["SOURCE_COMMIT_BINDING"], expected_status)
+                self.assertFalse(report["acceptance_eligible"])
+                self.assertIn(
+                    "IDENTITY_NOT_BOUND",
+                    " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]),
+                )
+
+    def test_short_commit_prefix_never_satisfies_binding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-short-") as name:
+            report = self._report(
+                Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT[:12]
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "NOT_BOUND")
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("short prefix never binds", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_full_64_digit_commit_is_supported(self) -> None:
+        full_commit = "c" * 64
+        with tempfile.TemporaryDirectory(prefix="identity-sha256-") as name:
+            report = _validate_host0_capture(
+                device_identity_stream(binary=STAGED_SHA, commit=full_commit),
+                identity_args(Path(name), source_commit=full_commit),
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_uppercase_full_device_commit_matches_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-uppercase-") as name:
+            report = self._report(
+                Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT.upper()
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertEqual(report["metadata"]["source_commit"], MEASURED_COMMIT)
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_partial_provenance_keeps_device_placeholders_visible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-partial-") as name:
+            args = identity_args(
+                Path(name), binary=None, source_commit=None, model="PSP-3000"
+            )
+            report = _validate_host0_capture(
+                device_identity_stream(binary="0" * 64, commit="0" * 40), args
+            )
+        self.assertEqual(report["metadata"]["source_commit"], "0" * 40)
+        self.assertEqual(report["metadata"]["binary_sha256"], "0" * 64)
+        self.assertFalse(report["acceptance_eligible"])
+
+    def test_makefile_rejects_unbound_or_dirty_probe_builds(self) -> None:
+        makefile = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "Makefile"
+        ).read_text(encoding="utf-8")
+        self.assertIn("git rev-parse --verify HEAD", makefile)
+        self.assertIn("git status --porcelain --untracked-files=normal", makefile)
+        self.assertIn("PROBE_BUILD_COMMIT_FULL", makefile)
+        self.assertIn("PROBE_BUILD_COMMIT must match the clean checkout HEAD", makefile)
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if make is None:
+            self.skipTest("GNU Make is unavailable")
+        makefile_path = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        )
+        missing = subprocess.run(
+            [make, "-C", str(makefile_path), "PROBE_BUILD_COMMIT_FULL="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn(
+            "PROBE_BUILD_COMMIT could not be determined",
+            missing.stdout + missing.stderr,
+        )
+        # git status never lists an empty directory, so the scratch directory
+        # needs a file for the checkout to read as dirty.
+        with tempfile.TemporaryDirectory(
+            prefix="probe-build-dirty-", dir=makefile_path
+        ) as scratch:
+            (Path(scratch) / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            completed = subprocess.run(
+                [make, "-C", str(makefile_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("source tree is dirty", completed.stdout + completed.stderr)
+
+    def test_probe_emits_build_commit_macro_not_a_zero_placeholder(self) -> None:
+        probe = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"source_commit=" PROBE_BUILD_COMMIT', probe)
+        self.assertIn("#error \"PROBE_BUILD_COMMIT must be the full git object id", probe)
+        self.assertNotIn("source_commit=0000000000000000000000000000000000000000", probe)
+
+
 class PspOracleRunnerTests(unittest.TestCase):
     def test_dmac_host0_capture_uses_the_runner_validation_path(self) -> None:
         args = SimpleNamespace(
@@ -365,7 +574,7 @@ class PspOracleRunnerTests(unittest.TestCase):
             self.assertEqual(captured.parent, results.resolve())
             self.assertIn("status=PASS", captured.read_text(encoding="utf-8"))
 
-    def test_model_code_is_derived_without_the_old_n1000_mapping(self) -> None:
+    def test_model_code_is_not_used_as_an_operator_declared_physical_label(self) -> None:
         command = [
             sys.executable,
             str(Path(__file__).resolve().parent / "psp_oracle" / "run_psplink.py"),
@@ -373,14 +582,44 @@ class PspOracleRunnerTests(unittest.TestCase):
             "--model-code",
             "3",
         ]
-        # Dry-run still validates/derives the model before reporting the plan.
+        # A raw code alone does not create an operator-declared physical label.
         completed = subprocess.run(
             command, capture_output=True, text=True, check=True
         )
         plan = json.loads(completed.stdout)
         self.assertFalse(plan["provenance_supplied"])
-        self.assertEqual(plan["model"], "PSP-3000-04g")
+        self.assertIsNone(plan["model"])
         self.assertEqual(plan["model_code"], 3)
+
+        with_model = subprocess.run(
+            command + [
+                "--model", "psp-3000-series",
+                "--binary", "probe.prx",
+                "--source-commit", "a" * 40,
+                "--firmware", "6.61",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        paired_plan = json.loads(with_model.stdout)
+        self.assertEqual(paired_plan["model"], "psp-3000-series")
+        self.assertEqual(paired_plan["model_code"], 3)
+
+    def test_terminal_annotation_preserves_legacy_model_envelope_fields(self) -> None:
+        legacy = {
+            "CONSOLE_MODEL": "PSP-3000-04g",
+            "MODEL_SOURCE": "operator-recorded label; no serial or MAC stored",
+            "PHYSICAL_MODEL_LABEL": "psp-3000-series",
+            "SOFTWARE_MODEL_RAW_VALUE": "3",
+            "MODEL_CONTRADICTION": "RECORDED",
+        }
+        annotated = annotate_terminal_outcome(legacy, b"transport only\n", "RESET")
+        self.assertEqual(
+            {key: annotated[key] for key in legacy},
+            legacy,
+        )
+        self.assertEqual(legacy["MODEL_CONTRADICTION"], "RECORDED")
 
     def test_nakagawa_mode_reuses_production_selftest_and_derives_records(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -436,12 +675,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 55)
+        self.assertEqual(len(routes), 56)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 56)))
+        self.assertEqual(set(ids), set(range(1, 57)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -677,15 +916,121 @@ class PspDmacProbeTests(unittest.TestCase):
                 open_guards.append(line_number)
         self.assertEqual(open_guards, [], f"unclosed #if at lines {open_guards}")
 
-    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
-        manifest = json.loads(
+    def _oracle_manifest(self) -> dict:
+        return json.loads(
             (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
                 encoding="utf-8"
             )
         )
-        system = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-SYSTEM-001")
+
+    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
+        system = next(
+            entry for entry in self._oracle_manifest()["tests"] if entry["id"] == "PSP-SYSTEM-001"
+        )
         self.assertEqual(system["status"], "implemented")
+        self.assertEqual(system["hardware_evidence"], "CAPTURED")
         self.assertEqual(system["case_ids"], ["model-profile"])
+
+    def test_implemented_status_alone_is_not_accepted_hardware_evidence(self) -> None:
+        """`status: implemented` is probe-source prose, never hardware evidence."""
+        manifest = self._oracle_manifest()
+        oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
+        for test_id in ("PSP-TRANSPORT-001", "PSP-SYSTEM-001"):
+            entry = next(item for item in manifest["tests"] if item["id"] == test_id)
+            self.assertEqual(entry["status"], "implemented")
+            self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+            for api in entry["apis"]:
+                self.assertNotIn(
+                    api,
+                    oracle_apis,
+                    f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
+                )
+
+    def test_fpu_and_cache_probe_families_are_named_as_not_run(self) -> None:
+        manifest = self._oracle_manifest()
+        by_id = {entry["id"]: entry for entry in manifest["tests"]}
+        for test_id in ("PSP-FPU-001", "PSP-CACHE-001"):
+            self.assertEqual(by_id[test_id]["status"], "planned")
+            self.assertEqual(by_id[test_id]["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(len(by_id), len(manifest["tests"]))
+
+    def test_manifest_hardware_evidence_uses_closed_vocabulary(self) -> None:
+        manifest = self._oracle_manifest()
+        vocabulary = {"NOT_RUN", "CAPTURED", "MEASURED"}
+        for entry in manifest["tests"]:
+            with self.subTest(test_id=entry["id"]):
+                self.assertIn("hardware_evidence", entry)
+                self.assertIsInstance(entry["hardware_evidence"], str)
+                self.assertIn(entry["hardware_evidence"], vocabulary)
+
+    def test_only_documented_measured_groups_claim_hardware_evidence(self) -> None:
+        manifest = self._oracle_manifest()
+        evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "MEASURED"},
+            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001"},
+        )
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
+            {"PSP-KERNEL-001", "PSP-TRANSPORT-001", "PSP-SYSTEM-001"},
+        )
+
+    def test_measured_rows_cite_a_public_document_and_the_cases_it_measures(self) -> None:
+        """A MEASURED row must name publication-eligible evidence and its own cases."""
+        include_paths = set(
+            json.loads(
+                (self.root / "assets" / "public_source_profile.json").read_text(
+                    encoding="utf-8"
+                )
+            )["include_paths"]
+        )
+        measured = [
+            entry
+            for entry in self._oracle_manifest()["tests"]
+            if entry["hardware_evidence"] == "MEASURED"
+        ]
+        self.assertTrue(measured)
+        for entry in measured:
+            with self.subTest(test_id=entry["id"]):
+                match = re.fullmatch(
+                    r"(docs/[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)", entry["evidence_ref"]
+                )
+                self.assertIsNotNone(match, "evidence_ref must be 'docs/....md#section'")
+                self.assertIn(match.group(1), include_paths)
+                cases = entry["evidence_cases"]
+                self.assertTrue(cases)
+                self.assertTrue(
+                    set(cases) <= set(entry.get("case_ids", [])) | set(entry["apis"])
+                )
+                self.assertTrue(entry["measurement_note"].strip())
+
+    def test_rows_without_measured_evidence_say_why(self) -> None:
+        for entry in self._oracle_manifest()["tests"]:
+            if entry["hardware_evidence"] == "MEASURED":
+                continue
+            with self.subTest(test_id=entry["id"]):
+                self.assertTrue(
+                    entry.get("evidence_note", "").strip(),
+                    "an unmeasured row must state why it is not measured",
+                )
+
+    def test_exception_campaign_is_named_with_its_buildable_cases(self) -> None:
+        entry = next(
+            item
+            for item in self._oracle_manifest()["tests"]
+            if item["id"] == "PSP-EXCEPTION-001"
+        )
+        self.assertEqual(entry["hardware_evidence"], "MEASURED")
+        makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        for case_id in entry["case_ids"]:
+            with self.subTest(case_id=case_id):
+                self.assertIn(f"else ifeq ($(CASE),{case_id})", makefile)
+        # exception-a2 is measured as run PSP-A2-01, but the cited section names
+        # its fixture only inside the range `exception-a1`..`exception-a3`.
+        self.assertIn("exception-a2", entry["case_ids"])
+        self.assertNotIn("exception-a2", entry["evidence_cases"])
 
     def test_manifest_routes_issue_23_to_dedicated_scalar_probe(self) -> None:
         manifest = json.loads(
@@ -695,6 +1040,7 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
+        self.assertEqual(dmac["hardware_evidence"], "MEASURED")
         self.assertEqual(len(dmac["case_ids"]), 23)
         self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])
@@ -703,6 +1049,259 @@ class PspDmacProbeTests(unittest.TestCase):
             set(dmac["outcome_contract"]),
             {"result", "skip", "hang", "reset", "inconclusive"},
         )
+
+    def test_manifest_routes_mailbox_measurement_to_339_and_341(self) -> None:
+        manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        kernel = next(
+            entry for entry in manifest["tests"] if entry["id"] == "PSP-KERNEL-001"
+        )
+        self.assertIn("mbx-delete-wait", kernel["diagnostic_case_ids"])
+        self.assertIn("mbx-timeout-control", kernel["diagnostic_case_ids"])
+        self.assertIn(339, kernel["issues"])
+        self.assertIn(341, kernel["issues"])
+        for api in (
+            "sceKernelCreateMbx",
+            "sceKernelDeleteMbx",
+            "sceKernelReceiveMbx",
+            "sceKernelReferMbxStatus",
+            "sceKernelReferThreadStatus",
+            "sceKernelWaitThreadEnd",
+        ):
+            self.assertIn(api, kernel["apis"])
+
+
+class PspMailboxCleanupTests(unittest.TestCase):
+    def test_probe_cleans_one_mailbox_and_joins_or_terminates_receiver(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is unavailable for the synthetic mailbox cleanup harness")
+
+        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        start = probe.rindex(
+            "#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MBX_DELETE_WAIT"
+        )
+        end = probe.index("#endif", start) + len("#endif")
+        mailbox_probe = probe[start:end]
+        harness = r'''#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#define PSP_ORACLE_CASE_MBX_DELETE_WAIT 56
+#define PSP_ORACLE_CASE PSP_ORACLE_CASE_MBX_DELETE_WAIT
+#define PSP_THREAD_WAITING 4u
+#define THREAD_ATTR_USER 0
+
+typedef uint32_t SceSize;
+typedef uint32_t SceUInt;
+typedef int32_t SceUID;
+typedef int (*ThreadEntry)(SceSize, void *);
+typedef struct {
+    int size;
+    uint32_t status;
+    uint32_t waitType;
+    SceUID waitId;
+} SceKernelThreadInfo;
+typedef struct {
+    int size;
+    uint32_t numWaitThreads;
+} SceKernelMbxInfo;
+
+SceUID sceKernelCreateMbx(const char *, int, void *);
+SceUID sceKernelCreateThread(const char *, ThreadEntry, int, int, int, void *);
+int sceKernelStartThread(SceUID, SceSize, void *);
+int sceKernelReferThreadStatus(SceUID, SceKernelThreadInfo *);
+int sceKernelDeleteMbx(SceUID);
+int sceKernelWaitThreadEnd(SceUID, SceUInt *);
+int sceKernelDeleteThread(SceUID);
+int sceKernelTerminateDeleteThread(SceUID);
+int sceKernelReferMbxStatus(SceUID, SceKernelMbxInfo *);
+int sceKernelReceiveMbx(SceUID, void **, SceUInt *);
+uint32_t sceKernelGetSystemTimeLow(void);
+void emit_record_extended(int, const char *, const char *, const char *,
+                          uint32_t, const uint32_t *, size_t);
+
+/* MAILBOX PROBE SNIPPET */
+
+static int live_mailboxes;
+static int live_threads;
+static int mailbox_active[32];
+static int mailbox_delete_calls[32];
+static int mailbox_creates;
+static int thread_status_queries;
+static int clock_queries;
+static int timeout_join;
+static int terminate_delete_calls;
+
+static void reset_state(int should_timeout_join) {
+    memset(mailbox_active, 0, sizeof(mailbox_active));
+    memset(mailbox_delete_calls, 0, sizeof(mailbox_delete_calls));
+    live_mailboxes = 0;
+    live_threads = 0;
+    mailbox_creates = 0;
+    thread_status_queries = 0;
+    clock_queries = 0;
+    timeout_join = should_timeout_join;
+    terminate_delete_calls = 0;
+}
+
+SceUID sceKernelCreateMbx(const char *name, int attr, void *options) {
+    (void)name;
+    (void)attr;
+    (void)options;
+    const SceUID uid = mailbox_creates++ == 0 ? 10 : 20;
+    mailbox_active[uid] = 1;
+    live_mailboxes++;
+    return uid;
+}
+
+SceUID sceKernelCreateThread(const char *name, ThreadEntry entry, int priority,
+                             int stack_size, int attr, void *options) {
+    (void)name;
+    (void)entry;
+    (void)priority;
+    (void)stack_size;
+    (void)attr;
+    (void)options;
+    live_threads++;
+    return 30;
+}
+
+int sceKernelStartThread(SceUID thread, SceSize args, void *argp) {
+    (void)thread;
+    (void)args;
+    (void)argp;
+    s_mbx_receive_entry_us = 100;
+    return 0;
+}
+
+int sceKernelReferThreadStatus(SceUID thread, SceKernelThreadInfo *status) {
+    (void)thread;
+    if (thread_status_queries++ == 0) {
+        status->status = PSP_THREAD_WAITING;
+        status->waitType = 5;
+        status->waitId = 10;
+    }
+    return 0;
+}
+
+int sceKernelDeleteMbx(SceUID uid) {
+    mailbox_delete_calls[uid]++;
+    if (!mailbox_active[uid]) {
+        return -1;
+    }
+    mailbox_active[uid] = 0;
+    live_mailboxes--;
+    return 0;
+}
+
+int sceKernelWaitThreadEnd(SceUID thread, SceUInt *timeout) {
+    (void)thread;
+    *timeout = 0;
+    if (timeout_join) {
+        return -1;
+    }
+    s_mbx_receive_rc = (int)0x800201b5u;
+    s_mbx_receive_message = &s_mbx_message_sentinel;
+    s_mbx_receive_remaining_us = 0;
+    s_mbx_receive_return_us = 250;
+    s_mbx_receive_completion_count = 1;
+    return 0;
+}
+
+int sceKernelDeleteThread(SceUID thread) {
+    (void)thread;
+    live_threads--;
+    return 0;
+}
+
+int sceKernelTerminateDeleteThread(SceUID thread) {
+    (void)thread;
+    terminate_delete_calls++;
+    live_threads--;
+    return 0;
+}
+
+int sceKernelReferMbxStatus(SceUID uid, SceKernelMbxInfo *status) {
+    (void)uid;
+    status->numWaitThreads = 0;
+    return 0;
+}
+
+int sceKernelReceiveMbx(SceUID uid, void **message, SceUInt *timeout) {
+    (void)uid;
+    (void)message;
+    *timeout = 0;
+    return -1;
+}
+
+uint32_t sceKernelGetSystemTimeLow(void) {
+    static const uint32_t values[] = {200, 300, 50300};
+    const size_t index = (size_t)clock_queries++;
+    return values[index < sizeof(values) / sizeof(values[0]) ? index : 2];
+}
+
+void emit_record_extended(int emulated, const char *test_id, const char *case_id,
+                          const char *status, uint32_t result,
+                          const uint32_t *out, size_t count) {
+    (void)emulated;
+    (void)test_id;
+    (void)case_id;
+    (void)status;
+    (void)result;
+    (void)out;
+    (void)count;
+}
+
+int main(void) {
+    reset_state(0);
+    if (!run_mbx_delete_wait(0)) {
+        return 1;
+    }
+    if (mailbox_delete_calls[10] != 1) {
+        return 2; /* redundant delete after the primary mailbox was removed */
+    }
+    if (mailbox_delete_calls[20] != 1 || live_mailboxes != 0 || live_threads != 0) {
+        return 3;
+    }
+
+    reset_state(1);
+    if (run_mbx_delete_wait(0)) {
+        return 4;
+    }
+    if (mailbox_delete_calls[10] != 1) {
+        return 5;
+    }
+    if (mailbox_delete_calls[20] != 1 || terminate_delete_calls != 1 ||
+        live_mailboxes != 0 || live_threads != 0) {
+        return 6;
+    }
+    return 0;
+}
+'''.replace("/* MAILBOX PROBE SNIPPET */", mailbox_probe)
+
+        fixture = root / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="mbx-cleanup-host-", dir=fixture) as scratch:
+            source_path = Path(scratch) / "mbx_cleanup_host.c"
+            binary_path = Path(scratch) / "mbx_cleanup_host.exe"
+            source_path.write_text(harness, encoding="utf-8")
+            build = subprocess.run(
+                [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", str(source_path), "-o", str(binary_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr)
+            executed = subprocess.run(
+                [str(binary_path)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
 
 
 class PspMutexProbeTests(unittest.TestCase):

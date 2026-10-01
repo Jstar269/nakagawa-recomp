@@ -136,8 +136,8 @@ Additions the mission list missed (all `upstream_derived` in the ledger):
 
 One row per rewrite unit. "Depends" names in-tree consumers (production or
 test). "Tests today" names only tests that run without private inputs;
-anything needing PPSSPP-captured traces or retail inputs is marked BLOCKED
-accordingly. Sizes at base.
+anything needing external oracle traces or retail inputs has an explicit blocked or not-run disposition; v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
+Sizes at base.
 
 | # | Group (paths) | Upstream | Lines | Depended on by | Tests today | LLE relevance |
 | --- | --- | --- | --- | --- | --- | --- |

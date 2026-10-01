@@ -30,14 +30,19 @@ the private input ever entering a contributor's hands.  Pass
 must agree, and ``--check`` fails closed when they do not.
 
 This tool never edits a ledger, a policy, or any other control.  It prints an
-inventory; a human decides what to admit.
+inventory; a human decides what to admit.  For an upstream-derived production
+gap, the inventory also reports whether the maintained independence campaign
+names an owner and an explicit disposition.  That roadmap annotation is
+planning evidence only; it never authorizes a provenance admission.
 """
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -55,6 +60,93 @@ except ImportError:  # pragma: no cover - direct script execution
 
 LEDGER_PATH = "assets/public_provenance_ledger.json"
 POLICY_PATH = "assets/public_source_profile.json"
+INDEPENDENCE_PLAN_PATH = "docs/INDEPENDENCE_CAMPAIGN.md"
+
+_CAMPAIGN_INVENTORY_ROW = re.compile(r"^\|\s*(G\d+)\s*\|\s*(.*?)\s*\|")
+_CAMPAIGN_TARGET = re.compile(r"^\s*-\s+\*\*(G\d+)\b")
+_CODE_SPAN = re.compile(r"`([^`]+)`")
+_PRODUCTION_PREFIXES = ("src/", "tools/")
+
+
+def _campaign_groups(plan_text: str) -> dict[str, tuple[str, ...]]:
+    """Return the source paths named by each independence campaign group.
+
+    The campaign is deliberately prose, but its inventory table already uses
+    stable group IDs and code spans for the paths it owns.  Keeping this small
+    parser here makes a newly reported path fail closed when it is absent from
+    that maintained inventory instead of silently treating the record gap as
+    an owned independence item.
+    """
+    groups: dict[str, tuple[str, ...]] = {}
+    for line in plan_text.splitlines():
+        match = _CAMPAIGN_INVENTORY_ROW.match(line)
+        if match is None:
+            continue
+        paths = tuple(
+            span for span in _CODE_SPAN.findall(match.group(2))
+            if span.startswith(_PRODUCTION_PREFIXES)
+        )
+        if paths:
+            groups[match.group(1)] = paths
+    return groups
+
+
+def _campaign_targets(plan_text: str) -> dict[str, str]:
+    """Return the explicit disposition text for each campaign group."""
+    lines = plan_text.splitlines()
+    targets: dict[str, str] = {}
+    starts = [
+        (index, match.group(1))
+        for index, line in enumerate(lines)
+        if (match := _CAMPAIGN_TARGET.match(line)) is not None
+    ]
+    for position, (start, group) in enumerate(starts):
+        stop = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
+        block = " ".join(lines[start:stop])
+        if "bounded-(c)" in block or re.search(r"\(c\)", block):
+            targets[group] = "bounded-exclusion"
+        elif re.search(r"\(a\)\s*\+\s*\(a\)", block):
+            targets[group] = "clean-room-rewrite"
+        elif re.search(r"\(a\)", block):
+            targets[group] = "clean-room-rewrite"
+        elif re.search(r"\(b\)", block):
+            targets[group] = "LLE-replacement"
+        elif "evidence, not rewrite" in block:
+            targets[group] = "evidence-hardening"
+    return targets
+
+
+def independence_metadata(
+    path: str,
+    *,
+    campaign_path: Path = ROOT / INDEPENDENCE_PLAN_PATH,
+) -> dict[str, object] | None:
+    """Find the maintained owner/disposition for a production path.
+
+    A group ID is the campaign owner for this inventory slice.  ``None`` is a
+    deliberate fail-closed result: a new upstream-derived production path must
+    first be named in the campaign inventory and given an explicit disposition
+    (including a bounded exclusion) before it can be treated as planned work.
+    """
+    try:
+        plan_text = campaign_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    groups = _campaign_groups(plan_text)
+    targets = _campaign_targets(plan_text)
+    for group, patterns in groups.items():
+        if not any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
+            continue
+        disposition = targets.get(group)
+        if disposition is None:
+            return None
+        return {
+            "status": "mapped",
+            "owner": group,
+            "disposition": disposition,
+            "source": INDEPENDENCE_PLAN_PATH,
+        }
+    return None
 
 
 def tracked_paths(repo: Path = ROOT) -> list[str]:
@@ -88,6 +180,18 @@ def exact_paths_from_public_ledger(ledger_path: Path) -> set[str]:
     return covered
 
 
+def public_classifications(ledger_path: Path) -> dict[str, str]:
+    """Return the public ledger's path classifications for gap diagnostics."""
+    document = json.loads(ledger_path.read_text(encoding="utf-8"))
+    return {
+        entry["path"]: entry["classification"]
+        for entry in document.get("entries", [])
+        if isinstance(entry, dict)
+        and isinstance(entry.get("path"), str)
+        and isinstance(entry.get("classification"), str)
+    }
+
+
 def exact_paths_from_trusted_ledger(trusted_ledger: Path) -> set[str]:
     """Ask the private authority directly (maintainer-side, optional)."""
     exact, _patterns, _ids = verifier.load_trusted_records(trusted_ledger.read_bytes())
@@ -109,8 +213,10 @@ def record_gaps(
     """
     if covered is None:
         covered = exact_paths_from_public_ledger(repo / LEDGER_PATH)
+    classifications = public_classifications(repo / LEDGER_PATH)
+    campaign_path = repo / INDEPENDENCE_PLAN_PATH
     policy = load_policy(repo / POLICY_PATH)
-    gaps: list[dict[str, str]] = []
+    gaps: list[dict[str, object]] = []
     for path in tracked_paths(repo):
         if policy.resolve(path).disposition != "included":
             continue
@@ -118,12 +224,25 @@ def record_gaps(
             continue
         if path in covered:
             continue
-        classification, _evidence = provenance_ledger.class_for(path, None)
-        gaps.append({
+        classification = classifications.get(path)
+        if classification is None:
+            classification, _evidence = provenance_ledger.class_for(path, None)
+        gap: dict[str, object] = {
             "path": path,
             "reason": "no exact trusted record",
             "deterministic_class": classification,
-        })
+        }
+        if path.startswith(_PRODUCTION_PREFIXES) and classification in {
+            "upstream_derived",
+            "unresolved",
+        }:
+            metadata = independence_metadata(path, campaign_path=campaign_path)
+            gap["independence"] = metadata or {
+                "status": "missing",
+                "reason": "no explicit campaign owner or disposition",
+                "source": INDEPENDENCE_PLAN_PATH,
+            }
+        gaps.append(gap)
     return gaps
 
 
@@ -159,6 +278,9 @@ def main(argv: list[str] | None = None) -> int:
               f"adding one of them fails with TRUSTED_PATH_MISSING until a maintainer admits it.")
         for gap in gaps:
             print(f"  {gap['path']}  [{gap['deterministic_class']}]")
+            independence = gap.get("independence")
+            if isinstance(independence, dict) and independence.get("status") == "missing":
+                print("    independence: missing campaign owner/disposition")
         if gaps:
             print("\nBatch admission: one trusted record covering all of these paths clears them "
                   "together; per-path records are equally acceptable and are the stronger form.")

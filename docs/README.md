@@ -43,8 +43,19 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
   player discovery, and their profile-zero acceptance status (#309).
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
-  runtime and supported tooling parser boundaries, resource limits, deterministic
+  runtime and supported tooling parser boundaries, including every native and Python
+  JSON consumer (title manifest, runtime package, library, cache/identity, font cache,
+  input profile, player settings and package-builder documents) plus performance
+  summaries, frame-dump and other tooling readers; each row carries resource limits, deterministic
   regression/mutation status, sanitizer availability, and unresolved gaps (#319).
+  Every source anchor is a stable `path:symbol` reference checked against current
+  definitions by `tools/test_parse_fuzz.py`; line-number anchors are rejected.
+  Python methods use `Class.method` where needed, and anchors must resolve to one
+  definition (including supported constants). The checker rejects a `never reaches`
+  claim when a listed Python test has a syntactic call path to that reader, and a
+  row may only call a route untested when it names the kind of test that is missing.
+  The document is `schema_version` 4: `arithmetic.safe` remains a string status
+  rather than a boolean, and `schema_notes` records both changes.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
@@ -77,9 +88,13 @@ with explicit target and unbuilt boundaries.
   title id, address, or disc id may be hardcoded into generic code. The rule is
   machine-enforced by `tools/test_generic_title_planning_proof.py`.
 - [`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md) — the
-  functional checklist a native player slice is measured against.
+  authoritative per-capability disposition of every former web-dashboard and
+  diagnostic capability, with each row's owning test path or tracking issue, plus
+  the functional checklist a native player slice is measured against. The table is
+  machine-enforced by `tools/lint_docs.py`.
 - [`NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md`](NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md)
-  — per-capability native implementation status, with the gaps named.
+  — the native implementation narrative and the launch-path evidence; per-capability
+  status is maintained in the matrix above, not here.
 - [`NATIVE_PLAYER_ARCHITECTURE.md`](NATIVE_PLAYER_ARCHITECTURE.md),
   [`AOT_PRODUCTIZATION_ARCHITECTURE.md`](AOT_PRODUCTIZATION_ARCHITECTURE.md),
   [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md),
@@ -185,8 +200,8 @@ Every substantial document carries one status.
 | `LLE_FIDELITY_ARCHITECTURE.md` | CURRENT | Fidelity doctrine; ranks correctness above convenience |
 | `HLE_AND_WORKAROUND_INVENTORY.md` | CURRENT | The tier doctrine and HLE budget. The per-item inventory inside it is capture-time; live counts come from `tools/test_compat_manifest.py` |
 | `TITLE_PROFILE_ARCHITECTURE.md` | CURRENT | No-hardcoded-title rule, enforced by `tools/test_generic_title_planning_proof.py` |
-| `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Native slice functional checklist |
-| `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation per capability; PARTIAL rows name what is absent |
+| `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Authoritative capability disposition table plus the native slice functional checklist |
+| `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
 | `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build; carries the proposed preview copy |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202) and the library's build-package → validate → launch route exists (PR #487), while module decryption, retail-disc hash validation, and one-click play without the developer toolchain remain unbuilt and are marked inline |

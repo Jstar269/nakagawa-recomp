@@ -358,16 +358,26 @@ DISPLAY_SMOKE_DEMO_FRAMES := 1800
 
 # The AOT-gap mode of the same fixture: identical guest addresses, but the
 # helper is omitted from native emission (--omit-aot) so region A reaches it
-# through the ordinary production dispatch() seam.
+# through the ordinary production dispatch() seam. The address must match
+# HELPER in fixtures/production_smoke/generate.py (it moved to 0x08804068 when
+# the sceImpose language round trip extended region A).
 PRODUCTION_SMOKE_GAP_DIR       := build/production-smoke-gap
 PRODUCTION_SMOKE_GAP_FIXTURE   := $(PRODUCTION_SMOKE_GAP_DIR)/fixture
 PRODUCTION_SMOKE_GAP_MAP       := $(PRODUCTION_SMOKE_GAP_DIR)/production_smoke_gap.map
-PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804028
+PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804068
 
 # Caller-supplied extra codegen arguments (build-time codegen choices such as
 # the smoke's --omit-aot). Empty by default; carried into the codegen profile
 # hash so changing it regenerates instead of reusing stale output.
 CODEGEN_USER_ARGS ?=
+
+# Stack census declarations and runtime support are compiled only for builds
+# whose generated code contains the opt-in instrumentation.
+STACK_CENSUS_CFLAG :=
+ifneq ($(filter --stack-census,$(CODEGEN_USER_ARGS)),)
+STACK_CENSUS_CFLAG := -DSR_STACK_CENSUS_ENABLED
+override CFLAGS += $(STACK_CENSUS_CFLAG)
+endif
 
 # SR_NAN_TRAP: build-time NaN/Inf origin diagnostic (issue #69). Off by default
 # and zero cost when off. `make NAN_TRAP=1` turns on BOTH halves at once:
@@ -518,16 +528,21 @@ RUNTIME_PROFILE_MANIFEST := $(BUILD_DIR)/runtime_profile.json
 RECOMP_PROFILE_MANIFEST := $(BUILD_DIR)/recomp_profile.json
 CODEGEN_PROFILE_MANIFEST := $(BUILD_DIR)/codegen_profile.json
 
-# Verification-gate inputs. These are PPSSPP-captured golden traces + (for the microtest
-# gate) a PSP-compiled test module. They are external assets not committed to the repo, so
-# `make verify` is meant to be run in CI with them supplied on the command line, e.g.:
+# Verification-gate inputs. Codegen/microtest oracle traces remain external inputs; v1
+# traces are accepted for those non-hardware comparisons and reported as corroborative.
+# The hardware gate requires a strict v2 PSP_HARDWARE + LOCAL_COSIM pair.
 #   make verify GAME_NAME=hst GAME_ELF=eboot.elf GAME_BASE=0 GAME_ENTRY=0 \
 #     CODEGEN_ORACLE=oracle/eboot.trace \
-#     MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace
-# When an input is absent the corresponding gate reports BLOCKED with a real (non-zero) signal.
+#     MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace \
+#     PSP_HARDWARE_TRACE=oracle/psp-hardware.trace LOCAL_COSIM_TRACE=oracle/local-cosim.trace
+# When a codegen/microtest input is absent that gate reports NOT_RUN with a non-zero signal.
+# The hardware pair is optional: with neither trace set it reports NOT_RUN without failing
+# the target, so `make verify` can still succeed; setting only one of the two fails.
 CODEGEN_ORACLE   ?=
 MICROTEST_MODULE ?=
 MICROTEST_ORACLE ?=
+PSP_HARDWARE_TRACE ?=
+LOCAL_COSIM_TRACE ?=
 RUN_ELF_EXE      ?= $(BUILD_DIR)/run_elf.exe
 VERIFY_WORKDIR   ?= $(BUILD_DIR)/verify
 
@@ -841,6 +856,7 @@ PUBLIC_TARGETS := \
 	atrac3p-bridge-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
+	psmf-media-selftest-csc-mutant \
 	audio-selftest \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
@@ -893,7 +909,7 @@ HELP_DESCRIPTION_showcase := build packaged source-owned PSP showcase demos (req
 HELP_DESCRIPTION_showcase-smoke := run bundled demos headlessly with telemetry checks
 HELP_DESCRIPTION_showcase-linux := build and smoke the showcase demos on this POSIX host (Linux CI gate)
 HELP_DESCRIPTION_display-smoke := build the display smoke fixture
-HELP_DESCRIPTION_display-smoke-run := run the display smoke fixture
+HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/present flight bundle
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
 HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
@@ -948,6 +964,7 @@ HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
+HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
 HELP_DESCRIPTION_audio-selftest := run the SDL3 host audio output selftest
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
@@ -1199,8 +1216,13 @@ display-smoke:
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
 
+# display-smoke-run is the aggregate source-owned gate: it runs the guest-only
+# scheduler route and the --sched --gui route through the explicit no-window
+# presenter, then records and compares GE/present events from the same guest.
 display-smoke-run: display-smoke
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) flight --build-dir $(DISPLAY_SMOKE_DIR)
 
 display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
@@ -1461,6 +1483,7 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
 RECOMP_OPT ?= -O0
 RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
 override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 TRACE ?= 0
 ifeq ($(TRACE),1)
@@ -1630,6 +1653,7 @@ cosim-selftest:
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
+		CODEGEN_USER_ARGS=--stack-census \
 		CODEGEN_TOOL=$(CODEGEN_TOOL)
 	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
 	$(MAKE) cosim-selftest-run \
@@ -1640,7 +1664,8 @@ cosim-selftest:
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC) \
 		COSIM_FP_CONVERT_PRELUDE=$(COSIM_FP_CONVERT_PRELUDE) \
-		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC)
+		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC) \
+		CODEGEN_USER_ARGS=--stack-census
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.
@@ -1922,12 +1947,34 @@ else
 PSMF_MEDIA_LIBS :=
 endif
 
-psmf-media-selftest:
-	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections \
+PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/driver.o $(BUILD_DIR)/hle.o $(BUILD_DIR)/mpeg.o $(BUILD_DIR)/psmf_producer.o,$(RT_OBJS))
+
+psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest.exe \
-		src/rt/psmf_producer.c src/rt/psmf_media_selftest.c src/rt/h264_mf.c src/rt/h264_null.c src/rt/perf.c src/rt/flight_recorder.c \
-		$(PSMF_MEDIA_LIBS) -Wl,--gc-sections
+		$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o \
+		src/rt/hle.c $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o \
+		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
+
+# Prove the guest pixel assertion detects a Csc implementation that returns success but writes
+# nothing. The mutation is compiled only into this synthetic fixture translation unit.
+psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest_csc_mutant.o
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -DSR_MPEG_CSC_NO_WRITE_MUTANT -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
+		-o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe \
+		$(BUILD_DIR)/psmf_producer_media_selftest_csc_mutant.o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.o \
+		src/rt/hle.c $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o \
+		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
+	@$(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe > $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log 2>&1; result=$$?; \
+		if test $$result -eq 0; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc no-write mutant unexpectedly passed" >&2; exit 1; fi; \
+		if ! grep -Fq "FAIL: CSC writes the retained host picture deterministically" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the decoder-independent CSC write assertion" >&2; exit 1; fi; \
+		if ! grep -Fq "SKIP: guest Decode/Copy/CSC pixel assertions need an H.264 backend" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log && \
+		   ! grep -Fq "FAIL: guest CSC writes decoded I_PCM pixels into the guest destination" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
+		echo "psmf-media-selftest-csc-mutant: killed by the CSC write assertions"
 
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
@@ -1943,6 +1990,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nest
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
 hle-thread-selftest: hle-thread-selftest-build
@@ -1976,6 +2024,7 @@ hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py 
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
 
@@ -2006,6 +2055,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
 
@@ -2045,9 +2095,14 @@ stale-code-selftest:
 # return + EXL clear, user-mode traps, RI on unsupported encodings, Status /
 # Cause write masking, vector selection/validation, and the LLE gate that
 # keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
-cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+CPU_LLE_AOT_FIXTURE_C := $(BUILD_DIR)/cpu_lle_aot_flow_fixture.c
+
+$(CPU_LLE_AOT_FIXTURE_C): tools/test_cpu_lle.py tools/codegen.py tools/analyze.py
+	$(PYTHON) tools/test_cpu_lle.py --generate-lle-aot-flow-fixture $@
+
+cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(CPU_LLE_AOT_FIXTURE_C)
 	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
-		src/rt/cpu_lle_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
+		src/rt/cpu_lle_selftest.c $(CPU_LLE_AOT_FIXTURE_C) src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
 # domain-mode-selftest — host-neutral unit tests for the LLE Phase 1
@@ -2246,9 +2301,9 @@ psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 	$(PYTHON) tools/psp_oracle/run_nakagawa_vfpu.py --executable "$(PSP_VFPU_ORACLE_EXE)" --output "$(PSP_VFPU_ORACLE_OUT)" -- --model "$(PSP_VFPU_ORACLE_MODEL)" --firmware "$(PSP_VFPU_ORACLE_FIRMWARE)" --source-commit "$(PSP_VFPU_ORACLE_COMMIT)"
 
 # verify — differential smoke gates (no recompiler build needed; runs Python analysis tools
-# and the host reference interpreter). These are differential tests: each compares the
-# recompiler/reference output against a PPSSPP-captured oracle trace. The oracle inputs are
-# external and supplied via the *ORACLE / *MODULE variables above.
+# and the host reference interpreter). Codegen and microtest compare project output against
+# their supplied traces. The hardware gate separately requires a matching v2 PSP_HARDWARE
+# and LOCAL_COSIM pair; PPSSPP_CORROBORATIVE and v1 traces cannot satisfy it.
 #
 # Correct gate signatures (see tools/codegen_gate.py and tools/microtest_gate.py):
 #   codegen_gate.py   <elf> <oracle.trace> <workdir>
@@ -2256,12 +2311,14 @@ psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 #
 # Usage: make verify GAME_NAME=hst GAME_ELF=eboot.elf GAME_BASE=0 GAME_ENTRY=0 \
 #          CODEGEN_ORACLE=oracle/eboot.trace \
-#          MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace
+#          MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace \
+#          PSP_HARDWARE_TRACE=oracle/psp-hardware.trace LOCAL_COSIM_TRACE=oracle/local-cosim.trace
 verify: run_elf
 	$(PYTHON) tools/verify_gates.py --cc "$(CC)" --env-elf \
 		--run-elf "$(RUN_ELF_EXE)" --workdir "$(VERIFY_WORKDIR)" \
 		--codegen-oracle "$(CODEGEN_ORACLE)" --microtest-module "$(MICROTEST_MODULE)" \
-		--microtest-oracle "$(MICROTEST_ORACLE)"
+		--microtest-oracle "$(MICROTEST_ORACLE)" \
+		--psp-hardware-trace "$(PSP_HARDWARE_TRACE)" --local-cosim-trace "$(LOCAL_COSIM_TRACE)"
 
 # run_elf — host reference-interpreter driver used by microtest_gate. Built WITHOUT
 # -DSR_SELFTEST_ONLY so run_elf.cpp's main() (ELF loader + trace driver) is included.

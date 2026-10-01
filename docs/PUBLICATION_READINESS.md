@@ -175,6 +175,7 @@ the submitted tree is internally coherent and remains within that authority.
 | Path authority | may this path be published, and as what class? | `records` in the trusted detailed ledger, plus the deterministic classifier | `TRUSTED_PATH_MISSING`, `TRUSTED_PATH_UNQUALIFIED` |
 | Content binding | does the public ledger describe the actual candidate bytes? | candidate Git objects and regenerated ledger/export | `CONTENT_MISMATCH`, `EXPORT_FIELD_MISMATCH` |
 | Scope and policy | did the candidate hide or newly expose protected content? | trusted base policy/tree and the trusted verifier | `TRUSTED_SCOPE_VIOLATION`, `POLICY_SUBSTITUTION` |
+| Declared coverage | does every path the profile publishes still resolve to a tracked file? | candidate tree against the candidate policy's `include_paths` | `INCLUDED_PATH_UNTRACKED` |
 
 An exact implementation record authorizes a path across ordinary revisions. A
 routine edit therefore needs no second private approval: it updates the public
@@ -236,18 +237,27 @@ mingw32-make --no-print-directory provenance-refresh
 
 Stage the intended candidate changes first. This command calls the same
 `generate_ephemeral_controls()` implementation as hosted attestation, reads the
-public ledger from the exact base commit, records the changed existing public
-paths in the refresh audit block, and generates both controls in one pass. It
+public ledger from the exact base commit, checks every changed existing public
+path against the trusted authority, and generates both controls in one pass. It
 stages the generated ledger and export, plus the profile when `--apply-policy`
-is selected. If `PROVENANCE_BASE_SHA` is omitted,
-the command uses `merge-base(HEAD, origin/main)`.
+is selected. The committed ledger stays a per-path document: it never carries
+the tree-wide `refresh` audit block, because one slot holding the base tree,
+the candidate tree and the changed path list was rewritten by every landing and
+conflicted between two independent refreshes, so landing one reviewed change
+forced a control resync on every other open one. The refresh audit lives in the
+commit, the hosted verdict, and the external authority document. A ledger that
+still carries a block is accepted only when the block exactly describes this
+candidate against this base; any other block is refused. If `PROVENANCE_BASE_SHA` is
+omitted, the command uses `merge-base(HEAD, origin/main)`.
 When the candidate publication profile changed, also supply the external
 `PROVENANCE_TRUSTED_CANDIDATE_POLICY` and
 `PROVENANCE_POLICY_DELTA_AUTHORITY` inputs; the command stops if either is
 missing.
 
 The lower-level exact-path API remains available for narrowly scoped refresh
-operations and is useful for testing the underlying path checks:
+operations and is useful for testing the underlying path checks. It is a legacy
+route that still writes the `refresh` block, so prefer `make provenance-refresh`
+for pull requests:
 
 ```text
 python tools/provenance_ledger.py refresh-reviewed \
