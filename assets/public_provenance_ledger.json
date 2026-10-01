@@ -658,7 +658,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "cf7d10448e4b6cea9e34dfb8e71eb05e14425b5cc7f20288fa6462d431a1582a"
+      "sha256": "dd3e9a17b61b0e7a2df243eb3f011f2b58b965270716e3fbe10249f483768df2"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
