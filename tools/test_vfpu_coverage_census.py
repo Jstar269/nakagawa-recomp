@@ -312,6 +312,85 @@ class VfpuRouteCensusTests(unittest.TestCase):
             {f"0x{ROUTE_CLEAN_WORD:08x}", f"0x{ROUTE_OTHER_WORD:08x}"},
         )
 
+    def test_route_arg_must_be_a_codegen_option(self):
+        with tempfile.TemporaryDirectory(prefix="vfpu_route_arg_") as tmp:
+            elf = Path(tmp) / "route.elf"
+            elf.write_bytes(_synthetic_elf([ROUTE_CLEAN_WORD, *ROUTE_TAIL]))
+            for bad in ("88000000", "-base=0x1000", "--", ""):
+                with self.subTest(bad=bad):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        rc = census.main(["--route", str(elf), f"--route-arg={bad}"])
+                    self.assertEqual(rc, 2)
+                    self.assertEqual(output.getvalue(), "")
+
+    def test_route_with_a_vfpu_stub_fails_closed_and_other_stubs_are_counted(self):
+        with tempfile.TemporaryDirectory(prefix="vfpu_route_stub_") as tmp:
+            main_c = Path(tmp) / "route.c"
+            main_c.write_text(
+                f"    sr_begin(s, 0x00001000u, 0x{ROUTE_CLEAN_WORD:08x}u); sr_end(s, 0u, 0);" + chr(10),
+                encoding="ascii",
+            )
+            stubs = Path(tmp) / "route_stubs.txt"
+
+            def run():
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    rc = census.main(["--route", str(main_c)])
+                return rc, output.getvalue()
+
+            # A function stubbed on a VFPU-routed opcode hides its VFPU words.
+            stubs.write_text("0x00001040 opcode 0x36 at 0x00001040" + chr(10), encoding="ascii")
+            rc, text = run()
+            self.assertEqual((rc, text), (2, ""))
+            # An unrelated stub is reported, not hidden: the pass covers translated functions only.
+            stubs.write_text("0x00001040 control in delay slot at 0x00001040" + chr(10), encoding="ascii")
+            rc, text = run()
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(text)["route_stubbed_functions"], 1)
+            stubs.write_text("", encoding="ascii")
+            rc, text = run()
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(text)["route_stubbed_functions"], 0)
+
+    def test_route_report_names_emitted_occurrences_and_classification_flags(self):
+        rc, report = self._run_route([ROUTE_CLEAN_WORD, *ROUTE_TAIL])
+        self.assertEqual(rc, 0)
+        self.assertIn("route_emitted_occurrences", report)
+        self.assertNotIn("route_occurrences", report)
+        self.assertFalse(report["classification_lle_cpu"])
+        for entry in report["entries"]:
+            self.assertIn("emitted_occurrences", entry)
+            self.assertNotIn("count", entry)
+
+    def test_lle_cpu_route_args_reach_the_classification(self):
+        """lv.q/sv.q route to the interpreter in the generated C under --lle-cpu."""
+        from unittest import mock
+
+        seen = []
+        original = census._classify_aot
+
+        def spy(word, *, lle_cpu=False):
+            seen.append(lle_cpu)
+            return original(word, lle_cpu=lle_cpu)
+
+        with tempfile.TemporaryDirectory(prefix="vfpu_route_lle_") as tmp:
+            main_c = Path(tmp) / "route.c"
+            main_c.write_text(
+                f"    sr_begin(s, 0x00001000u, 0x{ROUTE_CLEAN_WORD:08x}u); sr_end(s, 0u, 0);\n",
+                encoding="ascii",
+            )
+            with mock.patch.object(census, "_classify_aot", spy):
+                report = census.build_route_report(main_c)
+        self.assertEqual(seen, [False])
+        self.assertFalse(report["classification_lle_cpu"])
+        words = mock.MagicMock(return_value=(__import__("collections").Counter({ROUTE_CLEAN_WORD: 1}), 1, 0))
+        with mock.patch.object(census, "_route_words", words), \
+                mock.patch.object(census, "_classify_aot", spy):
+            report = census.build_route_report(Path("route.elf"), ["--lle-cpu"])
+        self.assertEqual(seen[-1], True)
+        self.assertTrue(report["classification_lle_cpu"])
+
     def test_route_census_rejects_non_route_input(self):
         with tempfile.TemporaryDirectory(prefix="vfpu_route_bad_") as tmp:
             binary = Path(tmp) / "route.bin"

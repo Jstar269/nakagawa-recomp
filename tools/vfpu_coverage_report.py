@@ -408,7 +408,7 @@ def _aot_structure(body: str) -> str:
     return " ".join(normalized.split())
 
 
-def _classify_aot(word: int) -> dict[str, object]:
+def _classify_aot(word: int, *, lle_cpu: bool = False) -> dict[str, object]:
     routed, controls = production_vfpu_opcodes()
     op = word >> 26
     if op in controls:
@@ -427,7 +427,7 @@ def _classify_aot(word: int) -> dict[str, object]:
             "aot_emitted": "",
         }
     try:
-        body, _, _ = codegen.vfpu_effect(0x1000, word)
+        body, _, _ = codegen.vfpu_effect(0x1000, word, lle_cpu=lle_cpu)
     except codegen.Unsupported as exc:
         reason = _reason_template(exc)
         return {
@@ -445,12 +445,12 @@ def _classify_aot(word: int) -> dict[str, object]:
     }
 
 
-def classify_words(words: Iterable[int]) -> list[dict[str, object]]:
+def classify_words(words: Iterable[int], *, lle_cpu: bool = False) -> list[dict[str, object]]:
     ordered = tuple(sorted(set(words)))
     probe = _run_interpreter_probe(ordered)
     records: list[dict[str, object]] = []
     for word in ordered:
-        record = _classify_aot(word)
+        record = _classify_aot(word, lle_cpu=lle_cpu)
         record["aot_structure"] = _aot_structure(str(record["aot_emitted"]))
         kind, return_line = probe[word]
         record.update(
@@ -1008,8 +1008,55 @@ def _collect_route_words(paths: Iterable[Path]) -> tuple[Counter[int], int]:
     return counts, emitted
 
 
-def _run_route_codegen(elf: Path, route_args: list[str]) -> tuple[Counter[int], int]:
+def _check_route_args(route_args: list[str]) -> None:
+    """Reject anything tools/codegen.py would treat as a positional.
+
+    codegen splits argv into positionals (not starting with ``--``) and options and
+    uses only the first two positionals, so a malformed value (``--route-arg=88000000``
+    where ``--base=`` was meant) would silently regenerate the route with other
+    settings and still report a pass.
+    """
+    for value in route_args:
+        if not value.startswith("--") or value == "--":
+            raise CensusError(
+                f"--route-arg {value!r} must be a codegen option starting with '--' "
+                "(use the --flag=value form)"
+            )
+
+
+_STUB_OPCODE = re.compile(r"\bopcode 0x([0-9a-fA-F]+)\b")
+
+
+def _stub_summary(stub_list: Path) -> int:
+    """Count the functions codegen replaced with a stub; refuse VFPU-opcode stubs.
+
+    A stubbed function emits no ``sr_begin`` literals, so its VFPU words never reach
+    the census. A stub whose reason names an opcode the production AOT routes to the
+    VFPU decoder is exactly such a hidden boundary, so it fails closed. Other stubs
+    (unsupported non-VFPU opcodes, control in a delay slot, ...) are counted and
+    reported, because a pass then covers only the translated functions.
+    """
+    try:
+        lines = [line for line in stub_list.read_text(encoding="ascii").splitlines() if line.strip()]
+    except (OSError, UnicodeError) as exc:
+        raise CensusError(f"route stub list {stub_list.name} is unreadable") from exc
+    opcodes = route_opcodes()
+    hidden = 0
+    for line in lines:
+        match = _STUB_OPCODE.search(line)
+        if match is not None and int(match.group(1), 16) in opcodes:
+            hidden += 1
+    if hidden:
+        raise CensusError(
+            f"route AOT generation stubbed {hidden} function(s) on a VFPU-routed opcode; "
+            "their VFPU words are invisible to the census, so a pass would only mean 'stubbed'"
+        )
+    return len(lines)
+
+
+def _run_route_codegen(elf: Path, route_args: list[str]) -> tuple[Counter[int], int, int]:
     """Reproduce the route's AOT by running the production code generator."""
+    _check_route_args(route_args)
     with tempfile.TemporaryDirectory(prefix="nakagawa_vfpu_route_") as tmp:
         out = Path(tmp) / "route_recomp.c"
         command = [sys.executable, str(TOOLS / "codegen.py"), str(elf), str(out), *route_args]
@@ -1024,10 +1071,13 @@ def _run_route_codegen(elf: Path, route_args: list[str]) -> tuple[Counter[int], 
             raise CensusError(
                 f"route AOT generation failed with status {completed.returncode}: {detail}"
             )
-        return _collect_route_words([out, *sorted(Path(tmp).glob("route_recomp_*.c"))])
+        stub_list = Path(tmp) / "route_recomp_stubs.txt"
+        stubbed = _stub_summary(stub_list) if stub_list.is_file() else 0
+        counts, emitted = _collect_route_words([out, *sorted(Path(tmp).glob("route_recomp_*.c"))])
+        return counts, emitted, stubbed
 
 
-def _route_words(path: Path, route_args: list[str]) -> tuple[Counter[int], int]:
+def _route_words(path: Path, route_args: list[str]) -> tuple[Counter[int], int, int]:
     path = path.resolve()
     try:
         with open(path, "rb") as handle:
@@ -1040,7 +1090,10 @@ def _route_words(path: Path, route_args: list[str]) -> tuple[Counter[int], int]:
         raise CensusError("--route-arg applies only to an ELF route input")
     if path.suffix != ".c":
         raise CensusError("route input must be an ELF or a generated .c file")
-    return _collect_route_words(_route_generated_files(path))
+    sibling_stubs = path.with_name(f"{path.stem}_stubs.txt")
+    stubbed = _stub_summary(sibling_stubs) if sibling_stubs.is_file() else 0
+    counts, emitted = _collect_route_words(_route_generated_files(path))
+    return counts, emitted, stubbed
 
 
 def build_route_report(
@@ -1053,12 +1106,17 @@ def build_route_report(
     SR_VFPU_OTHER. AOT-owned direct controls (vflush) never reach the
     interpreter and stay pass.
     """
-    counts, emitted = _route_words(Path(path), list(route_args))
+    route_args = list(route_args)
+    counts, emitted, stubbed = _route_words(Path(path), route_args)
+    # The scanned route may have been generated with --lle-cpu, which changes how
+    # VFPU memory forms are emitted; classify with the same setting so the report
+    # describes the route that was scanned. A generated .c input carries no flags.
+    lle_cpu = "--lle-cpu" in route_args
     entries: list[dict[str, object]] = []
     failures: list[str] = []
     records: list[dict[str, object]] = []
     if counts:
-        records = classify_words(tuple(sorted(counts)))
+        records = classify_words(tuple(sorted(counts)), lle_cpu=lle_cpu)
         if any(record["aot_source"] is None for record in records):
             raise CensusError("route contains a word outside the production VFPU decoders")
         validate_agreement(records)
@@ -1069,7 +1127,9 @@ def build_route_report(
         entries.append(
             {
                 "word": word,
-                "count": counts[int(record["word"])],
+                # Text emissions of the word in the generated C, not executed
+                # occurrences: a delay slot that is also a branch target is emitted twice.
+                "emitted_occurrences": counts[int(record["word"])],
                 "disposition": disposition,
                 "aot": record["aot_disposition"],
                 "interpreter": record["interpreter_kind"],
@@ -1086,8 +1146,12 @@ def build_route_report(
         "fail_rule": ROUTE_FAIL_RULE,
         "status": "fail" if failures else "pass",
         "route_emitted_words": emitted,
+        # Functions codegen could not translate emit no instructions, so a pass covers
+        # the translated functions only; this is how many were left out.
+        "route_stubbed_functions": stubbed,
         "route_words": len(entries),
-        "route_occurrences": sum(counts.values()),
+        "route_emitted_occurrences": sum(counts.values()),
+        "classification_lle_cpu": lle_cpu,
         "failures": failures,
         "entries": entries,
     }
