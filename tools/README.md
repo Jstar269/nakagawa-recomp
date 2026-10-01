@@ -284,6 +284,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `test_codegen_vfpu_fallback.py` | VFPU fallback emission, including unsupported forms failing closed. |
 | `test_cosim_fixture.py` | Structural gates for the AOT/interpreter cosimulation fixture. |
 | `test_compat_manifest.py` | Every custom codegen stub and dispatch hook must be in the manifest. |
+| `test_cosim_mutation_gate_outcome.py` | Cosim mutation driver verdicts bound to process status, the timeout verdict and child-tree reaping. |
 | `test_cpu_lle.py` | Low-level emulation CPU gates: COP0, exceptions, eret, interpreter support. |
 | `test_domain_mode.py` | Domain mode table and the import-call seam gates. |
 | `test_dispatch_call_boundary.py` | Mutation proof for the production interpreter CALL/RETURN boundary. |
@@ -327,6 +328,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `test_savedata_spans.py` | Guest span validation, preflight ordering and portable contained-delete seams. |
 | `test_sched_invariants.py` | Source-level guards for scheduler and thread-lifecycle invariants. |
 | `test_sdkver_c.py` | Retained-state regression for the compiled SDK-version contract. |
+| `test_tracediff_local_coverage.py` | Strict local trace coverage contract for `tracediff.py --strict-local` and the codegen/microtest gates. |
 | `test_vfs_c.py` | Host-neutral VFS path joining regression test. |
 | `test_vfs_contained.py` | Executable evidence for the host-neutral contained-delete seam. |
 
