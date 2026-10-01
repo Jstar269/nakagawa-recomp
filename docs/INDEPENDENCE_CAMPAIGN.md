@@ -465,7 +465,8 @@ Ledger end-state (checked mechanically):
    mislabelled as project-authored.
 
 Enforcing gate (implemented via `tools/provenance_record_gap.py --check`):
-verifies that every upstream-derived production path has an explicit roadmap
+verifies that every upstream-derived production code path (under `src/` or `tools/`,
+excluding `.md`/`.txt` notice and format documents) has an explicit roadmap
 disposition in this document (`status=missing` fails closed). Existing known
 gaps are tracked in a reviewed baseline (`KNOWN_DISPOSITION_GAPS`) with owner
 issue and rationale, ensuring the set of untriaged gaps can shrink but never

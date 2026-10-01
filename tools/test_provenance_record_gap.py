@@ -309,13 +309,26 @@ class TestOutput(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(seen.get("trusted_classifications"), {"src/a.c": "upstream_derived"})
 
-    def test_documented_flag_behaviour_matches_main(self) -> None:
+    def test_documented_flag_behaviour_is_described(self) -> None:
         doc = gap.__doc__ or ""
         self.assertIn("--check-records", doc)
         self.assertIn("disposition ratchet", doc)
         self.assertNotIn("``--check`` fails closed when they do not", doc)
-        parser_help = (ROOT / "tools" / "README.md").read_text(encoding="utf-8")
-        self.assertIn("disposition", parser_help.split("`provenance_record_gap.py`", 1)[1].splitlines()[0])
+        readme = (ROOT / "tools" / "README.md").read_text(encoding="utf-8")
+        rows = [line for line in readme.splitlines()
+                if line.startswith("| `provenance_record_gap.py` |")]
+        self.assertEqual(len(rows), 1, "tools/README.md needs exactly one index row for the tool")
+        self.assertIn("disposition", rows[0])
+        self.assertIn("--check-records", rows[0])
+
+    def test_combining_the_two_gates_is_rejected(self) -> None:
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            rc = gap.main(["--repo", str(ROOT), "--check", "--check-records"])
+        self.assertEqual(rc, 2)
+        self.assertIn("separate gates", err.getvalue())
 
     def test_the_inventory_mode_is_not_a_gate(self) -> None:
         self.assertEqual(gap.main(["--repo", str(ROOT)]), 0)

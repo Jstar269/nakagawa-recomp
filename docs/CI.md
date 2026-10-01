@@ -125,8 +125,9 @@ from those generated ledger bytes in the same invocation, so a second pass is
 not needed.
 
 The `provenance_record_gap.py --check` gate (`make provenance-record-gap-check`)
-enforces that every upstream-derived production path has an explicit disposition
-in [`docs/INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md). Paths with
+enforces that every upstream-derived production code path (under `src/` or
+`tools/`, excluding `.md`/`.txt` notice and format documents) has an explicit
+disposition in [`docs/INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md). Paths with
 `status=missing` fail closed. A reviewed baseline (`KNOWN_DISPOSITION_GAPS`)
 allows existing gaps to shrink but never grow; stale baseline entries fail
 closed. The check is wired into `make check`, `make readiness`, pre-commit, and

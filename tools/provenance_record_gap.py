@@ -516,6 +516,12 @@ def main(argv: list[str] | None = None) -> int:
              "trusted record (an admission inventory, not a merge gate)",
     )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.check and args.check_records:
+        # The two gates report separately; combining them would let the first verdict
+        # hide the second, so run them as two invocations.
+        print("provenance_record_gap: --check and --check-records are separate gates; "
+              "run them as two invocations", file=sys.stderr)
+        return 2
 
     repo = args.repo.resolve()
     source = "committed public ledger (projection of the private authority)"
