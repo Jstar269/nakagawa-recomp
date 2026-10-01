@@ -93,6 +93,7 @@ int main(int argc, char **argv) {
     snprintf(g2.title_name, sizeof(g2.title_name), "%s", m2.title_name);
     snprintf(g2.title_id, sizeof(g2.title_id), "%s", m2.matched_title->id);
     snprintf(g2.iso_path, sizeof(g2.iso_path), "%s", iso2);
+    snprintf(g2.boot_executable, sizeof(g2.boot_executable), "EBOOT.OLD");
     g2.status = NK_STATUS_VERIFIED;
     g2.is_prepared = true;
 
@@ -111,13 +112,17 @@ int main(int argc, char **argv) {
     assert(r1 != NULL && r2 != NULL);
     assert(strcmp(r1->title_id, "synthetic-allegrex-v1") == 0);
     assert(strcmp(r2->title_id, "pspdev-phase5-v1") == 0);
+    assert(strcmp(r2->boot_executable, "EBOOT.OLD") == 0);
 
     /* Test typed launch session creation and execution for second title */
     if (argc >= 5) {
         const char *test_root = argv[4];
         NkLaunchSession session;
+        NkGameEntry launch_game = *r2;
         memset(&session, 0, sizeof(session));
-        assert(nk_launch_prepare_session(&session, r2, test_root) == NK_OK);
+        snprintf(launch_game.selected_executable,
+                 sizeof(launch_game.selected_executable), "EBOOT.BIN");
+        assert(nk_launch_prepare_session(&session, &launch_game, test_root) == NK_OK);
         printf("SECOND_TITLE_SESSION_CREATED\\n");
         assert(strcmp(session.title_id, "pspdev-phase5-v1") == 0);
         assert(strcmp(session.disc_id, "TEST00005") == 0);
@@ -179,6 +184,9 @@ int main(int argc, char **argv) {
 int main(void) {
     const char *iso = getenv("PSP_ISO");
     assert(iso != NULL && strlen(iso) > 0);
+    const char *boot_path = getenv("SR_BOOT_PATH");
+    assert(boot_path != NULL && strcmp(boot_path,
+           "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD") == 0);
     const char *fps = getenv("SR_FPS_CAP");
     assert(fps != NULL && strcmp(fps, "60") == 0);
     /* No dispatch-control variable may reach the runtime: dispatch is

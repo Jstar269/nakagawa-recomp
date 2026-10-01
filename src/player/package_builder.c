@@ -1631,6 +1631,19 @@ bool package_builder_toolchain_missing(
     return true;
 }
 
+/* Every new build attempt starts from a clean run state. A session is
+ * reusable, so a previous run's clock and outcome flags must not survive into
+ * the next start: the poll clock latches on start_time_ms == 0, and a stale
+ * value would report the previous build's elapsed time. */
+static void package_builder_reset_run_state(PackageBuildSession *session) {
+    session->is_complete = false;
+    session->is_failed = false;
+    session->is_cancelled = false;
+    session->exit_code = -1;
+    session->start_time_ms = 0;
+    session->elapsed_ms = 0;
+}
+
 NkResult package_builder_start(
     PackageBuildSession *session,
     const char *python_path,
@@ -1641,6 +1654,10 @@ NkResult package_builder_start(
     if (!session || !python_path || !cli_path || !session->disc_id[0]) {
         return NK_ERROR_GENERIC;
     }
+
+    /* Reset before anything can fail, so a reused session never reports the
+     * previous build's elapsed time or outcome. */
+    package_builder_reset_run_state(session);
 
     /* Set up progress file and log file paths */
     const char *ldir = (log_dir && log_dir[0]) ? log_dir : ".";
@@ -1725,6 +1742,8 @@ NkResult package_builder_start(
     session->is_failed = false;
     session->is_cancelled = false;
     session->exit_code = -1;
+    session->start_time_ms = 0;
+    session->elapsed_ms = 0;
     session->current_stage = PACKAGE_BUILD_STAGE_PREFLIGHT;
     safe_str_copy(session->current_stage_name, sizeof(session->current_stage_name), "preflight");
     safe_str_copy(session->current_message, sizeof(session->current_message), "Starting package build...");
@@ -1769,7 +1788,13 @@ static void read_new_progress_lines(PackageBuildSession *session) {
 void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms) {
     if (!session || !session->is_building) return;
 
-    if (session->start_time_ms > 0 && current_time_ms >= session->start_time_ms) {
+    /* The clock starts at the first poll of a running build: the start routines
+     * reset start_time_ms to 0 and nothing else set it, so Elapsed stayed 0.0 s. */
+    if (session->start_time_ms == 0) {
+        session->start_time_ms = current_time_ms ? current_time_ms : 1u;
+        session->elapsed_ms = 0;
+    }
+    if (current_time_ms >= session->start_time_ms) {
         session->elapsed_ms = (uint32_t)(current_time_ms - session->start_time_ms);
     }
 

@@ -10,6 +10,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,21 +148,229 @@ static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
     SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
 }
 
+#define PLAYER_UI_LOGICAL_WIDTH 1280
+#define PLAYER_UI_LOGICAL_HEIGHT 720
+#define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
+#define PLAYER_WINDOW_MIN_LOGICAL_HEIGHT 540
+
+static SDL_DisplayID player_window_display(const PlayerSettings *settings) {
+    SDL_DisplayID display = 0;
+    if (settings && settings->launcher_window_position_valid) {
+        SDL_Point center = {
+            settings->launcher_window_x + settings->launcher_window_width / 2,
+            settings->launcher_window_y + settings->launcher_window_height / 2
+        };
+        display = SDL_GetDisplayForPoint(&center);
+    }
+    if (!display) display = SDL_GetPrimaryDisplay();
+    return display;
+}
+
+static bool player_display_usable_bounds(SDL_DisplayID display, SDL_Rect *bounds) {
+    if (!display || !bounds) return false;
+    if (!SDL_GetDisplayUsableBounds(display, bounds)) {
+        if (!SDL_GetDisplayBounds(display, bounds)) return false;
+    }
+    return bounds->w > 0 && bounds->h > 0;
+}
+
+static float player_display_content_scale(SDL_DisplayID display) {
+    float scale = SDL_GetDisplayContentScale(display);
+    if (scale < 1.0f || scale > 3.0f) scale = 1.0f;
+    return scale;
+}
+
+static PlayerWindowFrame player_estimated_window_frame(float content_scale) {
+    PlayerWindowFrame frame;
+    frame.left = (int)(8.0f * content_scale + 0.999f);
+    frame.right = frame.left;
+    frame.top = (int)(32.0f * content_scale + 0.999f);
+    frame.bottom = frame.left;
+    return frame;
+}
+
+static PlayerWindowRect player_requested_window(const PlayerSettings *settings,
+                                                 float content_scale) {
+    PlayerWindowRect requested;
+    requested.x = settings ? settings->launcher_window_x : 0;
+    requested.y = settings ? settings->launcher_window_y : 0;
+    if (settings && settings->launcher_window_position_valid) {
+        requested.width = settings->launcher_window_width;
+        requested.height = settings->launcher_window_height;
+    } else {
+        requested.width = (int)(PLAYER_UI_LOGICAL_WIDTH * content_scale + 0.5f);
+        requested.height = (int)(PLAYER_UI_LOGICAL_HEIGHT * content_scale + 0.5f);
+    }
+    return requested;
+}
+
+static bool player_apply_window_geometry(SDL_Window *window,
+                                         PlayerWindowRect requested,
+                                         PlayerWindowRect usable,
+                                         PlayerWindowFrame frame,
+                                         bool position_valid,
+                                         PlayerWindowRect *fitted) {
+    PlayerWindowRect next;
+    if (!window || !player_window_fit_to_display(requested, usable, frame,
+                                                 position_valid, &next)) {
+        return false;
+    }
+    bool size_set = SDL_SetWindowSize(window, next.width, next.height);
+    bool position_set = SDL_SetWindowPosition(window, next.x, next.y);
+    if (fitted) *fitted = next;
+    return size_set && position_set;
+}
+
+static bool player_refit_to_actual_frame(SDL_Window *window,
+                                         PlayerWindowRect requested,
+                                         SDL_Rect usable,
+                                         bool position_valid,
+                                         PlayerWindowRect *fitted) {
+    int top = 0;
+    int left = 0;
+    int bottom = 0;
+    int right = 0;
+    if (!SDL_GetWindowBordersSize(window, &top, &left, &bottom, &right)) {
+        return false;
+    }
+    PlayerWindowRect usable_rect = { usable.x, usable.y, usable.w, usable.h };
+    PlayerWindowFrame frame = { top, left, bottom, right };
+    return player_apply_window_geometry(window, requested, usable_rect, frame,
+                                        position_valid, fitted);
+}
+
+static void player_capture_window_settings(PlayerApp *app, SDL_Window *window) {
+    if (!app || !window) return;
+    Uint32 flags = SDL_GetWindowFlags(window);
+    app->settings.launcher_fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+    if (app->settings.launcher_fullscreen) return;
+
+    app->settings.launcher_window_maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    if (flags & SDL_WINDOW_MINIMIZED) return;
+    if (app->settings.launcher_window_maximized) return;
+
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    if (SDL_GetWindowPosition(window, &x, &y) &&
+        SDL_GetWindowSize(window, &width, &height) &&
+        width >= 320 && height >= 240) {
+        app->settings.launcher_window_x = x;
+        app->settings.launcher_window_y = y;
+        app->settings.launcher_window_width = width;
+        app->settings.launcher_window_height = height;
+        app->settings.launcher_window_position_valid = true;
+    }
+}
+
+static void player_apply_launcher_fullscreen(PlayerApp *app, SDL_Window *window,
+                                              bool *applied_fullscreen) {
+    if (!app || !window || !applied_fullscreen ||
+        app->settings.launcher_fullscreen == *applied_fullscreen) {
+        return;
+    }
+    bool requested = app->settings.launcher_fullscreen;
+    if (SDL_SetWindowFullscreen(window, requested)) {
+        *applied_fullscreen = requested;
+    } else {
+        app->settings.launcher_fullscreen = *applied_fullscreen;
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Could not change launcher fullscreen mode: %.72s",
+                 SDL_GetError());
+        player_app_save_settings(app, NULL);
+    }
+}
+
+static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
+    if (player_app_take_close_confirmation_fallback(app)) {
+        fprintf(stderr,
+                "[PLAYER] Close confirmation was unavailable; the second close request is treated as explicit force-quit.\n");
+        return player_app_close_decision(app, true) == PLAYER_CLOSE_QUIT;
+    }
+    if (player_app_close_decision(app, false) != PLAYER_CLOSE_CONFIRM_REQUIRED) {
+        return true;
+    }
+
+    const SDL_MessageBoxButtonData buttons[] = {
+        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT |
+              SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT,
+          0, "Cancel" },
+        { 0, 1, "Close game and quit" }
+    };
+    const SDL_MessageBoxData dialog = {
+        SDL_MESSAGEBOX_WARNING,
+        window,
+        "Game still running",
+        "A game is running. Close it and quit?",
+        2,
+        buttons,
+        NULL
+    };
+    int button_id = 0;
+    bool dialog_shown = false;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (!getenv("NK_UI_TEST_MESSAGEBOX_FAIL")) {
+        dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
+    }
+#else
+    dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
+#endif
+    if (!dialog_shown) {
+        player_app_note_close_confirmation_failure(app);
+        fprintf(stderr,
+                "[PLAYER] Close confirmation failed: %.160s. Repeat the close request to force-quit safely.\n",
+                SDL_GetError());
+        return false;
+    }
+    return player_app_close_decision(app, button_id == 1) == PLAYER_CLOSE_QUIT;
+}
+
 /* Keep the user-input mapping in one place so the native loop and the headless
  * regression drive the same SDL event path. Worker and device-lifecycle events
  * remain owned by the loop because they carry live handles. */
 static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                                      SDL_Window *window, bool *running,
+                                     bool *close_request_handled_in_batch,
                                      const SDL_Event *event) {
     if (!app || !input || !running || !event) return false;
 
     switch (event->type) {
     case SDL_EVENT_QUIT:
-        *running = false;
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        if (player_app_close_request_batch_claim(
+                close_request_handled_in_batch) &&
+            player_confirm_quit(window, app)) {
+            *running = false;
+        }
         return true;
     case SDL_EVENT_WINDOW_RESIZED:
-        app->window_width = event->window.data1;
-        app->window_height = event->window.data2;
+        if (!app->logical_ui) {
+            app->window_width = event->window.data1;
+            app->window_height = event->window.data2;
+        }
+        if (!(SDL_GetWindowFlags(window) &
+              (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED |
+               SDL_WINDOW_MINIMIZED))) {
+            app->settings.launcher_window_width = event->window.data1;
+            app->settings.launcher_window_height = event->window.data2;
+        }
+        return true;
+    case SDL_EVENT_WINDOW_MOVED:
+        if (!(SDL_GetWindowFlags(window) &
+              (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED |
+               SDL_WINDOW_MINIMIZED))) {
+            app->settings.launcher_window_x = event->window.data1;
+            app->settings.launcher_window_y = event->window.data2;
+            app->settings.launcher_window_position_valid = true;
+        }
+        return true;
+    case SDL_EVENT_WINDOW_MAXIMIZED:
+        app->settings.launcher_window_maximized = true;
+        return true;
+    case SDL_EVENT_WINDOW_RESTORED:
+        app->settings.launcher_window_maximized =
+            (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
         return true;
     case SDL_EVENT_MOUSE_MOTION:
         input->mouse_x = (int)event->motion.x;
@@ -177,7 +386,12 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
     case SDL_EVENT_KEY_DOWN:
-        if (event->key.key == SDLK_ESCAPE) {
+        if (!event->key.repeat &&
+            (event->key.key == SDLK_F11 ||
+             ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
+              (event->key.mod & SDL_KMOD_ALT)))) {
+            player_app_toggle_launcher_fullscreen(app);
+        } else if (event->key.key == SDLK_ESCAPE) {
             if (app->active_view == VIEW_SETUP_WIZARD) {
                 player_app_wizard_back(app);
             } else if (app->active_view == VIEW_CONTROLLER_SETTINGS) {
@@ -200,7 +414,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             } else if (!player_view_is_library(app->active_view)) {
                 player_app_set_view(app, VIEW_LIBRARY);
             } else {
-                *running = false;
+                if (player_confirm_quit(window, app)) *running = false;
             }
         } else if (event->key.key == SDLK_O && !app->wizard.is_extracting) {
             trigger_file_picker(window, app);
@@ -419,6 +633,10 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->type = SDL_EVENT_QUIT;
         return 1;
     }
+    if (strcmp(token, "CLOSE") == 0) {
+        event->type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+        return 1;
+    }
     if (strncmp(token, "WAIT_MS=", 8) == 0) {
         uint64_t duration = 0;
         if (!player_ui_test_parse_positive_u64(token + 8, &duration) ||
@@ -595,9 +813,12 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     }
     SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
     bool badge_valid = ui_last_status_badge_rect(&badge);
+    int settings_two_col = app->active_view == VIEW_SETTINGS
+        ? (player_settings_uses_two_columns(app->window_width,
+                                             app->window_height) ? 1 : 0) : -1;
     printf("[PLAYER_UI_TEST] frame=%d ticks_ms=%llu view=%s "
            "selected=%d selected_disc=%s selected_title_id=%s "
-           "focus=%d focus_count=%d wizard_step=%s "
+           "focus=%d focus_count=%d settings_two_col=%d wizard_step=%s "
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
@@ -613,7 +834,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->selected_game_index,
            selected ? selected->disc_id : "NONE",
            selected ? selected->title_id : "NONE",
-           app->focus_index, ui_focus_count(app),
+           app->focus_index, ui_focus_count(app), settings_two_col,
            player_ui_test_wizard_step_name(app->wizard.step),
            app->wizard.font_confirmed ? 1 : 0,
            app->wizard.is_extracting ? 1 : 0, app->wizard.extraction_percent,
@@ -1317,6 +1538,7 @@ int main(int argc, char *argv[]) {
     bool ui_test_waiting_for_view = false;
     uint64_t ui_test_wait_deadline = 0;
     uint32_t ui_test_wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
+    bool ui_test_fake_game_running = false;
 #endif
     bool launch_now = false;
     bool stage_initial_iso = false;
@@ -1391,6 +1613,10 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    {
+        const char *fake_running = getenv("NK_UI_TEST_GAME_RUNNING");
+        ui_test_fake_game_running = ui_test_mode && fake_running && fake_running[0];
+    }
     if (ui_test_mode) setvbuf(stdout, NULL, _IONBF, 0);
 #endif
 
@@ -1739,6 +1965,7 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (ui_test_fake_game_running) app.is_game_running = true;
     if (ui_test_error_code) {
         player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
                              "Synthetic UI regression error state.",
@@ -1814,6 +2041,68 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    bool interactive_window = screenshot_path == NULL
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        && !ui_test_mode
+#endif
+        ;
+    SDL_DisplayID startup_display = 0;
+    SDL_Rect usable_bounds = { 0, 0, 0, 0 };
+    bool have_usable_bounds = false;
+    float display_content_scale = 1.0f;
+    PlayerWindowRect requested_window = {
+        0, 0, app.window_width, app.window_height
+    };
+    PlayerWindowRect startup_window = requested_window;
+    PlayerWindowFrame estimated_frame = { 0, 0, 0, 0 };
+    int minimum_width = 640;
+    int minimum_height = 480;
+    if (interactive_window) {
+        startup_display = player_window_display(&app.settings);
+        have_usable_bounds = player_display_usable_bounds(startup_display,
+                                                          &usable_bounds);
+        display_content_scale = player_display_content_scale(startup_display);
+        requested_window = player_requested_window(&app.settings,
+                                                    display_content_scale);
+        estimated_frame = player_estimated_window_frame(display_content_scale);
+        if (have_usable_bounds) {
+            PlayerWindowRect usable_rect = {
+                usable_bounds.x, usable_bounds.y, usable_bounds.w, usable_bounds.h
+            };
+            if (!player_window_fit_to_display(
+                    requested_window, usable_rect, estimated_frame,
+                    app.settings.launcher_window_position_valid,
+                    &startup_window)) {
+                int fallback_width = usable_bounds.w -
+                    estimated_frame.left - estimated_frame.right;
+                int fallback_height = usable_bounds.h -
+                    estimated_frame.top - estimated_frame.bottom;
+                if (fallback_width < 1) fallback_width = 1;
+                if (fallback_height < 1) fallback_height = 1;
+                startup_window = (PlayerWindowRect){
+                    usable_bounds.x, usable_bounds.y,
+                    fallback_width, fallback_height
+                };
+            }
+            int available_width = usable_bounds.w -
+                estimated_frame.left - estimated_frame.right;
+            int available_height = usable_bounds.h -
+                estimated_frame.top - estimated_frame.bottom;
+            int scaled_min_width = (int)(PLAYER_WINDOW_MIN_LOGICAL_WIDTH *
+                                         display_content_scale + 0.5f);
+            int scaled_min_height = (int)(PLAYER_WINDOW_MIN_LOGICAL_HEIGHT *
+                                          display_content_scale + 0.5f);
+            if (available_width < scaled_min_width) scaled_min_width = available_width;
+            if (available_height < scaled_min_height) scaled_min_height = available_height;
+            minimum_width = scaled_min_width < startup_window.width
+                ? scaled_min_width : startup_window.width;
+            minimum_height = scaled_min_height < startup_window.height
+                ? scaled_min_height : startup_window.height;
+            if (minimum_width < 1) minimum_width = 1;
+            if (minimum_height < 1) minimum_height = 1;
+        }
+    }
+
     Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (screenshot_path != NULL
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -1823,18 +2112,52 @@ int main(int argc, char *argv[]) {
         win_flags |= SDL_WINDOW_HIDDEN;
     }
 
-    SDL_Window *window = SDL_CreateWindow("Nakagawa Recomp", app.window_width, app.window_height, win_flags);
+    SDL_Window *window = SDL_CreateWindow("Nakagawa Recomp", startup_window.width,
+                                          startup_window.height, win_flags);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
-    /* Launcher stays usable when thrown any resize: refuse tiny windows
-     * that would collapse every card below its minimum. */
-    SDL_SetWindowMinimumSize(window, 640, 560);
-    /* Record real pixel density for crisp type; 1.0 on standard displays. */
+    if (interactive_window && have_usable_bounds) {
+        SDL_Rect usable = usable_bounds;
+        player_apply_window_geometry(
+            window, requested_window,
+            (PlayerWindowRect){ usable.x, usable.y, usable.w, usable.h },
+            estimated_frame, app.settings.launcher_window_position_valid,
+            &startup_window);
+    }
+    /* Keep a useful minimum where the display permits it. On smaller displays
+       the minimum shrinks to the available client area rather than covering
+       the taskbar or extending onto a monitor that is no longer connected. */
+    SDL_SetWindowMinimumSize(window, minimum_width, minimum_height);
+    /* The window rectangle uses SDL's native screen units. Pixel density is
+       only for the high-density renderer/font backing store. */
     app.dpi_scale = SDL_GetWindowPixelDensity(window);
     if (app.dpi_scale < 1.0f) app.dpi_scale = 1.0f;
+    bool window_frame_measured = !interactive_window;
+    if (interactive_window && have_usable_bounds) {
+        window_frame_measured = player_refit_to_actual_frame(
+            window, requested_window, usable_bounds,
+            app.settings.launcher_window_position_valid, &startup_window);
+    }
+
+    bool applied_launcher_fullscreen = false;
+    bool launcher_minimized_for_game = false;
+    bool launcher_handoff_attempted = false;
+    Uint32 launcher_restore_flags = 0;
+    if (interactive_window && app.settings.launcher_fullscreen) {
+        applied_launcher_fullscreen = SDL_SetWindowFullscreen(window, true);
+        if (!applied_launcher_fullscreen) {
+            app.settings.launcher_fullscreen = false;
+            snprintf(app.settings_notice, sizeof(app.settings_notice),
+                     "Could not restore launcher fullscreen mode: %.72s",
+                     SDL_GetError());
+        }
+    } else if (interactive_window &&
+               app.settings.launcher_window_maximized) {
+        SDL_MaximizeWindow(window);
+    }
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, NULL);
     if (!renderer) {
@@ -1842,6 +2165,25 @@ int main(int argc, char *argv[]) {
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
+    }
+
+    bool logical_presentation_set = interactive_window &&
+        SDL_SetRenderLogicalPresentation(
+            renderer, PLAYER_UI_LOGICAL_WIDTH, PLAYER_UI_LOGICAL_HEIGHT,
+            SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    if (logical_presentation_set) {
+        app.logical_ui = true;
+        app.window_width = PLAYER_UI_LOGICAL_WIDTH;
+        app.window_height = PLAYER_UI_LOGICAL_HEIGHT;
+    } else if (interactive_window) {
+        int actual_width = startup_window.width;
+        int actual_height = startup_window.height;
+        if (!SDL_GetWindowSize(window, &actual_width, &actual_height)) {
+            actual_width = startup_window.width;
+            actual_height = startup_window.height;
+        }
+        app.window_width = actual_width > 0 ? actual_width : PLAYER_UI_LOGICAL_WIDTH;
+        app.window_height = actual_height > 0 ? actual_height : PLAYER_UI_LOGICAL_HEIGHT;
     }
 
     UiInput input;
@@ -1928,12 +2270,18 @@ int main(int argc, char *argv[]) {
     }
     PlayerStagingJob *staging_job = NULL;
 
+    app.enable_focus_handoff = interactive_window;
     bool running = true;
     uint64_t last_tick = SDL_GetTicks();
     /* The first frame is rendered before the event wait. A bounded wait keeps
        process-exit monitoring alive while the user is idle; staging progress
        and normal input still wake the loop immediately. */
     ui_render_frame(renderer, &app, &input);
+    if (interactive_window && have_usable_bounds && !window_frame_measured) {
+        window_frame_measured = player_refit_to_actual_frame(
+            window, requested_window, usable_bounds,
+            app.settings.launcher_window_position_valid, &startup_window);
+    }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     char *ui_test_drop_data = NULL;
     if (ui_test_mode) player_ui_test_report_frame(0, &app, renderer, true);
@@ -2066,11 +2414,27 @@ int main(int argc, char *argv[]) {
 
         input.mouse_clicked = false;
         input.activate_pressed = false;
+        bool close_request_handled_in_batch = false;
         SDL_Event event;
         bool event_available = SDL_WaitEventTimeout(&event, 50);
         if (event_available) {
             do {
-                if (!player_dispatch_ui_event(&app, &input, window, &running, &event)) {
+                if (app.logical_ui &&
+                    (event.type == SDL_EVENT_MOUSE_MOTION ||
+                     event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                     event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                     event.type == SDL_EVENT_MOUSE_WHEEL ||
+                     event.type == SDL_EVENT_FINGER_MOTION ||
+                     event.type == SDL_EVENT_FINGER_DOWN ||
+                     event.type == SDL_EVENT_FINGER_UP ||
+                     event.type == SDL_EVENT_PEN_MOTION ||
+                     event.type == SDL_EVENT_PEN_DOWN ||
+                     event.type == SDL_EVENT_PEN_UP)) {
+                    SDL_ConvertEventToRenderCoordinates(renderer, &event);
+                }
+                if (!player_dispatch_ui_event(&app, &input, window, &running,
+                                              &close_request_handled_in_batch,
+                                              &event)) {
                     switch (event.type) {
                     case SDL_EVENT_GAMEPAD_ADDED:
                         if (!gamepad) {
@@ -2195,7 +2559,57 @@ int main(int argc, char *argv[]) {
         }
 
         /* Monitor running game process */
-        player_app_monitor_game_session(&app, SDL_GetTicks());
+        bool child_exited = false;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (!(ui_test_mode && ui_test_fake_game_running)) {
+#endif
+            child_exited = player_app_monitor_game_session(&app, SDL_GetTicks());
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        }
+#endif
+        (void)child_exited;
+        if (interactive_window && launcher_minimized_for_game &&
+            !app.is_game_running) {
+            SDL_RestoreWindow(window);
+            if (app.settings.launcher_fullscreen) {
+                SDL_SetWindowFullscreen(window, true);
+            } else if (launcher_restore_flags & SDL_WINDOW_FULLSCREEN) {
+                SDL_SetWindowFullscreen(window, false);
+            }
+            if (!app.settings.launcher_fullscreen &&
+                (app.settings.launcher_window_maximized ||
+                 (launcher_restore_flags & SDL_WINDOW_MAXIMIZED))) {
+                SDL_MaximizeWindow(window);
+            }
+            SDL_RaiseWindow(window);
+            launcher_minimized_for_game = false;
+        }
+        /* A later launch gets its own handoff attempt, including after a
+           minimize that failed and left the launcher visible. */
+        if (interactive_window && !app.is_game_running) {
+            launcher_handoff_attempted = false;
+        }
+        /* Interactive launches must have a boot-event path and a real
+           window_ready/first_frame marker before the launcher yields focus.
+           Missing evidence keeps the launcher visible. The attempt is latched
+           so a failed SDL_MinimizeWindow leaves the launcher visible without
+           recapturing and rewriting the launcher settings on every frame. */
+        if (player_app_should_attempt_window_handoff(
+                interactive_window, app.is_game_running,
+                launcher_handoff_attempted,
+                app.launch_session.boot_event_file_path[0]
+                    ? player_app_child_window_ready(&app)
+                    : false)) {
+            launcher_handoff_attempted = true;
+            player_capture_window_settings(&app, window);
+            player_app_save_settings(&app, NULL);
+            launcher_restore_flags = SDL_GetWindowFlags(window);
+            launcher_minimized_for_game = SDL_MinimizeWindow(window);
+        }
+        if (interactive_window) {
+            player_apply_launcher_fullscreen(&app, window,
+                                             &applied_launcher_fullscreen);
+        }
 
         /* Live input sampling for controller settings monitor (#357) */
         if (gamepad) {
@@ -2224,6 +2638,10 @@ int main(int argc, char *argv[]) {
         }
 
         ui_render_frame(renderer, &app, &input);
+        if (interactive_window) {
+            player_apply_launcher_fullscreen(&app, window,
+                                             &applied_launcher_fullscreen);
+        }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
         if (ui_test_mode) {
             ui_test_frame++;
@@ -2244,6 +2662,10 @@ int main(int argc, char *argv[]) {
         player_app_stop_game(&app);
     }
 
+    if (interactive_window) {
+        player_capture_window_settings(&app, window);
+        player_app_save_settings(&app, NULL);
+    }
     if (app.prerequisite_job_started) {
         package_builder_bootstrap_python_cancel(&app.bootstrap_session);
         package_builder_bootstrap_python_close(&app.bootstrap_session);

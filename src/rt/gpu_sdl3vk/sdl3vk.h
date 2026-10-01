@@ -28,6 +28,9 @@ extern "C" {
  * failure (caller falls back to the GDI path). */
 int  sdl3vk_init(const char *title);
 
+/* Raise the initialized SDL window. On Windows, also request OS foreground activation. */
+bool sdl3vk_raise_window(void);
+
 /* Swapchain present-mode choice for the SR_VSYNC setting (pure, no window needed).
  * `available` lists VkPresentModeKHR values as plain ints so this header stays
  * Vulkan-free: 0 = IMMEDIATE, 1 = MAILBOX, 2 = FIFO. vsync != 0 locks presentation
