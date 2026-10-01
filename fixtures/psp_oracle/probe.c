@@ -2897,7 +2897,8 @@ static void run_audio_query(int emulated) {
         : sceAudioGetChannelRestLength(channel);
     out[0] = (uint32_t)rest0_before;
     out[1] = (uint32_t)rest1_before;
-    audio_defer(emulated, "audio-ch-query-before", "PASS", 0, out, 2);
+    audio_defer(emulated, "audio-ch-query-before", channel < 0 ? "SKIP" : "PASS",
+                0, out, 2);
 
     for (uint32_t block = 0; block < AUDIO_QUERY_BLOCKS; ++block) {
         char case_id[48];
@@ -2937,16 +2938,20 @@ static void run_audio_query(int emulated) {
 
     const uint32_t channel_release = channel < 0 ? AUDIO_NOT_CAPTURED
         : (uint32_t)sceAudioChRelease(channel);
+    const int released = channel >= 0 && (int32_t)channel_release >= 0;
     out[0] = channel_release;
-    audio_defer(emulated, "audio-ch-release", channel < 0 ? "SKIP" : "PASS",
+    audio_defer(emulated, "audio-ch-release",
+                channel < 0 ? "SKIP" : released ? "PASS" : "FAIL",
                 channel_release, out, 1);
 
-    /* The just-released channel: what a query on it returns after release. */
-    out[0] = channel < 0 ? AUDIO_NOT_CAPTURED
+    /* The just-released channel: what a query on it returns after release. A
+     * refused release leaves the channel live, so nothing is measured then. */
+    out[0] = !released ? AUDIO_NOT_CAPTURED
         : (uint32_t)sceAudioGetChannelRestLen(channel);
-    out[1] = channel < 0 ? AUDIO_NOT_CAPTURED
+    out[1] = !released ? AUDIO_NOT_CAPTURED
         : (uint32_t)sceAudioGetChannelRestLength(channel);
-    audio_defer(emulated, "audio-ch-query-released", "PASS", 0, out, 2);
+    audio_defer(emulated, "audio-ch-query-released", released ? "PASS" : "SKIP",
+                0, out, 2);
 
     const int out2 = sceAudioOutput2Reserve(AUDIO_QUERY_SAMPLES);
     out[0] = (uint32_t)out2;
