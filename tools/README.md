@@ -285,9 +285,11 @@ python tools/compiler_compare.py --output build/compiler-compare
 The report is `build/compiler-compare/compiler_compare.json`, and its shape is fixed by
 `validate_report()`, which refuses to accept a report that carries a timing under a vetoed or
 unavailable compiler. Exit status is `0` only when at least one compiler is `MEASURED` and
-none is `VETOED` or `WORKLOAD_FAILED`; a missing `make` is exit `2`. Every write stays inside
-the `--output` root, no title/ISO/ELF/PRX input is read, and running the harness changes no
-compiler default. Findings belong in issue #317.
+none is `VETOED` or `WORKLOAD_FAILED`; a missing `make` is exit `2`. Each compiler's corpus build
+and report stay inside the `--output` root, but five workloads (`production-smoke-gap`, `cosim`
+and the three `platform-ladder-*` targets) build into their fixed repository trees under `build/`,
+which each compiler rewrites in turn. No title/ISO/ELF/PRX input is read, and running the
+harness changes no compiler default. Findings belong in issue #317.
 
 ### Regression tests: code generation and the guest interpreter
 

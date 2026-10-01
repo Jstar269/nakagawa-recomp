@@ -60,12 +60,14 @@ class _Fake:
                  failing_gate: str | None = None,
                  matrix: dict | None = None,
                  make_missing: bool = False,
-                 matrix_report: bool = True) -> None:
+                 matrix_report: bool = True,
+                 corpus_executable: bool = True) -> None:
         self.available = available
         self.failing_gate = failing_gate
         self.matrix = _matrix("PASS", "PASS") if matrix is None else matrix
         self.make_missing = make_missing
         self.matrix_report = matrix_report
+        self.corpus_executable = corpus_executable
         self.commands: list[list[str]] = []
 
     def which(self, name: str) -> str | None:
@@ -112,7 +114,8 @@ class _Fake:
             if gate == compiler_compare.CORPUS_GATE:
                 corpus = Path(self._arg(command, "PRODUCTION_SMOKE_GAP_DIR=") or "")
                 corpus.mkdir(parents=True, exist_ok=True)
-                (corpus / f"{compiler_compare.CORPUS_GAME}.exe").write_bytes(FAKE_EXE)
+                if self.corpus_executable:
+                    (corpus / f"{compiler_compare.CORPUS_GAME}.exe").write_bytes(FAKE_EXE)
                 (corpus / "chunk.o").write_bytes(b"\x00" * FAKE_OBJECT_BYTES)
             if gate == self.failing_gate:
                 return subprocess.CompletedProcess(command, 1, f"{gate}: FAIL\n")
@@ -233,10 +236,17 @@ class TestVetoOrdering(_CompareCase, unittest.TestCase):
         for prefix, root in zip(prefixes, roots, strict=True):
             self.assertTrue(prefix.startswith(root.replace("\\", "/")), prefix)
 
-    def test_a_missing_executable_fails_the_gate_without_a_timing(self) -> None:
+    def test_a_missing_make_is_an_error_not_a_timing(self) -> None:
         harness = self.harness(make_missing=True)
         with self.assertRaises(compiler_compare.CompareError):
             harness.compare(["gcc"])
+
+    def test_a_corpus_build_without_its_executable_discards_the_report(self) -> None:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        harness = _Harness(self, Path(holder.name), _Fake(corpus_executable=False))
+        self.assertEqual(compiler_compare.main(["--compilers", "gcc", "--output", str(harness.output)]), 2)
+        self.assertFalse((harness.output / "compiler_compare.json").exists())
 
 
 class TestStatusVocabulary(_CompareCase, unittest.TestCase):
@@ -293,11 +303,14 @@ class TestStatusVocabulary(_CompareCase, unittest.TestCase):
         self.assertNotIn("build_profile.py", settings)
         self.assertEqual(entry["version"], "gcc (fake) 0.0")
 
-    def test_a_skipped_workload_is_carried_through_as_skipped(self) -> None:
+    def test_a_skipped_workload_is_carried_through_and_never_measured(self) -> None:
         harness = self.harness(matrix=_matrix("SKIP", "PASS"))
-        entry = harness.compare(["gcc"])["compilers"][0]
-        self.assertEqual(entry["status"], compiler_compare.MEASURED)
+        report = harness.compare(["gcc"])
+        entry = report["compilers"][0]
+        self.assertEqual(entry["status"], compiler_compare.WORKLOAD_FAILED)
+        self.assertEqual(entry["measurements"]["workloads_status"], "SKIP")
         self.assertEqual([run["status"] for run in entry["measurements"]["workloads"]], ["SKIP", "PASS"])
+        compiler_compare.validate_report(report)
 
     def test_a_missing_benchmark_report_fails_the_matrix(self) -> None:
         harness = self.harness(matrix_report=False)
@@ -398,6 +411,12 @@ class TestReportValidator(unittest.TestCase):
     def test_a_timing_published_under_a_veto_is_rejected(self) -> None:
         entry = self._vetoed_entry()
         entry["build_seconds"] = 3.5
+        with self.assertRaises(compiler_compare.CompareError):
+            compiler_compare.validate_report(self._report(entry))
+
+    def test_a_timing_published_under_an_unavailable_compiler_is_rejected(self) -> None:
+        entry = {"name": "clang", "status": compiler_compare.NOT_AVAILABLE,
+                 "veto": None, "measurements": None, "build_seconds": 3.5}
         with self.assertRaises(compiler_compare.CompareError):
             compiler_compare.validate_report(self._report(entry))
 

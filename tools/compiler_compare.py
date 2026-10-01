@@ -45,13 +45,15 @@ which GNU Make propagates to the recursive ``$(MAKE)`` invocations and, through
 ``cosim-mutants`` drives itself; the build roots are passed with forward
 slashes because make hands them to a shell.
 
-One boundary of that isolation belongs to the platform ladder, not to this
-harness: its Makefile targets name their own ``build/platform-ladder/<workload>``
-directory instead of ``BUILD_DIR``, so three of the eight #282 workloads
-compile into the same tree whichever compiler asked for them.  Compilers still
-run sequentially and the build-profile stamp carries the compiler identity, so
-no object is reused across compilers; the shared tree is named here rather than
-hidden.
+One boundary of that isolation belongs to the Makefile, not to this harness:
+five of the eight #282 workloads compile into fixed repository trees instead of
+``BUILD_DIR`` -- ``production-smoke-gap`` (``PRODUCTION_SMOKE_GAP_DIR``),
+``cosim`` (``COSIM_DIR``) and the three ``platform-ladder-*`` targets
+(``build/platform-ladder/<workload>``) -- so those trees are shared with a
+developer's default build and rewritten by each compiler in turn.  Compilers
+still run sequentially and the build-profile stamp carries the compiler
+identity, so no object is reused across compilers; the shared trees are named
+here rather than hidden.
 """
 
 from __future__ import annotations
@@ -117,6 +119,7 @@ TIMING_KEYS = frozenset({
 })
 GATE_PASS = "PASS"
 GATE_FAIL = "FAIL"
+GATE_SKIP = "SKIP"
 OUTPUT_TAIL = 4000
 
 
@@ -281,7 +284,11 @@ def _workload_measurements(python: str, make: str, perf_dir: Path, build_prefix:
             "output": str(run.get("output", ""))[-OUTPUT_TAIL:],
         })
     return {
-        "status": GATE_FAIL if any(run["status"] == GATE_FAIL for run in workloads) else GATE_PASS,
+        # Any workload that did not PASS keeps the matrix from passing: a skipped
+        # workload has no timing, so the compiler was not fully measured.
+        "status": (GATE_FAIL if any(run["status"] == GATE_FAIL for run in workloads)
+                   else GATE_SKIP if any(run["status"] != GATE_PASS for run in workloads)
+                   else GATE_PASS),
         "detail": None,
         "workloads": workloads,
     }
@@ -337,7 +344,7 @@ def _measure_compiler(name: str, path: str, make: str, python: str, build_root: 
         "workloads_detail": workloads["detail"],
         "workloads": workloads["workloads"],
     }
-    record["status"] = WORKLOAD_FAILED if workloads["status"] == GATE_FAIL else MEASURED
+    record["status"] = MEASURED if workloads["status"] == GATE_PASS else WORKLOAD_FAILED
     return record
 
 
@@ -383,6 +390,8 @@ def validate_report(report: Any) -> None:
         if status == NOT_AVAILABLE:
             if veto is not None or entry.get("measurements") is not None:
                 _fail(f"{path}: an unavailable compiler records neither a veto nor a measurement")
+            if _timing_keys(entry):
+                _fail(f"{path}: an unavailable compiler carries no timing")
             continue
         if not isinstance(veto, dict):
             _fail(f"{path}.veto: expected an object")
@@ -418,7 +427,7 @@ def validate_report(report: Any) -> None:
                 _fail(f"{path}.measurements.{key}: missing required property")
         if status == MEASURED and measurements["workloads_status"] != GATE_PASS:
             _fail(f"{path}: a measured compiler must have a passing workload matrix")
-        if status == WORKLOAD_FAILED and measurements["workloads_status"] != GATE_FAIL:
+        if status == WORKLOAD_FAILED and measurements["workloads_status"] not in (GATE_FAIL, GATE_SKIP):
             _fail(f"{path}: a workload-failed compiler must name a failing workload matrix")
 
 
