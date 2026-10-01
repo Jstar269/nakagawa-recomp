@@ -29,8 +29,9 @@ workaround enters guest semantics.  Findings belong in issue #317.
 Corpus and gates are public, source-owned and synthetic only: the
 ``production-smoke-gap`` AOT-gap fixture, the generated ``cosim`` fixture, and
 the host-neutral ``stale_code``/``cpu_lle`` selftest binaries.  No title, ISO,
-ELF or PRX input is read, and every write stays inside the ``--output`` root,
-which defaults to ``build/compiler-compare``.
+ELF or PRX input is read.  Every write this harness owns stays inside the
+``--output`` root, which defaults to ``build/compiler-compare``; five workloads
+build into shared repository trees instead (see the boundary below).
 
 Usage::
 
