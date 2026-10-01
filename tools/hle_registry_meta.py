@@ -94,6 +94,28 @@ HANDLER_METADATA = {
         ],
         "description": "Writes measured 60000/1001 float refresh rate (59.9400599f) into $f0 under unified display clock.",
     },
+    # These two handlers are reached by the source-owned display-smoke route.
+    # Its fixed 8888 framebuffer flip and ordinary guest-thread vblank wait
+    # establish that narrow production path, while the API edges below remain
+    # explicitly outside the route's evidence (#341).
+    "h_DisplaySetFrameBuf": {
+        "status": "partial",
+        "evidence": [
+            "Makefile:display-smoke-run",
+            "fixtures/display_smoke/generate.py:verify",
+            "fixtures/display_smoke/generate.py:run",
+        ],
+        "limitation": "display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)",
+    },
+    "h_DisplayWaitVblankStart": {
+        "status": "partial",
+        "evidence": [
+            "Makefile:display-smoke-run",
+            "fixtures/display_smoke/generate.py:run",
+            "tools/test_sched_invariants.py:test_the_two_display_nids_have_separate_handlers",
+        ],
+        "limitation": "display-smoke covers ordinary guest-thread waits; interrupt-context behavior and callback wait variants remain outside this route (#341)",
+    },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
     # decoder actually produced: the video getter validates the caller's stride
@@ -162,10 +184,12 @@ HANDLER_METADATA = {
     # regression-tested through production dispatch: the illegal-size and
     # illegal-address classes, whole-span validation with overflow-safe
     # arithmetic, failure atomicity (no byte written, no GPU dirty),
-    # memmove-correct same-pointer and overlapping copies, and the measured
-    # 0xC000 effective prefix ceiling. The handlers remain partial because
-    # concurrent-DMA BUSY behavior and the precedence of validation for an
-    # invalid truncated tail are not established by the available evidence.
+    # memmove-correct same-pointer and overlapping copies, and full-span copies
+    # (the PSP-3000 size matrix copied fully valid spans completely through
+    # 0x100000; there is no API-wide 0xC000 ceiling, see docs/ARCHITECTURE.md).
+    # The handlers remain partial because concurrent-DMA BUSY behavior and the
+    # precedence of validation for an invalid truncated tail are not established
+    # by the available evidence.
     "h_DmacMemcpy": {
         "status": "partial",
         "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
