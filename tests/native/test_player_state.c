@@ -1095,9 +1095,19 @@ int main(int argc, char **argv) {
         assert(mapped != NULL);
         nk_library_init(&mapped->library);
         input_settings_init(&mapped->input_settings);
+        /* Scratch root: CMake points NK_TEST_SCRATCH_DIR into its binary tree so
+         * an out-of-source build never depends on <source>/build existing; the
+         * Makefile target runs from the source tree, where build/ is the
+         * conventional scratch directory. */
+        const char *scratch_dir = getenv("NK_TEST_SCRATCH_DIR");
+        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = "build";
+        char global_profile[NK_MAX_PATH];
+        snprintf(global_profile, sizeof(global_profile),
+                 "%s/test_launch_global_profile.json", scratch_dir);
+        assert(nk_platform_mkdir_p(scratch_dir));
         snprintf(mapped->input_settings.profile_path,
                  sizeof(mapped->input_settings.profile_path),
-                 "build/test_launch_global_profile.json");
+                 "%s", global_profile);
 
         GameRecord tennis;
         memset(&tennis, 0, sizeof(tennis));
@@ -1107,7 +1117,7 @@ int main(int argc, char **argv) {
         /* No per-title entry: the disc runs the global profile. */
         assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
         assert(strcmp(mapped->launch_session.config.input_profile_path,
-                      "build/test_launch_global_profile.json") == 0);
+                      global_profile) == 0);
         assert(mapped->input_profile_notice[0] == '\0');
 
         /* Give that disc its own mapping. */
@@ -1124,7 +1134,7 @@ int main(int argc, char **argv) {
         assert(player_app_apply_input_profile_to_session(mapped, &tennis) == NK_OK);
         const char *profile_path = mapped->launch_session.config.input_profile_path;
         assert(strstr(profile_path, "UCUS98701") != NULL);
-        assert(strcmp(profile_path, "build/test_launch_global_profile.json") != 0);
+        assert(strcmp(profile_path, global_profile) != 0);
         char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
         NkInputProfile handed;
         assert(nk_input_profile_load(&handed, profile_path, diag, sizeof(diag)) == NK_OK);
@@ -1137,7 +1147,7 @@ int main(int argc, char **argv) {
         snprintf(boxing.disc_id, sizeof(boxing.disc_id), "ULUS10041");
         assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
         assert(strcmp(mapped->launch_session.config.input_profile_path,
-                      "build/test_launch_global_profile.json") == 0);
+                      global_profile) == 0);
 
         /* A disc ID the document has no entry for is not an error, and NULL
          * arguments are safe no-ops that change nothing. */
@@ -1151,7 +1161,7 @@ int main(int argc, char **argv) {
         assert(strcmp(mapped->launch_session.config.input_profile_path, before) == 0);
 
         remove(profile_path);
-        remove("build/test_launch_global_profile.json");
+        remove(global_profile);
         free(mapped);
     }
 
