@@ -103,6 +103,7 @@ class TestGuestSpanRouting(unittest.TestCase):
             ROOT / "src" / "rt" / "ge.c": {
                 "ge_decode_tex_rgba": ("sr_guest_rect_readable",),
                 "ge_block_transfer": ("sr_guest_rect_readable", "sr_guest_rect_writable"),
+                "ge_vramdump_write": ("sr_guest_span_readable",),
             },
             ROOT / "src" / "rt" / "ge_capture.c": {
                 "ge_capture_begin": ("sr_guest_span_readable",),
@@ -118,6 +119,25 @@ class TestGuestSpanRouting(unittest.TestCase):
         }
         for path, owners in cases.items():
             text = path.read_text(encoding="utf-8")
+            if path.name == "ge.c":
+                # The standalone VRAM decoder CLI build reads a private captured 2 MiB
+                # image through ge_vram_cli_read8, which bounds-checks every byte; it
+                # never touches guest memory. Blank those blocks, but require the check.
+                self.assertIn("ge_vram_cli_bad_read = 1;", text)
+                lines = text.split(chr(10))
+                depth = 0
+                for index, line in enumerate(lines):
+                    stripped = line.strip()
+                    if depth == 0 and stripped == "#ifdef SR_GE_VRAM_DECODER_CLI":
+                        depth = 1
+                        lines[index] = ""
+                    elif depth:
+                        if stripped.startswith(("#if", "#ifdef", "#ifndef")):
+                            depth += 1
+                        elif stripped.startswith("#endif"):
+                            depth -= 1
+                        lines[index] = ""
+                text = chr(10).join(lines)
             if path.name == "ge_gpu.c":
                 # Ignore the explicitly synthetic Vulkan selftest block. Production
                 # code before and after it remains in the census.
