@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/ge_corpus.schema.json",
+  "$comment": "SPDX-License-Identifier: GPL-3.0-or-later",
+  "title": "Nakagawa PSP GE Pixel Corpus v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "semantic_boundary", "tracking_issue", "cases"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema_version": {"const": 1},
+    "semantic_boundary": {"const": "GE_RASTER_PIXEL_CONFORMANCE"},
+    "tracking_issue": {"const": 343},
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id", "command_words", "relocations", "vertex_words", "framebuffer",
+        "selected_pixels", "framebuffer_sha256", "source_tier", "evidence_envelope"
+      ],
+      "properties": {
+        "case_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "command_words": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "^0x[0-9a-f]{8}$"},
+          "description": "32-bit GE words encoded as command byte followed by a 24-bit operand."
+        },
+        "relocations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command_index", "part", "resource"],
+            "properties": {
+              "command_index": {"type": "integer", "minimum": 0},
+              "part": {"enum": ["BASE", "VADDR"]},
+              "resource": {"const": "vertex_words"}
+            }
+          }
+        },
+        "vertex_words": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "^0x[0-9a-f]{8}$"},
+          "description": "Source-owned little-endian 32-bit vertex words; floats use IEEE-754 bits."
+        },
+        "framebuffer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format", "width", "height", "stride_pixels", "initial_pixel"],
+          "properties": {
+            "format": {"enum": ["5650", "5551", "4444", "8888"]},
+            "width": {"type": "integer", "minimum": 1, "maximum": 4096},
+            "height": {"type": "integer", "minimum": 1, "maximum": 4096},
+            "stride_pixels": {"type": "integer", "minimum": 1, "maximum": 4096},
+            "initial_pixel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "Packed initial value in the framebuffer format declared above."
+            }
+          }
+        },
+        "selected_pixels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["x", "y", "pixel_value"],
+            "properties": {
+              "x": {"type": "integer", "minimum": 0, "maximum": 4095},
+              "y": {"type": "integer", "minimum": 0, "maximum": 4095},
+              "pixel_value": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "Packed pixel value in the case framebuffer format."
+              }
+            }
+          }
+        },
+        "framebuffer_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "source_tier": {
+          "type": ["string", "null"],
+          "enum": [null, "PSP_HARDWARE", "LOCAL_COSIM", "PPSSPP_CORROBORATIVE"]
+        },
+        "evidence_envelope": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": [
+            "EVIDENCE_CLASS", "ACCEPTANCE_ELIGIBLE", "CASE_ID", "CONSOLE_MODEL", "FW",
+            "SOURCE_COMMIT", "BINARY_SHA256", "RESULT_RECORD"
+          ],
+          "properties": {
+            "EVIDENCE_CLASS": {"enum": ["PSP_HARDWARE", "UNQUALIFIED_CAPTURE"]},
+            "ACCEPTANCE_ELIGIBLE": {"type": "boolean"},
+            "CASE_ID": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+            "CONSOLE_MODEL": {"type": "string", "minLength": 1, "maxLength": 48},
+            "FW": {"type": "string", "minLength": 1, "maxLength": 48},
+            "SOURCE_COMMIT": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+            "BINARY_SHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "RESULT_RECORD": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,7}$"
+                },
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

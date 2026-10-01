@@ -248,5 +248,9 @@ void      ge_decode_tex_rgba(uint32_t *out);
 void      ge_replay_restore(const GeState *state, const uint16_t *zbuf);
 void      ge_cpu_profile_reset(void);
 void      ge_cpu_profile_get(GeCpuProfileStats *out);
+/* Capture one bounded, present-aligned VRAM image and its GE state sidecar. */
+int       ge_vramdump_write(const char *directory, uint32_t vblank,
+                            uint32_t display_addr, uint32_t display_stride,
+                            uint32_t display_format);
 
 #endif /* GE_SHARED_H */

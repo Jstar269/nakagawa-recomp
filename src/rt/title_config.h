@@ -91,8 +91,8 @@ typedef struct SrTitleRuntimeConfig {
     uint32_t    fallback_entry;               /* module-start fallback when the image entry is uncompiled */
     uint32_t    worker_thread_entry;          /* thread entry that carries the title's worker role */
     uint32_t    launcher_thread_entry;        /* thread entry that carries the title's launcher role */
-    uint32_t    vblank_frame_counter_addr;    /* guest word incremented once per delivered VBLANK */
-    uint32_t    vblank_vsync_counter_addr;    /* guest word incremented once per delivered VBLANK */
+    uint32_t    vblank_frame_counter_addr;    /* retired: recorded only; the runtime never writes it */
+    uint32_t    vblank_vsync_counter_addr;    /* retired: recorded only; the runtime never writes it */
     uint32_t    libfont_ready_flag_addr;      /* guest word forced to 1 when libfont.prx loads */
     uint32_t    frame_ready_latch_addr;       /* guest counter that gates frame presentation */
     SrTitleDisplayBringup display_bringup;    /* valid only when DISPLAY_BRINGUP bit set */

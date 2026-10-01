@@ -4,6 +4,7 @@
 #ifndef SR_PERF_H
 #define SR_PERF_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -106,6 +107,13 @@ extern int sr_perf_aot_active;
 extern int sr_perf_enabled;
 
 void     sr_perf_init(void);
+
+/* Where a finished telemetry line goes.  The default is a single fwrite() to stderr; the
+ * test accessors below exist only in SR_PROFILER_SELFTEST builds (perf.c) but are declared
+ * unconditionally, like the profiler accessors in recomp.h. */
+typedef void (*SrPerfReportSink)(const char *line, size_t len);
+void     sr_perf_test_set_report_sink(SrPerfReportSink sink);
+void     sr_perf_test_force_report(void);
 void     sr_perf_shutdown(void);
 uint64_t sr_perf_now_ns_impl(void);
 #define sr_perf_now_ns() (sr_perf_enabled ? sr_perf_now_ns_impl() : 0)

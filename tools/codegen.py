@@ -4,6 +4,15 @@
 # Modified by Nakagawa Recomp contributors, 2026-08-10.
 # See NOTICE.md for upstream lineage and modification provenance.
 
+"""MIPS to C; consumes ``analyze.py``'s function boundaries and splits the output
+into ``<g>_recomp_<n>.c`` chunks.
+
+``main`` takes ``<elf> <out.c>`` (or ``--env-elf <out.c>``) and emits the translated
+guest as a chain of generated translation units.  The chunk count follows the
+discovered function count and ``--funcs-per-chunk``/``--target-chunk-bytes``; it is
+never a fixed per-title constant.
+"""
+
 import struct
 import re
 import os
