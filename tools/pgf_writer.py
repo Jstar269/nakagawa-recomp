@@ -51,8 +51,8 @@ DEFAULT_FONT_TYPE = "SYNTHETIC-FIXTURE"
 MAX_IMAGE_SIZE = 16 * 1024 * 1024
 MAX_COUNT = 1 << 20
 MAX_EDGE = 127
-#: A metric-group index occupies one byte, so a deduplicated table holds 256 entries.
-# The header stores each metric table's entry count in one byte (0x0102..0x0105).
+#: The header stores each deduplicated metric table's entry count in one byte
+#: (0x0102..0x0105), so a table holds at most 255 entries.
 MAX_TABLE_ENTRIES = 255
 MAX_REPEAT_RUN = 8
 MAX_LITERAL_RUN = 8

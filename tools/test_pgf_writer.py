@@ -255,13 +255,14 @@ class PgfWriterRefusalTests(unittest.TestCase):
         ]
         self.assert_refused("metric-table-overflow", glyphs=glyphs)
 
-    def test_metric_table_at_the_one_byte_limit_is_refused_by_name(self):
-        # 256 distinct advances cannot be counted in the one-byte header field.
+    def test_metric_table_at_the_limit_is_accepted(self):
+        # Exactly MAX_TABLE_ENTRIES distinct advances still fit the one-byte header count.
+        self.assertEqual(pgf_writer.MAX_TABLE_ENTRIES, 255)
         glyphs = [
             Glyph(code=0x41 + index, width=1, height=1, samples=(0,), advance_x=index)
-            for index in range(256)
+            for index in range(pgf_writer.MAX_TABLE_ENTRIES)
         ]
-        self.assert_refused("metric-table-overflow", glyphs=glyphs)
+        self.assertTrue(build_pgf(glyphs))
 
     def test_non_contiguous_code_points_are_refused_by_name(self):
         glyphs = [
