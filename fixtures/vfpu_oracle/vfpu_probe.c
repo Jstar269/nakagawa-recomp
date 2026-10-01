@@ -91,6 +91,26 @@ static const VfpuCase CASES[] = {
     { "vfpu-vexp2", vfpu_vexp2 },
 };
 
+/* Issue #69's exact public reproduction words, plus the legal endpoints and
+   nearby out-of-domain values. Per-word records preserve the input/result
+   association that the aggregate transcendental digest cannot provide. */
+static const uint32_t VASIN_DOMAIN_INPUTS[] = {
+    0xBF800000u, /* -1.0: in-domain endpoint */
+    0x3F800000u, /* +1.0: in-domain endpoint */
+    0xBF800001u, /* immediately below -1.0 */
+    0x3F800001u, /* immediately above +1.0 */
+    0x3F80000Bu, /* eleven ULPs above +1.0 */
+    0xBF80000Bu, /* title corpus: eleven ULPs below -1.0 */
+    0xBF80DABCu,
+    0xBF82026Au,
+    0xBF8FA2B7u,
+    0xBF9A419Cu,
+    0xBFB63DDAu,
+    0xBFFB5A51u,
+    0xBFFFFE00u,
+    0xC0000000u, /* title corpus endpoint: -2.0 */
+};
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -125,6 +145,19 @@ int main(int argc, char *argv[]) {
                  CASES[c].case_id, (unsigned int)digest,
                  (unsigned int)spot[0], (unsigned int)spot[1], (unsigned int)spot[2],
                  (unsigned int)VFPU_ORACLE_INPUT_COUNT);
+        emit(emulated, line);
+    }
+
+    for (unsigned i = 0;
+         i < sizeof(VASIN_DOMAIN_INPUTS) / sizeof(VASIN_DOMAIN_INPUTS[0]);
+         ++i) {
+        const uint32_t in = VASIN_DOMAIN_INPUTS[i];
+        const uint32_t out = vfpu_vasin(in);
+        snprintf(line, sizeof(line),
+                 "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-VFPU-001 "
+                 "case_id=vfpu-vasin-domain-arg%02u status=PASS "
+                 "result=0x%08x out0=0x%08x\n",
+                 i, (unsigned int)out, (unsigned int)in);
         emit(emulated, line);
     }
 
