@@ -120,7 +120,9 @@ as the first comment line (an arbitrary comment header, a missing header or a
 second identity header is rejected), at least one step record (an empty or
 header-only stream is never evidence of equivalence), and step records numbered
 contiguously from zero, so duplicates, gaps and reordering are rejected by name.
-When both headers declare `start_pc`, they must agree. `--expect-steps N` adds the
+When both headers declare `start_pc`, they must agree. The two streams must always
+carry the same number of records; a pair of different lengths is rejected as
+`step count differs` even without `--expect-steps`. `--expect-steps N` adds the
 caller's own required length: a stream with fewer than `N` records is rejected as
 incomplete coverage and one with more is rejected as over-coverage, so equal
 lengths cannot substitute for declared coverage. `N` must be a positive decimal

@@ -257,7 +257,8 @@ class GateRequiredCoverageTests(unittest.TestCase):
         oracle = self.write_oracle("microtest-fault.trace", (0, 1, 2, 3), exit_index=3)
         faulted = subprocess.CompletedProcess(args=[], returncode=4, stdout="", stderr="")
         with mock.patch.object(microtest_gate, "find_exit_syscall_pc",
-                               return_value=0x0890000C),              mock.patch.object(microtest_gate.subprocess, "run",
+                               return_value=0x0890000C), \
+             mock.patch.object(microtest_gate.subprocess, "run",
                                return_value=faulted) as runner:
             rc = microtest_gate.main(["microtest_gate.py", "run_elf.exe", "m.elf",
                                       str(oracle), self.dir])
