@@ -288,7 +288,7 @@ PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
 ifeq ($(CASE),ge-nan)
-LIBS += -lpspgum -lpspgu -lpspge
+LIBS := -lpspgum -lpspgu $(LIBS)
 endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge

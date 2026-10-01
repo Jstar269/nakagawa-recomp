@@ -2888,10 +2888,13 @@ static void run_audio_query(int emulated) {
     out[0] = (uint32_t)channel;
     out[1] = AUDIO_QUERY_SAMPLES;
     out[2] = PSP_AUDIO_FORMAT_STEREO;
-    audio_defer(emulated, "audio-ch-reserve", "PASS", channel, out, 3);
+    audio_defer(emulated, "audio-ch-reserve", channel < 0 ? "FAIL" : "PASS",
+                channel, out, 3);
 
-    const int rest0_before = sceAudioGetChannelRestLen(0);
-    const int rest1_before = sceAudioGetChannelRestLength(0);
+    const int rest0_before = channel < 0 ? (int)AUDIO_NOT_CAPTURED
+        : sceAudioGetChannelRestLen(channel);
+    const int rest1_before = channel < 0 ? (int)AUDIO_NOT_CAPTURED
+        : sceAudioGetChannelRestLength(channel);
     out[0] = (uint32_t)rest0_before;
     out[1] = (uint32_t)rest1_before;
     audio_defer(emulated, "audio-ch-query-before", "PASS", 0, out, 2);
@@ -2938,14 +2941,18 @@ static void run_audio_query(int emulated) {
     audio_defer(emulated, "audio-ch-release", channel < 0 ? "SKIP" : "PASS",
                 channel_release, out, 1);
 
-    out[0] = (uint32_t)sceAudioGetChannelRestLen(0);
-    out[1] = (uint32_t)sceAudioGetChannelRestLength(0);
+    /* The just-released channel: what a query on it returns after release. */
+    out[0] = channel < 0 ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioGetChannelRestLen(channel);
+    out[1] = channel < 0 ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioGetChannelRestLength(channel);
     audio_defer(emulated, "audio-ch-query-released", "PASS", 0, out, 2);
 
     const int out2 = sceAudioOutput2Reserve(AUDIO_QUERY_SAMPLES);
     out[0] = (uint32_t)out2;
     out[1] = AUDIO_QUERY_SAMPLES;
-    audio_defer(emulated, "audio-out2-reserve", "PASS", out2, out, 2);
+    audio_defer(emulated, "audio-out2-reserve", out2 < 0 ? "FAIL" : "PASS",
+                out2, out, 2);
 
     const int out2_rest_before = sceAudioOutput2GetRestSample();
     out[0] = (uint32_t)out2_rest_before;
@@ -2981,7 +2988,8 @@ static void run_audio_query(int emulated) {
         : (uint32_t)sceAudioSRCChRelease();
     out[0] = (uint32_t)src;
     out[1] = src_release;
-    audio_defer(emulated, "audio-src-reserve", "PASS", src, out, 2);
+    audio_defer(emulated, "audio-src-reserve", src < 0 ? "FAIL" : "PASS",
+                src, out, 2);
 
     uint32_t done_out[1] = {13u};
     defer_record("audio-done", "PASS", 0, done_out, 1);
@@ -3097,7 +3105,8 @@ static int ge_nan_render(uint32_t mode, uint32_t bits, uint32_t *hash,
             0x43500000u, 0x43880000u, 0x00000000u,
         };
         memcpy(s_ge_nan_vertices, screen, sizeof(screen));
-        memcpy(&s_ge_nan_vertices[3], &bits, sizeof(bits));
+        /* Vertex 0's screen x: GU_TRANSFORM_2D consumes x and y, not z. */
+        memcpy(&s_ge_nan_vertices[0], &bits, sizeof(bits));
         sceKernelDcacheWritebackRange(s_ge_nan_vertices,
                                       sizeof(s_ge_nan_vertices));
         sceGuDrawArray(GU_TRIANGLES,
@@ -3114,7 +3123,8 @@ static int ge_nan_render(uint32_t mode, uint32_t bits, uint32_t *hash,
             s_ge_nan_vertices[base + 5u] = sane_pos[vertex * 3u + 2u];
         }
         if (mode == 1u) {
-            s_ge_nan_vertices[3u + 3u] = bits;
+            /* Vertex 1's position x (normal is [6..8], position [9..11]). */
+            s_ge_nan_vertices[6u + 3u] = bits;
             sceKernelDcacheWritebackRange(s_ge_nan_vertices,
                                           sizeof(s_ge_nan_vertices));
             sceGuDrawArray(GU_TRIANGLES,
