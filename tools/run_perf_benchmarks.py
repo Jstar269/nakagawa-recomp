@@ -41,7 +41,7 @@ def _clear_outputs(output_dir: Path) -> None:
 
 
 def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
-             output_root: Path, enabled: bool) -> dict[str, Any]:
+             output_root: Path, enabled: bool, build_prefix: str) -> dict[str, Any]:
     output_dir = output_root / name
     output_dir.mkdir(parents=True, exist_ok=True)
     _clear_outputs(output_dir)
@@ -50,7 +50,7 @@ def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
     env["SR_PERF"] = "1" if enabled else "0"
     env["SR_PERF_JSON"] = str((output_dir / "perf.json").resolve())
     env["SR_PERF_CSV"] = str((output_dir / "perf.csv").resolve())
-    command = [make, f"BUILD_DIR=build/perf-benchmark/{name}", *targets]
+    command = [make, f"BUILD_DIR={build_prefix}/{name}", *targets]
     started = time.perf_counter()
     completed = subprocess.run(command, cwd=ROOT, env=env, check=False,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -102,8 +102,9 @@ def _run_direct(command: list[str], output_dir: Path, enabled: bool) -> dict[str
     }
 
 
-def _run_overhead(make: str, python: str, output_root: Path, samples: int) -> dict[str, Any]:
-    build = _run_one(make, python, "overhead-build", ("production-smoke-gap",), output_root, False)
+def _run_overhead(make: str, python: str, output_root: Path, samples: int,
+                  build_prefix: str) -> dict[str, Any]:
+    build = _run_one(make, python, "overhead-build", ("production-smoke-gap",), output_root, False, build_prefix)
     if build["status"] != "PASS":
         return {"status": "BLOCKED", "build": build, "ratio": None}
     command = [
@@ -111,7 +112,7 @@ def _run_overhead(make: str, python: str, output_root: Path, samples: int) -> di
         str(ROOT / "fixtures" / "production_smoke" / "generate.py"),
         "run",
         "--build-dir",
-        str(ROOT / "build" / "production-smoke-gap"),
+        str(ROOT / build_prefix / "production-smoke-gap"),
         "--mode",
         "aot-gap",
     ]
@@ -141,6 +142,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--make", default=os.environ.get("MAKE", "mingw32-make"))
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--output", type=Path, default=ROOT / "build" / "perf-benchmark")
+    parser.add_argument("--build-prefix", default="build/perf-benchmark",
+                        help="make-relative BUILD_DIR root; give each compiler its own so a "
+                             "candidate never reuses another compiler's objects")
     parser.add_argument("--overhead", action="store_true")
     parser.add_argument("--samples", type=int, default=3)
     args = parser.parse_args(argv)
@@ -150,9 +154,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.samples < 1:
         parser.error("--samples must be positive")
+    args.build_prefix = args.build_prefix.rstrip("/")
+    if not args.build_prefix:
+        parser.error("--build-prefix must name a directory")
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
-    runs = [_run_one(make, args.python, name, targets, args.output, True)
+    runs = [_run_one(make, args.python, name, targets, args.output, True, args.build_prefix)
             for name, targets in WORKLOADS]
     result: dict[str, Any] = {
         "schema": "nakagawa-perf-benchmark-v1",
@@ -160,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         "runs": runs,
     }
     if args.overhead:
-        result["overhead"] = _run_overhead(make, args.python, args.output, args.samples)
+        result["overhead"] = _run_overhead(make, args.python, args.output, args.samples, args.build_prefix)
     report_path = args.output / "benchmark.json"
     report_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(result, indent=2, sort_keys=True))
