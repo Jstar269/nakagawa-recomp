@@ -26,8 +26,20 @@ The default source of truth is the committed *public* ledger, which discloses a
 the same answer the gate derives, read from a file that is in the repository, so
 the inventory can be produced by anyone -- including the maintainer -- without
 the private input ever entering a contributor's hands.  Pass
-``--trusted-ledger`` to ask the private authority directly instead; the two
-must agree, and ``--check`` fails closed when they do not.
+``--trusted-ledger`` to ask the private authority directly instead: the
+record-coverage answer and the path classifications then come from the
+authority, not from the candidate-editable public projection.
+
+Three modes, with different exit behaviour:
+
+* default: print the inventory and exit 0;
+* ``--check-records``: print the inventory and exit non-zero while any tracked
+  public path has no exact trusted record (the admission inventory, not a merge
+  gate);
+* ``--check``: the disposition ratchet.  It does not compare record coverage at
+  all; it fails closed when an upstream-derived production path has no
+  independence-campaign owner and disposition and is not in the reviewed
+  baseline (or the baseline holds a stale entry).
 
 This tool never edits a ledger, a policy, or any other control.  It prints an
 inventory; a human decides what to admit.  For an upstream-derived production
@@ -66,6 +78,15 @@ _CAMPAIGN_INVENTORY_ROW = re.compile(r"^\|\s*(G\d+)\s*\|\s*(.*?)\s*\|")
 _CAMPAIGN_TARGET = re.compile(r"^\s*-\s+\*\*(G\d+)\b")
 _CODE_SPAN = re.compile(r"`([^`]+)`")
 _PRODUCTION_PREFIXES = ("src/", "tools/")
+#: Third-party notices and format documents under the production prefixes are not
+#: code an independence campaign would rewrite, so the disposition ratchet and the
+#: independence annotation skip them; a vendored dependency's licence or notice
+#: file must never have to be pruned from the baseline when it is relocated.
+_NON_CODE_SUFFIXES = (".md", ".txt")
+
+
+def _is_production_code(path: str) -> bool:
+    return path.startswith(_PRODUCTION_PREFIXES) and not path.endswith(_NON_CODE_SUFFIXES)
 
 
 def _campaign_groups(plan_text: str) -> dict[str, tuple[str, ...]]:
@@ -192,6 +213,15 @@ def public_classifications(ledger_path: Path) -> dict[str, str]:
     }
 
 
+def classifications_from_trusted_ledger(trusted_ledger: Path) -> dict[str, str]:
+    """Path classifications the private authority assigns through exact records."""
+    exact, _patterns, _ids = verifier.load_trusted_records(trusted_ledger.read_bytes())
+    return {
+        path: provenance_ledger.class_for(path, record)[0]
+        for path, record in exact.items()
+    }
+
+
 def exact_paths_from_trusted_ledger(trusted_ledger: Path) -> set[str]:
     """Ask the private authority directly (maintainer-side, optional)."""
     exact, _patterns, _ids = verifier.load_trusted_records(trusted_ledger.read_bytes())
@@ -232,7 +262,7 @@ def record_gaps(
             "reason": "no exact trusted record",
             "deterministic_class": classification,
         }
-        if path.startswith(_PRODUCTION_PREFIXES) and classification in {
+        if _is_production_code(path) and classification in {
             "upstream_derived",
             "unresolved",
         }:
@@ -272,8 +302,6 @@ _KNOWN_DISPOSITION_GAP_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "#355",
         "vendored LGPL ATRAC3+ decoder and its selftest have no independence campaign group yet",
         (
-            "src/rt/atrac3p/LICENSE.LGPLv2.1.txt",
-            "src/rt/atrac3p/PROVENANCE.md",
             "src/rt/atrac3p/atrac3p_api.c",
             "src/rt/atrac3p/atrac3p_api.h",
             "src/rt/atrac3p/libavcodec/atrac.c",
@@ -356,7 +384,6 @@ _KNOWN_DISPOSITION_GAP_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "#355",
         "trace, microtest and codegen-gate tooling has no independence campaign group yet",
         (
-            "tools/TRACE_FORMAT.md",
             "tools/codegen_gate.py",
             "tools/funcdiff_cmp.py",
             "tools/gen_microtest.py",
@@ -380,23 +407,34 @@ KNOWN_DISPOSITION_GAPS: dict[str, dict[str, str]] = {
 }
 
 
-def disposition_gaps(*, repo: Path = ROOT) -> list[dict[str, object]]:
+def disposition_gaps(
+    *,
+    repo: Path = ROOT,
+    trusted_classifications: dict[str, str] | None = None,
+) -> list[dict[str, object]]:
     """Return every upstream-derived production path with no campaign disposition.
 
     Unlike :func:`record_gaps` this does not depend on record coverage: an
     upstream-derived path needs a roadmap disposition whether or not a trusted
     record already covers it, so admitting a record never hides the gap.
+
+    ``trusted_classifications`` (from ``--trusted-ledger``) takes precedence over
+    the committed public projection, so a contributor cannot silence the ratchet
+    by reclassifying a path in the tracked public ledger when the authority is
+    consulted.
     """
     classifications = public_classifications(repo / LEDGER_PATH)
     campaign_path = repo / INDEPENDENCE_PLAN_PATH
     policy = load_policy(repo / POLICY_PATH)
     gaps: list[dict[str, object]] = []
     for path in tracked_paths(repo):
-        if not path.startswith(_PRODUCTION_PREFIXES):
+        if not _is_production_code(path):
             continue
         if policy.resolve(path).disposition != "included":
             continue
-        classification = classifications.get(path)
+        classification = (trusted_classifications or {}).get(path)
+        if classification is None:
+            classification = classifications.get(path)
         if classification is None:
             classification, _evidence = provenance_ledger.class_for(path, None)
         if classification not in {"upstream_derived", "unresolved"}:
@@ -462,24 +500,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--trusted-ledger", type=Path, default=None,
         help="external detailed implementation ledger; when supplied, the exact-record answer "
-             "comes from the authority instead of the committed public projection",
+             "and (for --check) the path classifications come from the authority instead of "
+             "the committed public projection",
     )
     parser.add_argument("--json", action="store_true", help="emit the inventory as JSON")
     parser.add_argument(
         "--check", action="store_true",
-        help="fail closed if any upstream-derived production path lacks a roadmap disposition",
+        help="disposition ratchet: fail closed if an upstream-derived production path lacks a "
+             "roadmap disposition and is not in the reviewed baseline (does not check record "
+             "coverage; use --check-records for that)",
     )
     parser.add_argument(
         "--check-records", action="store_true",
-        help="exit non-zero when any gap remains (an admission inventory, not a merge gate)",
+        help="record-coverage gate: exit non-zero while any tracked public path has no exact "
+             "trusted record (an admission inventory, not a merge gate)",
     )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     repo = args.repo.resolve()
     source = "committed public ledger (projection of the private authority)"
     covered = None
+    trusted_classifications = None
     if args.trusted_ledger is not None:
         covered = exact_paths_from_trusted_ledger(args.trusted_ledger)
+        trusted_classifications = classifications_from_trusted_ledger(args.trusted_ledger)
         source = "trusted authority (--trusted-ledger)"
 
     gaps = record_gaps(repo=repo, covered=covered)
@@ -501,8 +545,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         validate_baseline(KNOWN_DISPOSITION_GAPS)
-        unlisted, stale = check_disposition_gaps(disposition_gaps(repo=repo),
-                                                 baseline=KNOWN_DISPOSITION_GAPS)
+        unlisted, stale = check_disposition_gaps(
+            disposition_gaps(repo=repo, trusted_classifications=trusted_classifications),
+            baseline=KNOWN_DISPOSITION_GAPS)
         if unlisted or stale:
             if unlisted:
                 print(
