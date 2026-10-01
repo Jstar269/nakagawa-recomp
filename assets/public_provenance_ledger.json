@@ -4882,7 +4882,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f482b7403f2aa807b8e469e5d6c0d3941e0637e58eed8e302efdcc7cb8e8f539"
+      "sha256": "4c6408b220ac3295d71288e14c0a8bcee4c0de3bc384ef65cbc4004634c5dbed"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4894,7 +4894,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2256108d7432645c98ba3f674beaf9f7d54925679dbca354876c3ee7d4080519"
+      "sha256": "b91755052fdeca221d653f61e9f3e52ca1ce123eabc02644f6314c7916d2ce41"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -8972,7 +8972,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6de57b612cd66092844ce315aebaa0d9703f9add09d79e2d531a9ca3d25f1edd"
+      "sha256": "43bbacc9947682617a0341fbf4588006b33932905c11dee2e0c0d626a22508d9"
     },
     {
       "path": "tools/test_trace_window_probe.py",
