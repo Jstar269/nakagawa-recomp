@@ -28,6 +28,7 @@
 #include "iso_reader.h"
 #include "nk_font.h"
 #include "nk_platform.h"
+#include "../../src/rt/recomp.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -38,6 +39,7 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
+#include <process.h>
 #define test_rmdir _rmdir
 #define nk_ps_chdir _chdir
 #define nk_ps_getcwd _getcwd
@@ -65,6 +67,11 @@ static void nk_ps_set_env(const char *key, const char *value) {
     else unsetenv(key);
     free(pair);
 #endif
+}
+
+static void count_gui_foreground_request(void *context) {
+    int *count = (int *)context;
+    ++*count;
 }
 
 /* Copy an environment value out before any mutation invalidates getenv's pointer. */
@@ -1277,7 +1284,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 15); /* 8x preset not offered */
+        assert(player_app_focus_count(stops) == 16); /* launcher fullscreen; 8x preset absent */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
@@ -1824,16 +1831,27 @@ int main(int argc, char **argv) {
         assert(s_app->settings.fps_cap == 60);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
+        assert(s_app->settings.launcher_fullscreen == false);
         assert(s_app->settings.reduce_motion == false);
         assert(s_app->settings.master_volume == 80);
+        assert(s_app->settings.launcher_window_width == 1280);
+        assert(s_app->settings.launcher_window_height == 720);
+        assert(s_app->settings.launcher_window_position_valid == false);
 
         /* Mutate all settings and round-trip */
         s_app->settings.resolution_scale = 2;
         s_app->settings.fps_cap = 30;
         s_app->settings.vsync = false;
         s_app->settings.fullscreen = true;
+        s_app->settings.launcher_fullscreen = true;
         s_app->settings.reduce_motion = true;
         s_app->settings.master_volume = 55;
+        s_app->settings.launcher_window_maximized = true;
+        s_app->settings.launcher_window_position_valid = true;
+        s_app->settings.launcher_window_x = -1600;
+        s_app->settings.launcher_window_y = 80;
+        s_app->settings.launcher_window_width = 1100;
+        s_app->settings.launcher_window_height = 640;
 
         assert(player_app_save_settings(s_app, test_settings_path) == NK_OK);
 
@@ -1844,9 +1862,229 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.fps_cap == 30);
         assert(s_app2->settings.vsync == false);
         assert(s_app2->settings.fullscreen == true);
+        assert(s_app2->settings.launcher_fullscreen == true);
         assert(s_app2->settings.reduce_motion == true);
         assert(s_app2->settings.master_volume == 55);
+        assert(s_app2->settings.launcher_window_maximized == true);
+        assert(s_app2->settings.launcher_window_position_valid == true);
+        assert(s_app2->settings.launcher_window_x == -1600);
+        assert(s_app2->settings.launcher_window_y == 80);
+        assert(s_app2->settings.launcher_window_width == 1100);
+        assert(s_app2->settings.launcher_window_height == 640);
         assert(s_app2->settings_notice[0] == '\0');
+
+        /* Launcher and game fullscreen are independent persisted settings. */
+        player_app_toggle_launcher_fullscreen(s_app2);
+        assert(s_app2->settings.launcher_fullscreen == false);
+        assert(s_app2->settings.fullscreen == true);
+
+        /* Closing a running child requires explicit confirmation; closing an
+           idle player remains immediate. */
+        assert(player_app_close_decision(s_app2, false) == PLAYER_CLOSE_QUIT);
+        s_app2->is_game_running = true;
+        assert(player_app_close_decision(s_app2, false) ==
+               PLAYER_CLOSE_CONFIRM_REQUIRED);
+        assert(player_app_close_decision(s_app2, true) == PLAYER_CLOSE_QUIT);
+        assert(!player_app_take_close_confirmation_fallback(s_app2));
+        player_app_note_close_confirmation_failure(s_app2);
+        assert(player_app_take_close_confirmation_fallback(s_app2));
+        assert(!player_app_take_close_confirmation_fallback(s_app2));
+
+        /* One host close may enter SDL as both QUIT and WINDOW_CLOSE_REQUESTED.
+           Canceling the first confirmation leaves the child running, but a
+           second close event in that drained batch must not ask again. */
+        bool close_request_handled_in_batch = false;
+        int confirmation_count = 0;
+        for (int event = 0; event < 2; ++event) {
+            if (player_app_close_request_batch_claim(
+                    &close_request_handled_in_batch) &&
+                player_app_close_decision(s_app2, false) ==
+                    PLAYER_CLOSE_CONFIRM_REQUIRED) {
+                ++confirmation_count;
+                /* Cancel keeps s_app2->is_game_running set. */
+            }
+        }
+        assert(confirmation_count == 1);
+        assert(s_app2->is_game_running);
+
+        /* A later close starts a new batch and prompts once again. */
+        close_request_handled_in_batch = false;
+        for (int event = 0; event < 2; ++event) {
+            if (player_app_close_request_batch_claim(
+                    &close_request_handled_in_batch) &&
+                player_app_close_decision(s_app2, false) ==
+                    PLAYER_CLOSE_CONFIRM_REQUIRED) {
+                ++confirmation_count;
+            }
+        }
+        assert(confirmation_count == 2);
+        s_app2->is_game_running = false;
+
+        /* The two-column layout is used from the first card width that can
+           hold it, with the right column pushed clear of the wide launcher
+           control. A window that wide must never fall into the single-column
+           flow, which cannot fit a 720 px client. */
+        assert(!player_settings_uses_two_columns(1043, 720));
+        assert(player_settings_uses_two_columns(1044, 720));
+        assert(player_settings_uses_two_columns(1187, 720));
+        assert(player_settings_uses_two_columns(1188, 720));
+        for (float card = 980.0f; card <= 1216.0f; card += 1.0f) {
+            float offset = player_settings_second_column_offset(card);
+            /* launcher control and hint end 562 px into the card */
+            assert(offset >= 562.0f + 24.0f);
+            /* the right column keeps usable width for the stepper */
+            assert(card - 32.0f - offset >= 300.0f);
+        }
+        assert(player_settings_uses_two_columns(1280, 620));
+        assert(!player_settings_uses_two_columns(1280, 619));
+
+        /* The focus handoff is attempted once per launch, and only on proven
+           evidence. A failed SDL_MinimizeWindow leaves the launcher visible:
+           the contract is that the loop does not retry, because each retry
+           would recapture and rewrite the launcher settings every frame. */
+        assert(player_app_should_attempt_window_handoff(true, true, false, true));
+        assert(player_app_should_attempt_window_handoff(true, true, false, false) == false);
+        assert(player_app_should_attempt_window_handoff(true, false, false, true) == false);
+        assert(player_app_should_attempt_window_handoff(false, true, false, true) == false);
+        assert(player_app_should_attempt_window_handoff(true, true, true, true) == false);
+        assert(player_app_should_attempt_window_handoff(true, true, true, false) == false);
+        /* The same launch is not retried after a failed attempt. */
+        assert(player_app_should_attempt_window_handoff(true, true, true, true) == false);
+        /* A later launch gets a fresh attempt once the loop clears the latch. */
+        assert(player_app_should_attempt_window_handoff(true, true, false, true) == true);
+
+        /* The child requests foreground once only after the launcher handoff
+           marker exists and a visible, non-headless window is available. */
+        {
+            bool request_issued = false;
+            int request_count = 0;
+
+            assert(!sr_gui_request_launcher_foreground_once(
+                NULL, true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", false, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", true, true, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(!request_issued && request_count == 0);
+            assert(sr_gui_request_launcher_foreground_once(
+                "boot-events", true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(request_issued && request_count == 1);
+            assert(!sr_gui_request_launcher_foreground_once(
+                "boot-events", true, false, &request_issued, &request_count,
+                count_gui_foreground_request));
+            assert(request_count == 1);
+        }
+
+        assert(player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=window_ready backend=sdl"));
+        assert(player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=first_frame source=cpu"));
+        assert(!player_app_boot_event_is_window_ready(
+            "BOOT_EVENT phase=guest_start mode=scheduler"));
+
+        /* A 1280x720 request fits the 1024x600 usable area after the window
+           frame is reserved; a saved position on a missing monitor centers
+           safely on the current display. */
+        {
+            PlayerWindowRect fitted;
+            PlayerWindowRect usable = { 0, 0, 1024, 600 };
+            PlayerWindowRect requested = { 0, 0, 1280, 720 };
+            PlayerWindowFrame frame = { 32, 8, 8, 8 };
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                false, &fitted));
+            assert(fitted.width > 0 && fitted.height > 0);
+            assert(fitted.width + frame.left + frame.right <= usable.width);
+            assert(fitted.height + frame.top + frame.bottom <= usable.height);
+
+            usable.x = -1280;
+            usable.y = 40;
+            usable.width = 1280;
+            usable.height = 680;
+            requested.x = 5000;
+            requested.y = 5000;
+            requested.width = 1280;
+            requested.height = 720;
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                true, &fitted));
+            /* The fitted rect is a CLIENT rect, so it is bounded by the
+               display's client area, not by the raw usable bounds. */
+            assert(fitted.x >= usable.x + frame.left);
+            assert(fitted.y >= usable.y + frame.top);
+            assert((int64_t)fitted.x + fitted.width <=
+                   (int64_t)usable.x + usable.width - frame.right);
+            assert((int64_t)fitted.y + fitted.height <=
+                   (int64_t)usable.y + usable.height - frame.bottom);
+
+            /* On a 2x content-scale desktop, a 2x native-coordinate request
+               still fits by clamping against the same SDL screen units. */
+            usable.x = 0;
+            usable.y = 0;
+            usable.width = 3840;
+            usable.height = 2160;
+            frame.top = 64;
+            frame.left = 16;
+            frame.bottom = 16;
+            frame.right = 16;
+            requested.width = 2560;
+            requested.height = 1440;
+            assert(player_window_fit_to_display(requested, usable, frame,
+                                                false, &fitted));
+            assert(fitted.width == requested.width);
+            assert(fitted.height == requested.height);
+
+            /* SDL_SetWindowSize and SDL_SetWindowPosition address the CLIENT
+               rectangle, and the persisted launcher geometry is a client
+               rectangle too, so the fitted rectangle must stay inside the
+               display's client area. Clamping against the raw usable bounds
+               instead put the title bar and the top of the window off-screen:
+               on a real 3840x2160 display a saved window at (0,0) was measured
+               at a Win32 outer rect of (-11,-45). */
+            {
+                PlayerWindowRect live_usable = { 0, 0, 3840, 2088 };
+                PlayerWindowFrame live_frame = { 45, 11, 11, 11 };
+                PlayerWindowRect live_requested = { 0, 0, 1280, 720 };
+                int64_t client_x = (int64_t)live_usable.x + live_frame.left;
+                int64_t client_y = (int64_t)live_usable.y + live_frame.top;
+                int64_t client_w = (int64_t)live_usable.width -
+                                   live_frame.left - live_frame.right;
+                int64_t client_h = (int64_t)live_usable.height -
+                                   live_frame.top - live_frame.bottom;
+                assert(player_window_fit_to_display(live_requested, live_usable,
+                                                    live_frame, true, &fitted));
+                assert(fitted.x >= client_x);
+                assert(fitted.y >= client_y);
+                assert((int64_t)fitted.x + fitted.width <= client_x + client_w);
+                assert((int64_t)fitted.y + fitted.height <= client_y + client_h);
+                assert(fitted.width == live_requested.width);
+                assert(fitted.height == live_requested.height);
+
+                /* A saved client rect flush against the right/bottom edge is
+                   pulled back by the frame instead of hanging off the display. */
+                live_requested.x = 3840 - live_requested.width;
+                live_requested.y = 2088 - live_requested.height;
+                assert(player_window_fit_to_display(live_requested, live_usable,
+                                                    live_frame, true, &fitted));
+                assert((int64_t)fitted.x + fitted.width <= client_x + client_w);
+                assert((int64_t)fitted.y + fitted.height <= client_y + client_h);
+
+                /* A window larger than the whole display still resolves to a
+                   client rectangle that fits, and never a negative maximum. */
+                live_requested.x = 0;
+                live_requested.y = 0;
+                live_requested.width = 5000;
+                live_requested.height = 3000;
+                assert(player_window_fit_to_display(live_requested, live_usable,
+                                                    live_frame, true, &fitted));
+                assert(fitted.x >= client_x);
+                assert(fitted.y >= client_y);
+                assert(fitted.width <= client_w);
+                assert(fitted.height <= client_h);
+            }
+        }
 
         /* Corrupt JSON file resets to defaults and produces notice */
         write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
@@ -2291,6 +2529,79 @@ int main(int argc, char **argv) {
         /* Recovery: restore the executable and launch again. */
         copy_executable_file(self_path, package_exe);
         repeat_launch_and_settle(rep, 0, 3000, 3500, memstick1);
+
+        /* Tier-2 regression: an interactive launch must fail closed when the
+           launcher cannot prepare its boot-event handoff file. This exercises
+           player_app_launch_game itself rather than only the path helper. */
+#if defined(_WIN32) || defined(_WIN64)
+        const char *cache_root_env = "LOCALAPPDATA";
+#elif defined(__APPLE__)
+        const char *cache_root_env = "HOME";
+#else
+        const char *cache_root_env = "XDG_CACHE_HOME";
+#endif
+        bool had_cache_root_env;
+        char *old_cache_root_env =
+            capture_environment_value(cache_root_env, &had_cache_root_env);
+        char oversized_cache_root[NK_MAX_PATH * 2];
+        memset(oversized_cache_root, 'x', sizeof(oversized_cache_root) - 1);
+        oversized_cache_root[sizeof(oversized_cache_root) - 1] = '\0';
+        set_environment_value(cache_root_env, oversized_cache_root);
+        rep->enable_focus_handoff = true;
+        assert(!player_app_launch_game(rep, 0));
+        assert(!rep->is_game_running);
+        assert(rep->boot_event_file_path[0] == '\0');
+        assert(rep->launch_session.boot_event_file_path[0] == '\0');
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code,
+                      "WINDOW_HANDOFF_UNAVAILABLE") == 0);
+        assert(strstr(rep->last_error.message, "boot-event") != NULL);
+        assert(strcmp(rep->last_error.recovery_action_label,
+                      "Return to Library") == 0);
+        assert(rep->last_error.return_view == VIEW_LIBRARY);
+        restore_environment_value(cache_root_env, old_cache_root_env,
+                                  had_cache_root_env);
+        free(old_cache_root_env);
+
+        /* A stale marker must not authorize a handoff when its pathname
+           cannot be removed. A nonempty directory at the exact marker path
+           is a portable filesystem failure seam: remove() fails in the real
+           production helper, without mocking the filesystem or player path.
+           The pathname comes from the production formatter, so the seam lands
+           on the sequence the next launch really uses instead of assuming a
+           hardcoded sequence number. */
+        char stale_marker_path[1100];
+        char stale_marker_child[1200];
+        char next_marker_path[1200];
+        player_app_next_boot_event_path(next_marker_path, sizeof(next_marker_path));
+        assert(next_marker_path[0] != '\0');
+        assert(strstr(next_marker_path, "player-boot-") != NULL);
+        assert(strstr(next_marker_path, ".events") != NULL);
+        assert(strchr(next_marker_path, sep) != NULL);
+        if ((size_t)snprintf(stale_marker_path, sizeof(stale_marker_path), "%s",
+                             next_marker_path) >= sizeof(stale_marker_path)) {
+            printf("[PLAYER_STATE_TEST] FAIL stale-marker pathname too long\n");
+            return 1;
+        }
+        assert(nk_platform_mkdir_p(stale_marker_path));
+        snprintf(stale_marker_child, sizeof(stale_marker_child), "%s%crecord",
+                 stale_marker_path, sep);
+        write_text_file(stale_marker_child, "stale marker\n");
+        rep->enable_focus_handoff = true;
+        assert(!player_app_launch_game(rep, 0));
+        assert(!rep->is_game_running);
+        assert(rep->boot_event_file_path[0] == '\0');
+        assert(rep->launch_session.boot_event_file_path[0] == '\0');
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code,
+                      "WINDOW_HANDOFF_UNAVAILABLE") == 0);
+        assert(nk_platform_dir_exists(stale_marker_path));
+        assert(remove(stale_marker_child) == 0);
+        assert(test_rmdir(stale_marker_path) == 0);
+        rep->enable_focus_handoff = false;
+        /* The same prepared package still launches once the cache route is
+           restored, proving the failed attempt did not wedge session state. */
+        repeat_launch_and_settle(rep, 0, 4000, 4500, memstick1);
 
         /* Early failure B: the child exits non-zero immediately. The
            documented classification is RUNTIME_PREMATURE_EXIT. */

@@ -1,7 +1,9 @@
 # Hardware oracle plan — a real PSP as an external verification source
 
-**Status: proposal. The trace-oracle design below has not been built or tested.** Throughput figures
-are estimates and labelled as such. This document is a plan in the same sense as
+**Status: the resident PSP-side trace producer described below is still a proposal.** The v2
+trace format, strict comparator, and verifier consumer are implemented; throughput figures
+for the producer remain estimates and are labelled as such. This document is a plan in the
+same sense as
 [DECOMPME_INTEGRATION.md](DECOMPME_INTEGRATION.md), not a record of completed work.
 
 > **A narrower subset of this plan is now implemented.**
@@ -10,9 +12,10 @@ are estimates and labelled as such. This document is a plan in the same sense as
 > [`tools/psp_readiness.py`](../tools/psp_readiness.py) cover the implemented subset. Read those
 > first. In particular, the `tools/hw_doctor.py` proposed in §7 is superseded by the readiness tool
 > — extend that tool rather than adding a second precondition checker.
-> What remains genuinely unbuilt here is the *instruction-trace* oracle
-> (`CODEGEN_ORACLE`/`MICROTEST_ORACLE` capture on real silicon), which the scalar probe does not
-> provide.
+> What remains unbuilt here is the PSP-side v2 instruction-trace producer and capture path.
+> `verify_gates.py` can consume a supplied `PSP_HARDWARE` + `LOCAL_COSIM` pair, but the scalar
+> probe and this verifier change do not produce a real-PSP trace. The producer is in the works
+> as a later hardware slice under issue #312.
 
 ## Measured to date (index — exact cells only, do not generalize)
 
@@ -32,20 +35,50 @@ proposals. Each claim covers only the exact fixture named:
   overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
   route and date. Bulk random differential fuzz (Loop A) remains unbuilt, and
   the PPSSPP-derived-table warning stands for every unmeasured encoding.
-- **Out-of-domain transcendental arguments** (issue #69): NOT_MEASURED, and the
-  runtime therefore fails closed rather than inventing a result. The
-  `vasin` unit reduces its argument to a fixed 9.23 index and a 128-entry
-  segment table, so every `|x| > 1` encoding is outside the reconstructed
-  domain; the runtime returns the PSP invalid NaN `0x7F800001` with the input
-  sign. Upstream describes that branch as a guess (its own accuracy sweeps stop
-  at `|x| = 1`) and `pspdev` `vfpu-docs` states no edge case for it, so the
-  real silicon result is unknown here. A qualified private-title route reaches
-  it: the `NAN_TRAP` diagnostic on the main-menu transition shows every
-  arc-sine argument of the guest's rotation solve leaving the domain
-  (`|x|` in `[1.026, 2.0]`), which propagates to the bone matrices the title
-  uploads. Closing this needs a Loop B microtest over the existing oracle
-  vector, which already carries `+2.0` and `-10.0`; the answer must be
-  measured before any value is baked in.
+- **Out-of-domain transcendental arguments** (issue #69): `HARDWARE_MEASURED`
+  for these 14 exact raw words on the authorized PSP-3000-series / 6.61 /
+  ARK-5.1.0 route (2026-09-30). Fixture: `fixtures/vfpu_oracle/vfpu_probe.c`
+  (`FIXTURE_BUILD_ID nakagawa-vfpu-oracle-v1`), whose source-owned
+  `VASIN_DOMAIN_INPUTS` list fed the console; each word produced one record,
+  `vfpu-vasin-domain-arg00` through `vfpu-vasin-domain-arg13`, in the table's
+  order. These were two fresh USBHostFS/PSPLink sessions of that single probe
+  (no multi-fixture campaign identifier applies); both returned
+  byte-identical records, and the raw captures and the PRX digest stay
+  private. `FIXTURE_BUILD_ID` names the source fixture, not the built PRX: this
+  probe's `NAKAGAWA_PSP_META` record still carries the all-zero binary and
+  commit placeholders (unlike `fixtures/psp_oracle/probe.c`, which refuses to
+  build without a commit), so this is a documented-run measurement of these
+  exact words, not a device-bound capture, and the PSP oracle runner would
+  classify it `IDENTITY_NOT_BOUND` / not acceptance-eligible. The project's shared runtime `vasin` helper (`sr_vfpu_asin`)
+  returns the signed invalid signaling NaN that the PSP returned for every
+  sampled out-of-domain word, and the endpoints return themselves. Do not
+  clamp these NaNs in VASIN: downstream handling is required, and both
+  rasterizer paths already drop and count non-finite primitives. This is
+  evidence for these exact words, not every possible out-of-domain encoding.
+
+  | Input word | PSP result word |
+  | :--- | :--- |
+  | `0xBF800000` | `0xBF800000` |
+  | `0x3F800000` | `0x3F800000` |
+  | `0xBF800001` | `0xFF800001` |
+  | `0x3F800001` | `0x7F800001` |
+  | `0x3F80000B` | `0x7F800001` |
+  | `0xBF80000B` | `0xFF800001` |
+  | `0xBF80DABC` | `0xFF800001` |
+  | `0xBF82026A` | `0xFF800001` |
+  | `0xBF8FA2B7` | `0xFF800001` |
+  | `0xBF9A419C` | `0xFF800001` |
+  | `0xBFB63DDA` | `0xFF800001` |
+  | `0xBFFB5A51` | `0xFF800001` |
+  | `0xBFFFFE00` | `0xFF800001` |
+  | `0xC0000000` | `0xFF800001` |
+
+  A qualified private-title route reaches this edge: its `NAN_TRAP`
+  diagnostic on the main-menu transition shows the guest rotation solve
+  leaving the arc-sine domain (`|x|` in `[1.026, 2.0]`) and propagating to the
+  uploaded bone matrices. The measured result does not establish the root
+  cause of the one-frame skinned-model corruption; that issue remains in the
+  works under #69.
 - **Display/vblank masking** (detail: `ARCHITECTURE.md` display-mask section
   and the shipped `PSP-DISPLAY-001` oracle results): masked-window behavior is
   HARDWARE_MEASURED (+0 when no period crossed, +1 when one or two crossed,
@@ -333,16 +366,17 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 ## 1. The gap this closes
 
-`tools/verify_gates.py` reports, verbatim:
+With no pair of strict v2 hardware inputs, `tools/verify_gates.py` reports:
 
 ```text
-BLOCKED: CODEGEN_ORACLE not set (need a PPSSPP-captured .trace for <elf>)
+NOT_RUN: set both PSP_HARDWARE_TRACE and LOCAL_COSIM_TRACE
 ```
 
-**PPSSPP-captured** is the problem. Full verification currently compares this project against
-another reimplementation. Where PPSSPP is wrong or approximate, we inherit the error invisibly.
-[AGENTS.md](../AGENTS.md) already forbids describing renderer agreement as an external oracle; the
-same limit applies to trace agreement.
+The codegen and microtest comparisons still accept legacy v1 traces, and the verifier reports
+those as `CORROBORATIVE_ONLY`. A v2 `PPSSPP_CORROBORATIVE` trace is also corroborative only.
+Neither can satisfy the hardware gate: that gate requires a matching `PSP_HARDWARE` and
+`LOCAL_COSIM` pair, validated by `strict_hardware_diff`. Agreement with another reimplementation
+remains corroboration, not hardware evidence.
 
 A PSP running custom firmware executes on real Allegrex silicon and is the only ground truth
 available in the absence of documentation.
@@ -355,16 +389,19 @@ available in the absence of documentation.
 | `tools/gen_microtest.py` | Emits CRT-free Allegrex test modules; takes `--groups` / `--opcodes`; seeded and deterministic |
 | `tools/microtest_gate.py` | Compares `src/ref` against an oracle trace, truncated at the first syscall so everything compared is pure CPU |
 | `tools/codegen_gate.py` | Same shape, generated code vs oracle |
-| `tools/verify_gates.py` | Orchestrates gates and reports BLOCKED rather than silently downgrading |
+| `tools/verify_gates.py` | Reports trace tiers and runs the strict hardware gate; absent hardware inputs are `NOT_RUN` |
 | `src/rt/vfpu_interp.c`, `vfpu_fuzz.c` | Existing differential harness over pinned tables |
 
-The trace header is currently:
+The legacy v1 trace header is:
 
 ```text
 # psp-recomp trace v1 target=<name> oracle=<ppsspp|interp|recomp> start_pc=<hpc> steps=<N>
 ```
 
-Hardware support means extending that enum and recording provenance — see §9.
+Strict v2 adds the `source_tier` field (`PSP_HARDWARE`, `LOCAL_COSIM`, or
+`PPSSPP_CORROBORATIVE`) and the identity fields described in
+[`TRACE_FORMAT.md`](../tools/TRACE_FORMAT.md). The producer that emits
+`PSP_HARDWARE` traces on the PSP is in the works as a later hardware slice under issue #312.
 
 ## 3. Architecture: a resident runner, not per-test rebuilds
 
@@ -524,15 +561,16 @@ loop; route those to the batch path.
 
 ## 9. Repository changes required
 
-1. `tools/TRACE_FORMAT.md` — extend `oracle=` with `hardware-psp` and `vita-epsp`; add
-   model/firmware/CFW/clock fields.
+1. `tools/TRACE_FORMAT.md` — strict v2 tier and identity envelope implemented; PSP-side trace
+   production remains unbuilt.
 2. `tools/hwtest_gate.py` — **new**, result-vector comparison.
 3. `fixtures/psp_runner/` — PSPSDK sources for the resident runner, excluded from the native
    build. Tracked; the `hw-verify` target and `tools/hwtest_gate.py` below are still unbuilt.
 4. ~~`tools/hw_doctor.py` — **new**, the machine-checkable precondition check.~~ Superseded by the
    shipped `tools/psp_readiness.py`; add the live `host0:` round-trip check there.
 5. `Makefile` — a `hw-verify` target reporting BLOCKED when no device is attached.
-6. `tools/verify_gates.py` — register the hardware gate with the same BLOCKED semantics.
+6. `tools/verify_gates.py` — strict v2 `PSP_HARDWARE` + `LOCAL_COSIM` consumer implemented;
+   missing inputs report `NOT_RUN`.
 7. `publish_audit.py` / `.gitignore` — permit homebrew traces, reject retail-derived captures.
 
 ## 10. Scope discipline
