@@ -190,6 +190,7 @@
     "assets/bringup_report.schema.json",
     "assets/enhancement_package.schema.json",
     "assets/flight_recorder_schema.json",
+    "assets/ge_corpus.schema.json",
     "assets/history_audit_reviewed.json",
     "assets/issue_routing.json",
     "assets/issue_routing.schema.json",
@@ -310,6 +311,7 @@
     "fixtures/profile_zero/prebuilt/profile_zero_guest.prx",
     "fixtures/psp_oracle/Makefile",
     "fixtures/psp_oracle/README.md",
+    "fixtures/psp_oracle/ge_corpus.json",
     "fixtures/psp_oracle/mutex_imports.S",
     "fixtures/psp_oracle/probe.c",
     "fixtures/psp_oracle/probe_exception_a1.c",
@@ -578,6 +580,7 @@
     "tests/native/test_package_builder.c",
     "tests/native/test_parsers_hostile.c",
     "tests/native/test_pgf_public.c",
+    "tests/native/test_pgf_writer_roundtrip.c",
     "tests/native/test_player_state.c",
     "tests/native/test_player_ui.py",
     "tests/native/test_ui_clip.c",
@@ -665,6 +668,7 @@
     "tools/pngcmp.py",
     "tools/policy_sync.py",
     "tools/perf_summary_diff.py",
+    "tools/pgf_writer.py",
     "tools/portability_inventory.py",
     "tools/ppm2png.py",
     "tools/ppmdiff.py",
@@ -812,6 +816,7 @@
     "tools/test_platform_ladder.py",
     "tools/test_profile_zero_e2e.py",
     "tools/test_perf_summary_diff.py",
+    "tools/test_pgf_writer.py",
     "tools/test_portability_inventory.py",
     "tools/test_ppmdiff_coverage.py",
     "tools/test_prep_fail_closed.py",
@@ -935,6 +940,9 @@
     "src/core/nk_psp_sha1.h",
     "tools/nk_core/decrypt_boundary.py",
     "tools/nk_core/decrypt_tool.py",
-    "tools/test_psp_decrypt.py"
+    "tools/test_psp_decrypt.py",
+    "tools/tree_lint.py",
+    "tools/tree_lint_allow.json",
+    "tools/test_tree_lint.py"
   ]
 }

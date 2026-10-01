@@ -690,6 +690,25 @@ command buffer that blits the displayed frame, then published atomically as an e
 nothing was written). `gpu-capture-selftest` (Verify step 15) byte-checks both CPU- and GPU-source
 captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`.
 
+#### Headless VRAM capture and PNG export
+
+Set `SR_VRAMDUMP=<vblank>[,<vblank>...]` and `SR_VRAMDUMP_DIR=<existing-directory>` to capture at up to eight unique vblank numbers. A request is serviced only when that vblank presents a display frame; an unpresented selection is reported as `NOT_CAPTURED`. Each serviced selection writes `vram_<vblank>.bin` (the complete 2 MiB PSP VRAM image) and `vram_<vblank>.json` (display and GE draw framebuffers, depth buffer, bound texture-level registers, and loaded CLUT metadata/data). This is off by default and host-side. A GPU backend may materialize pending render-target state at the capture boundary before copying it. A texture level outside the captured VRAM image is marked `in_vram: false` and cannot be exported from that snapshot; report it as an unavailable VRAM surface under issue #314.
+
+Decode one surface from a raw image with `nk_cli vram`:
+
+```powershell
+nk_cli vram vram_120.bin --addr 0x04000000 --width 480 --height 272 `
+    --stride 512 --format 8888 --output display.png
+nk_cli vram vram_120.bin --addr 0x04020000 --width 64 --height 64 `
+    --stride 64 --format CLUT8 --clut-addr 0x04030000 `
+    --clut-format 5650 --output texture.png
+nk_cli vram --from-sidecar capture/vram_120.json --out-dir capture/png
+```
+
+Supported formats are `5650`, `5551`, `4444`, `8888`, `CLUT4`, `CLUT8`, `CLUT16`, `CLUT32`, `DXT1`, `DXT3`, `DXT5`, and `DEPTH16`. `--swizzled` applies PSP swizzle addressing to non-DXT textures. Sidecar mode exports each named VRAM surface, including the loaded palette and a grayscale depth preview. The CLI compiles the existing GE sampler into a temporary decoder with GCC, so Windows users need UCRT64 GCC on `PATH`.
+
+`mingw32-make --no-print-directory display-smoke-run` checks raw-to-PNG pixels against the display smoke fixture's host-sink PPM and checks that enabling the capture leaves that PPM byte-identical. The explicit `SR_VIDEO=offscreen` backend has no Vulkan swapchain, so this headless check uses the existing `SR_FIRST_FRAME_DUMP` host-sink PPM rather than `SR_FBDUMP`'s swapchain-only `present_source.ppm`. The interactive in-player VRAM panel remains UNBUILT; the headless viewer is the partial capability tracked by [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314).
+
 #### Where `SR_EXIT_AT_VBLANK` actually stops
 
 It is the **last statement of `sr_vblank_tick()`**. At that point vblank *V* is complete in
@@ -793,6 +812,8 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_FBSNAP_WINDOWS=a-b[,c-d]` | Capture only inside these vblank ranges; names files `frame_v<vcount>.ppm` so windows cannot overwrite each other (legacy `snap_v<vcount>.ppm` still written) |
 | `SR_EXIT_AT_VBLANK=V` | Terminate cleanly (status 0) at the **end** of vblank V's tick (see above) |
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
+| `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
+| `SR_VRAMDUMP_DIR=PATH` | Existing directory for `vram_<vblank>.bin` and `.json` capture files |
 | `SR_NOVBPACE=1` | Disable vblank pacing |
 
 For a replayable GE fixture, set `SR_GE_CAPTURE_FRAME=<vblank>` or

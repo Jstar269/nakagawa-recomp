@@ -2,6 +2,12 @@
 # Copyright (C) 2025-2026 the psp-recomp authors
 # Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 
+"""Convert a framebuffer PPM snapshot to PNG.
+
+Usage: ``python tools/ppm2png.py <input.ppm> <output.png>``.  Reads the PPM written
+by ``SR_FBSNAP=<N>`` and writes a PNG for the diff tools and the UI baseline.
+"""
+
 import struct
 import sys
 import zlib
