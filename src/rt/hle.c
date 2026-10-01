@@ -62,6 +62,7 @@
 #include "flight_recorder.h"
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
+#include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13226,6 +13227,82 @@ static int s_fbsnap_win_n = 0;
 static char s_fbcap_armed[128];  /* path armed for the CURRENT frame's present ("" = none) */
 static char s_fbcap_legacy[64];  /* legacy snap_*.ppm path for the same frame ("" = none) */
 
+#define SR_VRAMDUMP_MAX_VBLANKS 8
+static uint32_t s_vramdump_vblanks[SR_VRAMDUMP_MAX_VBLANKS];
+static unsigned s_vramdump_count;
+static unsigned s_vramdump_done;
+static char s_vramdump_dir[768];
+
+static void vramdump_init_once(void) {
+    static int initialized;
+    const char *selection, *directory;
+    const char *cursor;
+    if (initialized) return;
+    initialized = 1;
+    selection = getenv("SR_VRAMDUMP");
+    if (!selection || !selection[0]) return;
+    directory = getenv("SR_VRAMDUMP_DIR");
+    if (!directory || !directory[0] || strlen(directory) >= sizeof s_vramdump_dir) {
+        fprintf(stderr, "VRAMDUMP CONFIG_FAIL (SR_VRAMDUMP_DIR must name an existing output directory)\n");
+        return;
+    }
+    memcpy(s_vramdump_dir, directory, strlen(directory) + 1u);
+    cursor = selection;
+    while (*cursor) {
+        char *end = NULL;
+        unsigned long value;
+        if (s_vramdump_count >= SR_VRAMDUMP_MAX_VBLANKS || *cursor < '0' || *cursor > '9')
+            goto invalid;
+        errno = 0;
+        value = strtoul(cursor, &end, 10);
+        if (errno == ERANGE || end == cursor || value > UINT32_MAX || (*end && *end != ','))
+            goto invalid;
+        for (unsigned i = 0; i < s_vramdump_count; i++)
+            if (s_vramdump_vblanks[i] == (uint32_t)value) goto invalid;
+        s_vramdump_vblanks[s_vramdump_count++] = (uint32_t)value;
+        if (!*end) break;
+        cursor = end + 1;
+        if (!*cursor) goto invalid;
+    }
+    if (!s_vramdump_count) goto invalid;
+    fprintf(stderr, "VRAMDUMP enabled selections=%u\n", s_vramdump_count);
+    return;
+
+invalid:
+    s_vramdump_count = 0;
+    fprintf(stderr, "VRAMDUMP CONFIG_FAIL (expected up to %u unique decimal vblank values)\n",
+            SR_VRAMDUMP_MAX_VBLANKS);
+}
+
+static void vramdump_try_present(uint32_t vcount, const DisplayFrameState *fb) {
+    vramdump_init_once();
+    if (!s_vramdump_count || !fb) return;
+    for (unsigned i = 0; i < s_vramdump_count; i++) {
+        unsigned bit = 1u << i;
+        if (s_vramdump_vblanks[i] != vcount || (s_vramdump_done & bit)) continue;
+        s_vramdump_done |= bit;
+        if (ge_vramdump_write(s_vramdump_dir, vcount, fb->addr,
+                              (uint32_t)fb->stride, (uint32_t)fb->fmt))
+            fprintf(stderr, "VRAMDUMP vblank=%u PASS\n", vcount);
+        else
+            fprintf(stderr, "VRAMDUMP vblank=%u FAIL (see diagnostic above)\n", vcount);
+        break;
+    }
+}
+
+static void vramdump_note_vblank(uint32_t vcount) {
+    vramdump_init_once();
+    if (!s_vramdump_count) return;
+    for (unsigned i = 0; i < s_vramdump_count; i++) {
+        unsigned bit = 1u << i;
+        if (!(s_vramdump_done & bit) && s_vramdump_vblanks[i] < vcount) {
+            s_vramdump_done |= bit;
+            fprintf(stderr, "VRAMDUMP vblank=%u NOT_CAPTURED (no frame was presented at that vblank)\n",
+                    s_vramdump_vblanks[i]);
+        }
+    }
+}
+
 static void fbcap_parse_windows_once(void) {
     static int done = 0;
     if (done) return;
@@ -13366,6 +13443,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
+        vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     } else {
         s_setfb.latched++;
@@ -13655,10 +13733,12 @@ void sr_vblank_tick(void) {
          * double-buffering title (which flips at VBLANK, not synchronously) with no
          * present-truthful capture at all. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
+        vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     }
     if (ge_log_on() && (s_vcount & 0x3f) == 0)
         fprintf(stderr, "VBLANK tick %u\n", s_vcount);
+    vramdump_note_vblank(s_vcount);
     /* Full guest-PC dumps contain thousands of rows and synchronous five-second cadence
      * materially distorts the route being profiled. Keep periodic capture opt-in and let the
      * canonical manager choose a bounded default for runs that may be force-stopped before

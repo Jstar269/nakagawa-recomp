@@ -53,6 +53,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -672,6 +673,174 @@ def run(build_dir: Path, gui: bool = False, offscreen: bool = False) -> int:
     return 0
 
 
+def run_vramdump(build_dir: Path) -> int:
+    """Prove present-aligned VRAM capture and the host PNG decoder on this fixture."""
+    build_dir = build_dir.resolve()
+    executable = (build_dir / f"{ARTIFACT_STEM}.exe").resolve()
+    if not executable.exists():
+        executable = (build_dir / ARTIFACT_STEM).resolve()
+    image_path = (build_dir / f"{ARTIFACT_STEM}_image.bin").resolve()
+    if not executable.is_file() or not image_path.is_file():
+        raise RuntimeError("display-smoke runtime and generated image must be built first")
+
+    command = [
+        str(executable), "--image", str(image_path),
+        f"0x{BASE:08x}", f"0x{ENTRY:08x}", "none", "none", "--sched", "--gui",
+    ]
+
+    def launch(work_dir: Path, *, capture_vblank: int | None) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        for name in ("SR_FBDUMP", "SR_FIRST_FRAME_DUMP", "SR_VRAMDUMP",
+                     "SR_VRAMDUMP_DIR", "SR_EXIT_AT_VBLANK"):
+            env.pop(name, None)
+        env.update({
+            "SDL_VIDEO_DRIVER": "dummy", "SDL_VIDEODRIVER": "dummy",
+            "SDL_AUDIO_DRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
+            "SR_VIDEO": "offscreen", "SR_PRESENT_TRACE": "1",
+            "SR_FIRST_FRAME_DUMP": "1",
+        })
+        if capture_vblank is not None:
+            env["SR_VRAMDUMP"] = capture_vblank
+            env["SR_VRAMDUMP_DIR"] = str(work_dir / "capture")
+            (work_dir / "capture").mkdir()
+        completed = subprocess.run(
+            command, cwd=work_dir, env=env, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        if completed.returncode:
+            raise RuntimeError(
+                f"display-smoke {'capture' if capture_vblank is not None else 'baseline'} exited "
+                f"{completed.returncode}: {completed.stdout}{completed.stderr}"
+            )
+        combined = completed.stdout + completed.stderr
+        if "HOST_PRESENT_SUBMITTED" not in combined:
+            raise RuntimeError(
+                "display-smoke VRAM check did not observe a submitted present: " + combined
+            )
+        return completed
+
+    with tempfile.TemporaryDirectory(prefix="display-smoke-vramdump-") as temporary:
+        root = Path(temporary)
+        baseline_dir = root / "baseline"
+        capture_dir = root / "capture-run"
+        baseline_dir.mkdir()
+        capture_dir.mkdir()
+        baseline = launch(baseline_dir, capture_vblank=None)
+        presents = re.findall(r"HOST_PRESENT_SUBMITTED f=(\d+)",
+                              baseline.stdout + baseline.stderr)
+        if not presents:
+            raise RuntimeError("display-smoke baseline did not report its first presented vblank")
+        selected_vblank = int(presents[0])
+        selected_vblanks = ",".join(str(vblank) for vblank in range(selected_vblank,
+                                                                     selected_vblank + 8))
+        captured = launch(capture_dir, capture_vblank=selected_vblanks)
+        baseline_ppm = baseline_dir / "frame_first.ppm"
+        capture_ppm = capture_dir / "frame_first.ppm"
+        if not baseline_ppm.is_file() or not capture_ppm.is_file():
+            raise RuntimeError("offscreen host sink did not publish its first-frame PPM")
+        if baseline_ppm.read_bytes() != capture_ppm.read_bytes():
+            raise RuntimeError("enabling SR_VRAMDUMP changed the presented PPM bytes")
+        if f"VRAMDUMP vblank={selected_vblank} PASS" not in captured.stdout + captured.stderr:
+            raise RuntimeError(f"requested vblank {selected_vblank} produced no VRAM capture")
+
+        sidecars = sorted((capture_dir / "capture").glob("vram_*.json"))
+        if not sidecars:
+            raise RuntimeError("no selected vblank produced a VRAM sidecar")
+        ppm_header = b"P6\n480 272\n255\n"
+        ppm = baseline_ppm.read_bytes()
+        if not ppm.startswith(ppm_header) or len(ppm) - len(ppm_header) != 480 * 272 * 3:
+            raise RuntimeError("offscreen host-sink output is not the expected 480x272 P6 frame")
+        expected_rgb = ppm[len(ppm_header):]
+        matching_sidecar = None
+        for candidate in sidecars:
+            candidate_sidecar = json.loads(candidate.read_text(encoding="utf-8"))
+            display = candidate_sidecar.get("display_framebuffer", {})
+            if (display.get("addr") != f"0x{FRAMEBUFFER:08x}" or
+                    display.get("stride") != STRIDE or display.get("format_code") != PIXEL_FORMAT):
+                raise RuntimeError(f"captured display framebuffer metadata mismatch: {display}")
+            raw_path = candidate.parent / candidate_sidecar["vram"]["image_file"]
+            raw_image = raw_path.read_bytes()
+            matches = True
+            for y in range(272):
+                for x in range(480):
+                    raw_offset = (y * STRIDE + x) * 4
+                    ppm_offset = (y * 480 + x) * 3
+                    if (raw_image[raw_offset:raw_offset + 3] !=
+                            expected_rgb[ppm_offset:ppm_offset + 3]):
+                        matches = False
+                        break
+                if not matches:
+                    break
+            if matches:
+                matching_sidecar = candidate
+                break
+        if matching_sidecar is None:
+            first_sidecar = json.loads(sidecars[0].read_text(encoding="utf-8"))
+            raw_image = (sidecars[0].parent / first_sidecar["vram"]["image_file"]).read_bytes()
+            samples = []
+            for sample_y in (0, 128, 263, 264, 265, 271):
+                raw_at = (sample_y * STRIDE) * 4
+                ppm_at = sample_y * 480 * 3
+                samples.append(
+                    f"y{sample_y}:vram={raw_image[raw_at:raw_at + 4].hex()}"
+                    f"/ppm={expected_rgb[ppm_at:ppm_at + 3].hex()}"
+                )
+            raise RuntimeError(
+                f"none of {len(sidecars)} bounded VRAM captures matched the offscreen presented PPM; "
+                + ",".join(samples)
+            )
+
+        output_dir = root / "png"
+        decoded = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "vram",
+             "--from-sidecar", str(matching_sidecar), "--out-dir", str(output_dir)],
+            cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
+        )
+        if decoded.returncode:
+            raise RuntimeError(f"nk_cli vram could not decode the runtime sidecar: {decoded.stderr}")
+        png_path = output_dir / "display_framebuffer.png"
+        png = png_path.read_bytes()
+        if png[:8] != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError("nk_cli vram output is not a PNG")
+        offset = 8
+        compressed = bytearray()
+        png_width = png_height = 0
+        while offset < len(png):
+            size = struct.unpack_from(">I", png, offset)[0]
+            kind = png[offset + 4:offset + 8]
+            data = png[offset + 8:offset + 8 + size]
+            offset += size + 12
+            if kind == b"IHDR":
+                png_width, png_height, depth, color, *_ = struct.unpack(">IIBBBBB", data)
+                if depth != 8 or color != 6:
+                    raise RuntimeError("nk_cli vram did not produce RGBA8 pixels")
+            elif kind == b"IDAT":
+                compressed.extend(data)
+            elif kind == b"IEND":
+                break
+        raw = zlib.decompress(compressed)
+        if (png_width, png_height) != (480, 272) or len(raw) != 272 * (1 + 480 * 4):
+            raise RuntimeError("nk_cli vram PNG dimensions or scanline length mismatch")
+        for y in range(272):
+            row = raw[y * (1 + 480 * 4):(y + 1) * (1 + 480 * 4)]
+            if row[0] != 0:
+                raise RuntimeError("nk_cli vram emitted an unexpected PNG row filter")
+            row_rgba = row[1:]
+            row_rgb = expected_rgb[y * 480 * 3:(y + 1) * 480 * 3]
+            for x in range(480):
+                rgb = row_rgb[x * 3:x * 3 + 3]
+                rgba = row_rgba[x * 4:x * 4 + 4]
+                ppm_rgba = rgb + bytes((255,))
+                if rgba != ppm_rgba:
+                    raise RuntimeError(
+                        f"decoded display pixel mismatch at ({x},{y}): "
+                        f"PNG={rgba.hex()} PPM={ppm_rgba.hex()}"
+                    )
+    print("DISPLAY_SMOKE_VRAMDUMP status=PASS bounded_sidecars=1..8 "
+          "present_bytes=IDENTICAL png_pixels=IDENTICAL")
+    return 0
+
+
 def run_player(build_dir: Path) -> int:
     """Drive PLAY NOW through the native player without human input.
 
@@ -762,6 +931,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--offscreen", action="store_true",
         help="run --sched --gui with the explicit no-window host presenter",
     )
+    vramdump_parser = subparsers.add_parser("vramdump")
+    vramdump_parser.add_argument("--build-dir", type=Path, required=True)
     player_parser = subparsers.add_parser("run-player")
     player_parser.add_argument("--build-dir", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -779,6 +950,8 @@ def main(argv: list[str] | None = None) -> int:
             return verify(args.build_dir)
         if args.command == "run":
             return run(args.build_dir, gui=args.gui, offscreen=args.offscreen)
+        if args.command == "vramdump":
+            return run_vramdump(args.build_dir)
         if args.command == "run-player":
             return run_player(args.build_dir)
         raise AssertionError(f"unhandled command {args.command}")

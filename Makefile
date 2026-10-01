@@ -1215,6 +1215,7 @@ display-smoke:
 display-smoke-run: display-smoke
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
 	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
+	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) vramdump --build-dir $(DISPLAY_SMOKE_DIR)
 
 display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)

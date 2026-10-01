@@ -33,6 +33,9 @@
  */
 
 #define _CRT_SECURE_NO_WARNINGS
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "recomp.h"
 #include "ge_shared.h"
 #include "ge_capture.h"
@@ -61,11 +64,38 @@ static void ge_capture_w32(uint32_t addr, uint32_t value) { ge_capture_note_memo
 #undef MEM_R32
 #undef MEM_W16
 #undef MEM_W32
+#ifdef SR_GE_VRAM_DECODER_CLI
+static int ge_vram_cli_bad_read;
+static uint8_t ge_vram_cli_read8(uint32_t addr) {
+    uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys < GE_CAPTURE_VRAM_BASE || phys >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE) {
+        ge_vram_cli_bad_read = 1;
+        return 0;
+    }
+    return *(const uint8_t *)SR_HOST(phys);
+}
+static uint16_t ge_vram_cli_read16(uint32_t addr) {
+    return (uint16_t)ge_vram_cli_read8(addr) |
+           (uint16_t)((uint16_t)ge_vram_cli_read8(addr + 1u) << 8);
+}
+static uint32_t ge_vram_cli_read32(uint32_t addr) {
+    return (uint32_t)ge_vram_cli_read8(addr) |
+           ((uint32_t)ge_vram_cli_read8(addr + 1u) << 8) |
+           ((uint32_t)ge_vram_cli_read8(addr + 2u) << 16) |
+           ((uint32_t)ge_vram_cli_read8(addr + 3u) << 24);
+}
+#define MEM_R8(a) ge_vram_cli_read8((a))
+#define MEM_R16(a) ge_vram_cli_read16((a))
+#define MEM_R32(a) ge_vram_cli_read32((a))
+#define MEM_W16(a, v) ((void)(a), (void)(v))
+#define MEM_W32(a, v) ((void)(a), (void)(v))
+#else
 #define MEM_R8(a) (g_ge_capture_active ? ge_capture_r8((a)) : sr_r8((a)))
 #define MEM_R16(a) (g_ge_capture_active ? ge_capture_r16((a)) : sr_r16((a)))
 #define MEM_R32(a) (g_ge_capture_active ? ge_capture_r32((a)) : sr_r32((a)))
 #define MEM_W16(a, v) (g_ge_capture_active ? ge_capture_w16((a), (uint16_t)(v)) : sr_w16((a), (uint16_t)(v)))
 #define MEM_W32(a, v) (g_ge_capture_active ? ge_capture_w32((a), (uint32_t)(v)) : sr_w32((a), (uint32_t)(v)))
+#endif
 
 /* Wall-clock ms (MinGW clock() is wall time with CLOCKS_PER_SEC=1000). */
 static unsigned long wall_ms(void) { return (unsigned long)(clock() * 1000ull / CLOCKS_PER_SEC); }
@@ -3955,3 +3985,351 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
 }
 
 uint32_t ge_framebuffer(void) { return ge_fb_addr(); }
+
+static const char *ge_vramdump_format_name(uint32_t format) {
+    static const char *const names[] = {
+        "5650", "5551", "4444", "8888", "CLUT4", "CLUT8", "CLUT16",
+        "CLUT32", "DXT1", "DXT3", "DXT5", "DEPTH16"
+    };
+    return format < sizeof names / sizeof names[0] ? names[format] : "UNKNOWN";
+}
+
+static int ge_vramdump_addr_in_vram(uint32_t address) {
+    uint32_t phys = address & 0x1FFFFFFFu;
+    return phys >= GE_CAPTURE_VRAM_BASE &&
+           phys < GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE;
+}
+
+static uint64_t ge_vramdump_surface_size(uint32_t width, uint32_t height,
+                                         uint32_t stride, uint32_t format) {
+    uint64_t row = stride ? stride : width;
+    uint64_t rows = height;
+    switch (format) {
+        case 0: case 1: case 2: case 6: case 11: return row * rows * 2u;
+        case 3: case 7: return row * rows * 4u;
+        case 4: return ((row + 1u) / 2u) * rows;
+        case 5: return row * rows;
+        case 8: return ((row + 3u) / 4u) * ((rows + 3u) / 4u) * 8u;
+        case 9: case 10: return ((row + 3u) / 4u) * ((rows + 3u) / 4u) * 16u;
+        default: return 0;
+    }
+}
+
+static void ge_vramdump_surface(FILE *file, int *first, const char *name,
+                                const char *kind, uint32_t addr, uint32_t width,
+                                uint32_t height, uint32_t stride, uint32_t format,
+                                int swizzled, const uint8_t *data, size_t data_size) {
+    if (!*first) fputc(',', file);
+    *first = 0;
+    fprintf(file,
+            "{\"name\":\"%s\",\"kind\":\"%s\",\"addr\":\"0x%08x\","
+            "\"width\":%u,\"height\":%u,\"stride\":%u,\"format\":\"%s\","
+            "\"format_code\":%u,\"size_bytes\":%llu,\"swizzled\":%s",
+            name, kind, addr, width, height, stride,
+            ge_vramdump_format_name(format), format,
+            (unsigned long long)ge_vramdump_surface_size(width, height, stride, format),
+            swizzled ? "true" : "false");
+    if (data) {
+        fputs(",\"data_hex\":\"", file);
+        for (size_t i = 0; i < data_size; i++) fprintf(file, "%02x", data[i]);
+        fputc('"', file);
+    }
+    fputc('}', file);
+}
+
+int ge_vramdump_write(const char *directory, uint32_t vblank,
+                      uint32_t display_addr, uint32_t display_stride,
+                      uint32_t display_format) {
+    char image_name[64], image_path[1024], sidecar_path[1024];
+    FILE *image = NULL, *sidecar = NULL;
+    uint32_t clut_command, clut_bytes, clut_format, clut_stride;
+    int first_surface = 1, ok = 0;
+
+    if (!directory || !directory[0]) return 0;
+    if (s_gpu && s_gpu->capture_boundary && !s_gpu->capture_boundary()) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (GPU readback boundary unavailable)\n", vblank);
+        return 0;
+    }
+    if (!sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (guest VRAM span unavailable)\n", vblank);
+        return 0;
+    }
+    if (snprintf(image_name, sizeof image_name, "vram_%u.bin", vblank) >= (int)sizeof image_name ||
+        snprintf(image_path, sizeof image_path, "%s/%s", directory, image_name) >= (int)sizeof image_path ||
+        snprintf(sidecar_path, sizeof sidecar_path, "%s/vram_%u.json", directory, vblank) >= (int)sizeof sidecar_path) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (output path too long)\n", vblank);
+        return 0;
+    }
+
+    image = fopen(image_path, "wb");
+    if (!image) {
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (cannot open raw image)\n", vblank);
+        return 0;
+    }
+    {
+        size_t written = fwrite(SR_HOST(GE_CAPTURE_VRAM_BASE), 1,
+                                GE_CAPTURE_VRAM_SIZE, image);
+        int close_result = fclose(image);
+        image = NULL;
+        if (written != GE_CAPTURE_VRAM_SIZE || close_result != 0) {
+            remove(image_path);
+            fprintf(stderr, "VRAMDUMP vblank=%u FAIL (raw image write incomplete)\n", vblank);
+            return 0;
+        }
+    }
+
+    clut_command = ge_get_cmd(GE_LOADCLUT);
+    clut_bytes = (clut_command & 0x3Fu) * 32u;
+    if (clut_bytes > sizeof ge.clutram) clut_bytes = (uint32_t)sizeof ge.clutram;
+    clut_format = ge.clut_fmt;
+    clut_stride = clut_bytes / ((clut_format & 3u) == 3u ? 4u : 2u);
+    sidecar = fopen(sidecar_path, "wb");
+    if (!sidecar) {
+        remove(image_path);
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (cannot open JSON sidecar)\n", vblank);
+        return 0;
+    }
+
+    fprintf(sidecar,
+            "{\"schema\":\"nakagawa-vram-dump-v1\",\"vblank\":%u,"
+            "\"vram\":{\"base\":\"0x%08x\",\"size_bytes\":%u,\"image_file\":\"%s\"},",
+            vblank, GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE, image_name);
+    fprintf(sidecar,
+            "\"display_framebuffer\":{\"addr\":\"0x%08x\",\"width\":480,"
+            "\"height\":272,\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"swizzled\":false},",
+            display_addr, display_stride, ge_vramdump_format_name(display_format), display_format);
+    fprintf(sidecar,
+            "\"draw_framebuffer\":{\"addr\":\"0x%08x\",\"width\":480,"
+            "\"height\":272,\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"swizzled\":false},",
+            ge.fbp, ge.fbw, ge_vramdump_format_name(ge.fbfmt & 3u), ge.fbfmt & 3u);
+    fprintf(sidecar,
+            "\"depth_buffer\":{\"addr\":\"0x%08x\",\"width\":%u,"
+            "\"height\":272,\"stride\":%u,\"format\":\"DEPTH16\","
+            "\"format_code\":11,\"swizzled\":false},",
+            ge.zbp, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
+            ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u));
+    fprintf(sidecar, "\"texture_enabled\":%s,\"texture_levels\":[",
+            ge.tex_enable ? "true" : "false");
+    {
+        int first_level = 1;
+        for (uint32_t level = 0; level < 8u; level++) {
+            uint32_t address_low = ge_get_cmd(GE_TEXADDR0 + level);
+            uint32_t buffer_width = ge_get_cmd(GE_TEXBUFWIDTH0 + level);
+            uint32_t size_word = ge_get_cmd(GE_TEXSIZE0 + level);
+            uint32_t address = (address_low & 0x00FFFFFFu) |
+                               ((buffer_width & 0x00FF0000u) << 8);
+            uint32_t width = 1u << (size_word & 0xFu);
+            uint32_t height = 1u << ((size_word >> 8) & 0xFu);
+            uint32_t stride = buffer_width & 0xFFFFu;
+            if (!stride) stride = width;
+            if (!address) continue;
+            if (!first_level) fputc(',', sidecar);
+            first_level = 0;
+            fprintf(sidecar,
+                    "{\"level\":%u,\"addr\":\"0x%08x\",\"width\":%u,"
+                    "\"height\":%u,\"stride\":%u,\"format\":\"%s\","
+                    "\"format_code\":%u,\"size_bytes\":%llu,\"swizzled\":%s,\"in_vram\":%s}",
+                    level, address, width, height, stride,
+                    ge_vramdump_format_name(ge.tex_fmt & 0xFu), ge.tex_fmt & 0xFu,
+                    (unsigned long long)ge_vramdump_surface_size(
+                        width, height, stride, ge.tex_fmt & 0xFu),
+                    ge.tex_swizzle ? "true" : "false",
+                    ge_vramdump_addr_in_vram(address) ? "true" : "false");
+        }
+    }
+    fprintf(sidecar,
+            "],\"clut\":{\"addr\":\"0x%08x\",\"size_bytes\":%u,"
+            "\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"format_word\":\"0x%08x\",\"swizzled\":false,\"loaded_bytes\":%u,"
+            "\"loaded_data_hex\":\"",
+            ge.clut_addr, clut_bytes, clut_stride,
+            ge_vramdump_format_name(clut_format & 3u), clut_format & 3u,
+            clut_format, clut_bytes);
+    for (size_t i = 0; i < sizeof ge.clutram; i++) fprintf(sidecar, "%02x", ge.clutram[i]);
+    fputs("\"},\"surfaces\":[", sidecar);
+
+    ge_vramdump_surface(sidecar, &first_surface, "display_framebuffer", "color",
+                        display_addr, 480u, 272u, display_stride, display_format, 0, NULL, 0);
+    if (ge_vramdump_addr_in_vram(ge.fbp))
+        ge_vramdump_surface(sidecar, &first_surface, "draw_framebuffer", "color",
+                            ge.fbp, 480u, 272u, ge.fbw, ge.fbfmt & 3u, 0, NULL, 0);
+    if (ge.zbp && ge_vramdump_addr_in_vram(ge.zbp))
+        ge_vramdump_surface(sidecar, &first_surface, "depth_buffer", "depth",
+                            ge.zbp, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
+                            272u, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
+                            11u, 0, NULL, 0);
+    for (uint32_t level = 0; level < 8u; level++) {
+        uint32_t address_low = ge_get_cmd(GE_TEXADDR0 + level);
+        uint32_t buffer_width = ge_get_cmd(GE_TEXBUFWIDTH0 + level);
+        uint32_t size_word = ge_get_cmd(GE_TEXSIZE0 + level);
+        uint32_t address = (address_low & 0x00FFFFFFu) |
+                           ((buffer_width & 0x00FF0000u) << 8);
+        uint32_t width = 1u << (size_word & 0xFu);
+        uint32_t height = 1u << ((size_word >> 8) & 0xFu);
+        uint32_t stride = buffer_width & 0xFFFFu;
+        char name[32];
+        if (!stride) stride = width;
+        if (!address || !ge_vramdump_addr_in_vram(address)) continue;
+        snprintf(name, sizeof name, "texture_level_%u", level);
+        ge_vramdump_surface(sidecar, &first_surface, name, "texture", address,
+                            width, height, stride,
+                            ge.tex_fmt & 0xFu, ge.tex_swizzle, NULL, 0);
+    }
+    if (clut_bytes && (clut_format & 3u) <= 3u) {
+        uint32_t palette_bpp = (clut_format & 3u) == 3u ? 4u : 2u;
+        uint32_t entries = clut_bytes / palette_bpp;
+        ge_vramdump_surface(sidecar, &first_surface, "clut", "palette",
+                            ge.clut_addr, entries, 1u, entries, clut_format & 3u,
+                            0, ge.clutram, clut_bytes);
+    }
+    fputs("]}\n", sidecar);
+    ok = !ferror(sidecar);
+    if (fclose(sidecar) != 0) ok = 0;
+    sidecar = NULL;
+    if (!ok) {
+        remove(sidecar_path);
+        remove(image_path);
+        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (JSON sidecar write incomplete)\n", vblank);
+        return 0;
+    }
+    return 1;
+}
+
+#ifdef SR_GE_VRAM_DECODER_CLI
+uint8_t *g_mem;
+int g_ge_capture_active;
+void ge_capture_note_memory(uint32_t addr, uint32_t bytes) { (void)addr; (void)bytes; }
+void sr_oor(uint32_t addr, uint32_t value, int store) {
+    (void)addr; (void)value; (void)store;
+    ge_vram_cli_bad_read = 1;
+}
+uint32_t sr_get_ge_status(void) { return 0; }
+
+static int ge_vram_cli_parse_u32(const char *text, uint32_t *out) {
+    char *end = NULL;
+    unsigned long value;
+    if (!text || !text[0] || !out) return 0;
+    value = strtoul(text, &end, 0);
+    if (end == text || *end != '\0' || value > UINT32_MAX) return 0;
+    *out = (uint32_t)value;
+    return 1;
+}
+
+static int ge_vram_cli_read_file(const char *path, uint8_t *out, size_t size) {
+    FILE *file = fopen(path, "rb");
+    int ok;
+    if (!file) return 0;
+    ok = fread(out, 1, size, file) == size && fgetc(file) == EOF;
+    if (fclose(file) != 0) ok = 0;
+    return ok;
+}
+
+int main(int argc, char **argv) {
+    const size_t arena_size = (size_t)GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE;
+    uint8_t *arena = NULL;
+    uint32_t addr, width, height, stride, format, swizzled, clut_addr, clut_format;
+    uint64_t pixel_count, bytes_per_pixel, byte_extent;
+    uint32_t *pixels = NULL;
+    FILE *output = NULL;
+    int result = 1;
+
+    if (argc != 12 ||
+        !ge_vram_cli_parse_u32(argv[2], &addr) ||
+        !ge_vram_cli_parse_u32(argv[3], &width) ||
+        !ge_vram_cli_parse_u32(argv[4], &height) ||
+        !ge_vram_cli_parse_u32(argv[5], &stride) ||
+        !ge_vram_cli_parse_u32(argv[6], &format) ||
+        !ge_vram_cli_parse_u32(argv[7], &swizzled) ||
+        !ge_vram_cli_parse_u32(argv[8], &clut_addr) ||
+        !ge_vram_cli_parse_u32(argv[9], &clut_format)) {
+        fprintf(stderr, "usage: ge-vram-decoder IMAGE ADDR WIDTH HEIGHT STRIDE FORMAT SWIZZLED CLUT_ADDR CLUT_FORMAT CLUT_FILE RGBA_OUT\n");
+        return 2;
+    }
+    if (!width || !height || width > 4096u || height > 4096u || stride < width ||
+        swizzled > 1u || (format > 10u && format != 11u) ||
+        (format >= 8u && format <= 10u && swizzled) ||
+        (format >= 8u && format <= 10u && (stride & 3u)) ||
+        (uint64_t)width * height > 4194304u ||
+        addr < GE_CAPTURE_VRAM_BASE || addr >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE ||
+        (clut_addr && (clut_addr < GE_CAPTURE_VRAM_BASE ||
+                       clut_addr >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE)) ||
+        clut_format > 0x00FFFFFFu) {
+        fprintf(stderr, "VRAM decoder rejected out-of-range or unsupported surface metadata\n");
+        return 2;
+    }
+    if (format <= 3u) {
+        bytes_per_pixel = format == 3u ? 4u : 2u;
+        byte_extent = ((uint64_t)height - 1u) * stride * bytes_per_pixel +
+                      (uint64_t)width * bytes_per_pixel;
+        if ((uint64_t)addr + byte_extent >
+            (uint64_t)GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE) {
+            fprintf(stderr, "VRAM decoder surface crosses the captured VRAM boundary\n");
+            return 2;
+        }
+    }
+
+    arena = (uint8_t *)calloc(1, arena_size);
+    if (!arena) { fprintf(stderr, "VRAM decoder could not allocate the guest address window\n"); goto done; }
+    g_mem = arena + GE_CAPTURE_VRAM_BASE;
+    if (!ge_vram_cli_read_file(argv[1], arena, GE_CAPTURE_VRAM_SIZE)) {
+        fprintf(stderr, "VRAM decoder input must be exactly 2 MiB\n"); goto done;
+    }
+    g_ge_capture_active = 0;
+    ge.tex_addr = addr;
+    ge.tex_w = (int)width;
+    ge.tex_h = (int)height;
+    ge.tex_bufw = stride;
+    ge.tex_fmt = format;
+    ge.tex_swizzle = (int)swizzled;
+    ge.clut_addr = clut_addr;
+    ge.clut_fmt = clut_format;
+    if (strcmp(argv[10], "-") != 0) {
+        if (!ge_vram_cli_read_file(argv[10], ge.clutram, sizeof ge.clutram)) {
+            fprintf(stderr, "VRAM decoder CLUT input must be exactly 2048 bytes\n"); goto done;
+        }
+    } else if (clut_addr) {
+        uint32_t offset = (clut_addr - GE_CAPTURE_VRAM_BASE) & 0x001FFFFFu;
+        for (uint32_t i = 0; i < sizeof ge.clutram; i++)
+            ge.clutram[i] = arena[(offset + i) & 0x001FFFFFu];
+    }
+
+    pixel_count = (uint64_t)width * height;
+    pixels = (uint32_t *)malloc((size_t)pixel_count * sizeof *pixels);
+    if (!pixels) { fprintf(stderr, "VRAM decoder could not allocate the pixel buffer\n"); goto done; }
+    if (format == 11u) {
+        for (uint32_t y = 0; y < height; y++) {
+            for (uint32_t x = 0; x < width; x++) {
+                uint8_t gray = (uint8_t)(MEM_R16(addr + (y * stride + x) * 2u) >> 8);
+                pixels[y * width + x] = (uint32_t)gray | ((uint32_t)gray << 8) |
+                                        ((uint32_t)gray << 16) | 0xFF000000u;
+            }
+        }
+    } else {
+        ge_decode_tex_rgba(pixels);
+    }
+    if (ge_vram_cli_bad_read) {
+        fprintf(stderr, "VRAM decoder read outside the captured 2 MiB VRAM image\n"); goto done;
+    }
+    output = fopen(argv[11], "wb");
+    if (!output) { fprintf(stderr, "VRAM decoder could not open its RGBA output\n"); goto done; }
+    for (uint64_t i = 0; i < pixel_count; i++) {
+        uint32_t pixel = pixels[i];
+        uint8_t rgba[4] = {(uint8_t)pixel, (uint8_t)(pixel >> 8),
+                           (uint8_t)(pixel >> 16), (uint8_t)(pixel >> 24)};
+        if (fwrite(rgba, 1, sizeof rgba, output) != sizeof rgba) {
+            fprintf(stderr, "VRAM decoder RGBA output write failed\n"); goto done;
+        }
+    }
+    if (fclose(output) != 0) { output = NULL; fprintf(stderr, "VRAM decoder RGBA output close failed\n"); goto done; }
+    output = NULL;
+    result = 0;
+done:
+    if (output) fclose(output);
+    free(pixels);
+    free(arena);
+    g_mem = NULL;
+    return result;
+}
+#endif /* SR_GE_VRAM_DECODER_CLI */

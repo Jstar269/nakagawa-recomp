@@ -272,7 +272,12 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
             uint32_t i = (uint32_t)(y * (int)stride + x);
             int rr, gg, bb;
             if (fmt == 3) {
-                uint32_t p = sr_r32(fbaddr + i * 4);
+                uint32_t p;
+                /* display_host_span_valid checks the complete framebuffer before this
+                 * conversion. Read framebuffer storage literally: sr_r32 reserves the
+                 * GE status port at 0x04084000, which can otherwise replace a pixel when
+                 * a PSP VRAM framebuffer spans that address. */
+                memcpy(&p, SR_HOST(fbaddr + i * 4), sizeof p);
                 rr = p & 0xFF; gg = (p >> 8) & 0xFF; bb = (p >> 16) & 0xFF;
             } else {
                 uint16_t p = sr_r16(fbaddr + i * 2);
