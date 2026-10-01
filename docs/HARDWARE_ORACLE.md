@@ -134,13 +134,36 @@ proposals. Each claim covers only the exact fixture named:
   (`GEGPU stats: ... nonfinite=`) instead of handing a NaN `gl_Position` to the
   fixed-function clipper, whose verdict for NaN is undefined. The two share one
   predicate (`ge_vtx_finite` in `src/rt/ge_shared.h`) so they cannot disagree.
-  A hardware capture through the existing
-  Loop B probe — one triangle with a NaN bone matrix and one with a NaN vertex
-  normal, read back through `sceGuGetMemoryStick`/`sceGuFinish` into a host
-  framebuffer hash — would settle whether the hardware culls, clamps or
-  rasterizes such a vertex, and is the measurement this cell is waiting for.
-  The related producer is a separate cell: the out-of-domain arc-sine argument
-  that makes a bone matrix non-finite in the first place.
+  `CASE=ge-nan` now emits `PSP-GE-001` raw-word records for qNaN, positive and
+  negative infinity, negative zero, and the minimum positive denormal. It also
+  hashes the PSP framebuffer after direct screen-coordinate, clip-position,
+  and lit-normal triangles. This probe is `NOT_RUN` pending the physical
+  campaign, does not repeat the already measured VASIN edge words, and has not
+  yet established a hardware rasterization rule; this GE boundary remains in
+  the works under #69. The out-of-domain arc-sine argument that can produce a
+  non-finite bone matrix remains a separate cell.
+- **Audio query and blocking-output semantics** (issue #311; `CASE=audio-query`):
+  `NOT_RUN`. The probe captures both channel rest-length spellings, two bounded
+  channel output blocks, one silent Output2 block, rest-sample queries, raw
+  returns, and elapsed microseconds. Each successfully reserved channel is
+  released. No audio timing or return rule is hardware-measured by this build;
+  the remaining #311 audio contract is in the works.
+- **DMAC alignment and overlap cells** (issue #303; `CASE=dma-cells`):
+  `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
+  and destination residues, paired unaligned addresses, and overlap in both
+  directions. It records cache-disciplined copy observations and owned-buffer
+  guards; the previously measured size matrix is not repeated. The four
+  invalid-tail launches remain safe-boundary `SKIP` records because no safe
+  unowned address has been established. Invalid-span validation and atomicity
+  remain in the works under #303.
+- **Zero-duration thread yield and callback behavior** (scheduler work tracked
+  by #340, related to #290; `CASE=delay-zero`): `NOT_RUN`. Live source shows
+  `h_DelayThread` parks via `sched_delay_current(A0)`, while
+  `h_DelayThreadCB` returns from its zero-duration helper without entering the
+  park loop. The probe measures the physical PSP's equal-priority worker,
+  pending callback, raw return codes, and system-time deltas before deciding
+  whether runtime behavior needs a follow-up; hardware qualification is in the
+  works under #340.
 - **Misaligned data access** (runs PSP-A3-02 and PSP-A3-03; same route,
   campaign and console; fixtures `exception-a3-mload` and `exception-a3-mstore`,
   which are `probe_exception_a3.c` built with `-DA3_CASE=2` and `=3`):

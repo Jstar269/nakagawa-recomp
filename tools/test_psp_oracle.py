@@ -39,6 +39,23 @@ from psp_oracle.run_psplink import (
     annotate_terminal_outcome,
     main as run_psplink_main,
 )
+from psp_oracle.parse_golden import (
+    AUDIO_OUT_COUNTS,
+    AUDIO_SPEC,
+    DELAY_ZERO_OUT_COUNTS,
+    DELAY_ZERO_SPEC,
+    DMAC_CELL_OUT_COUNTS,
+    DMAC_CELL_SPEC,
+    DMAC_INVALID_CASES,
+    GE_NAN_OUT_COUNTS,
+    GE_NAN_SPEC,
+    GE_NAN_WORDS,
+    parse_audio_query_output,
+    parse_delay_zero_output,
+    parse_dmac_cells_output,
+    parse_dmac_invalid_tail_output,
+    parse_ge_nan_output,
+)
 
 
 META = (
@@ -207,6 +224,133 @@ class PspOracleProtocolTests(unittest.TestCase):
                 )
                 with self.assertRaises(ProtocolError):
                     parse_output(text)
+
+
+class NewProbeResultParserTests(unittest.TestCase):
+    def _row(self, test_id: str, case_id: str, count: int, *,
+             status: str = "PASS", values: dict[int, int] | None = None) -> str:
+        outputs = values or {}
+        fields = " ".join(
+            f"out{i}=0x{outputs.get(i, 0):08x}" for i in range(count)
+        )
+        return (
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} case_id={case_id} "
+            f"status={status} result=0x00000000 {fields}\n"
+        )
+
+    def _stream(self, rows: list[str]) -> str:
+        return META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        ) + "".join(rows)
+
+    def test_audio_query_complete_and_malformed_scalar_fixtures(self) -> None:
+        rows = []
+        for case_id in AUDIO_SPEC.ordered_cases:
+            count = AUDIO_OUT_COUNTS[case_id]
+            values = {0: AUDIO_SPEC.terminal_count} if case_id == "audio-done" else None
+            rows.append(self._row("PSP-AUDIO-001", case_id, count, values=values))
+        complete = self._stream(rows)
+        self.assertTrue(parse_audio_query_output(complete).complete)
+        with self.assertRaises(ProtocolError):
+            parse_audio_query_output(complete.replace(" out6=0x00000000", "", 1))
+        with self.assertRaises(ProtocolError):
+            parse_audio_query_output(self._stream(rows[:-1]))
+
+    def test_ge_nan_complete_and_wrong_raw_bits_are_rejected(self) -> None:
+        rows = []
+        for case_id in GE_NAN_SPEC.ordered_cases:
+            values = {0: GE_NAN_SPEC.terminal_count}
+            if case_id != "ge-nan-done":
+                sample = case_id.rsplit("-", 1)[1]
+                values[0] = GE_NAN_WORDS[sample]
+            rows.append(self._row(
+                "PSP-GE-001", case_id, GE_NAN_OUT_COUNTS[case_id], values=values
+            ))
+        complete = self._stream(rows)
+        self.assertTrue(parse_ge_nan_output(complete).complete)
+        malformed = complete.replace("out0=0x7fc00000", "out0=0x7fc00001", 1)
+        with self.assertRaises(ProtocolError):
+            parse_ge_nan_output(malformed)
+
+    def test_dma_owned_alignment_and_overlap_cells_validate_exact_addresses(self) -> None:
+        rows = []
+        for case_id in DMAC_CELL_SPEC.ordered_cases:
+            if case_id == "dmac-cells-done":
+                rows.append(self._row(
+                    "PSP-DMAC-001", case_id, 1,
+                    values={0: DMAC_CELL_SPEC.terminal_count},
+                ))
+                continue
+            if case_id.startswith("align-"):
+                _, api_name, side, offset_text = case_id.split("-")
+                offset = int(offset_text, 16)
+                src_offset = offset if side in {"src", "both"} else 0
+                dst_offset = offset if side in {"dst", "both"} else 0
+                values = {
+                    0: 0 if api_name == "memcpy" else 1,
+                    1: src_offset, 2: dst_offset, 3: 64,
+                    4: 64, 5: 64, 6: 0, 7: 1,
+                    8: 0x08801000 + src_offset,
+                    9: 0x08802000 + dst_offset,
+                }
+            else:
+                _, api_name, direction, delta_text = case_id.split("-")
+                delta = int(delta_text, 16)
+                source_offset = delta if direction == "backward" else 0
+                destination_offset = delta if direction == "forward" else 0
+                values = {
+                    0: 0 if api_name == "memcpy" else 1,
+                    1: 0 if direction == "forward" else 1,
+                    2: delta, 3: 64, 4: 64, 5: 64, 6: 0, 7: 1,
+                    8: 0x08801000 + source_offset,
+                    9: 0x08801000 + destination_offset,
+                }
+            rows.append(self._row(
+                "PSP-DMAC-001", case_id, DMAC_CELL_OUT_COUNTS[case_id],
+                values=values,
+            ))
+        complete = self._stream(rows)
+        self.assertTrue(parse_dmac_cells_output(complete).complete)
+        malformed = complete.replace("out9=0x08802001", "out9=0x08802000", 1)
+        with self.assertRaises(ProtocolError):
+            parse_dmac_cells_output(malformed)
+
+    def test_delay_zero_ready_equal_priority_fixture_and_malformed_pass(self) -> None:
+        rows = []
+        for case_id in DELAY_ZERO_SPEC.ordered_cases:
+            if case_id == "delay-zero-done":
+                rows.append(self._row(
+                    "PSP-KERNEL-002", case_id, 1,
+                    values={0: DELAY_ZERO_SPEC.terminal_count},
+                ))
+            else:
+                rows.append(self._row(
+                    "PSP-KERNEL-002", case_id, DELAY_ZERO_OUT_COUNTS[case_id],
+                    values={0: 0, 1: 1, 2: 0, 3: 0, 4: 1, 5: 4,
+                            6: 32, 7: 32, 8: 2, 9: 0},
+                ))
+        complete = self._stream(rows)
+        self.assertTrue(parse_delay_zero_output(complete).complete)
+        malformed = complete.replace("out6=0x00000020", "out6=0x00000021", 1)
+        with self.assertRaises(ProtocolError):
+            parse_delay_zero_output(malformed)
+
+    def test_each_invalid_tail_launch_accepts_only_its_safe_skip_record(self) -> None:
+        for campaign_case, (record_case, direction, api) in DMAC_INVALID_CASES.items():
+            with self.subTest(campaign_case=campaign_case):
+                row = self._row(
+                    "PSP-DMAC-001", record_case, 7, status="SKIP",
+                    values={0: 7, 1: 0xC001, 2: 0xC000, 3: direction,
+                            4: api, 5: 0xFFFFFFFE, 6: 0x10000},
+                )
+                complete = self._stream([row])
+                self.assertEqual(len(parse_dmac_invalid_tail_output(
+                    complete, campaign_case
+                ).results), 1)
+                malformed = complete.replace("out1=0x0000c001", "out1=0x0000c000", 1)
+                with self.assertRaises(ProtocolError):
+                    parse_dmac_invalid_tail_output(malformed, campaign_case)
 
 
 class GeCorpusGateTests(unittest.TestCase):
@@ -943,12 +1087,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 56)
+        self.assertEqual(len(routes), 59)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 57)))
+        self.assertEqual(set(ids), set(range(1, 60)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -1008,6 +1152,7 @@ class PspDmacProbeTests(unittest.TestCase):
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
             "dma-concurrency",
+            "dma-cells",
             "dma-invalid-tail-memcpy-dst",
             "dma-invalid-tail-memcpy-src",
             "dma-invalid-tail-try-dst",
@@ -1019,6 +1164,34 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("LIBS = -lpspdmac", self.makefile)
         self.assertIn("sceDmacMemcpy(dst, src, size)", self.probe)
         self.assertIn("sceDmacTryMemcpy(dst, src, size)", self.probe)
+
+    def test_dma_alignment_and_overlap_cells_stay_inside_owned_guarded_buffers(self) -> None:
+        self.assertIn("DMAC_CELL_BYTES 64u", self.probe)
+        self.assertIn("1u, 2u, 3u, 5u, 6u, 7u, 9u, 10u, 11u, 13u, 14u, 15u", self.probe)
+        self.assertIn("s_dmac_overlap_offsets[] = {1u, 2u, 3u, 7u, 15u}", self.probe)
+        self.assertIn("sceKernelDcacheWritebackInvalidateRange", self.probe)
+        self.assertIn("dmac_cell_guard_mutations", self.probe)
+        self.assertIn('"dmac-cells-done", "PASS", 0u, done_out', self.probe)
+        for case in ("ge-nan", "delay-zero"):
+            self.assertIn(f"else ifeq ($(CASE),{case})", self.makefile)
+
+    def test_audio_probe_uses_only_two_channel_blocks_and_releases_owned_channels(self) -> None:
+        self.assertIn("AUDIO_QUERY_BLOCKS 2", self.probe)
+        self.assertIn("sceAudioGetChannelRestLength", self.probe)
+        self.assertIn("sceAudioOutputBlocking", self.probe)
+        self.assertIn("sceAudioOutput2GetRestSample", self.probe)
+        self.assertIn("sceAudioOutput2OutputBlocking", self.probe)
+        self.assertIn("sceAudioChRelease(channel)", self.probe)
+        self.assertIn("sceAudioOutput2Release()", self.probe)
+        self.assertIn("sceAudioSRCChRelease()", self.probe)
+
+    def test_delay_zero_probe_records_equal_priority_ready_worker_and_pending_callback(self) -> None:
+        self.assertIn("sceKernelDelayThreadCB(0u)", self.probe)
+        self.assertIn("sceKernelDelayThread(0u)", self.probe)
+        self.assertIn("sceKernelNotifyCallback(callback, 0x5a)", self.probe)
+        self.assertIn("worker_status_before == PSP_THREAD_READY", self.probe)
+        self.assertIn("s_delay_zero_worker_runs", self.probe)
+        self.assertIn("sceKernelGetSystemTimeLow() - start", self.probe)
 
     def test_concurrency_probe_separates_a_caller_window_from_busy(self) -> None:
         self.assertIn("#define DMAC_CONCURRENCY_TRIALS 64u", self.probe)
@@ -1307,9 +1480,10 @@ class PspDmacProbeTests(unittest.TestCase):
             )
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
-        self.assertEqual(dmac["issues"], [23])
+        self.assertEqual(dmac["issues"], [23, 303])
         self.assertEqual(dmac["hardware_evidence"], "MEASURED")
         self.assertEqual(len(dmac["case_ids"]), 23)
+        self.assertEqual(dmac["diagnostic_case_ids"], ["dma-cells"])
         self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])
         self.assertIn("missing record is never PASS", dmac["reset"])
@@ -1340,6 +1514,34 @@ class PspDmacProbeTests(unittest.TestCase):
             "sceKernelWaitThreadEnd",
         ):
             self.assertIn(api, kernel["apis"])
+
+    def test_new_probe_families_are_registered_as_not_run(self) -> None:
+        manifest = self._oracle_manifest()
+        by_id = {entry["id"]: entry for entry in manifest["tests"]}
+        expected = {
+            "PSP-AUDIO-001": (AUDIO_SPEC, "audio-query"),
+            "PSP-GE-001": (GE_NAN_SPEC, "ge-nan"),
+            "PSP-KERNEL-002": (None, "delay-zero"),
+            "PSP-DMAC-001": (None, "dma-cells"),
+        }
+        for test_id, (spec, campaign_case) in expected.items():
+            with self.subTest(test_id=test_id):
+                entry = by_id[test_id]
+                self.assertIn(campaign_case, entry.get("diagnostic_case_ids", []))
+                if spec is not None:
+                    self.assertEqual(entry["case_ids"], list(spec.ordered_cases))
+                if test_id in {"PSP-AUDIO-001", "PSP-GE-001"}:
+                    self.assertEqual(entry["status"], "planned")
+                    self.assertEqual(entry["hardware_evidence"], "NOT_RUN")
+        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
+            self.assertIn(f"else ifeq ($(CASE),{case_id})", self.makefile)
+        delay_zero = by_id["PSP-KERNEL-002"]
+        self.assertEqual(delay_zero["status"], "planned")
+        self.assertEqual(delay_zero["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(delay_zero["case_ids"], [
+            "delay-threadcb-zero", "delay-thread-zero", "delay-zero-done"
+        ])
+        self.assertIn(340, delay_zero["issues"])
 
 
 class PspMailboxCleanupTests(unittest.TestCase):

@@ -58,6 +58,7 @@ from psp_oracle.run_psplink import (
 )
 from psp_oracle import run_psplink as run_psplink_module
 from psp_oracle.parse_golden import (
+    DMAC_INVALID_CASES,
     CACHE_SPEC,
     EXPECTED_CELLS as FPU_EXPECTED_CELLS,
     IO_SPEC,
@@ -1254,6 +1255,43 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             len(_parse_campaign_records(_campaign_spec_stream(IO_SPEC), "io-matrix").results),
             IO_SPEC.record_count,
         )
+
+    def test_new_probe_cases_register_strict_runner_completeness(self):
+        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
+            with self.subTest(case_id=case_id):
+                self.assertEqual(
+                    run_psplink_module._campaign_completeness_contract(case_id),
+                    "strict-golden-sequence",
+                )
+                self.assertFalse(run_psplink_module._campaign_stream_complete(
+                    CAMPAIGN_META, case_id
+                ))
+
+        for campaign_case, (record_case, direction, api) in DMAC_INVALID_CASES.items():
+            with self.subTest(case_id=campaign_case):
+                self.assertEqual(
+                    run_psplink_module._campaign_completeness_contract(campaign_case),
+                    "strict-safe-dmac-skip",
+                )
+                row = (
+                    "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+                    f"case_id={record_case} status=SKIP result=0xfffffffe "
+                    f"out0=0x7 out1=0xc001 out2=0xc000 out3=0x{direction:x} "
+                    f"out4=0x{api:x} out5=0xfffffffe out6=0x10000\n"
+                )
+                self.assertTrue(run_psplink_module._campaign_stream_complete(
+                    CAMPAIGN_META + row, campaign_case
+                ))
+                self.assertEqual(
+                    len(_parse_campaign_records(CAMPAIGN_META + row, campaign_case).results),
+                    1,
+                )
+                malformed = row.replace("out1=0xc001", "out1=0xc000")
+                self.assertFalse(
+                    run_psplink_module._campaign_stream_complete(
+                        CAMPAIGN_META + malformed, campaign_case
+                    )
+                )
 
     def test_campaign_mbx_delete_wait_requires_exact_complete_stream(self):
         complete = _campaign_mbx_delete_wait_stream()
