@@ -5364,7 +5364,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5787c3a6216373f31635cadacaec3e88a0733c349a5e6dc071d9c19f9cf52ffa"
+      "sha256": "4cd699f6385c405bccc6fcc2f179c40ec7d5e53781386d213bd890e57173a9bf"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -6482,7 +6482,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26f8bf854f97187df8c2d90aeac282f5af5065f9efc4f6a6e0a3f0593e6a3f04"
+      "sha256": "4f6a95f83c7e2ea1a64416e30aaebc2f5582732c2a4ba2ce6b960533f0379a83"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8215,7 +8215,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92244a1a3fa42719ade43a526f65e637fca63510831adedd3ffb8d4475e95ee2"
+      "sha256": "ae119a84fe6f2910c370c668e94fc6682a87ba0454b22051c9d8fb286bc96fb1"
     },
     {
       "path": "tools/test_platform_ladder.py",
