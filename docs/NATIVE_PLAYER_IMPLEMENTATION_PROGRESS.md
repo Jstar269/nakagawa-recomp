@@ -17,7 +17,8 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
    - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
-   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`; it never performs decryption.
+   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. Separately, the built-in decryption boundary (`src/core/nk_psp_container.c`) unwraps the disc's encrypted executable and its encrypted PRX modules, but only when the user's own key file is present (`<user data>/keys/psp-keyfile.json` or `NAKAGAWA_PSP_KEY_FILE`) and only into the private per-title folder. The player holds no key material, a user-supplied plain module still wins, and a missing key entry fails closed naming the entry
+     ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
    - `nk_xb.c` / `nk_xb.h`: Project-authored bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
@@ -81,31 +82,14 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
 
 ---
 
-## 3. Native UI Regression Matrix Status (Audit & Evidence Strength Alignment)
+## 3. Native UI Capability Status
 
-The matrix distinguishes between architectural staging, implementation completeness, and verified execution:
-
-- `PIPELINE_STAGE_EXISTS`: A state/step is declared in UI/data structures, but backend execution is not yet integrated.
-- `NOT_IMPLEMENTED`: Underlying engine functionality (e.g. retail-disc hash validation) does not yet exist.
-- `PLAN_VERIFIED`: Launch session data/environment parameters construct correctly in unit tests.
-- `EXECUTED_VERIFIED`: Real process spawned, child landmarks observed on host.
-
-| # | Capability | Web Studio Baseline | Native Player Status | Real Evidence Tier |
-| :- | :--- | :--- | :--- | :--- |
-| 1 | ISO Drag & Drop | Sandbox only | Full native filesystem read | **PASS** (Direct OS path handoff) |
-| 2 | Disc Identification | Web Worker sector parse | Direct C ISO9660 PVD + SFO parse | **PASS** (Project-authored C PVD parser) |
-| 3 | Title Qualification | Profile match in JS | Single authoritative manifest catalog | **PASS** (Derived from `assets/titles`) |
-| 4 | Asset Extraction | External PowerShell script | Native ISO/XB staging worker | **PARTIAL** (synthetic native path is verified; module decryption pending; the runtime also serves the read-only archive-backed VFS ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298))) |
-| 5 | Module Decryption | External toolchain | **NOT_SUPPORTED** (open maintainer legal decision, #295) | **NOT_SUPPORTED** (plain inputs only) |
-| 6 | Runtime Launch | Node child_process spawn | Native launch session & process spawn | **EXECUTED_VERIFIED** for `display-smoke-v1` only (see below); `PLAN_VERIFIED` for every other title |
-| 7 | Graphics Settings | Web localStorage | Native JSON configuration (`settings.json`) & CLI env | **PASS** (Atomically persisted and round-trip verified) |
-| 8 | Gamepad Calibration | Web Gamepad API | Dedicated native Controller Settings screen (`VIEW_CONTROLLER_SETTINGS`) with interactive button remapping (14 digital PSP controls + analog stick), non-destructive conflict detection, deadzone & trigger threshold calibration, live input/deadzone monitor, guided resting/extreme calibration wizard (#357), and atomic profile persistence | **PASS** (Remapping, deadzone/trigger calibration, live monitor, guided stick/trigger calibration, and atomic profile persistence verified) |
-| 9 | Preflight Checks | `nk_doctor.py` via HTTP | Integrated diagnostic rules | **PASS** (Portable rule engine) |
-| 10 | Progress Feedback | Server-Sent Events (SSE) | Reactive SDL staging events | **PARTIAL** — native copy/unpack progress supplies bounded file counts and percentages; decryption and hosted/retail progress remain unavailable |
-| 11 | Error Handling | HTML alert banner | Modal error dialog with recovery buttons | **PASS** (Structured recovery views) |
-| 12 | Moved ISO Handling | Silent failure | Fail-closed detection + fallback lookup | **PASS** (Unit-tested recovery) |
-| 13 | Multi-Title Support | Hardcoded HST strings | Data-driven manifest catalog | **IN_PROGRESS** (Unifying title contract) |
-| 14 | In-Game Performance Overlay | Web Studio Profiler | Running game window HUD (F1 / `SR_HUD=1` opt-in) rendering presented FPS, frame time, VBlank rate, and audio active status from `SR_PERF` telemetry; zero guest timing impact; zero GPU work when disabled | **PASS** (SDL3 debug text presentation path overlay, SR_HUD and F1 toggle verified, headless smoke parity maintained) |
+Per-capability status is not maintained here. The single authoritative disposition
+of every former web-dashboard and diagnostic capability — status, surface, owning
+test path, and the tracking issue for anything unbuilt — lives in
+[`NATIVE_UI_REGRESSION_MATRIX.md`](NATIVE_UI_REGRESSION_MATRIX.md), which
+`tools/lint_docs.py` enforces. This file keeps the narrative: what was built, what
+the launch path proves, and what it does not.
 
 ---
 
