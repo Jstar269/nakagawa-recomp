@@ -30,7 +30,7 @@ Live join of every exact `sce*` / `__sce*` API named in
 Open-owner counts:
 
 - #339: 21
-- #341: 42
+- #341: 41
 
 ## Census
 
@@ -44,7 +44,7 @@ Open-owner counts:
 | `sceDisplayIsVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayIsVblank` | `0x4d4e10ec` |
 | `sceDisplayWaitVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblank` | `0x36cdfade` |
 | `sceDisplayWaitVblankCB` | missing | #339 | missing | - | - | - |
-| `sceDisplayWaitVblankStart` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStart` | `0x984c27e7` |
+| `sceDisplayWaitVblankStart` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStart` | `0x984c27e7` |
 | `sceDisplayWaitVblankStartCB` | missing | #339 | missing | - | - | - |
 | `sceDisplayWaitVblankStartMulti` | missing | #339 | missing | - | - | - |
 | `sceDisplayWaitVblankStartMultiCB` | missing | #339 | missing | - | - | - |
