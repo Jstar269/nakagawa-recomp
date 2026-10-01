@@ -1158,6 +1158,17 @@ class TestFlightSmokeProjection(unittest.TestCase):
                     display_generator._require_vblank_progress(bundle, "stalled")
 
 
+    def test_a_single_frame_run_is_not_blamed_on_the_vblank_clock(self):
+        display_generator._require_vblank_progress(self._bundle([(0x04000000, 5)]), "one-frame")
+
+    def test_flight_smoke_checks_vblank_progress_before_projecting(self):
+        """Both runs are gated before the host-paced count is zeroed for the comparison."""
+        source = DISPLAY_GENERATOR_PATH.read_text(encoding="utf-8")
+        body = source[source.index("def flight_smoke("):source.index("def run_player(")]
+        gate = body.index("_require_vblank_progress(bundle, label)")
+        self.assertLess(gate, body.index("_without_host_present_events(source)"))
+
+
 class TestPresenterContract(unittest.TestCase):
     def test_gdi_acceptance_requires_window_dc_and_positive_scanlines(self):
         """The headless suite cannot open GDI, so pin its acceptance contract in source."""
