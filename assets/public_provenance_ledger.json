@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2009bad9d0175bbe28886271562525b8491e76e641de16ebf7d03231b5a3c2fb"
+      "sha256": "dd33835e77c44f2c37a48c5f8606451db81ac4879e94acdcf2b253359eac9c1f"
     },
     {
       "path": "NOTICE.md",
@@ -1087,7 +1087,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dbb4e2ec8fbc89c7a5a04e2016b1051728d9024825c229c1de8a2eb1e114e4d7"
+      "sha256": "79950a2f01f6e3df816bb424b6449178789f9b3c0091bd64e6e5ac6b9fac1900"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1198,7 +1198,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f46f863497dedd65715ed9912f04758a9a9985e82cc2a4f5bef087aec2413ec8"
+      "sha256": "18e906977d73c79fdd8933c43d8e9ae709ce7d736f8df00ee5c4b19479f355b6"
     },
     {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
@@ -1645,7 +1645,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57fc4d388658a7ae32dda0ca525f41d7cd04e8faacab419f540479b62b57efd1"
+      "sha256": "57076c66510254c0e610c51a6a404d5c968a5655bb0699f5a27ea7107e395d6d"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
@@ -4187,7 +4187,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "508e14bb31b245068d9ac1a53cdb42c090a5045f36f3bb608a0b4e2fdc08448b"
+      "sha256": "e0f7ad8fb5991e3e7ba57b88e7f807f6067cfc7729c2e3f54dc7f15b6e9fc54d"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -4248,7 +4248,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b4ca0b829a738df72c813bd6db8f2705034b1262e4e1aba6a112bb793c187495"
+      "sha256": "333acb7ff1dce50d60e7586e3d4fb6d53672b4902b7195b64604b60d92432ebb"
     },
     {
       "path": "src/rt/gpu_capture_selftest.c",
@@ -4475,7 +4475,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "68c81520856fabbf78292a36a596977b6f6ef94569347c3ab1e753c39bf9f110"
+      "sha256": "6afb9f2fd2d7073070bfed1adb37caac57cd18987d653968916d5a08ef074812"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -4525,7 +4525,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1f17c7d2738d75003b5131de7eb97216855ad19b9f1e95febb38b23050eb8034"
+      "sha256": "aa382a5fc1fb432b03640b2c4786bf7c0733c2168aa38ec8f02ae8da9e3ed58c"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6206,7 +6206,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0b48a7482418688fc7a7c0cd57d3929a41ec07dea7acbaf97a8fc1d267929fe4"
+      "sha256": "5dfb4c29cd66651610f28338d136d1f57b2f686232f217c202d6a14aeb2e294f"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7686,7 +7686,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bebe42536ee128460d3a071bfb42d7b06b3b443b6264ec6d83f4cabe7d6a6026"
+      "sha256": "bf562b23753cf508c235cfa371cce996d454a496825a90bac6be474bbda5770d"
     },
     {
       "path": "tools/test_guestmem_c.py",
@@ -8107,7 +8107,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0284044f67a0acaef6eb6bdf42a1ebebeaf8685d1a95983565625db2a1552bd9"
+      "sha256": "9c4926cb27d373023ef56adedcc12e84fdf4d94f291a22a7e16fb7fcc77918b9"
     },
     {
       "path": "tools/test_nk_core.py",
