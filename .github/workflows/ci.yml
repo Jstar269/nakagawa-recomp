@@ -92,6 +92,9 @@ jobs:
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
 
+      - name: Enforce tracked-tree reference ratchet
+        run: python tools/tree_lint.py --check
+
       - name: Locate the pinned Betterleaks binary
         shell: bash
         run: |
@@ -304,6 +307,10 @@ jobs:
         # alias/waiver balance, classification-baseline drift, and synthetic
         # malformed-ELF fixtures. Requires no game inputs.
         run: python tools/import_audit_gate.py
+
+      - name: Run provenance record and disposition gap check
+        # #355: ratchets disposition gaps for upstream-derived production paths.
+        run: python tools/provenance_record_gap.py --check
 
       - name: Compile host-neutral runtime objects on Linux
         run: make GAME_NAME=ci BUILD_DIR=build/portable-check CC=gcc portable-core-objects
@@ -845,6 +852,10 @@ jobs:
         # Publication audit is part of the always-present hygiene job; this
         # smoke adds a fresh main-branch import gate without repeating it.
         run: python tools/import_audit_gate.py
+
+      - name: Run provenance record and disposition gap check
+        # #355: ratchets disposition gaps for upstream-derived production paths.
+        run: python tools/provenance_record_gap.py --check
 
   ci_required:
     name: CI required

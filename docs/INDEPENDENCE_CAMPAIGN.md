@@ -464,16 +464,25 @@ Ledger end-state (checked mechanically):
 5. Dependencies (§3) stay declared with pins and notices; no dependency is
    mislabelled as project-authored.
 
-Enforcing gate (proposed, to be built as tooling, not prose): extend the
-trusted merge-gate posture with `LEDGER_DERIVED_ADMISSION` — the check
-loads the trusted ledger at the base ref and the candidate ledger, and
-fails when the candidate's `upstream_derived` set under `src/`/`tools/`
-grows by any path (new file, relabel, or re-add), unless the delta carries
-an explicit bounded-(c) exemption record signed by the same authority that
-backs other provenance claims. Tightening (fewer derived paths) always
-passes; loosening never passes without that authority. Until the tooling
-exists, the same comparison is a manual review step with the two sorted
-path lists pasted into the PR.
+Enforcing gate (implemented via `tools/provenance_record_gap.py --check`):
+verifies that every upstream-derived production code path (under `src/` or `tools/`,
+excluding `.md`/`.txt` notice and format documents) has an explicit roadmap
+disposition in this document (`status=missing` fails closed). Existing known
+gaps are tracked in a reviewed baseline (`KNOWN_DISPOSITION_GAPS`) with owner
+issue and rationale, ensuring the set of untriaged gaps can shrink but never
+grow; a new unlisted gap fails, and stale baseline entries whose gaps have been
+resolved fail closed until pruned. The gate is wired into `make check`,
+`make readiness`, `make provenance-record-gap-check`, pre-commit hooks, and
+hosted CI (`native_tools` and `main_smoke`).
+
+In addition, the proposed `LEDGER_DERIVED_ADMISSION` merge-gate posture
+extends this to trusted-ledger admission: the check loads the trusted ledger
+at the base ref and the candidate ledger, and fails when the candidate's
+`upstream_derived` set under `src/`/`tools/` grows by any path (new file,
+relabel, or re-add), unless the delta carries an explicit bounded-(c) exemption
+record signed by the same authority that backs other provenance claims.
+Tightening (fewer derived paths) always passes; loosening never passes without
+that authority.
 
 ## 10. Open questions for the maintainer
 

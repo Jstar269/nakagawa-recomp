@@ -63,6 +63,11 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
   Normal mode reports `SKIPPED` if GitHub is unavailable; use `--strict` as a live review/merge audit.
   It is deliberately separate from the offline pre-commit hook so lack of network access cannot make
   ordinary local commits nondeterministically fail.
+- **`tree_lint.py`** — dead-file detection for the public tree. It reports tracked files that no other
+  tracked file names; `python tools/tree_lint.py --check` enforces the reviewed reference and allowlist ratchet
+  in the always-on hygiene job; unreferenced files must be removed or have a reviewed allowlist reason in
+  `tools/tree_lint_allow.json`. `mingw32-make tree-lint` runs the reporting form, which exits 0 whatever the
+  tree contains.
 - **`xb_probe.py <archive.xb> [--lookup <inner-key>]`** — bounded, read-only direct-XB
   metadata/lookup prototype (see [`docs/archive/ISSUE196_DIRECT_XB.md`](../docs/archive/ISSUE196_DIRECT_XB.md)). It uses synthetic tests in `test_xb_probe.py`,
   never dumps archive contents by default, and does not participate in production HLE lookup.
@@ -110,7 +115,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `ghidra_scripts/` | Ghidra headless scripts: decompile to C, export the function CSV, list references. |
 | `nk_core/` | Portable preparation and runtime library shared by the tools. |
-| `psp_oracle/` | Host side of the PSP hardware oracle. |
+| `psp_oracle/` | Host side of the PSP hardware oracle, runners and `verify_vfpu_addr.py`. |
 | `psp_threading_oracle/` | Threading analyzer, parser and evidence model. |
 
 <!-- tools-subpackages:end -->
@@ -221,7 +226,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `provenance_ledger.py` | Build and validate the explicit public provenance ledger. |
 | `provenance_refresh.py` | Generate the public provenance controls with the hosted attestation logic. |
 | `provenance_attest_verify.py` | Verify a candidate tree's public provenance against external authority. |
-| `provenance_record_gap.py` | Inventory the tracked paths that have no exact trusted provenance record. |
+| `provenance_record_gap.py` | Inventory the tracked paths that have no exact trusted provenance record (`--check-records` gates on it); `--check` is the separate upstream-derived disposition ratchet; the two flags are mutually exclusive (exit 2), so run them as two invocations. |
 | `modified_file_notice_audit.py` | Check the explicit notices recorded in the inherited-file manifest. |
 | `history_audit.py` | Non-destructive full-history secret, proprietary-material and privacy audit. |
 | `betterleaks_canary.py` | Exercise the pinned Betterleaks policy with synthetic, non-secret canaries. |
@@ -242,6 +247,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
 | `portability_inventory.py` | Public-safe portability inventory of the native runtime and build. |
+| `tree_lint.py` | Report tracked files that no other tracked file names; `--check` enforces the reference ratchet. |
 
 ### Performance, frames and runtime diagnostics
 
@@ -473,6 +479,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `test_readme_images.py` | Deterministic checks on the published showcase screenshots. |
 | `test_relocated_clone.py` | Contributor quick check in a checkout whose own path contains spaces. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
+| `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |
 | `test_vulkan_sdk.py` | Vulkan SDK discovery precedence and Makefile wiring. |
 | `test_workspace_paths.py` | Workspace path handling with spaces, Unicode and long paths. |

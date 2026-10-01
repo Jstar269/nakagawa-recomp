@@ -108,20 +108,30 @@ the strict authority-bound gate:
 mingw32-make --no-print-directory check
 ```
 
-`check` covers documentation and policy checks, both publication-audit legs,
-the native host-core tests, and a fast Python subset. It does not replace
-`make readiness`: readiness additionally verifies the exact candidate against
-the external detailed ledger and therefore remains `BLOCKED` when
-`NK_TRUSTED_LEDGER` is unavailable. `make provenance-refresh` is the single
-local command for regenerating the tracked public controls. It calls the same
-`generate_ephemeral_controls()` implementation as the hosted provenance
-attestation, reads the trusted public ledger from the exact base commit, and
-requires the external detailed ledger through `NK_TRUSTED_LEDGER`. Stage the
-intended candidate changes first. The target stages the generated controls and
-the profile when `--apply-policy` is requested; it does not stage the rest of
-the worktree. The committed ledger stays a per-path
-document (no `refresh` audit block), and the export is computed from those
-generated ledger bytes in the same invocation, so a second pass is not needed.
+`check` covers documentation and policy checks, the provenance record and
+disposition gap check, both publication-audit legs, the native host-core tests,
+and a fast Python subset. It does not replace `make readiness`: readiness
+additionally verifies the exact candidate against the external detailed ledger
+and therefore remains `BLOCKED` when `NK_TRUSTED_LEDGER` is unavailable.
+`make provenance-refresh` is the single local command for regenerating the
+tracked public controls. It calls the same `generate_ephemeral_controls()`
+implementation as the hosted provenance attestation, reads the trusted public
+ledger from the exact base commit, and requires the external detailed ledger
+through `NK_TRUSTED_LEDGER`. Stage the intended candidate changes first. The
+target stages the generated controls and the profile when `--apply-policy` is
+requested; it does not stage the rest of the worktree. The committed ledger
+stays a per-path document (no `refresh` audit block), and the export is computed
+from those generated ledger bytes in the same invocation, so a second pass is
+not needed.
+
+The `provenance_record_gap.py --check` gate (`make provenance-record-gap-check`)
+enforces that every upstream-derived production code path (under `src/` or
+`tools/`, excluding `.md`/`.txt` notice and format documents) has an explicit
+disposition in [`docs/INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md). Paths with
+`status=missing` fail closed. A reviewed baseline (`KNOWN_DISPOSITION_GAPS`)
+allows existing gaps to shrink but never grow; stale baseline entries fail
+closed. The check is wired into `make check`, `make readiness`, pre-commit, and
+hosted CI (`native_tools` and `main_smoke`).
 
 The base defaults to `merge-base(HEAD, origin/main)`. When the pull request's
 exact base differs, set `PROVENANCE_BASE_SHA` to its full 40-character commit
@@ -147,6 +157,7 @@ at the first failure. Prefer it to assembling the checklist by hand.
 ```bash
 python tools/policy_sync.py
 python tools/lint_docs.py
+python tools/provenance_record_gap.py --check
 python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha>     --require-immutable-revisions --trusted-ledger <external detailed ledger>     --workdir <scratch outside the repo>
