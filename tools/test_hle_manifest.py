@@ -11,6 +11,7 @@ and reproducibility of the committed classification baseline.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 import re
@@ -1139,6 +1140,132 @@ class CensusTests(unittest.TestCase):
         self.assertGreaterEqual(len(census_handlers), 350)
         self.assertEqual(self.census["summary"]["total_dedicated_handlers"], len(expected_handlers))
 
+    def test_census_totals_are_internally_consistent(self) -> None:
+        # Invariants rather than pinned totals: adding a registration must not need
+        # a hand edit here (the generated inventory block guards the published counts).
+        summary = self.census["summary"]
+        self.assertEqual(sum(summary["registration_classification"].values()),
+                         summary["total_registrations"])
+        self.assertEqual(summary["total_registrations"], len(self.manifest["registrations"]))
+        self.assertEqual(sum(summary["by_status"].values()), summary["total_dedicated_handlers"])
+        self.assertEqual(sum(summary["by_status_registrations"].values()),
+                         summary["total_dedicated_registrations"])
+        self.assertEqual(set(summary["by_status"]), set(summary["by_status_registrations"]))
+        for status, handlers in summary["by_status"].items():
+            with self.subTest(status=status):
+                self.assertLessEqual(handlers, summary["by_status_registrations"][status])
+
+    def test_partial_census_entries_preserve_named_route_evidence(self) -> None:
+        by_handler = {entry["handler"]: entry for entry in self.census["handlers"]}
+        for handler in ("h_DisplaySetFrameBuf", "h_DisplayWaitVblankStart"):
+            with self.subTest(handler=handler):
+                self.assertTrue(by_handler[handler]["evidence"])
+                self.assertTrue(by_handler[handler]["limitation"])
+
+    @staticmethod
+    def _fixture_constant(path: Path, name: str) -> int | tuple[int, ...]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        assignments = {}
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        assignments[target.id] = statement.value
+
+        def resolve(node: ast.expr) -> int | tuple[int, ...]:
+            if isinstance(node, ast.Constant) and type(node.value) is int:
+                return node.value
+            if isinstance(node, ast.Name):
+                if node.id not in assignments:
+                    raise AssertionError(f"{path} refers to undefined constant {node.id!r}")
+                return resolve(assignments[node.id])
+            if isinstance(node, (ast.Tuple, ast.List)):
+                return tuple(resolve(element) for element in node.elts)
+            raise AssertionError(f"{path} has unsupported import constant {name!r}")
+
+        if name not in assignments:
+            raise AssertionError(f"{path} has no {name!r} import constant")
+        return resolve(assignments[name])
+
+    def test_public_smoke_route_imports_are_not_unreviewed(self) -> None:
+        # Covers the production-smoke and display-smoke guests only. The
+        # profile-zero guest's imports (audio, controller, I/O, threads) still
+        # route to unreviewed handlers; that gate is open work under #341.
+        production_nid = self._fixture_constant(
+            ROOT / "fixtures" / "production_smoke" / "generate.py", "NID"
+        )
+        display_nids = self._fixture_constant(
+            ROOT / "fixtures" / "display_smoke" / "generate.py", "NIDS"
+        )
+        route_nids = {production_nid, *display_nids}
+        registrations = {
+            int(reg["nid"], 16): reg for reg in self.manifest["registrations"]
+        }
+        missing = sorted(route_nids - registrations.keys())
+        self.assertEqual(
+            missing,
+            [],
+            "public production-smoke imports must resolve to an HLE registration",
+        )
+        unreviewed = [
+            f"{registrations[nid]['name']} ({nid:#010x})"
+            for nid in sorted(route_nids)
+            if registrations[nid]["status"] == "unreviewed"
+        ]
+        self.assertEqual(
+            unreviewed,
+            [],
+            "public production/display smoke imports must have a reviewed semantic status",
+        )
+
+    def test_documented_hle_census_matches_generated_source(self) -> None:
+        text = (ROOT / "docs" / "HLE_AND_WORKAROUND_INVENTORY.md").read_text(
+            encoding="utf-8"
+        )
+        begin = "<!-- BEGIN GENERATED HLE STATUS CENSUS -->"
+        end = "<!-- END GENERATED HLE STATUS CENSUS -->"
+        self.assertEqual(text.count(begin), 1, "inventory needs one generated census block")
+        self.assertEqual(text.count(end), 1, "inventory needs one generated census block")
+        actual = text.split(begin, 1)[1].split(end, 1)[0].strip("\r\n")
+        expected = hle_manifest.render_census_markdown(
+            self.census, heading_level=3
+        ).rstrip("\r\n")
+        self.assertEqual(
+            actual,
+            expected,
+            "HLE inventory census is stale; regenerate it from tools/hle_manifest.py",
+        )
+
+    def test_partial_with_evidence_still_needs_a_limitation(self) -> None:
+        with mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DisplaySetFrameBuf": ""}):
+            self.assertTrue(meta.HANDLER_EVIDENCE.get("h_DisplaySetFrameBuf"))
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("has no named limitation", str(ctx.exception))
+
+    def test_evidence_anchor_must_exist_in_the_cited_file(self) -> None:
+        for bogus in ("Makefile:display-smoke-run-renamed",
+                      "fixtures/display_smoke/generate.py:verify_renamed",
+                      "tools/test_sched_invariants.py:test_no_such_test_341"):
+            with self.subTest(evidence=bogus):
+                with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DisplaySetFrameBuf": [bogus]}):
+                    with self.assertRaises(ManifestError) as ctx:
+                        hle_manifest.validate_meta(self.raw_regs)
+                self.assertIn("does not define", str(ctx.exception))
+
+    def test_documented_regeneration_command_reproduces_the_inventory_block(self) -> None:
+        import tempfile
+        text = (ROOT / "docs" / "HLE_AND_WORKAROUND_INVENTORY.md").read_text(encoding="utf-8")
+        block = text.split("<!-- BEGIN GENERATED HLE STATUS CENSUS -->", 1)[1]
+        block = block.split("<!-- END GENERATED HLE STATUS CENSUS -->", 1)[0].strip("\r\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "hle_census.md"
+            manifest_out = Path(tmp) / "hle_manifest.json"
+            rc = hle_manifest.main(["--out", str(manifest_out), "--census-markdown", str(out),
+                                    "--census-heading-level", "3"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(out.read_text(encoding="utf-8").strip("\r\n"), block)
+
     def test_complete_without_evidence_is_rejected(self) -> None:
         with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": []}):
             with self.assertRaises(ManifestError) as ctx:
@@ -1148,6 +1275,15 @@ class CensusTests(unittest.TestCase):
     def test_complete_with_nonexistent_evidence_file_is_rejected(self) -> None:
         with mock.patch.dict(
             meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": ["tools/test_nonexistent_341.py"]}
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("cites non-existent evidence file", str(ctx.exception))
+
+    def test_partial_with_nonexistent_evidence_file_is_rejected(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE,
+            {"h_DisplaySetFrameBuf": ["fixtures/test_nonexistent_341.py"]},
         ):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
@@ -1174,13 +1310,20 @@ class CensusTests(unittest.TestCase):
     def test_census_cli_output(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as td:
+            manifest_out = Path(td) / "manifest.json"
             json_out = Path(td) / "census.json"
             md_out = Path(td) / "census.md"
-            rc = hle_manifest.main(["--census", str(json_out), "--census-markdown", str(md_out)])
+            rc = hle_manifest.main([
+                "--out", str(manifest_out),
+                "--census", str(json_out),
+                "--census-markdown", str(md_out),
+            ])
             self.assertEqual(rc, 0)
+            self.assertTrue(manifest_out.exists())
             self.assertTrue(json_out.exists())
             self.assertTrue(md_out.exists())
             loaded = json.loads(json_out.read_text(encoding="ascii"))
+            self.assertEqual(loaded["schema"], 2)
             self.assertEqual(loaded["schema"], hle_manifest.CENSUS_SCHEMA)
             self.assertGreaterEqual(loaded["summary"]["total_dedicated_handlers"], 350)
             md_text = md_out.read_text(encoding="utf-8")
