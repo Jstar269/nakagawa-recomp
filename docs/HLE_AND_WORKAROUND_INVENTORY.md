@@ -37,10 +37,10 @@ Semantic handler census: **370** handlers across **21** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 6 | 13 |
-| `partial` | 24 | 24 |
+| `partial` | 25 | 25 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 337 | 367 |
+| `unreviewed` | 336 | 366 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -52,7 +52,7 @@ Semantic handler census: **370** handlers across **21** API families, covering *
 | `sceDisplay` | 1 | 2 | 0 | 0 | 10 | 13 | 13 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
+| `sceGe` | 0 | 1 | 0 | 0 | 8 | 9 | 9 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 1 | 0 | 0 | 18 | 21 | 22 |
 | `sceKernel` | 2 | 9 | 0 | 0 | 124 | 135 | 158 |
@@ -65,7 +65,7 @@ Semantic handler census: **370** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **6** | **24** | **1** | **2** | **337** | **370** | **411** |
+| **Total** | **6** | **25** | **1** | **2** | **336** | **370** | **411** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -108,6 +108,11 @@ Semantic handler census: **370** handlers across **21** API families, covering *
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+- **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
+  - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
+  - Evidence: Makefile:display-smoke-run
+  - Evidence: fixtures/display_smoke/generate.py:flight_smoke
+  - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
   - Limitation: Memory Stick devctl callback events unmodeled (#281, #341)
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)

@@ -116,6 +116,18 @@ HANDLER_METADATA = {
         ],
         "limitation": "display-smoke covers ordinary guest-thread waits; interrupt-context behavior and callback wait variants remain outside this route (#341)",
     },
+    # sceGeListEnQueue is reached by the display-smoke route with one bounded,
+    # unstalled list (PRIM, FINISH, END) that the host GE runs to completion at
+    # enqueue. The flight recorder pins that single production path.
+    "h_GeListEnQueue": {
+        "status": "partial",
+        "evidence": [
+            "Makefile:display-smoke-run",
+            "fixtures/display_smoke/generate.py:flight_smoke",
+            "src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events",
+        ],
+        "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)",
+    },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
     # decoder actually produced: the video getter validates the caller's stride
