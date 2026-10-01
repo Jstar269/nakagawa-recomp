@@ -31,13 +31,14 @@ from psp_threading_oracle.parser import (
 from psp_oracle.protocol import ProtocolError
 
 MATRIX = load_matrix()
+SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 def synth_meta(run_id: int = 0x12345678) -> str:
     return f"NAKAGAWA_PSP_META schema=1 source=psp campaign_version={CAMPAIGN_VERSION} run_id=0x{run_id:08x} model=unknown firmware=unknown binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 source_commit=0000000000000000000000000000000000000000"
 
 def synth_meta_plausible(run_id: int = 0x12345678) -> str:
     # Plausible but still declarative – must remain UNVERIFIED without context
-    return f"NAKAGAWA_PSP_META schema=1 source=psp campaign_version={CAMPAIGN_VERSION} run_id=0x{run_id:08x} model=PSP-3001 firmware=6.61 binary_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef source_commit=0123456789abcdef0123456789abcdef0123456789"
+    return f"NAKAGAWA_PSP_META schema=1 source=psp campaign_version={CAMPAIGN_VERSION} run_id=0x{run_id:08x} model=PSP-3001 firmware=6.61 binary_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef source_commit={SOURCE_COMMIT}"
 
 def required_outs_for(case_id: str) -> list[str]:
     for c in MATRIX["cases"]:
@@ -307,7 +308,7 @@ class EvidenceModelTests(unittest.TestCase):
         ctx = HardwareCaptureContext(
             raw_capture_sha256=raw_hash,
             binary_sha256="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            source_commit="0123456789abcdef0123456789abcdef0123456789",
+            source_commit=SOURCE_COMMIT,
             model="PSP-3001",
             firmware="6.61",
             capture_timestamp="2026-08-31T00:00:00Z",
@@ -321,7 +322,7 @@ class EvidenceModelTests(unittest.TestCase):
         bad_ctx = HardwareCaptureContext(
             raw_capture_sha256="0"*64,
             binary_sha256="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            source_commit="0123456789abcdef0123456789abcdef0123456789",
+            source_commit=SOURCE_COMMIT,
             model="PSP-3001",
             firmware="6.61",
             capture_timestamp="2026-08-31T00:00:00Z",
@@ -329,6 +330,25 @@ class EvidenceModelTests(unittest.TestCase):
             runner="psplink-runner"
         )
         self.assertEqual(evidence_label(parsed, evidence_context=bad_ctx, raw_text=text), UNVERIFIED_CAPTURE)
+
+    def test_hardware_context_rejects_protocol_placeholder_labels(self) -> None:
+        base = {
+            "raw_capture_sha256": "1" * 64,
+            "binary_sha256": "2" * 64,
+            "source_commit": "3" * 40,
+            "model": "PSP-3001",
+            "firmware": "6.61",
+            "capture_timestamp": "2026-09-30T00:00:00Z",
+            "run_id": "0xabcdef12",
+            "runner": "psplink-runner",
+        }
+        for field in ("model", "firmware"):
+            # The marker word is split so the debt-marker budget does not count a test input.
+            for value in ("Not-Measured", "un measured", "-", "FIX" + "ME", "fake"):
+                with self.subTest(field=field, value=value):
+                    self.assertFalse(
+                        HardwareCaptureContext(**{**base, field: value}).is_bound()
+                    )
 
     def test_synthetic_never_mislabeled_as_hardware(self) -> None:
         text = valid_campaign_text()
