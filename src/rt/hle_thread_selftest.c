@@ -31,6 +31,12 @@
  * protection, so it is a hard requirement rather than an option.
  */
 
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
+
 #ifndef SR_CORO_LIFECYCLE_TEST
 #error "hle_thread_selftest requires -DSR_CORO_LIFECYCLE_TEST: the coroutine lifecycle \
 instrumentation is this test's protection against the historical RAM runaway."
@@ -3862,6 +3868,7 @@ static char s_prewarm_root[MAX_PATH];
 
 static void prewarm_env_restore(void) {
     SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", NULL);
 }
 
 typedef struct {
@@ -4289,7 +4296,7 @@ static int host_data_bench_make_tree(const char *root, size_t total_files,
                                      size_t *dirs_created) {
     char usrdir[MAX_PATH];
     char loose[MAX_PATH];
-    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\xbdata_extracted", root);
+    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\primary", root);
     if (n < 0 || (size_t)n >= dataroot_capacity) return 0;
     n = snprintf(usrdir, sizeof(usrdir), "%s\\USRDIR", root);
     if (n < 0 || (size_t)n >= sizeof(usrdir)) return 0;
@@ -4357,7 +4364,19 @@ static void test_host_data_scan_scaling(void) {
             if (root_path_ok) host_data_bench_remove_tree(root);
             continue;
         }
+        char loose_root[MAX_PATH], loose_binding[MAX_PATH + 32];
+        int loose_root_len = snprintf(loose_root, sizeof(loose_root), "%s\\USRDIR", root);
+        int loose_binding_len = loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root)
+            ? snprintf(loose_binding, sizeof(loose_binding), "%s\t\t10\n", loose_root) : -1;
+        expect(loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root) &&
+               loose_binding_len >= 0 && (size_t)loose_binding_len < sizeof(loose_binding),
+               "the synthetic benchmark loose-root binding fits its bounded environment field");
+        if (loose_binding_len < 0 || (size_t)loose_binding_len >= sizeof(loose_binding)) {
+            host_data_bench_remove_tree(root);
+            continue;
+        }
         SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+        SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", loose_binding);
         sr_hle_test_data_reset(0);
         ULONGLONG started = GetTickCount64();
         int state = sr_host_data_prepare();
@@ -4408,6 +4427,7 @@ static void test_host_data_scan_scaling(void) {
 typedef struct {
     char root[MAX_PATH];
     char dataroot[MAX_PATH];
+    char loose_roots[MAX_PATH + 32];
     char memstick[MAX_PATH];
     char legacy[MAX_PATH];
     char archive[MAX_PATH];
@@ -4421,15 +4441,18 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
     _snprintf(fixture->root, sizeof(fixture->root), "%s\\build\\archive_route_%lu_%llu",
               cwd, (unsigned long)GetCurrentProcessId(),
               (unsigned long long)GetTickCount64());
-    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\xbdata_extracted",
+    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
              fixture->root);
+    _snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
+              "%s\\USRDIR\t\t0\n", fixture->root);
     _snprintf(fixture->memstick, sizeof(fixture->memstick), "%s\\memstick", fixture->root);
     _snprintf(fixture->legacy, sizeof(fixture->legacy), "%s\\legacy", fixture->root);
     _snprintf(fixture->archive, sizeof(fixture->archive), "%s\\assets.xb", fixture->dataroot);
     _snprintf(fixture->hidden, sizeof(fixture->hidden), "%s\\assets.xb.hidden", fixture->dataroot);
 
     static const char *const dirs[] = {
-        "", "\\USRDIR", "\\USRDIR\\xbdata_extracted",
+        "", "\\USRDIR", "\\USRDIR\\primary",
+        "\\USRDIR\\primary\\data", "\\USRDIR\\primary\\data\\menu",
         "\\USRDIR\\data", "\\USRDIR\\data\\menu",
         "\\USRDIR\\PSP", "\\USRDIR\\PSP\\SAVEDATA",
         "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
@@ -4455,6 +4478,7 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
         const char *body;
     } loose_files[] = {
         { "\\USRDIR\\data\\menu\\loose.to", "loose-route" },
+        { "\\USRDIR\\primary\\data\\menu\\loose.to", "primary-route" },
         { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" }
     };
     for (size_t i = 0; i < sizeof(loose_files) / sizeof(loose_files[0]); i++) {
@@ -4473,8 +4497,9 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
 static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixture) {
     if (!fixture) return;
     static const char *const files[] = {
-        "\\USRDIR\\xbdata_extracted\\assets.xb",
-        "\\USRDIR\\xbdata_extracted\\assets.xb.hidden",
+        "\\USRDIR\\primary\\assets.xb",
+        "\\USRDIR\\primary\\assets.xb.hidden",
+        "\\USRDIR\\primary\\data\\menu\\loose.to",
         "\\USRDIR\\data\\menu\\loose.to",
         "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL"
     };
@@ -4489,7 +4514,9 @@ static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixtu
         "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
         "\\USRDIR\\PSP\\SAVEDATA",
         "\\USRDIR\\PSP",
-        "\\USRDIR\\xbdata_extracted",
+        "\\USRDIR\\primary\\data\\menu",
+        "\\USRDIR\\primary\\data",
+        "\\USRDIR\\primary",
         "\\USRDIR",
         "\\memstick",
         "\\legacy"
@@ -4527,6 +4554,24 @@ static uint32_t hle_archive_route_open_result(const char *path) {
     return fd;
 }
 
+static int hle_archive_route_file_matches(const char *path, const char *expected) {
+    static const uint32_t content_addr = 0x0910c000u;
+    CpuState cpu;
+    uint32_t fd = disc_route_open(&cpu, path);
+    if (fd < 3u || fd >= 64u) return 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = content_addr;
+    cpu.r[6] = 64u;
+    uint32_t content_size = sr_hle_test_io_read(&cpu);
+    int content_matches = content_size == strlen(expected) &&
+        memcmp((const uint8_t *)(g_mem_base + content_addr), expected,
+               strlen(expected)) == 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    return content_matches && sr_hle_test_io_close(&cpu) == 0u;
+}
+
 static uint32_t hle_archive_route_stat_result(const char *path, uint32_t *size_out) {
     CpuState cpu;
     static const uint32_t path_addr = 0x09109000u;
@@ -4556,13 +4601,16 @@ static void test_archive_mode_preserves_loose_routes(void) {
         "ms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
         "fatms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
         "disc0:/PSP_GAME/USRDIR/data/menu/loose.to",
+        "host0:data/menu/loose.to",
         "disc0:/PSP_GAME/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL"
     };
     const size_t path_count = sizeof(paths) / sizeof(paths[0]);
     const char *old_data_value = getenv("SR_DATAROOT");
+    const char *old_loose_value = getenv("SR_LOOSE_CONTENT_ROOTS");
     const char *old_memstick_value = getenv("SR_MEMSTICK");
     const char *old_fs_value = getenv("SR_FSDIR");
     char *old_data = hle_archive_route_env_copy(old_data_value);
+    char *old_loose = hle_archive_route_env_copy(old_loose_value);
     char *old_memstick = hle_archive_route_env_copy(old_memstick_value);
     char *old_fs = hle_archive_route_env_copy(old_fs_value);
     HleArchiveRouteFixture fixture;
@@ -4580,11 +4628,13 @@ static void test_archive_mode_preserves_loose_routes(void) {
            "the archive/loose route fixture was created");
     if (fixture.root[0] == '\0') {
         free(old_data);
+        free(old_loose);
         free(old_memstick);
         free(old_fs);
         return;
     }
     hle_archive_route_set_env("SR_DATAROOT", fixture.dataroot);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", fixture.loose_roots);
     hle_archive_route_set_env("SR_MEMSTICK", fixture.memstick);
     hle_archive_route_set_env("SR_FSDIR", fixture.legacy);
 
@@ -4607,6 +4657,9 @@ static void test_archive_mode_preserves_loose_routes(void) {
             loose_ready = 1;
             for (size_t i = 0; i < path_count; i++)
                 loose_results[i] = hle_archive_route_open_result(paths[i]);
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "the primary extracted tree wins the migration-root duplicate in loose mode");
             loose_stat = hle_archive_route_stat_result(paths[0], &loose_size);
             loose_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
         }
@@ -4623,6 +4676,9 @@ static void test_archive_mode_preserves_loose_routes(void) {
             archive_ready = 1;
             for (size_t i = 0; i < path_count; i++)
                 archive_results[i] = hle_archive_route_open_result(paths[i]);
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "the primary extracted tree wins the migration-root duplicate in archive mode");
             archive_stat = hle_archive_route_stat_result(paths[0], &archive_size);
             archive_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
         }
@@ -4666,10 +4722,12 @@ static void test_archive_mode_preserves_loose_routes(void) {
 
     sr_hle_test_data_reset(0);
     hle_archive_route_set_env("SR_DATAROOT", old_data);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", old_loose);
     hle_archive_route_set_env("SR_MEMSTICK", old_memstick);
     hle_archive_route_set_env("SR_FSDIR", old_fs);
     hle_archive_route_fixture_remove(&fixture);
     free(old_data);
+    free(old_loose);
     free(old_memstick);
     free(old_fs);
 }
@@ -4840,15 +4898,9 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
     sr_hle_test_data_reset(0);
 }
 
-/* 2b. The disc route serves the whole namespace the guest addresses, not one
- *     physical tree: the archive-derived keys and the loose content beside the
- *     root land in the same key space, and the declared census keeps describing
- *     the configured root alone.
- *
- *     Fixture: <cwd>/build/disc_route_<pid>/USRDIR/xbdata_extracted/menu\a.xb0.d\data\menu\archived.to
- *              <cwd>/build/disc_route_<pid>/USRDIR/data/sound/bgm/bgm_title.sgb
- *     SR_DATAROOT is the xbdata_extracted tree, so BOTH keys must resolve through
- *     one prepared index, and the archive tree must not appear under a second key. */
+/* 2b. The disc route serves a manifest-declared namespace assembled from the
+ *     primary archive root and two loose roots. Their shared key proves the
+ *     declared precedence rule; a second key proves later roots still contribute. */
 static char s_disc_route_root[MAX_PATH];
 
 static int disc_route_make_fixture(void) {
@@ -4862,14 +4914,17 @@ static int disc_route_make_fixture(void) {
      * fixture cannot depend on an earlier test having left a parent behind. */
     static const char *const dirs[] = {
         "", "\\USRDIR",
-        "\\USRDIR\\xbdata_extracted",
-        "\\USRDIR\\xbdata_extracted\\menu",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu",
-        "\\USRDIR\\data",
-        "\\USRDIR\\data\\sound",
-        "\\USRDIR\\data\\sound\\bgm"
+        "\\USRDIR\\primary",
+        "\\USRDIR\\primary\\menu",
+        "\\USRDIR\\primary\\menu\\a.xb0.d",
+        "\\USRDIR\\primary\\menu\\a.xb0.d\\data",
+        "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu",
+        "\\USRDIR\\root_a",
+        "\\USRDIR\\root_a\\sound",
+        "\\USRDIR\\root_a\\sound\\bgm",
+        "\\USRDIR\\root_b",
+        "\\USRDIR\\root_b\\sound",
+        "\\USRDIR\\root_b\\sound\\bgm"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char dir[MAX_PATH];
@@ -4877,8 +4932,10 @@ static int disc_route_make_fixture(void) {
         if (!(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)) return 0;
     }
     static const struct { const char *rel; const char *body; } files[] = {
-        { "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
-        { "\\USRDIR\\data\\sound\\bgm\\bgm_title.sgb", "loose" }
+        { "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
+        { "\\USRDIR\\root_a\\sound\\bgm\\bgm_title.sgb", "first-root" },
+        { "\\USRDIR\\root_b\\sound\\bgm\\bgm_title.sgb", "second-root" },
+        { "\\USRDIR\\root_b\\sound\\bgm\\only_second.bin", "second-only" }
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char file[MAX_PATH];
@@ -4908,8 +4965,14 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     expect(disc_route_make_fixture(), "the disc-route fixture was created");
 
     char dataroot[MAX_PATH];
-    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\xbdata_extracted", s_disc_route_root);
+    char root_a[MAX_PATH], root_b[MAX_PATH], serialized_roots[MAX_PATH * 5];
+    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\primary", s_disc_route_root);
+    snprintf(root_a, sizeof root_a, "%s\\USRDIR\\root_a", s_disc_route_root);
+    snprintf(root_b, sizeof root_b, "%s\\USRDIR\\root_b", s_disc_route_root);
+    snprintf(serialized_roots, sizeof serialized_roots,
+             "%s\tdata\t10\n%s\tdata\t20\n", root_a, root_b);
     SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", serialized_roots);
     sr_hle_test_data_reset(0);
 
     int state = sr_host_data_prepare();
@@ -4928,10 +4991,25 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     const char *loose = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/bgm_title.sgb";
     uint32_t loose_fd = disc_route_open(&cpu, loose);
     expect(loose_fd >= 3u && loose_fd < 64u,
-           "a loose asset beside the root resolves through the same disc path");
-    memset(&cpu, 0, sizeof cpu);
-    cpu.r[4] = loose_fd;
-    expect(sr_hle_test_io_close(&cpu) == 0u, "the loose descriptor closes");
+           "a manifest-bound loose root resolves through the production disc path");
+    static const uint32_t data_addr = 0x09106000u;
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = loose_fd; cpu.r[5] = data_addr; cpu.r[6] = 64u;
+    expect(sr_hle_test_io_read(&cpu) == 10u &&
+           memcmp((const uint8_t *)(g_mem_base + data_addr), "first-root", 10u) == 0,
+           "the lower-precedence-number root wins duplicate guest-file keys");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = loose_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the configured loose descriptor closes");
+
+    const char *second_only = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/only_second.bin";
+    uint32_t second_fd = disc_route_open(&cpu, second_only);
+    expect(second_fd >= 3u && second_fd < 64u,
+           "the second declared root also resolves through HLE");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = second_fd; cpu.r[5] = data_addr; cpu.r[6] = 64u;
+    expect(sr_hle_test_io_read(&cpu) == 11u &&
+           memcmp((const uint8_t *)(g_mem_base + data_addr), "second-only", 11u) == 0,
+           "unique files from later roots remain available");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = second_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the second-root descriptor closes");
 
     /* The device-qualified disc form the engine actually issues must normalize to
      * the same relative key as the bare form.  Both strips consume their trailing
@@ -4954,11 +5032,6 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
             expect(sr_hle_test_io_close(&cpu) == 0u, "each form's descriptor closes");
         }
     }
-
-    /* ...and the configured root is not enumerated a second time under a key it
-     * never had, which is what the skip exists to prevent. */
-    expect(!sr_hle_test_data_key_seen("xbdata_extracted/"),
-           "the configured root is skipped by the loose walk, not re-indexed");
 
     prewarm_env_restore();
     sr_hle_test_data_reset(0);

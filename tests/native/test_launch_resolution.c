@@ -632,12 +632,16 @@ int main(int argc, char **argv) {
     char custom_img[1100];
     char custom_data[1000];
     char custom_ms[1000];
+    char custom_root_a[1000];
+    char custom_root_b[1000];
     snprintf(custom_manifest, sizeof(custom_manifest), "%s%claunch-name-test.json", base, sep);
     snprintf(custom_build_dir, sizeof(custom_build_dir), "%s%cbuild%ccustom-launch", base, sep, sep);
     snprintf(custom_exe, sizeof(custom_exe), "%s%ccustom-launch", custom_build_dir, sep);
     snprintf(custom_img, sizeof(custom_img), "%s%ccustom-launch_image.bin", custom_build_dir, sep);
     snprintf(custom_data, sizeof(custom_data), "%s%ccustom-data", base, sep);
     snprintf(custom_ms, sizeof(custom_ms), "%s%ccustom-ms", base, sep);
+    snprintf(custom_root_a, sizeof(custom_root_a), "%s%ccustom-root-a", base, sep);
+    snprintf(custom_root_b, sizeof(custom_root_b), "%s%ccustom-root-b", base, sep);
     const char *custom_manifest_json =
         "{\"schema_version\":1,\"id\":\"launch-name-test-v1\","
         "\"game_name\":\"custom-launch\",\"display_name\":\"Launch Name Test\","
@@ -645,13 +649,18 @@ int main(int argc, char **argv) {
         "\"executable\":{\"base\":\"0x08820000\",\"entry\":\"0x08820000\","
         "\"bss_metadata_source\":\"elf\",\"extra_executable_spans\":[]},"
         "\"modules\":[],\"filesystem\":{\"data_root\":\"custom-data\","
-        "\"memory_stick_root\":\"custom-ms\",\"device_prefixes\":[\"host0:\"]},"
+        "\"memory_stick_root\":\"custom-ms\",\"device_prefixes\":[\"host0:\"],"
+        "\"loose_content_roots\":["
+        "{\"root\":\"custom-root-a\",\"mount\":\"data\",\"precedence\":10},"
+        "{\"root\":\"custom-root-b\",\"mount\":\"data\",\"precedence\":20}]},"
         "\"hle_profile\":\"standard\",\"feature_requirements\":[\"allegrex\"],"
         "\"verification_profile\":\"smoke\"}";
     write_file(custom_manifest, custom_manifest_json);
     assert(nk_platform_mkdir_p(custom_build_dir));
     assert(nk_platform_mkdir_p(custom_data));
     assert(nk_platform_mkdir_p(custom_ms));
+    assert(nk_platform_mkdir_p(custom_root_a));
+    assert(nk_platform_mkdir_p(custom_root_b));
     write_file(custom_exe, "binary");
     write_file(custom_img, "image");
 
@@ -670,6 +679,8 @@ int main(int argc, char **argv) {
     assert(ends_with(session.image_path, "custom-launch_image.bin"));
     assert(strstr(session.dataroot_path, "custom-data") != NULL);
     assert(strstr(session.memstick_root, "custom-ms") != NULL);
+    assert(strstr(session.loose_content_roots, "custom-root-a\tdata\t10\n") != NULL);
+    assert(strstr(session.loose_content_roots, "custom-root-b\tdata\t20\n") != NULL);
     nk_title_catalog_clear_overlay();
     remove(custom_exe);
     remove(custom_img);
@@ -677,6 +688,8 @@ int main(int argc, char **argv) {
     test_rmdir(custom_build_dir);
     test_rmdir(custom_data);
     test_rmdir(custom_ms);
+    test_rmdir(custom_root_a);
+    test_rmdir(custom_root_b);
 
     /* 7. A promoted staging root is the source-side launch contract: the
      * staged EBOOT is checked, decoded XB data is preferred over the catalog's
@@ -685,11 +698,24 @@ int main(int argc, char **argv) {
     fflush(stdout);
     char staged_root[800];
     char staged_eboot[900];
-    char staged_xbdata[900];
+    char staged_data_root[900];
+    char staged_data_relative[NK_MAX_PATH];
     snprintf(staged_root, sizeof(staged_root), "%s%cstaged-game", base, sep);
     snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN", staged_root, sep);
-    snprintf(staged_xbdata, sizeof(staged_xbdata), "%s%cxbdata", staged_root, sep);
-    assert(nk_platform_mkdir_p(staged_xbdata));
+    const NkTitleEntry *staged_entry = nk_title_catalog_find_by_id("display-smoke-v1");
+    assert(staged_entry != NULL && staged_entry->data_root != NULL);
+    assert(strlen(staged_entry->data_root) < sizeof(staged_data_relative));
+    snprintf(staged_data_relative, sizeof(staged_data_relative), "%s",
+             staged_entry->data_root);
+    for (size_t i = 0; staged_data_relative[i]; i++) {
+        if (staged_data_relative[i] == '/') staged_data_relative[i] = sep;
+    }
+    int staged_data_written = snprintf(staged_data_root, sizeof(staged_data_root),
+                                       "%s%c%s", staged_root, sep,
+                                       staged_data_relative);
+    assert(staged_data_written > 0 &&
+           (size_t)staged_data_written < sizeof(staged_data_root));
+    assert(nk_platform_mkdir_p(staged_data_root));
     write_valid_elf(staged_eboot, 0x08810000u, 0x08810000u);
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
@@ -700,7 +726,7 @@ int main(int argc, char **argv) {
     NkLaunchExecutableInfo staged_info;
     char staged_error[256];
     assert(nk_launch_validate_staged_executable(&game,
-                                                nk_title_catalog_find_by_id(game.title_id),
+                                                staged_entry,
                                                 &staged_info, staged_error,
                                                 sizeof(staged_error)) == NK_OK);
     assert(staged_info.is_elf == true);
@@ -715,19 +741,20 @@ int main(int argc, char **argv) {
     assert(ends_with(session.staged_executable_path, "EBOOT.BIN"));
     printf("[LAUNCH_TEST] staged data_root=%s memstick=%s\n",
            session.dataroot_path, session.memstick_root);
+    fflush(stdout);
     assert(strstr(session.dataroot_path, "staged-game") != NULL);
-    assert(strstr(session.dataroot_path, "xbdata") != NULL);
+    assert(strstr(session.dataroot_path, staged_data_relative) != NULL);
     assert(strstr(session.memstick_root, "staged-game") != NULL);
     assert(strstr(session.memstick_root, "memstick") != NULL);
 
     write_valid_elf(staged_eboot, 0x08811000u, 0x08811000u);
     assert(nk_launch_validate_staged_executable(&game,
-                                                nk_title_catalog_find_by_id(game.title_id),
+                                                staged_entry,
                                                 &staged_info, staged_error,
                                                 sizeof(staged_error)) != NK_OK);
     write_file(staged_eboot, "not-an-executable");
     assert(nk_launch_validate_staged_executable(&game,
-                                                nk_title_catalog_find_by_id(game.title_id),
+                                                staged_entry,
                                                 &staged_info, staged_error,
                                                 sizeof(staged_error)) != NK_OK);
 
@@ -735,7 +762,7 @@ int main(int argc, char **argv) {
      * is not reported as an ELF validation result. */
     write_psp_container(staged_eboot);
     assert(nk_launch_validate_staged_executable(&game,
-                                                nk_title_catalog_find_by_id(game.title_id),
+                                                staged_entry,
                                                 &staged_info, staged_error,
                                                 sizeof(staged_error)) == NK_OK);
     assert(staged_info.is_psp_container == true);
@@ -746,6 +773,18 @@ int main(int argc, char **argv) {
         char memstick[900];
         snprintf(memstick, sizeof(memstick), "%s%cmemstick", staged_root, sep);
         test_rmdir(memstick);
+    }
+    test_rmdir(staged_data_root);
+    {
+        char parent[900];
+        size_t root_length = strlen(staged_root);
+        snprintf(parent, sizeof(parent), "%s", staged_data_root);
+        for (;;) {
+            char *last_separator = strrchr(parent, sep);
+            if (!last_separator || (size_t)(last_separator - parent) <= root_length) break;
+            *last_separator = '\0';
+            test_rmdir(parent);
+        }
     }
     test_rmdir(staged_root);
 

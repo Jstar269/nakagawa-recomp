@@ -117,6 +117,9 @@ MAX_RUNTIME_SYNC_WRAPPERS = 3
 #: into an unbounded runtime table.
 MAX_DISPATCH_ALIASES = 32
 MAX_CALLBACK_TERMINATORS = 32
+MAX_LOOSE_CONTENT_ROOTS = 16
+MAX_LOOSE_CONTENT_PRECEDENCE = 65535
+NK_LAUNCH_MAX_PATH_BYTES = 512
 
 #: Dispatch-target values the CORE runtime has already claimed, mirroring
 #: ``SR_DISPATCH_VFPU_TAG``/``SR_DISPATCH_VFPU_MASK`` in ``src/rt/recomp.h``. A target
@@ -985,6 +988,7 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
     value = obj(value, path, {
         "data_root", "memory_stick_root", "device_prefixes",
         "executable", "module_dir", "psp_header", "disc_image",
+        "loose_content_roots",
     })
     require(value, path, "data_root", "memory_stick_root", "device_prefixes")
     prefixes: set[str] = set()
@@ -1000,6 +1004,8 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
         "data_root": portable_path(value["data_root"], f"{path}.data_root"),
         "memory_stick_root": portable_path(value["memory_stick_root"], f"{path}.memory_stick_root"),
         "device_prefixes": sorted(prefixes),
+        "loose_content_roots": validate_loose_content_roots(
+            value.get("loose_content_roots", []), f"{path}.loose_content_roots"),
     }
     # Paths the manager hands to Make keep the strict Make-safe component rule.
     for optional_key in ("executable", "module_dir", "psp_header"):
@@ -1008,6 +1014,127 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
     if "disc_image" in value:
         result["disc_image"] = disc_image_path(value["disc_image"], f"{path}.disc_image")
     return result
+
+
+def validate_loose_content_roots(value: Any, path: str) -> list[dict[str, Any]]:
+    """Validate optional loose roots; lower precedence numbers win guest-key collisions.
+
+    Roots are relative to the resolved data root's parent. The single root ``."`
+    means that parent itself and lets a manifest describe a split disc layout
+    without teaching generic runtime code any directory names.
+    """
+    roots = array(value, path, MAX_LOOSE_CONTENT_ROOTS)
+    result: list[dict[str, Any]] = []
+    seen_roots: list[tuple[str, ...]] = []
+    seen_precedence: set[int] = set()
+    for index, raw in enumerate(roots):
+        item_path = f"{path}[{index}]"
+        item = obj(raw, item_path, {"root", "mount", "precedence"})
+        require(item, item_path, "root", "mount", "precedence")
+        raw_root = text(item["root"], f"{item_path}.root", 240)
+        root = "." if raw_root == "." else portable_path(raw_root, f"{item_path}.root")
+        raw_mount = text(item["mount"], f"{item_path}.mount", 240, 0)
+        mount = "" if raw_mount == "" else portable_path(raw_mount, f"{item_path}.mount")
+        precedence = uint(item["precedence"], f"{item_path}.precedence",
+                          MAX_LOOSE_CONTENT_PRECEDENCE)
+        if precedence in seen_precedence:
+            fail(f"{item_path}.precedence", "duplicate loose-content precedence")
+        seen_precedence.add(precedence)
+        parts = () if root == "." else tuple(part.casefold() for part in root.split("/"))
+        for previous in seen_roots:
+            if not parts or not previous or parts[:len(previous)] == previous or previous[:len(parts)] == parts:
+                if parts == previous:
+                    fail(f"{item_path}.root", "duplicate loose-content root")
+                fail(f"{item_path}.root", "overlapping loose-content roots")
+        seen_roots.append(parts)
+        result.append({"root": root, "mount": mount, "precedence": precedence})
+    return sorted(result, key=lambda entry: entry["precedence"])
+
+
+def encode_loose_content_roots(
+    validated_manifest: Any,
+    resolved_data_root: Path | str | None,
+) -> str:
+    """Encode the validated manifest roots using nk_launch.c's env transport.
+
+    Roots are resolved from the parent of the already-resolved absolute
+    SR_DATAROOT. The result is one UTF-8 ``host-path<TAB>mount<TAB>precedence``
+    row per root, each ending in LF. An empty declaration produces an empty
+    value, matching the native launcher's explicit inherited-value mask.
+    """
+    boundary = "Loose-content root binding #289 (in the works)"
+    if not isinstance(validated_manifest, dict):
+        raise TitleManifestError(f"{boundary}: validated manifest must be an object")
+    filesystem = validated_manifest.get("filesystem")
+    if not isinstance(filesystem, dict):
+        raise TitleManifestError(f"{boundary}: manifest filesystem block is missing")
+    try:
+        roots = validate_loose_content_roots(
+            filesystem.get("loose_content_roots", []),
+            "$.filesystem.loose_content_roots",
+        )
+    except TitleManifestError as exc:
+        raise TitleManifestError(f"{boundary}: {exc}") from exc
+    if not roots:
+        return ""
+
+    def fail(detail: str) -> NoReturn:
+        raise TitleManifestError(f"{boundary}: {detail}")
+
+    if resolved_data_root is None:
+        fail("the manifest declares roots but no resolved absolute SR_DATAROOT was supplied")
+    try:
+        data_root = Path(resolved_data_root)
+        if not data_root.is_absolute() or not data_root.is_dir():
+            fail("SR_DATAROOT must be an existing absolute directory when roots are declared")
+        # Match nk_platform_absolute_path: GetFullPathNameA on Windows and
+        # realpath on POSIX. The caller supplies a resolved path; Windows
+        # canonicalizes lexically while POSIX canonicalizes existing paths.
+        if os.name == "nt":
+            data_root = Path(os.path.abspath(os.fspath(data_root)))
+        else:
+            data_root = data_root.resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        fail(f"SR_DATAROOT could not be resolved: {exc}")
+    data_root_text = os.fspath(data_root)
+    if len(data_root_text.encode("utf-8")) >= NK_LAUNCH_MAX_PATH_BYTES:
+        fail("SR_DATAROOT exceeds the native launch path limit")
+    anchor = data_root.parent
+
+    # nk_launch.h sizes this as MAX_ROOTS * (NK_MAX_PATH * 2 + 512) + 1.
+    # Keep the byte count because the C buffers are bytes.
+    transport_capacity = MAX_LOOSE_CONTENT_ROOTS * (2 * NK_LAUNCH_MAX_PATH_BYTES + 512) + 1
+    used = 0
+    encoded: list[str] = []
+    for binding in roots:
+        relative_root = binding["root"]
+        candidate = anchor if relative_root == "." else anchor.joinpath(*relative_root.split("/"))
+        candidate_text = os.fspath(candidate)
+        if len(candidate_text.encode("utf-8")) >= NK_LAUNCH_MAX_PATH_BYTES * 2:
+            fail("a configured loose-content root exceeds the native launch path limit")
+        try:
+            if not candidate.is_dir():
+                fail(f"configured loose-content root is not an existing directory: {relative_root}")
+            if os.name == "nt":
+                host_root = Path(os.path.abspath(candidate_text))
+            else:
+                host_root = candidate.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            fail(f"configured loose-content root could not be resolved: {exc}")
+        host_text = os.fspath(host_root)
+        host_bytes = host_text.encode("utf-8")
+        if len(host_bytes) >= NK_LAUNCH_MAX_PATH_BYTES * 2:
+            fail("a resolved loose-content root exceeds the native launch path limit")
+        mount = binding["mount"]
+        if any(character in host_text or character in mount for character in ("\t", "\n")):
+            fail("resolved paths and mounts cannot contain tabs or newlines")
+        row = f"{host_text}\t{mount}\t{binding['precedence']}\n"
+        row_bytes = row.encode("utf-8")
+        if len(row_bytes) >= transport_capacity - used:
+            fail("serialized roots exceed the native launch environment limit")
+        encoded.append(row)
+        used += len(row_bytes)
+    return "".join(encoded)
 
 
 def validate_required_runtime_bindings(value: Any, path: str) -> list[str]:
@@ -1271,12 +1398,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="emit a C99 identity catalog from included public manifests")
     parser.add_argument("--normalize-out", type=Path)
     parser.add_argument("--print-normalized", action="store_true")
+    parser.add_argument("--encode-loose-content-roots", action="store_true",
+                        help="emit the resolved loose-root environment value as a JSON string")
+    parser.add_argument("--resolved-data-root", type=Path,
+                        help="absolute SR_DATAROOT for --encode-loose-content-roots")
     parser.add_argument("--max-bytes", type=int, default=PUBLIC_MANIFEST_MAX_BYTES)
     args = parser.parse_args(argv)
     if args.print_public_catalog:
         import publication_policy
 
-        if args.manifest or args.normalize_out or args.print_normalized:
+        if (args.manifest or args.normalize_out or args.print_normalized or
+                args.encode_loose_content_roots or args.resolved_data_root):
             parser.error("--print-public-catalog cannot be combined with manifest options")
         try:
             rendered = public_native_title_catalog(Path(__file__).resolve().parent.parent)
@@ -1288,8 +1420,16 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     if args.manifest is None:
         parser.error("a manifest is required unless --print-public-catalog is selected")
+    if args.resolved_data_root and not args.encode_loose_content_roots:
+        parser.error("--resolved-data-root requires --encode-loose-content-roots")
     try:
         normalized = validate_manifest(load_manifest(args.manifest, max_bytes=args.max_bytes))
+        if args.encode_loose_content_roots:
+            if args.normalize_out or args.print_normalized:
+                parser.error("--encode-loose-content-roots cannot be combined with normalization options")
+            encoded = encode_loose_content_roots(normalized, args.resolved_data_root)
+            sys.stdout.write(json.dumps(encoded, ensure_ascii=True) + "\n")
+            return 0
         if args.normalize_out:
             write_normalized(args.normalize_out, normalized)
         if args.print_normalized:

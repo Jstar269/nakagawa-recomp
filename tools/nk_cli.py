@@ -1497,6 +1497,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         print(f"Executable: {cmd[0]}")
         print(f"PSP_ISO:    {env.get('PSP_ISO')}")
         print(f"DATAROOT:   {env.get('SR_DATAROOT')}")
+        print(f"LOOSE_ROOTS: {env.get('SR_LOOSE_CONTENT_ROOTS')}")
         print(f"FPS_CAP:    {env.get('SR_FPS_CAP')}")
         return 0
     except Exception as exc:
@@ -2469,6 +2470,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         if not executable.is_file():
             raise PackageBuildError("The generated package executable is missing.")
         env = os.environ.copy()
+        env.pop("SR_DATAROOT", None)
+        env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+        data_root = (ROOT / manifest["filesystem"]["data_root"]).resolve(strict=False)
+        try:
+            loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)
+        except (OSError, ValueError) as exc:
+            _fail_bringup(
+                report, "launch", "LOOSE_CONTENT_ROOTS_UNAVAILABLE", [289],
+                int((time.perf_counter() - started) * 1000),
+            )
+            print(str(exc), file=sys.stderr)
+            _write_bringup_report(report, report_path)
+            print(_bringup_human_summary(report))
+            return 1
         env.update({
             # SDL3 prefers the singular selector names. Pin both spellings so
             # an inherited modern or legacy selector cannot replace the
@@ -2484,7 +2499,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             # this policy.
             "SR_VIDEO": "offscreen",
             "PSP_ISO": str(iso_path),
-            "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
+            "SR_DATAROOT": str(data_root),
+            "SR_LOOSE_CONTENT_ROOTS": loose_roots,
         })
         flight_output: Path | None = None
         try:

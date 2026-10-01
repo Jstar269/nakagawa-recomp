@@ -4150,28 +4150,6 @@ static int sr_wide_module_font_root(wchar_t **out) {
     return ok;
 }
 
-/* The managed HST executable lives at <repo>/build/hst/hst.exe.  Resolve the
- * default data tree from that executable location, never from process CWD. */
-static int sr_wide_module_data_root(wchar_t **out) {
-    if (!out) return 0;
-    *out = NULL;
-    wchar_t *module_dir = NULL, *build_dir = NULL, *repo_dir = NULL;
-    wchar_t *candidate = NULL, *next = NULL;
-    int ok = sr_wide_module_dir_alloc(&module_dir) &&
-             sr_wide_parent_alloc(module_dir, &build_dir) &&
-             sr_wide_parent_alloc(build_dir, &repo_dir) &&
-             sr_wide_join_alloc(repo_dir, L"place_game_here", &candidate) &&
-             sr_wide_join_alloc(candidate,
-                                L"EXTRACTED\\PSP_GAME\\USRDIR\\xbdata_extracted", &next) &&
-             sr_wide_extended_absolute_alloc(next, out);
-    free(module_dir);
-    free(build_dir);
-    free(repo_dir);
-    free(candidate);
-    free(next);
-    return ok;
-}
-
 static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode) {
     wchar_t *wide = NULL;
     if (!mode || !sr_wide_path_alloc(path, &wide)) return NULL;
@@ -4642,25 +4620,6 @@ static int sr_wide_module_font_root(wchar_t **out) {
     free(module_dir);
     free(repo_dir);
     free(candidate);
-    return ok;
-}
-
-static int sr_wide_module_data_root(wchar_t **out) {
-    if (!out) return 0;
-    wchar_t *module_dir = NULL, *build_dir = NULL, *repo_dir = NULL;
-    wchar_t *candidate = NULL, *next = NULL;
-    int ok = sr_wide_module_dir_alloc(&module_dir) &&
-             sr_wide_parent_alloc(module_dir, &build_dir) &&
-             sr_wide_parent_alloc(build_dir, &repo_dir) &&
-             sr_wide_join_alloc(repo_dir, L"place_game_here", &candidate) &&
-             sr_wide_join_alloc(candidate,
-                                L"EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted", &next) &&
-             sr_wide_extended_absolute_alloc(next, out);
-    free(module_dir);
-    free(build_dir);
-    free(repo_dir);
-    free(candidate);
-    free(next);
     return ok;
 }
 
@@ -8229,24 +8188,20 @@ typedef struct {
 } DirFd;
 static DirFd s_dirfds[32];
 
-/* ---- Data-root lookup: serve files extracted from the game's XB archives -------------
+/* ---- Data-root lookup: serve files extracted from XB archives ------------------------
  *
- * The game requests paths like "data/menu/text/CommonText_Acce.to" which exist on the
- * ISO ONLY as packed XB archives (xbdata/<subdir>/<archive>.xb{,0,2,3}). The dev workflow
- * extracts those archives once with tools/extract_xb.py into xbdata_extracted/, producing
- * the tree:
- *     <SR_DATAROOT>/<subdir>/<archive>.xb[0-9].d/<relpath-as-on-disc>
- *
- * To serve those files through h_IoOpen / h_IoGetstat we build (once) a sorted relative-path
- * -> host-path cache by walking SR_DATAROOT recursively. Lookup is then O(log N).
+ * The development workflow extracts packed XB archive members under
+ * <SR_DATAROOT>/<archive>.xb[0-9].d/<relative-path>. To serve those files through
+ * h_IoOpen / h_IoGetstat we build a sorted relative-path -> host-path cache by
+ * walking the explicitly configured data root. Lookup is then O(log N).
  * The cache is published only after the walk, sort, expected-count, and
  * enumerated-size checks succeed; an enumeration or allocation failure destroys
  * the temporary table and permanently fails the data-root route. The actual
  * file open is deferred until the guest requests an entry and fails closed if
  * the indexed host path is no longer readable.
  *
- * SR_DATAROOT defaults to the executable-relative
- * "place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted" tree.
+ * SR_DATAROOT is supplied by the native launcher's validated title filesystem
+ * binding. Without it, the generic runtime does not infer a title directory.
  */
 
 static SrAssetIndex s_data_index;
@@ -8326,6 +8281,214 @@ static char *data_rel_join(const char *prefix, const char *name) {
     return sr_utf8_join_alloc(prefix, name, '/');
 }
 
+#define SR_DATA_MAX_LOOSE_ROOTS 16u
+typedef struct {
+    wchar_t *host_wide;
+    char *host_utf8;
+    char *mount;
+    uint32_t precedence;
+    int skip_primary_root;
+} SrDataLooseRoot;
+
+static SrDataLooseRoot s_data_loose_roots[SR_DATA_MAX_LOOSE_ROOTS];
+static size_t s_data_loose_root_count;
+
+static void data_loose_roots_clear(void) {
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        free(s_data_loose_roots[i].host_wide);
+        free(s_data_loose_roots[i].host_utf8);
+        free(s_data_loose_roots[i].mount);
+        memset(&s_data_loose_roots[i], 0, sizeof(s_data_loose_roots[i]));
+    }
+    s_data_loose_root_count = 0;
+}
+
+static int data_loose_mount_valid(const char *mount) {
+    if (!mount) return 0;
+    if (!mount[0]) return 1;
+    const char *part = mount;
+    for (const char *p = mount;; p++) {
+        if (*p == '/' || *p == '\0') {
+            size_t len = (size_t)(p - part);
+            if (len == 0u || (len == 1u && part[0] == '.') ||
+                (len == 2u && part[0] == '.' && part[1] == '.')) return 0;
+            for (size_t i = 0; i < len; i++) {
+                char c = part[i];
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')) return 0;
+            }
+            if (!*p) break;
+            part = p + 1;
+        }
+    }
+    return 1;
+}
+
+static int data_wide_path_overlaps(const wchar_t *a, const wchar_t *b) {
+    size_t a_len = wcslen(a), b_len = wcslen(b);
+    while (a_len > 1u && (a[a_len - 1u] == L'/' || a[a_len - 1u] == L'\\')) a_len--;
+    while (b_len > 1u && (b[b_len - 1u] == L'/' || b[b_len - 1u] == L'\\')) b_len--;
+    size_t common = a_len < b_len ? a_len : b_len;
+    for (size_t i = 0; i < common; i++) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca == L'/') ca = L'\\';
+        if (cb == L'/') cb = L'\\';
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return 0;
+    }
+    if (a_len == b_len) return 1;
+    return a_len < b_len ? (b[common] == L'/' || b[common] == L'\\')
+                         : (a[common] == L'/' || a[common] == L'\\');
+}
+
+static int data_wide_path_equal(const wchar_t *a, const wchar_t *b) {
+    if (!a || !b) return a == b;
+    size_t a_len = wcslen(a), b_len = wcslen(b);
+    while (a_len > 1u && (a[a_len - 1u] == L'/' || a[a_len - 1u] == L'\\')) a_len--;
+    while (b_len > 1u && (b[b_len - 1u] == L'/' || b[b_len - 1u] == L'\\')) b_len--;
+    if (a_len != b_len) return 0;
+    for (size_t i = 0; i < a_len; i++) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca == L'/') ca = L'\\';
+        if (cb == L'/') cb = L'\\';
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
+static int data_parse_precedence(const wchar_t *text, uint32_t *out) {
+    if (!text || !text[0] || !out) return 0;
+    uint32_t value = 0;
+    for (const wchar_t *p = text; *p; p++) {
+        if (*p < L'0' || *p > L'9') return 0;
+        uint32_t digit = (uint32_t)(*p - L'0');
+        if (value > (65535u - digit) / 10u) return 0;
+        value = value * 10u + digit;
+    }
+    *out = value;
+    return 1;
+}
+
+static int data_loose_root_parse(const wchar_t *primary_root) {
+    data_loose_roots_clear();
+    wchar_t *serialized = NULL;
+    int present = 0;
+    if (!sr_wide_env_alloc(L"SR_LOOSE_CONTENT_ROOTS", &serialized, &present)) return 0;
+    if (!present || !serialized || !serialized[0]) {
+        free(serialized);
+        return 1;
+    }
+    size_t serialized_len = wcslen(serialized);
+    if (serialized_len > 32767u || !primary_root) {
+        fprintf(stderr, "host_data: loose-content binding #289 (in the works) exceeds its limit\n");
+        free(serialized);
+        return 0;
+    }
+    wchar_t *primary_parent = NULL;
+    if (!sr_wide_parent_alloc(primary_root, &primary_parent)) {
+        free(serialized);
+        return 0;
+    }
+    int ok = 1;
+    wchar_t *cursor = serialized;
+    wchar_t *serialized_end = serialized + serialized_len;
+    while (cursor < serialized_end && ok) {
+        wchar_t *line_end = wcschr(cursor, L'\n');
+        if (!line_end) line_end = serialized_end;
+        wchar_t saved_end = *line_end;
+        *line_end = L'\0';
+        if (line_end > cursor && line_end[-1] == L'\r') line_end[-1] = L'\0';
+        wchar_t *tab1 = wcschr(cursor, L'\t');
+        wchar_t *tab2 = tab1 ? wcschr(tab1 + 1, L'\t') : NULL;
+        if (!cursor[0] || !tab1 || !tab2 || wcschr(tab2 + 1, L'\t')) {
+            ok = 0;
+        } else {
+            *tab1 = L'\0';
+            *tab2 = L'\0';
+            uint32_t precedence = 0;
+            size_t mount_len = wcslen(tab1 + 1);
+            char mount[241];
+            if (mount_len > 240u || !data_parse_precedence(tab2 + 1, &precedence)) {
+                ok = 0;
+            } else {
+                for (size_t i = 0; i < mount_len; i++) {
+                    if ((uint32_t)(tab1[1 + i]) > 0x7fu) { ok = 0; break; }
+                    mount[i] = (char)tab1[1 + i];
+                }
+                mount[mount_len] = '\0';
+                if (ok && !data_loose_mount_valid(mount)) ok = 0;
+            }
+            wchar_t *host_wide = NULL;
+            char *host_utf8 = NULL;
+            if (ok && (!cursor[0] || wcschr(cursor, L'\t') ||
+                       !sr_wide_configured_root_wide_alloc(cursor, &host_wide) ||
+                       !sr_wide_to_utf8_alloc(host_wide, &host_utf8))) ok = 0;
+            if (ok) {
+#ifdef _WIN32
+                DWORD attributes = GetFileAttributesW(host_wide);
+                if (attributes == INVALID_FILE_ATTRIBUTES ||
+                    !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+                    (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) ok = 0;
+#else
+                struct stat st, link;
+                if (lstat(host_utf8, &link) != 0 || S_ISLNK(link.st_mode) ||
+                    stat(host_utf8, &st) != 0 || !S_ISDIR(st.st_mode)) ok = 0;
+#endif
+            }
+            int skip_primary = 0;
+            if (ok) {
+                if (data_wide_path_overlaps(host_wide, primary_root)) {
+                    if (data_wide_path_equal(host_wide, primary_parent)) skip_primary = 1;
+                    else ok = 0;
+                }
+                for (size_t i = 0; i < s_data_loose_root_count && ok; i++) {
+                    if (data_wide_path_overlaps(host_wide, s_data_loose_roots[i].host_wide))
+                        ok = 0;
+                    if (s_data_loose_roots[i].precedence == precedence) ok = 0;
+                }
+            }
+            if (ok && s_data_loose_root_count < SR_DATA_MAX_LOOSE_ROOTS) {
+                SrDataLooseRoot *root = &s_data_loose_roots[s_data_loose_root_count++];
+                root->host_wide = host_wide; host_wide = NULL;
+                root->host_utf8 = host_utf8; host_utf8 = NULL;
+                root->mount = sr_asset_index_strdup(mount);
+                root->precedence = precedence;
+                root->skip_primary_root = skip_primary;
+                if (!root->mount) ok = 0;
+            } else if (ok) {
+                ok = 0;
+            }
+            free(host_wide);
+            free(host_utf8);
+        }
+        if (!ok) {
+            fprintf(stderr, "host_data: loose-content binding #289 (in the works) is malformed, overlapping, or unavailable\n");
+            break;
+        }
+        cursor = (saved_end == L'\n') ? line_end + 1 : serialized_end;
+    }
+    free(primary_parent);
+    free(serialized);
+    if (!ok) {
+        data_loose_roots_clear();
+        return 0;
+    }
+    for (size_t i = 1; i < s_data_loose_root_count; i++) {
+        size_t j = i;
+        while (j > 0 && s_data_loose_roots[j].precedence <
+                            s_data_loose_roots[j - 1].precedence) {
+            SrDataLooseRoot swap = s_data_loose_roots[j];
+            s_data_loose_roots[j] = s_data_loose_roots[j - 1];
+            s_data_loose_roots[j - 1] = swap;
+            j--;
+        }
+    }
+    return 1;
+}
+
 typedef struct {
     wchar_t *host;
     char *rel;
@@ -8360,7 +8523,8 @@ static int data_walk_push(DataWalkDir **stack, size_t *count, size_t *capacity,
  * first, so the first root's own subtree would otherwise be enumerated twice. */
 #ifdef _WIN32
 static int data_walk(const wchar_t *root, const char *relprefix,
-                     const wchar_t *skip_top_name, SrAssetIndex *index) {
+                     const wchar_t *skip_top_name, SrAssetIndex *index,
+                     uint32_t precedence) {
     if (!root || !relprefix || !index) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
@@ -8475,8 +8639,8 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
                                 index->count);
                         ok = 0;
-                    } else if (!sr_asset_index_add_sized(index, key, host_utf8, variant,
-                                                         file_size)) {
+                    } else if (!sr_asset_index_add_sized_precedence(
+                                   index, key, host_utf8, variant, file_size, precedence)) {
                         fprintf(stderr, "host_data: index allocation failed after %zu files\n",
                                 index->count);
                         ok = 0;
@@ -8518,7 +8682,8 @@ static int data_walk(const wchar_t *root, const char *relprefix,
  * reparse point, and a regular file is still read-open probed so a race cannot
  * publish an entry the guest cannot later open. */
 static int data_walk(const wchar_t *root, const char *relprefix,
-                     const wchar_t *skip_top_name, SrAssetIndex *index) {
+                     const wchar_t *skip_top_name, SrAssetIndex *index,
+                     uint32_t precedence) {
     if (!root || !relprefix || !index) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
@@ -8630,8 +8795,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                             fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
                                     index->count);
                             ok = 0;
-                        } else if (!sr_asset_index_add_sized(index, key, child_utf8, variant,
-                                                             (uint64_t)st.st_size)) {
+                        } else if (!sr_asset_index_add_sized_precedence(
+                                       index, key, child_utf8, variant,
+                                       (uint64_t)st.st_size, precedence)) {
                             fprintf(stderr, "host_data: index allocation failed after %zu files\n",
                                     index->count);
                             ok = 0;
@@ -9044,107 +9210,73 @@ static int data_validate_archive_index(size_t primary_count) {
     return 1;
 }
 
-/* Fold the loose content tree beside the configured root into the same namespace.
- *
- * The guest addresses one disc namespace, rooted at USRDIR: it asks for
- * `disc0:/PSP_GAME/USRDIR/<rel>` and `host0:<rel>`, and the canonical prepared
- * layout splits that namespace across two physical trees -- the
- * extracted-archive root (`<...>/USRDIR/xbdata_extracted`, i.e. SR_DATAROOT) and
- * the loose content beside it (`<...>/USRDIR/data`, `movie_us/`, `module/`,
- * `bundle_data/`, `umd.ufl`).  Keys are relative to whichever root produced
- * them, so both trees land in one key space no matter which root served the file.
- *
- * A loose asset can legitimately be outside the configured extracted tree, so
- * the index must include that adjacent content rather than treating a miss as a
- * decoder or player failure.  The synthetic regression below proves the two
- * sources resolve through one namespace without requiring retail bytes.
- *
- * Deliberately narrow: applying a second walk to the parent unconditionally would
- * be unbounded (`SR_DATAROOT=C:\extracted` would enumerate `C:\`).  So it applies
- * only when the configured root really is the canonical prepared layout -- an
- * extracted-archive directory named `xbdata_extracted`/`xbdata` whose parent is a
- * `USRDIR`.  Any other root keeps the single-root behaviour untouched.
- *
- * Returns 1 when the route is not applicable or the walk completed, and only 0
- * when the walk applied and failed, because a partially enumerated extra root
- * must refuse the index rather than publish it. */
-#ifdef _WIN32
-static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
-    wchar_t *parent = NULL;
-    wchar_t *primary_name = NULL;
-    wchar_t *parent_name = NULL;
-    int applied = 0;
-    int ok = 1;
-    if (sr_wide_parent_alloc(primary_root, &parent) &&
-        sr_wide_basename_alloc(primary_root, &primary_name) &&
-        sr_wide_basename_alloc(parent, &parent_name) &&
-        (_wcsicmp(primary_name, L"xbdata_extracted") == 0 ||
-         _wcsicmp(primary_name, L"xbdata") == 0) &&
-        _wcsicmp(parent_name, L"USRDIR") == 0) {
-        DWORD attributes = GetFileAttributesW(parent);
-        if (attributes != INVALID_FILE_ATTRIBUTES &&
-            (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
-            !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-            applied = 1;
-            fprintf(stderr, "host_data: also indexing the loose content beside the "
-                            "extracted-archive root\n");
-            ok = data_walk(parent, "", primary_name, index);
-        }
-    }
-    if (applied && !ok) {
-        fprintf(stderr, "host_data: loose-content enumeration failed; refusing partial index\n");
-    }
-    free(parent);
-    free(primary_name);
-    free(parent_name);
-    return ok;
-}
-#else /* !_WIN32: the same loose-content rules over POSIX stat ------------------ */
-static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
-    wchar_t *parent = NULL;
-    wchar_t *primary_name = NULL;
-    wchar_t *parent_name = NULL;
-    int applied = 0;
-    int ok = 1;
-    if (sr_wide_parent_alloc(primary_root, &parent) &&
-        sr_wide_basename_alloc(primary_root, &primary_name) &&
-        sr_wide_basename_alloc(parent, &parent_name) &&
-        (sr_wide_stricmp(primary_name, L"xbdata_extracted") == 0 ||
-         sr_wide_stricmp(primary_name, L"xbdata") == 0) &&
-        sr_wide_stricmp(parent_name, L"USRDIR") == 0) {
-        char *parent_utf8 = NULL;
-        if (parent && sr_wide_to_utf8_alloc(parent, &parent_utf8)) {
-            struct stat st, link;
-            int is_link = lstat(parent_utf8, &link) == 0 && S_ISLNK(link.st_mode);
-            if (stat(parent_utf8, &st) == 0 && S_ISDIR(st.st_mode) && !is_link) {
-                applied = 1;
-                fprintf(stderr, "host_data: also indexing the loose content beside the "
-                                "extracted-archive root\n");
-                ok = data_walk(parent, "", primary_name, index);
+/* Exact guest-file collisions across manifest roots are intentional overlays:
+ * the lower precedence value wins. A collision within one root is ambiguous
+ * after guest-key case folding and refuses the whole index. File/directory
+ * collisions also fail closed. */
+static int data_validate_duplicate_policy(const SrAssetIndex *index) {
+    if (!index || !index->finalized) return 0;
+    for (size_t i = 0; i < index->count; i++) {
+        const SrAssetIndexEntry *entry = &index->entries[i];
+        if (i > 0u) {
+            const SrAssetIndexEntry *previous = &index->entries[i - 1u];
+            if (strcmp(previous->key, entry->key) == 0 &&
+                previous->variant == entry->variant &&
+                previous->precedence == entry->precedence) {
+                fprintf(stderr, "host_data: duplicate guest-file key within one root; refusing index\n");
+                return 0;
             }
-            free(parent_utf8);
+        }
+        size_t key_len = strlen(entry->key);
+        size_t first = sr_asset_index_lower_bound(index, entry->key);
+        size_t after = first;
+        while (after < index->count &&
+               strcmp(index->entries[after].key, entry->key) == 0) after++;
+        if (after < index->count &&
+            strncmp(index->entries[after].key, entry->key, key_len) == 0 &&
+            index->entries[after].key[key_len] == '/') {
+            fprintf(stderr, "host_data: guest file/directory key collision; refusing index\n");
+            return 0;
         }
     }
-    if (applied && !ok) {
-        fprintf(stderr, "host_data: loose-content enumeration failed; refusing partial index\n");
-    }
-    free(parent);
-    free(primary_name);
-    free(parent_name);
-    return ok;
+    return 1;
 }
-#endif /* _WIN32 */
 
-static char *data_loose_path_alloc(const char *key) {
-    if (!s_data_root_utf8 || !key) return NULL;
-    if (!key[0]) return sr_asset_index_strdup(s_data_root_utf8);
-    size_t root_len = strlen(s_data_root_utf8);
+/* Enumerate only roots carried by the validated title filesystem binding.
+ * The manifest default is an empty set; generic HLE performs no directory
+ * discovery. Lower precedence numbers win duplicate guest-file keys. */
+static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        SrDataLooseRoot *root = &s_data_loose_roots[i];
+        wchar_t *primary_name = NULL;
+        const wchar_t *skip = NULL;
+        if (root->skip_primary_root) {
+            if (!sr_wide_basename_alloc(primary_root, &primary_name)) return 0;
+            skip = primary_name;
+        }
+        /* The manifest rank orders loose roots after the primary data root;
+         * primary is 0 and declared ranks occupy 1..65536. */
+        int ok = data_walk(root->host_wide, root->mount, skip, index,
+                           root->precedence + 1u);
+        free(primary_name);
+        if (!ok) {
+            fprintf(stderr, "host_data: configured loose-content root failed; refusing partial index\n");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static char *data_loose_path_alloc(const char *root_utf8, const char *key) {
+    if (!root_utf8 || !key) return NULL;
+    if (!key[0]) return sr_asset_index_strdup(root_utf8);
+    size_t root_len = strlen(root_utf8);
     size_t key_len = strlen(key);
     if (root_len > SIZE_MAX - key_len - 2u) return NULL;
     size_t capacity = root_len + key_len + 2u;
     char *path = (char *)malloc(capacity);
     if (!path) return NULL;
-    if (sr_vfs_host_dir_path(s_data_root_utf8, key, path, capacity, '\\') <= 0) {
+    if (sr_vfs_host_dir_path(root_utf8, key, path, capacity, '\\') <= 0) {
         free(path);
         return NULL;
     }
@@ -9152,12 +9284,12 @@ static char *data_loose_path_alloc(const char *key) {
 }
 
 #ifdef _WIN32
-static int data_loose_file_open(const char *key, FILE **file_out,
-                                uint32_t *size_out) {
+static int data_loose_file_open_at(const char *root_utf8, const char *key,
+                                   FILE **file_out, uint32_t *size_out) {
     if (file_out) *file_out = NULL;
     if (size_out) *size_out = 0;
-    if (!s_data_root_utf8 || !key || !key[0]) return 0;
-    char *path = data_loose_path_alloc(key);
+    if (!root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(root_utf8, key);
     if (!path) return -1;
     wchar_t *wide = NULL;
     if (!sr_wide_path_alloc(path, &wide)) {
@@ -9191,12 +9323,12 @@ static int data_loose_file_open(const char *key, FILE **file_out,
     return 1;
 }
 #else /* !_WIN32: the same open, refusing directories and symlinks ------------- */
-static int data_loose_file_open(const char *key, FILE **file_out,
-                                uint32_t *size_out) {
+static int data_loose_file_open_at(const char *root_utf8, const char *key,
+                                   FILE **file_out, uint32_t *size_out) {
     if (file_out) *file_out = NULL;
     if (size_out) *size_out = 0;
-    if (!s_data_root_utf8 || !key || !key[0]) return 0;
-    char *path = data_loose_path_alloc(key);
+    if (!root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(root_utf8, key);
     if (!path) return -1;
     /* Open first and judge the opened file: O_NOFOLLOW refuses a symlink (ELOOP), fstat
      * refuses a directory or special file, so no check can be raced by a path swap. */
@@ -9225,11 +9357,39 @@ static int data_loose_file_open(const char *key, FILE **file_out,
 }
 #endif /* _WIN32 */
 
+static const char *data_loose_key_for_mount(const char *key, const char *mount) {
+    if (!key || !mount) return NULL;
+    if (!mount[0]) return key;
+    size_t mount_len = strlen(mount);
+    if (sr_vfs_strnicmp(key, mount, mount_len) != 0) return NULL;
+    if (key[mount_len] == '\0') return "";
+    return key[mount_len] == '/' ? key + mount_len + 1u : NULL;
+}
+
+static int data_loose_file_open(const char *key, FILE **file_out,
+                                uint32_t *size_out) {
+    if (file_out) *file_out = NULL;
+    if (size_out) *size_out = 0;
+    if (!key || !key[0]) return 0;
+    int primary_result = data_loose_file_open_at(s_data_root_utf8, key,
+                                                  file_out, size_out);
+    if (primary_result != 0) return primary_result;
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        const char *relative = data_loose_key_for_mount(key,
+                                                        s_data_loose_roots[i].mount);
+        if (!relative || !relative[0]) continue;
+        int result = data_loose_file_open_at(s_data_loose_roots[i].host_utf8,
+                                             relative, file_out, size_out);
+        if (result != 0) return result;
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
     if (found_out) *found_out = 0;
     if (!s_data_root_utf8 || !list) return -1;
-    char *path = data_loose_path_alloc(key ? key : "");
+    char *path = data_loose_path_alloc(s_data_root_utf8, key ? key : "");
     if (!path) return -1;
     wchar_t *wide = NULL;
     wchar_t *pattern = NULL;
@@ -9303,7 +9463,7 @@ static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_
 static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
     if (found_out) *found_out = 0;
     if (!s_data_root_utf8 || !list) return -1;
-    char *path = data_loose_path_alloc(key ? key : "");
+    char *path = data_loose_path_alloc(s_data_root_utf8, key ? key : "");
     if (!path) return -1;
     struct stat st, link;
     int is_link = lstat(path, &link) == 0 && S_ISLNK(link.st_mode);
@@ -9386,11 +9546,13 @@ int sr_host_data_prepare(void) {
          * already terminal or being prepared is never re-scanned here. */
         return atomic_load_explicit(&s_data_state, memory_order_acquire);
     }
+    data_loose_roots_clear();
     wchar_t *configured_root = NULL;
     int configured_present = 0;
     int env_ok = sr_wide_env_alloc(L"SR_DATAROOT", &configured_root, &configured_present);
     if (!configured_present && sr_title_config_expected_data_file_count() == 0) {
         free(configured_root);
+        data_loose_roots_clear();
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_DISABLED, memory_order_release);
         fprintf(stderr, "host_data: disabled (no SR_DATAROOT configured and this profile "
                         "declares no extracted-data census); guest lookups will fall back "
@@ -9404,23 +9566,22 @@ int sr_host_data_prepare(void) {
     free(s_data_root_utf8);
     s_data_root_utf8 = NULL;
     s_data_archive_mode = 0;
-    const char *root_label = configured_present ? "<configured SR_DATAROOT>" :
-        "<executable>/../../place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted";
+    const char *root_label = "<configured SR_DATAROOT>";
     fprintf(stderr, "host_data: scanning %s ...\n", root_label);
     wchar_t *root_wide = NULL;
-    int root_ok = env_ok && (configured_present ?
-        (configured_root[0] && sr_wide_configured_root_wide_alloc(configured_root, &root_wide)) :
-        sr_wide_module_data_root(&root_wide));
+    int root_ok = env_ok && configured_present && configured_root && configured_root[0] &&
+                  sr_wide_configured_root_wide_alloc(configured_root, &root_wide);
     if (!root_ok) {
         if (!env_ok)
             fprintf(stderr, "host_data: SR_DATAROOT could not be read\n");
         else if (configured_present)
             fprintf(stderr, "host_data: SR_DATAROOT is configured but is not a valid absolute path\n");
         else
-            fprintf(stderr, "host_data: executable-relative data root could not be resolved\n");
+            fprintf(stderr, "host_data: extracted-data census requires a configured SR_DATAROOT\n");
     }
     free(configured_root);
-    if (root_ok && !data_root_validate(root_wide, configured_present)) root_ok = 0;
+    if (root_ok && !data_root_validate(root_wide, 1)) root_ok = 0;
+    if (root_ok && !data_loose_root_parse(root_wide)) root_ok = 0;
     size_t primary_count = 0;
     size_t archive_count = 0;
     int archive_mode = 0;
@@ -9446,13 +9607,15 @@ int sr_host_data_prepare(void) {
             SR_DATA_TEST_PHASE_START(phase_started);
             if (walk_ok && temporary.count != 0u &&
                 !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+            if (walk_ok && temporary.count != 0u &&
+                !data_validate_duplicate_policy(&temporary)) walk_ok = 0;
             SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         }
     } else if (walk_ok) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         sr_archive_vfs_init(&s_archive_vfs);
         SR_DATA_TEST_PHASE_START(phase_started);
-        walk_ok = data_walk(root_wide, "", NULL, &temporary);
+        walk_ok = data_walk(root_wide, "", NULL, &temporary, 0u);
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_PRIMARY_WALK, phase_started);
         if (walk_ok) {
             primary_count = temporary.count;
@@ -9462,6 +9625,7 @@ int sr_host_data_prepare(void) {
         }
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+        if (walk_ok && !data_validate_duplicate_policy(&temporary)) walk_ok = 0;
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !data_validate_index(&temporary, primary_count)) walk_ok = 0;
@@ -9474,6 +9638,7 @@ int sr_host_data_prepare(void) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         free(s_data_root_utf8);
         s_data_root_utf8 = NULL;
+        data_loose_roots_clear();
         s_data_archive_mode = 0;
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
@@ -9491,6 +9656,7 @@ int sr_host_data_prepare(void) {
             sr_archive_vfs_destroy(&s_archive_vfs);
             free(s_data_root_utf8);
             s_data_root_utf8 = NULL;
+            data_loose_roots_clear();
             s_data_archive_mode = 0;
             atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
             return SR_DATA_STATE_FAILED;
@@ -9512,6 +9678,7 @@ int sr_host_data_prepare(void) {
         fprintf(stderr, "host_data: failed to publish finalized index\n");
         sr_asset_index_destroy(&temporary);
         sr_archive_vfs_destroy(&s_archive_vfs);
+        data_loose_roots_clear();
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
     }
@@ -9520,7 +9687,7 @@ int sr_host_data_prepare(void) {
     fprintf(stderr, "host_data: indexed %zu files under %s\n", s_data_index.count, root_label);
     if (s_data_index.count != primary_count) {
         fprintf(stderr, "host_data: configured root contributed %zu of them; %zu came from "
-                        "the loose content beside it\n",
+                        "configured loose roots\n",
                 primary_count, s_data_index.count - primary_count);
     }
     data_report_phases();
@@ -9583,6 +9750,7 @@ void sr_hle_test_data_reset(int pace_ms) {
     sr_archive_vfs_init(&s_archive_vfs);
     free(s_data_root_utf8);
     s_data_root_utf8 = NULL;
+    data_loose_roots_clear();
     s_data_archive_mode = 0;
     atomic_store_explicit(&s_data_state, SR_DATA_STATE_UNINITIALIZED, memory_order_release);
     s_data_test_walk_calls = 0;
@@ -9689,7 +9857,10 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
          * is a name sceIoOpen resolves under the identical variant. */
         if (!sr_asset_index_variant_selected(candidate->variant, wanted_variant)) continue;
         if (wanted_variant >= 0) { chosen = candidate; break; }
-        if (!chosen || candidate->variant == -1 ||
+        if (!chosen ||
+            (candidate->variant == -1 && chosen->variant != -1) ||
+            (candidate->variant == chosen->variant &&
+             candidate->precedence < chosen->precedence) ||
             (chosen->variant != -1 && candidate->variant < chosen->variant)) {
             chosen = candidate;
         }

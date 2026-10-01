@@ -48,6 +48,42 @@ The manifest is not a storage location for absolute paths, usernames, hashes,
 keys, retail bytes, routes, saves, or oracle evidence. Those are private
 workspace bindings supplied locally and remain outside Git.
 
+For split loose-file layouts, declare the extra roots in
+`filesystem.loose_content_roots` rather than teaching generic runtime code
+directory names. Each `{ "root", "mount", "precedence" }` entry resolves
+`root` relative to the parent of `filesystem.data_root`; `mount` is the
+guest-relative prefix (or `""` for the namespace root), and lower unique
+`precedence` values win duplicate file keys between loose roots. Files under
+`filesystem.data_root` keep priority over matching files from loose roots. The schema rejects unsafe,
+duplicate, or overlapping roots. Existing manifests without this optional
+field still load with no extra roots; add the field when the title needs them.
+When staging an ISO, matching roots under PSP_GAME/USRDIR are copied to the
+same relative staging paths; the player does not infer a directory when the
+field is absent.
+
+To migrate the former inferred layout whose data root is
+`<something>/USRDIR/xbdata` or
+`<something>/USRDIR/xbdata_extracted`, and whose loose assets live beside that
+directory under `USRDIR`, add this declaration:
+
+```json
+"loose_content_roots": [
+  {"root": ".", "mount": "", "precedence": 0}
+]
+```
+
+The parent root contributes paths such as `data/sound/menu.csv` to the same
+guest namespace, while the primary data root still wins duplicate keys. The
+old inference required the parent name `USRDIR` and one of those two data-root
+names, then indexed the primary root and walked the parent while skipping the
+primary child. For an unqualified duplicate, the index sorted by host path and
+the lookup kept the last match; the primary path sorted after the adjacent
+`data/...` path and therefore won. The declaration makes primary-first
+priority explicit and leaves lower-number ordering for collisions among loose
+roots.
+This migration and the remaining loose-content integration are tracked as
+**Loose-content root binding — in the works ([#289](https://github.com/Jstar269/nakagawa-recomp/issues/289))**.
+
 For the privately route-validated HST title, the opt-in manager path is
 (private-local-only: it requires a local, publication-excluded copy of the
 retail HST manifest, so it is not runnable from a public clone):

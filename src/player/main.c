@@ -677,6 +677,9 @@ typedef struct {
     char iso_path[NK_MAX_PATH];
     char staging_root[4096];
     char final_root[4096];
+    char loose_content_root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241];
+    const char *loose_content_roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS];
+    size_t loose_content_root_count;
     bool cancel_requested;
     bool finished;
     bool completion_handled;
@@ -688,6 +691,50 @@ typedef struct {
     char error_message[256];
     PlayerStageSummary summary;
 } PlayerStagingJob;
+
+static bool player_copy_staging_roots(
+    const GameRecord *game,
+    char storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241],
+    const char *roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS],
+    size_t *root_count
+) {
+    if (!game || !storage || !roots || !root_count) return false;
+    *root_count = 0;
+    const NkTitleEntry *entry = NULL;
+    NkTitleEntry experimental_entry;
+    if (game->is_experimental) {
+        char user_data_root[NK_MAX_PATH];
+        char profile_hash[65];
+        char error[256];
+        if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root)) ||
+            !nk_title_manifest_read_experimental_profile(
+                user_data_root, game->disc_id, game->title_id,
+                game->selected_executable, &experimental_entry,
+                profile_hash, error, sizeof(error))) return false;
+        entry = &experimental_entry;
+    } else {
+        const NkTitleEntry *by_disc = game->disc_id[0]
+            ? nk_title_catalog_find_by_disc_id(game->disc_id) : NULL;
+        const NkTitleEntry *by_id = game->title_id[0]
+            ? nk_title_catalog_find_by_id(game->title_id) : NULL;
+        if (!by_disc && !by_id) return true;
+        if (by_disc && game->title_id[0] &&
+            (!by_id || strcmp(by_disc->id, by_id->id) != 0)) return false;
+        if (!by_disc) return true;
+        entry = by_disc;
+    }
+    if (!entry || entry->loose_content_root_count < 0 ||
+        entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
+        (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) return false;
+    for (int i = 0; i < entry->loose_content_root_count; i++) {
+        const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
+        if (!binding->root || strlen(binding->root) >= sizeof(storage[i])) return false;
+        snprintf(storage[i], sizeof(storage[i]), "%s", binding->root);
+        roots[i] = storage[i];
+        (*root_count)++;
+    }
+    return true;
+}
 
 static void staging_push_event(PlayerStagingJob *job, int code) {
     if (!job) return;
@@ -738,6 +785,8 @@ static int SDLCALL staging_thread_main(void *userdata) {
     char error_message[256];
     NkResult result = player_stage_game_with_summary(job->iso_path,
                                                      job->staging_root,
+                                                     job->loose_content_roots,
+                                                     job->loose_content_root_count,
                                                      &callbacks, &job->summary,
                                                      error_message,
                                                      sizeof(error_message));
@@ -803,26 +852,45 @@ static bool promote_staging_root(const char *staging_root, const char *final_roo
 #endif
 }
 
-static bool staged_payload_is_complete(const char *root) {
+static bool staged_payload_is_complete(const char *root,
+                                       const char *const *loose_content_roots,
+                                       size_t loose_content_root_count) {
     if (!root || !root[0]) return false;
     char eboot_path[4096];
-    char xbdata_path[4096];
     int eboot_written = snprintf(eboot_path, sizeof(eboot_path), "%s%cEBOOT.BIN",
                                  root, nk_platform_path_separator());
-    int xbdata_written = snprintf(xbdata_path, sizeof(xbdata_path), "%s%cxbdata",
-                                  root, nk_platform_path_separator());
-    return eboot_written > 0 && xbdata_written > 0 &&
-           (size_t)eboot_written < sizeof(eboot_path) &&
-           (size_t)xbdata_written < sizeof(xbdata_path) &&
-           nk_platform_file_exists(eboot_path) && nk_platform_dir_exists(xbdata_path);
+    if (eboot_written <= 0 || (size_t)eboot_written >= sizeof(eboot_path) ||
+        !nk_platform_file_exists(eboot_path) ||
+        loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
+        (loose_content_root_count != 0u && !loose_content_roots)) return false;
+    for (size_t i = 0; i < loose_content_root_count; i++) {
+        if (strcmp(loose_content_roots[i], ".") == 0) continue;
+        char content_root[4096];
+        int written = snprintf(content_root, sizeof(content_root), "%s%c%s", root,
+                               nk_platform_path_separator(), loose_content_roots[i]);
+        if (written <= 0 || (size_t)written >= sizeof(content_root)) return false;
+        for (char *p = content_root + strlen(root) + 1u; *p; p++) {
+            if (*p == '/' || *p == '\\') *p = nk_platform_path_separator();
+        }
+        if (!nk_platform_dir_exists(content_root)) return false;
+    }
+    return true;
 }
 
 /* A completed promotion can outlive the library write if the user-data
  * filesystem is full or temporarily unavailable. Reuse only the exact root
- * derived from the inspected disc ID and only when the transaction's two
- * required payload roots are present; never replace it with a fresh tree. */
+ * derived from the inspected disc ID and only when the executable and all
+ * manifest-configured staging roots are present; never replace it with a fresh tree. */
 static bool adopt_existing_staged_root(PlayerApp *app, const char *final_root) {
-    if (!app || !final_root || !staged_payload_is_complete(final_root) ||
+    if (!app || !final_root) return false;
+    char root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
+    const char *loose_content_roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS] = {0};
+    size_t loose_content_root_count = 0;
+    if (!player_copy_staging_roots(&app->inspecting_game, root_storage,
+                                   loose_content_roots,
+                                   &loose_content_root_count) ||
+        !staged_payload_is_complete(final_root, loose_content_roots,
+                                    loose_content_root_count) ||
         !copy_bounded_text(app->inspecting_game.prepared_root,
                            sizeof(app->inspecting_game.prepared_root),
                            final_root)) return false;
@@ -857,6 +925,16 @@ static bool start_staging_job(PlayerApp *app, PlayerStagingJob **job_slot) {
                                             "Could not allocate the staging worker.");
         return false;
     }
+    if (!player_copy_staging_roots(&app->inspecting_game,
+                                   job->loose_content_root_storage,
+                                   job->loose_content_roots,
+                                   &job->loose_content_root_count)) {
+        free(job);
+        player_app_wizard_finish_extraction(
+            app, NK_ERROR_UNSUPPORTED_TITLE,
+            "The selected title's loose-content root configuration could not be resolved.");
+        return false;
+    }
     if (!staging_paths_for_disc(app->inspecting_game.disc_id, job->staging_root,
                                 sizeof(job->staging_root), job->final_root,
                                 sizeof(job->final_root))) {
@@ -875,7 +953,9 @@ static bool start_staging_job(PlayerApp *app, PlayerStagingJob **job_slot) {
         return false;
     }
     if (nk_platform_dir_exists(job->final_root)) {
-        bool complete = staged_payload_is_complete(job->final_root);
+        bool complete = staged_payload_is_complete(job->final_root,
+                                                   job->loose_content_roots,
+                                                   job->loose_content_root_count);
         if (complete && adopt_existing_staged_root(app, job->final_root)) {
             free(job);
             player_app_wizard_finish_extraction(
@@ -1003,6 +1083,15 @@ static int stage_iso_synchronously(PlayerApp *app) {
 
     char staging_root[4096];
     char final_root[4096];
+    char root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
+    const char *loose_content_roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS] = {0};
+    size_t loose_content_root_count = 0;
+    if (!player_copy_staging_roots(&app->inspecting_game, root_storage,
+                                   loose_content_roots,
+                                   &loose_content_root_count)) {
+        fprintf(stderr, "[PLAYER] The selected title's loose-content root configuration could not be resolved.\n");
+        return 3;
+    }
     if (!staging_paths_for_disc(app->inspecting_game.disc_id,
                                 staging_root, sizeof(staging_root),
                                 final_root, sizeof(final_root))) {
@@ -1026,7 +1115,8 @@ static int stage_iso_synchronously(PlayerApp *app) {
     PlayerStageSummary summary;
     char error_message[256];
     NkResult result = player_stage_game_with_summary(
-        app->inspecting_game.iso_path, staging_root, NULL, &summary,
+        app->inspecting_game.iso_path, staging_root, loose_content_roots,
+        loose_content_root_count, NULL, &summary,
         error_message, sizeof(error_message));
     if (result != NK_OK) {
         fprintf(stderr, "[PLAYER] --stage-only failed (%d): %s\n", (int)result,

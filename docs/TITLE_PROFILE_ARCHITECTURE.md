@@ -30,6 +30,68 @@ The authoritative public shape is [`assets/title_manifest.schema.json`](../asset
 
 The schema covers manifest identity and kind, retail disc identity, executable layout, module inventory, filesystem roots, game/HLE/code-generation identifiers, feature requirements, compatibility-manifest and verification references, and notes. Optional `runtime_contract` and `profile_zero` blocks have additional machine-checked constraints; `profile_zero` is limited to synthetic manifests. Their exact required fields belong to the schema and validator, not to a second prose-defined schema.
 
+### Typed loose-content roots (#289)
+
+`filesystem.loose_content_roots` optionally declares up to 16 extra host roots
+for the runtime's loose-file VFS. Each entry has exactly `root`, `mount`, and
+`precedence`. `root` is a safe relative path resolved from the parent directory
+of `filesystem.data_root`; `.` names that parent. `mount` is an empty string or
+a guest-relative prefix. `precedence` is a unique integer from 0 through 65535;
+the lower number wins when loose roots expose the same guest file key. A file
+under the primary `filesystem.data_root` wins a duplicate against any loose
+root, preserving the pre-migration extracted-tree behavior.
+During ISO staging, the player looks for each configured relative root under
+PSP_GAME/USRDIR and stages any matching directory at that same relative path.
+With no configured roots, it stages the executable only and performs no
+neighbor-directory discovery.
+
+Roots that are duplicated or overlap are rejected, including a parent root and
+one of its descendants. Unknown keys, absolute paths, traversal, malformed
+mounts, and duplicate precedence values also fail validation. Within one root,
+case-folded duplicate guest file keys and file/directory key collisions refuse
+the index. The same file key may appear in separate roots; the first available
+file by declared precedence is opened, and unreadable files fail closed.
+
+For example, a synthetic profile can mount two sibling roots into the same
+guest namespace:
+
+```json
+"loose_content_roots": [
+  {"root": "assets_a", "mount": "data", "precedence": 10},
+  {"root": "assets_b", "mount": "data", "precedence": 20}
+]
+```
+
+The private flagship manifest expresses its roots with these same typed entries;
+its local manifest and inputs remain outside this repository. A manifest that
+omits `loose_content_roots` still loads and normalizes to an empty list. That is
+the explicit migration default: no neighboring-directory discovery occurs, so
+profiles that need extra roots must add the field before expecting those files
+to resolve. The named runtime boundary is **loose-content root binding — in the
+works ([#289](https://github.com/Jstar269/nakagawa-recomp/issues/289))**; the
+private flagship parity route has not been established by public fixtures.
+
+For a previous layout with `filesystem.data_root` at
+`<something>/USRDIR/xbdata` or
+`<something>/USRDIR/xbdata_extracted`, the declaration below recreates the
+former parent walk. It contributes files such as `data/sound/menu.csv` at
+their original guest paths, skips the primary data-root directory while
+walking the parent, and keeps primary files ahead of duplicate loose files:
+
+```json
+"loose_content_roots": [
+  {"root": ".", "mount": "", "precedence": 0}
+]
+```
+
+The old inference activated only when the parent directory was `USRDIR` and
+the primary root was named `xbdata` or `xbdata_extracted`; it indexed the
+primary root, then walked the parent while skipping that primary child. The
+asset index sorted equal keys by host path, and the unqualified lookup selected
+the last unqualified record. In this layout the primary-root path sorts after
+the adjacent `data/...` path and wins. The new binding states that priority
+directly, with all loose roots ranked after the primary root.
+
 A retail disc may set `disc.require_local_compatibility_record` when its
 revision needs an explicit local qualification. That switch contains no retail
 hashes: the user's package builder records exact executable/module inputs under

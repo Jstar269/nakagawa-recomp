@@ -1115,6 +1115,7 @@ class TitleDiagnosticContext:
     module_dir: Path | None
     psp_header_path: Path | None
     data_root: Path | None
+    has_loose_content_roots: bool
     disc_image: Path | None
     required_modules: tuple[str, ...]
     requires_game_elf: bool
@@ -1134,6 +1135,40 @@ def _safe_manifest_path(root: Path, value: object) -> Path | None:
     if not isinstance(value, str) or not _MANIFEST_PATH_RE.fullmatch(value):
         return None
     return root.joinpath(*value.split("/"))
+
+
+def _has_loose_files_beside_data_root(data_root: Path, limit: int = 100_000) -> bool:
+    """Check for bounded regular files beside a manifest data root.
+
+    The data root itself is excluded; the previous generic walk served other
+    files under its parent. Symlinks are neither followed nor counted.
+    """
+    try:
+        absolute_root = Path(os.path.abspath(os.fspath(data_root)))
+        parent = absolute_root.parent
+        root_path = os.path.normcase(os.fspath(absolute_root))
+        pending = [parent]
+        scanned = 0
+        while pending and scanned < limit:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    scanned += 1
+                    if scanned > limit:
+                        return False
+                    entry_path = Path(entry.path)
+                    try:
+                        if os.path.normcase(os.path.abspath(os.fspath(entry_path))) == root_path:
+                            continue
+                        if entry.is_file(follow_symlinks=False):
+                            return True
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry_path)
+                    except OSError:
+                        continue
+    except OSError:
+        return False
+    return False
 
 
 def _manifest_mapping(
@@ -1191,6 +1226,8 @@ def title_diagnostic_context(
     declared_module_dir = _safe_manifest_path(root, filesystem.get("module_dir"))
     declared_psp_header = _safe_manifest_path(root, filesystem.get("psp_header"))
     declared_disc_image = _safe_manifest_path(root, filesystem.get("disc_image"))
+    raw_loose_roots = filesystem.get("loose_content_roots")
+    has_loose_content_roots = isinstance(raw_loose_roots, list) and bool(raw_loose_roots)
 
     data_root = declared_data_root
     module_dir = declared_module_dir
@@ -1234,6 +1271,7 @@ def title_diagnostic_context(
         module_dir=module_dir,
         psp_header_path=psp_header,
         data_root=data_root,
+        has_loose_content_roots=has_loose_content_roots,
         disc_image=declared_disc_image,
         required_modules=tuple(required_modules),
         requires_game_elf=True,
@@ -1360,6 +1398,21 @@ def check_private_inputs(
                     )
 
     if need_assets and context.requires_assets:
+        manifest_data_root = context.data_root
+        if (
+            manifest_data_root is not None
+            and manifest_data_root.is_dir()
+            and not context.has_loose_content_roots
+            and _has_loose_files_beside_data_root(manifest_data_root)
+        ):
+            report.warn(
+                "MIGRATE_LOOSE_CONTENT_ROOTS",
+                "Loose files beside the manifest data root need filesystem.loose_content_roots (#289 is in the works)",
+                path=manifest_data_root.parent,
+                remediation=(
+                    "Declare each loose-content root in filesystem.loose_content_roots so the runtime can bind it explicitly."
+                ),
+            )
         sr_dataroot = os.environ.get("SR_DATAROOT")
         if sr_dataroot:
             data_path = Path(sr_dataroot)

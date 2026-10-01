@@ -105,6 +105,66 @@ static bool launch_find_existing_directory(const char *base, const char *relativ
            launch_store_existing(candidate, true, out_path, out_size);
 }
 
+static bool launch_parent_directory(const char *path, char *out_path, size_t out_size) {
+    if (!path || !path[0] || !out_path || out_size == 0) return false;
+    size_t len = strlen(path);
+    if (len >= out_size) return false;
+    memcpy(out_path, path, len + 1u);
+    while (len > 1u && (out_path[len - 1u] == '/' || out_path[len - 1u] == '\\')) {
+        if (len == 3u && out_path[1] == ':') break;
+        out_path[--len] = '\0';
+    }
+    size_t split = len;
+    while (split > 0u && out_path[split - 1u] != '/' && out_path[split - 1u] != '\\') split--;
+    if (split == 0u) return false;
+    if (split == 1u || (split == 3u && out_path[1] == ':')) {
+        out_path[split] = '\0';
+    } else {
+        out_path[split - 1u] = '\0';
+    }
+    return true;
+}
+
+/* Resolve validated roots relative to the parent of SR_DATAROOT and encode the
+ * narrow process transport consumed by HLE. Newlines and tabs cannot occur in
+ * valid Windows paths or manifest paths, so they delimit this bounded format. */
+static bool launch_resolve_loose_content_roots(
+    const NkTitleEntry *entry,
+    const char *data_root,
+    char *out_value,
+    size_t out_size
+) {
+    if (!out_value || out_size == 0) return false;
+    out_value[0] = '\0';
+    if (!entry || entry->loose_content_root_count == 0) return true;
+    if (!entry->loose_content_roots || entry->loose_content_root_count < 0 ||
+        entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
+        !data_root || !data_root[0]) return false;
+
+    char anchor[NK_MAX_PATH * 2];
+    if (!launch_parent_directory(data_root, anchor, sizeof(anchor))) return false;
+    size_t used = 0;
+    for (int i = 0; i < entry->loose_content_root_count; i++) {
+        const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
+        if (!binding->root || !binding->mount || binding->precedence > 65535u) return false;
+        char candidate[NK_MAX_PATH * 2];
+        char absolute[NK_MAX_PATH * 2];
+        if (strcmp(binding->root, ".") == 0) {
+            safe_copy_path(candidate, sizeof(candidate), anchor);
+        } else if (!launch_join_path(anchor, binding->root, candidate, sizeof(candidate))) {
+            return false;
+        }
+        if (!launch_store_existing(candidate, true, absolute, sizeof(absolute))) return false;
+        if (strchr(absolute, '\t') || strchr(absolute, '\n') || strchr(binding->mount, '\t') ||
+            strchr(binding->mount, '\n')) return false;
+        int written = snprintf(out_value + used, out_size - used, "%s\t%s\t%u\n",
+                               absolute, binding->mount, (unsigned)binding->precedence);
+        if (written < 0 || (size_t)written >= out_size - used) return false;
+        used += (size_t)written;
+    }
+    return true;
+}
+
 /* Confirm a directory exists and can actually be written to.
  *
  * nk_platform_dir_exists answers a different question: a directory under
@@ -871,22 +931,10 @@ NkResult nk_launch_prepare_session(
     const char *asset_root = session->package_launch
         ? session->user_data_root : session->working_directory;
     if (game->assets_staged && game->prepared_root[0]) {
-        /* Native staging deliberately writes the decoded XB tree below
-         * prepared_root/xbdata. Prefer a manifest-relative root when it is
-         * present (useful for future staged layouts), then the canonical
-         * native staging names. */
+        /* The manifest owns the staged data-root name; generic launch code
+         * does not guess a title's directory layout. */
         if (entry && entry->data_root) {
             launch_find_existing_directory(game->prepared_root, entry->data_root,
-                                           session->dataroot_path,
-                                           sizeof(session->dataroot_path));
-        }
-        if (session->dataroot_path[0] == '\0') {
-            launch_find_existing_directory(game->prepared_root, "xbdata",
-                                           session->dataroot_path,
-                                           sizeof(session->dataroot_path));
-        }
-        if (session->dataroot_path[0] == '\0') {
-            launch_find_existing_directory(game->prepared_root, "xbdata_extracted",
                                            session->dataroot_path,
                                            sizeof(session->dataroot_path));
         }
@@ -907,19 +955,29 @@ NkResult nk_launch_prepare_session(
         }
     }
     if (session->dataroot_path[0] == '\0') {
-        /* Check alongside ISO directory: EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted */
-        char iso_dir[NK_MAX_PATH];
-        safe_copy_path(iso_dir, sizeof(iso_dir), game->iso_path);
-        char *s = strstr(iso_dir, "place_game_here");
-        if (s) {
-            s[15] = '\0'; /* truncate to place_game_here */
-            char cand_data[NK_MAX_PATH * 2];
-            int w = snprintf(cand_data, sizeof(cand_data), "%s%cEXTRACTED%cPSP_GAME%cUSRDIR%cxbdata_extracted",
-                             iso_dir, sep, sep, sep, sep);
-            if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
-                safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), cand_data);
-            }
+        /* A declared data_root may also be staged beside the source image's
+         * extracted PSP user directory. The title-specific final component
+         * comes only from the validated manifest. */
+        char iso_dir[NK_MAX_PATH * 2];
+        char usrdir[NK_MAX_PATH * 2];
+        char cand_data[NK_MAX_PATH * 3];
+        if (entry && entry->data_root && game->iso_path[0] &&
+            launch_parent_directory(game->iso_path, iso_dir, sizeof(iso_dir)) &&
+            launch_join_path(iso_dir, "EXTRACTED/PSP_GAME/USRDIR",
+                             usrdir, sizeof(usrdir)) &&
+            launch_join_path(usrdir, entry->data_root,
+                             cand_data, sizeof(cand_data))) {
+            launch_store_existing(cand_data, true, session->dataroot_path,
+                                 sizeof(session->dataroot_path));
         }
+    }
+
+    if (!launch_resolve_loose_content_roots(entry, session->dataroot_path,
+                                            session->loose_content_roots,
+                                            sizeof(session->loose_content_roots))) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "Loose-content root binding #289 (in the works) could not be resolved.");
+        return NK_ERROR_FILE_NOT_FOUND;
     }
 
     /* 5. Resolve font directory: check user-data cache (<user_data>/fonts/v1), falling back to <asset_root>/font */
@@ -1104,6 +1162,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_scale[32];
     char env_vsync[32];
     char env_dataroot[NK_MAX_PATH + 16];
+    char env_loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY + 32];
     char env_font[NK_MAX_PATH + 16];
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
@@ -1151,6 +1210,11 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         snprintf(env_dataroot, sizeof(env_dataroot), "SR_DATAROOT=%s", session->dataroot_path);
         envp[env_count++] = env_dataroot;
     }
+    /* Empty explicitly masks any inherited title's bindings in a generic or
+       legacy launch. Each row is host-path<TAB>mount<TAB>precedence<NEWLINE>. */
+    snprintf(env_loose_content_roots, sizeof(env_loose_content_roots),
+             "SR_LOOSE_CONTENT_ROOTS=%s", session->loose_content_roots);
+    envp[env_count++] = env_loose_content_roots;
     if (session->font_dir[0]) {
         snprintf(env_font, sizeof(env_font), "SR_FONTDIR=%s", session->font_dir);
         envp[env_count++] = env_font;

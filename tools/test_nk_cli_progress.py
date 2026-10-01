@@ -60,6 +60,7 @@ class NkCliProgressTests(unittest.TestCase):
                 with (
                     patch.object(nk_cli, "ROOT", cli_root),
                     patch.object(nk_cli.subprocess, "Popen") as popen,
+                    patch.dict(os.environ, {"SR_LOOSE_CONTENT_ROOTS": "inherited-root"}),
                     redirect_stdout(stdout),
                     redirect_stderr(stderr),
                 ):
@@ -70,6 +71,19 @@ class NkCliProgressTests(unittest.TestCase):
         popen.assert_not_called()
         self.assertEqual(result, 0, stderr.getvalue())
         self.assertIn(f"Executable: {executable}", stdout.getvalue())
+        self.assertIn("LOOSE_ROOTS: \n", stdout.getvalue())
+
+    def test_bringup_direct_launch_binds_manifest_loose_roots(self) -> None:
+        import inspect
+
+        import nk_cli
+
+        source = inspect.getsource(nk_cli.cmd_bringup)
+        self.assertIn('env.pop("SR_DATAROOT", None)', source)
+        self.assertIn('env.pop("SR_LOOSE_CONTENT_ROOTS", None)', source)
+        self.assertIn('title_manifest.encode_loose_content_roots(manifest, data_root)', source)
+        self.assertIn('"SR_DATAROOT": str(data_root)', source)
+        self.assertIn('"SR_LOOSE_CONTENT_ROOTS": loose_roots', source)
 
     def test_progress_json_invalid_disc_id(self) -> None:
         """Verify --progress-json reports failure for an invalid disc ID format."""

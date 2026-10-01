@@ -49,6 +49,7 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
 
 #define MAX_MODULES 32
 #define MAX_COMPAT_DISC_IDS 16
+#define MAX_LOOSE_CONTENT_ROOTS 16
 #define NK_MANIFEST_MAX_OVERLAYS 8
 
 /* The window a guest module's base must lie in: its code and data are both placed there, so a
@@ -75,6 +76,10 @@ typedef struct {
     uint32_t run_entry;
     char bss_metadata_source[16];
     char data_root[257];
+    char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241];
+    char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241];
+    NkLooseContentRoot loose_roots[MAX_LOOSE_CONTENT_ROOTS];
+    size_t loose_root_count;
     char memory_stick_root[129];
     char hle_profile[65];
     char codegen_profile[65];
@@ -272,6 +277,21 @@ static bool is_valid_portable_path(const char *s) {
     return is_valid_relative_path(s, false);
 }
 
+static bool is_valid_loose_root_path(const char *s) {
+    return s && strcmp(s, ".") == 0 ? true : is_valid_portable_path(s);
+}
+
+static bool loose_root_paths_overlap(const char *a, const char *b) {
+    if (strcmp(a, ".") == 0 || strcmp(b, ".") == 0) return true;
+    size_t a_len = strlen(a), b_len = strlen(b);
+    size_t common = a_len < b_len ? a_len : b_len;
+    for (size_t i = 0; i < common; i++) {
+        if (nk_ascii_lower((unsigned char)a[i]) != nk_ascii_lower((unsigned char)b[i]))
+            return false;
+    }
+    return a_len == b_len || (a_len < b_len ? b[a_len] == '/' : a[b_len] == '/');
+}
+
 /* Host runtime package artifacts additionally allow '+' in path components
  * because GCC/MSYS2 runtime library names contain it (libstdc++-6.dll,
  * libc++.so). Mirrors _safe_relative() in tools/nk_core/package_cache.py, which
@@ -442,6 +462,11 @@ bool nk_title_manifest_parse_buffer(
 
     JsonNode *root = json_parse(json_str, json_len, error_buf, error_buf_len);
     if (!root) return false;
+
+    char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
+    char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
+    uint32_t loose_root_precedence[MAX_LOOSE_CONTENT_ROOTS] = {0};
+    size_t loose_root_count = 0;
 
     /* 1. Root keys validation */
     static const char * const allowed_root_keys[] = {
@@ -842,7 +867,7 @@ bool nk_title_manifest_parse_buffer(
      * (issue #196 Phase 4): a manifest declares where its private inputs live.
      * The runtime consumes only the required runtime-filesystem contract today;
      * the optional declarations are accepted (and validated) for tool parity. */
-    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", NULL};
+    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", "loose_content_roots", NULL};
     static const char * const required_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", NULL};
     if (!check_object_keys(fs_node, "$.filesystem", allowed_fs_keys, required_fs_keys, error_buf, error_buf_len)) {
         json_free(root);
@@ -911,6 +936,104 @@ bool nk_title_manifest_parse_buffer(
                 if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: duplicate device prefix", p);
                 json_free(root);
                 return false;
+            }
+        }
+    }
+
+    JsonNode *loose_node = obj_get(fs_node, "loose_content_roots");
+    if (loose_node) {
+        if (loose_node->type != JSON_ARRAY) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.filesystem.loose_content_roots: must be an array");
+            json_free(root);
+            return false;
+        }
+        if (loose_node->u.arr.count > MAX_LOOSE_CONTENT_ROOTS) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.filesystem.loose_content_roots: contains %zu items; maximum is %d",
+                                    loose_node->u.arr.count, MAX_LOOSE_CONTENT_ROOTS);
+            json_free(root);
+            return false;
+        }
+        static const char * const allowed_root_keys[] = {"root", "mount", "precedence", NULL};
+        static const char * const required_root_keys[] = {"root", "mount", "precedence", NULL};
+        for (size_t i = 0; i < loose_node->u.arr.count; i++) {
+            char item_path[96];
+            snprintf(item_path, sizeof(item_path), "$.filesystem.loose_content_roots[%zu]", i);
+            JsonNode *item = loose_node->u.arr.items[i];
+            if (!check_object_keys(item, item_path, allowed_root_keys,
+                                   required_root_keys, error_buf, error_buf_len)) {
+                json_free(root);
+                return false;
+            }
+            JsonNode *root_path = obj_get(item, "root");
+            JsonNode *mount = obj_get(item, "mount");
+            JsonNode *priority = obj_get(item, "precedence");
+            if (!root_path || root_path->type != JSON_STRING ||
+                strlen(root_path->u.str_val) > 240 ||
+                !is_valid_loose_root_path(root_path->u.str_val)) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.root: must be '.' or a portable relative POSIX-style path without traversal",
+                    item_path);
+                json_free(root);
+                return false;
+            }
+            if (!mount || mount->type != JSON_STRING || strlen(mount->u.str_val) > 240 ||
+                (mount->u.str_val[0] && !is_valid_portable_path(mount->u.str_val))) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.mount: must be empty or a portable relative POSIX-style path",
+                    item_path);
+                json_free(root);
+                return false;
+            }
+            uint32_t precedence = 0;
+            if (!parse_uint32(priority, &precedence) || precedence > 65535u) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.precedence: must be an integer in range 0..65535", item_path);
+                json_free(root);
+                return false;
+            }
+            for (size_t previous = 0; previous < i; previous++) {
+                if (loose_root_precedence[previous] == precedence) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.precedence: duplicate loose-content precedence", item_path);
+                    json_free(root);
+                    return false;
+                }
+                if (nk_ascii_casecmp(loose_root_paths[previous], root_path->u.str_val) == 0) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.root: duplicate loose-content root", item_path);
+                    json_free(root);
+                    return false;
+                }
+                if (loose_root_paths_overlap(loose_root_paths[previous], root_path->u.str_val)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.root: overlapping loose-content roots", item_path);
+                    json_free(root);
+                    return false;
+                }
+            }
+            snprintf(loose_root_paths[i], sizeof(loose_root_paths[i]), "%s", root_path->u.str_val);
+            snprintf(loose_root_mounts[i], sizeof(loose_root_mounts[i]), "%s", mount->u.str_val);
+            loose_root_precedence[i] = precedence;
+            loose_root_count++;
+        }
+        /* Array order is canonicalized by numeric precedence, so every consumer
+         * applies the same first-wins duplicate-file rule. */
+        for (size_t i = 1; i < loose_root_count; i++) {
+            size_t j = i;
+            while (j > 0 && loose_root_precedence[j] < loose_root_precedence[j - 1]) {
+                char path_swap[241], mount_swap[241];
+                memcpy(path_swap, loose_root_paths[j], sizeof(path_swap));
+                memcpy(loose_root_paths[j], loose_root_paths[j - 1], sizeof(path_swap));
+                memcpy(loose_root_paths[j - 1], path_swap, sizeof(path_swap));
+                memcpy(mount_swap, loose_root_mounts[j], sizeof(mount_swap));
+                memcpy(loose_root_mounts[j], loose_root_mounts[j - 1], sizeof(mount_swap));
+                memcpy(loose_root_mounts[j - 1], mount_swap, sizeof(mount_swap));
+                uint32_t priority_swap = loose_root_precedence[j];
+                loose_root_precedence[j] = loose_root_precedence[j - 1];
+                loose_root_precedence[j - 1] = priority_swap;
+                j--;
             }
         }
     }
@@ -1209,6 +1332,16 @@ bool nk_title_manifest_parse_buffer(
     temp.run_entry = fallback_entry ? fallback_entry : exe_entry;
     snprintf(temp.bss_metadata_source, sizeof(temp.bss_metadata_source), "%s", bss_src);
     snprintf(temp.data_root, sizeof(temp.data_root), "%s", dr_node->u.str_val);
+    temp.loose_root_count = loose_root_count;
+    for (size_t i = 0; i < loose_root_count; i++) {
+        snprintf(temp.loose_root_paths[i], sizeof(temp.loose_root_paths[i]), "%s",
+                 loose_root_paths[i]);
+        snprintf(temp.loose_root_mounts[i], sizeof(temp.loose_root_mounts[i]), "%s",
+                 loose_root_mounts[i]);
+        temp.loose_roots[i].root = temp.loose_root_paths[i];
+        temp.loose_roots[i].mount = temp.loose_root_mounts[i];
+        temp.loose_roots[i].precedence = loose_root_precedence[i];
+    }
     snprintf(temp.memory_stick_root, sizeof(temp.memory_stick_root), "%s", ms_node->u.str_val);
     snprintf(temp.hle_profile, sizeof(temp.hle_profile), "%s", hle_node->u.str_val);
 
@@ -1248,6 +1381,8 @@ bool nk_title_manifest_parse_buffer(
     temp.entry.run_entry = temp.run_entry;
     temp.entry.bss_metadata_source = temp.bss_metadata_source;
     temp.entry.data_root = temp.data_root;
+    temp.entry.loose_content_roots = temp.loose_root_count ? temp.loose_roots : NULL;
+    temp.entry.loose_content_root_count = (int)temp.loose_root_count;
     temp.entry.memory_stick_root = temp.memory_stick_root;
     temp.entry.hle_profile = temp.hle_profile;
     temp.entry.codegen_profile = temp.codegen_profile;
@@ -1421,6 +1556,12 @@ bool nk_title_manifest_parse_buffer(
     dest->entry.run_entry = dest->run_entry;
     dest->entry.bss_metadata_source = dest->bss_metadata_source;
     dest->entry.data_root = dest->data_root;
+    for (size_t i = 0; i < dest->loose_root_count; i++) {
+        dest->loose_roots[i].root = dest->loose_root_paths[i];
+        dest->loose_roots[i].mount = dest->loose_root_mounts[i];
+    }
+    dest->entry.loose_content_roots = dest->loose_root_count ? dest->loose_roots : NULL;
+    dest->entry.loose_content_root_count = (int)dest->loose_root_count;
     dest->entry.memory_stick_root = dest->memory_stick_root;
     dest->entry.hle_profile = dest->hle_profile;
     dest->entry.codegen_profile = dest->codegen_profile;

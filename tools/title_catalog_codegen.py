@@ -269,6 +269,7 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "#include <stdint.h>",
         "",
         "#define NK_TITLE_CATALOG_SCHEMA_VERSION 1",
+        "#define NK_TITLE_MAX_LOOSE_CONTENT_ROOTS 16",
         f'#define NK_TITLE_CATALOG_DIGEST "{digest}"',
         "",
         "typedef enum {",
@@ -284,6 +285,12 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "} NkModuleDefinition;",
         "",
         "typedef struct {",
+        "    const char *root;       /* Relative to the resolved data root's parent; '.' names that parent. */",
+        "    const char *mount;      /* Guest-relative prefix; empty mounts at the namespace root. */",
+        "    uint32_t precedence;   /* Lower values win duplicate guest-file keys. */",
+        "} NkLooseContentRoot;",
+        "",
+        "typedef struct {",
         "    const char *id;                     /* e.g. \"synthetic-allegrex-v1\" */",
         "    const char *game_name;              /* portable build/launch name */",
         "    const char *display_name;",
@@ -295,6 +302,8 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "    uint32_t run_entry;                 /* where a run starts: runtime_bindings.fallback_entry when declared, else executable_entry (title_codegen_plan._resolve_run_entry) */",
         "    const char *bss_metadata_source;",
         "    const char *data_root;",
+        "    const NkLooseContentRoot *loose_content_roots;",
+        "    int loose_content_root_count;",
         "    const char *memory_stick_root;",
         "    const char *hle_profile;",
         "    const char *codegen_profile;",
@@ -406,6 +415,15 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
             lines.append("    NULL")
             lines.append("};")
             lines.append("")
+        loose_roots = t["filesystem"].get("loose_content_roots", [])
+        if loose_roots:
+            lines.append(f"static const NkLooseContentRoot s_loose_roots_title_{idx}[] = {{")
+            for root in loose_roots:
+                root_path = _c_string_escape(root["root"])
+                mount = _c_string_escape(root["mount"])
+                lines.append(f'    {{ "{root_path}", "{mount}", {root["precedence"]}U }},')
+            lines.append("};")
+            lines.append("")
 
     # Emit main public catalog array
     lines.append(f"const int nk_title_catalog_count = {len(titles)};")
@@ -445,6 +463,8 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
         num_mods = len(t.get("modules", []))
         mod_ref = f"s_modules_title_{idx}" if num_mods > 0 else "NULL"
         compat_ref = f"s_compat_discs_{idx}" if t.get("disc", {}).get("compatible_revisions") else "NULL"
+        loose_roots = t["filesystem"].get("loose_content_roots", [])
+        loose_roots_ref = f"s_loose_roots_title_{idx}" if loose_roots else "NULL"
 
         lines.append("    {")
         lines.append(f'        "{t_id}",')
@@ -458,6 +478,8 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
         lines.append(f"        0x{run_entry:08x}U,")
         lines.append(f'        "{bss_source}",')
         lines.append(f'        "{data_root}",')
+        lines.append(f"        {loose_roots_ref},")
+        lines.append(f"        {len(loose_roots)},")
         lines.append(f'        "{ms_root}",')
         lines.append(f'        "{hle}",')
         lines.append(f'        "{codegen}",')

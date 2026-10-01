@@ -219,6 +219,60 @@ class PrivateInputTests(unittest.TestCase):
             asset = [result for result in report.results if result.code == "INPUT_XB_DATA"][-1]
             self.assertEqual(asset.status, "FAIL")
 
+    def test_parent_loose_files_warn_when_manifest_has_no_migration_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "content" / "archive"
+            data_root.mkdir(parents=True)
+            (data_root / "asset.bin").write_bytes(b"synthetic-primary")
+            loose_file = root / "content" / "data" / "sound" / "menu.csv"
+            loose_file.parent.mkdir(parents=True)
+            loose_file.write_bytes(b"synthetic-loose")
+            manifest = {
+                "kind": "synthetic",
+                "filesystem": {"data_root": "content/archive"},
+            }
+            report = nk_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": ""}):
+                self.check_inputs(
+                    root,
+                    report,
+                    need_iso=False,
+                    need_assets=True,
+                    context_manifest=manifest,
+                )
+            warnings = [result for result in report.results if result.code == "MIGRATE_LOOSE_CONTENT_ROOTS"]
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(warnings[0].status, "WARN")
+            self.assertIn("#289 is in the works", warnings[0].summary)
+
+    def test_parent_loose_migration_binding_suppresses_doctor_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "content" / "archive"
+            data_root.mkdir(parents=True)
+            (data_root / "asset.bin").write_bytes(b"synthetic-primary")
+            loose_file = root / "content" / "data" / "sound" / "menu.csv"
+            loose_file.parent.mkdir(parents=True)
+            loose_file.write_bytes(b"synthetic-loose")
+            manifest = {
+                "kind": "synthetic",
+                "filesystem": {
+                    "data_root": "content/archive",
+                    "loose_content_roots": [{"root": ".", "mount": "", "precedence": 0}],
+                },
+            }
+            report = nk_doctor.Report(root, "inputs")
+            with mock.patch.dict(os.environ, {"SR_DATAROOT": ""}):
+                self.check_inputs(
+                    root,
+                    report,
+                    need_iso=False,
+                    need_assets=True,
+                    context_manifest=manifest,
+                )
+            self.assertFalse(any(result.code == "MIGRATE_LOOSE_CONTENT_ROOTS" for result in report.results))
+
     def test_expected_disc_id_is_retired_from_doctor_core(self) -> None:
         self.assertFalse(
             hasattr(nk_doctor_core, "EXPECTED_DISC_ID"),

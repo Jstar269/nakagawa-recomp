@@ -7,6 +7,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -283,6 +284,132 @@ class TitleManifestTests(unittest.TestCase):
                 value["filesystem"]["data_root"] = bad_path
                 with self.assertRaises(title_manifest.TitleManifestError):
                     title_manifest.validate_manifest(value)
+
+    def test_loose_content_roots_validate_paths_mounts_precedence_and_migration_default(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        filesystem = value["filesystem"]
+        self.assertNotIn("loose_content_roots", filesystem)
+        self.assertEqual(title_manifest.validate_manifest(value)["filesystem"]["loose_content_roots"], [])
+
+        filesystem["loose_content_roots"] = [
+            {"root": "second", "mount": "data", "precedence": 20},
+            {"root": "first", "mount": "data", "precedence": 10},
+        ]
+        normalized = title_manifest.validate_manifest(value)
+        self.assertEqual(normalized["filesystem"]["loose_content_roots"], [
+            {"root": "first", "mount": "data", "precedence": 10},
+            {"root": "second", "mount": "data", "precedence": 20},
+        ])
+
+        invalid = [
+            ([{"root": "../outside", "mount": "", "precedence": 1}], "components"),
+            ([{"root": "/absolute", "mount": "", "precedence": 1}], "portable relative"),
+            ([{"root": "same", "mount": "", "precedence": 1},
+              {"root": "SAME", "mount": "other", "precedence": 2}], "duplicate loose-content root"),
+            ([{"root": "parent", "mount": "", "precedence": 1},
+              {"root": "parent/child", "mount": "other", "precedence": 2}], "overlapping loose-content roots"),
+            ([{"root": "one", "mount": "", "precedence": 1},
+              {"root": "two", "mount": "", "precedence": 1}], "duplicate loose-content precedence"),
+            ([{"root": "one", "mount": "../escape", "precedence": 1}], "components"),
+            ([{"root": "one", "mount": "", "precedence": 1, "fallback": True}], "unknown field"),
+        ]
+        for roots, error in invalid:
+            with self.subTest(roots=roots):
+                candidate = copy.deepcopy(value)
+                candidate["filesystem"]["loose_content_roots"] = roots
+                with self.assertRaisesRegex(title_manifest.TitleManifestError, error):
+                    title_manifest.validate_manifest(candidate)
+
+        candidate = copy.deepcopy(value)
+        candidate["filesystem"]["loose_content_roots"] = [{
+            "root": ".", "mount": "", "precedence": 1,
+        }]
+        self.assertEqual(
+            title_manifest.validate_manifest(candidate)["filesystem"]["loose_content_roots"][0]["root"],
+            ".",
+        )
+        candidate["filesystem"]["loose_content_roots"].append({
+            "root": "nested", "mount": "", "precedence": 2,
+        })
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "overlapping loose-content roots"):
+            title_manifest.validate_manifest(candidate)
+
+    def test_migration_root_example_encodes_and_resolves_old_host_path(self) -> None:
+        manifest = copy.deepcopy(self.fixture)
+        manifest["filesystem"]["data_root"] = "content/archive"
+        manifest["filesystem"]["loose_content_roots"] = [
+            {"root": ".", "mount": "", "precedence": 0},
+        ]
+        validated = title_manifest.validate_manifest(manifest)
+
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            data_root = base / "content" / "archive"
+            data_root.mkdir(parents=True)
+            loose_file = base / "content" / "data" / "sound" / "menu.csv"
+            loose_file.parent.mkdir(parents=True)
+            loose_file.write_bytes(b"synthetic loose file")
+
+            encoded = title_manifest.encode_loose_content_roots(validated, data_root)
+            host_root, mount, precedence = encoded.rstrip("\n").split("\t")
+            self.assertEqual(Path(host_root), data_root.parent.resolve())
+            self.assertEqual((mount, precedence), ("", "0"))
+
+            guest_path = "host0:data/sound/menu.csv"
+            relative_key = guest_path.removeprefix("host0:")
+            self.assertEqual((Path(host_root) / relative_key).read_bytes(),
+                             b"synthetic loose file")
+
+    def test_loose_content_encoder_rejects_missing_declared_roots(self) -> None:
+        manifest = copy.deepcopy(self.fixture)
+        manifest["filesystem"]["loose_content_roots"] = [
+            {"root": "missing", "mount": "data", "precedence": 1},
+        ]
+        validated = title_manifest.validate_manifest(manifest)
+        with tempfile.TemporaryDirectory() as temp:
+            data_root = Path(temp) / "archive"
+            data_root.mkdir()
+            with self.assertRaisesRegex(
+                title_manifest.TitleManifestError,
+                "Loose-content root binding #289.*resolved",
+            ):
+                title_manifest.encode_loose_content_roots(validated, data_root)
+
+    def test_generic_runtime_sources_have_no_flagship_data_directory_literals(self) -> None:
+        docs = (ROOT / "docs" / "TITLE_PROFILE_ARCHITECTURE.md").read_text(encoding="utf-8")
+        section = re.search(
+            r"### Typed loose-content roots.*?```json\s*(.*?)```",
+            docs,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(section, "manifest documentation must retain its typed-root example")
+        documented_roots = json.loads("{" + section.group(1) + "}")[
+            "loose_content_roots"
+        ]
+        forbidden = {"xbdata_extracted", "xbdata"}
+        forbidden.update(root["root"] for root in documented_roots if root["root"] != ".")
+        source_suffixes = {".c", ".h", ".cc", ".cpp", ".inc", ".inl"}
+        sources = [
+            path
+            for directory in (ROOT / "src" / "rt", ROOT / "src" / "core")
+            for path in directory.rglob("*")
+            if path.is_file() and path.suffix.lower() in source_suffixes
+        ]
+        hits = [(path.relative_to(ROOT).as_posix(), token)
+                for path in sources for token in forbidden
+                if token.casefold() in path.read_text(encoding="utf-8").casefold()]
+        self.assertEqual(hits, [], f"title filesystem literals leaked into generic runtime: {hits}")
+
+    def test_migration_documentation_uses_the_parent_root_contract(self) -> None:
+        docs = (ROOT / "docs" / "TITLE_PROFILE_ARCHITECTURE.md").read_text(encoding="utf-8")
+        section = re.search(
+            r"For a previous layout.*?```json\s*(.*?)```",
+            docs,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(section)
+        roots = json.loads("{" + section.group(1) + "}")["loose_content_roots"]
+        self.assertEqual(roots, [{"root": ".", "mount": "", "precedence": 0}])
 
     def test_declared_executable_input_uses_the_make_safe_rule(self) -> None:
         value = copy.deepcopy(self.fixture)

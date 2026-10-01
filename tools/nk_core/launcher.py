@@ -297,7 +297,21 @@ class RuntimeLauncher:
             env["PSP_ISO"] = iso_path
         env["SR_FPS_CAP"] = str(fps_cap)
         env["SR_GPU_GE"] = "0" if software_render else ("1" if gpu_ge else "0")
-        env["SR_DATAROOT"] = str(g_dir / "extracted")
+        env.pop("SR_DATAROOT", None)
+        data_root = g_dir / "extracted"
+        env["SR_DATAROOT"] = str(data_root)
+        env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+        try:
+            import title_manifest
+
+            env["SR_LOOSE_CONTENT_ROOTS"] = title_manifest.encode_loose_content_roots(
+                {"filesystem": {
+                    "loose_content_roots": list(title_profile.loose_content_roots),
+                }},
+                data_root,
+            )
+        except (OSError, ValueError) as exc:
+            raise RuntimeLaunchError(str(exc)) from exc
         from .fonts import resolve_font_directory
 
         resolved_font_dir = resolve_font_directory(fallback_root=self.repo_root)

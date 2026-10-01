@@ -103,6 +103,80 @@ class TitleManifestParityTests(unittest.TestCase):
             raw = json.loads(mf.read_text(encoding="utf-8"))
             self.assertIn(f"id={raw['id']}", c_out)
 
+    def test_loose_root_bindings_and_failures_have_native_python_parity(self):
+        base = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
+        base["filesystem"]["loose_content_roots"] = [
+            {"root": "second", "mount": "data", "precedence": 20},
+            {"root": "first", "mount": "data", "precedence": 10},
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "roots.json"
+            path.write_text(json.dumps(base), encoding="utf-8")
+            py_ok, _ = self._run_python(path)
+            c_ok, _ = self._run_native(path, allow_override=True)
+            self.assertTrue(py_ok)
+            self.assertTrue(c_ok)
+
+            failures = [
+                ([{"root": "../outside", "mount": "", "precedence": 1}], "root"),
+                ([{"root": "same", "mount": "", "precedence": 1},
+                  {"root": "SAME", "mount": "other", "precedence": 2}], "duplicate"),
+                ([{"root": "parent", "mount": "", "precedence": 1},
+                  {"root": "parent/child", "mount": "", "precedence": 2}], "overlap"),
+                ([{"root": "one", "mount": "", "precedence": 1},
+                  {"root": "two", "mount": "", "precedence": 1}], "precedence"),
+                ([{"root": "one", "mount": "", "precedence": 1, "guess": True}], "unknown"),
+            ]
+            for roots, _reason in failures:
+                with self.subTest(roots=roots):
+                    bad = json.loads(json.dumps(base))
+                    bad["filesystem"]["loose_content_roots"] = roots
+                    path.write_text(json.dumps(bad), encoding="utf-8")
+                    py_ok, py_out = self._run_python(path)
+                    c_ok, c_out = self._run_native(path, allow_override=True)
+                    self.assertFalse(py_ok, py_out)
+                    self.assertFalse(c_ok, c_out)
+                    self.assertIn("filesystem.loose_content_roots", py_out)
+                    self.assertIn("filesystem.loose_content_roots", c_out)
+
+    def test_python_and_nk_launch_encode_identical_loose_root_bytes(self):
+        manifest = json.loads(
+            (ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        manifest["id"] = "loose-encoder-parity-v1"
+        manifest["game_name"] = "loose-encoder-parity"
+        manifest["display_name"] = "Loose Encoder Parity"
+        manifest["filesystem"]["data_root"] = "content/archive"
+        manifest["filesystem"]["memory_stick_root"] = "save"
+        manifest["filesystem"]["loose_content_roots"] = [
+            {"root": "assets_a", "mount": "", "precedence": 10},
+            {"root": "assets_b", "mount": "data", "precedence": 20},
+        ]
+        validated = title_manifest.validate_manifest(manifest)
+
+        with tempfile.TemporaryDirectory(prefix="nk_loose_encoder_") as temporary:
+            base = Path(temporary)
+            data_root = base / "content" / "archive"
+            data_root.mkdir(parents=True)
+            (data_root.parent / "assets_a").mkdir()
+            (data_root.parent / "assets_b").mkdir()
+            manifest_path = base / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            output_path = base / "native-transport.bin"
+            result = subprocess.run(
+                [str(self.native_exe), "--launch-loose-roots", str(manifest_path),
+                 str(base), manifest["id"], str(output_path)],
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            native_bytes = output_path.read_bytes()
+            python_bytes = title_manifest.encode_loose_content_roots(
+                validated, data_root.resolve()
+            ).encode("utf-8")
+            self.assertEqual(native_bytes, python_bytes)
+
     def test_missing_required_fields_parity(self):
         """Both parsers must reject manifests missing required schema fields."""
         required = [
