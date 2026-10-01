@@ -255,8 +255,11 @@ class TestRegistryScope(unittest.TestCase):
         helper_nids = {nid for nid, _, _ in self.triples(self.conformance_helper())}
         self.assertGreaterEqual(len(helper_nids), 25, "registry helper is suspiciously small")
         body = self.init_body()
-        shared = body[: body.index("#ifdef SR_HLE_THREAD_SELFTEST")]
-        selftest = body[body.index("#ifdef SR_HLE_THREAD_SELFTEST"): body.index("#else")]
+        thread_selftest = body.index("#ifdef SR_HLE_THREAD_SELFTEST")
+        shared = body[:thread_selftest]
+        # The first #else belongs to whichever feature guard opens sr_hle_init
+        # (the MPEG media selftest), so look for the one after the ThreadMan guard.
+        selftest = body[thread_selftest: body.index("#else", thread_selftest)]
         called = set(re.findall(r"(hle_register_\w+)\(\);", shared + selftest))
         self.assertIn("hle_register_wait_conformance_handlers", called)
 
