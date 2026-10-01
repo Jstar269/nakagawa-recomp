@@ -10,7 +10,9 @@ pointers, raw memory dumps, screenshots, or retail/game-derived payloads.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Any, Iterable
 
@@ -714,6 +716,10 @@ def _schema_keyword_errors(schema: Any, path: str = "") -> list[tuple[str, str]]
         if isinstance(children, dict):
             for key, child in children.items():
                 errors.extend(_schema_keyword_errors(child, f"{path}/{name}/{key}"))
+    if "additionalProperties" in schema and not isinstance(schema["additionalProperties"], bool):
+        errors.append((path, "additionalProperties is enforced only in its boolean form"))
+    if "items" in schema and not isinstance(schema["items"], dict):
+        errors.append((path, "items is enforced only in its single-schema object form"))
     if isinstance(schema.get("items"), dict):
         errors.extend(_schema_keyword_errors(schema["items"], f"{path}/items"))
     return errors
@@ -855,16 +861,27 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
                     seen_positions.add((x, y))
     vertices = case.get("vertex_words")
     if isinstance(commands, list) and isinstance(vertices, list):
+        # Vertex words are consumed cumulatively by successive PRIM commands, so the
+        # words must divide evenly over the TOTAL vertex count (one vertex layout).
+        prim_counts: list[tuple[int, int]] = []
         for index, command in enumerate(commands):
             if isinstance(command, str) and command[2:4] == "04":
                 try:
                     count = int(command, 16) & 0xFFFF
                 except ValueError:
                     continue
-                if count == 0 or len(vertices) % count != 0:
-                    errors.append((f"{path}.command_words[{index}]",
-                                   f"PRIM vertex count {count} does not divide the "
-                                   f"{len(vertices)} vertex_words"))
+                if count == 0:
+                    errors.append((f"{path}.command_words[{index}]", "PRIM vertex count is zero"))
+                else:
+                    prim_counts.append((index, count))
+        total = sum(count for _, count in prim_counts)
+        if total and len(vertices) % total != 0:
+            first_index = prim_counts[0][0]
+            counts = ", ".join(str(count) for _, count in prim_counts)
+            label = (f"PRIM vertex count {total}" if len(prim_counts) == 1
+                     else f"PRIM vertex counts {counts} (total {total})")
+            errors.append((f"{path}.command_words[{first_index}]",
+                           f"{label} does not divide the {len(vertices)} vertex_words"))
     if isinstance(commands, list) and isinstance(relocations, list):
         for index, relocation in enumerate(relocations):
             if not isinstance(relocation, dict):
@@ -883,7 +900,33 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
     return errors
 
 
-def _ge_case_status(case: dict[str, Any]) -> tuple[str, str]:
+def _load_result_record(record: Any, results_root: Path | None) -> tuple[str | None, str]:
+    """Return (raw result text, "") or (None, refusal reason) for a RESULT_RECORD.
+
+    Raw hardware result text stays in the private results directory; a public corpus
+    carries only its root-relative path and SHA-256.
+    """
+    if not isinstance(record, dict) or not isinstance(record.get("path"), str) \
+            or not isinstance(record.get("sha256"), str):
+        return None, "evidence envelope lacks a RESULT_RECORD path and sha256."
+    assert results_root is not None
+    base = results_root.resolve()
+    target = (base / record["path"]).resolve()
+    if base not in target.parents:
+        return None, "RESULT_RECORD path leaves the results directory."
+    try:
+        data = target.read_bytes()
+    except OSError:
+        return None, "RESULT_RECORD is not present in the results directory."
+    if hashlib.sha256(data).hexdigest() != record["sha256"]:
+        return None, "RESULT_RECORD sha256 does not match the stored result."
+    try:
+        return data.decode("utf-8"), ""
+    except UnicodeDecodeError:
+        return None, "RESULT_RECORD is not UTF-8 result text."
+
+
+def _ge_case_status(case: dict[str, Any], results_root: Path | None = None) -> tuple[str, str]:
     case_id = case["case_id"]
     source_tier = case["source_tier"]
     envelope = case["evidence_envelope"]
@@ -911,8 +954,14 @@ def _ge_case_status(case: dict[str, Any]) -> tuple[str, str]:
     if not outputs_present:
         return "REFUSED", "accepted PSP_HARDWARE envelope has no complete pixel vector and framebuffer digest."
 
+    if results_root is None:
+        return "NOT_RUN", ("PSP_HARDWARE envelope references a private result record; no results "
+                           "directory is available to verify it.")
+    raw_result, refusal = _load_result_record(envelope.get("RESULT_RECORD"), results_root)
+    if raw_result is None:
+        return "REFUSED", refusal
     try:
-        parsed = parse_output(envelope["RAW_RESULT"])
+        parsed = parse_output(raw_result)
     except ProtocolError as exc:
         return "REFUSED", f"raw result protocol is invalid: {exc}"
     metadata = parsed.metadata_dict()
@@ -951,7 +1000,7 @@ def _ge_case_status(case: dict[str, Any]) -> tuple[str, str]:
     return "MEASURED", "acceptance-eligible PSP_HARDWARE record matches this case and its pixel results."
 
 
-def ge_corpus_report(corpus: Any, schema: Any) -> dict[str, Any]:
+def ge_corpus_report(corpus: Any, schema: Any, results_root: Path | None = None) -> dict[str, Any]:
     """Validate a GE corpus against its checked-in schema and classify each case."""
 
     boundary = "GE_RASTER_PIXEL_CONFORMANCE"
@@ -965,10 +1014,14 @@ def ge_corpus_report(corpus: Any, schema: Any) -> dict[str, Any]:
         }
     identity_errors: list[tuple[str, str]] = []
     schema_properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    boundary_schema = schema_properties.get("semantic_boundary")
+    issue_schema = schema_properties.get("tracking_issue")
     if (
         schema.get("$id") != GE_CORPUS_SCHEMA_ID
-        or schema_properties.get("semantic_boundary", {}).get("const") != boundary
-        or schema_properties.get("tracking_issue", {}).get("const") != issue
+        or not isinstance(boundary_schema, dict)
+        or boundary_schema.get("const") != boundary
+        or not isinstance(issue_schema, dict)
+        or issue_schema.get("const") != issue
     ):
         identity_errors.append(("<schema>", "document is not the GE pixel corpus contract"))
     identity_errors.extend(_schema_keyword_errors(schema))
@@ -1022,7 +1075,7 @@ def ge_corpus_report(corpus: Any, schema: Any) -> dict[str, Any]:
             )
             case_reports.append({"case_id": report_id, "status": "REFUSED", "reason": reason})
         else:
-            status, reason = _ge_case_status(item)
+            status, reason = _ge_case_status(item, results_root)
             case_reports.append({"case_id": report_id, "status": status, "reason": reason})
     report_status = "REFUSED" if any(item["status"] == "REFUSED" for item in case_reports) else "IN_THE_WORKS"
     return {

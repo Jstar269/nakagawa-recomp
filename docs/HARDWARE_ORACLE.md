@@ -28,7 +28,11 @@ coordinate, packed according to the case framebuffer format.
 
 Run `python tools/psp_oracle/run_psplink.py --ge-corpus-gate` to validate the corpus and report each
 case. A case is `MEASURED` only when its source tier is `PSP_HARDWARE`, the oracle envelope is
-acceptance-eligible, and the raw result protocol identifies `source=psp`. Software, Vulkan, or
+acceptance-eligible, and the raw result protocol identifies `source=psp`. The public corpus never
+inlines raw hardware result text: its envelope's `RESULT_RECORD` names a file under the private
+results directory (`--results-directory`, default `oracle/hardware-results/`) by relative path and
+SHA-256, and the gate verifies that file. Without that directory a hardware claim reports
+`NOT_RUN`, never `MEASURED`. Software, Vulkan, or
 PPSSPP data cannot be promoted by setting a hardware label. The current case reports `NOT_RUN`.
 **GE raster pixel conformance is IN THE WORKS (#343);** a real run still depends on the resident
 runner and recovery substrate tracked by #352.

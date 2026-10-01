@@ -216,12 +216,20 @@ class GeCorpusGateTests(unittest.TestCase):
             (self.root / "fixtures" / "psp_oracle" / "ge_corpus.json").read_text(encoding="utf-8")
         )
 
-    def _run_gate(self, document: dict | None = None) -> subprocess.CompletedProcess[str]:
+    def _run_gate(self, document: dict | None = None,
+                  results: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         command = [sys.executable, str(self.root / "tools" / "psp_oracle" / "run_psplink.py"), "--ge-corpus-gate"]
         if document is None:
             return subprocess.run(command, capture_output=True, text=True, check=False)
         fixture_dir = self.root / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="ge-corpus-gate-", dir=fixture_dir) as scratch:
+            results_dir = Path(scratch) / "results"
+            results_dir.mkdir()
+            for relative, text in (results or {}).items():
+                target = results_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8", newline="")
+            command.extend(["--results-directory", str(results_dir)])
             corpus_path = Path(scratch) / "corpus.json"
             corpus_path.write_text(json.dumps(document), encoding="utf-8")
             command.extend(["--ge-corpus", str(corpus_path)])
@@ -277,7 +285,27 @@ class GeCorpusGateTests(unittest.TestCase):
         case["vertex_words"] = case["vertex_words"][:-1]
         result = ge_corpus_report(document, self._schema())["cases"][0]
         self.assertEqual(result["status"], "REFUSED")
-        self.assertIn("PRIM vertex count 3", result["reason"])
+        self.assertIn("PRIM vertex count 3 does not divide", result["reason"])
+
+    def test_successive_prims_consume_vertex_words_cumulatively(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        commands = case["command_words"]
+        prim = next(i for i, word in enumerate(commands) if word[2:4] == "04")
+        count = int(commands[prim], 16) & 0xFFFF
+        per_vertex = len(case["vertex_words"]) // count
+        quad = f"0x{(int(commands[prim], 16) & 0xFFFF0000) | 4:08x}"
+        commands.insert(prim + 1, quad)
+        for relocation in case.get("relocations", []):
+            if relocation["command_index"] > prim:
+                relocation["command_index"] += 1
+        case["vertex_words"] = case["vertex_words"] + case["vertex_words"][:per_vertex] * 4
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertNotEqual(result["status"], "REFUSED", result["reason"])
+        case["vertex_words"] = case["vertex_words"][:-1]
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn(f"PRIM vertex counts {count}, 4 (total {count + 4})", result["reason"])
 
     def test_the_public_fixture_carries_no_hardware_envelope(self) -> None:
         """Raw hardware text must not enter this synthetic-classified public fixture.
@@ -310,9 +338,12 @@ class GeCorpusGateTests(unittest.TestCase):
             "FW": "6.61-ARK",
             "SOURCE_COMMIT": MEASURED_COMMIT,
             "BINARY_SHA256": MEASURED_SHA,
-            "RAW_RESULT": raw_result,
+            "RESULT_RECORD": {
+                "path": "ge/software.txt",
+                "sha256": hashlib.sha256(raw_result.encode("utf-8")).hexdigest(),
+            },
         }
-        completed = self._run_gate(document)
+        completed = self._run_gate(document, {"ge/software.txt": raw_result})
         self.assertEqual(completed.returncode, 2, completed.stderr)
         report = self._report(completed)
         result = report["cases"][0]
@@ -334,13 +365,89 @@ class GeCorpusGateTests(unittest.TestCase):
             "FW": "6.61-ARK",
             "SOURCE_COMMIT": MEASURED_COMMIT,
             "BINARY_SHA256": MEASURED_SHA,
-            "RAW_RESULT": stream("psp"),
+            "RESULT_RECORD": {"path": "ge/psp.txt", "sha256": "0" * 64},
         }
         completed = self._run_gate(document)
         self.assertEqual(completed.returncode, 2, completed.stderr)
         result = self._report(completed)["cases"][0]
         self.assertEqual(result["status"], "REFUSED")
         self.assertIn("not acceptance-eligible", result["reason"])
+
+    def _hardware_case(self, raw_result: str, record_sha: str | None = None) -> dict:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["source_tier"] = "PSP_HARDWARE"
+        case["framebuffer_sha256"] = "a" * 64
+        for pixel in case["selected_pixels"]:
+            pixel["pixel_value"] = 0
+        case["evidence_envelope"] = {
+            "EVIDENCE_CLASS": "PSP_HARDWARE",
+            "ACCEPTANCE_ELIGIBLE": True,
+            "CASE_ID": case["case_id"],
+            "CONSOLE_MODEL": "PSP-3000",
+            "FW": "6.61-ARK",
+            "SOURCE_COMMIT": MEASURED_COMMIT,
+            "BINARY_SHA256": MEASURED_SHA,
+            "RESULT_RECORD": {
+                "path": "ge/run.txt",
+                "sha256": record_sha or hashlib.sha256(raw_result.encode("utf-8")).hexdigest(),
+            },
+        }
+        return document
+
+    def test_hardware_claim_without_a_results_directory_is_not_run(self) -> None:
+        document = self._hardware_case(stream("psp"))
+        result = ge_corpus_report(document, self._schema(), None)["cases"][0]
+        self.assertEqual(result["status"], "NOT_RUN")
+        self.assertIn("private result record", result["reason"])
+
+    def test_result_record_digest_must_match_the_stored_result(self) -> None:
+        document = self._hardware_case(stream("psp"), record_sha="b" * 64)
+        completed = self._run_gate(document, {"ge/run.txt": stream("psp")})
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        result = self._report(completed)["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("sha256 does not match", result["reason"])
+
+    def test_missing_result_record_is_refused(self) -> None:
+        completed = self._run_gate(self._hardware_case(stream("psp")), {})
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("not present", self._report(completed)["cases"][0]["reason"])
+
+    def test_schema_requires_a_record_reference_not_inline_raw_text(self) -> None:
+        envelope = self._schema()["$defs"]["case"]["properties"]["evidence_envelope"]
+        self.assertIn("RESULT_RECORD", envelope["required"])
+        self.assertNotIn("RAW_RESULT", envelope["properties"])
+        document = self._hardware_case(stream("psp"))
+        document["cases"][0]["evidence_envelope"]["RESULT_RECORD"]["path"] = "../escape.txt"
+        result = ge_corpus_report(document, self._schema(), self.root)["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+
+    def test_non_object_identity_entries_are_refused_not_raised(self) -> None:
+        for key, value in (("semantic_boundary", "GE_RASTER_PIXEL_CONFORMANCE"), ("tracking_issue", 343)):
+            with self.subTest(key=key):
+                schema = self._schema()
+                schema["properties"][key] = value
+                report = ge_corpus_report(self.corpus, schema)
+                self.assertEqual(report["status"], "REFUSED")
+                self.assertIn("not the GE pixel corpus contract", report["cases"][0]["reason"])
+
+    def test_unimplemented_keyword_forms_are_refused(self) -> None:
+        schema = self._schema()
+        schema["$defs"]["case"]["additionalProperties"] = {"type": "string"}
+        self.assertIn("boolean form", ge_corpus_report(self.corpus, schema)["cases"][0]["reason"])
+        schema = self._schema()
+        schema["$defs"]["case"]["properties"]["vertex_words"]["items"] = [{"type": "string"}]
+        self.assertIn("single-schema object form", ge_corpus_report(self.corpus, schema)["cases"][0]["reason"])
+
+    def test_cli_accepts_only_the_tracked_schema_file(self) -> None:
+        sibling = self.root / "assets" / "public_source_profile.json"
+        completed = subprocess.run(
+            [sys.executable, str(self.root / "tools" / "psp_oracle" / "run_psplink.py"),
+             "--ge-corpus-gate", "--ge-corpus-schema", str(sibling)],
+            capture_output=True, text=True, check=False)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("must be assets/ge_corpus.schema.json", completed.stderr)
 
     def test_schema_violation_is_refused_with_case_field_name(self) -> None:
         document = json.loads(json.dumps(self.corpus))

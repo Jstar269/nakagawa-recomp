@@ -99,7 +99,7 @@
           "additionalProperties": false,
           "required": [
             "EVIDENCE_CLASS", "ACCEPTANCE_ELIGIBLE", "CASE_ID", "CONSOLE_MODEL", "FW",
-            "SOURCE_COMMIT", "BINARY_SHA256", "RAW_RESULT"
+            "SOURCE_COMMIT", "BINARY_SHA256", "RESULT_RECORD"
           ],
           "properties": {
             "EVIDENCE_CLASS": {"enum": ["PSP_HARDWARE", "UNQUALIFIED_CAPTURE"]},
@@ -109,7 +109,18 @@
             "FW": {"type": "string", "minLength": 1, "maxLength": 48},
             "SOURCE_COMMIT": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
             "BINARY_SHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "RAW_RESULT": {"type": "string", "minLength": 1, "maxLength": 16384}
+            "RESULT_RECORD": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,7}$"
+                },
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
           }
         }
       }

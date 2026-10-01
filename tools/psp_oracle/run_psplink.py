@@ -1812,6 +1812,10 @@ def main(argv: list[str] | None = None) -> int:
             schema_path.relative_to(allowed_schema_root)
         except ValueError:
             parser.error("--ge-corpus-schema must stay under assets")
+        # The identity markers alone cannot prove the contract content, so the gate only
+        # accepts the tracked schema file itself.
+        if schema_path != (allowed_schema_root / "ge_corpus.schema.json").resolve():
+            parser.error("--ge-corpus-schema must be assets/ge_corpus.schema.json")
         try:
             corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
             schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -1828,7 +1832,12 @@ def main(argv: list[str] | None = None) -> int:
             }
             sys.stdout.write(dump_json(report))
             return 2
-        report = ge_corpus_report(corpus, schema)
+        results_root = args.results_directory.resolve()
+        try:
+            results_root.relative_to(ROOT.resolve())
+        except ValueError:
+            parser.error("--results-directory must be inside the repository root")
+        report = ge_corpus_report(corpus, schema, results_root if results_root.is_dir() else None)
         sys.stdout.write(dump_json(report))
         return 2 if report["status"] == "REFUSED" else 0
     args.results_directory = args.results_directory.resolve()
