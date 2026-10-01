@@ -98,10 +98,18 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn(
             'file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")', cmake
         )
+        # The test runs from the source tree (it reads a source-relative
+        # fixture) but writes its scratch files into the binary tree, so an
+        # out-of-source build never depends on <source>/build existing.
+        self.assertIn("set_tests_properties(player_state_test PROPERTIES", cmake)
+        self.assertIn("WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}", cmake)
         self.assertIn(
-            "set_tests_properties(player_state_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})",
-            cmake,
+            'ENVIRONMENT "NK_TEST_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/build"', cmake
         )
+        state_test = (ROOT / "tests" / "native" / "test_player_state.c").read_text(
+            encoding="utf-8")
+        self.assertIn('getenv("NK_TEST_SCRATCH_DIR")', state_test)
+        self.assertNotIn('"build/test_launch_global_profile.json"', state_test)
 
     def test_sdl3_pin_is_consistent_across_ci_cmake_and_docs(self) -> None:
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")

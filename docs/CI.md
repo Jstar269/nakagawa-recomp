@@ -84,8 +84,11 @@ SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot 
 source-owned showcase packages with dummy SDL video and audio drivers, then passes the generated
 TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requires
 `STAGING_RESULT status=PASS`. This is build, test, and headless staging evidence for the named
-synthetic fixtures. Consumer ISO compatibility remains in the works (#306); these checks do not
-establish PSP hardware acceptance or interactive desktop presentation.
+synthetic fixtures. The CMake player is configured with CMake's default, unoptimized build type, so
+the gate covers only that configuration: an optimized Release configuration fails under the global
+`-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
+job does not claim that configuration builds. Consumer ISO compatibility remains in the works
+(#306); these checks do not establish PSP hardware acceptance or interactive desktop presentation.
 
 ## Local readiness before opening a pull request
 

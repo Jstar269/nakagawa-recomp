@@ -119,7 +119,11 @@ target_link_libraries(test_player_state PRIVATE nakagawa_core)
 add_test(NAME player_state_test COMMAND test_player_state)
 # The sample player state uses a source-relative fixture path, so this CTest
 # must run from the source tree just like the Makefile test target.
-set_tests_properties(player_state_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+# Scratch files go to the binary tree, so an out-of-source build is
+# self-sufficient and never needs <source>/build to exist.
+set_tests_properties(player_state_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    ENVIRONMENT "NK_TEST_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/build")
 
 add_executable(test_package_builder
     tests/native/test_package_builder.c
