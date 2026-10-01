@@ -502,7 +502,7 @@ StepResult Run(CpuState *s, Memory *mem, unsigned long long max_steps, TraceSink
 		uint32_t pc = s->pc;
 		uint32_t op = mem->Read32(pc);
 		if (mem->last_fault())
-			return {StopReason::kMemoryFault, pc, op};
+			return {StopReason::kMemoryFault, pc, op, i + 1};
 
 		uint32_t store_addr = 0;
 		int store_size = 0;
@@ -518,11 +518,11 @@ StepResult Run(CpuState *s, Memory *mem, unsigned long long max_steps, TraceSink
 		if (sink) sink->EndStep(s, store_addr, store_size, mem);
 
 		if (mem->last_fault())
-			return {StopReason::kMemoryFault, pc, op};
+			return {StopReason::kMemoryFault, pc, op, i + 1};
 		if (reason != StopReason::kRunning)
-			return {reason, pc, op};
+			return {reason, pc, op, i + 1};
 	}
-	return {StopReason::kStepLimit, s->pc, 0};
+	return {StopReason::kStepLimit, s->pc, 0, max_steps};
 }
 
 }  // namespace ref

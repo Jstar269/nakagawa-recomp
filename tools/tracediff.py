@@ -8,6 +8,14 @@
 # Exit 0 when the two traces are identical step-for-step, 1 when they diverge, 2 on a
 # malformed input. The first divergence is reported with the guest PC where it happened,
 # which is the located bug for differential testing against the PPSSPP oracle.
+#
+# Three comparison modes:
+#   * default: informational v1 equality over the permissive legacy loader.
+#   * --strict-hardware: complete v2 identity/coverage contract, PSP_HARDWARE required.
+#   * --strict-local: the LOCAL contract for gates that run without PSP metadata. It
+#     requires an identity header, a positive record count and contiguous indices, and
+#     --expect-steps N additionally requires exactly N records. Equal lengths are not
+#     coverage, so an incomplete stream cannot pass.
 
 import re
 import sys
@@ -58,26 +66,31 @@ class HardwareTraceError(ValueError):
     """A strict v2 hardware trace violates its identity or stream contract."""
 
 
-def parse_step_line(line, lineno, path):
+class LocalTraceError(ValueError):
+    """A local (non-hardware) trace violates the local coverage contract."""
+
+
+def parse_step_line(line, lineno, path, report=None):
     # "<step> pc=<hpc> op=<hword> <tokens...>" -> (step, pc, op, {name: value})
+    report = fail if report is None else report
     parts = line.split()
     if len(parts) < 3:
-        fail(f"{path}:{lineno}: step line has fewer than 3 fields: {line!r}")
+        report(f"{path}:{lineno}: step line has fewer than 3 fields: {line!r}")
     try:
         step = int(parts[0], 10)
     except ValueError:
-        fail(f"{path}:{lineno}: step index is not a decimal integer: {parts[0]!r}")
+        report(f"{path}:{lineno}: step index is not a decimal integer: {parts[0]!r}")
     if not parts[1].startswith("pc=") or not parts[2].startswith("op="):
-        fail(f"{path}:{lineno}: expected 'pc=' then 'op=', got {parts[1]!r} {parts[2]!r}")
+        report(f"{path}:{lineno}: expected 'pc=' then 'op=', got {parts[1]!r} {parts[2]!r}")
     pc = parts[1][3:]
     op = parts[2][3:]
     writes = {}
     for tok in parts[3:]:
         name, eq, value = tok.partition("=")
         if eq != "=" or not name or not value:
-            fail(f"{path}:{lineno}: malformed write token: {tok!r}")
+            report(f"{path}:{lineno}: malformed write token: {tok!r}")
         if name in writes:
-            fail(f"{path}:{lineno}: duplicate write token for {name!r}")
+            report(f"{path}:{lineno}: duplicate write token for {name!r}")
         writes[name] = value
     return step, pc, op, writes
 
@@ -366,6 +379,7 @@ def describe_writes(writes):
 
 
 def diff(path_a, path_b):
+    """Informational legacy equality mode: v1 loader, pairwise and length compare."""
     _, a = load(path_a)
     _, b = load(path_b)
     n = min(len(a), len(b))
@@ -391,6 +405,127 @@ def diff(path_a, path_b):
     return None
 
 
+def _local_error(path, lineno, message):
+    location = f"{path}:{lineno}" if lineno is not None else str(path)
+    raise LocalTraceError(f"{location}: {message}")
+
+
+def _local_report(message):
+    raise LocalTraceError(message)
+
+
+def _parse_local_identity_header(line, path, lineno):
+    """Parse a local v1 identity header without the strict v2 field contract."""
+
+    parts = line[1:].split()
+    if parts[:2] != ["psp-recomp", "trace"]:
+        _local_error(path, lineno,
+                     "expected '# psp-recomp trace' identity header, got a bare comment")
+    fields = {}
+    for token in parts[2:]:
+        if token in ("v1", "v2"):
+            continue
+        name, equals, value = token.partition("=")
+        if equals != "=" or not name or not value or name in fields:
+            _local_error(path, lineno, f"malformed or duplicate identity field {token!r}")
+        fields[name] = value
+    return fields
+
+
+def _load_local(path, expect_steps=None):
+    """Load one local trace and validate its identity and step coverage.
+
+    This is the LOCAL contract used by the codegen/microtest gates. It is
+    deliberately separate from the strict v2 hardware lane: those gates run
+    without any PSP metadata, so they need their own positive, contiguous
+    coverage proof instead of borrowing the hardware envelope. Equal lengths are
+    not coverage, so a caller that knows how many records it requires passes
+    ``expect_steps`` and an under-length stream is rejected here.
+    """
+
+    steps = []
+    header = None
+    header_line = None
+    try:
+        handle = open(path, "r", encoding="utf-8")
+    except OSError as exc:
+        _local_error(path, None, f"cannot read trace: {exc}")
+    with handle:
+        for lineno, line in _decode_trace_lines(handle, path):
+            if line.strip() == "":
+                continue
+            if line.startswith("#"):
+                if _is_identity_header(line):
+                    if header is not None:
+                        _local_error(
+                            path, lineno,
+                            "duplicate trace identity header: exactly one identity "
+                            f"header is allowed per stream (first one at line {header_line})",
+                        )
+                    header = _parse_local_identity_header(line, path, lineno)
+                    header_line = lineno
+                elif header is None:
+                    _local_error(path, lineno,
+                                 "first comment line is not a '# psp-recomp trace' "
+                                 "identity header")
+                continue
+            if header is None:
+                _local_error(path, lineno, "step record appears before the identity header")
+            steps.append(parse_step_line(line, lineno, path, report=_local_report))
+            if expect_steps is not None and len(steps) > expect_steps:
+                _local_error(path, lineno,
+                             f"stream exceeds the required {expect_steps} records: "
+                             f"captured more at index {len(steps) - 1}")
+    if header is None:
+        _local_error(path, None, "missing required '# psp-recomp trace' identity header")
+    if not steps:
+        _local_error(path, header_line,
+                     "stream carries no step records: zero coverage is never "
+                     "evidence that execution matched")
+    if expect_steps is not None and len(steps) < expect_steps:
+        _local_error(path, header_line,
+                     f"required coverage of {expect_steps} step records is "
+                     f"incomplete: captured {len(steps)}")
+    for expected, record in enumerate(steps):
+        if record[0] != expected:
+            _local_error(path, header_line,
+                         f"step sequence is not contiguous at index {expected}: "
+                         f"record says {record[0]}")
+    return header, steps
+
+
+def strict_local_diff(path_a, path_b, expect_steps=None):
+    """Compare two local traces under the local coverage contract.
+
+    Raises LocalTraceError when either stream is not a positive, contiguous,
+    identity-carrying local trace (optionally of exactly ``expect_steps``
+    records). Returns the first divergence like diff(), or None.
+    """
+
+    header_a, a = _load_local(path_a, expect_steps)
+    header_b, b = _load_local(path_b, expect_steps)
+    start_a = header_a.get("start_pc")
+    start_b = header_b.get("start_pc")
+    if start_a is not None and start_b is not None and start_a != start_b:
+        _local_error(path_a, None,
+                     f"trace identity start_pc differs: A={start_a!r} B={start_b!r}")
+    # _load_local proved both streams are contiguous from index 0 and, when a
+    # required length was stated, exactly that long, so records align by position.
+    for i in range(len(a)):
+        _, pc_a, op_a, writes_a = a[i]
+        _, pc_b, op_b, writes_b = b[i]
+        if pc_a != pc_b:
+            return (i, pc_a, f"pc {pc_a} vs {pc_b}")
+        if op_a != op_b:
+            return (i, pc_a, f"op {op_a} vs {op_b}")
+        if writes_a != writes_b:
+            only_a = {k: v for k, v in writes_a.items() if writes_b.get(k) != v}
+            only_b = {k: v for k, v in writes_b.items() if writes_a.get(k) != v}
+            detail = f"writes differ: A[{describe_writes(only_a)}] B[{describe_writes(only_b)}]"
+            return (i, pc_a, detail)
+    return None
+
+
 def main(argv):
     if len(argv) >= 2 and argv[1] == "--strict-hardware":
         if len(argv) != 4:
@@ -409,15 +544,48 @@ def main(argv):
         step, pc, detail = result
         print(f"DIVERGENCE at step {step}, pc {pc}: {detail}")
         return 1
+    if len(argv) >= 2 and argv[1] == "--strict-local":
+        return _main_strict_local(argv[2:])
     if len(argv) != 3:
         sys.stderr.write(
-            "usage: tracediff.py [--strict-hardware] <trace-a> <trace-b>\n"
+            "usage: tracediff.py [--strict-hardware|--strict-local] <trace-a> <trace-b>\n"
+            "                            [--expect-steps N]\n"
         )
         return 2
     result = diff(argv[1], argv[2])
     if result is None:
         _, a = load(argv[1])
         print(f"OK: traces identical, {len(a)} steps, zero divergences")
+        return 0
+    step, pc, detail = result
+    print(f"DIVERGENCE at step {step}, pc {pc}: {detail}")
+    return 1
+
+
+def _main_strict_local(args):
+    expect_steps = None
+    if len(args) >= 2 and args[-2] == "--expect-steps":
+        raw = args[-1]
+        if not re.fullmatch(r"[0-9]{1,9}", raw) or int(raw, 10) < 1:
+            sys.stderr.write(
+                "--expect-steps must be a positive decimal record count\n"
+            )
+            return 2
+        expect_steps = int(raw, 10)
+        args = args[:-2]
+    if len(args) != 2:
+        sys.stderr.write(
+            "usage: tracediff.py --strict-local <trace-a> <trace-b> [--expect-steps N]\n"
+        )
+        return 2
+    try:
+        result = strict_local_diff(args[0], args[1], expect_steps)
+    except LocalTraceError as exc:
+        print(f"REJECTED: {exc}", file=sys.stderr)
+        return 2
+    if result is None:
+        print(f"OK: local traces identical, {expect_steps or 'all'} steps covered, "
+              "zero divergences")
         return 0
     step, pc, detail = result
     print(f"DIVERGENCE at step {step}, pc {pc}: {detail}")

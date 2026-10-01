@@ -29,6 +29,9 @@ struct StepResult {
 	StopReason reason = StopReason::kRunning;
 	uint32_t pc = 0;       // pc of the instruction involved when stopping
 	uint32_t op = 0;       // the instruction word
+	uint64_t executed = 0; // instructions actually executed before stopping; a caller
+	                        // asserting an expected stop needs this to tell a bounded run
+	                        // (executed == budget) from a guest exit.
 };
 
 // Writes one trace line per executed instruction in the TRACE_FORMAT.md shape. The sink owns

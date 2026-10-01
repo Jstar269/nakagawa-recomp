@@ -205,6 +205,12 @@ try {
     }
     . $VulkanDiscovery
 
+    $GpuStatusSupport = Join-Path $PSScriptRoot "tools\gpu_selftest_status.ps1"
+    if (-not (Test-Path -LiteralPath $GpuStatusSupport -PathType Leaf)) {
+        throw "Missing required helper: $GpuStatusSupport"
+    }
+    . $GpuStatusSupport
+
     # Ensure title manifest defaults to synthetic if empty
     if ([string]::IsNullOrWhiteSpace($TitleManifest)) {
         $TitleManifest = "assets/titles/synthetic.json"
@@ -706,6 +712,7 @@ try {
         }
         $failed = @()
         $gateStatus = @{}
+        $gpuStatus = $null
         $makeBaseArgs = @(Get-NkMakeBaseArgs)
 
         Write-Host "`n[1/15] Python unit suite (tools/test_*.py)..." -ForegroundColor Cyan
@@ -775,22 +782,24 @@ try {
         if ($LASTEXITCODE -ne 0) { $failed += "publish-audit-worktree"; $gateStatus["publish-audit-worktree"] = "FAIL" } else { $gateStatus["publish-audit-worktree"] = "PASS" }
 
         Write-Host "`n[15/15] GPU coherence/capture gates..." -ForegroundColor Cyan
-        $gpuSkipReason = $null
-        if ($null -eq (Get-Command glslc -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $VulkanSdk "bin\glslc.exe"))) {
-            $gpuSkipReason = "glslc not found"
-        }
-        if ($gpuSkipReason) {
-            Write-Host "[SKIP] GPU selftests skipped: $gpuSkipReason." -ForegroundColor Yellow
-            $gateStatus["gpu-coherence-selftest"] = "SKIP"
-            $gateStatus["gpu-capture-selftest"] = "SKIP"
-        } else {
-            $a = $makeBaseArgs + @("gpu-coherence-selftest", "--no-print-directory")
-            $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
-            if ($p.ExitCode -ne 0) { $failed += "gpu-coherence-selftest"; $gateStatus["gpu-coherence-selftest"] = "FAIL" } else { $gateStatus["gpu-coherence-selftest"] = "PASS" }
-
-            $a = $makeBaseArgs + @("gpu-capture-selftest", "--no-print-directory")
-            $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
-            if ($p.ExitCode -ne 0) { $failed += "gpu-capture-selftest"; $gateStatus["gpu-capture-selftest"] = "FAIL" } else { $gateStatus["gpu-capture-selftest"] = "PASS" }
+        # Capability detection belongs to the Makefile, not to a toolchain guess here.
+        # Both targets depend on `shader-verify`, which validates the checked-in
+        # shader embeddings; only `shaders`/`shader-repro-verify` need glslc. Gating on
+        # glslc therefore skipped GPU verification on hosts that can build and run it.
+        # `gpu-selftest-status` reports each binary's own outcome, because a failed
+        # recipe always leaves Make with its own exit status, which would turn a child
+        # SKIP (77) into a failure.
+        $a = $makeBaseArgs + @("gpu-selftest-status", "--no-print-directory")
+        $gpuLog = (& $makeExe @a 2>&1 | Out-String)
+        $gpuExit = $LASTEXITCODE
+        Write-Host $gpuLog
+        $gpuGates = @("gpu-coherence-selftest", "gpu-capture-selftest")
+        $gpuStatus = Resolve-GpuSelftestStatus -Results (Get-GpuSelftestResults -Log $gpuLog) `
+            -Gates $gpuGates -ExitCode $gpuExit
+        foreach ($gateOutcome in $gpuStatus.Gates) {
+            $gateStatus[$gateOutcome.Gate] = $gateOutcome.Status
+            if ($gateOutcome.Status -eq "FAIL") { $failed += $gateOutcome.Gate }
+            Write-Host "[$($gateOutcome.Status)] $($gateOutcome.Gate): $($gateOutcome.Reason)"
         }
 
         $allGates = @(
@@ -807,6 +816,10 @@ try {
         $summaryParts += "make-verify=NOT_RUN(private PPSSPP oracle traces absent)"
         $summaryParts += "atrac3p-title-accept=NOT_RUN(private title stream absent)"
         $summaryParts += "visual-oracle=NOT_RUN(private title route required)"
+        # Run status and evidence completeness are separate facts: PASS for the
+        # executed GPU checks does not mean required graphics evidence exists when a
+        # binary reported SKIP, so the aggregate never implies completeness it lacks.
+        $summaryParts += "gpu-graphics-evidence=$(if ($null -eq $gpuStatus) { 'NOT_RUN' } else { $gpuStatus.Completeness })"
 
         $aggregate = if ($failed.Count -eq 0) { "PASS" } else { "FAIL" }
         Write-Host ("VERIFY_SUMMARY aggregate={0} {1}" -f $aggregate, ($summaryParts -join " ")) -ForegroundColor $(if ($aggregate -eq "PASS") { "Green" } else { "Red" })

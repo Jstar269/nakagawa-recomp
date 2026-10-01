@@ -17,6 +17,10 @@ Two rules make the campaign meaningful rather than decorative:
   names the mission-level defect class it stands for, and the driver records the
   first divergence the gate actually reported, so a mutant that fails "for some
   other reason" is visible in the output rather than counted silently.
+* A verdict is bound to the process outcome. A marker is never classified on its
+  own: "cosim: OK" from a nonzero process is an inconsistent run, a bare
+  "cosim: FAIL" with no located divergence is not a kill, and a gate that exceeds
+  its budget is a TIMEOUT -- never a pass and never a kill.
 
 The source tree is never modified. Mutants are selected through the Makefile's
 COSIM_INTERP_SRC, COSIM_FP_CONVERT_PRELUDE or CODEGEN_TOOL override.
@@ -28,6 +32,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -322,12 +327,56 @@ def make_command(source: Path, target: str) -> list[str]:
     return [resolve_make(), "--no-print-directory", "cosim-selftest", override]
 
 
-def run_gate(source: Path, target: str = "interpreter") -> tuple[str, str]:
+# A generated-code control-flow regression can hang the driver, so the gate gets a
+# separate runtime budget. A timeout is neither PASS nor a semantic kill.
+GATE_TIMEOUT_S = int(os.environ.get("COSIM_GATE_TIMEOUT_S", "3600"))
+TERMINATE_GRACE_S = 30
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    """Reap the gate and the build children it started.
+
+    Host-scoped by design: Windows terminates the tree through taskkill, POSIX
+    terminates the session's process group that Popen created below. A surviving
+    build child would keep a CI slot busy long after the driver gave up.
+    """
+    pid = getattr(process, "pid", None)
+    if pid is not None:
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True, text=True, check=False, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        else:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (OSError, AttributeError):
+                pass
+    try:
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        process.kill()
+        try:
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+def run_gate(source: Path, target: str = "interpreter",
+             timeout_s: int | None = None) -> tuple[str, str]:
     """Run the cosim gate against one mutated source.
 
-    Returns (verdict, detail) where verdict is one of "ok", "fail" or "no-run".
-    "no-run" means the harness binary never printed its result -- the build
-    failed, or the run died before reporting -- which is NOT a mutation kill.
+    Returns (verdict, detail). verdict is one of:
+      "ok"           the gate exited zero and reported cosim: OK;
+      "fail"         the gate exited nonzero, reported cosim: FAIL AND located a
+                      divergence record/cell -- the only shape that is a kill;
+      "timeout"      the gate exceeded its runtime budget (never a kill);
+      "inconsistent" the marker and the process outcome contradict each other;
+      "no-run"       the harness never reported an outcome (build failure, crash,
+                      or a failure with no located divergence).
     """
     env = dict(os.environ)
     if target == "generator":
@@ -335,15 +384,29 @@ def run_gate(source: Path, target: str = "interpreter") -> tuple[str, str]:
         # (analyze, host_stubs, build_profile), and running it from the ignored
         # build tree puts the wrong directory first on sys.path.
         env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
-    completed = subprocess.run(
-        make_command(source, target),
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        env=env,
-    )
-    output = completed.stdout + completed.stderr
+    budget = GATE_TIMEOUT_S if timeout_s is None else timeout_s
+    command = make_command(source, target)
+    try:
+        process = subprocess.Popen(
+            command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, errors="replace", env=env,
+            # Own session on POSIX so a timeout reaps the whole build tree.
+            start_new_session=(os.name != "nt"),
+        )
+    except OSError as exc:
+        return "no-run", f"could not start the gate: {exc}"
+    try:
+        stdout, stderr = process.communicate(timeout=budget)
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=TERMINATE_GRACE_S)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            stdout, stderr = "", ""
+        return "timeout", (f"gate exceeded its {budget}s budget and was terminated; "
+                           "a timeout is neither a pass nor a semantic kill")
+
+    output = stdout + stderr
     detail = ""
     for index, line in enumerate(output.splitlines()):
         if line.startswith(("COSIM DIVERGENCE", "COSIM FPU REFERENCE FAIL")):
@@ -352,11 +415,26 @@ def run_gate(source: Path, target: str = "interpreter") -> tuple[str, str]:
             if remainder:
                 detail += " | " + remainder[0].strip()
             break
-    if "cosim: FAIL" in output:
-        return "fail", detail
-    if "cosim: OK" in output:
-        return "ok", detail
     tail = "\n".join(output.strip().splitlines()[-6:])
+    reported_ok = "cosim: OK" in output
+    reported_fail = "cosim: FAIL" in output
+    code = process.returncode
+
+    if code == 0:
+        if reported_ok:
+            return "ok", detail
+        if reported_fail:
+            return "inconsistent", (f"gate exited 0 while reporting cosim: FAIL; "
+                                    f"the marker contradicts the process outcome\n{tail}")
+        return "no-run", tail
+    if reported_ok:
+        return "inconsistent", (f"gate exited {code} while reporting cosim: OK; "
+                                "a nonzero process never passes on OK text\n" + tail)
+    if reported_fail:
+        if detail:
+            return "fail", detail
+        return "no-run", (f"gate exited {code} with cosim: FAIL but no divergence "
+                          f"record was located; not a kill\n{tail}")
     return "no-run", tail
 
 
@@ -392,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
     killed = 0
     survived: list[str] = []
     invalid: list[str] = []
+    invalid_reasons: dict[str, list[str]] = {}
     for mutant in MUTANTS:
         directory = mutant_root / mutant.name
         directory.mkdir(parents=True, exist_ok=True)
@@ -423,7 +502,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             invalid.append(mutant.name)
-            print(f"COSIM_MUTATION INVALID  {mutant.name:<34} (never ran; not a kill)")
+            invalid_reasons.setdefault(verdict, []).append(mutant.name)
+            print(f"COSIM_MUTATION INVALID  {mutant.name:<34} "
+                  f"(verdict={verdict}; not a kill)")
             print(detail)
 
     # Leave the tree in the state a reader expects: the real sources, passing.
@@ -446,8 +527,10 @@ def main(argv: list[str] | None = None) -> int:
         print("COSIM_MUTATION FAIL: the comparator did not detect: " + ", ".join(survived),
               file=sys.stderr)
     if invalid:
-        print("COSIM_MUTATION FAIL: mutants that never executed: " + ", ".join(invalid),
-              file=sys.stderr)
+        for verdict, names in sorted(invalid_reasons.items()):
+            print(f"COSIM_MUTATION FAIL: {len(names)} mutant(s) had verdict "
+                  f"{verdict} (neither a pass nor a kill): " + ", ".join(names),
+                  file=sys.stderr)
     return 1 if (survived or invalid) else 0
 
 

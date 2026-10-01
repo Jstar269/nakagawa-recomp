@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -96,6 +97,92 @@ class ManagerSafetyBehaviorTests(unittest.TestCase):
             0,
             f"tools/test_manager_safety.ps1 failed:\n{proc.stdout}\n{proc.stderr}",
         )
+
+
+class GpuVerificationStatusTests(unittest.TestCase):
+    """GPU capability detection and outcome handling in the manager and Makefile.
+
+    Two facts are load-bearing: shader reproducibility (glslc) is NOT a
+    prerequisite for building/running the GPU selftests, and a child SKIP (77)
+    must survive the Make wrapper instead of collapsing into a failure.
+    """
+
+    def setUp(self) -> None:
+        self.manager = MANAGER.read_text(encoding="utf-8-sig")
+        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.helper = (ROOT / "tools" / "gpu_selftest_status.ps1").read_text(encoding="utf-8-sig")
+
+    def test_glslc_is_not_a_prerequisite_for_the_gpu_gates(self) -> None:
+        branch = self.manager[self.manager.index("[15/15] GPU coherence/capture gates") :]
+        branch = branch[: branch.index("$allGates = @(")]
+        for probe in ("Get-Command glslc", "glslc.exe"):
+            self.assertNotIn(probe, branch,
+                             "the GPU gates must not skip on a shader-compiler prerequisite")
+        self.assertIn("shader-verify", branch,
+                      "state why shader reproducibility is a separate concern")
+        self.assertIn("gpu-selftest-status", branch,
+                      "the manager must use the outcome-preserving Make seam")
+
+    def test_manager_maps_structured_results_not_the_make_exit_code(self) -> None:
+        self.assertIn("gpu_selftest_status.ps1", self.manager)
+        self.assertIn("Get-GpuSelftestResults", self.manager)
+        self.assertIn("Resolve-GpuSelftestStatus", self.manager)
+        self.assertNotIn("$gpuSkipReason", self.manager)
+        # A SKIP must never be folded into the failure list.
+        self.assertIn('if ($gateOutcome.Status -eq "FAIL") { $failed += $gateOutcome.Gate }',
+                      self.manager)
+
+    def test_summary_reports_graphics_evidence_completeness_separately(self) -> None:
+        self.assertIn("gpu-graphics-evidence=$(if ($null -eq $gpuStatus)", self.manager)
+        for value in ("EXECUTED", "PARTIAL_SKIPPED", "NOT_RUN_HOST_UNSUPPORTED", "FAILED"):
+            self.assertIn(f'"{value}"', self.helper,
+                          f"completeness must distinguish {value}")
+
+    def test_make_seam_prints_one_structured_result_line_per_binary(self) -> None:
+        self.assertIn("GPU_SELFTEST_RESULT", self.makefile)
+        self.assertRegex(self.makefile, r"(?m)^gpu-selftest-status:")
+        self.assertIn("HELP_DESCRIPTION_gpu-selftest-status :=", self.makefile)
+
+    def test_child_skip_survives_the_real_make_wrapper(self) -> None:
+        """Drive the actual recipe with synthetic children (no Vulkan needed)."""
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if make is None:
+            self.skipTest("GNU Make is required for the behavioural check")
+        with tempfile.TemporaryDirectory(prefix="gpu_status_seam_") as tmp:
+            work = Path(tmp)
+            children = {
+                "pass_child": 0,
+                "skip_child": 77,
+            }
+            paths = []
+            for name, code in children.items():
+                script = work / f"{name}.sh"
+                script.write_text(f"#!/bin/sh\nexit {code}\n", encoding="utf-8", newline="\n")
+                script.chmod(0o755)
+                paths.append(script.as_posix())
+            failed = work / "fail_child.sh"
+            failed.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8", newline="\n")
+            failed.chmod(0o755)
+
+            def run_seam(bins: list[str]) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [make, "--no-print-directory", "gpu-selftest-status",
+                     f"GPU_SELFTEST_BINS={' '.join(bins)}",
+                     "GPU_SELFTEST_PREREQS=",
+                     f"BUILD_DIR={(work / 'build').as_posix()}"],
+                    cwd=ROOT, capture_output=True, text=True, timeout=300,
+                )
+
+            proc = run_seam(paths)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("GPU_SELFTEST_RESULT pass_child.sh PASS 0", proc.stdout)
+            self.assertIn("GPU_SELFTEST_RESULT skip_child.sh SKIP 77", proc.stdout)
+
+            proc = run_seam([*paths, failed.as_posix()])
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("GPU_SELFTEST_RESULT fail_child.sh FAIL 3", proc.stdout)
+            # The already-skipping child must still read as SKIP next to a real failure.
+            self.assertIn("GPU_SELFTEST_RESULT skip_child.sh SKIP 77", proc.stdout)
 
 
 class ManagerSafetyContractTests(unittest.TestCase):
@@ -200,9 +287,13 @@ class ManagerSafetyContractTests(unittest.TestCase):
             "visual-oracle=NOT_RUN",
         ):
             self.assertIn(unavailable, self.manager)
-        # A SKIP (Vulkan unavailable) must be reported as SKIP, never folded into a pass.
-        self.assertIn('$gateStatus["gpu-coherence-selftest"] = "SKIP"', self.manager)
-        self.assertIn('$gateStatus["gpu-capture-selftest"] = "SKIP"', self.manager)
+        # A SKIP (Vulkan unavailable) must be reported as SKIP, never folded into a
+        # pass: the verdicts come from the per-binary result lines, and only FAIL
+        # entries join the failure list.
+        self.assertIn('$gateStatus[$gateOutcome.Gate] = $gateOutcome.Status', self.manager)
+        self.assertIn('if ($gateOutcome.Status -eq "FAIL") { $failed += $gateOutcome.Gate }',
+                      self.manager)
+        self.assertIn("gpu-graphics-evidence=$(if ($null -eq $gpuStatus)", self.manager)
 
     def test_no_early_exit_inside_the_try_body(self) -> None:
         # Every failure inside the action dispatch records a code and breaks, so the

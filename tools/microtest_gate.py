@@ -23,12 +23,16 @@ import os
 
 
 try:
+    from .codegen_gate import CoverageError
     from .codegen_gate import find_exit_syscall_pc
     from .codegen_gate import first_syscall_step as _first_syscall_step
+    from .codegen_gate import pre_exit_record_count
     from .codegen_gate import truncate as _truncate
 except ImportError:
+    from codegen_gate import CoverageError
     from codegen_gate import find_exit_syscall_pc
     from codegen_gate import first_syscall_step as _first_syscall_step
+    from codegen_gate import pre_exit_record_count
     from codegen_gate import truncate as _truncate
 
 
@@ -59,16 +63,36 @@ def main(argv):
     if syscall_step is None:
         sys.stderr.write("no syscall (exit) found in reference interpreter trace; module did not reach its exit\n")
         return 2
+    if syscall_step == 0:
+        sys.stderr.write(
+            "oracle reaches the exit syscall at step 0: zero pre-exit instructions "
+            "is a non-semantic probe, never evidence that CPU semantics matched\n")
+        return 2
     print(f"first exit syscall at trace step {syscall_step}; comparing the {syscall_step} preceding instructions")
 
     trunc = os.path.join(workdir, "oracle_pre_exit.trace")
-    write_truncated(oracle, trunc, syscall_step)
+    try:
+        pre_exit_record_count(oracle, syscall_step)
+    except CoverageError as exc:
+        sys.stderr.write(f"ERROR: oracle pre-exit coverage is incomplete: {exc}\n")
+        return 2
+    written = write_truncated(oracle, trunc, syscall_step)
+    if written != syscall_step:
+        sys.stderr.write(
+            f"ERROR: truncated oracle carries {written} records, required {syscall_step}\n")
+        return 2
 
     mine = os.path.join(workdir, "ref.trace")
-    subprocess.run([run_elf, module, oracle, mine, str(syscall_step)], check=True)
+    # This route deliberately runs for exactly the pre-exit budget, so the runner must
+    # be told that a bounded stop is the expected outcome: a bounded run is not a guest
+    # exit, and the runner now fails any stop the caller did not declare.
+    subprocess.run([run_elf, module, oracle, mine, str(syscall_step),
+                    "--expect-stop=step-limit"], check=True)
 
     here = os.path.dirname(os.path.abspath(__file__))
-    result = subprocess.run([sys.executable, os.path.join(here, "tracediff.py"), trunc, mine])
+    result = subprocess.run([sys.executable, os.path.join(here, "tracediff.py"),
+                             "--strict-local", trunc, mine,
+                             "--expect-steps", str(syscall_step)])
     if result.returncode == 0:
         print("microtest gate OK: all pre-exit instructions match reference interpreter")
     return result.returncode
