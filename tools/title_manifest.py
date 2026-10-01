@@ -58,10 +58,13 @@ RUNTIME_BINDING_FIELDS = (
     "fallback_entry",
     "worker_thread_entry",
     "launcher_thread_entry",
-    "vblank_frame_counter_addr",
-    "vblank_vsync_counter_addr",
     "libfont_ready_flag_addr",
     "frame_ready_latch_addr",
+)
+
+RETIRED_RUNTIME_BINDING_FIELDS = (
+    "vblank_frame_counter_addr",
+    "vblank_vsync_counter_addr",
 )
 
 # Expected extracted-data file count for the title's xbdata tree.
@@ -70,7 +73,7 @@ RUNTIME_BINDING_FIELDS = (
 # be a typo or a stale contract.
 RUNTIME_BINDING_COUNTS = ("expected_data_file_count",)
 MAX_EXPECTED_DATA_FILE_COUNT = 1000000
-RUNTIME_BINDING_PAIRS = (("vblank_frame_counter_addr", "vblank_vsync_counter_addr"),)
+RUNTIME_BINDING_PAIRS: tuple[tuple[str, str], ...] = ()
 
 #: Optional *typed collections* of title bindings. Unlike the scalar fields above, each
 #: names a set of semantic sites rather than one address, so the runtime carries a table
@@ -882,6 +885,10 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     which address -- that meaning applies. A manifest without the block, or without
     a given field, leaves the corresponding runtime behavior disabled.
     """
+    if isinstance(value, dict):
+        for retired in RETIRED_RUNTIME_BINDING_FIELDS:
+            if retired in value:
+                fail(f"{path}.{retired}", f"{retired} is retired (#643); runtime does not write guest VBLANK counters")
     value = obj(value, path,
                 {"schema_version", *RUNTIME_BINDING_FIELDS, *RUNTIME_BINDING_COLLECTIONS,
                  *RUNTIME_BINDING_OBJECTS, *RUNTIME_BINDING_COUNTS})
@@ -1187,6 +1194,8 @@ def validate_required_runtime_bindings(value: Any, path: str) -> list[str]:
     declared: set[str] = set()
     for index, name in enumerate(array(value, path, len(DECLARABLE_BINDING_FAMILIES))):
         name = identifier(name, f"{path}[{index}]")
+        if name in RETIRED_RUNTIME_BINDING_FIELDS:
+            fail(f"{path}[{index}]", f"{name} is retired (#643); runtime does not write guest VBLANK counters")
         if name not in DECLARABLE_BINDING_FAMILIES:
             fail(f"{path}[{index}]",
                  f"is not a runtime binding family (known: {', '.join(sorted(DECLARABLE_BINDING_FAMILIES))})")

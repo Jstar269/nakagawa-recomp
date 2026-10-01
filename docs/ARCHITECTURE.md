@@ -567,6 +567,7 @@ the maintained references for exact behavior.
 
 | Variable | Values | Purpose |
 | --- | --- | --- |
+| `SR_NOVBPACE` | unset, empty, `0` / `1` | Vblank pacing mode: unset, empty, or `0` = paced (default); `1` = turbo. Other values fail closed |
 | `SR_GPU_GE` | `0` / `1` | Software vs Vulkan GE path |
 | `SR_GPU_LOG` | present/unset | GPU diagnostics where implemented |
 | `SR_VIDEO` | e.g. `gdi` | Select host fallback video path |
