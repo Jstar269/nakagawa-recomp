@@ -6,13 +6,14 @@
 The committed fixture is this recipe, not a binary.  It deterministically emits
 a small ELF32 PSP PRX/``~PSP`` pair into the ignored build tree.  Unlike
 ``fixtures/production_smoke``, whose guest proves the AOT/interpreter seam with
-a sentinel word, this guest proves the *presentation* path: it fills the PSP
-framebuffer with a moving pattern, hands the buffer to ``sceDisplaySetFrameBuf``
-and waits for vblank, once per frame, for a fixed number of frames.
+a sentinel word, this guest proves the *presentation* path: it submits one
+source-owned GE list, fills the PSP framebuffer with a moving pattern, hands
+the buffer to ``sceDisplaySetFrameBuf`` and waits for vblank once per frame.
 
 That exercises the production chain the compute fixtures never touch --
-``sceDisplaySetFrameBuf`` -> display latch -> vblank -> ``gui_present`` -- with
-no external toolchain, no retail disc, and no private input.  The guest is
+``sceGeListEnQueue`` -> GE command walk and ``sceDisplaySetFrameBuf`` -> display
+latch -> vblank -> ``gui_present`` -- with no external toolchain, no retail
+disc, and no private input.  The guest is
 hand-assembled MIPS here for exactly the reason ``production_smoke`` is: the
 fixture must build on any host in CI, and a PSPDEV toolchain is an external
 input this repository does not require.
@@ -27,6 +28,8 @@ Guest program
 -------------
 ::
 
+    list = [GE_PRIM(type=0, vertices=0), GE_FINISH, GE_END]
+    sceGeListEnQueue(list, stall=0, callback=0, callback_arg=0)
     frame = 0
     do {
         for (i = 0; i < 512 * 272; i++)
@@ -44,6 +47,7 @@ not claim a particular spatial arrangement.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
@@ -66,38 +70,45 @@ ENTRY = BASE
 ARTIFACT_STEM = "display-smoke-v1"
 TITLE_ID = ARTIFACT_STEM
 
-# Guest text layout. The entry body occupies [0, TEXT_SECTION_SIZE); the two
+# Guest text layout. The entry body occupies [0, TEXT_SECTION_SIZE); three
 # import stubs form the .sceStub.text section at STUB_OFFSET.
-TEXT_SECTION_SIZE = 0xA4
-STUB_OFFSET = 0xB0
+TEXT_SECTION_SIZE = 0xD8
+STUB_OFFSET = 0xE0
 SETFB_STUB = STUB_OFFSET
 VBLANK_STUB = STUB_OFFSET + 8
-TEXT_FILE_SIZE = 0xC0
+GE_LIST_ENQUEUE_STUB = STUB_OFFSET + 16
+TEXT_FILE_SIZE = 0x100
 
 # Guest data layout, mirroring the PSP module-info/import-table shape.
 DATA_VADDR = 0x1000
 MODULE_INFO_SIZE = 52
 LIBRARY_NAME_OFFSET = 0x34
 LIBSTUB_OFFSET = 0x50
-LIBSTUB_SIZE = 20
-NID_TABLE_OFFSET = 0x64
-DATA_FILE_SIZE = 0x70
-DATA_MEMORY_SIZE = 0x80
+GE_LIBRARY_NAME_OFFSET = 0x40
+GE_LIBSTUB_OFFSET = 0x64
+LIBSTUB_END_OFFSET = 0x78
+NID_TABLE_OFFSET = 0x78
+GE_NID_TABLE_OFFSET = 0x80
+DATA_FILE_SIZE = 0x84
+DATA_MEMORY_SIZE = 0x90
 BSS_SIZE = DATA_MEMORY_SIZE - DATA_FILE_SIZE
 
 TEXT_FILE_OFFSET = 0x100
 DATA_FILE_OFFSET = 0x200
-RELOCATION_FILE_OFFSET = 0x280
+RELOCATION_FILE_OFFSET = DATA_FILE_OFFSET + DATA_FILE_SIZE
 
 LIBRARY = "sceDisplay"
+GE_LIBRARY = "sceGe_user"
 NID_SET_FRAME_BUF = 0x289D82FE
 NID_WAIT_VBLANK_START = 0x984C27E7
-NIDS = (NID_SET_FRAME_BUF, NID_WAIT_VBLANK_START)
+NID_GE_LIST_ENQUEUE = 0xAB49E76A
+NIDS = (NID_SET_FRAME_BUF, NID_WAIT_VBLANK_START, NID_GE_LIST_ENQUEUE)
 
 # Presentation parameters. Stride must be a multiple of 64 and the format must
 # be 0..3; src/rt/hle.c rejects anything else, which is part of what the gate
 # proves is being honoured.
 FRAMEBUFFER = 0x04000000
+GE_LIST = 0x08900000
 STRIDE = 512
 PIXEL_FORMAT = 3  # PSP_DISPLAY_PIXEL_FORMAT_8888
 PIXELS = STRIDE * 272
@@ -174,7 +185,7 @@ def final_frame_first_pixel(frames: int) -> int:
 
 
 def _entry_words(frames: int) -> list[int]:
-    """The whole guest: a frame loop around a framebuffer fill and a flip."""
+    """The guest submits a GE list, then fills and presents each frame."""
     if not 1 <= frames <= 0x7FFF:
         raise ValueError(f"frame count {frames} does not fit a signed 16-bit immediate")
     return [
@@ -183,66 +194,84 @@ def _entry_words(frames: int) -> list[int]:
         _i(0x2B, SP, RA, 28),            # 0x04 sw ra, 28(sp)
         _i(0x2B, SP, S0, 24),            # 0x08 sw s0, 24(sp)
         _r(ZERO, ZERO, S0, 0, 0x21),     # 0x0C addu s0, zero, zero   (frame = 0)
-        # frame_loop (0x10)
-        _i(0x0F, ZERO, T0, 0x0400),      # 0x10 lui t0, 0x0400        (vram cursor)
-        _r(ZERO, ZERO, T1, 0, 0x21),     # 0x14 addu t1, zero, zero   (i = 0)
-        _i(0x0F, ZERO, T2, PIXELS >> 16),  # 0x18 lui t2, hi(PIXELS)
-        _i(0x0D, T2, T2, PIXELS & 0xFFFF),  # 0x1C ori t2, t2, lo(PIXELS)
-        # pixel_loop (0x20)
-        _r(ZERO, T1, T3, 4, 0x02),       # 0x20 srl t3, t1, 4
-        _r(T3, S0, T3, 0, 0x21),         # 0x24 addu t3, t3, s0
-        _i(0x0C, T3, T3, 0xFF),          # 0x28 andi t3, t3, 0xFF     (red)
-        _i(0x0E, T3, T4, 0xFF),          # 0x2C xori t4, t3, 0xFF     (green)
-        _r(ZERO, T3, T5, 1, 0x00),       # 0x30 sll t5, t3, 1
-        _i(0x0C, T5, T5, 0xFF),          # 0x34 andi t5, t5, 0xFF     (blue)
-        _r(ZERO, T5, T6, 16, 0x00),      # 0x38 sll t6, t5, 16
-        _r(ZERO, T4, T7, 8, 0x00),       # 0x3C sll t7, t4, 8
-        _r(T6, T7, T6, 0, 0x25),         # 0x40 or t6, t6, t7
-        _r(T6, T3, T6, 0, 0x25),         # 0x44 or t6, t6, t3
-        _i(0x0F, ZERO, T8, 0xFF00),      # 0x48 lui t8, 0xFF00        (alpha)
-        _r(T6, T8, T6, 0, 0x25),         # 0x4C or t6, t6, t8
-        _i(0x2B, T0, T6, 0),             # 0x50 sw t6, 0(t0)
-        _i(0x09, T0, T0, 4),             # 0x54 addiu t0, t0, 4
-        _i(0x09, T1, T1, 1),             # 0x58 addiu t1, t1, 1
-        _i(0x05, T1, T2, -16),           # 0x5C bne t1, t2, pixel_loop
-        0,                               # 0x60 nop (delay slot)
+        # ge_list_setup (0x10): one no-vertex PRIM, FINISH, END.
+        _i(0x0F, ZERO, T0, GE_LIST >> 16),  # 0x10 lui t0, 0x0890 (GE list)
+        _i(0x0F, ZERO, T1, 0x0400),      # 0x14 lui t1, 0x0400 (PRIM type 0, count 0)
+        _i(0x2B, T0, T1, 0),             # 0x18 sw t1, 0(t0)
+        _i(0x0F, ZERO, T1, 0x0F00),      # 0x1C lui t1, 0x0f00 (FINISH)
+        _i(0x2B, T0, T1, 4),             # 0x20 sw t1, 4(t0)
+        _i(0x0F, ZERO, T1, 0x0C00),      # 0x24 lui t1, 0x0c00 (END)
+        _i(0x2B, T0, T1, 8),             # 0x28 sw t1, 8(t0)
+        _r(ZERO, T0, A0, 0, 0x21),       # 0x2C addu a0, t0, zero
+        _r(ZERO, ZERO, A1, 0, 0x21),     # 0x30 addu a1, zero, zero
+        _r(ZERO, ZERO, A2, 0, 0x21),     # 0x34 addu a2, zero, zero
+        _r(ZERO, ZERO, A3, 0, 0x21),     # 0x38 addu a3, zero, zero
+        _j(0x03, GE_LIST_ENQUEUE_STUB),  # 0x3C jal sceGeListEnQueue
+        0,                               # 0x40 nop (delay slot)
+        # frame_loop (0x44)
+        _i(0x0F, ZERO, T0, 0x0400),      # 0x44 lui t0, 0x0400 (vram cursor)
+        _r(ZERO, ZERO, T1, 0, 0x21),     # 0x48 addu t1, zero, zero (i = 0)
+        _i(0x0F, ZERO, T2, PIXELS >> 16),  # 0x4C lui t2, hi(PIXELS)
+        _i(0x0D, T2, T2, PIXELS & 0xFFFF),  # 0x50 ori t2, t2, lo(PIXELS)
+        # pixel_loop (0x54)
+        _r(ZERO, T1, T3, 4, 0x02),       # 0x54 srl t3, t1, 4
+        _r(T3, S0, T3, 0, 0x21),         # 0x58 addu t3, t3, s0
+        _i(0x0C, T3, T3, 0xFF),          # 0x5C andi t3, t3, 0xFF (red)
+        _i(0x0E, T3, T4, 0xFF),          # 0x60 xori t4, t3, 0xFF (green)
+        _r(ZERO, T3, T5, 1, 0x00),       # 0x64 sll t5, t3, 1
+        _i(0x0C, T5, T5, 0xFF),          # 0x68 andi t5, t5, 0xFF (blue)
+        _r(ZERO, T5, T6, 16, 0x00),      # 0x6C sll t6, t5, 16
+        _r(ZERO, T4, T7, 8, 0x00),       # 0x70 sll t7, t4, 8
+        _r(T6, T7, T6, 0, 0x25),         # 0x74 or t6, t6, t7
+        _r(T6, T3, T6, 0, 0x25),         # 0x78 or t6, t6, t3
+        _i(0x0F, ZERO, T8, 0xFF00),      # 0x7C lui t8, 0xFF00 (alpha)
+        _r(T6, T8, T6, 0, 0x25),         # 0x80 or t6, t6, t8
+        _i(0x2B, T0, T6, 0),             # 0x84 sw t6, 0(t0)
+        _i(0x09, T0, T0, 4),             # 0x88 addiu t0, t0, 4
+        _i(0x09, T1, T1, 1),             # 0x8C addiu t1, t1, 1
+        _i(0x05, T1, T2, -16),           # 0x90 bne t1, t2, pixel_loop
+        0,                               # 0x94 nop (delay slot)
         # present
-        _i(0x0F, ZERO, A0, FRAMEBUFFER >> 16),  # 0x64 lui a0, 0x0400
-        _i(0x09, ZERO, A1, STRIDE),      # 0x68 addiu a1, zero, 512
-        _i(0x09, ZERO, A2, PIXEL_FORMAT),  # 0x6C addiu a2, zero, 3
-        _i(0x09, ZERO, A3, 1),           # 0x70 addiu a3, zero, 1     (sync = 1)
-        _j(0x03, SETFB_STUB),            # 0x74 jal sceDisplaySetFrameBuf
-        0,                               # 0x78 nop (delay slot)
-        _j(0x03, VBLANK_STUB),           # 0x7C jal sceDisplayWaitVblankStart
-        0,                               # 0x80 nop (delay slot)
-        _i(0x09, S0, S0, 1),             # 0x84 addiu s0, s0, 1
-        _i(0x0A, S0, T9, frames),        # 0x88 slti t9, s0, FRAMES
-        _i(0x05, T9, ZERO, -32),         # 0x8C bne t9, zero, frame_loop
-        0,                               # 0x90 nop (delay slot)
+        _i(0x0F, ZERO, A0, FRAMEBUFFER >> 16),  # 0x98 lui a0, 0x0400
+        _i(0x09, ZERO, A1, STRIDE),      # 0x9C addiu a1, zero, 512
+        _i(0x09, ZERO, A2, PIXEL_FORMAT),  # 0xA0 addiu a2, zero, 3
+        _i(0x09, ZERO, A3, 1),           # 0xA4 addiu a3, zero, 1 (sync = 1)
+        _j(0x03, SETFB_STUB),            # 0xA8 jal sceDisplaySetFrameBuf
+        0,                               # 0xAC nop (delay slot)
+        _j(0x03, VBLANK_STUB),           # 0xB0 jal sceDisplayWaitVblankStart
+        0,                               # 0xB4 nop (delay slot)
+        _i(0x09, S0, S0, 1),             # 0xB8 addiu s0, s0, 1
+        _i(0x0A, S0, T9, frames),        # 0xBC slti t9, s0, FRAMES
+        _i(0x05, T9, ZERO, -32),         # 0xC0 bne t9, zero, frame_loop
+        0,                               # 0xC4 nop (delay slot)
         # epilogue
-        _i(0x23, SP, RA, 28),            # 0x94 lw ra, 28(sp)
-        _i(0x23, SP, S0, 24),            # 0x98 lw s0, 24(sp)
-        _r(RA, 0, 0, 0, 0x08),           # 0x9C jr ra
-        _i(0x09, SP, SP, 32),            # 0xA0 addiu sp, sp, 32 (delay slot)
+        _i(0x23, SP, RA, 28),            # 0xC8 lw ra, 28(sp)
+        _i(0x23, SP, S0, 24),            # 0xCC lw s0, 24(sp)
+        _r(RA, 0, 0, 0, 0x08),           # 0xD0 jr ra
+        _i(0x09, SP, SP, 32),            # 0xD4 addiu sp, sp, 32 (delay slot)
     ]
 
 
 def relocation_records() -> list[tuple[int, int]]:
     """The ordered PSP type-A relocation table.
 
-    Segment 0 is .text, segment 1 is .data. The two R_MIPS_26 records rebase the
+    Segment 0 is .text, segment 1 is .data. The three R_MIPS_26 records rebase the
     calls to the import stubs; the R_MIPS_32 records rebase the module-info and
     import-table pointers. The stub-table pointer is the only data word that
     targets the text segment.
     """
     return [
-        (0x74, relocation_info(R_MIPS_26, 0, 0)),  # jal sceDisplaySetFrameBuf
-        (0x7C, relocation_info(R_MIPS_26, 0, 0)),  # jal sceDisplayWaitVblankStart
+        (0x3C, relocation_info(R_MIPS_26, 0, 0)),  # jal sceGeListEnQueue
+        (0xA8, relocation_info(R_MIPS_26, 0, 0)),  # jal sceDisplaySetFrameBuf
+        (0xB0, relocation_info(R_MIPS_26, 0, 0)),  # jal sceDisplayWaitVblankStart
         (0x2C, relocation_info(R_MIPS_32, 1, 1)),  # module libstub
         (0x30, relocation_info(R_MIPS_32, 1, 1)),  # module libstubend
-        (0x50, relocation_info(R_MIPS_32, 1, 1)),  # library name
-        (0x5C, relocation_info(R_MIPS_32, 1, 1)),  # NID table
-        (0x60, relocation_info(R_MIPS_32, 1, 0)),  # first import stub (into .text)
+        (0x50, relocation_info(R_MIPS_32, 1, 1)),  # display library name
+        (0x5C, relocation_info(R_MIPS_32, 1, 1)),  # display NID table
+        (0x60, relocation_info(R_MIPS_32, 1, 0)),  # display import stubs (into .text)
+        (0x64, relocation_info(R_MIPS_32, 1, 1)),  # GE library name
+        (0x70, relocation_info(R_MIPS_32, 1, 1)),  # GE NID table
+        (0x74, relocation_info(R_MIPS_32, 1, 0)),  # GE import stub (into .text)
     ]
 
 
@@ -254,10 +283,10 @@ def build_text_segment(frames: int) -> bytes:
         )
     text = bytearray(TEXT_FILE_SIZE)
     text[0 : len(entry) * 4] = _words(entry)
-    # Two 8-byte import slots: the recompiler pairs each with its NID and routes
+    # Three 8-byte import slots: the recompiler pairs each with its NID and routes
     # the call to the HLE handler, so the syscall word is never executed.
-    text[STUB_OFFSET : STUB_OFFSET + 16] = _words(
-        [0x03E00008, 0x0000000C, 0x03E00008, 0x0000000C]
+    text[STUB_OFFSET : STUB_OFFSET + 24] = _words(
+        [0x03E00008, 0x0000000C] * len(NIDS)
     )
     return bytes(text)
 
@@ -266,6 +295,7 @@ def build_data_segment() -> bytes:
     data = bytearray(DATA_FILE_SIZE)
     module_name = b"display-smoke-v1"
     library_name = LIBRARY.encode("ascii") + b"\0"
+    ge_library_name = GE_LIBRARY.encode("ascii") + b"\0"
     data[0:MODULE_INFO_SIZE] = struct.pack(
         "<HH28s5I",
         0,
@@ -275,23 +305,38 @@ def build_data_segment() -> bytes:
         0,
         0,
         LIBSTUB_OFFSET,
-        LIBSTUB_OFFSET + LIBSTUB_SIZE,
+        LIBSTUB_END_OFFSET,
     )
     if len(library_name) > LIBSTUB_OFFSET - LIBRARY_NAME_OFFSET:
         raise AssertionError("library name no longer fits the fixed layout")
+    if len(ge_library_name) > GE_LIBSTUB_OFFSET - GE_LIBRARY_NAME_OFFSET:
+        raise AssertionError("GE library name no longer fits the fixed layout")
     data[LIBRARY_NAME_OFFSET : LIBRARY_NAME_OFFSET + len(library_name)] = library_name
-    data[LIBSTUB_OFFSET : LIBSTUB_OFFSET + LIBSTUB_SIZE] = struct.pack(
+    data[GE_LIBRARY_NAME_OFFSET : GE_LIBRARY_NAME_OFFSET + len(ge_library_name)] = ge_library_name
+    data[LIBSTUB_OFFSET : LIBSTUB_OFFSET + 20] = struct.pack(
         "<IHHBBHII",
         LIBRARY_NAME_OFFSET,
         0x0101,
         0x0009,
         5,
         0,
-        len(NIDS),
+        2,
         NID_TABLE_OFFSET,
         STUB_OFFSET,
     )
-    struct.pack_into(f"<{len(NIDS)}I", data, NID_TABLE_OFFSET, *NIDS)
+    data[GE_LIBSTUB_OFFSET : GE_LIBSTUB_OFFSET + 20] = struct.pack(
+        "<IHHBBHII",
+        GE_LIBRARY_NAME_OFFSET,
+        0x0101,
+        0x0009,
+        5,
+        0,
+        1,
+        GE_NID_TABLE_OFFSET,
+        GE_LIST_ENQUEUE_STUB,
+    )
+    struct.pack_into("<2I", data, NID_TABLE_OFFSET, *NIDS[:2])
+    struct.pack_into("<I", data, GE_NID_TABLE_OFFSET, NID_GE_LIST_ENQUEUE)
     return bytes(data)
 
 
@@ -397,7 +442,8 @@ def build_prx(frames: int = DEFAULT_FRAMES) -> bytes:
             ),
             section(
                 ".lib.stub", 1, 2, DATA_VADDR + LIBSTUB_OFFSET,
-                DATA_FILE_OFFSET + LIBSTUB_OFFSET, LIBSTUB_SIZE, 4,
+                DATA_FILE_OFFSET + LIBSTUB_OFFSET,
+                LIBSTUB_END_OFFSET - LIBSTUB_OFFSET, 4,
             ),
             section(
                 ".rodata.sceNid", 1, 2, DATA_VADDR + NID_TABLE_OFFSET,
@@ -479,8 +525,10 @@ def manifest_bytes(prx: bytes, psp_header: bytes, frames: int) -> bytes:
         "title_id": TITLE_ID,
         "base": f"0x{BASE:08x}",
         "entry": f"0x{ENTRY:08x}",
-        "library": LIBRARY,
-        "nids": [f"0x{nid:08x}" for nid in NIDS],
+        "libraries": {
+            LIBRARY: [f"0x{nid:08x}" for nid in NIDS[:2]],
+            GE_LIBRARY: [f"0x{NID_GE_LIST_ENQUEUE:08x}"],
+        },
         "stub_table": f"0x{BASE + STUB_OFFSET:08x}",
         "framebuffer": f"0x{FRAMEBUFFER:08x}",
         "stride": STRIDE,
@@ -533,8 +581,9 @@ def verify(build_dir: Path) -> int:
         raise RuntimeError(f"image {image_path} is {len(image)} bytes, shorter than .text")
 
     for offset, expected_target, label in (
-        (0x74, SETFB_STUB, "sceDisplaySetFrameBuf"),
-        (0x7C, VBLANK_STUB, "sceDisplayWaitVblankStart"),
+        (0x3C, GE_LIST_ENQUEUE_STUB, "sceGeListEnQueue"),
+        (0xA8, SETFB_STUB, "sceDisplaySetFrameBuf"),
+        (0xB0, VBLANK_STUB, "sceDisplayWaitVblankStart"),
     ):
         word = struct.unpack_from("<I", image, offset)[0]
         opcode = (word >> 26) & 0x3F
@@ -597,7 +646,12 @@ def offscreen_present_evidence_failure(combined: str) -> str | None:
     return None
 
 
-def run(build_dir: Path, gui: bool = False, offscreen: bool = False) -> int:
+def run(
+    build_dir: Path,
+    gui: bool = False,
+    offscreen: bool = False,
+    flight_output: Path | None = None,
+) -> int:
     # The runtime is spawned with cwd=ROOT, so a relative build_dir would make the
     # CHILD resolve the executable/image paths against ROOT rather than the
     # caller's cwd. Resolve once so every path handed to subprocess is absolute.
@@ -637,6 +691,11 @@ def run(build_dir: Path, gui: bool = False, offscreen: bool = False) -> int:
             "SR_VIDEO": "offscreen",
             "SR_PRESENT_TRACE": "1",
         })
+    if flight_output is not None:
+        env.update({
+            "SR_FLIGHT": "ge,present;4096",
+            "SR_FLIGHT_OUTPUT": str(flight_output.resolve()),
+        })
     completed = subprocess.run(
         command, cwd=ROOT, env=env, capture_output=True, text=True
     )
@@ -668,6 +727,102 @@ def run(build_dir: Path, gui: bool = False, offscreen: bool = False) -> int:
     print(
         f"DISPLAY_SMOKE_RUN status=PASS mode={mode} "
         f"frames={frames} framebuffer=0x{FRAMEBUFFER:08x} value=0x{expected:08x}"
+    )
+    return 0
+
+
+FLIGHT_KIND_PRESENT_FRAME = 29
+
+
+def _without_host_present_events(bundle: dict) -> dict:
+    """Project out successful-present events and renumber the rest as a complete run."""
+    projected = json.loads(json.dumps(bundle))
+    kept = [
+        event for event in projected["events"]
+        if not (event["class"] == "present" and event["kind"] == FLIGHT_KIND_PRESENT_FRAME)
+    ]
+    for index, event in enumerate(kept, start=1):
+        event["sequence"] = index
+    projected["events"] = kept
+    projected["recorder"]["recorded"] = len(kept)
+    projected["recorder"]["dropped"] = 0
+    if projected["terminal"]["sequence"]:
+        projected["terminal"]["sequence"] = len(kept)
+    return projected
+
+
+def flight_smoke(build_dir: Path) -> int:
+    """Record and compare repeatable GE/present evidence from the public guest."""
+    build_dir = build_dir.resolve()
+    manifest = _read_manifest(build_dir / "fixture")
+    frames = int(manifest["frames"])
+    with tempfile.TemporaryDirectory(prefix="display-smoke-flight-") as temp_dir:
+        temp = Path(temp_dir)
+        first_path = temp / "first.json"
+        second_path = temp / "second.json"
+        mutated_path = temp / "mutated.json"
+        run(build_dir, gui=True, offscreen=True, flight_output=first_path)
+        run(build_dir, gui=True, offscreen=True, flight_output=second_path)
+
+        first = json.loads(first_path.read_text(encoding="utf-8"))
+        second = json.loads(second_path.read_text(encoding="utf-8"))
+        for label, bundle in (("first", first), ("second", second)):
+            if bundle["schema_version"] != 4:
+                raise RuntimeError(f"{label} flight bundle is not schema v4")
+            if bundle["recorder"]["enabled_classes"] != ["ge", "present"]:
+                raise RuntimeError(f"{label} flight bundle has unexpected class coverage")
+            if bundle["recorder"]["dropped"] != 0:
+                raise RuntimeError(f"{label} flight bundle dropped events")
+
+        kind_counts = Counter((event["class"], event["kind"]) for event in first["events"])
+        expected = {
+            ("ge", 20): 1,   # enqueue
+            ("ge", 25): 1,   # bounded PRIM event
+            ("ge", 26): 1,   # list completed
+            ("ge", 27): 1,   # FINISH command
+            ("present", 28): frames,
+            ("present", 29): frames // 2,
+        }
+        if kind_counts != expected:
+            raise RuntimeError(f"unexpected GE/present event counts: {dict(kind_counts)}")
+
+        # Successful host presents are recorded when a VBLANK is serviced, so where
+        # they fall among the guest's SetFrameBuf calls follows wall-clock pacing and
+        # reordered between two identical runs on a loaded runner. They are counted
+        # above; the repeatability comparison covers the guest-determined events (the
+        # GE stream and every SetFrameBuf) with the present events projected out.
+        for source, target in ((first, first_path), (second, second_path)):
+            target.write_text(
+                json.dumps(_without_host_present_events(source), sort_keys=True),
+                encoding="utf-8")
+        second = _without_host_present_events(second)
+
+        tool = ROOT / "tools" / "flight_diff.py"
+        match = subprocess.run(
+            [sys.executable, str(tool), str(first_path), str(second_path)],
+            capture_output=True, text=True, check=False,
+        )
+        if match.returncode != 0 or "MATCH:" not in match.stdout:
+            raise RuntimeError(f"identical flight runs did not match: {match.stdout}{match.stderr}")
+
+        draw = next(event for event in second["events"]
+                    if event["class"] == "ge" and event["kind"] == 25)
+        draw["arg3"] += 1
+        mutated_path.write_text(json.dumps(second, sort_keys=True), encoding="utf-8")
+        divergence = subprocess.run(
+            [sys.executable, str(tool), str(first_path), str(mutated_path)],
+            capture_output=True, text=True, check=False,
+        )
+        if (divergence.returncode != 1 or f"DIVERGENCE: sequence {draw['sequence']}" not in divergence.stdout
+                or "class=ge kind=ge-draw (25)" not in divergence.stdout
+                or "arg3:" not in divergence.stdout):
+            raise RuntimeError(
+                f"mutated draw count was not localized: {divergence.stdout}{divergence.stderr}"
+            )
+
+    print(
+        f"DISPLAY_FLIGHT_SMOKE status=PASS ge=4 set_framebuf={frames} "
+        f"present={frames // 2} identical=MATCH mutation=FIRST_GE_DRAW_COUNT"
     )
     return 0
 
@@ -762,6 +917,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--offscreen", action="store_true",
         help="run --sched --gui with the explicit no-window host presenter",
     )
+    flight_parser = subparsers.add_parser("flight")
+    flight_parser.add_argument("--build-dir", type=Path, required=True)
     player_parser = subparsers.add_parser("run-player")
     player_parser.add_argument("--build-dir", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -779,6 +936,8 @@ def main(argv: list[str] | None = None) -> int:
             return verify(args.build_dir)
         if args.command == "run":
             return run(args.build_dir, gui=args.gui, offscreen=args.offscreen)
+        if args.command == "flight":
+            return flight_smoke(args.build_dir)
         if args.command == "run-player":
             return run_player(args.build_dir)
         raise AssertionError(f"unhandled command {args.command}")

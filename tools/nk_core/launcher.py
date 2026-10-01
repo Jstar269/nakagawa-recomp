@@ -51,6 +51,25 @@ IMAGE_SUFFIX: str = "_image.bin"
 
 #: Portable build-name shape for every identity-derived path component.
 _BUILD_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+MAX_BOOT_EXECUTABLE_BYTES = 255
+
+
+def psp_boot_path(boot_executable: object) -> Optional[str]:
+    """Build the guest-visible UMD ISO path for the selected boot module."""
+    if not isinstance(boot_executable, str):
+        return None
+    try:
+        encoded_length = len(boot_executable.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+    if (
+        not boot_executable
+        or encoded_length > MAX_BOOT_EXECUTABLE_BYTES
+        or boot_executable in {".", ".."}
+        or any(ord(char) < 0x20 or char in "/\\:" for char in boot_executable)
+    ):
+        return None
+    return f"disc0:/PSP_GAME/SYSDIR/{boot_executable}"
 
 
 class RuntimeLaunchError(RuntimeError):
@@ -282,6 +301,7 @@ class RuntimeLauncher:
         # Environment variables configured strictly for this execution session
         env = dict(os.environ)
         env.pop("PSP_ISO", None)
+        env.pop("SR_BOOT_PATH", None)
         if iso_path:
             iso_file = Path(iso_path)
             if not iso_file.is_file():
@@ -295,6 +315,16 @@ class RuntimeLauncher:
                         "The ISO file may have been moved, renamed, or deleted. Please re-locate it."
                     )
             env["PSP_ISO"] = iso_path
+        boot_executable = manifest.get("boot_executable") or manifest.get(
+            "selected_executable", ""
+        )
+        if iso_path and boot_executable:
+            boot_path = psp_boot_path(boot_executable)
+            if boot_path is None:
+                raise RuntimeLaunchError(
+                    "Manifest field 'boot_executable' must be a PSP executable filename."
+                )
+            env["SR_BOOT_PATH"] = boot_path
         env["SR_FPS_CAP"] = str(fps_cap)
         env["SR_GPU_GE"] = "0" if software_render else ("1" if gpu_ge else "0")
         env["SR_DATAROOT"] = str(g_dir / "extracted")

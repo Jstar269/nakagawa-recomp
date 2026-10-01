@@ -20,8 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_manifest
 from psp_oracle.protocol import (
     ProtocolError,
+    PSP_MODEL_INTERPRETATION_RULE,
     compare_texts,
     decode_psp_model_code,
+    model_identity_fields,
     parse_output,
     provenance_issues,
     validate_dmac_size_matrix,
@@ -148,6 +150,29 @@ class PspOracleProtocolTests(unittest.TestCase):
         for value in (-1, 8, True, "3"):
             with self.assertRaises(ValueError):
                 decode_psp_model_code(value)  # type: ignore[arg-type]
+
+    def test_model_identity_rule_separates_raw_family_and_agreement(self) -> None:
+        fields = model_identity_fields("psp-3000-series", "0x03")
+        self.assertEqual(fields["PHYSICAL_MODEL_LABEL"], "psp-3000-series")
+        self.assertEqual(fields["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(fields["INTERPRETED_MODEL_FAMILY"], "PSP-3000")
+        self.assertEqual(fields["MODEL_INTERPRETATION_RULE"], PSP_MODEL_INTERPRETATION_RULE)
+        self.assertEqual(fields["MODEL_IDENTITY_AGREEMENT"], "AGREES")
+
+    def test_unknown_model_rule_leaves_the_raw_value_untouched(self) -> None:
+        stored_envelope = {
+            "PHYSICAL_MODEL_LABEL": "PSP-3000",
+            "SOFTWARE_MODEL_RAW_VALUE": "0x03",
+        }
+        fields = model_identity_fields(
+            stored_envelope["PHYSICAL_MODEL_LABEL"],
+            stored_envelope["SOFTWARE_MODEL_RAW_VALUE"],
+            rule_id="PSPSDK_PMODEL_ORDINAL_V2",
+        )
+        self.assertEqual(fields["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(stored_envelope["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(fields["INTERPRETED_MODEL_FAMILY"], "UNKNOWN")
+        self.assertEqual(fields["MODEL_IDENTITY_AGREEMENT"], "UNKNOWN")
 
     def test_parser_requires_metadata_and_orders_records(self) -> None:
         parsed = parse_output(stream("psp"))
@@ -549,7 +574,7 @@ class PspOracleRunnerTests(unittest.TestCase):
             self.assertEqual(captured.parent, results.resolve())
             self.assertIn("status=PASS", captured.read_text(encoding="utf-8"))
 
-    def test_model_code_is_derived_without_the_old_n1000_mapping(self) -> None:
+    def test_model_code_is_not_used_as_an_operator_declared_physical_label(self) -> None:
         command = [
             sys.executable,
             str(Path(__file__).resolve().parent / "psp_oracle" / "run_psplink.py"),
@@ -557,14 +582,44 @@ class PspOracleRunnerTests(unittest.TestCase):
             "--model-code",
             "3",
         ]
-        # Dry-run still validates/derives the model before reporting the plan.
+        # A raw code alone does not create an operator-declared physical label.
         completed = subprocess.run(
             command, capture_output=True, text=True, check=True
         )
         plan = json.loads(completed.stdout)
         self.assertFalse(plan["provenance_supplied"])
-        self.assertEqual(plan["model"], "PSP-3000-04g")
+        self.assertIsNone(plan["model"])
         self.assertEqual(plan["model_code"], 3)
+
+        with_model = subprocess.run(
+            command + [
+                "--model", "psp-3000-series",
+                "--binary", "probe.prx",
+                "--source-commit", "a" * 40,
+                "--firmware", "6.61",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        paired_plan = json.loads(with_model.stdout)
+        self.assertEqual(paired_plan["model"], "psp-3000-series")
+        self.assertEqual(paired_plan["model_code"], 3)
+
+    def test_terminal_annotation_preserves_legacy_model_envelope_fields(self) -> None:
+        legacy = {
+            "CONSOLE_MODEL": "PSP-3000-04g",
+            "MODEL_SOURCE": "operator-recorded label; no serial or MAC stored",
+            "PHYSICAL_MODEL_LABEL": "psp-3000-series",
+            "SOFTWARE_MODEL_RAW_VALUE": "3",
+            "MODEL_CONTRADICTION": "RECORDED",
+        }
+        annotated = annotate_terminal_outcome(legacy, b"transport only\n", "RESET")
+        self.assertEqual(
+            {key: annotated[key] for key in legacy},
+            legacy,
+        )
+        self.assertEqual(legacy["MODEL_CONTRADICTION"], "RECORDED")
 
     def test_nakagawa_mode_reuses_production_selftest_and_derives_records(self) -> None:
         root = Path(__file__).resolve().parents[1]
