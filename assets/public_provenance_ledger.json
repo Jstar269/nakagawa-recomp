@@ -2440,7 +2440,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ccad6627bb32436d8b16d0d82f9402bfdde9c9c3057326d738bdadf7b333654f"
+      "sha256": "56762045d33158db15e02bb834736a475e07fb88364d13c8de69e4961bb05035"
     },
     {
       "path": "src/core/nk_platform_posix.c",
@@ -2452,7 +2452,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "21cfe667433b85dae74582d7821be740bf013f447df2a263fe994253230d4569"
+      "sha256": "1114798f243dd43be0b758fa6ce75823cdb89b76c7f44a38585367a6e75a9687"
     },
     {
       "path": "src/core/nk_platform_win32.c",
@@ -2598,7 +2598,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b2929654fcfa0908b2155a4075b82dfb9bbd6412de2c5613dcd65ffcd1019d4f"
+      "sha256": "77e9def0428cc142f36b0a04a8f3d171f85944f353157e7eeee5fa8c6b39e64e"
     },
     {
       "path": "src/core/nk_psp_keystore.h",
@@ -2930,7 +2930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c64aff2913b1929a877cb8a8768a1962184f400254a656c1e54fe986e28c4bb6"
+      "sha256": "4acce664a87d254a4f5c6f07e904a576c36983fae0ffbe8db0e684db2df078c5"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -5304,7 +5304,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7928121e219ff93895bcf1e431d04cba1f7091ca109857793ebb89834be30a2d"
+      "sha256": "583ffed1570753e28e7e7485cab4beb19681ebd46d921a399e40f0b367714b42"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
