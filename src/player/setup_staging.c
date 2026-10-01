@@ -544,7 +544,7 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
     if (!source || !destination) {
         if (source) fclose(source);
         if (destination) fclose(destination);
-        remove(destination_path);
+        nk_remove_utf8(destination_path);
         stage_error(context, NK_ERROR_IO, "cannot open PRX staging file");
         return false;
     }
@@ -567,7 +567,7 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
     int source_close_failed = fclose(source) != 0;
     int destination_close_failed = fclose(destination) != 0;
     if (!okay || remaining != 0 || source_close_failed || destination_close_failed) {
-        remove(destination_path);
+        nk_remove_utf8(destination_path);
         if (context->callback_result == NK_ERROR_CANCELLED) return false;
         stage_error(context, NK_ERROR_IO, "failed while copying decrypted PRX");
         return false;

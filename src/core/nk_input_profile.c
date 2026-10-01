@@ -1689,7 +1689,7 @@ static NkResult profile_document_write(
 
     if (fflush(f) != 0) {
         fclose(f);
-        remove(tmp_path);
+        nk_remove_utf8(tmp_path);
         diag_set(diag_buf, diag_buf_sz, "failed to flush temporary profile file '%s'", tmp_path);
         return NK_ERROR_IO;
     }
@@ -1707,7 +1707,7 @@ static NkResult profile_document_write(
     WCHAR wtmp[32768], wtarget[32768];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 32768) <= 0 ||
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, file_path, -1, wtarget, 32768) <= 0) {
-        DeleteFileA(tmp_path);
+        nk_remove_utf8(tmp_path);
         diag_set(diag_buf, diag_buf_sz, "failed UTF-8 conversion for path '%s'", file_path);
         return NK_ERROR_IO;
     }
