@@ -18,6 +18,12 @@
 #include <stdio.h>
 #include <string.h>
 
+/* source_commit is device-reported build identity, not a host-side rewrite.
+   The Makefile supplies the full object id only from a clean checkout. */
+#ifndef PROBE_BUILD_COMMIT
+#error "PROBE_BUILD_COMMIT must be the full git object id this probe was built from"
+#endif
+
 PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 
 #define FIXTURE_BUILD_ID "nakagawa-psp-oracle-v1"
@@ -3890,11 +3896,14 @@ int main(int argc, char *argv[]) {
     char line[320];
 
     /* uint32_t is `unsigned long` in the PSP newlib ABI, so %x must be fed an
-       explicitly-converted unsigned int or psp-gcc warns under -Wformat. */
+       explicitly-converted unsigned int or psp-gcc warns under -Wformat.
+       The device reports its build commit so the host can compare it with the
+       staged source. It cannot hash its module image, so binary_sha256 remains
+       an explicit placeholder and is recorded as a host-measured digest. */
     snprintf(line, sizeof(line),
              "NAKAGAWA_PSP_META schema=1 source=%s model=unknown firmware=unknown "
              "binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 "
-             "source_commit=0000000000000000000000000000000000000000 fixture=%s\n",
+             "source_commit=" PROBE_BUILD_COMMIT " fixture=%s\n",
              emulated ? "ppsspp" : "psp", FIXTURE_BUILD_ID);
     emit(emulated, line);
 #ifdef PROBE_HOST0_LOG

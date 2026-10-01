@@ -681,6 +681,23 @@ class CanonicalCfgTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "read_at_vaddr"):
             analyze.canonical_cfg_report(None)
 
+    def test_cfg_erets_are_no_delay_exits_not_linear_fallthrough(self):
+        image = FakeCodeImage({
+            0x1800: 0x42000018,  # eret has no delay slot
+            0x1804: 0x012A4020,  # non-padding word outside known control flow
+        })
+        report = analyze.canonical_cfg_report(
+            image, ranges=[(0x1800, 0x1808)], entries=[0x1800]
+        )
+        nodes = {node["address"]: node for node in report["instructions"]}
+
+        self.assertEqual(nodes[0x1800]["terminator"], "eret")
+        self.assertIsNone(nodes[0x1800]["delay_slot_of"])
+        self.assertFalse(nodes[0x1800]["edges"])
+        self.assertEqual(
+            nodes[0x1804]["classification"], "unowned-executable"
+        )
+
     def test_cfg_preserves_calls_tail_likely_delay_and_unresolved_edges(self):
         words = {
             0x1000: jal(0x1100), 0x1004: 0,

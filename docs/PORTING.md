@@ -48,6 +48,47 @@ The manifest is not a storage location for absolute paths, usernames, hashes,
 keys, retail bytes, routes, saves, or oracle evidence. Those are private
 workspace bindings supplied locally and remain outside Git.
 
+For split loose-file layouts, declare the extra roots in
+`filesystem.loose_content_roots` rather than teaching generic runtime code
+directory names. Each entry has `root`, `mount`, and `precedence`, with optional
+`skip_primary_root` and `exclude` fields. `root` resolves relative to the
+parent of `filesystem.data_root`; `mount` is the guest-relative prefix (or
+`""` for the namespace root), and lower unique `precedence` values win
+duplicate file keys between loose roots. `root: "."` skips the primary data
+root by default; `exclude` lists up to two safe relative paths that the walk
+does not enter. Files under `filesystem.data_root` keep priority over matching
+files from loose roots. The schema rejects unsafe, duplicate, or overlapping
+roots. Existing manifests without this optional field still load with no extra
+roots; add the field when the title needs them.
+When staging an ISO, matching roots under PSP_GAME/USRDIR are copied to the
+same relative staging paths; the player does not infer a directory when the
+field is absent.
+
+To migrate the former inferred layout whose data root is
+`<something>/USRDIR/xbdata` or
+`<something>/USRDIR/xbdata_extracted`, and whose loose assets live beside that
+directory under `USRDIR`, add this declaration:
+
+```json
+"loose_content_roots": [
+  {"root": ".", "mount": "", "precedence": 0, "skip_primary_root": true}
+]
+```
+
+This reproduces the former parent walk: it indexed the primary extracted tree,
+then recursively indexed readable regular files below the parent while
+skipping the primary child. It otherwise visited sibling directories too;
+omitting `exclude` preserves that complete historical file set. A profile may
+list additional relative paths in `exclude` when those subtrees are outside its
+disc namespace or would make the walk needlessly broad. For the extracted-tree
+layout, primary files win matching loose-file keys, as before. The former
+inference only activated for the documented `USRDIR`/archive-root layout; the
+manifest now states the root relationship directly. The archived and extracted
+routes have distinct open order: a matching extracted-primary file wins a loose
+file, while a loose filesystem file is checked before an XB archive member.
+This migration and the remaining loose-content integration are tracked as
+**Loose-content root binding — in the works ([#289](https://github.com/Jstar269/nakagawa-recomp/issues/289))**.
+
 For the privately route-validated HST title, the opt-in manager path is
 (private-local-only: it requires a local, publication-excluded copy of the
 retail HST manifest, so it is not runnable from a public clone):

@@ -99,7 +99,7 @@ bool package_builder_load_prerequisites(const char *cli_path,
         return false;
     }
     memset(out_list, 0, sizeof(*out_list));
-    file = fopen(path, "rb");
+    file = nk_fopen_utf8(path, "rb");
     if (!file || fseek(file, 0, SEEK_END) != 0 || (file_size = ftell(file)) <= 0 ||
         file_size > 2 * 1024 * 1024 || fseek(file, 0, SEEK_SET) != 0) {
         if (error && error_size) snprintf(error, error_size, "PREREQUISITE_MANIFEST_NOT_FOUND: cannot read %s.", path);
@@ -224,7 +224,7 @@ void package_builder_mark_prerequisites_installed(PackagePrerequisiteList *list,
     int n = snprintf(path, sizeof(path), "%s%cprerequisites%cinstalled.json",
                      data_root, nk_platform_path_separator(), nk_platform_path_separator());
     if (n < 0 || (size_t)n >= sizeof(path)) return;
-    FILE *file = fopen(path, "rb");
+    FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return;
     if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return; }
     long size = ftell(file);
@@ -568,7 +568,7 @@ bool package_builder_download_verified(
             "The server reported the wrong size for %s. Retry the download.", item->name);
         goto done;
     }
-    partial_file = fopen(partial_path, "wb");
+    partial_file = nk_fopen_utf8(partial_path, "wb");
     if (!partial_file) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "DISK_FULL");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
@@ -669,11 +669,7 @@ bool package_builder_download_verified(
         goto done;
     }
     partial_file = NULL;
-#if defined(_WIN32) || defined(_WIN64)
-    if (!MoveFileExA(partial_path, destination, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-#else
-    if (rename(partial_path, destination) != 0) {
-#endif
+    if (nk_rename_utf8(partial_path, destination) != 0) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "DESTINATION_WRITE_FAILED");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
             "Could not save the verified prerequisite in app data. Check permissions and free disk space.");
@@ -682,7 +678,7 @@ bool package_builder_download_verified(
     ok = true;
 done:
     if (partial_file) fclose(partial_file);
-    if (!ok) remove(partial_path);
+    if (!ok) nk_remove_utf8(partial_path);
     if (response_open && response.close) response.close(response.context);
 #if defined(_WIN32) || defined(_WIN64)
     if (hash) BCryptDestroyHash(hash);
@@ -693,30 +689,50 @@ done:
 }
 
 #if defined(_WIN32) || defined(_WIN64)
-static bool bootstrap_remove_tree(const char *path) {
-    DWORD attributes = GetFileAttributesA(path);
+/* The CPython staging tree lives under the per-user app-data root, whose name
+ * may hold non-ASCII characters, so the narrow *A file APIs would re-read it
+ * in the active ANSI code page. Every filesystem call below therefore takes a
+ * wide name. */
+static bool bootstrap_utf8_to_wide(const char *utf8, WCHAR *out_wide, size_t max_wide_chars) {
+    if (!utf8 || !out_wide || max_wide_chars == 0) return false;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, out_wide,
+                            (int)max_wide_chars) <= 0) {
+        out_wide[0] = L'\0';
+        return false;
+    }
+    return true;
+}
+
+static bool bootstrap_remove_tree_wide(const WCHAR *wpath) {
+    DWORD attributes = GetFileAttributesW(wpath);
     if (attributes == INVALID_FILE_ATTRIBUTES) return GetLastError() == ERROR_FILE_NOT_FOUND ||
                                                           GetLastError() == ERROR_PATH_NOT_FOUND;
-    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return DeleteFileA(path) != 0;
-    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) return RemoveDirectoryA(path) != 0;
-    char pattern[NK_MAX_PATH];
-    int n = snprintf(pattern, sizeof(pattern), "%s\\*", path);
-    if (n < 0 || (size_t)n >= sizeof(pattern)) return false;
-    WIN32_FIND_DATAA data;
-    HANDLE find = FindFirstFileA(pattern, &data);
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return DeleteFileW(wpath) != 0;
+    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) return RemoveDirectoryW(wpath) != 0;
+    WCHAR wpattern[NK_MAX_PATH];
+    if (swprintf(wpattern, sizeof(wpattern) / sizeof(wpattern[0]), L"%s\\*", wpath) < 0) return false;
+    WIN32_FIND_DATAW data;
+    HANDLE find = FindFirstFileW(wpattern, &data);
     if (find != INVALID_HANDLE_VALUE) {
         do {
-            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) continue;
-            char child[NK_MAX_PATH];
-            n = snprintf(child, sizeof(child), "%s\\%s", path, data.cFileName);
-            if (n < 0 || (size_t)n >= sizeof(child) || !bootstrap_remove_tree(child)) {
+            if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+            WCHAR wchild[NK_MAX_PATH];
+            if (swprintf(wchild, sizeof(wchild) / sizeof(wchild[0]), L"%s\\%s", wpath,
+                         data.cFileName) < 0 ||
+                !bootstrap_remove_tree_wide(wchild)) {
                 FindClose(find);
                 return false;
             }
-        } while (FindNextFileA(find, &data));
+        } while (FindNextFileW(find, &data));
         FindClose(find);
     }
-    return RemoveDirectoryA(path) != 0;
+    return RemoveDirectoryW(wpath) != 0;
+}
+
+static bool bootstrap_remove_tree(const char *path) {
+    WCHAR wpath[NK_MAX_PATH];
+    if (!bootstrap_utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(wpath[0]))) return false;
+    return bootstrap_remove_tree_wide(wpath);
 }
 
 static bool bootstrap_cancel_requested(PackageBootstrapSession *session) {
@@ -769,6 +785,8 @@ static DWORD WINAPI bootstrap_python_thread(void *context) {
     char item_dir[NK_MAX_PATH];
     char final_python_dir[NK_MAX_PATH];
     char staged_python[NK_MAX_PATH];
+    WCHAR wstaging[NK_MAX_PATH];
+    WCHAR wfinal[NK_MAX_PATH];
     char code[48] = "";
     char message[512] = "";
     int n;
@@ -855,7 +873,9 @@ static DWORD WINAPI bootstrap_python_thread(void *context) {
         goto finished;
     }
     if (!bootstrap_remove_tree(final_python_dir) ||
-        !MoveFileExA(session->staging_path, final_python_dir, MOVEFILE_WRITE_THROUGH)) {
+        !bootstrap_utf8_to_wide(session->staging_path, wstaging, NK_MAX_PATH) ||
+        !bootstrap_utf8_to_wide(final_python_dir, wfinal, NK_MAX_PATH) ||
+        !MoveFileExW(wstaging, wfinal, MOVEFILE_WRITE_THROUGH)) {
         snprintf(code, sizeof(code), "DISK_WRITE_FAILED");
         snprintf(message, sizeof(message), "The verified CPython files could not be promoted into app data. Check permissions and retry.");
         goto finished;
@@ -1034,8 +1054,8 @@ NkResult package_builder_start_prerequisite_fetch(
     n = snprintf(session->cancel_file_path, sizeof(session->cancel_file_path),
                  "%s%cinstall-cancel.signal", prereq_root, nk_platform_path_separator());
     if (n < 0 || (size_t)n >= sizeof(session->cancel_file_path)) return NK_ERROR_GENERIC;
-    remove(session->progress_file_path);
-    remove(session->cancel_file_path);
+    nk_remove_utf8(session->progress_file_path);
+    nk_remove_utf8(session->cancel_file_path);
     session->progress_file_offset = 0;
     session->log_file_path[0] = '\0';
     const char *ldir = (log_dir && log_dir[0]) ? log_dir : prereq_root;
@@ -1094,7 +1114,7 @@ void package_builder_request_prerequisite_cancel(
     const char *path = cancel_file_path && cancel_file_path[0]
         ? cancel_file_path : session->cancel_file_path;
     if (!path || !path[0]) return;
-    FILE *cancel = fopen(path, "wb");
+    FILE *cancel = nk_fopen_utf8(path, "wb");
     if (cancel) {
         fputs("cancel\n", cancel);
         fclose(cancel);
@@ -1611,6 +1631,19 @@ bool package_builder_toolchain_missing(
     return true;
 }
 
+/* Every new build attempt starts from a clean run state. A session is
+ * reusable, so a previous run's clock and outcome flags must not survive into
+ * the next start: the poll clock latches on start_time_ms == 0, and a stale
+ * value would report the previous build's elapsed time. */
+static void package_builder_reset_run_state(PackageBuildSession *session) {
+    session->is_complete = false;
+    session->is_failed = false;
+    session->is_cancelled = false;
+    session->exit_code = -1;
+    session->start_time_ms = 0;
+    session->elapsed_ms = 0;
+}
+
 NkResult package_builder_start(
     PackageBuildSession *session,
     const char *python_path,
@@ -1622,6 +1655,10 @@ NkResult package_builder_start(
         return NK_ERROR_GENERIC;
     }
 
+    /* Reset before anything can fail, so a reused session never reports the
+     * previous build's elapsed time or outcome. */
+    package_builder_reset_run_state(session);
+
     /* Set up progress file and log file paths */
     const char *ldir = (log_dir && log_dir[0]) ? log_dir : ".";
     nk_platform_mkdir_p(ldir);
@@ -1632,8 +1669,8 @@ NkResult package_builder_start(
              "%s%cbuild_%s.log", ldir, nk_platform_path_separator(), session->disc_id);
 
     /* Remove previous files if present */
-    remove(session->progress_file_path);
-    remove(session->log_file_path);
+    nk_remove_utf8(session->progress_file_path);
+    nk_remove_utf8(session->log_file_path);
     session->progress_file_offset = 0;
 
     const char *argv[16];
@@ -1705,6 +1742,8 @@ NkResult package_builder_start(
     session->is_failed = false;
     session->is_cancelled = false;
     session->exit_code = -1;
+    session->start_time_ms = 0;
+    session->elapsed_ms = 0;
     session->current_stage = PACKAGE_BUILD_STAGE_PREFLIGHT;
     safe_str_copy(session->current_stage_name, sizeof(session->current_stage_name), "preflight");
     safe_str_copy(session->current_message, sizeof(session->current_message), "Starting package build...");
@@ -1718,7 +1757,7 @@ NkResult package_builder_start(
 
 static void read_new_progress_lines(PackageBuildSession *session) {
     if (!session || !session->progress_file_path[0]) return;
-    FILE *f = fopen(session->progress_file_path, "rb");
+    FILE *f = nk_fopen_utf8(session->progress_file_path, "rb");
     if (!f) return;
 
     if (session->progress_file_offset > 0) {
@@ -1749,7 +1788,13 @@ static void read_new_progress_lines(PackageBuildSession *session) {
 void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms) {
     if (!session || !session->is_building) return;
 
-    if (session->start_time_ms > 0 && current_time_ms >= session->start_time_ms) {
+    /* The clock starts at the first poll of a running build: the start routines
+     * reset start_time_ms to 0 and nothing else set it, so Elapsed stayed 0.0 s. */
+    if (session->start_time_ms == 0) {
+        session->start_time_ms = current_time_ms ? current_time_ms : 1u;
+        session->elapsed_ms = 0;
+    }
+    if (current_time_ms >= session->start_time_ms) {
         session->elapsed_ms = (uint32_t)(current_time_ms - session->start_time_ms);
     }
 
@@ -1776,7 +1821,7 @@ void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms
             if (!session->failure_boundary[0]) {
                 /* If no boundary message was recorded from JSON, extract last error from log */
                 if (session->log_file_path[0]) {
-                    FILE *lf = fopen(session->log_file_path, "rb");
+                    FILE *lf = nk_fopen_utf8(session->log_file_path, "rb");
                     if (lf) {
                         char last_line[512] = "";
                         char cur_line[512];

@@ -251,14 +251,20 @@
     },
     "filesystem": {
       "type": "object",
-      "additionalProperties": false,      "required": ["data_root", "memory_stick_root", "device_prefixes"],
-        "properties": {
+      "additionalProperties": false,
+      "required": ["data_root", "memory_stick_root", "device_prefixes"],
+      "properties": {
         "data_root": {"$ref": "#/$defs/relativePath"},
         "executable": {"$ref": "#/$defs/relativePath"},
         "module_dir": {"$ref": "#/$defs/relativePath"},
         "psp_header": {"$ref": "#/$defs/relativePath"},
         "disc_image": {"$ref": "#/$defs/discImagePath"},
         "memory_stick_root": {"$ref": "#/$defs/relativePath"},
+        "loose_content_roots": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/looseContentRoot"}
+        },
         "device_prefixes": {
           "type": "array",
           "maxItems": 16,
@@ -269,6 +275,40 @@
           }
         }
       }
+    },
+    "looseContentRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "mount", "precedence"],
+      "properties": {
+        "root": {
+          "oneOf": [
+            {"const": "."},
+            {"$ref": "#/$defs/relativePath"}
+          ]
+        },
+        "mount": {
+          "anyOf": [
+            {"const": ""},
+            {"$ref": "#/$defs/relativePath"}
+          ]
+        },
+        "precedence": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "skip_primary_root": {"type": "boolean"},
+        "exclude": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/relativePath"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"root": {"const": "."}}, "required": ["root"]},
+          "then": {"properties": {"skip_primary_root": {"const": true}}},
+          "else": {"properties": {"skip_primary_root": {"const": false}}}
+        }
+      ]
     },
     "runtimeContract": {
       "type": "object",

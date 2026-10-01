@@ -11,6 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#endif
+
 #include "nk_json.h"
 #include "nk_psp_crypto.h"
 #include "nk_psp_keystore.h"
@@ -338,12 +342,33 @@ done:
     return status;
 }
 
+/* A key file may live under a per-user data root that holds non-ASCII
+ * characters, which the narrow CRT would re-read in the active ANSI code page.
+ * This local copy exists for one build only: tools/nk_core/decrypt_tool.py
+ * compiles this file for nk_decrypt from a fixed source list with no platform
+ * layer. The player and nakagawa_core builds link nk_platform and could call
+ * nk_fopen_utf8 instead; this is a deliberate, documented exception (one of the
+ * file-local wide opens listed in nk_platform.h), not a general property of the
+ * file. */
+static FILE *keystore_fopen(const char *path)
+{
+#if defined(_WIN32) || defined(_WIN64)
+    wchar_t wpath[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath,
+                            (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0)
+        return NULL;
+    return _wfopen(wpath, L"rb");
+#else
+    return fopen(path, "rb");
+#endif
+}
+
 int nk_keystore_load_file(NkKeystore *ks, const char *path,
                           char *err, size_t err_len)
 {
     if (err_len) err[0] = '\0';
     if (ks == NULL || path == NULL) return NK_PSP_ERR_KEYFILE;
-    FILE *stream = fopen(path, "rb");
+    FILE *stream = keystore_fopen(path);
     if (stream == NULL) {
         snprintf(err, err_len, "no key file at %s", path);
         return NK_PSP_ERR_KEYFILE;

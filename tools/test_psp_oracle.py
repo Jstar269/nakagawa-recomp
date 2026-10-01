@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -16,10 +17,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import hle_manifest
 from psp_oracle.protocol import (
     ProtocolError,
+    ge_corpus_report,
+    PSP_MODEL_INTERPRETATION_RULE,
     compare_texts,
     decode_psp_model_code,
+    model_identity_fields,
     parse_output,
     provenance_issues,
     validate_dmac_size_matrix,
@@ -43,6 +48,8 @@ META = (
 
 MEASURED_SHA = "a" * 64
 MEASURED_COMMIT = "b" * 40
+STAGED_PRX = b"synthetic PSP oracle probe"
+STAGED_SHA = hashlib.sha256(STAGED_PRX).hexdigest()
 
 
 def stream(source: str, result: str = "0x1") -> str:
@@ -104,6 +111,37 @@ def measured_stream(source: str, result: str = "0x1") -> str:
     ) + ("NAKAGAWA_PSP_TEST schema=1 test_id=SMOKE case_id=one status=PASS result=" + result + "\n")
 
 
+def device_identity_stream(*, binary: str, commit: str | None) -> str:
+    """A complete DMAC stream with a controlled device META identity."""
+
+    text = dmac_matrix_stream()
+    first_line, remainder = text.split("\n", 1)
+    first_line = first_line.replace(f"binary_sha256={MEASURED_SHA}", f"binary_sha256={binary}")
+    if commit is None:
+        first_line = re.sub(r" source_commit=[^ ]+", "", first_line)
+    else:
+        first_line = first_line.replace(
+            f"source_commit={MEASURED_COMMIT}", f"source_commit={commit}"
+        )
+    return first_line + "\n" + remainder
+
+
+def identity_args(tmp: Path, **overrides: object) -> SimpleNamespace:
+    binary = tmp / "probe.prx"
+    binary.write_bytes(STAGED_PRX)
+    args = SimpleNamespace(
+        validate_dmac_size_matrix=True,
+        binary=binary,
+        source_commit=MEASURED_COMMIT,
+        model="PSP-3000",
+        firmware="6.61-ARK",
+        model_code=None,
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
 class PspOracleProtocolTests(unittest.TestCase):
     def test_pspsdk_model_ordinal_three_is_psp3000_generation_04g(self) -> None:
         self.assertEqual(decode_psp_model_code(3), ("04g", "PSP-3000"))
@@ -113,6 +151,29 @@ class PspOracleProtocolTests(unittest.TestCase):
         for value in (-1, 8, True, "3"):
             with self.assertRaises(ValueError):
                 decode_psp_model_code(value)  # type: ignore[arg-type]
+
+    def test_model_identity_rule_separates_raw_family_and_agreement(self) -> None:
+        fields = model_identity_fields("psp-3000-series", "0x03")
+        self.assertEqual(fields["PHYSICAL_MODEL_LABEL"], "psp-3000-series")
+        self.assertEqual(fields["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(fields["INTERPRETED_MODEL_FAMILY"], "PSP-3000")
+        self.assertEqual(fields["MODEL_INTERPRETATION_RULE"], PSP_MODEL_INTERPRETATION_RULE)
+        self.assertEqual(fields["MODEL_IDENTITY_AGREEMENT"], "AGREES")
+
+    def test_unknown_model_rule_leaves_the_raw_value_untouched(self) -> None:
+        stored_envelope = {
+            "PHYSICAL_MODEL_LABEL": "PSP-3000",
+            "SOFTWARE_MODEL_RAW_VALUE": "0x03",
+        }
+        fields = model_identity_fields(
+            stored_envelope["PHYSICAL_MODEL_LABEL"],
+            stored_envelope["SOFTWARE_MODEL_RAW_VALUE"],
+            rule_id="PSPSDK_PMODEL_ORDINAL_V2",
+        )
+        self.assertEqual(fields["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(stored_envelope["SOFTWARE_MODEL_RAW_VALUE"], "0x03")
+        self.assertEqual(fields["INTERPRETED_MODEL_FAMILY"], "UNKNOWN")
+        self.assertEqual(fields["MODEL_IDENTITY_AGREEMENT"], "UNKNOWN")
 
     def test_parser_requires_metadata_and_orders_records(self) -> None:
         parsed = parse_output(stream("psp"))
@@ -135,6 +196,284 @@ class PspOracleProtocolTests(unittest.TestCase):
     def test_malformed_hex_is_rejected(self) -> None:
         with self.assertRaises(ProtocolError):
             parse_output(stream("psp", "not-hex"))
+
+    def test_source_commit_requires_a_full_40_or_64_digit_object_id(self) -> None:
+        for length in (12, 41, 63):
+            with self.subTest(length=length):
+                text = measured_stream("psp").replace(
+                    f"source_commit={MEASURED_COMMIT}",
+                    f"source_commit={'b' * length}",
+                    1,
+                )
+                with self.assertRaises(ProtocolError):
+                    parse_output(text)
+
+
+class GeCorpusGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.corpus = json.loads(
+            (self.root / "fixtures" / "psp_oracle" / "ge_corpus.json").read_text(encoding="utf-8")
+        )
+
+    def _run_gate(self, document: dict | None = None,
+                  results: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        command = [sys.executable, str(self.root / "tools" / "psp_oracle" / "run_psplink.py"), "--ge-corpus-gate"]
+        if document is None:
+            return subprocess.run(command, capture_output=True, text=True, check=False)
+        fixture_dir = self.root / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="ge-corpus-gate-", dir=fixture_dir) as scratch:
+            results_dir = Path(scratch) / "results"
+            results_dir.mkdir()
+            for relative, text in (results or {}).items():
+                target = results_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8", newline="")
+            command.extend(["--results-directory", str(results_dir)])
+            corpus_path = Path(scratch) / "corpus.json"
+            corpus_path.write_text(json.dumps(document), encoding="utf-8")
+            command.extend(["--ge-corpus", str(corpus_path)])
+            return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    def _report(self, completed: subprocess.CompletedProcess[str]) -> dict:
+        self.assertTrue(completed.stdout, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_unmeasured_ge_case_reports_not_run(self) -> None:
+        completed = self._run_gate()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = self._report(completed)
+        self.assertEqual(report["semantic_boundary"], "GE_RASTER_PIXEL_CONFORMANCE")
+        self.assertEqual(report["tracking_issue"], 343)
+        self.assertEqual(report["cases"][0]["status"], "NOT_RUN")
+
+    def _schema(self) -> dict:
+        return json.loads((self.root / "assets" / "ge_corpus.schema.json").read_text(encoding="utf-8"))
+
+    def test_a_substituted_schema_is_refused(self) -> None:
+        permissive = json.loads((self.root / "assets" / "public_source_profile.json").read_text(encoding="utf-8"))
+        report = ge_corpus_report(self.corpus, permissive)
+        self.assertEqual(report["status"], "REFUSED")
+        self.assertIn("not the GE pixel corpus contract", report["cases"][0]["reason"])
+        self.assertNotEqual(ge_corpus_report(self.corpus, self._schema())["status"], "REFUSED")
+
+    def test_schema_keywords_the_validator_would_ignore_are_refused(self) -> None:
+        schema = self._schema()
+        schema["$defs"]["case"]["properties"]["framebuffer"]["properties"]["width"]["minium"] = 1
+        report = ge_corpus_report(self.corpus, schema)
+        self.assertEqual(report["status"], "REFUSED")
+        self.assertIn("minium", report["cases"][0]["reason"])
+
+    def test_packed_pixel_values_must_fit_the_declared_format(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["framebuffer"]["format"] = "5650"
+        case["framebuffer"]["initial_pixel"] = 0xFF00FF00
+        case["selected_pixels"][0]["pixel_value"] = 0xFF00FF00
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("does not fit the 5650 pixel format", result["reason"])
+        case["framebuffer"]["initial_pixel"] = 0
+        case["selected_pixels"][0]["pixel_value"] = 0xFFFF
+        case["selected_pixels"][1]["pixel_value"] = 0
+        case["selected_pixels"][2]["pixel_value"] = 0
+        self.assertNotIn("does not fit", ge_corpus_report(document, self._schema())["cases"][0]["reason"])
+
+    def test_prim_vertex_count_must_agree_with_the_vertex_words(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["vertex_words"] = case["vertex_words"][:-1]
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("PRIM vertex count 3 does not divide", result["reason"])
+
+    def test_successive_prims_consume_vertex_words_cumulatively(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        commands = case["command_words"]
+        prim = next(i for i, word in enumerate(commands) if word[2:4] == "04")
+        count = int(commands[prim], 16) & 0xFFFF
+        per_vertex = len(case["vertex_words"]) // count
+        quad = f"0x{(int(commands[prim], 16) & 0xFFFF0000) | 4:08x}"
+        commands.insert(prim + 1, quad)
+        for relocation in case.get("relocations", []):
+            if relocation["command_index"] > prim:
+                relocation["command_index"] += 1
+        case["vertex_words"] = case["vertex_words"] + case["vertex_words"][:per_vertex] * 4
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertNotEqual(result["status"], "REFUSED", result["reason"])
+        case["vertex_words"] = case["vertex_words"][:-1]
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn(f"PRIM vertex counts {count}, 4 (total {count + 4})", result["reason"])
+
+    def test_the_public_fixture_carries_no_hardware_envelope(self) -> None:
+        """Raw hardware text must not enter this synthetic-classified public fixture.
+
+        A measured envelope inlines the console model, firmware, binary digest and
+        source commit; admitting one is a maintainer provenance decision, so the
+        committed corpus stays envelope-free until that decision is made.
+        """
+        for case in self.corpus["cases"]:
+            self.assertIsNone(case["evidence_envelope"])
+            self.assertIsNone(case["source_tier"])
+
+    def test_software_record_labelled_psp_hardware_is_refused(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["source_tier"] = "PSP_HARDWARE"
+        case["framebuffer_sha256"] = "a" * 64
+        for pixel in case["selected_pixels"]:
+            pixel["pixel_value"] = 0xFF0000FF if (pixel["x"], pixel["y"]) == (4, 4) else 0
+        raw_result = stream("nakagawa") + (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-001 "
+            f"case_id={case['case_id']} status=PASS framebuffer_sha256={'a' * 64} "
+            "pixel_0_0=0x00000000 pixel_4_4=0xff0000ff pixel_12_12=0x00000000\n"
+        )
+        case["evidence_envelope"] = {
+            "EVIDENCE_CLASS": "PSP_HARDWARE",
+            "ACCEPTANCE_ELIGIBLE": True,
+            "CASE_ID": case["case_id"],
+            "CONSOLE_MODEL": "PSP-3000",
+            "FW": "6.61-ARK",
+            "SOURCE_COMMIT": MEASURED_COMMIT,
+            "BINARY_SHA256": MEASURED_SHA,
+            "RESULT_RECORD": {
+                "path": "ge/software.txt",
+                "sha256": hashlib.sha256(raw_result.encode("utf-8")).hexdigest(),
+            },
+        }
+        completed = self._run_gate(document, {"ge/software.txt": raw_result})
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        report = self._report(completed)
+        result = report["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("source 'nakagawa'", result["reason"])
+
+    def test_hardware_label_requires_acceptance_eligible_envelope(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["source_tier"] = "PSP_HARDWARE"
+        case["framebuffer_sha256"] = "a" * 64
+        for pixel in case["selected_pixels"]:
+            pixel["pixel_value"] = 0
+        case["evidence_envelope"] = {
+            "EVIDENCE_CLASS": "PSP_HARDWARE",
+            "ACCEPTANCE_ELIGIBLE": False,
+            "CASE_ID": case["case_id"],
+            "CONSOLE_MODEL": "PSP-3000",
+            "FW": "6.61-ARK",
+            "SOURCE_COMMIT": MEASURED_COMMIT,
+            "BINARY_SHA256": MEASURED_SHA,
+            "RESULT_RECORD": {"path": "ge/psp.txt", "sha256": "0" * 64},
+        }
+        completed = self._run_gate(document)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        result = self._report(completed)["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("not acceptance-eligible", result["reason"])
+
+    def _hardware_case(self, raw_result: str, record_sha: str | None = None) -> dict:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["source_tier"] = "PSP_HARDWARE"
+        case["framebuffer_sha256"] = "a" * 64
+        for pixel in case["selected_pixels"]:
+            pixel["pixel_value"] = 0
+        case["evidence_envelope"] = {
+            "EVIDENCE_CLASS": "PSP_HARDWARE",
+            "ACCEPTANCE_ELIGIBLE": True,
+            "CASE_ID": case["case_id"],
+            "CONSOLE_MODEL": "PSP-3000",
+            "FW": "6.61-ARK",
+            "SOURCE_COMMIT": MEASURED_COMMIT,
+            "BINARY_SHA256": MEASURED_SHA,
+            "RESULT_RECORD": {
+                "path": "ge/run.txt",
+                "sha256": record_sha or hashlib.sha256(raw_result.encode("utf-8")).hexdigest(),
+            },
+        }
+        return document
+
+    def test_hardware_claim_without_a_results_directory_is_not_run(self) -> None:
+        document = self._hardware_case(stream("psp"))
+        result = ge_corpus_report(document, self._schema(), None)["cases"][0]
+        self.assertEqual(result["status"], "NOT_RUN")
+        self.assertIn("private result record", result["reason"])
+
+    def test_result_record_digest_must_match_the_stored_result(self) -> None:
+        document = self._hardware_case(stream("psp"), record_sha="b" * 64)
+        completed = self._run_gate(document, {"ge/run.txt": stream("psp")})
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        result = self._report(completed)["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("sha256 does not match", result["reason"])
+
+    def test_missing_result_record_is_refused(self) -> None:
+        completed = self._run_gate(self._hardware_case(stream("psp")), {})
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("not present", self._report(completed)["cases"][0]["reason"])
+
+    def test_schema_requires_a_record_reference_not_inline_raw_text(self) -> None:
+        envelope = self._schema()["$defs"]["case"]["properties"]["evidence_envelope"]
+        self.assertIn("RESULT_RECORD", envelope["required"])
+        self.assertNotIn("RAW_RESULT", envelope["properties"])
+        document = self._hardware_case(stream("psp"))
+        document["cases"][0]["evidence_envelope"]["RESULT_RECORD"]["path"] = "../escape.txt"
+        result = ge_corpus_report(document, self._schema(), self.root)["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+
+    def test_result_record_loader_refuses_escape_and_oversize(self) -> None:
+        from psp_oracle.protocol import GE_RESULT_RECORD_MAX_BYTES, _load_result_record
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch) / "results"
+            base.mkdir()
+            outside = Path(scratch) / "outside.txt"
+            outside.write_text("x", encoding="utf-8")
+            text, reason = _load_result_record({"path": "../outside.txt", "sha256": "0" * 64}, base)
+            self.assertIsNone(text)
+            self.assertIn("leaves the results directory", reason)
+            big = base / "big.txt"
+            big.write_bytes(b"a" * (GE_RESULT_RECORD_MAX_BYTES + 1))
+            text, reason = _load_result_record({"path": "big.txt", "sha256": "0" * 64}, base)
+            self.assertIsNone(text)
+            self.assertIn("at most", reason)
+
+    def test_non_object_identity_entries_are_refused_not_raised(self) -> None:
+        for key, value in (("semantic_boundary", "GE_RASTER_PIXEL_CONFORMANCE"), ("tracking_issue", 343)):
+            with self.subTest(key=key):
+                schema = self._schema()
+                schema["properties"][key] = value
+                report = ge_corpus_report(self.corpus, schema)
+                self.assertEqual(report["status"], "REFUSED")
+                self.assertIn("not the GE pixel corpus contract", report["cases"][0]["reason"])
+
+    def test_unimplemented_keyword_forms_are_refused(self) -> None:
+        schema = self._schema()
+        schema["$defs"]["case"]["additionalProperties"] = {"type": "string"}
+        self.assertIn("boolean form", ge_corpus_report(self.corpus, schema)["cases"][0]["reason"])
+        schema = self._schema()
+        schema["$defs"]["case"]["properties"]["vertex_words"]["items"] = [{"type": "string"}]
+        self.assertIn("single-schema object form", ge_corpus_report(self.corpus, schema)["cases"][0]["reason"])
+
+    def test_cli_accepts_only_the_tracked_schema_file(self) -> None:
+        sibling = self.root / "assets" / "public_source_profile.json"
+        completed = subprocess.run(
+            [sys.executable, str(self.root / "tools" / "psp_oracle" / "run_psplink.py"),
+             "--ge-corpus-gate", "--ge-corpus-schema", str(sibling)],
+            capture_output=True, text=True, check=False)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("must be assets/ge_corpus.schema.json", completed.stderr)
+
+    def test_schema_violation_is_refused_with_case_field_name(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        document["cases"][0]["framebuffer"]["format"] = "888x"
+        completed = self._run_gate(document)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        report = self._report(completed)
+        result = report["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("framebuffer.format", result["reason"])
 
 
 class PspDmacProtocolTests(unittest.TestCase):
@@ -288,6 +627,143 @@ class PspOracleAcceptanceGateTests(unittest.TestCase):
         self.assertIn("if (!low_started)", body)
 
 
+class PspOracleDeviceIdentityTests(unittest.TestCase):
+    """The capture must bind the device's own identity, not a host rewrite."""
+
+    def _report(
+        self, tmp: Path, *, binary: str, commit: str | None
+    ) -> dict[str, object]:
+        return _validate_host0_capture(
+            device_identity_stream(binary=binary, commit=commit), identity_args(tmp)
+        )
+
+    def test_matching_device_identity_is_eligible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-match-") as name:
+            report = self._report(Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT)
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertEqual(report["BINARY_SHA256_BINDING"], "MATCH")
+        self.assertEqual(report["DEVICE_IDENTITY_STATUS"], "MATCH")
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_device_source_commit_mismatch_is_not_overwritten(self) -> None:
+        mismatch = "d" * 40
+        with tempfile.TemporaryDirectory(prefix="identity-mismatch-") as name:
+            report = self._report(Path(name), binary=STAGED_SHA, commit=mismatch)
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MISMATCH")
+        self.assertEqual(report["metadata"]["source_commit"], mismatch)
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("IDENTITY_MISMATCH", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_device_binary_digest_mismatch_is_not_overwritten(self) -> None:
+        mismatch = "d" * 64
+        with tempfile.TemporaryDirectory(prefix="identity-digest-") as name:
+            report = self._report(Path(name), binary=mismatch, commit=MEASURED_COMMIT)
+        self.assertEqual(report["BINARY_SHA256_BINDING"], "MISMATCH")
+        self.assertEqual(report["metadata"]["binary_sha256"], mismatch)
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("IDENTITY_MISMATCH", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_zero_or_absent_device_commit_is_not_bound(self) -> None:
+        for commit, expected_status in (("0" * 40, "PLACEHOLDER"), (None, "NOT_REPORTED")):
+            with self.subTest(commit=commit):
+                with tempfile.TemporaryDirectory(prefix="identity-unbound-") as name:
+                    report = self._report(Path(name), binary=STAGED_SHA, commit=commit)
+                self.assertEqual(report["SOURCE_COMMIT_BINDING"], expected_status)
+                self.assertFalse(report["acceptance_eligible"])
+                self.assertIn(
+                    "IDENTITY_NOT_BOUND",
+                    " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]),
+                )
+
+    def test_short_commit_prefix_never_satisfies_binding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-short-") as name:
+            report = self._report(
+                Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT[:12]
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "NOT_BOUND")
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertIn("short prefix never binds", " | ".join(report["DEVICE_IDENTITY_BLOCKERS"]))
+
+    def test_full_64_digit_commit_is_supported(self) -> None:
+        full_commit = "c" * 64
+        with tempfile.TemporaryDirectory(prefix="identity-sha256-") as name:
+            report = _validate_host0_capture(
+                device_identity_stream(binary=STAGED_SHA, commit=full_commit),
+                identity_args(Path(name), source_commit=full_commit),
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_uppercase_full_device_commit_matches_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-uppercase-") as name:
+            report = self._report(
+                Path(name), binary=STAGED_SHA, commit=MEASURED_COMMIT.upper()
+            )
+        self.assertEqual(report["SOURCE_COMMIT_BINDING"], "MATCH")
+        self.assertEqual(report["metadata"]["source_commit"], MEASURED_COMMIT)
+        self.assertTrue(report["acceptance_eligible"])
+
+    def test_partial_provenance_keeps_device_placeholders_visible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="identity-partial-") as name:
+            args = identity_args(
+                Path(name), binary=None, source_commit=None, model="PSP-3000"
+            )
+            report = _validate_host0_capture(
+                device_identity_stream(binary="0" * 64, commit="0" * 40), args
+            )
+        self.assertEqual(report["metadata"]["source_commit"], "0" * 40)
+        self.assertEqual(report["metadata"]["binary_sha256"], "0" * 64)
+        self.assertFalse(report["acceptance_eligible"])
+
+    def test_makefile_rejects_unbound_or_dirty_probe_builds(self) -> None:
+        makefile = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "Makefile"
+        ).read_text(encoding="utf-8")
+        self.assertIn("git rev-parse --verify HEAD", makefile)
+        self.assertIn("git status --porcelain --untracked-files=normal", makefile)
+        self.assertIn("PROBE_BUILD_COMMIT_FULL", makefile)
+        self.assertIn("PROBE_BUILD_COMMIT must match the clean checkout HEAD", makefile)
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if make is None:
+            self.skipTest("GNU Make is unavailable")
+        makefile_path = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        )
+        missing = subprocess.run(
+            [make, "-C", str(makefile_path), "PROBE_BUILD_COMMIT_FULL="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn(
+            "PROBE_BUILD_COMMIT could not be determined",
+            missing.stdout + missing.stderr,
+        )
+        # git status never lists an empty directory, so the scratch directory
+        # needs a file for the checkout to read as dirty.
+        with tempfile.TemporaryDirectory(
+            prefix="probe-build-dirty-", dir=makefile_path
+        ) as scratch:
+            (Path(scratch) / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            completed = subprocess.run(
+                [make, "-C", str(makefile_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("source tree is dirty", completed.stdout + completed.stderr)
+
+    def test_probe_emits_build_commit_macro_not_a_zero_placeholder(self) -> None:
+        probe = (
+            Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"source_commit=" PROBE_BUILD_COMMIT', probe)
+        self.assertIn("#error \"PROBE_BUILD_COMMIT must be the full git object id", probe)
+        self.assertNotIn("source_commit=0000000000000000000000000000000000000000", probe)
+
+
 class PspOracleRunnerTests(unittest.TestCase):
     def test_dmac_host0_capture_uses_the_runner_validation_path(self) -> None:
         args = SimpleNamespace(
@@ -366,7 +842,7 @@ class PspOracleRunnerTests(unittest.TestCase):
             self.assertEqual(captured.parent, results.resolve())
             self.assertIn("status=PASS", captured.read_text(encoding="utf-8"))
 
-    def test_model_code_is_derived_without_the_old_n1000_mapping(self) -> None:
+    def test_model_code_is_not_used_as_an_operator_declared_physical_label(self) -> None:
         command = [
             sys.executable,
             str(Path(__file__).resolve().parent / "psp_oracle" / "run_psplink.py"),
@@ -374,14 +850,44 @@ class PspOracleRunnerTests(unittest.TestCase):
             "--model-code",
             "3",
         ]
-        # Dry-run still validates/derives the model before reporting the plan.
+        # A raw code alone does not create an operator-declared physical label.
         completed = subprocess.run(
             command, capture_output=True, text=True, check=True
         )
         plan = json.loads(completed.stdout)
         self.assertFalse(plan["provenance_supplied"])
-        self.assertEqual(plan["model"], "PSP-3000-04g")
+        self.assertIsNone(plan["model"])
         self.assertEqual(plan["model_code"], 3)
+
+        with_model = subprocess.run(
+            command + [
+                "--model", "psp-3000-series",
+                "--binary", "probe.prx",
+                "--source-commit", "a" * 40,
+                "--firmware", "6.61",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        paired_plan = json.loads(with_model.stdout)
+        self.assertEqual(paired_plan["model"], "psp-3000-series")
+        self.assertEqual(paired_plan["model_code"], 3)
+
+    def test_terminal_annotation_preserves_legacy_model_envelope_fields(self) -> None:
+        legacy = {
+            "CONSOLE_MODEL": "PSP-3000-04g",
+            "MODEL_SOURCE": "operator-recorded label; no serial or MAC stored",
+            "PHYSICAL_MODEL_LABEL": "psp-3000-series",
+            "SOFTWARE_MODEL_RAW_VALUE": "3",
+            "MODEL_CONTRADICTION": "RECORDED",
+        }
+        annotated = annotate_terminal_outcome(legacy, b"transport only\n", "RESET")
+        self.assertEqual(
+            {key: annotated[key] for key in legacy},
+            legacy,
+        )
+        self.assertEqual(legacy["MODEL_CONTRADICTION"], "RECORDED")
 
     def test_nakagawa_mode_reuses_production_selftest_and_derives_records(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -678,15 +1184,121 @@ class PspDmacProbeTests(unittest.TestCase):
                 open_guards.append(line_number)
         self.assertEqual(open_guards, [], f"unclosed #if at lines {open_guards}")
 
-    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
-        manifest = json.loads(
+    def _oracle_manifest(self) -> dict:
+        return json.loads(
             (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
                 encoding="utf-8"
             )
         )
-        system = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-SYSTEM-001")
+
+    def test_system_manifest_exposes_the_model_profile_case(self) -> None:
+        system = next(
+            entry for entry in self._oracle_manifest()["tests"] if entry["id"] == "PSP-SYSTEM-001"
+        )
         self.assertEqual(system["status"], "implemented")
+        self.assertEqual(system["hardware_evidence"], "CAPTURED")
         self.assertEqual(system["case_ids"], ["model-profile"])
+
+    def test_implemented_status_alone_is_not_accepted_hardware_evidence(self) -> None:
+        """`status: implemented` is probe-source prose, never hardware evidence."""
+        manifest = self._oracle_manifest()
+        oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
+        for test_id in ("PSP-TRANSPORT-001", "PSP-SYSTEM-001"):
+            entry = next(item for item in manifest["tests"] if item["id"] == test_id)
+            self.assertEqual(entry["status"], "implemented")
+            self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+            for api in entry["apis"]:
+                self.assertNotIn(
+                    api,
+                    oracle_apis,
+                    f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
+                )
+
+    def test_fpu_and_cache_probe_families_are_named_as_not_run(self) -> None:
+        manifest = self._oracle_manifest()
+        by_id = {entry["id"]: entry for entry in manifest["tests"]}
+        for test_id in ("PSP-FPU-001", "PSP-CACHE-001"):
+            self.assertEqual(by_id[test_id]["status"], "planned")
+            self.assertEqual(by_id[test_id]["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(len(by_id), len(manifest["tests"]))
+
+    def test_manifest_hardware_evidence_uses_closed_vocabulary(self) -> None:
+        manifest = self._oracle_manifest()
+        vocabulary = {"NOT_RUN", "CAPTURED", "MEASURED"}
+        for entry in manifest["tests"]:
+            with self.subTest(test_id=entry["id"]):
+                self.assertIn("hardware_evidence", entry)
+                self.assertIsInstance(entry["hardware_evidence"], str)
+                self.assertIn(entry["hardware_evidence"], vocabulary)
+
+    def test_only_documented_measured_groups_claim_hardware_evidence(self) -> None:
+        manifest = self._oracle_manifest()
+        evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "MEASURED"},
+            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001"},
+        )
+        self.assertEqual(
+            {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
+            {"PSP-KERNEL-001", "PSP-TRANSPORT-001", "PSP-SYSTEM-001"},
+        )
+
+    def test_measured_rows_cite_a_public_document_and_the_cases_it_measures(self) -> None:
+        """A MEASURED row must name publication-eligible evidence and its own cases."""
+        include_paths = set(
+            json.loads(
+                (self.root / "assets" / "public_source_profile.json").read_text(
+                    encoding="utf-8"
+                )
+            )["include_paths"]
+        )
+        measured = [
+            entry
+            for entry in self._oracle_manifest()["tests"]
+            if entry["hardware_evidence"] == "MEASURED"
+        ]
+        self.assertTrue(measured)
+        for entry in measured:
+            with self.subTest(test_id=entry["id"]):
+                match = re.fullmatch(
+                    r"(docs/[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)", entry["evidence_ref"]
+                )
+                self.assertIsNotNone(match, "evidence_ref must be 'docs/....md#section'")
+                self.assertIn(match.group(1), include_paths)
+                cases = entry["evidence_cases"]
+                self.assertTrue(cases)
+                self.assertTrue(
+                    set(cases) <= set(entry.get("case_ids", [])) | set(entry["apis"])
+                )
+                self.assertTrue(entry["measurement_note"].strip())
+
+    def test_rows_without_measured_evidence_say_why(self) -> None:
+        for entry in self._oracle_manifest()["tests"]:
+            if entry["hardware_evidence"] == "MEASURED":
+                continue
+            with self.subTest(test_id=entry["id"]):
+                self.assertTrue(
+                    entry.get("evidence_note", "").strip(),
+                    "an unmeasured row must state why it is not measured",
+                )
+
+    def test_exception_campaign_is_named_with_its_buildable_cases(self) -> None:
+        entry = next(
+            item
+            for item in self._oracle_manifest()["tests"]
+            if item["id"] == "PSP-EXCEPTION-001"
+        )
+        self.assertEqual(entry["hardware_evidence"], "MEASURED")
+        makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        for case_id in entry["case_ids"]:
+            with self.subTest(case_id=case_id):
+                self.assertIn(f"else ifeq ($(CASE),{case_id})", makefile)
+        # exception-a2 is measured as run PSP-A2-01, but the cited section names
+        # its fixture only inside the range `exception-a1`..`exception-a3`.
+        self.assertIn("exception-a2", entry["case_ids"])
+        self.assertNotIn("exception-a2", entry["evidence_cases"])
 
     def test_manifest_routes_issue_23_to_dedicated_scalar_probe(self) -> None:
         manifest = json.loads(
@@ -696,6 +1308,7 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23])
+        self.assertEqual(dmac["hardware_evidence"], "MEASURED")
         self.assertEqual(len(dmac["case_ids"]), 23)
         self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])

@@ -30,12 +30,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_registry_meta as meta  # noqa: E402
+import publication_policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 HLE_C = ROOT / "src" / "rt" / "hle.c"
@@ -494,26 +495,38 @@ def validate_meta(regs: list[dict]) -> None:
             f"FLOAT_RETURN_HANDLERS names handlers hle.c no longer registers: {stale_float_handlers}"
         )
     for handler, status in meta.HANDLER_STATUS.items():
+        evidence = meta.HANDLER_EVIDENCE.get(handler)
         if status == "complete":
-            evidence = meta.HANDLER_EVIDENCE.get(handler)
             if not evidence or not isinstance(evidence, list):
                 raise ManifestError(
                     f"handler {handler!r} is marked 'complete' but has no evidence metadata; "
                     "a complete handler must cite at least one verifiable evidence entry "
                     "(public ABI/doc, source-owned test name, hardware oracle id, or guest-module takeover)"
                 )
+        if evidence is not None:
+            if not isinstance(evidence, list) or not evidence:
+                raise ManifestError(f"handler {handler!r} has empty evidence metadata")
             for ev in evidence:
                 if not isinstance(ev, str) or not ev.strip():
                     raise ManifestError(f"handler {handler!r} has empty evidence entry")
-                candidate_path = ev.split(":")[0].strip()
-                if (
-                    candidate_path.startswith("src/")
-                    or candidate_path.startswith("tools/")
-                ) and not (ROOT / candidate_path).exists():
+                candidate_path, _, anchor = (part.strip() for part in ev.partition(":"))
+                if not (
+                    candidate_path == "Makefile"
+                    or candidate_path.startswith(("src/", "tools/", "fixtures/"))
+                ):
+                    continue
+                if not (ROOT / candidate_path).exists():
                     raise ManifestError(
                         f"handler {handler!r} cites non-existent evidence file {candidate_path!r}"
                     )
-        elif status in ("partial", "compatibility"):
+                if anchor and not _evidence_anchor_present(ROOT / candidate_path, anchor):
+                    raise ManifestError(
+                        f"handler {handler!r} cites evidence anchor {anchor!r} that "
+                        f"{candidate_path!r} does not define"
+                    )
+        # Independent of evidence: a partial or compatibility handler must always
+        # name its limitation, whether or not it also cites evidence.
+        if status in ("partial", "compatibility"):
             limitation = meta.HANDLER_LIMITATIONS.get(handler)
             if not limitation or not isinstance(limitation, str) or not limitation.strip():
                 raise ManifestError(
@@ -521,6 +534,23 @@ def validate_meta(regs: list[dict]) -> None:
                     "every partial and compatibility entry must carry a non-empty limitation "
                     "(state a factual limitation from code or 'limitation not yet reviewed (#341)')"
                 )
+
+
+def _evidence_anchor_present(path: Path, anchor: str) -> bool:
+    """Whether ``path`` defines the symbol an evidence entry cites after ``:``.
+
+    A Makefile anchor must be a target rule; any other anchor is a dotted name
+    (``Class.method`` or ``function``) whose every component must appear as a
+    whole word, so a renamed target, test or function fails the citation.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if path.name == "Makefile":
+        return re.search(rf"^{re.escape(anchor)}\s*:", text, re.MULTILINE) is not None
+    return all(
+        re.search(rf"\b{re.escape(part)}\b", text) is not None
+        for part in anchor.split(".")
+        if part
+    )
 
 
 def compute_findings(regs: list[dict]) -> list[dict]:
@@ -654,9 +684,16 @@ def dump_json(obj: dict, path: Path) -> None:
 
 CHAIN_SCHEMA = 1
 
+#: The closed vocabulary of `tools/psp_oracle/manifest.json`'s per-test
+#: `hardware_evidence`.  `status` states whether the probe source exists;
+#: only this field states what a hardware run established, and only `MEASURED`
+#: — with a resolvable committed citation — may grant HARDWARE_MEASURED.
+HARDWARE_EVIDENCE_VALUES = frozenset({"NOT_RUN", "CAPTURED", "MEASURED"})
+
 INTR_CONFORMANCE_H = ROOT / "src" / "rt" / "intr_conformance.h"
 SELFTEST_C = ROOT / "src" / "rt" / "hle_thread_selftest.c"
 PSP_ORACLE_MANIFEST = ROOT / "tools" / "psp_oracle" / "manifest.json"
+PUBLIC_SOURCE_PROFILE = ROOT / "assets" / "public_source_profile.json"
 
 SELFTEST_MACRO = "SR_HLE_THREAD_SELFTEST"
 
@@ -812,14 +849,169 @@ def selftest_dispatched_nids(selftest_text: str) -> set[int]:
     return nids
 
 
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def _heading_slug(heading: str) -> str:
+    """GitHub-style anchor slug for one Markdown ATX heading."""
+    return re.sub(r"\s+", "-", re.sub(r"[^\w\s-]", "", heading.strip().lower())).strip("-")
+
+
+def _cited_section(ref: str, test_id: str) -> str:
+    """The text of the ``path#heading-slug`` section an evidence_ref cites.
+
+    Fails closed on everything a citation could lean on without being checked:
+    a malformed reference, a path the canonical publication policy does not
+    classify as publishable (an excluded or unclassified record is not public
+    evidence), a missing file, or a heading the file does not contain.
+    """
+    path_text, _, slug = ref.partition("#")
+    pure = PurePosixPath(path_text)
+    if not path_text or not slug or pure.is_absolute() or ".." in pure.parts:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref {ref!r} must be a repo-relative "
+            "'path#heading-slug' reference"
+        )
+    resolution = publication_policy.load_policy(PUBLIC_SOURCE_PROFILE).resolve(path_text)
+    if resolution.disposition != publication_policy.INCLUDED:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref cites {path_text!r}, which the publication "
+            f"policy resolves as {resolution.disposition} ({resolution.rule}); hardware "
+            "evidence must cite committed, publication-eligible documentation"
+        )
+    section: str | None = None
+    body: list[str] = []
+    try:
+        lines = (ROOT / pure).read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref cites {path_text!r}, which is not readable "
+            f"in this tree ({error.strerror})"
+        ) from error
+    # Headings are recognised the way GitHub renders them: a `#` line inside a
+    # fenced code block is not a heading, and a repeated heading gets the
+    # `-1`, `-2` ... anchor suffix, so a citation resolves to the section a
+    # reader sees or fails closed.
+    fence: str | None = None
+    seen: dict[str, int] = {}
+    for line in lines:
+        marker = _FENCE_RE.match(line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+        heading = None if fence is not None or marker else _HEADING_RE.match(line)
+        if heading:
+            if section == slug:
+                return "\n".join(body)
+            base = _heading_slug(heading.group(1))
+            count = seen.get(base, 0)
+            seen[base] = count + 1
+            section, body = (base if count == 0 else f"{base}-{count}"), []
+            continue
+        if section == slug:
+            body.append(line)
+    if section == slug:
+        return "\n".join(body)
+    raise ManifestError(
+        f"test {test_id!r} evidence_ref {ref!r} names no heading in {path_text!r}"
+    )
+
+
+def measured_evidence_section(test: dict) -> str:
+    """Check one `MEASURED` oracle row's citation and return the cited text.
+
+    A MEASURED row must name the cases the citation covers in `evidence_cases`,
+    every one of them must be one of the row's own `case_ids`/`apis`, and the
+    cited section must contain each of them verbatim.  Every one of the row's
+    `case_ids` must be either cited that way or listed in `uncited_cases`, so a
+    partial citation is explicit rather than silently standing for the whole
+    row.  Only the `apis` named in `evidence_cases` are granted the tier (see
+    `oracle_exercised_apis`).
+    """
+    test_id = test.get("id", "?")
+    ref = test.get("evidence_ref")
+    cases = test.get("evidence_cases")
+    if not isinstance(ref, str) or not ref:
+        raise ManifestError(
+            f"test {test_id!r} claims hardware_evidence MEASURED with no evidence_ref"
+        )
+    if (
+        not isinstance(cases, list)
+        or not cases
+        or not all(isinstance(case, str) and case for case in cases)
+    ):
+        raise ManifestError(
+            f"test {test_id!r} claims hardware_evidence MEASURED with no evidence_cases"
+        )
+    declared = set(test.get("case_ids", [])) | set(test.get("apis", []))
+    undeclared = sorted({case for case in cases if case not in declared})
+    if undeclared:
+        raise ManifestError(
+            f"test {test_id!r} evidence_cases {undeclared} are neither its case_ids nor its apis"
+        )
+    uncited = test.get("uncited_cases", [])
+    if not isinstance(uncited, list) or not all(isinstance(c, str) and c for c in uncited):
+        raise ManifestError(f"test {test_id!r} uncited_cases must be a list of case ids")
+    stray = sorted(set(uncited) - set(test.get("case_ids", [])))
+    if stray:
+        raise ManifestError(f"test {test_id!r} uncited_cases {stray} are not its case_ids")
+    both = sorted(set(uncited) & set(cases))
+    if both:
+        raise ManifestError(
+            f"test {test_id!r} lists {both} in both evidence_cases and uncited_cases"
+        )
+    unaccounted = sorted(
+        set(test.get("case_ids", [])) - set(cases) - set(uncited)
+    )
+    if unaccounted:
+        raise ManifestError(
+            f"test {test_id!r} case_ids {unaccounted} are neither cited in evidence_cases "
+            "nor listed in uncited_cases; a partial citation must say what it omits"
+        )
+    section = _cited_section(ref, test_id)
+    unnamed = sorted({case for case in cases if case not in section})
+    if unnamed:
+        raise ManifestError(
+            f"test {test_id!r} evidence_ref {ref!r} does not name {unnamed}; a MEASURED "
+            "row must cite evidence of the exact cases it claims"
+        )
+    return section
+
+
 def oracle_exercised_apis(manifest: dict) -> dict[str, list[str]]:
-    """API name -> ids of implemented source-owned PSP probes that call it."""
+    """API name -> ids of measured source-owned PSP probes that call it.
+
+    The strongest evidence tier is granted from the oracle manifest's explicit
+    `hardware_evidence` field alone.  `status: implemented` is hand-maintained
+    probe-source prose and never grants evidence; `MEASURED` additionally has to
+    cite committed, publication-eligible documentation that names every case the
+    row claims (see `measured_evidence_section`).
+    """
     out: dict[str, list[str]] = {}
     for test in manifest.get("tests", []):
-        if test.get("status") != "implemented":
+        test_id = test.get("id", "?")
+        hardware_evidence = test.get("hardware_evidence", "NOT_RUN")
+        if (
+            not isinstance(hardware_evidence, str)
+            or hardware_evidence not in HARDWARE_EVIDENCE_VALUES
+        ):
+            raise ManifestError(
+                f"test {test_id!r} has unknown hardware_evidence "
+                f"{hardware_evidence!r}; expected one of {sorted(HARDWARE_EVIDENCE_VALUES)}"
+            )
+        if hardware_evidence != "MEASURED":
             continue
+        measured_evidence_section(test)
+        # The tier follows the citation, not the row: an API the cited section
+        # does not name is not measured by it, whatever else the row lists.
+        cited = set(test.get("evidence_cases", []))
         for api in test.get("apis", []):
-            out.setdefault(api, []).append(test.get("id", "?"))
+            if api in cited:
+                out.setdefault(api, []).append(test.get("id", "?"))
     return out
 
 
@@ -1072,7 +1264,7 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
 # grouped by API family (library name). Generic success handlers (h_ok)
 # and refusal markers (h_ControlledUnsupported) are excluded.
 
-CENSUS_SCHEMA = 1
+CENSUS_SCHEMA = 2
 CENSUS_STATUSES = (
     "complete",
     "partial",
@@ -1121,9 +1313,10 @@ def build_census(manifest: dict | None = None) -> dict:
             "status": status,
             "registrations": apis,
         }
-        if status == "complete":
-            entry["evidence"] = meta.HANDLER_EVIDENCE.get(h, [])
-        elif status in ("partial", "compatibility"):
+        evidence = meta.HANDLER_EVIDENCE.get(h, [])
+        if evidence:
+            entry["evidence"] = evidence
+        if status in ("partial", "compatibility"):
             entry["limitation"] = meta.HANDLER_LIMITATIONS.get(h, "")
         handler_entries.append(entry)
 
@@ -1147,10 +1340,20 @@ def build_census(manifest: dict | None = None) -> dict:
         fam_dict["summary"][entry["status"]] = fam_dict["summary"].get(entry["status"], 0) + 1
 
     total_by_status = {s: 0 for s in CENSUS_STATUSES}
+    status_registrations = {s: 0 for s in CENSUS_STATUSES}
     for e in handler_entries:
         total_by_status[e["status"]] = total_by_status.get(e["status"], 0) + 1
+        status_registrations[e["status"]] = (
+            status_registrations.get(e["status"], 0) + len(e["registrations"])
+        )
 
     total_registrations = sum(len(e["registrations"]) for e in handler_entries)
+    registration_classification: dict[str, int] = {}
+    for reg in regs:
+        classification = reg["classification"]
+        registration_classification[classification] = (
+            registration_classification.get(classification, 0) + 1
+        )
 
     by_family_summary = {
         fam: {
@@ -1165,9 +1368,12 @@ def build_census(manifest: dict | None = None) -> dict:
         "schema": CENSUS_SCHEMA,
         "source": manifest.get("source", "src/rt/hle.c"),
         "summary": {
+            "total_registrations": len(regs),
+            "registration_classification": dict(sorted(registration_classification.items())),
             "total_dedicated_handlers": len(handler_entries),
             "total_dedicated_registrations": total_registrations,
             "by_status": total_by_status,
+            "by_status_registrations": status_registrations,
             "by_family": by_family_summary,
         },
         "families": {fam: families[fam] for fam in sorted(families)},
@@ -1175,31 +1381,53 @@ def build_census(manifest: dict | None = None) -> dict:
     }
 
 
-def render_census_markdown(census: dict) -> str:
+def render_census_markdown(census: dict, *, heading_level: int = 1) -> str:
     """Render a GitHub-flavored Markdown summary table and review details."""
+    if not 1 <= heading_level <= 5:
+        raise ValueError("heading_level must leave room for the detail headings")
+    heading = "#" * heading_level
+    detail_heading = "#" * (heading_level + 1)
     out = []
-    out.append("# HLE Semantic Status Census")
+    out.append(f"{heading} HLE Semantic Status Census")
     out.append("")
     s = census["summary"]
     out.append(
-        f"Dedicated handlers audited: **{s['total_dedicated_handlers']}** "
-        f"({s['total_dedicated_registrations']} registrations) across **{len(s['by_family'])}** API families."
+        f"Registered NIDs: **{s['total_registrations']}** "
+        f"(dedicated **{s['registration_classification'].get('dedicated', 0)}**, "
+        f"fake_success **{s['registration_classification'].get('fake_success', 0)}**, "
+        f"controlled_unsupported **{s['registration_classification'].get('controlled_unsupported', 0)}**)."
+    )
+    out.append(
+        f"Semantic handler census: **{s['total_dedicated_handlers']}** handlers "
+        f"across **{len(s['by_family'])}** API families, covering "
+        f"**{s['total_dedicated_registrations']}** handler-associated NID registrations."
     )
     out.append("")
+    out.append("| Semantic Status | Handlers | NID Registrations |")
+    out.append("| :--- | :---: | :---: |")
+    for status in CENSUS_STATUSES:
+        out.append(
+            f"| `{status}` | {s['by_status'][status]} | "
+            f"{s['by_status_registrations'][status]} |"
+        )
+    out.append("")
     out.append(
-        "| API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers |"
+        "| API Family | Complete | Partial | Compatibility | Controlled Unsupported | "
+        "Unreviewed | Total Handlers | NID Registrations |"
     )
-    out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+    out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
     tot = s["by_status"]
     for fam, stats in sorted(s["by_family"].items()):
         out.append(
             f"| `{fam}` | {stats['complete']} | {stats['partial']} | {stats['compatibility']} | "
-            f"{stats['controlled_unsupported']} | {stats['unreviewed']} | {stats['total_handlers']} |"
+            f"{stats['controlled_unsupported']} | {stats['unreviewed']} | "
+            f"{stats['total_handlers']} | {stats['total_registrations']} |"
         )
     out.append(
         f"| **Total** | **{tot['complete']}** | **{tot['partial']}** | **{tot['compatibility']}** | "
-        f"**{tot['controlled_unsupported']}** | **{tot['unreviewed']}** | **{s['total_dedicated_handlers']}** |"
+        f"**{tot['controlled_unsupported']}** | **{tot['unreviewed']}** | "
+        f"**{s['total_dedicated_handlers']}** | **{s['total_dedicated_registrations']}** |"
     )
     out.append("")
 
@@ -1210,7 +1438,7 @@ def render_census_markdown(census: dict) -> str:
     controlled_handlers = [h for h in handlers if h["status"] == "controlled_unsupported"]
 
     if complete_handlers:
-        out.append("## Complete Handlers (Evidence-Backed)")
+        out.append(f"{detail_heading} Complete Handlers (Evidence-Backed)")
         out.append("")
         for h in complete_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
@@ -1220,25 +1448,29 @@ def render_census_markdown(census: dict) -> str:
         out.append("")
 
     if partial_handlers:
-        out.append("## Partial Handlers (Named Limitations)")
+        out.append(f"{detail_heading} Partial Handlers (Named Limitations)")
         out.append("")
         for h in partial_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
             out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
             out.append(f"  - Limitation: {h.get('limitation', '')}")
+            for ev in h.get("evidence", []):
+                out.append(f"  - Evidence: {ev}")
         out.append("")
 
     if compat_handlers:
-        out.append("## Compatibility Handlers (Named Limitations)")
+        out.append(f"{detail_heading} Compatibility Handlers (Named Limitations)")
         out.append("")
         for h in compat_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
             out.append(f"- **`{h['handler']}`** (`{h['api_family']}`): {api_names}")
             out.append(f"  - Limitation: {h.get('limitation', '')}")
+            for ev in h.get("evidence", []):
+                out.append(f"  - Evidence: {ev}")
         out.append("")
 
     if controlled_handlers:
-        out.append("## Controlled Unsupported Dedicated Handlers")
+        out.append(f"{detail_heading} Controlled Unsupported Dedicated Handlers")
         out.append("")
         for h in controlled_handlers:
             api_names = ", ".join(f"`{a['name']}` ({a['nid']})" for a in h["registrations"])
@@ -1285,6 +1517,13 @@ def main(argv: list[str]) -> int:
         help="emit the Markdown summary table of the HLE status census",
     )
     ap.add_argument(
+        "--census-heading-level",
+        type=int,
+        choices=range(1, 5),
+        default=1,
+        help="top heading level for --census-markdown (the inventory doc embeds level 3)",
+    )
+    ap.add_argument(
         "--triage-top",
         type=int,
         default=30,
@@ -1300,13 +1539,17 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     try:
         manifest = build_manifest()
+        chain = (
+            build_evidence_chain(manifest, args.imports, args.triage_top)
+            if args.evidence_chain is not None
+            else None
+        )
     except ManifestError as e:
         print(f"hle_manifest: {e}", file=sys.stderr)
         return 1
     dump_json(manifest, args.out)
     print(f"hle_manifest: {len(manifest['registrations'])} registrations -> {args.out}")
-    if args.evidence_chain is not None:
-        chain = build_evidence_chain(manifest, args.imports, args.triage_top)
+    if chain is not None:
         dump_json(chain, args.evidence_chain)
         tiers = ", ".join(f"{k}={v}" for k, v in chain["summary"]["by_tier"].items())
         print(f"hle_manifest: evidence chain -> {args.evidence_chain} ({tiers})")
@@ -1320,7 +1563,7 @@ def main(argv: list[str]) -> int:
                 f"{len(s['by_family'])} families) -> {args.census}"
             )
         if args.census_markdown is not None:
-            md_text = render_census_markdown(census)
+            md_text = render_census_markdown(census, heading_level=args.census_heading_level)
             args.census_markdown.parent.mkdir(parents=True, exist_ok=True)
             args.census_markdown.write_text(md_text, encoding="utf-8")
             print(f"hle_manifest: census markdown -> {args.census_markdown}")

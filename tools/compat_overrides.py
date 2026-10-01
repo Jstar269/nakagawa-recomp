@@ -53,7 +53,14 @@ Categories (pick exactly one per entry):
 
 Every entry's `test` field names the regression test that pins it, or "none" if
 it does not have one yet (a real gap -- see ISSUES.md, not silently swept in).
+For a `temporary_compatibility_patch` that gap is now a CI failure: the debt
+gate in tools/test_compat_manifest.py also requires a live `owner_issue` and an
+explicit `retirement` condition, and only its reviewed allowlist can waive the
+test.  `python tools/compat_overrides.py --debt-census` prints the census.
 """
+
+import re
+import sys
 
 CATEGORIES = {
     "faithful_abi_bridge",
@@ -137,16 +144,46 @@ def is_generic_site(function: str, shape: str, address: int) -> bool:
             return True
     return False
 
+# --- executable regressions shared by the codegen-layer temporary patches ----
+#: The differential that pins the codegen-layer temporary patches that replace
+#: a whole function body (issue #363): the custom stubs and the eight
+#: HST_SIMPLE_STUBS.  The coupling half fails if the patch stops firing under
+#: --profile=hst, because the stubbed body would then match its byte-identical
+#: control copy; the decoupling half fails if it leaks into --profile=none.
+#: Verified by disabling each patch in tools/codegen.py and watching this
+#: test fail.  It pins existence and profile gating, NOT guest-visible
+#: correctness -- that is what the entry's retirement condition is for.
+CODEGEN_TEMPORARY_PATCH_TEST = (
+    "tools/test_codegen_profile_isolation.py"
+    "::ProfileHstCouplingTests::test_every_coupled_address_differs_from_its_control_copy"
+    " + ProfileNoneDecouplingTests.test_every_coupled_address_matches_its_control_copy"
+)
+
+#: The two GUEST_PATCHES instruction overrides are pinned by a different test.
+#: The coupling differential does NOT catch them being switched off: their
+#: static-verify exclusion (_SV_SPECIAL in tools/codegen.py) is keyed on the
+#: same addresses, so a disabled patch still emits address-different text.
+#: The legacy-emission test asserts the patch's own marker text instead, and
+#: fails when the patch stops applying (verified the same way).
+CODEGEN_GUEST_PATCH_TEST = (
+    "tools/test_codegen_profile_isolation.py"
+    "::ProfileHstLegacyTests::test_legacy_hst_emission_is_unchanged"
+)
+
 # --- tools/codegen.py: GUEST_PATCHES (instruction-level overrides) ----------
 GUEST_PATCHES = [
     dict(address=0x00010950, layer="codegen_instruction", category="temporary_compatibility_patch",
          source="tools/codegen.py:GUEST_PATCHES", name="bypass worker frame-init spin loop",
          reason="force the branch condition to skip a spin loop at 0x10950 (worker frame init)",
-         test="none", owner_issue="ISSUES.md #5.1"),
+         test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
+         retirement="reproduce and root-cause the forced-control-flow case: the frame-init loop "
+                    "must terminate on its own guest-visible condition, then delete the entry"),
     dict(address=0x00048320, layer="codegen_instruction", category="temporary_compatibility_patch",
          source="tools/codegen.py:GUEST_PATCHES", name="force single-iteration pass",
          reason="inject a forced single-iteration exit at 0x48320",
-         test="none", owner_issue="ISSUES.md #5.1"),
+         test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
+         retirement="reproduce and root-cause the forced-control-flow case: the guest loop must "
+                    "run its real iteration count, then delete the injected exit"),
     dict(address=0x0004cdc8, layer="codegen_instruction", category="hle_boundary",
          source="tools/codegen.py:GUEST_PATCHES", name="route asset reads through host filesystem",
          reason="force the branch that selects the host0 (sceIoOpen-backed) asset path; "
@@ -199,7 +236,9 @@ CODEGEN_CUSTOM_STUBS = [
     dict(address=0x0001034c, category="temporary_compatibility_patch", name="skip heap-statistics walk",
          reason="the guest free-list can be incomplete during bring-up; walking it for "
                 "mallinfo-style counters must not block game initialization",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="the guest free-list is complete during bring-up so the real walk no longer "
+                    "blocks initialization; then drop the skip"),
     # 0x0001a5f8 / 0x0001c008: constant-return stubs removed 2026-07-18 after a
     # Ghidra-assisted review proved both shadowed real translatable code (a
     # delay-slot setter and a computed-goto resume point). The real translations
@@ -213,7 +252,9 @@ CODEGEN_CUSTOM_STUBS = [
          reason="recovers from an impossible id=0 result from the retail chooser (every shipped "
                 "title archive is numbered from 01) instead of leaving a stray text surface in "
                 "the title background",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="root-cause the retail chooser's id=0 result (or translate its real body) so "
+                    "the postcondition recovery is unnecessary"),
     dict(address=0x00011090, category="faithful_abi_bridge", name="memcpy native",
          reason="native memmove-backed reimplementation, same semantics as the translated body",
          test="none"),
@@ -260,32 +301,51 @@ HST_ENTRY_ROLES = [
 ]
 
 # --- tools/host_stubs.py: HST_SIMPLE_STUBS ----------------------------------
+# #363 owns all eight: audit each body, prefer translating/executing the guest
+# function, otherwise implement the real generic lower-layer dependency instead
+# of a magic success value.
 HST_SIMPLE_STUBS = [
     dict(address=0x00015f98, category="temporary_compatibility_patch", name="Config_LoadGameSettings",
          reason="returns a static success value instead of performing real config load",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="translate and run the real settings-load body (or implement the generic "
+                    "settings dependency) instead of returning a static 1"),
     dict(address=0x0001c010, category="temporary_compatibility_patch", name="VFS_RegisterHeap",
          reason="no-op success; no VFS heap is actually registered",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="register a real VFS heap through the generic lower layer, then drop the "
+                    "no-op success"),
     dict(address=0x0001c0fc, category="temporary_compatibility_patch", name="VFS_RegisterBuffer",
          reason="no-op success; no VFS buffer is actually registered",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="register a real VFS buffer through the generic lower layer, then drop the "
+                    "no-op success"),
     dict(address=0x0001c104, category="temporary_compatibility_patch", name="Config_LoadProfile",
          reason="returns a static success value instead of performing real profile load",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="translate and run the real profile-load body (or implement the generic "
+                    "profile dependency) instead of returning a static 1"),
     dict(address=0x0001c810, category="temporary_compatibility_patch", name="TexCache_Initialize",
          reason="no-op success; no texture cache is actually initialized here",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="bring up a real texture cache (or translate the guest body) so the no-op "
+                    "success is unnecessary"),
     dict(address=0x0001c818, category="temporary_compatibility_patch", name="VFS_RegisterCallback",
          reason="no-op success; no VFS callback is actually registered",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="register a real VFS callback through the generic lower layer, then drop the "
+                    "no-op success"),
     dict(address=0x0001c560, category="temporary_compatibility_patch", name="main_GraphicsInit",
          reason="returns a static success value instead of performing real graphics init "
                 "(the real GPU backend is brought up elsewhere in the host runtime)",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="make the graphics-init contract real (or prove the guest body needs no "
+                    "separate init) instead of returning a static 1"),
     dict(address=0x0001c604, category="temporary_compatibility_patch", name="World_LoadInitialState",
          reason="no-op success; no world initial state is actually loaded",
-         test="none"),
+         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
+         retirement="load the real world initial state (or translate the guest body) instead of "
+                    "returning a no-op success"),
 ]
 
 # --- src/rt/recomp.c: retired #362 exact diagnostic hooks -----------------
@@ -364,9 +424,12 @@ SCHEDULER_HOOKS = [
                 "SR_NO_THREAD_REUSE=1. The address above is no longer compiled into the "
                 "runtime: it reaches sched.c only as the runtime_bindings.worker_thread_entry "
                 "of a validated title manifest, so an unconfigured build never applies this "
-                "override at all. Retire by proving the guest's create/exit sequence needs no "
-                "reuse, which retires the binding with it.",
-         test="make sched-selftest (generic/fixture-a/fixture-b matrix)"),
+                 "override at all. Retire by proving the guest's create/exit sequence needs no "
+                 "reuse, which retires the binding with it.",
+         test="make sched-selftest (generic/fixture-a/fixture-b matrix)",
+         owner_issue="#363",
+         retirement="prove the guest's create/exit sequence needs no reuse, which retires the "
+                    "binding with it"),
     dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher priority demotion",
          source="src/rt/sched.c:sched_create_thread_finish",
          reason="the launcher thread's declared priority is overridden to 50 (below the "
@@ -377,18 +440,24 @@ SCHEDULER_HOOKS = [
                 "(SR_ROTLOG was retired with pick_next's rotation, 2026-07-18). The address "
                 "above is no longer compiled into the runtime: it reaches sched.c only as the "
                 "runtime_bindings.launcher_thread_entry of a validated title manifest, so an "
-                "unconfigured build never demotes anything. Retire by fixing the underlying "
-                "scheduling inversion, which retires the binding with it.",
-         test="make sched-selftest (generic/fixture-a/fixture-b matrix)"),
+                 "unconfigured build never demotes anything. Retire by fixing the underlying "
+                 "scheduling inversion, which retires the binding with it.",
+         test="make sched-selftest (generic/fixture-a/fixture-b matrix)",
+         owner_issue="#363",
+         retirement="fix the underlying scheduling inversion that lets the launcher starve the "
+                    "worker, which retires the binding with it"),
     dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker relaunch trampoline",
          source="src/rt/sched.c:deliver_vblank",
          reason="a DORMANT thread holding the WORKER role is restarted on the next VBLANK, "
                 "as a host surrogate for the GE list-complete callback that re-arms the "
                 "guest's frame loop on real hardware; opt-out via SR_NO_RELAUNCH=1. Reached "
                 "only through the captured worker role, so a build with no worker binding "
-                "re-arms nothing. Retire by implementing the real list-complete callback "
-                "path, which retires the surrogate.",
-         test="make sched-selftest (generic build asserts no role is captured, so no relaunch)"),
+                 "re-arms nothing. Retire by implementing the real list-complete callback "
+                 "path, which retires the surrogate.",
+         test="make sched-selftest (generic build asserts no role is captured, so no relaunch)",
+         owner_issue="#363",
+         retirement="implement the real GE list-complete callback path, which retires the "
+                    "VBLANK relaunch surrogate"),
     dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher reent ownership",
          source="src/rt/sched.c:register_libc_thread/init_guest_reent",
          reason="a thread holding the LAUNCHER role seeds g_master_reent for every later "
@@ -401,8 +470,11 @@ SCHEDULER_HOOKS = [
                 "0x111 inherited every one of them. They are role tests now: roles start at "
                 "SR_ROLE_UID_NONE and are captured only from a configured entry, so an "
                 "unconfigured build applies none of this. Retire together with the launcher "
-                "binding once the guest's reent bring-up needs no host participation.",
-         test="make sched-selftest (generic build allocates UID 0x111 and asserts it is ordinary)"),
+                 "binding once the guest's reent bring-up needs no host participation.",
+         test="make sched-selftest (generic build allocates UID 0x111 and asserts it is ordinary)",
+         owner_issue="#363",
+         retirement="retire together with the launcher binding once the guest's reent bring-up "
+                    "needs no host participation"),
 ]
 
 # HST-only guest Newlib addresses now live behind the validated HST title-config
@@ -414,14 +486,20 @@ TITLE_CONFIGURED_SCHEDULER_COMPAT = [
          title_scope="hst-ucus98701",
          reason="provides the pre-launcher Newlib master only for the validated HST profile; "
                 "generic and fixture builds receive no address",
-         test="tools/test_hle_title_isolation.py and flagship verification"),
+         test="tools/test_hle_title_isolation.py and flagship verification",
+         owner_issue="#363",
+         retirement="model the actual libc/thread bring-up so the pre-launcher master reent needs "
+                    "no host-supplied address; then remove the binding"),
     dict(address=0x0030aa88, category="temporary_compatibility_patch",
          name="guest thread reent table root",
          source="src/rt/title_config.c:sr_title_config_reent_bindings",
          title_scope="hst-ucus98701",
          reason="seeds and maintains the guest's legacy per-thread reent hash only for the "
                 "validated HST profile; generic builds perform no guest-table access",
-         test="tools/test_hle_title_isolation.py and flagship verification"),
+         test="tools/test_hle_title_isolation.py and flagship verification",
+         owner_issue="#363",
+         retirement="model the guest's own per-thread reent registration so the host stops "
+                    "seeding the guest table; then remove the binding"),
 ]
 
 # --- src/rt/recomp.c: dispatch bindings owned by TITLE CONFIGURATION ----------
@@ -456,15 +534,21 @@ TITLE_CONFIGURED_DISPATCH = [
                 "modelling the guest's list terminator faithfully so the walk ends on its "
                 "own. This site constrains ra only, which is the constraint the original "
                 "hardcoded check applied; narrowing it to a pc as well would be a behavior "
-                "change, not a migration.",
-         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)"),
+                 "change, not a migration.",
+         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)",
+         owner_issue="#363",
+         retirement="model the guest's circular callback-list terminator faithfully so the walk "
+                    "ends on its own instead of being reported complete here"),
     dict(address=0x00292fa0, category="temporary_compatibility_patch",
          name="callback-list walker terminal miss",
          source="src/rt/recomp.c:dispatch (runtime_bindings.callback_terminators)",
          reason="the same walker's -1 terminal target, reported as complete for this exact "
-                "inner call site (pc plus ra) only. Retire together with the null terminator "
-                "above: both are surrogates for a faithfully-modelled list end.",
-         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)"),
+                 "inner call site (pc plus ra) only. Retire together with the null terminator "
+                 "above: both are surrogates for a faithfully-modelled list end.",
+         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)",
+         owner_issue="#363",
+         retirement="retire together with the null terminator above: both are surrogates for a "
+                    "faithfully-modelled list end"),
 ]
 
 OVERRIDES = (
@@ -657,6 +741,7 @@ HLE_TITLE_CONFIGURED_COMPAT = [
          evidence="title_config gated: generic build has no MEM_R32/MEM_W32(0x00331b80)",
          accidental_inheritance="no -- generic build touches no latch; configured title touches only its own",
          test="tools/test_hle_title_isolation.py",
+         owner_issue="#363",
          retirement="model the real list-complete event generically; then the latch address itself may retire"),
     dict(name="runtime_sync_callback_config", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
@@ -676,7 +761,8 @@ HLE_TITLE_CONFIGURED_COMPAT = [
          evidence_tier="SOURCE_SHAPE",
          evidence="title_config gated: generic hle.c has no literal 0x00333138 etc.",
          accidental_inheritance="no -- generic build installs nothing; configured title installs its own pairs",
-         test="tools/test_hle_title_isolation.py"),
+         test="tools/test_hle_title_isolation.py",
+         owner_issue="#363"),
     dict(name="display_setmode_guest_init", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
@@ -690,6 +776,7 @@ HLE_TITLE_CONFIGURED_COMPAT = [
          evidence="title_config gated: generic hle.c has no ge_call_guest at those addresses",
          accidental_inheritance="no -- generic build calls nothing; configured title calls its own entries",
          test="tools/test_hle_title_isolation.py",
+         owner_issue="#363",
          retirement="model the guest's own display-driver init; retire when generic init suffices"),
 ]
 
@@ -702,3 +789,149 @@ def all_documented_addresses() -> "set[int]":
         if isinstance(addr, int):
             result.add(addr)
     return result
+
+
+# --- temporary compatibility debt census and gate (#363) ---------------------
+#
+# #363 acceptance: every live `temporary_compatibility_patch` carries a current
+# owner, an executable regression and an explicit retirement condition, and
+# test="none" is not an acceptable permanent state for a behavior-changing
+# entry.  This section is the machine-readable form of that requirement.
+#
+# Collections are DISCOVERED from the module namespace instead of listed by
+# hand, so an entry added to an existing list -- or to a brand new list --
+# cannot exist without appearing in the census.  The CI gate that enforces the
+# census lives in tools/test_compat_manifest.py, and the reviewed no-test
+# allowlist lives there too: this manifest cannot waive itself.
+
+#: Module collections that only re-list entries owned by another collection.
+#: Skipped by name so the census stays at one row per patch whichever name a
+#: reader reaches first.
+AGGREGATE_COLLECTIONS = frozenset({"OVERRIDES"})
+
+#: An owner must LEAD with a live GitHub issue number.  An ISSUES.md anchor
+#: such as "ISSUES.md #5.1" is a documentation pointer, not an owner, and does
+#: not satisfy it.
+OWNER_ISSUE_RE = re.compile(r"#\d+\b")
+
+
+def manifest_collections() -> "dict[str, list[dict]]":
+    """Every collection of manifest entries declared in this module.
+
+    Discovered from the module namespace rather than a hard-coded list: a new
+    collection cannot be added without showing up in the debt census.  Empty
+    lists are kept (a collection that has retired its last temporary patch is
+    still scanned); sets, plain address lists and aggregates are not
+    collections of entries and are skipped.
+    """
+    found: "dict[str, list[dict]]" = {}
+    for name, value in globals().items():
+        if name in AGGREGATE_COLLECTIONS or not isinstance(value, (list, tuple)):
+            continue
+        if value and not all(isinstance(entry, dict) for entry in value):
+            continue
+        found[name] = list(value)
+    return found
+
+
+def _census_anchor(entry: dict) -> str:
+    """The address a patch is keyed by: its own, or its group's first."""
+    address = entry.get("address")
+    if not isinstance(address, int):
+        addresses = entry.get("addresses")
+        address = addresses[0] if addresses else None
+    return f"0x{address:08x}" if isinstance(address, int) else "-"
+
+
+def temporary_compatibility_patches() -> "list[dict]":
+    """Every live ``temporary_compatibility_patch``, with a stable census id.
+
+    Each returned dict is a copy of the manifest entry plus:
+
+      collection -- the module collection the entry lives in;
+      id         -- "<collection>:<address>:<name>", the identity the CI gate
+                    and its no-test allowlist key on.
+
+    Every collection is scanned, retired ones included: an entry labelled
+    temporary there is fail-closed debt, not a silent pass.
+    """
+    patches: "list[dict]" = []
+    for collection, entries in manifest_collections().items():
+        for entry in entries:
+            if entry.get("category") != "temporary_compatibility_patch":
+                continue
+            patch = dict(entry)
+            patch["collection"] = collection
+            patch["id"] = f"{collection}:{_census_anchor(entry)}:{entry.get('name', '(unnamed)')}"
+            patches.append(patch)
+    return patches
+
+
+def temporary_patch_defects(patch: dict) -> "list[str]":
+    """The #363 census facts a temporary compatibility patch is missing.
+
+    A temporary patch with no owner issue has nobody to retire it, one with no
+    retirement condition has no point at which it is done, and one with no test
+    makes its later removal prove nothing.  Any of the three is invisible debt.
+    The ``test`` field may be waived only by the reviewed allowlist in
+    tools/test_compat_manifest.py, which this module deliberately does not
+    read.
+    """
+    problems: "list[str]" = []
+    if not OWNER_ISSUE_RE.match(str(patch.get("owner_issue") or "").strip()):
+        problems.append("owner_issue must lead with a live GitHub issue number (e.g. #363)")
+    if not str(patch.get("retirement") or "").strip():
+        problems.append("no retirement condition")
+    test = str(patch.get("test") or "").strip()
+    if not test or test.lower() == "none":
+        problems.append("test is none/empty")
+    return problems
+
+
+def format_debt_census() -> str:
+    """Render the temporary-compatibility debt census (#363).
+
+    One block per patch -- id, owner issue, retirement condition and test, the
+    four facts #363's acceptance requires -- followed by a DEFECTS section
+    naming every patch that is missing one of them.  Reporting only: the CI
+    gate, which also knows the reviewed no-test allowlist, is
+    tools/test_compat_manifest.TemporaryCompatibilityDebtGateTests.
+    """
+    patches = temporary_compatibility_patches()
+    found = [(patch, temporary_patch_defects(patch)) for patch in patches]
+    defects = [(patch, problems) for patch, problems in found if problems]
+    scanned = manifest_collections()
+    lines = [
+        "temporary compatibility patch census (#363)",
+        f"collections scanned: {len(scanned)} ({', '.join(scanned)})",
+        f"temporary_compatibility_patch entries: {len(patches)}",
+        f"defective entries: {len(defects)}",
+        "",
+    ]
+    for patch in patches:
+        lines.append(patch["id"])
+        lines.append(f"    owner_issue: {patch.get('owner_issue') or '-'}")
+        lines.append(f"    retirement:   {patch.get('retirement') or '-'}")
+        lines.append(f"    test:         {patch.get('test') or '-'}")
+        lines.append("")
+    if defects:
+        lines.append("DEFECTS (temporary patch missing owner/retirement/test):")
+        for patch, problems in defects:
+            lines.append(f"    {patch['id']}: {'; '.join(problems)}")
+    else:
+        lines.append("DEFECTS: none")
+    return "\n".join(lines)
+
+
+def main(argv: "list[str]") -> int:
+    """CLI: ``--debt-census`` prints the census.  Exit status stays 0 so a
+    reviewed no-test waiver in the CI gate cannot make this report lie."""
+    if argv == ["--debt-census"]:
+        print(format_debt_census())
+        return 0
+    print("usage: python tools/compat_overrides.py --debt-census", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

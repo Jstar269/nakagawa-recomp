@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "nk_title_manifest.h"
+#include "nk_launch.h"
 #include "nk_platform.h"
 #include <assert.h>
 #include <stdio.h>
@@ -629,7 +630,85 @@ static void test_overlay_collision_policy(void) {
     printf("[MANIFEST_TEST] Overlay collision policy tests PASSED!\n");
 }
 
+static int launch_loose_roots_transport(int argc, char *argv[]) {
+    if (argc != 6 || strcmp(argv[1], "--launch-loose-roots") != 0) return 0;
+    const char *manifest_path = argv[2];
+    const char *root = argv[3];
+    const char *title_id = argv[4];
+    const char *output_path = argv[5];
+    char error[512] = {0};
+    if (!nk_title_manifest_load_overlay_ext(manifest_path, true,
+                                            error, sizeof(error))) {
+        fprintf(stderr, "native launch manifest rejected: %s\n", error);
+        return 2;
+    }
+    const NkTitleEntry *entry = nk_title_catalog_find_by_id(title_id);
+    if (!entry || !entry->game_name) {
+        fprintf(stderr, "native launch manifest lookup failed: %s\n", title_id);
+        return 3;
+    }
+
+    char separator = nk_platform_path_separator();
+    char runtime_dir[NK_MAX_PATH * 2];
+    char runtime_path[NK_MAX_PATH * 2];
+    char image_path[NK_MAX_PATH * 2];
+    int written = snprintf(runtime_dir, sizeof(runtime_dir), "%s%cbuild%c%s",
+                           root, separator, separator, entry->game_name);
+    if (written <= 0 || (size_t)written >= sizeof(runtime_dir) ||
+        !nk_platform_mkdir_p(runtime_dir)) {
+        fprintf(stderr, "native launch fixture runtime directory failed\n");
+        return 4;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    written = snprintf(runtime_path, sizeof(runtime_path), "%s%c%s.exe",
+                       runtime_dir, separator, entry->game_name);
+#else
+    written = snprintf(runtime_path, sizeof(runtime_path), "%s%c%s",
+                       runtime_dir, separator, entry->game_name);
+#endif
+    if (written <= 0 || (size_t)written >= sizeof(runtime_path)) return 5;
+    written = snprintf(image_path, sizeof(image_path), "%s%c%s_image.bin",
+                       runtime_dir, separator, entry->game_name);
+    if (written <= 0 || (size_t)written >= sizeof(image_path)) return 5;
+    const char *fixture_paths[] = {runtime_path, image_path};
+    for (size_t i = 0; i < sizeof(fixture_paths) / sizeof(fixture_paths[0]); i++) {
+        FILE *fixture = fopen(fixture_paths[i], "wb");
+        if (!fixture) return 6;
+        int fixture_ok = fwrite("synthetic", 1u, 9u, fixture) == 9u;
+        if (fclose(fixture) != 0) fixture_ok = 0;
+        if (!fixture_ok) return 6;
+    }
+
+    NkGameEntry game;
+    memset(&game, 0, sizeof(game));
+    snprintf(game.title_id, sizeof(game.title_id), "%s", title_id);
+    char iso_path[NK_MAX_PATH * 2];
+    written = snprintf(iso_path, sizeof(iso_path), "%s%csynthetic.iso",
+                       root, separator);
+    if (written <= 0 || (size_t)written >= sizeof(iso_path)) return 5;
+    FILE *iso = fopen(iso_path, "wb");
+    if (!iso) return 6;
+    int iso_ok = fwrite("synthetic", 1u, 9u, iso) == 9u;
+    if (fclose(iso) != 0) iso_ok = 0;
+    if (!iso_ok || strlen(iso_path) >= sizeof(game.iso_path)) return 6;
+    memcpy(game.iso_path, iso_path, strlen(iso_path) + 1u);
+    NkLaunchSession session;
+    if (nk_launch_prepare_session(&session, &game, root) != NK_OK) {
+        fprintf(stderr, "native launch session failed: %s\n", session.last_error);
+        return 7;
+    }
+    FILE *output = fopen(output_path, "wb");
+    if (!output) return 8;
+    size_t bytes = strlen(session.loose_content_roots);
+    int ok = fwrite(session.loose_content_roots, 1u, bytes, output) == bytes;
+    if (fclose(output) != 0) ok = 0;
+    return ok ? 0 : 8;
+}
+
 int main(int argc, char *argv[]) {
+    if (argc >= 2 && strcmp(argv[1], "--launch-loose-roots") == 0) {
+        return launch_loose_roots_transport(argc, argv);
+    }
     if (argc >= 3 && strcmp(argv[1], "--check") == 0) {
         const char *manifest_path = argv[2];
         char err_buf[512] = {0};

@@ -117,7 +117,7 @@ static float ui_font_pt_for_scale(float scale, float density) {
 
 static bool ui_font_file_exists(const char *path) {
     if (!path || !*path) return false;
-    FILE *f = fopen(path, "rb");
+    FILE *f = nk_fopen_utf8(path, "rb");
     if (!f) return false;
     fclose(f);
     return true;
@@ -1204,20 +1204,20 @@ static void render_topbar(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) 
         draw_badge(ren, 460.0f, 20.0f, pid_str, COLOR_LIME);
     }
 
-    /* Controller badge: full label on wide windows, compact state dot
-     * below that, hidden on the narrowest layouts. */
+    /* Leave the Settings header's Build Tools/Settings action group clear. */
     if (w >= 1000.0f) {
         if (app->settings.controller_connected) {
-            draw_badge(ren, w - 320.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_LIME);
+            draw_badge(ren, w - 480.0f, 20.0f, "GAMEPAD CONNECTED", COLOR_LIME);
         } else {
-            draw_badge(ren, w - 320.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
+            draw_badge(ren, w - 480.0f, 20.0f, "KEYBOARD READY", COLOR_TEXT_DIM);
         }
     } else if (w >= 760.0f) {
-        if (app->settings.controller_connected) {
-            draw_badge(ren, w - 300.0f, 20.0f, "PAD OK", COLOR_LIME);
-        } else {
-            draw_badge(ren, w - 300.0f, 20.0f, "KEYBOARD", COLOR_TEXT_DIM);
-        }
+        /* Right-align against the BUILD TOOLS button (w - 278) with an 8 px
+         * gutter, whatever the label's width, so the compact badge clears the
+         * action group by construction. */
+        const char *compact_label = app->settings.controller_connected ? "PAD OK" : "KEYBOARD";
+        draw_badge(ren, w - 278.0f - 8.0f - badge_width(compact_label), 20.0f, compact_label,
+                   app->settings.controller_connected ? COLOR_LIME : COLOR_TEXT_DIM);
     }
 
     /* Settings Button. Mouse-driven; keyboard/gamepad users press S/START
@@ -2011,10 +2011,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (card_w > 1216.0f) card_w = 1216.0f;
     float card_x = centered_card_x(w, card_w);
     float card_y = 96.0f;
-    /* Two columns need the four resolution presets (left) to clear the
-     * audio column (right); below this the cursor-flow single column
-     * below takes over, which cannot overlap by construction. */
-    bool two_col = card_w >= 980.0f;
+    /* Two columns need the launcher fullscreen control and save-directory
+     * text to clear one another; below this the single-column flow cannot
+     * overlap by construction. */
+    bool two_col = player_settings_uses_two_columns(app->window_width,
+                                                     app->window_height);
     float card_h = two_col ? 520.0f : 660.0f;
     if (card_y + card_h > h - 40.0f && h > 560.0f) {
         card_h = h - 40.0f - card_y;
@@ -2032,7 +2033,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
     } else {
         draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f,
-                             "Configuration saved to settings.json. Game settings apply at the next launch.",
+                             "Game settings apply at the next launch; launcher fullscreen applies now.",
                              1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
     }
     /* Identify the platform the player runs, never imply endorsement. */
@@ -2041,7 +2042,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                          0.9f, card_w - 64.0f, COLOR_TEXT_DIM);
 
     float col1_x = card_x + 32.0f;
-    float col2_x = two_col ? card_x + card_w * 0.5f : col1_x;
+    float col2_x = two_col ? card_x + player_settings_second_column_offset(card_w) : col1_x;
     float row_y = card_y + 128.0f;
     int focus = 0;
 
@@ -2098,12 +2099,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             y = by + 52.0f;
         }
         /* Display toggles. */
-        draw_text(ren, col1_x, y, "DISPLAY (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "GAME DISPLAY (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
         {
             char vsync_label[32];
             snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
             char fs_label[64];
-            snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
+            snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
             float by = y + 24.0f;
             float bx = col1_x;
             bool focused = (app->focus_index == focus);
@@ -2134,6 +2135,23 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             }
             focus++;
             y = by + 52.0f;
+        }
+        draw_text(ren, col1_x, y, "LAUNCHER WINDOW", 1.1f, COLOR_TEXT_DIM);
+        {
+            char launcher_fs_label[64];
+            snprintf(launcher_fs_label, sizeof(launcher_fs_label),
+                     "Launcher fullscreen: %s",
+                     app->settings.launcher_fullscreen ? "ON" : "OFF");
+            bool focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, col1_x, y + 24.0f, 310.0f, 36.0f,
+                                    launcher_fs_label,
+                                    app->settings.launcher_fullscreen, in, focused)) {
+                player_app_toggle_launcher_fullscreen(app);
+            }
+            focus++;
+            draw_text(ren, col1_x + 326.0f, y + 32.0f,
+                      "F11 / Alt+Enter", 0.9f, COLOR_TEXT_DIM);
+            y += 68.0f;
         }
         /* Volume stepper and audio text. */
         draw_text(ren, col1_x, y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);
@@ -2263,7 +2281,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Display toggles */
     float tog_y = fps_y + 90.0f;
-    draw_text(ren, col1_x, tog_y, "DISPLAY (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, tog_y, "GAME DISPLAY (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
     {
         char vsync_label[32];
         snprintf(vsync_label, sizeof(vsync_label), "VSync: %s", app->settings.vsync ? "ON" : "OFF");
@@ -2273,7 +2291,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
         char fs_label[64];
-        snprintf(fs_label, sizeof(fs_label), "Fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
+        snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
         if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
@@ -2287,6 +2305,24 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
     }
+
+    float launcher_window_y = tog_y + 44.0f;
+    {
+        char launcher_fs_label[64];
+        snprintf(launcher_fs_label, sizeof(launcher_fs_label),
+                 "Launcher fullscreen: %s",
+                 app->settings.launcher_fullscreen ? "ON" : "OFF");
+        bool focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, col1_x + 220.0f, launcher_window_y + 24.0f,
+                                310.0f, 36.0f, launcher_fs_label,
+                                app->settings.launcher_fullscreen, in, focused)) {
+            player_app_toggle_launcher_fullscreen(app);
+        }
+        focus++;
+    }
+    draw_text(ren, col1_x + 220.0f, launcher_window_y + 64.0f,
+              "Toggle launcher fullscreen: F11 / Alt+Enter", 0.85f,
+              COLOR_TEXT_DIM);
 
     /* Audio */
     draw_text(ren, col2_x, col2_y, "AUDIO & SOUND OUTPUT", 1.1f, COLOR_TEXT_DIM);

@@ -126,7 +126,7 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
  * is invoked while a selected file is copied and once more after that file is
  * closed successfully. Returning false aborts the walk with NK_ERROR_CANCELLED.
  * `bytes_complete` and `bytes_total` are cumulative across the selected
- * EBOOT.BIN and PSP_GAME/USRDIR/xbdata tree. */
+ * EBOOT.BIN and the configured loose-content roots found in the ISO. */
 typedef bool (*NkIsoProgressCallback)(const char *relative_path,
                                       uint64_t bytes_complete,
                                       uint64_t bytes_total,
@@ -134,11 +134,14 @@ typedef bool (*NkIsoProgressCallback)(const char *relative_path,
                                       size_t total_files,
                                       void *userdata);
 
-/* Extract only the game payload needed by the native player into a caller
- * owned staging root: EBOOT.BIN and every regular file below
- * PSP_GAME/USRDIR/xbdata. The ISO is walked from its own directory records;
- * no host-side directory listing or external extractor is involved. */
+/* Extract EBOOT.BIN and any configured loose-content roots found below
+ * PSP_GAME/USRDIR into a caller-owned staging root. Each root is a validated
+ * relative path and is also the destination path below host_root. The ISO is
+ * walked from its own directory records; no host-side directory listing or
+ * external extractor is involved. */
 NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
+                             const char *const *loose_content_roots,
+                             size_t loose_content_root_count,
                              NkIsoProgressCallback progress, void *userdata);
 #endif
 
