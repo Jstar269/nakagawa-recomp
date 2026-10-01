@@ -1642,7 +1642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1818c74da1ac8de05967329fedcc26400555b265778a6e295f9a7e6402ee7fad"
+      "sha256": "32cb4fe9f8154d051d24453b64816f0f2805ca84820a554a4029977e011379f8"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
