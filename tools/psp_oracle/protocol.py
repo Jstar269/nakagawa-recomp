@@ -622,6 +622,39 @@ def _schema_type_matches(value: Any, expected: str) -> bool:
     return False
 
 
+#: Keywords the in-tree validator enforces, plus pure annotations. A schema using any
+#: other keyword would be silently under-enforced here while a conforming validator
+#: applied it, so the schema is refused instead (see _schema_keyword_errors).
+_JSON_SCHEMA_ENFORCED = frozenset({
+    "$ref", "type", "const", "enum", "required", "properties", "additionalProperties",
+    "minItems", "maxItems", "uniqueItems", "items", "minLength", "maxLength",
+    "pattern", "minimum", "maximum",
+})
+_JSON_SCHEMA_ANNOTATIONS = frozenset({
+    "$schema", "$id", "$comment", "$defs", "title", "description",
+})
+GE_CORPUS_SCHEMA_ID = "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/ge_corpus.schema.json"
+
+
+def _schema_keyword_errors(schema: Any, path: str = "") -> list[tuple[str, str]]:
+    """Reject schema keywords the validator would silently ignore (typos included)."""
+
+    if not isinstance(schema, dict):
+        return []
+    errors: list[tuple[str, str]] = []
+    unknown = sorted(set(schema) - _JSON_SCHEMA_ENFORCED - _JSON_SCHEMA_ANNOTATIONS)
+    if unknown:
+        errors.append((path, "schema uses keyword(s) this validator does not enforce: " + ", ".join(unknown)))
+    for name in ("properties", "$defs"):
+        children = schema.get(name)
+        if isinstance(children, dict):
+            for key, child in children.items():
+                errors.extend(_schema_keyword_errors(child, f"{path}/{name}/{key}"))
+    if isinstance(schema.get("items"), dict):
+        errors.extend(_schema_keyword_errors(schema["items"], f"{path}/items"))
+    return errors
+
+
 def _json_schema_errors(
     value: Any,
     schema: dict[str, Any],
@@ -722,6 +755,20 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
     commands = case.get("command_words")
     relocations = case.get("relocations")
     if isinstance(framebuffer, dict):
+        # A packed value must fit the declared pixel format: 16-bit formats cap at 0xFFFF.
+        limit = {"5650": 0xFFFF, "5551": 0xFFFF, "4444": 0xFFFF, "8888": 0xFFFFFFFF}.get(
+            framebuffer.get("format"))
+        if limit is not None:
+            initial = framebuffer.get("initial_pixel")
+            if isinstance(initial, int) and not isinstance(initial, bool) and initial > limit:
+                errors.append((f"{path}.framebuffer.initial_pixel",
+                               f"does not fit the {framebuffer.get('format')} pixel format"))
+            if isinstance(pixels, list):
+                for index, pixel in enumerate(pixels):
+                    value = pixel.get("pixel_value") if isinstance(pixel, dict) else None
+                    if isinstance(value, int) and not isinstance(value, bool) and value > limit:
+                        errors.append((f"{path}.selected_pixels[{index}].pixel_value",
+                                       f"does not fit the {framebuffer.get('format')} pixel format"))
         width = framebuffer.get("width")
         height = framebuffer.get("height")
         stride = framebuffer.get("stride_pixels")
@@ -742,6 +789,18 @@ def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str,
                     if (x, y) in seen_positions:
                         errors.append((pixel_path, "coordinate is duplicated"))
                     seen_positions.add((x, y))
+    vertices = case.get("vertex_words")
+    if isinstance(commands, list) and isinstance(vertices, list):
+        for index, command in enumerate(commands):
+            if isinstance(command, str) and command[2:4] == "04":
+                try:
+                    count = int(command, 16) & 0xFFFF
+                except ValueError:
+                    continue
+                if count == 0 or len(vertices) % count != 0:
+                    errors.append((f"{path}.command_words[{index}]",
+                                   f"PRIM vertex count {count} does not divide the "
+                                   f"{len(vertices)} vertex_words"))
     if isinstance(commands, list) and isinstance(relocations, list):
         for index, relocation in enumerate(relocations):
             if not isinstance(relocation, dict):
@@ -839,6 +898,26 @@ def ge_corpus_report(corpus: Any, schema: Any) -> dict[str, Any]:
             "semantic_boundary": boundary,
             "tracking_issue": issue,
             "cases": [{"case_id": "<schema>", "status": "REFUSED", "reason": "schema document is not an object."}],
+        }
+    identity_errors: list[tuple[str, str]] = []
+    schema_properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    if (
+        schema.get("$id") != GE_CORPUS_SCHEMA_ID
+        or schema_properties.get("semantic_boundary", {}).get("const") != boundary
+        or schema_properties.get("tracking_issue", {}).get("const") != issue
+    ):
+        identity_errors.append(("<schema>", "document is not the GE pixel corpus contract"))
+    identity_errors.extend(_schema_keyword_errors(schema))
+    if identity_errors:
+        return {
+            "status": "REFUSED",
+            "semantic_boundary": boundary,
+            "tracking_issue": issue,
+            "cases": [{
+                "case_id": "<schema>",
+                "status": "REFUSED",
+                "reason": "; ".join(f"{path}: {message}" for path, message in identity_errors),
+            }],
         }
     schema_errors = _json_schema_errors(corpus, schema, schema)
     if not isinstance(corpus, dict):

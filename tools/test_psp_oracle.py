@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_manifest
 from psp_oracle.protocol import (
     ProtocolError,
+    ge_corpus_report,
     compare_texts,
     decode_psp_model_code,
     parse_output,
@@ -212,6 +213,57 @@ class GeCorpusGateTests(unittest.TestCase):
         self.assertEqual(report["semantic_boundary"], "GE_RASTER_PIXEL_CONFORMANCE")
         self.assertEqual(report["tracking_issue"], 343)
         self.assertEqual(report["cases"][0]["status"], "NOT_RUN")
+
+    def _schema(self) -> dict:
+        return json.loads((self.root / "assets" / "ge_corpus.schema.json").read_text(encoding="utf-8"))
+
+    def test_a_substituted_schema_is_refused(self) -> None:
+        permissive = json.loads((self.root / "assets" / "public_source_profile.json").read_text(encoding="utf-8"))
+        report = ge_corpus_report(self.corpus, permissive)
+        self.assertEqual(report["status"], "REFUSED")
+        self.assertIn("not the GE pixel corpus contract", report["cases"][0]["reason"])
+        self.assertNotEqual(ge_corpus_report(self.corpus, self._schema())["status"], "REFUSED")
+
+    def test_schema_keywords_the_validator_would_ignore_are_refused(self) -> None:
+        schema = self._schema()
+        schema["$defs"]["case"]["properties"]["framebuffer"]["properties"]["width"]["minium"] = 1
+        report = ge_corpus_report(self.corpus, schema)
+        self.assertEqual(report["status"], "REFUSED")
+        self.assertIn("minium", report["cases"][0]["reason"])
+
+    def test_packed_pixel_values_must_fit_the_declared_format(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["framebuffer"]["format"] = "5650"
+        case["framebuffer"]["initial_pixel"] = 0xFF00FF00
+        case["selected_pixels"][0]["pixel_value"] = 0xFF00FF00
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("does not fit the 5650 pixel format", result["reason"])
+        case["framebuffer"]["initial_pixel"] = 0
+        case["selected_pixels"][0]["pixel_value"] = 0xFFFF
+        case["selected_pixels"][1]["pixel_value"] = 0
+        case["selected_pixels"][2]["pixel_value"] = 0
+        self.assertNotIn("does not fit", ge_corpus_report(document, self._schema())["cases"][0]["reason"])
+
+    def test_prim_vertex_count_must_agree_with_the_vertex_words(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["vertex_words"] = case["vertex_words"][:-1]
+        result = ge_corpus_report(document, self._schema())["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("PRIM vertex count 3", result["reason"])
+
+    def test_the_public_fixture_carries_no_hardware_envelope(self) -> None:
+        """Raw hardware text must not enter this synthetic-classified public fixture.
+
+        A measured envelope inlines the console model, firmware, binary digest and
+        source commit; admitting one is a maintainer provenance decision, so the
+        committed corpus stays envelope-free until that decision is made.
+        """
+        for case in self.corpus["cases"]:
+            self.assertIsNone(case["evidence_envelope"])
+            self.assertIsNone(case["source_tier"])
 
     def test_software_record_labelled_psp_hardware_is_refused(self) -> None:
         document = json.loads(json.dumps(self.corpus))
