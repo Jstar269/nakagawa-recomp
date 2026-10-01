@@ -126,8 +126,9 @@ static bool launch_parent_directory(const char *path, char *out_path, size_t out
 }
 
 /* Resolve validated roots relative to the parent of SR_DATAROOT and encode the
- * narrow process transport consumed by HLE. Newlines and tabs cannot occur in
- * valid Windows paths or manifest paths, so they delimit this bounded format. */
+ * narrow process transport consumed by HLE. The bounded tab-delimited row is
+ * host path, mount, precedence, primary-root skip flag, exclusion count, then
+ * relative exclusion paths. */
 static bool launch_resolve_loose_content_roots(
     const NkTitleEntry *entry,
     const char *data_root,
@@ -146,7 +147,10 @@ static bool launch_resolve_loose_content_roots(
     size_t used = 0;
     for (int i = 0; i < entry->loose_content_root_count; i++) {
         const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
-        if (!binding->root || !binding->mount || binding->precedence > 65535u) return false;
+        if (!binding->root || !binding->mount || binding->precedence > 65535u ||
+            binding->exclude_count < 0 ||
+            binding->exclude_count > NK_TITLE_MAX_LOOSE_CONTENT_EXCLUDES ||
+            (binding->exclude_count != 0 && !binding->exclude)) return false;
         char candidate[NK_MAX_PATH * 2];
         char absolute[NK_MAX_PATH * 2];
         if (strcmp(binding->root, ".") == 0) {
@@ -157,10 +161,23 @@ static bool launch_resolve_loose_content_roots(
         if (!launch_store_existing(candidate, true, absolute, sizeof(absolute))) return false;
         if (strchr(absolute, '\t') || strchr(absolute, '\n') || strchr(binding->mount, '\t') ||
             strchr(binding->mount, '\n')) return false;
-        int written = snprintf(out_value + used, out_size - used, "%s\t%s\t%u\n",
-                               absolute, binding->mount, (unsigned)binding->precedence);
+        int written = snprintf(out_value + used, out_size - used, "%s\t%s\t%u\t%u\t%d",
+                               absolute, binding->mount, (unsigned)binding->precedence,
+                               binding->skip_primary_root ? 1u : 0u,
+                               binding->exclude_count);
         if (written < 0 || (size_t)written >= out_size - used) return false;
         used += (size_t)written;
+        for (int exclude_index = 0; exclude_index < binding->exclude_count; exclude_index++) {
+            const char *exclude = binding->exclude[exclude_index];
+            if (!exclude || strchr(exclude, '\t') || strchr(exclude, '\n') || used >= out_size)
+                return false;
+            written = snprintf(out_value + used, out_size - used, "\t%s", exclude);
+            if (written < 0 || (size_t)written >= out_size - used) return false;
+            used += (size_t)written;
+        }
+        if (used + 1u >= out_size) return false;
+        out_value[used++] = '\n';
+        out_value[used] = '\0';
     }
     return true;
 }

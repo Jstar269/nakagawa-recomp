@@ -106,8 +106,10 @@ class TitleManifestParityTests(unittest.TestCase):
     def test_loose_root_bindings_and_failures_have_native_python_parity(self):
         base = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
         base["filesystem"]["loose_content_roots"] = [
-            {"root": "second", "mount": "data", "precedence": 20},
-            {"root": "first", "mount": "data", "precedence": 10},
+            {"root": "second", "mount": "data", "precedence": 20,
+             "skip_primary_root": False},
+            {"root": "first", "mount": "data", "precedence": 10,
+             "skip_primary_root": False, "exclude": ["packed", "module"]},
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "roots.json"
@@ -126,6 +128,12 @@ class TitleManifestParityTests(unittest.TestCase):
                 ([{"root": "one", "mount": "", "precedence": 1},
                   {"root": "two", "mount": "", "precedence": 1}], "precedence"),
                 ([{"root": "one", "mount": "", "precedence": 1, "guess": True}], "unknown"),
+                ([{"root": "one", "mount": "", "precedence": 1,
+                   "skip_primary_root": True}], "skip_primary_root"),
+                ([{"root": ".", "mount": "", "precedence": 1,
+                   "skip_primary_root": False}], "skip_primary_root"),
+                ([{"root": "one", "mount": "", "precedence": 1,
+                   "exclude": ["../escape"]}], "exclude"),
             ]
             for roots, _reason in failures:
                 with self.subTest(roots=roots):
@@ -149,8 +157,10 @@ class TitleManifestParityTests(unittest.TestCase):
         manifest["filesystem"]["data_root"] = "content/archive"
         manifest["filesystem"]["memory_stick_root"] = "save"
         manifest["filesystem"]["loose_content_roots"] = [
-            {"root": "assets_a", "mount": "", "precedence": 10},
-            {"root": "assets_b", "mount": "data", "precedence": 20},
+            {"root": "assets_a", "mount": "", "precedence": 10,
+             "exclude": ["packed", "module"]},
+            {"root": "assets_b", "mount": "data", "precedence": 20,
+             "skip_primary_root": False},
         ]
         validated = title_manifest.validate_manifest(manifest)
 
@@ -158,7 +168,8 @@ class TitleManifestParityTests(unittest.TestCase):
             base = Path(temporary)
             data_root = base / "content" / "archive"
             data_root.mkdir(parents=True)
-            (data_root.parent / "assets_a").mkdir()
+            (data_root.parent / "assets_a" / "packed").mkdir(parents=True)
+            (data_root.parent / "assets_a" / "module").mkdir()
             (data_root.parent / "assets_b").mkdir()
             manifest_path = base / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -171,6 +182,27 @@ class TitleManifestParityTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+            native_bytes = output_path.read_bytes()
+            python_bytes = title_manifest.encode_loose_content_roots(
+                validated, data_root.resolve()
+            ).encode("utf-8")
+            self.assertEqual(native_bytes, python_bytes)
+
+            manifest["filesystem"]["loose_content_roots"] = [{
+                "root": ".", "mount": "", "precedence": 10,
+                "skip_primary_root": True, "exclude": ["packed", "module"],
+            }]
+            validated = title_manifest.validate_manifest(manifest)
+            (data_root.parent / "packed").mkdir()
+            (data_root.parent / "module").mkdir()
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            result = subprocess.run(
+                [str(self.native_exe), "--launch-loose-roots", str(manifest_path),
+                 str(base), manifest["id"], str(output_path)],
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             native_bytes = output_path.read_bytes()
             python_bytes = title_manifest.encode_loose_content_roots(
                 validated, data_root.resolve()

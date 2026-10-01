@@ -46,8 +46,8 @@ class SyntheticDiscIdTests(unittest.TestCase):
         self.assertIn("typedef struct {", header)
         self.assertIn("const NkLooseContentRoot *loose_content_roots;", header)
         self.assertIn("static const NkLooseContentRoot s_loose_roots_title_0[]", source)
-        self.assertIn('{ "first", "data", 10U }', source)
-        self.assertIn('{ "second", "data", 20U }', source)
+        self.assertIn('{ "first", "data", 10U, false, NULL, 0 }', source)
+        self.assertIn('{ "second", "data", 20U, false, NULL, 0 }', source)
 
     def test_both_modules_use_the_canonical_assignment(self) -> None:
         import title_catalog_codegen

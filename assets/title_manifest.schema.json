@@ -293,8 +293,22 @@
             {"$ref": "#/$defs/relativePath"}
           ]
         },
-        "precedence": {"type": "integer", "minimum": 0, "maximum": 65535}
-      }
+        "precedence": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "skip_primary_root": {"type": "boolean"},
+        "exclude": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/relativePath"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"root": {"const": "."}}, "required": ["root"]},
+          "then": {"properties": {"skip_primary_root": {"const": true}}},
+          "else": {"properties": {"skip_primary_root": {"const": false}}}
+        }
+      ]
     },
     "runtimeContract": {
       "type": "object",

@@ -50,13 +50,16 @@ workspace bindings supplied locally and remain outside Git.
 
 For split loose-file layouts, declare the extra roots in
 `filesystem.loose_content_roots` rather than teaching generic runtime code
-directory names. Each `{ "root", "mount", "precedence" }` entry resolves
-`root` relative to the parent of `filesystem.data_root`; `mount` is the
-guest-relative prefix (or `""` for the namespace root), and lower unique
-`precedence` values win duplicate file keys between loose roots. Files under
-`filesystem.data_root` keep priority over matching files from loose roots. The schema rejects unsafe,
-duplicate, or overlapping roots. Existing manifests without this optional
-field still load with no extra roots; add the field when the title needs them.
+directory names. Each entry has `root`, `mount`, and `precedence`, with optional
+`skip_primary_root` and `exclude` fields. `root` resolves relative to the
+parent of `filesystem.data_root`; `mount` is the guest-relative prefix (or
+`""` for the namespace root), and lower unique `precedence` values win
+duplicate file keys between loose roots. `root: "."` skips the primary data
+root by default; `exclude` lists up to two safe relative paths that the walk
+does not enter. Files under `filesystem.data_root` keep priority over matching
+files from loose roots. The schema rejects unsafe, duplicate, or overlapping
+roots. Existing manifests without this optional field still load with no extra
+roots; add the field when the title needs them.
 When staging an ISO, matching roots under PSP_GAME/USRDIR are copied to the
 same relative staging paths; the player does not infer a directory when the
 field is absent.
@@ -68,19 +71,21 @@ directory under `USRDIR`, add this declaration:
 
 ```json
 "loose_content_roots": [
-  {"root": ".", "mount": "", "precedence": 0}
+  {"root": ".", "mount": "", "precedence": 0, "skip_primary_root": true}
 ]
 ```
 
-The parent root contributes paths such as `data/sound/menu.csv` to the same
-guest namespace, while the primary data root still wins duplicate keys. The
-old inference required the parent name `USRDIR` and one of those two data-root
-names, then indexed the primary root and walked the parent while skipping the
-primary child. For an unqualified duplicate, the index sorted by host path and
-the lookup kept the last match; the primary path sorted after the adjacent
-`data/...` path and therefore won. The declaration makes primary-first
-priority explicit and leaves lower-number ordering for collisions among loose
-roots.
+This reproduces the former parent walk: it indexed the primary extracted tree,
+then recursively indexed readable regular files below the parent while
+skipping the primary child. It otherwise visited sibling directories too;
+omitting `exclude` preserves that complete historical file set. A profile may
+list additional relative paths in `exclude` when those subtrees are outside its
+disc namespace or would make the walk needlessly broad. For the extracted-tree
+layout, primary files win matching loose-file keys, as before. The former
+inference only activated for the documented `USRDIR`/archive-root layout; the
+manifest now states the root relationship directly. The archived and extracted
+routes have distinct open order: a matching extracted-primary file wins a loose
+file, while a loose filesystem file is checked before an XB archive member.
 This migration and the remaining loose-content integration are tracked as
 **Loose-content root binding — in the works ([#289](https://github.com/Jstar269/nakagawa-recomp/issues/289))**.
 

@@ -297,8 +297,10 @@ class TitleManifestTests(unittest.TestCase):
         ]
         normalized = title_manifest.validate_manifest(value)
         self.assertEqual(normalized["filesystem"]["loose_content_roots"], [
-            {"root": "first", "mount": "data", "precedence": 10},
-            {"root": "second", "mount": "data", "precedence": 20},
+            {"root": "first", "mount": "data", "precedence": 10,
+             "skip_primary_root": False, "exclude": []},
+            {"root": "second", "mount": "data", "precedence": 20,
+             "skip_primary_root": False, "exclude": []},
         ])
 
         invalid = [
@@ -312,6 +314,16 @@ class TitleManifestTests(unittest.TestCase):
               {"root": "two", "mount": "", "precedence": 1}], "duplicate loose-content precedence"),
             ([{"root": "one", "mount": "../escape", "precedence": 1}], "components"),
             ([{"root": "one", "mount": "", "precedence": 1, "fallback": True}], "unknown field"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "skip_primary_root": True}], "true exactly when root is '.'"),
+            ([{"root": ".", "mount": "", "precedence": 1,
+               "skip_primary_root": False}], "true exactly when root is '.'"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "exclude": ["../escape"]}], "components"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "exclude": ["cache", "CACHE"]}], "duplicate excluded path"),
+            ([{"root": "one", "mount": "", "precedence": 1,
+               "exclude": ["a", "b", "c"]}], "maximum is 2"),
         ]
         for roots, error in invalid:
             with self.subTest(roots=roots):
@@ -324,10 +336,11 @@ class TitleManifestTests(unittest.TestCase):
         candidate["filesystem"]["loose_content_roots"] = [{
             "root": ".", "mount": "", "precedence": 1,
         }]
-        self.assertEqual(
-            title_manifest.validate_manifest(candidate)["filesystem"]["loose_content_roots"][0]["root"],
-            ".",
-        )
+        normalized_root = title_manifest.validate_manifest(candidate)[
+            "filesystem"]["loose_content_roots"][0]
+        self.assertEqual(normalized_root["root"], ".")
+        self.assertTrue(normalized_root["skip_primary_root"])
+        self.assertEqual(normalized_root["exclude"], [])
         candidate["filesystem"]["loose_content_roots"].append({
             "root": "nested", "mount": "", "precedence": 2,
         })
@@ -338,7 +351,8 @@ class TitleManifestTests(unittest.TestCase):
         manifest = copy.deepcopy(self.fixture)
         manifest["filesystem"]["data_root"] = "content/archive"
         manifest["filesystem"]["loose_content_roots"] = [
-            {"root": ".", "mount": "", "precedence": 0},
+            {"root": ".", "mount": "", "precedence": 0,
+             "skip_primary_root": True},
         ]
         validated = title_manifest.validate_manifest(manifest)
 
@@ -351,9 +365,11 @@ class TitleManifestTests(unittest.TestCase):
             loose_file.write_bytes(b"synthetic loose file")
 
             encoded = title_manifest.encode_loose_content_roots(validated, data_root)
-            host_root, mount, precedence = encoded.rstrip("\n").split("\t")
+            host_root, mount, precedence, skip_primary, exclude_count = \
+                encoded.rstrip("\n").split("\t")
             self.assertEqual(Path(host_root), data_root.parent.resolve())
-            self.assertEqual((mount, precedence), ("", "0"))
+            self.assertEqual((mount, precedence, skip_primary, exclude_count),
+                             ("", "0", "1", "0"))
 
             guest_path = "host0:data/sound/menu.csv"
             relative_key = guest_path.removeprefix("host0:")
@@ -409,7 +425,10 @@ class TitleManifestTests(unittest.TestCase):
         )
         self.assertIsNotNone(section)
         roots = json.loads("{" + section.group(1) + "}")["loose_content_roots"]
-        self.assertEqual(roots, [{"root": ".", "mount": "", "precedence": 0}])
+        self.assertEqual(roots, [{
+            "root": ".", "mount": "", "precedence": 0,
+            "skip_primary_root": True,
+        }])
 
     def test_declared_executable_input_uses_the_make_safe_rule(self) -> None:
         value = copy.deepcopy(self.fixture)

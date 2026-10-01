@@ -119,6 +119,7 @@ MAX_DISPATCH_ALIASES = 32
 MAX_CALLBACK_TERMINATORS = 32
 MAX_LOOSE_CONTENT_ROOTS = 16
 MAX_LOOSE_CONTENT_PRECEDENCE = 65535
+MAX_LOOSE_CONTENT_EXCLUDES = 2
 NK_LAUNCH_MAX_PATH_BYTES = 512
 
 #: Dispatch-target values the CORE runtime has already claimed, mirroring
@@ -1029,7 +1030,9 @@ def validate_loose_content_roots(value: Any, path: str) -> list[dict[str, Any]]:
     seen_precedence: set[int] = set()
     for index, raw in enumerate(roots):
         item_path = f"{path}[{index}]"
-        item = obj(raw, item_path, {"root", "mount", "precedence"})
+        item = obj(raw, item_path, {
+            "root", "mount", "precedence", "skip_primary_root", "exclude",
+        })
         require(item, item_path, "root", "mount", "precedence")
         raw_root = text(item["root"], f"{item_path}.root", 240)
         root = "." if raw_root == "." else portable_path(raw_root, f"{item_path}.root")
@@ -1037,6 +1040,26 @@ def validate_loose_content_roots(value: Any, path: str) -> list[dict[str, Any]]:
         mount = "" if raw_mount == "" else portable_path(raw_mount, f"{item_path}.mount")
         precedence = uint(item["precedence"], f"{item_path}.precedence",
                           MAX_LOOSE_CONTENT_PRECEDENCE)
+        skip_primary_root = item.get("skip_primary_root", root == ".")
+        if not isinstance(skip_primary_root, bool):
+            fail(f"{item_path}.skip_primary_root", "must be a boolean")
+        if skip_primary_root != (root == "."):
+            fail(f"{item_path}.skip_primary_root",
+                 "must be true exactly when root is '.'")
+        excludes: list[str] = []
+        seen_excludes: set[str] = set()
+        exclude_values = array(
+            item.get("exclude", []), f"{item_path}.exclude", MAX_LOOSE_CONTENT_EXCLUDES
+        )
+        for exclude_index, raw_exclude in enumerate(exclude_values):
+            exclude_path = portable_path(
+                raw_exclude, f"{item_path}.exclude[{exclude_index}]"
+            )
+            folded_exclude = exclude_path.casefold()
+            if folded_exclude in seen_excludes:
+                fail(f"{item_path}.exclude[{exclude_index}]", "duplicate excluded path")
+            seen_excludes.add(folded_exclude)
+            excludes.append(exclude_path)
         if precedence in seen_precedence:
             fail(f"{item_path}.precedence", "duplicate loose-content precedence")
         seen_precedence.add(precedence)
@@ -1047,7 +1070,13 @@ def validate_loose_content_roots(value: Any, path: str) -> list[dict[str, Any]]:
                     fail(f"{item_path}.root", "duplicate loose-content root")
                 fail(f"{item_path}.root", "overlapping loose-content roots")
         seen_roots.append(parts)
-        result.append({"root": root, "mount": mount, "precedence": precedence})
+        result.append({
+            "root": root,
+            "mount": mount,
+            "precedence": precedence,
+            "skip_primary_root": skip_primary_root,
+            "exclude": excludes,
+        })
     return sorted(result, key=lambda entry: entry["precedence"])
 
 
@@ -1058,8 +1087,9 @@ def encode_loose_content_roots(
     """Encode the validated manifest roots using nk_launch.c's env transport.
 
     Roots are resolved from the parent of the already-resolved absolute
-    SR_DATAROOT. The result is one UTF-8 ``host-path<TAB>mount<TAB>precedence``
-    row per root, each ending in LF. An empty declaration produces an empty
+    SR_DATAROOT. Each UTF-8 tab-delimited row contains the host path, mount,
+    precedence, primary-root skip flag, exclusion count, and exclusion paths.
+    Rows end in LF. An empty declaration produces an empty
     value, matching the native launcher's explicit inherited-value mask.
     """
     boundary = "Loose-content root binding #289 (in the works)"
@@ -1101,9 +1131,11 @@ def encode_loose_content_roots(
         fail("SR_DATAROOT exceeds the native launch path limit")
     anchor = data_root.parent
 
-    # nk_launch.h sizes this as MAX_ROOTS * (NK_MAX_PATH * 2 + 512) + 1.
+    # nk_launch.h sizes this as MAX_ROOTS * (2*NK_MAX_PATH + 512 + 2*241) + 1.
     # Keep the byte count because the C buffers are bytes.
-    transport_capacity = MAX_LOOSE_CONTENT_ROOTS * (2 * NK_LAUNCH_MAX_PATH_BYTES + 512) + 1
+    transport_capacity = MAX_LOOSE_CONTENT_ROOTS * (
+        2 * NK_LAUNCH_MAX_PATH_BYTES + 512 + MAX_LOOSE_CONTENT_EXCLUDES * 241
+    ) + 1
     used = 0
     encoded: list[str] = []
     for binding in roots:
@@ -1128,7 +1160,15 @@ def encode_loose_content_roots(
         mount = binding["mount"]
         if any(character in host_text or character in mount for character in ("\t", "\n")):
             fail("resolved paths and mounts cannot contain tabs or newlines")
-        row = f"{host_text}\t{mount}\t{binding['precedence']}\n"
+        fields = [
+            host_text,
+            mount,
+            str(binding["precedence"]),
+            "1" if binding["skip_primary_root"] else "0",
+            str(len(binding["exclude"])),
+            *binding["exclude"],
+        ]
+        row = "\t".join(fields) + "\n"
         row_bytes = row.encode("utf-8")
         if len(row_bytes) >= transport_capacity - used:
             fail("serialized roots exceed the native launch environment limit")

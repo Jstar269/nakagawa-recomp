@@ -270,6 +270,7 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "",
         "#define NK_TITLE_CATALOG_SCHEMA_VERSION 1",
         "#define NK_TITLE_MAX_LOOSE_CONTENT_ROOTS 16",
+        "#define NK_TITLE_MAX_LOOSE_CONTENT_EXCLUDES 2",
         f'#define NK_TITLE_CATALOG_DIGEST "{digest}"',
         "",
         "typedef enum {",
@@ -288,6 +289,9 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "    const char *root;       /* Relative to the resolved data root's parent; '.' names that parent. */",
         "    const char *mount;      /* Guest-relative prefix; empty mounts at the namespace root. */",
         "    uint32_t precedence;   /* Lower values win duplicate guest-file keys. */",
+        "    bool skip_primary_root;",
+        "    const char * const *exclude;",
+        "    int exclude_count;",
         "} NkLooseContentRoot;",
         "",
         "typedef struct {",
@@ -417,11 +421,28 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
             lines.append("")
         loose_roots = t["filesystem"].get("loose_content_roots", [])
         if loose_roots:
+            for root_index, root in enumerate(loose_roots):
+                excludes = root.get("exclude", [])
+                if excludes:
+                    exclude_ref = f"s_loose_excludes_title_{idx}_{root_index}"
+                    lines.append(f"static const char * const {exclude_ref}[] = {{")
+                    for exclude_path in excludes:
+                        lines.append(f'    "{_c_string_escape(exclude_path)}",')
+                    lines.append("};")
+                    lines.append("")
             lines.append(f"static const NkLooseContentRoot s_loose_roots_title_{idx}[] = {{")
-            for root in loose_roots:
+            for root_index, root in enumerate(loose_roots):
+                excludes = root.get("exclude", [])
+                exclude_ref = (
+                    f"s_loose_excludes_title_{idx}_{root_index}" if excludes else "NULL"
+                )
                 root_path = _c_string_escape(root["root"])
                 mount = _c_string_escape(root["mount"])
-                lines.append(f'    {{ "{root_path}", "{mount}", {root["precedence"]}U }},')
+                skip_primary = "true" if root["skip_primary_root"] else "false"
+                lines.append(
+                    f'    {{ "{root_path}", "{mount}", {root["precedence"]}U, '
+                    f'{skip_primary}, {exclude_ref}, {len(excludes)} }},'
+                )
             lines.append("};")
             lines.append("")
 

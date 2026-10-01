@@ -8354,16 +8354,24 @@ static char *data_rel_join(const char *prefix, const char *name) {
 }
 
 #define SR_DATA_MAX_LOOSE_ROOTS 16u
+#define SR_DATA_MAX_LOOSE_ROOT_EXCLUDES 2u
 typedef struct {
     wchar_t *host_wide;
     char *host_utf8;
     char *mount;
     uint32_t precedence;
     int skip_primary_root;
+    char exclude[SR_DATA_MAX_LOOSE_ROOT_EXCLUDES][241];
+    size_t exclude_count;
 } SrDataLooseRoot;
 
 static SrDataLooseRoot s_data_loose_roots[SR_DATA_MAX_LOOSE_ROOTS];
 static size_t s_data_loose_root_count;
+
+static int data_relative_path_equal(const char *a, const char *b) {
+    return a && b && strlen(a) == strlen(b) &&
+           sr_vfs_strnicmp(a, b, strlen(a)) == 0;
+}
 
 static void data_loose_roots_clear(void) {
     for (size_t i = 0; i < s_data_loose_root_count; i++) {
@@ -8444,6 +8452,14 @@ static int data_parse_precedence(const wchar_t *text, uint32_t *out) {
     return 1;
 }
 
+static int data_parse_boolean_flag(const wchar_t *text, int *out) {
+    if (!text || !out) return 0;
+    if (wcscmp(text, L"0") == 0) *out = 0;
+    else if (wcscmp(text, L"1") == 0) *out = 1;
+    else return 0;
+    return 1;
+}
+
 static int data_loose_root_parse(const wchar_t *primary_root) {
     data_loose_roots_clear();
     wchar_t *serialized = NULL;
@@ -8473,25 +8489,66 @@ static int data_loose_root_parse(const wchar_t *primary_root) {
         wchar_t saved_end = *line_end;
         *line_end = L'\0';
         if (line_end > cursor && line_end[-1] == L'\r') line_end[-1] = L'\0';
-        wchar_t *tab1 = wcschr(cursor, L'\t');
-        wchar_t *tab2 = tab1 ? wcschr(tab1 + 1, L'\t') : NULL;
-        if (!cursor[0] || !tab1 || !tab2 || wcschr(tab2 + 1, L'\t')) {
+        wchar_t *fields[5u + SR_DATA_MAX_LOOSE_ROOT_EXCLUDES] = {0};
+        size_t field_count = 1u;
+        fields[0] = cursor;
+        for (wchar_t *p = cursor; *p; p++) {
+            if (*p == L'\t') {
+                *p = L'\0';
+                if (field_count >= sizeof(fields) / sizeof(fields[0])) {
+                    ok = 0;
+                    break;
+                }
+                fields[field_count++] = p + 1;
+            }
+        }
+        if (!ok || !cursor[0] || (field_count != 3u && field_count < 5u)) {
             ok = 0;
         } else {
-            *tab1 = L'\0';
-            *tab2 = L'\0';
             uint32_t precedence = 0;
-            size_t mount_len = wcslen(tab1 + 1);
+            size_t mount_len = wcslen(fields[1]);
             char mount[241];
-            if (mount_len > 240u || !data_parse_precedence(tab2 + 1, &precedence)) {
+            if (mount_len > 240u || !data_parse_precedence(fields[2], &precedence)) {
                 ok = 0;
             } else {
                 for (size_t i = 0; i < mount_len; i++) {
-                    if ((uint32_t)(tab1[1 + i]) > 0x7fu) { ok = 0; break; }
-                    mount[i] = (char)tab1[1 + i];
+                    if ((uint32_t)fields[1][i] > 0x7fu) { ok = 0; break; }
+                    mount[i] = (char)fields[1][i];
                 }
                 mount[mount_len] = '\0';
                 if (ok && !data_loose_mount_valid(mount)) ok = 0;
+            }
+            int legacy_row = field_count == 3u;
+            int skip_primary = 0;
+            char excludes[SR_DATA_MAX_LOOSE_ROOT_EXCLUDES][241] = {{0}};
+            size_t exclude_count = 0u;
+            if (!legacy_row) {
+                uint32_t declared_excludes = 0u;
+                if (!data_parse_boolean_flag(fields[3], &skip_primary) ||
+                    !data_parse_precedence(fields[4], &declared_excludes) ||
+                    declared_excludes > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+                    field_count != 5u + declared_excludes) {
+                    ok = 0;
+                } else {
+                    exclude_count = declared_excludes;
+                    for (size_t exclude_index = 0; exclude_index < exclude_count; exclude_index++) {
+                        const wchar_t *field = fields[5u + exclude_index];
+                        size_t exclude_len = wcslen(field);
+                        if (exclude_len == 0u || exclude_len > 240u) { ok = 0; break; }
+                        for (size_t char_index = 0; char_index < exclude_len; char_index++) {
+                            if ((uint32_t)field[char_index] > 0x7fu) { ok = 0; break; }
+                            excludes[exclude_index][char_index] = (char)field[char_index];
+                        }
+                        excludes[exclude_index][exclude_len] = '\0';
+                        if (ok && !data_loose_mount_valid(excludes[exclude_index])) ok = 0;
+                        for (size_t previous = 0; previous < exclude_index && ok; previous++) {
+                            if (data_relative_path_equal(excludes[previous],
+                                                         excludes[exclude_index]))
+                                ok = 0;
+                        }
+                        if (!ok) break;
+                    }
+                }
             }
             wchar_t *host_wide = NULL;
             char *host_utf8 = NULL;
@@ -8510,12 +8567,12 @@ static int data_loose_root_parse(const wchar_t *primary_root) {
                     stat(host_utf8, &st) != 0 || !S_ISDIR(st.st_mode)) ok = 0;
 #endif
             }
-            int skip_primary = 0;
             if (ok) {
-                if (data_wide_path_overlaps(host_wide, primary_root)) {
-                    if (data_wide_path_equal(host_wide, primary_parent)) skip_primary = 1;
-                    else ok = 0;
-                }
+                int same_parent = data_wide_path_equal(host_wide, primary_parent);
+                int overlaps_primary = data_wide_path_overlaps(host_wide, primary_root);
+                if (legacy_row) skip_primary = same_parent;
+                if ((overlaps_primary && !same_parent) ||
+                    (skip_primary && !same_parent) || (same_parent && !skip_primary)) ok = 0;
                 for (size_t i = 0; i < s_data_loose_root_count && ok; i++) {
                     if (data_wide_path_overlaps(host_wide, s_data_loose_roots[i].host_wide))
                         ok = 0;
@@ -8529,6 +8586,8 @@ static int data_loose_root_parse(const wchar_t *primary_root) {
                 root->mount = sr_asset_index_strdup(mount);
                 root->precedence = precedence;
                 root->skip_primary_root = skip_primary;
+                root->exclude_count = exclude_count;
+                memcpy(root->exclude, excludes, sizeof(root->exclude));
                 if (!root->mount) ok = 0;
             } else if (ok) {
                 ok = 0;
@@ -8585,25 +8644,37 @@ static int data_walk_push(DataWalkDir **stack, size_t *count, size_t *capacity,
     return 1;
 }
 
+static int data_loose_path_excluded(const char *relative,
+                                   const char exclude_paths[][241],
+                                   size_t exclude_count) {
+    if (!relative || !exclude_paths) return 0;
+    for (size_t i = 0; i < exclude_count; i++) {
+        if (data_relative_path_equal(relative, exclude_paths[i])) return 1;
+    }
+    return 0;
+}
+
 /* Iterative depth-first walk of `root`, recording every regular file's relative
  * path and absolute host path.  An explicit heap stack keeps a crafted 32k
  * extended path from consuming the host thread's call stack.
  *
- * `skip_top_name` (optional) names one directory directly under `root` that the
- * walk does not descend into, by case-insensitive comparison.  It exists for the
- * route that adds a second root beside the first: that root is a parent of the
- * first, so the first root's own subtree would otherwise be enumerated twice. */
+ * `skip_top_name` (optional) names the primary root directly under `root`.
+ * `exclude_paths` name additional root-relative paths that are not entered.
+ * `mount` affects guest keys only; the walk stack always keeps host-relative
+ * paths so exclusions do not depend on the guest namespace prefix. */
 #ifdef _WIN32
-static int data_walk(const wchar_t *root, const char *relprefix,
-                     const wchar_t *skip_top_name, SrAssetIndex *index,
-                     uint32_t precedence) {
-    if (!root || !relprefix || !index) return 0;
+static int data_walk(const wchar_t *root, const char *mount,
+                     const wchar_t *skip_top_name,
+                     const char exclude_paths[][241], size_t exclude_count,
+                     SrAssetIndex *index, uint32_t precedence) {
+    if (!root || !mount || !index || exclude_count > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+        (exclude_count != 0u && !exclude_paths)) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
     size_t root_len = wcslen(root);
     if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
     wchar_t *initial_host = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial_host));
-    char *initial_rel = sr_asset_index_strdup(relprefix);
+    char *initial_rel = sr_asset_index_strdup("");
     if (!initial_host || !initial_rel) {
         free(initial_host);
         free(initial_rel);
@@ -8666,8 +8737,10 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     if (skip_top_name && current.rel[0] == '\0' &&
                         _wcsicmp(fd.cFileName, skip_top_name) == 0) {
-                        /* Already enumerated from its own root; do not pay for it
-                         * twice. On this title that subtree is 56,672 entries. */
+                        /* The primary data root is walked separately. */
+                    } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                        exclude_count)) {
+                        /* Excluded directories are never pushed onto the walk stack. */
                     } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                         fprintf(stderr, "host_data: refusing reparse-point directory\n");
                         ok = 0;
@@ -8679,6 +8752,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         child_host = NULL;
                         child_rel = NULL;
                     }
+                } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                    exclude_count)) {
+                    /* An excluded file is not indexed or opened. */
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                     fprintf(stderr, "host_data: refusing reparse-point file\n");
                     ok = 0;
@@ -8704,10 +8780,14 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                     int variant = -1;
                     uint64_t file_size = ((uint64_t)fd.nFileSizeHigh << 32) |
                                          (uint64_t)fd.nFileSizeLow;
+                    char *key_relative = mount[0]
+                        ? data_rel_join(mount, child_rel)
+                        : sr_asset_index_strdup(child_rel);
                     if (file_size > UINT32_MAX) {
                         fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
                         ok = 0;
-                    } else if (!sr_asset_index_key_from_rel(child_rel, &key, &variant)) {
+                    } else if (!key_relative ||
+                               !sr_asset_index_key_from_rel(key_relative, &key, &variant)) {
                         fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
                                 index->count);
                         ok = 0;
@@ -8717,6 +8797,7 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                                 index->count);
                         ok = 0;
                     }
+                    free(key_relative);
                 }
                 free(name);
                 free(child_rel);
@@ -8753,16 +8834,18 @@ static int data_walk(const wchar_t *root, const char *relprefix,
  * host's redirect, so it is refused exactly where the Windows walk refuses a
  * reparse point, and a regular file is still read-open probed so a race cannot
  * publish an entry the guest cannot later open. */
-static int data_walk(const wchar_t *root, const char *relprefix,
-                     const wchar_t *skip_top_name, SrAssetIndex *index,
-                     uint32_t precedence) {
-    if (!root || !relprefix || !index) return 0;
+static int data_walk(const wchar_t *root, const char *mount,
+                     const wchar_t *skip_top_name,
+                     const char exclude_paths[][241], size_t exclude_count,
+                     SrAssetIndex *index, uint32_t precedence) {
+    if (!root || !mount || !index || exclude_count > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+        (exclude_count != 0u && !exclude_paths)) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
     size_t root_len = wcslen(root);
     if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
     wchar_t *initial_host = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial_host));
-    char *initial_rel = sr_asset_index_strdup(relprefix);
+    char *initial_rel = sr_asset_index_strdup("");
     if (!initial_host || !initial_rel) {
         free(initial_host);
         free(initial_rel);
@@ -8835,6 +8918,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         sr_wide_stricmp(name, skip_top_name) == 0) {
                         /* Already enumerated from its own root; do not pay for
                          * it twice. */
+                    } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                        exclude_count)) {
+                        /* Excluded directories are never pushed onto the walk stack. */
                     } else if (!data_walk_push(&stack, &stack_count, &stack_capacity,
                                                child_host, child_rel)) {
                         fprintf(stderr, "host_data: directory-stack allocation failed\n");
@@ -8846,6 +8932,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                 } else if (!S_ISREG(st.st_mode)) {
                     fprintf(stderr, "host_data: refusing non-regular entry %s\n", child_utf8);
                     ok = 0;
+                } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                    exclude_count)) {
+                    /* An excluded file is not indexed or opened. */
                 } else {
                     int probe_fd = openat(dirfd(dir), entry->d_name,
                                           O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -8860,10 +8949,14 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         ok = 0;
                     } else {
                         int variant = -1;
+                        char *key_relative = mount[0]
+                            ? data_rel_join(mount, child_rel)
+                            : sr_asset_index_strdup(child_rel);
                         if ((uint64_t)st.st_size > UINT32_MAX) {
                             fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
                             ok = 0;
-                        } else if (!sr_asset_index_key_from_rel(child_rel, &key, &variant)) {
+                        } else if (!key_relative ||
+                                   !sr_asset_index_key_from_rel(key_relative, &key, &variant)) {
                             fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
                                     index->count);
                             ok = 0;
@@ -8874,6 +8967,7 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                                     index->count);
                             ok = 0;
                         }
+                        free(key_relative);
                     }
                 }
             }
@@ -9282,6 +9376,44 @@ static int data_validate_archive_index(size_t primary_count) {
     return 1;
 }
 
+static const char *data_index_root_for_precedence(uint32_t precedence) {
+    if (precedence == 0u) return s_data_root_utf8;
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        if (s_data_loose_roots[i].precedence + 1u == precedence)
+            return s_data_loose_roots[i].host_utf8;
+    }
+    return NULL;
+}
+
+static void data_duplicate_relative_path(const SrAssetIndexEntry *entry,
+                                         char output[161]) {
+    const char *base = entry ? data_index_root_for_precedence(entry->precedence) : NULL;
+    const char *relative = NULL;
+    if (entry && entry->host && base) {
+        size_t base_len = strlen(base);
+        size_t host_len = strlen(entry->host);
+        while (base_len > 1u && (base[base_len - 1u] == '/' || base[base_len - 1u] == '\\'))
+            base_len--;
+        if (host_len >= base_len && sr_vfs_strnicmp(entry->host, base, base_len) == 0 &&
+            (entry->host[base_len] == '\0' || entry->host[base_len] == '/' ||
+             entry->host[base_len] == '\\')) {
+            relative = entry->host + base_len;
+            while (*relative == '/' || *relative == '\\') relative++;
+        }
+    }
+    if (!relative) relative = "<root-relative-unavailable>";
+    size_t length = strlen(relative);
+    if (length < 161u) {
+        for (size_t i = 0; i < length; i++)
+            output[i] = relative[i] == '\\' ? '/' : relative[i];
+        output[length] = '\0';
+        return;
+    }
+    for (size_t i = 0; i < 157u; i++)
+        output[i] = relative[i] == '\\' ? '/' : relative[i];
+    memcpy(output + 157u, "...", 4u);
+}
+
 /* Exact guest-file collisions across manifest roots are intentional overlays:
  * the lower precedence value wins. A collision within one root is ambiguous
  * after guest-key case folding and refuses the whole index. File/directory
@@ -9295,7 +9427,13 @@ static int data_validate_duplicate_policy(const SrAssetIndex *index) {
             if (strcmp(previous->key, entry->key) == 0 &&
                 previous->variant == entry->variant &&
                 previous->precedence == entry->precedence) {
-                fprintf(stderr, "host_data: duplicate guest-file key within one root; refusing index\n");
+                char previous_path[161], current_path[161];
+                data_duplicate_relative_path(previous, previous_path);
+                data_duplicate_relative_path(entry, current_path);
+                fprintf(stderr,
+                        "host_data: duplicate guest-file key '%.*s' within root %u at '%s' and '%s'; refusing index\n",
+                        120, entry->key, (unsigned)entry->precedence,
+                        previous_path, current_path);
                 return 0;
             }
         }
@@ -9328,7 +9466,8 @@ static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *in
         }
         /* The manifest rank orders loose roots after the primary data root;
          * primary is 0 and declared ranks occupy 1..65536. */
-        int ok = data_walk(root->host_wide, root->mount, skip, index,
+        int ok = data_walk(root->host_wide, root->mount, skip,
+                           root->exclude, root->exclude_count, index,
                            root->precedence + 1u);
         free(primary_name);
         if (!ok) {
@@ -9687,7 +9826,7 @@ int sr_host_data_prepare(void) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         sr_archive_vfs_init(&s_archive_vfs);
         SR_DATA_TEST_PHASE_START(phase_started);
-        walk_ok = data_walk(root_wide, "", NULL, &temporary, 0u);
+        walk_ok = data_walk(root_wide, "", NULL, NULL, 0u, &temporary, 0u);
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_PRIMARY_WALK, phase_started);
         if (walk_ok) {
             primary_count = temporary.count;

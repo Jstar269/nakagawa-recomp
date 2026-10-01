@@ -679,8 +679,8 @@ int main(int argc, char **argv) {
     assert(ends_with(session.image_path, "custom-launch_image.bin"));
     assert(strstr(session.dataroot_path, "custom-data") != NULL);
     assert(strstr(session.memstick_root, "custom-ms") != NULL);
-    assert(strstr(session.loose_content_roots, "custom-root-a\tdata\t10\n") != NULL);
-    assert(strstr(session.loose_content_roots, "custom-root-b\tdata\t20\n") != NULL);
+    assert(strstr(session.loose_content_roots, "custom-root-a\tdata\t10\t0\t0\n") != NULL);
+    assert(strstr(session.loose_content_roots, "custom-root-b\tdata\t20\t0\t0\n") != NULL);
     nk_title_catalog_clear_overlay();
     remove(custom_exe);
     remove(custom_img);

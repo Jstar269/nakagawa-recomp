@@ -50,6 +50,7 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
 #define MAX_MODULES 32
 #define MAX_COMPAT_DISC_IDS 16
 #define MAX_LOOSE_CONTENT_ROOTS 16
+#define MAX_LOOSE_CONTENT_EXCLUDES 2
 #define NK_MANIFEST_MAX_OVERLAYS 8
 
 /* The window a guest module's base must lie in: its code and data are both placed there, so a
@@ -78,6 +79,8 @@ typedef struct {
     char data_root[257];
     char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241];
     char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241];
+    char loose_root_exclude_paths[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES][241];
+    const char *loose_root_exclude_ptrs[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES];
     NkLooseContentRoot loose_roots[MAX_LOOSE_CONTENT_ROOTS];
     size_t loose_root_count;
     char memory_stick_root[129];
@@ -465,6 +468,9 @@ bool nk_title_manifest_parse_buffer(
 
     char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
     char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
+    char loose_root_excludes[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES][241] = {{{0}}};
+    size_t loose_root_exclude_counts[MAX_LOOSE_CONTENT_ROOTS] = {0};
+    bool loose_root_skip_primary[MAX_LOOSE_CONTENT_ROOTS] = {0};
     uint32_t loose_root_precedence[MAX_LOOSE_CONTENT_ROOTS] = {0};
     size_t loose_root_count = 0;
 
@@ -955,7 +961,9 @@ bool nk_title_manifest_parse_buffer(
             json_free(root);
             return false;
         }
-        static const char * const allowed_root_keys[] = {"root", "mount", "precedence", NULL};
+        static const char * const allowed_root_keys[] = {
+            "root", "mount", "precedence", "skip_primary_root", "exclude", NULL
+        };
         static const char * const required_root_keys[] = {"root", "mount", "precedence", NULL};
         for (size_t i = 0; i < loose_node->u.arr.count; i++) {
             char item_path[96];
@@ -969,6 +977,8 @@ bool nk_title_manifest_parse_buffer(
             JsonNode *root_path = obj_get(item, "root");
             JsonNode *mount = obj_get(item, "mount");
             JsonNode *priority = obj_get(item, "precedence");
+            JsonNode *skip_primary_node = obj_get(item, "skip_primary_root");
+            JsonNode *exclude_node = obj_get(item, "exclude");
             if (!root_path || root_path->type != JSON_STRING ||
                 strlen(root_path->u.str_val) > 240 ||
                 !is_valid_loose_root_path(root_path->u.str_val)) {
@@ -993,6 +1003,65 @@ bool nk_title_manifest_parse_buffer(
                 json_free(root);
                 return false;
             }
+            bool skip_primary = strcmp(root_path->u.str_val, ".") == 0;
+            if (skip_primary_node) {
+                if (skip_primary_node->type != JSON_BOOL) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.skip_primary_root: must be a boolean", item_path);
+                    json_free(root);
+                    return false;
+                }
+                skip_primary = skip_primary_node->u.bool_val;
+            }
+            if (skip_primary != (strcmp(root_path->u.str_val, ".") == 0)) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.skip_primary_root: must be true exactly when root is '.'",
+                    item_path);
+                json_free(root);
+                return false;
+            }
+            if (exclude_node && exclude_node->type != JSON_ARRAY) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.exclude: must be an array", item_path);
+                json_free(root);
+                return false;
+            }
+            size_t exclude_count = exclude_node ? exclude_node->u.arr.count : 0u;
+            if (exclude_count > MAX_LOOSE_CONTENT_EXCLUDES) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.exclude: contains %zu items; maximum is %d",
+                    item_path, exclude_count, MAX_LOOSE_CONTENT_EXCLUDES);
+                json_free(root);
+                return false;
+            }
+            for (size_t exclude_index = 0; exclude_index < exclude_count; exclude_index++) {
+                JsonNode *exclude_path = exclude_node->u.arr.items[exclude_index];
+                char exclude_item_path[128];
+                snprintf(exclude_item_path, sizeof(exclude_item_path),
+                         "%.64s.exclude[%zu]", item_path, exclude_index);
+                if (!exclude_path || exclude_path->type != JSON_STRING ||
+                    strlen(exclude_path->u.str_val) > 240 ||
+                    !is_valid_portable_path(exclude_path->u.str_val)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.120s: must be a portable relative POSIX-style path without traversal",
+                        exclude_item_path);
+                    json_free(root);
+                    return false;
+                }
+                for (size_t previous_exclude = 0; previous_exclude < exclude_index;
+                     previous_exclude++) {
+                    if (nk_ascii_casecmp(loose_root_excludes[i][previous_exclude],
+                                          exclude_path->u.str_val) == 0) {
+                        if (error_buf) snprintf(error_buf, error_buf_len,
+                            "%.120s: duplicate excluded path", exclude_item_path);
+                        json_free(root);
+                        return false;
+                    }
+                }
+                snprintf(loose_root_excludes[i][exclude_index],
+                         sizeof(loose_root_excludes[i][exclude_index]), "%s",
+                         exclude_path->u.str_val);
+            }
             for (size_t previous = 0; previous < i; previous++) {
                 if (loose_root_precedence[previous] == precedence) {
                     if (error_buf) snprintf(error_buf, error_buf_len,
@@ -1015,6 +1084,8 @@ bool nk_title_manifest_parse_buffer(
             }
             snprintf(loose_root_paths[i], sizeof(loose_root_paths[i]), "%s", root_path->u.str_val);
             snprintf(loose_root_mounts[i], sizeof(loose_root_mounts[i]), "%s", mount->u.str_val);
+            loose_root_exclude_counts[i] = exclude_count;
+            loose_root_skip_primary[i] = skip_primary;
             loose_root_precedence[i] = precedence;
             loose_root_count++;
         }
@@ -1024,12 +1095,22 @@ bool nk_title_manifest_parse_buffer(
             size_t j = i;
             while (j > 0 && loose_root_precedence[j] < loose_root_precedence[j - 1]) {
                 char path_swap[241], mount_swap[241];
+                char excludes_swap[MAX_LOOSE_CONTENT_EXCLUDES][241];
+                size_t exclude_count_swap = loose_root_exclude_counts[j];
+                bool skip_primary_swap = loose_root_skip_primary[j];
                 memcpy(path_swap, loose_root_paths[j], sizeof(path_swap));
                 memcpy(loose_root_paths[j], loose_root_paths[j - 1], sizeof(path_swap));
                 memcpy(loose_root_paths[j - 1], path_swap, sizeof(path_swap));
                 memcpy(mount_swap, loose_root_mounts[j], sizeof(mount_swap));
                 memcpy(loose_root_mounts[j], loose_root_mounts[j - 1], sizeof(mount_swap));
                 memcpy(loose_root_mounts[j - 1], mount_swap, sizeof(mount_swap));
+                memcpy(excludes_swap, loose_root_excludes[j], sizeof(excludes_swap));
+                memcpy(loose_root_excludes[j], loose_root_excludes[j - 1], sizeof(excludes_swap));
+                memcpy(loose_root_excludes[j - 1], excludes_swap, sizeof(excludes_swap));
+                loose_root_exclude_counts[j] = loose_root_exclude_counts[j - 1];
+                loose_root_exclude_counts[j - 1] = exclude_count_swap;
+                loose_root_skip_primary[j] = loose_root_skip_primary[j - 1];
+                loose_root_skip_primary[j - 1] = skip_primary_swap;
                 uint32_t priority_swap = loose_root_precedence[j];
                 loose_root_precedence[j] = loose_root_precedence[j - 1];
                 loose_root_precedence[j - 1] = priority_swap;
@@ -1338,9 +1419,21 @@ bool nk_title_manifest_parse_buffer(
                  loose_root_paths[i]);
         snprintf(temp.loose_root_mounts[i], sizeof(temp.loose_root_mounts[i]), "%s",
                  loose_root_mounts[i]);
+        for (size_t exclude_index = 0;
+             exclude_index < loose_root_exclude_counts[i]; exclude_index++) {
+            snprintf(temp.loose_root_exclude_paths[i][exclude_index],
+                     sizeof(temp.loose_root_exclude_paths[i][exclude_index]), "%s",
+                     loose_root_excludes[i][exclude_index]);
+            temp.loose_root_exclude_ptrs[i][exclude_index] =
+                temp.loose_root_exclude_paths[i][exclude_index];
+        }
         temp.loose_roots[i].root = temp.loose_root_paths[i];
         temp.loose_roots[i].mount = temp.loose_root_mounts[i];
         temp.loose_roots[i].precedence = loose_root_precedence[i];
+        temp.loose_roots[i].skip_primary_root = loose_root_skip_primary[i];
+        temp.loose_roots[i].exclude = loose_root_exclude_counts[i]
+            ? temp.loose_root_exclude_ptrs[i] : NULL;
+        temp.loose_roots[i].exclude_count = (int)loose_root_exclude_counts[i];
     }
     snprintf(temp.memory_stick_root, sizeof(temp.memory_stick_root), "%s", ms_node->u.str_val);
     snprintf(temp.hle_profile, sizeof(temp.hle_profile), "%s", hle_node->u.str_val);
@@ -1559,6 +1652,13 @@ bool nk_title_manifest_parse_buffer(
     for (size_t i = 0; i < dest->loose_root_count; i++) {
         dest->loose_roots[i].root = dest->loose_root_paths[i];
         dest->loose_roots[i].mount = dest->loose_root_mounts[i];
+        for (int exclude_index = 0;
+             exclude_index < dest->loose_roots[i].exclude_count; exclude_index++) {
+            dest->loose_root_exclude_ptrs[i][exclude_index] =
+                dest->loose_root_exclude_paths[i][exclude_index];
+        }
+        dest->loose_roots[i].exclude = dest->loose_roots[i].exclude_count
+            ? dest->loose_root_exclude_ptrs[i] : NULL;
     }
     dest->entry.loose_content_roots = dest->loose_root_count ? dest->loose_roots : NULL;
     dest->entry.loose_content_root_count = (int)dest->loose_root_count;

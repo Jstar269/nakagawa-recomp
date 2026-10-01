@@ -33,13 +33,17 @@ The schema covers manifest identity and kind, retail disc identity, executable l
 ### Typed loose-content roots (#289)
 
 `filesystem.loose_content_roots` optionally declares up to 16 extra host roots
-for the runtime's loose-file VFS. Each entry has exactly `root`, `mount`, and
-`precedence`. `root` is a safe relative path resolved from the parent directory
-of `filesystem.data_root`; `.` names that parent. `mount` is an empty string or
-a guest-relative prefix. `precedence` is a unique integer from 0 through 65535;
-the lower number wins when loose roots expose the same guest file key. A file
-under the primary `filesystem.data_root` wins a duplicate against any loose
-root, preserving the pre-migration extracted-tree behavior.
+for the runtime's loose-file VFS. Each entry has `root`, `mount`, and
+`precedence`, with optional `skip_primary_root` and `exclude`. `root` is a safe
+relative path resolved from the parent directory of `filesystem.data_root`; `.`
+names that parent. `mount` is an empty string or a guest-relative prefix.
+`precedence` is a unique integer from 0 through 65535; the lower number wins
+when loose roots expose the same guest file key. `skip_primary_root` defaults
+to true exactly for `root: "."`, so the primary data-root child is not walked a
+second time. `exclude` lists up to two safe, root-relative paths; matching
+directories are skipped before descent. A file under the primary
+`filesystem.data_root` wins a duplicate against any loose root, preserving the
+pre-migration extracted-tree behavior.
 During ISO staging, the player looks for each configured relative root under
 PSP_GAME/USRDIR and stages any matching directory at that same relative path.
 With no configured roots, it stages the executable only and performs no
@@ -74,23 +78,27 @@ private flagship parity route has not been established by public fixtures.
 For a previous layout with `filesystem.data_root` at
 `<something>/USRDIR/xbdata` or
 `<something>/USRDIR/xbdata_extracted`, the declaration below recreates the
-former parent walk. It contributes files such as `data/sound/menu.csv` at
-their original guest paths, skips the primary data-root directory while
-walking the parent, and keeps primary files ahead of duplicate loose files:
+former parent walk and its file set. It contributes files such as
+`data/sound/menu.csv` at their original guest paths, skips only the primary
+data-root directory while walking the parent, and keeps primary files ahead of
+duplicate loose files:
 
 ```json
 "loose_content_roots": [
-  {"root": ".", "mount": "", "precedence": 0}
+  {"root": ".", "mount": "", "precedence": 0, "skip_primary_root": true}
 ]
 ```
 
-The old inference activated only when the parent directory was `USRDIR` and
-the primary root was named `xbdata` or `xbdata_extracted`; it indexed the
-primary root, then walked the parent while skipping that primary child. The
-asset index sorted equal keys by host path, and the unqualified lookup selected
-the last unqualified record. In this layout the primary-root path sorts after
-the adjacent `data/...` path and wins. The new binding states that priority
-directly, with all loose roots ranked after the primary root.
+The old inference activated only for its recognized parent/archive-root
+layout. It indexed the primary root, then visited every sibling directory
+recursively while skipping that direct primary child. It rejected links,
+non-regular entries, and files larger than the guest size limit; it did not
+filter packed-archive or module siblings. Leaving `exclude` absent preserves
+that traversal. A title profile can exclude additional root-relative subtrees
+when its compatibility contract establishes that they are outside the guest
+namespace or unnecessary to resolve. For this extracted-tree layout, duplicate
+keys from the primary extracted root take priority over adjacent loose files;
+the manifest transport now carries that ordering explicitly.
 
 A retail disc may set `disc.require_local_compatibility_record` when its
 revision needs an explicit local qualification. That switch contains no retail

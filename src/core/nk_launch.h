@@ -11,7 +11,8 @@
 #include <stdbool.h>
 
 #define NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY \
-    (NK_TITLE_MAX_LOOSE_CONTENT_ROOTS * (NK_MAX_PATH * 2 + 512) + 1)
+    (NK_TITLE_MAX_LOOSE_CONTENT_ROOTS * \
+     (NK_MAX_PATH * 2 + 512 + NK_TITLE_MAX_LOOSE_CONTENT_EXCLUDES * 241) + 1)
 
 #ifdef __cplusplus
 extern "C" {
