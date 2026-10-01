@@ -85,11 +85,12 @@ The bounded headless staging smoke uses the source-owned TEST00007 showcase ISO.
 PSPDEV because the showcase target first compiles its synthetic guest:
 
 ```bash
-NK_SHOWCASE_BUILD_ROOT=/tmp/nakagawa-showcase-build \
-NK_SHOWCASE_DEMO_ROOT=/tmp/nakagawa-showcase-demo make CC=gcc showcase-linux
-XDG_DATA_HOME=/tmp/nakagawa-player-smoke-data timeout 60s \
+scratch=$(mktemp -d)
+NK_SHOWCASE_BUILD_ROOT="$scratch/showcase-build" \
+NK_SHOWCASE_DEMO_ROOT="$scratch/showcase-demo" make CC=gcc showcase-linux
+XDG_DATA_HOME="$scratch/player-smoke-data" timeout 60s \
   build/cmake-linux/nakagawa_player \
-  --iso=/tmp/nakagawa-showcase-build/showcase-scene-v1/TEST00007.iso --stage-only
+  --iso="$scratch/showcase-build/showcase-scene-v1/TEST00007.iso" --stage-only
 # Expect: STAGING_RESULT status=PASS
 ```
 

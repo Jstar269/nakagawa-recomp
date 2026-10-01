@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9eab410ce25bec8fd214c8e3d3fcae846cf06f09451c03b45f53572e19cca038"
+      "sha256": "4b8ff17c913eaaf3f4c7be9538b758e40684558c4f862809cc2e846a1bde6274"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -1060,7 +1060,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4e57790713e7fc95c228ac59679204884227e9e4853fdf560dc6a0e827f5a91e"
+      "sha256": "c6f80cb3ceab0deac86d7a60d1b90caf557de1d2d87930483046eec017fec1e9"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5364,7 +5364,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9885b17118f8e9fdc165d365803847d49a35b013c16b12c1333f3c14a804becc"
+      "sha256": "1211d5098d7678122b88bff379e2223d47c8d20dfa1b8fedc65423eb6cdfa17f"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -8563,7 +8563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e93f2000306e7719df254e7edbfb25ac9e9e36599ec02f1ed164e625ef126891"
+      "sha256": "518b9a7893cecf5dfd93a670bc2d0d45ced4ae5a9a4f61aac824ef1b7d0f8871"
     },
     {
       "path": "tools/test_public_export.py",
