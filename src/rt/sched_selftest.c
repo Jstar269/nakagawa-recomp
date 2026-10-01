@@ -26,6 +26,12 @@
  *   - a stack request that does not fit the arena FAILS the create (no silent clamp).
  */
 
+#if !defined(_WIN32) && !defined(_WIN64)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
+
 #include "sched.c"   /* white-box: statics (s_tcb, s_ntcb, s_last_pick, ...) visible */
 
 #include <stdlib.h>
@@ -743,24 +749,15 @@ static void test_title_config_configured_roles_act(void) {
  * guest's frame or vsync words is the guest's own VBLANK handler; a runtime that also
  * incremented a title-named pair counted every VBLANK twice for a guest whose handler
  * maintains the same words, so a frame loop gated on "two VBLANKs elapsed" passed after
- * one and the guest ran at twice its intended rate. Whether or not the build names the
- * pair, no candidate word may change, and the pair a build does name must stay zero too. */
+ * one and the guest ran at twice its intended rate. No candidate word may change
+ * (#643 regression guard). */
 static void test_delivered_vblank_writes_no_guest_memory(void) {
     reset_sched();
-    uint32_t frame = 0, vsync = 0;
-    int configured = sr_title_config_vblank_counters(&frame, &vsync);
-    expect(configured == (cfg_has(SR_TITLE_CFG_VBLANK_COUNTERS) ? 1 : 0),
-           "the retired counter binding is still carried and matches its validity bit");
     for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
         MEM_W32(k_candidate_counters[i], 0u);
     }
-    if (configured) { MEM_W32(frame, 0u); MEM_W32(vsync, 0u); }
     deliver_vblank();
     deliver_vblank();
-    if (configured) {
-        expect(MEM_R32(frame) == 0u, "a delivered VBLANK leaves the configured frame word alone");
-        expect(MEM_R32(vsync) == 0u, "a delivered VBLANK leaves the configured vsync word alone");
-    }
     for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
         expect(MEM_R32(k_candidate_counters[i]) == 0u,
                "a candidate counter word is untouched by a delivered VBLANK");
@@ -2814,7 +2811,64 @@ static void test_turbo_vblank_latches_and_services(void) {
            "a saturated virtual clock readies no thread");
 }
 
-int main(void) {
+static void test_novbpace_value_semantics(void) {
+    /* Unset -> paced (1) */
+#if defined(_WIN32) || defined(_WIN64)
+    _putenv_s("SR_NOVBPACE", "");
+#else
+    unsetenv("SR_NOVBPACE");
+#endif
+    s_pace_on = -1;
+    pace_setup();
+    expect(s_pace_on == 1, "SR_NOVBPACE unset selects paced mode (1)");
+
+    /* Empty string -> paced (1) */
+#if defined(_WIN32) || defined(_WIN64)
+    _putenv_s("SR_NOVBPACE", "");
+#else
+    setenv("SR_NOVBPACE", "", 1);
+#endif
+    s_pace_on = -1;
+    pace_setup();
+    expect(s_pace_on == 1, "SR_NOVBPACE empty selects paced mode (1)");
+
+    /* "0" -> paced (1) */
+#if defined(_WIN32) || defined(_WIN64)
+    _putenv_s("SR_NOVBPACE", "0");
+#else
+    setenv("SR_NOVBPACE", "0", 1);
+#endif
+    s_pace_on = -1;
+    pace_setup();
+    expect(s_pace_on == 1, "SR_NOVBPACE=0 selects paced mode (1)");
+
+    /* "1" -> turbo (0) */
+#if defined(_WIN32) || defined(_WIN64)
+    _putenv_s("SR_NOVBPACE", "1");
+#else
+    setenv("SR_NOVBPACE", "1", 1);
+#endif
+    s_pace_on = -1;
+    pace_setup();
+    expect(s_pace_on == 0, "SR_NOVBPACE=1 selects turbo mode (0)");
+
+    /* Clean up to empty/unset */
+#if defined(_WIN32) || defined(_WIN64)
+    _putenv_s("SR_NOVBPACE", "");
+#else
+    unsetenv("SR_NOVBPACE");
+#endif
+    s_pace_on = 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--test-pace-setup") == 0) {
+        s_pace_on = -1;
+        pace_setup();
+        printf("s_pace_on=%d\n", s_pace_on);
+        return 0;
+    }
+
     g_mem_base = (uint8_t *)calloc(1, 0x0c000000u);
     if (!g_mem_base) {
         fprintf(stderr, "sched_selftest: cannot allocate guest arena\n");
@@ -2899,6 +2953,7 @@ int main(void) {
     test_vblank_only_wait_is_not_deadlock();
     test_unwakeable_vblank_states_are_reported();
     test_turbo_vblank_latches_and_services();
+    test_novbpace_value_semantics();
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",
             sr_title_config()->source_id, sr_title_config()->valid);

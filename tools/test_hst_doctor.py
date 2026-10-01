@@ -797,6 +797,7 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "tools" / "copy_build_assets.ps1",
+            ROOT / "tools" / "gpu_selftest_status.ps1",
             ROOT / "tools" / "nk_safety.ps1",
             ROOT / "tools" / "test_manager_safety.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",
@@ -845,6 +846,7 @@ class SimpleFrontEndTests(unittest.TestCase):
     def test_all_tracked_powershell_scripts_declare_consistent_requires_version(self) -> None:
         expected_scripts = {
             ROOT / "tools" / "copy_build_assets.ps1",
+            ROOT / "tools" / "gpu_selftest_status.ps1",
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "tools" / "nk_safety.ps1",

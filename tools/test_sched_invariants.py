@@ -35,7 +35,9 @@ reintroduced defect aborts in milliseconds rather than exhausting host RAM, and
 early warning, never as the safety argument.
 """
 
+import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -335,6 +337,58 @@ class StackAllocationTests(unittest.TestCase):
     def test_create_thread_maps_failure_to_no_memory(self):
         body = strip_comments(function_body(HLE, "h_CreateThread"))
         self.assertIn("0x80020190", body, "a failed create must surface NO_MEMORY to the guest")
+
+
+class NovbpaceSemanticsTests(unittest.TestCase):
+    """SR_NOVBPACE must enforce value semantics: unset/empty/'0' = paced, '1' = turbo, any other refused."""
+
+    def test_pace_setup_checks_value_semantics_source(self):
+        body = strip_comments(function_body(SCHED, "pace_setup"))
+        self.assertIn("SR_NOVBPACE", body)
+        self.assertIn('strcmp(e, "0")', body)
+        self.assertIn('strcmp(e, "1")', body)
+        self.assertIn("exit(1)", body)
+        self.assertIn("SR_NOVBPACE: invalid value", body)
+
+    def test_pace_setup_binary_execution(self):
+        bin_candidates = list((ROOT / "build").glob("**/sched_selftest*.exe"))
+        if not bin_candidates:
+            bin_candidates = list((ROOT / "build").glob("**/sched_selftest*"))
+        if not bin_candidates:
+            self.skipTest("sched_selftest executable not found; skipping binary execution test")
+
+        exe = str(bin_candidates[0])
+
+        # Unset -> paced (s_pace_on=1)
+        env = {k: v for k, v in os.environ.items() if k != "SR_NOVBPACE"}
+        res = subprocess.run([exe, "--test-pace-setup"], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("s_pace_on=1", res.stdout)
+
+        # Empty string -> paced (s_pace_on=1)
+        env["SR_NOVBPACE"] = ""
+        res = subprocess.run([exe, "--test-pace-setup"], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("s_pace_on=1", res.stdout)
+
+        # "0" -> paced (s_pace_on=1)
+        env["SR_NOVBPACE"] = "0"
+        res = subprocess.run([exe, "--test-pace-setup"], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("s_pace_on=1", res.stdout)
+
+        # "1" -> turbo (s_pace_on=0)
+        env["SR_NOVBPACE"] = "1"
+        res = subprocess.run([exe, "--test-pace-setup"], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("s_pace_on=0", res.stdout)
+
+        # Invalid values -> refused (fail closed)
+        for invalid in ("2", "turbo", "false", "true", "yes", "-1"):
+            env["SR_NOVBPACE"] = invalid
+            res = subprocess.run([exe, "--test-pace-setup"], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0, f"Expected rejection for SR_NOVBPACE={invalid}")
+            self.assertIn("SR_NOVBPACE: invalid value", res.stderr)
 
 
 if __name__ == "__main__":

@@ -407,6 +407,16 @@ static WCHAR *build_controlled_unicode_environment(const char * const *envp) {
                 }
             }
 
+            if (!eq) {
+                /* An entry without '=' requests removal of the variable from the child's environment. */
+                if (found_idx >= 0) {
+                    free(vars[found_idx].str);
+                    vars[found_idx] = vars[count - 1];
+                    count--;
+                }
+                continue;
+            }
+
             WCHAR *dup = _wcsdup(witem);
             if (!dup) { failed = true; break; }
             if (found_idx >= 0) {

@@ -22,6 +22,7 @@
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "nk_safety.ps1")
+. (Join-Path $PSScriptRoot "gpu_selftest_status.ps1")
 
 $script:Failures = 0
 function Test-Case {
@@ -465,7 +466,7 @@ try {
     $managerSrc = Join-Path $PSScriptRoot ".."
     $targetMgr = "nk_manager.ps1"
     Copy-Item -LiteralPath (Join-Path $managerSrc $targetMgr) -Destination $fakeRepo -Force
-    $safetyHelpers = @("nk_safety.ps1", "vulkan_sdk.ps1")
+    $safetyHelpers = @("nk_safety.ps1", "vulkan_sdk.ps1", "gpu_selftest_status.ps1")
     foreach ($helper in $safetyHelpers) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $helper) -Destination $fakeTools -Force
     }
@@ -519,6 +520,85 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath $cwdTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- GPU selftest status mapping -------------------------------------------------------
+# A failed recipe always leaves GNU Make with its own generic exit status, so a child SKIP
+# (exit 77) used to reach the manager as a plain failure. These cases drive the real
+# mapping against the structured lines `make gpu-selftest-status` prints.
+try {
+    $gpuGates = @("gpu-coherence-selftest", "gpu-capture-selftest")
+
+    Test-Case "child exit 77 is SKIP with a reason, not a failure" {
+        $log = "GPU_SELFTEST_RESULT gpu_coherence_selftest.exe SKIP 77`n" +
+               "vulkan loader unavailable`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe PASS 0`n"
+        $results = Get-GpuSelftestResults -Log $log
+        $status = Resolve-GpuSelftestStatus -Results $results -Gates $gpuGates -ExitCode 0
+        Assert-True ($status.Gates[0].Status -eq "SKIP") "child 77 was not SKIP"
+        Assert-True ($status.Gates[0].Reason -match "77") "SKIP lost the child exit code"
+        Assert-True ($status.Gates[1].Status -eq "PASS") "passing sibling misreported"
+        Assert-True ($status.Completeness -eq "PARTIAL_SKIPPED") `
+            "partial skip reported as $($status.Completeness)"
+    }
+
+    Test-Case "an executed semantic failure stays FAIL" {
+        $log = "GPU_SELFTEST_RESULT gpu_coherence_selftest.exe FAIL 3`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe PASS 0`n"
+        $status = Resolve-GpuSelftestStatus -Results (Get-GpuSelftestResults -Log $log) `
+            -Gates $gpuGates -ExitCode 2
+        Assert-True ($status.Gates[0].Status -eq "FAIL") "executed failure reported as PASS"
+        Assert-True ($status.Gates[0].Reason -match "3") "failure lost the child exit code"
+    }
+
+    Test-Case "a build failure is FAIL even when the log says skip" {
+        $log = "make[1]: *** No rule to make target 'gpu_coherence_selftest.exe'. Stop.`n" +
+               "SKIP: nothing to run`n"
+        $status = Resolve-GpuSelftestStatus -Results (Get-GpuSelftestResults -Log $log) `
+            -Gates $gpuGates -ExitCode 2
+        foreach ($gateOutcome in $status.Gates) {
+            Assert-True ($gateOutcome.Status -eq "FAIL") `
+                "$($gateOutcome.Gate) became $($gateOutcome.Status) without a result line"
+            Assert-True ($gateOutcome.Reason -match "not built or not run") `
+                "build failure reason missing for $($gateOutcome.Gate)"
+        }
+        Assert-True ($status.Completeness -eq "FAILED") `
+            "build failure reported as $($status.Completeness)"
+    }
+
+    Test-Case "every executed pass reports EXECUTED completeness" {
+        $log = "GPU_SELFTEST_RESULT gpu_coherence_selftest.exe PASS 0`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe PASS 0`n"
+        $status = Resolve-GpuSelftestStatus -Results (Get-GpuSelftestResults -Log $log) `
+            -Gates $gpuGates -ExitCode 0
+        Assert-True ($status.Completeness -eq "EXECUTED") `
+            "executed checks reported as $($status.Completeness)"
+    }
+
+    Test-Case "a host that skips both binaries reports absent graphics evidence" {
+        $log = "GPU_SELFTEST_RESULT gpu_coherence_selftest.exe SKIP 77`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe SKIP 77`n"
+        $status = Resolve-GpuSelftestStatus -Results (Get-GpuSelftestResults -Log $log) `
+            -Gates $gpuGates -ExitCode 0
+        Assert-True ($status.Completeness -eq "NOT_RUN_HOST_UNSUPPORTED") `
+            "all-skip reported as $($status.Completeness)"
+        Assert-True (@($status.Gates | Where-Object { $_.Status -eq "FAIL" }).Count -eq 0) `
+            "an all-skip host must not produce a failure"
+    }
+
+    Test-Case "structured lines are parsed strictly, not by substring" {
+        $log = "GPU_SELFTEST_RESULT gpu_capture_selftest.exe PASS 0`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe SKIP 77`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe SKIP extra 77`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe MAYBE 77`n" +
+               "GPU_SELFTEST_RESULT gpu_capture_selftest.exe PASS`n"
+        $results = Get-GpuSelftestResults -Log $log
+        Assert-True ($results.Count -eq 1) "malformed result lines were accepted"
+        Assert-True ($results["gpu_capture_selftest.exe"].Verdict -eq "SKIP") `
+            "the last WELL-FORMED line must win; a malformed one must not overwrite it"
+        Assert-True ($results["gpu_capture_selftest.exe"].Code -eq 77) "child exit code lost"
+    }
+} finally {
 }
 
 if ($script:Failures -gt 0) {
