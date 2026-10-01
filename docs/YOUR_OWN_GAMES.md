@@ -158,7 +158,7 @@ crashes.
   `python tools/nk_cli.py fonts import <folder>`
   ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)), rather than
   substituting mismatched system fonts that cause text clipping. Guest
-  `libfont` startup without a ready-flag bypass is in the works
+  translated `libfont` startup runs through its guest entry; if the module is absent or untranslated, the runtime reports `LIBFONT_STARTUP_UNAVAILABLE` and may apply the configured ready-flag fallback. Completing that boundary is in the works ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299))
   ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)), as is the
   clean-room open-font converter
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).

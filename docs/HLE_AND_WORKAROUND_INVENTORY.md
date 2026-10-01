@@ -64,12 +64,12 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 ### 3.1 Title-Specific Memory Writes and Bypasses (Tier 4)
 
-#### 1. `libfont.prx` Initialization Bypass & Compat Flag
+#### 1. `libfont.prx` Startup Fallback & Compat Flag
 
 - **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and `src/rt/title_config.c:74` (`SR_TITLE_CONFIG_LIBFONT_READY_FLAG_ADDR`; accessor at lines 190–194).
-- **Mechanism:** The title-specific libfont bypass uses `libfont_ready_flag_addr` from the title manifest via generated `sr_title_config.h`, not a hardcoded address in `title_config.c`. That file consumes the generated header at line 20, collection X-macros at lines 26–65, and configuration bindings at lines 67–94.
-- **Root Cause:** When `f_32200000` was previously executed, it blocked indefinitely on an unconditional `sceKernelWaitSema`.
-- **Lower-Level Solution:** Fix the semaphore initial count and thread scheduling in `src/rt/sched.c` so `libfont.prx` initializes naturally, then remove the hardcoded memory poke.
+- **Mechanism:** `sceKernelLoadModule` does not write the ready word. `sceKernelStartModule` runs a translated guest `libfont.prx` entry even when the opt-in module lifecycle gate is off. If the module is absent or its entry is untranslated, it emits `LIBFONT_STARTUP_UNAVAILABLE` and writes the manifest-configured fallback word when one exists. Generic builds have no fallback binding.
+- **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Issue #299 replaces that unconditional bypass with guest startup plus a named fallback; completion and retirement of the fallback remain in the works (#299).
+- **Lower-Level Solution:** Keep guest `module_start` and its exports authoritative whenever translated. Retire `libfont_ready_flag_addr` after supported module paths no longer need the absent or untranslated fallback.
 
 #### 2. `psmf.prx` and `libpsmfplayer.prx` Start Module Skip
 
@@ -193,7 +193,7 @@ timeline
     title Workaround Elimination & LLE Convergence
     Phase 1 : Zero-Initialize BSS & Segment Extents : Audit tools/codegen.py for $s0 register preservation : Eliminate INIT_WALKER_GUARD : Revalidate historical walker bypass rationale
     Phase 2 : Implement standalone ATRAC3+ decoder : Eliminate high-risk fake_success audio NIDs : Implement sceReg virtual system registry
-    Phase 3 : Complete kernel semaphore & thread synchronization : Execute libfont.prx module_start : Eliminate libfont_ready_flag_addr hardcoded poke
+    Phase 3 : Complete kernel semaphore & thread synchronization : Verify translated libfont.prx startup : Retire the named absent-or-untranslated fallback for #299
     Phase 4 : Execute scePsmf_library.prx & psmf.prx module_start : Bridge low-level sceMpeg to host hardware decoders : Eliminate StartModule bypasses
     Phase 5 : Eliminate remaining fake_success stubs : Retire title-specific manifest overrides : Reach Zero-Workaround State
 ```

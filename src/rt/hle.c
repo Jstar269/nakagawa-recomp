@@ -2128,6 +2128,17 @@ static uint32_t elf_vaddr_to_file(const SrElfPhdr *ph, unsigned n, uint32_t va, 
     return UINT32_MAX;
 }
 
+/* Module-info pointers in a relocatable PRX can already be rebased by the loader
+ * contract, while the export walker also accepts the base-relative form used by
+ * older public fixtures. Keep both representations anchored to the ELF segments. */
+static uint32_t prx_vaddr_to_file(const SrElfPhdr *ph, unsigned n, uint32_t va,
+                                 uint32_t base, size_t file_len) {
+    uint32_t off = elf_vaddr_to_file(ph, n, va, file_len);
+    if (off == UINT32_MAX && base != 0u && va >= base)
+        off = elf_vaddr_to_file(ph, n, va - base, file_len);
+    return off;
+}
+
 /* A 32-bit byte offset must be representable as this host's long for fseek.
  * The limit travels as a parameter rather than being written inline so that a
  * host whose long is wider than 32 bits (LP64) still takes the comparison
@@ -2137,7 +2148,8 @@ static int sr_off_fits_long(uint32_t off, long limit) {
     return (uint64_t)off <= (uint64_t)limit;
 }
 
-static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned phnum, size_t file_len) {
+static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned phnum,
+                             uint32_t base, size_t file_len) {
     uint32_t gp, ent_top, ent_end, stub_top, stub_end;
     uint16_t attributes; uint8_t major, minor;
     memcpy(&attributes, mi, 2); major = mi[2]; minor = mi[3];
@@ -2165,14 +2177,15 @@ static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned ph
     if (ent_top == 0 || ent_end <= ent_top || ent_end - ent_top > 0x10000u) return 0;
     if (stub_end < stub_top || stub_end - stub_top > 0x10000u) return 0;
 
-    return elf_vaddr_to_file(ph, phnum, ent_top, file_len) != UINT32_MAX;
+    return prx_vaddr_to_file(ph, phnum, ent_top, base, file_len) != UINT32_MAX;
 }
 
 /* Most stripped PRXs put the PspModuleInfo file offset in the executable PT_LOAD p_paddr.
  * A few Sony modules instead use that field for another resident-data address. Fall back to
  * the same conservative aligned scan used by the codegen analyzer, rather than interpreting
  * an export/NID table as module-info and silently publishing nothing. */
-static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum, size_t file_len, uint8_t mi[52]) {
+static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum,
+                                 uint32_t base, size_t file_len, uint8_t mi[52]) {
     for (unsigned pass = 0; pass < 2; pass++) {
         for (unsigned i = 0; i < phnum; i++) {
             if (ph[i].type != 1 || !(ph[i].flags & 1) || !ph[i].filesz) continue;
@@ -2184,7 +2197,7 @@ static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum, s
             if (pass == 0 && !begin) continue;
             for (uint32_t off = begin; off <= end && end - off >= 52u; ) {
                 if (!sr_off_fits_long(off, LONG_MAX) || fseek(f, (long)off, SEEK_SET) || fread(mi, 1, 52, f) != 52) break;
-                if (valid_module_info(mi, ph, phnum, file_len)) return off;
+                if (valid_module_info(mi, ph, phnum, base, file_len)) return off;
                 if (UINT32_MAX - off < 4u) break;
                 off += 4u;
             }
@@ -2212,7 +2225,6 @@ typedef struct {
     int stopped;
     int unloaded;
     int in_use;
-    int libfont_compat_poke_pending;
 } LoadedModule;
 
 static LoadedModule s_loaded_modules[16];
@@ -2331,7 +2343,7 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
         goto out;
     }
 
-    uint32_t mioff = find_module_info(f, ph, phnum, file_len, mi);
+    uint32_t mioff = find_module_info(f, ph, phnum, base, file_len, mi);
     if (mioff == UINT32_MAX) {
         fprintf(stderr, "register_prx_exports: FAILED to find module info in %s\n", host_path);
         goto out;
@@ -2346,14 +2358,14 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
 
     for (uint32_t ent = ent_top; ent <= ent_end && ent_end - ent >= 16u;) {
         uint8_t e[16];
-        uint32_t off = elf_vaddr_to_file(ph, phnum, ent, file_len);
+        uint32_t off = prx_vaddr_to_file(ph, phnum, ent, base, file_len);
         if (off == UINT32_MAX || (uint64_t)off + sizeof(e) > file_len || off > (uint32_t)LONG_MAX ||
             fseek(f, (long)off, SEEK_SET) || fread(e, 1, sizeof(e), f) != sizeof(e)) break;
         unsigned words = e[8], nvars = e[9]; uint16_t nfuncs; uint32_t table;
         memcpy(&nfuncs, e + 10, 2); memcpy(&table, e + 12, 4);
         unsigned count = (unsigned)nfuncs + nvars;
         if (words < 4 || words > 0x40 || count > 1024) break;
-        uint32_t toff = elf_vaddr_to_file(ph, phnum, table, file_len);
+        uint32_t toff = prx_vaddr_to_file(ph, phnum, table, base, file_len);
         if (toff != UINT32_MAX && count) {
             uint64_t pair_bytes = (uint64_t)count * 2u * sizeof(uint32_t);
             if (pair_bytes > SIZE_MAX || pair_bytes > file_len || (uint64_t)toff + pair_bytes > file_len || toff > (uint32_t)LONG_MAX)
@@ -7946,35 +7958,6 @@ static uint32_t h_LoadModule(CpuState *s) {
     }
     uint32_t uid = sr_alloc_uid();
     fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
-    /* The title checks this flag after the concrete libfont PRX load. Keep it
-     * on the explicit PRX path instead of conflating libfont with AV module
-     * id 0x302 (PSP_AV_MODULE_ATRAC3PLUS). Title-qualified: only when the
-     * manifest configures the compat flag; generic sceKernelLoadModule
-     * otherwise performs no guest write. */
-    int poke_pending = 0;
-    if (strstr(path, "libfont.prx")) {
-        if (!real_module_start_enabled()) {
-            uint32_t flag;
-            if (sr_title_config_libfont_ready_flag_addr(&flag)) {
-                if (!sr_guest_span_writable(flag, 4)) {
-                    fprintf(stderr,
-                            "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
-                            flag, sr_title_config()->source_id);
-                } else {
-                    MEM_W32(flag, 1u);
-                    fprintf(stderr,
-                            "libfont compat: flag 0x%08x <- 1 (title %s)\n",
-                            flag, sr_title_config()->source_id);
-                }
-            } else {
-                fprintf(stderr,
-                        "libfont.prx loaded (generic: no compat flag write, title %s)\n",
-                        sr_title_config()->source_id);
-            }
-        } else {
-            poke_pending = 1;
-        }
-    }
     LoadedModule *mod = alloc_loaded_module_slot();
     if (mod) {
         mod->uid = uid;
@@ -7985,7 +7968,6 @@ static uint32_t h_LoadModule(CpuState *s) {
         mod->started = 0;
         mod->stopped = 0;
         mod->unloaded = 0;
-        mod->libfont_compat_poke_pending = poke_pending;
     }
     return uid;
 }
@@ -8022,28 +8004,23 @@ static uint32_t h_StartModule(CpuState *s) {
                 break;
             }
         }
-        /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
-         * h_UtilityLoadModule): libfont/psmf/libpsmfplayer are fully host-side HLE'd, and their
-         * real module_start entries (f_32200000/f_32280000/f_322f8868) are genuine Sony SDK init
-         * code that assumes a real PSP kernel underneath -- running them hangs on an unconditional
-         * WaitSema. This is a second, independent call path into the exact same three PRXs (via
-         * sceKernelLoadModule + sceKernelStartModule instead of sceUtilityLoadModule), so it needs
-         * the identical skip. populate_known_module(path) was already called in h_LoadModule when
-         * the module was recorded, so it is not repeated here. */
-        if (path) {
-            if (strstr(path, "libfont.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized libfont.prx (module_start not executed; sceFont* is fully host-HLE'd)\n");
-                return 0;
-            } else if (strstr(path, "psmf.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-                return 0;
-            } else if (strstr(path, "libpsmfplayer.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-                return 0;
+        /* libfont is allowed through this legacy gate so a translated guest
+         * module_start can establish its own state. The PSMF host-HLE bypasses
+         * remain unchanged. populate_known_module(path) already ran in LoadModule. */
+        if (!path || !strstr(path, "libfont.prx")) {
+            if (path) {
+                if (strstr(path, "psmf.prx")) {
+                    fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
+                } else if (strstr(path, "libpsmfplayer.prx")) {
+                    fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
+                } else {
+                    fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
+                }
+            } else {
+                fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
             }
+            return 0;
         }
-        fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
-        return 0;
     }
 
     LoadedModule *mod = find_loaded_module(uid);
@@ -8061,38 +8038,40 @@ static uint32_t h_StartModule(CpuState *s) {
             MEM_W32(status_ptr, rv);
         }
         mod->started = 1;
-        mod->libfont_compat_poke_pending = 0;
         return 0;
     }
 
-    /* Entry is unknown or untranslated: keep today's behaviour and log once. */
-    if (mod->libfont_compat_poke_pending) {
+    /* Entry is unknown or untranslated. A configured ready word is a named
+     * fallback only for libfont; it never substitutes for translated startup. */
+    int is_libfont = strstr(mod->path, "libfont.prx") != NULL;
+    if (is_libfont) {
         uint32_t flag;
         if (sr_title_config_libfont_ready_flag_addr(&flag)) {
             if (!sr_guest_span_writable(flag, 4)) {
                 fprintf(stderr,
-                        "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
-                        flag, sr_title_config()->source_id);
+                        "LIBFONT_STARTUP_UNAVAILABLE: module absent or entry untranslated; "
+                        "ready-flag fallback target is not writable (#299)\n");
             } else {
                 MEM_W32(flag, 1u);
                 fprintf(stderr,
-                        "libfont compat: flag 0x%08x <- 1 (title %s)\n",
-                        flag, sr_title_config()->source_id);
+                        "LIBFONT_STARTUP_UNAVAILABLE: module absent or entry untranslated; "
+                        "using title-configured ready-flag fallback (#299)\n");
             }
+        } else {
+            fprintf(stderr,
+                    "LIBFONT_STARTUP_UNAVAILABLE: module absent or entry untranslated; "
+                    "ready-flag fallback is unconfigured (#299)\n");
         }
-        mod->libfont_compat_poke_pending = 0;
     }
 
     static int s_logged_untranslated = 0;
     if (!s_logged_untranslated) {
         s_logged_untranslated = 1;
-        if (strstr(mod->path, "libfont.prx")) {
-            fprintf(stderr, "sceKernelStartModule: recognized libfont.prx (module_start not executed; sceFont* is fully host-HLE'd)\n");
-        } else if (strstr(mod->path, "psmf.prx")) {
+        if (!is_libfont && strstr(mod->path, "psmf.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-        } else if (strstr(mod->path, "libpsmfplayer.prx")) {
+        } else if (!is_libfont && strstr(mod->path, "libpsmfplayer.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-        } else {
+        } else if (!is_libfont) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or untranslated entry, skipping\n", uid);
         }
     }
@@ -8118,7 +8097,6 @@ uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, ui
     mod->started = 0;
     mod->stopped = 0;
     mod->unloaded = 0;
-    mod->libfont_compat_poke_pending = 0;
     return uid;
 }
 

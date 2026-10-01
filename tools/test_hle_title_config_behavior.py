@@ -133,6 +133,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                     **os.environ,
                     "SR_HLE_DIAGNOSTICS": "1",
                     "SR_EXPECT_HLE_DIAGNOSTICS": "1",
+                    "SR_REAL_MODULE_START": "0",
                 },
                 timeout=180,
             )
@@ -141,7 +142,98 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("hle_title_production_selftest:", output)
         self.assertIn("0 failures", output)
         self.assertIn("replaying title display-driver init", output)
-        self.assertIn("libfont compat", output)
+        self.assertIn("LIBFONT_STARTUP_UNAVAILABLE", output)
+        self.assertIn("ready-flag fallback (#299)", output)
+
+    def test_libfont_guest_startup_routes_exports_without_ready_binding(self):
+        make = shutil.which("mingw32-make")
+        if not make:
+            raise unittest.SkipTest("mingw32-make is not available")
+        with tempfile.TemporaryDirectory(prefix="nakagawa_libfont_startup_") as tmp:
+            tmp_path = Path(tmp)
+            module_root = tmp_path / "modules"
+            module_root.mkdir()
+            manifest = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            guest_path = "disc0:/PSP_GAME/SYSDIR/libfont.prx"
+            manifest["modules"].insert(0, {
+                "name": "libfont.prx",
+                "load_address": 0x09F00000,
+                "required": True,
+                "role": "guest-prx",
+                "guest_path": guest_path,
+                "load_address_evidence": "provisional",
+            })
+            self.assertNotIn("libfont_ready_flag_addr", manifest["runtime_bindings"])
+            manifest_path = tmp_path / "synthetic-libfont.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            header = tmp_path / "sr_title_config.h"
+            exe = tmp_path / "hle_title_production_selftest_libfont.exe"
+            command = [
+                make,
+                "--no-print-directory",
+                "hle-title-selftest-one",
+                "HLE_TITLE_CONFIG=synthetic-libfont",
+                f"HLE_TITLE_MANIFEST={manifest_path.as_posix()}",
+                f"BUILD_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
+                f"HLE_TITLE_SELFTEST_EXE={exe.as_posix()}",
+            ]
+            env = os.environ.copy()
+            ucrt_bin = Path("C:/msys64/ucrt64/bin")
+            if ucrt_bin.is_dir():
+                env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
+            env["SR_MODULE_DIR"] = str(module_root)
+            env["SR_TEST_GUEST_MODULE_LOAD"] = "libfont-startup"
+            env["SR_REAL_MODULE_START"] = "0"
+            result = subprocess.run(
+                command, cwd=ROOT, capture_output=True, text=True, env=env, timeout=180
+            )
+            hle_source = ROOT / "src" / "rt" / "hle.c"
+            source_text = hle_source.read_text(encoding="utf-8")
+            gate = 'if (!path || !strstr(path, "libfont.prx")) {'
+            self.assertEqual(source_text.count(gate), 1)
+            mutant_source = tmp_path / "hle_skip_libfont_start.c"
+            mutant_source.write_text(source_text.replace(gate, "if (1) {", 1),
+                                     encoding="utf-8")
+            mutant_makefile = tmp_path / "Makefile.mutant"
+            makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+            self.assertIn("src/rt/hle.c", makefile_text)
+            mutant_makefile.write_text(
+                makefile_text.replace("src/rt/hle.c", mutant_source.as_posix()),
+                encoding="utf-8",
+            )
+            mutant_dir = tmp_path / "mutant"
+            mutant_dir.mkdir()
+            mutant_command = [
+                make,
+                "-f",
+                mutant_makefile.as_posix(),
+                "--no-print-directory",
+                "hle-title-selftest-one",
+                "HLE_TITLE_CONFIG=synthetic-libfont-mutant",
+                f"HLE_TITLE_MANIFEST={manifest_path.as_posix()}",
+                f"BUILD_DIR={mutant_dir.as_posix()}",
+                f"HLE_TITLE_SELFTEST_DIR={mutant_dir.as_posix()}",
+                f"HLE_TITLE_SELFTEST_HEADER={(mutant_dir / 'sr_title_config.h').as_posix()}",
+                f"HLE_TITLE_SELFTEST_EXE={(mutant_dir / 'hle_libfont_mutant.exe').as_posix()}",
+            ]
+            mutant = subprocess.run(
+                mutant_command, cwd=ROOT, capture_output=True, text=True,
+                env=env, timeout=180,
+            )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("prx image: libfont -> [0x09f00000", output.lower())
+        self.assertIn("PRX link:", output)
+        self.assertIn("0 failures", output)
+        self.assertNotIn("LIBFONT_STARTUP_UNAVAILABLE", output)
+        mutant_output = mutant.stdout + mutant.stderr
+        self.assertNotEqual(mutant.returncode, 0, mutant_output)
+        self.assertIn(
+            "FAIL: guest module_start writes the readiness word exactly once",
+            mutant_output,
+        )
 
     def test_manifest_module_load_honours_address_and_refuses_collision(self):
         make = shutil.which("mingw32-make")
