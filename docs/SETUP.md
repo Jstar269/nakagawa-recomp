@@ -492,7 +492,7 @@ SDL3 gamepads use the south/east/west/north face buttons as Cross/Circle/Square/
 Short presses are latched until one PSP controller sample consumes them, so normal taps work
 even while a frame is slow.
 
-The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
+The full `make verify` command needs external trace data that is not in the repository. Missing `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` inputs report `NOT_RUN` with a non-zero result. The hardware differential gate is optional: with neither `PSP_HARDWARE_TRACE` nor `LOCAL_COSIM_TRACE` it reports `NOT_RUN` without changing the result, supplying only one fails, and a matching pair reports `STRICT_V2_AGREEMENT` from the traces' own tier metadata, which is not device attestation. Legacy v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
 
 ### Public synthetic verification routes
 
@@ -637,7 +637,12 @@ installs that script into a user `Scripts/` directory that is frequently absent 
 Windows, so the bare form fails with "command not found" immediately after a successful install.
 The module form works regardless of `PATH`.
 
-These hooks install their own pinned Ruff and Betterleaks environments. C formatting is defined by
+These hooks install their own pinned Ruff and Betterleaks environments. The
+Betterleaks hook runs at the commit stage in directory mode over the staged files, which works the
+same on Windows and Linux; it is not a pre-push hook, because pre-commit passes no file names at
+that stage and directory mode would then scan the whole working tree, including the private input
+directories (the pushed history is scanned in hosted CI); its upstream git mode sets `GIT_CONFIG_GLOBAL=NUL`,
+which Git for Windows rejects, so that mode scanned nothing on Windows. C formatting is defined by
 `.clang-format` but is not currently an automatic pre-commit hook. A mypy configuration remains in
 `pyproject.toml`, but mypy is **not** a shared gate while the pre-existing Python typing baseline is being corrected. Do not describe a known-failing type check as a required
 contributor hook. These tools are not core runtime dependencies.

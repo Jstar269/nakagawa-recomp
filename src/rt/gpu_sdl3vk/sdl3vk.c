@@ -510,6 +510,28 @@ int sdl3vk_init(const char *title) {
     return 1;
 }
 
+bool sdl3vk_raise_window(void) {
+    if (!s_win) return false;
+
+    bool raised = SDL_RaiseWindow(s_win);
+    if (!raised) {
+        fprintf(stderr, "sdl3vk: SDL_RaiseWindow failed: %s\n", SDL_GetError());
+    }
+#ifdef _WIN32
+    SDL_PropertiesID properties = SDL_GetWindowProperties(s_win);
+    HWND window = (HWND)SDL_GetPointerProperty(
+        properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (!window) {
+        fprintf(stderr, "sdl3vk: SDL did not expose the Win32 game window handle\n");
+        raised = false;
+    } else if (!SetForegroundWindow(window)) {
+        fprintf(stderr, "sdl3vk: Win32 refused foreground activation for the game window\n");
+        raised = false;
+    }
+#endif
+    return raised;
+}
+
 /* ---- input -------------------------------------------------------------------------- */
 
 /* The profile's host enums index SDL's arrays directly; keep them numerically identical. */

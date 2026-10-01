@@ -67,6 +67,27 @@ typedef enum {
 
 typedef NkGameEntry GameRecord;
 
+/* Requested client-area geometry in SDL screen/window coordinate units. */
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+} PlayerWindowRect;
+
+/* Window decoration sizes in the same coordinate units as PlayerWindowRect. */
+typedef struct {
+    int top;
+    int left;
+    int bottom;
+    int right;
+} PlayerWindowFrame;
+
+typedef enum {
+    PLAYER_CLOSE_QUIT = 0,
+    PLAYER_CLOSE_CONFIRM_REQUIRED
+} PlayerCloseDecision;
+
 typedef struct {
     PlayerPrepStage stage;
     char operation[64];
@@ -82,10 +103,17 @@ typedef struct {
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     bool fullscreen;
+    bool launcher_fullscreen;
     bool vsync;
     int fps_cap;          /* 30, 60, 0 = uncapped */
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
+    bool launcher_window_maximized;
+    bool launcher_window_position_valid;
+    int launcher_window_x;
+    int launcher_window_y;
+    int launcher_window_width;
+    int launcher_window_height;
     char controller_name[64];
     bool controller_connected;
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
@@ -262,6 +290,11 @@ typedef struct {
     int window_width;
     int window_height;
     float dpi_scale;
+    bool logical_ui;
+    bool enable_focus_handoff;
+    bool child_window_ready;
+    bool close_confirmation_pending;
+    char boot_event_file_path[MAX_PATH_LEN];
     bool should_quit;
 } PlayerApp;
 
@@ -319,6 +352,28 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
 void player_app_cycle_fps_cap(PlayerApp *app, int direction);
 void player_app_toggle_fullscreen(PlayerApp *app);
+void player_app_toggle_launcher_fullscreen(PlayerApp *app);
+PlayerCloseDecision player_app_close_decision(const PlayerApp *app,
+                                              bool user_confirmed);
+/* SDL may report one host close action with more than one close event type.
+ * Claim the first such event in a drained event batch only. */
+bool player_app_close_request_batch_claim(bool *close_request_handled);
+/* If the host confirmation dialog cannot be shown, keep the running game
+ * alive and require a second explicit close request before forcing quit. */
+void player_app_note_close_confirmation_failure(PlayerApp *app);
+bool player_app_take_close_confirmation_fallback(PlayerApp *app);
+bool player_app_boot_event_is_window_ready(const char *line);
+bool player_app_child_window_ready(PlayerApp *app);
+/* Fit a requested client rectangle into a display. `usable` is the display's
+ * usable bounds and `frame` the window decoration, so the client area is
+ * `usable` reduced by `frame`; `out` receives a CLIENT rectangle that fits
+ * inside that area, ready for SDL_SetWindowSize/SDL_SetWindowPosition and for
+ * the launcher's persisted launcher_window_* geometry. */
+bool player_window_fit_to_display(PlayerWindowRect requested,
+                                  PlayerWindowRect usable,
+                                  PlayerWindowFrame frame,
+                                  bool requested_position_valid,
+                                  PlayerWindowRect *out);
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
@@ -339,6 +394,31 @@ void player_app_move_selection(PlayerApp *app, int delta);
 
 /* How many library cards fit in the current window, at least one. */
 int player_app_visible_library_cards(const PlayerApp *app);
+
+/* Whether the settings renderer has enough client width and height for its
+ * two-column layout. This is pure state logic so the threshold is tested
+ * independently of SDL and the renderer cannot drift from the layout contract. */
+bool player_settings_uses_two_columns(int window_width, int window_height);
+
+/* Horizontal offset, from the card's left edge, where the settings right
+ * column begins. It is never left of the end of the launcher fullscreen
+ * control plus a gutter, so the columns cannot overlap at any card width the
+ * two-column layout accepts. */
+float player_settings_second_column_offset(float card_width);
+
+/* Whether the event loop should attempt the launcher-to-game focus handoff on
+ * this frame. Pure state logic so the once-per-launch contract is tested
+ * without SDL: a failed SDL_MinimizeWindow keeps the launcher visible, and
+ * retrying it every frame would rewrite the launcher settings every frame. */
+bool player_app_should_attempt_window_handoff(bool interactive_window,
+                                              bool game_running,
+                                              bool handoff_attempted,
+                                              bool child_window_ready);
+
+/* The boot-event marker pathname the next interactive launch will use, without
+ * consuming the sequence. Pure naming so tests can build a filesystem seam at
+ * the exact path production will choose instead of assuming a sequence. */
+void player_app_next_boot_event_path(char *out, size_t out_size);
 
 /* How many keyboard/gamepad focus stops the current view offers, at least
  * one. Pure state logic (no SDL): the renderer draws its buttons in this

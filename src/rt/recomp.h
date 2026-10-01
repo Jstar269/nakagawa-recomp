@@ -18,6 +18,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include "fp_convert.h"
@@ -602,6 +603,8 @@ typedef enum SrStackCensusStatus {
 } SrStackCensusStatus;
 typedef struct SrStackCensusSummary {
     SrStackCensusStatus status;
+    uint32_t unobserved;
+    int unobserved_known;
     uint64_t entries;
     uint64_t returns;
     uint64_t excluded;
@@ -693,6 +696,26 @@ uint32_t ge_get_cmd(uint32_t cmd);
  * explicit offscreen sink; gui_present is called from sceDisplaySetFrameBuf to accept a frame,
  * pump messages, and sample live input on interactive routes. */
 #define SR_APP_TITLE "Nakagawa Recomp"   /* canonical window caption; see also gpu_sdl3vk/sdl3vk.c */
+/* Shared one-shot gate used by the visible GDI and SDL/Vulkan presenters.
+ * The boot-event file is the launcher's handoff marker; headless presenters
+ * and already-serviced launches never invoke the supplied window operation. */
+typedef void (*SrGuiForegroundRequestFn)(void *context);
+static inline bool sr_gui_request_launcher_foreground_once(
+    const char *boot_event_file,
+    bool window_visible,
+    bool headless_presenter,
+    bool *request_issued,
+    void *context,
+    SrGuiForegroundRequestFn raise_window
+) {
+    if (!boot_event_file || !boot_event_file[0] || !window_visible ||
+        headless_presenter || !request_issued || *request_issued || !raise_window) {
+        return false;
+    }
+    *request_issued = true;
+    raise_window(context);
+    return true;
+}
 void     gui_init(const char *title);
 int      gui_on(void);
 uint32_t gui_buttons(void);

@@ -186,7 +186,7 @@ class RecorderBundleTests(unittest.TestCase):
                 ],
             )
         build = bundle["build"]
-        self.assertEqual(bundle["schema_version"], 3)
+        self.assertEqual(bundle["schema_version"], 4)
         self.assertEqual(build["source_date_epoch"], int(FAKE_EPOCH))
         self.assertEqual(build["build_id"], FAKE_COMMIT)
         self.assertNotIn("compiled_date", build)
