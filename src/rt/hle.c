@@ -13324,6 +13324,10 @@ invalid:
 static void vramdump_try_present(uint32_t vcount, const DisplayFrameState *fb) {
     vramdump_init_once();
     if (!s_vramdump_count || !fb) return;
+    /* PASS must only ever mean a presented frame: apply the conditions
+     * display_present_active() applies before it hands a frame to the presenter. A
+     * vblank where it would decline stays selected and is reported NOT_CAPTURED. */
+    if (!gui_on() || !fb->addr || !display_host_span_valid(fb)) return;
     for (unsigned i = 0; i < s_vramdump_count; i++) {
         unsigned bit = 1u << i;
         if (s_vramdump_vblanks[i] != vcount || (s_vramdump_done & bit)) continue;

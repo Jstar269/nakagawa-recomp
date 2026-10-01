@@ -237,6 +237,8 @@ def _cmd_vram_sidecar(sidecar_path: Path, output_dir: Path) -> None:
                 raise ValueError("sidecar CLUT byte data is malformed or exceeds 2048 bytes")
             clut_path = temporary_path / "clut.bin"
             clut_path.write_bytes(bytes.fromhex(clut_data))
+        exported = 0
+        failed: list[str] = []
         for surface in surfaces:
             if not isinstance(surface, dict):
                 raise ValueError("sidecar surface entry must be an object")
@@ -264,17 +266,33 @@ def _cmd_vram_sidecar(sidecar_path: Path, output_dir: Path) -> None:
                 addr = _VRAM_BASE
             else:
                 image_for_surface = image
-            _decode_vram_surface(
-                decoder, image_for_surface, output, addr=addr, width=width,
-                height=height, stride=stride, format_code=format_code,
-                swizzled=bool(surface.get("swizzled", False)),
-                clut_addr=int(clut.get("addr", "0"), 0) if clut_path is None else 0,
-                clut_format=int(clut.get("format_word", clut.get("format_code", 0)), 0)
-                if isinstance(clut.get("format_word", clut.get("format_code", 0)), str)
-                else int(clut.get("format_word", clut.get("format_code", 0))),
-                clut_file=clut_path if format_code in (4, 5, 6, 7) else None,
-            )
+            try:
+                _decode_vram_surface(
+                    decoder, image_for_surface, output, addr=addr, width=width,
+                    height=height, stride=stride, format_code=format_code,
+                    swizzled=bool(surface.get("swizzled", False)),
+                    clut_addr=int(clut.get("addr", "0"), 0) if clut_path is None else 0,
+                    clut_format=int(clut.get("format_word", clut.get("format_code", 0)), 0)
+                    if isinstance(clut.get("format_word", clut.get("format_code", 0)), str)
+                    else int(clut.get("format_word", clut.get("format_code", 0))),
+                    clut_file=clut_path if format_code in (4, 5, 6, 7) else None,
+                )
+            except ValueError as exc:
+                # One surface the decoder rejects (an extent that leaves the captured
+                # span, say) must not abandon the surfaces after it -- the display
+                # framebuffer is the one these diagnostics exist for.
+                detail = " ".join(str(exc).split())[:160]
+                print(f"VRAM_SURFACE_UNAVAILABLE name={name} reason=decoder_rejected "
+                      f"detail={detail!r} issue=#314", file=sys.stderr)
+                failed.append(name)
+                continue
+            exported += 1
             print(f"VRAM_PNG status=PASS surface={name} output={output}")
+        if failed:
+            print(f"VRAM_EXPORT_PARTIAL exported={exported} unavailable={len(failed)}",
+                  file=sys.stderr)
+        if surfaces and not exported:
+            raise ValueError("no sidecar surface could be decoded")
 
 
 class PackageBuildError(ValueError):

@@ -743,6 +743,32 @@ def run_vramdump(build_dir: Path) -> int:
         if f"VRAMDUMP vblank={selected_vblank} PASS" not in captured.stdout + captured.stderr:
             raise RuntimeError(f"requested vblank {selected_vblank} produced no VRAM capture")
 
+        # PASS must mean a presented frame: with no presenter (no --gui) nothing is
+        # presented, so the same selection must capture nothing and never say PASS.
+        headless_dir = root / "headless-run"
+        (headless_dir / "capture").mkdir(parents=True)
+        headless_env = os.environ.copy()
+        for name in ("SR_FBDUMP", "SR_FIRST_FRAME_DUMP", "SR_EXIT_AT_VBLANK"):
+            headless_env.pop(name, None)
+        headless_env.update({
+            "SDL_AUDIO_DRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
+            "SR_VRAMDUMP": selected_vblanks,
+            "SR_VRAMDUMP_DIR": str(headless_dir / "capture"),
+        })
+        headless = subprocess.run(
+            command[:-1], cwd=headless_dir, env=headless_env, capture_output=True,
+            text=True, timeout=30, check=False,
+        )
+        if headless.returncode:
+            raise RuntimeError(
+                f"display-smoke headless VRAM check exited {headless.returncode}: "
+                f"{headless.stdout}{headless.stderr}"
+            )
+        headless_output = headless.stdout + headless.stderr
+        if re.search(r"VRAMDUMP vblank=\d+ PASS", headless_output) or list(
+                (headless_dir / "capture").glob("vram_*")):
+            raise RuntimeError("a run with no presenter reported a VRAM capture")
+
         sidecars = sorted((capture_dir / "capture").glob("vram_*.json"))
         if not sidecars:
             raise RuntimeError("no selected vblank produced a VRAM sidecar")

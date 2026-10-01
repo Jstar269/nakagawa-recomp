@@ -33,7 +33,10 @@
  */
 
 #define _CRT_SECURE_NO_WARNINGS
-#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+/* Only the standalone VRAM decoder build (nk_cli compiles it with -std=c99) needs the
+ * POSIX declarations; defining the macro in the runtime build would also remove the
+ * glibc default feature set that build gets from an unset macro. */
+#if defined(SR_GE_VRAM_DECODER_CLI) && !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "recomp.h"
@@ -4105,11 +4108,10 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
             "\"swizzled\":false},",
             ge.fbp, ge.fbw, ge_vramdump_format_name(ge.fbfmt & 3u), ge.fbfmt & 3u);
     fprintf(sidecar,
-            "\"depth_buffer\":{\"addr\":\"0x%08x\",\"width\":%u,"
+            "\"depth_buffer\":{\"addr\":\"0x%08x\",\"width\":480,"
             "\"height\":272,\"stride\":%u,\"format\":\"DEPTH16\","
             "\"format_code\":11,\"swizzled\":false},",
-            ge.zbp, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
-            ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u));
+            ge.zbp, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u));
     fprintf(sidecar, "\"texture_enabled\":%s,\"texture_levels\":[",
             ge.tex_enable ? "true" : "false");
     {
@@ -4157,8 +4159,8 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
                             ge.fbp, 480u, 272u, ge.fbw, ge.fbfmt & 3u, 0, NULL, 0);
     if (ge.zbp && ge_vramdump_addr_in_vram(ge.zbp))
         ge_vramdump_surface(sidecar, &first_surface, "depth_buffer", "depth",
-                            ge.zbp, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
-                            272u, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
+                            ge.zbp, 480u, 272u,
+                            ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u),
                             11u, 0, NULL, 0);
     for (uint32_t level = 0; level < 8u; level++) {
         uint32_t address_low = ge_get_cmd(GE_TEXADDR0 + level);

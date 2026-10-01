@@ -328,6 +328,56 @@ class NkCliVramTests(unittest.TestCase):
                     self.assertEqual(len(pixels), width * height)
                     self.assertEqual(pixels, expected_pixels)
 
+    def test_one_undecodable_surface_does_not_abandon_the_rest(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nk_cli_vram_partial_") as temp:
+            root = Path(temp)
+            sidecar, _expected = self._make_fixture(root)
+            document = json.loads(sidecar.read_text(encoding="utf-8"))
+            good = next(item for item in document["surfaces"] if item["format_code"] == 0)
+            # In VRAM at its base, but the extent leaves the captured 2 MiB span.
+            bad = dict(good, name="runs_off_the_end", addr="0x041ffff0", width=64,
+                       height=64, stride=64)
+            document["surfaces"] = [bad, good]
+            sidecar.write_text(json.dumps(document), encoding="utf-8")
+            output = root / "png-partial"
+            process = subprocess.run(
+                [sys.executable, str(CLI_PATH), "vram", "--from-sidecar", str(sidecar),
+                 "--out-dir", str(output)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+            self.assertIn("VRAM_SURFACE_UNAVAILABLE name=runs_off_the_end", process.stderr)
+            self.assertIn("VRAM_EXPORT_PARTIAL exported=1 unavailable=1", process.stderr)
+            self.assertTrue((output / f"{good['name']}.png").is_file())
+            self.assertFalse((output / "runs_off_the_end.png").exists())
+            # Nothing decodable at all is still a failure.
+            document["surfaces"] = [bad]
+            sidecar.write_text(json.dumps(document), encoding="utf-8")
+            process = subprocess.run(
+                [sys.executable, str(CLI_PATH), "vram", "--from-sidecar", str(sidecar),
+                 "--out-dir", str(root / "png-none")],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertNotEqual(process.returncode, 0)
+
+    def test_depth_surface_declares_the_screen_width_not_the_stride(self) -> None:
+        source = (ROOT / "src" / "rt" / "ge.c").read_text(encoding="utf-8")
+        header = source.index('"\\"depth_buffer\\":{')
+        self.assertIn('\\"width\\":480,', source[header:header + 120])
+        call = source.index('"depth_buffer", "depth",')
+        self.assertIn("ge.zbp, 480u, 272u,", source[call:call + 120])
+
+    def test_vram_capture_is_gated_on_a_presentable_frame(self) -> None:
+        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        start = source.index("static void vramdump_try_present(")
+        body = source[start:source.index("\n}\n", start)]
+        self.assertIn("!gui_on() || !fb->addr || !display_host_span_valid(fb)", body)
+
+    def test_posix_feature_macro_is_scoped_to_the_decoder_build(self) -> None:
+        source = (ROOT / "src" / "rt" / "ge.c").read_text(encoding="utf-8")
+        macro = source.index("#define _POSIX_C_SOURCE")
+        self.assertIn("defined(SR_GE_VRAM_DECODER_CLI)", source[macro - 140:macro])
+
     def test_vram_direct_export_decodes_one_linear_surface(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nk_cli_vram_direct_") as temp:
             root = Path(temp)
