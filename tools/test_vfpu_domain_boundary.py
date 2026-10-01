@@ -48,6 +48,7 @@ VFPU_INTERP_C = ROOT / "src" / "rt" / "vfpu_interp.c"
 COMPATIBILITY_MD = ROOT / "docs" / "COMPATIBILITY.md"
 HARDWARE_ORACLE_MD = ROOT / "docs" / "HARDWARE_ORACLE.md"
 VFPU_INTERP_SELFTEST_C = ROOT / "src" / "rt" / "vfpu_interp_selftest.c"
+VFPU_PROBE_C = ROOT / "fixtures" / "vfpu_oracle" / "vfpu_probe.c"
 
 #: `|x| = 1.0` in raw bits: the documented end of the arc-sine domain.
 DOMAIN_LIMIT_WORD = 0x3F800000
@@ -185,9 +186,37 @@ class NamedBoundaryTests(unittest.TestCase):
             row = f"`0x{input_word.upper()}` | `0x{result_word.upper()}`"
             self.assertIn(row, cell, f"missing measured row: {row}")
 
+    def test_oracle_table_inputs_are_the_words_the_probe_fed_the_console(self) -> None:
+        probe_src = VFPU_PROBE_C.read_text(encoding="utf-8")
+        start = probe_src.index("VASIN_DOMAIN_INPUTS[] = {")
+        probe_inputs = re.findall(
+            r"0x([0-9A-Fa-f]{8})u", probe_src[start:probe_src.index("};", start)])
+        self.assertEqual(len(probe_inputs), 14)
+        start = self.oracle.index("Out-of-domain transcendental arguments")
+        cell = self.oracle[start:self.oracle.index("\n- ", start + 1)]
+        table_inputs = re.findall(r"^\s*\| `0x([0-9A-Fa-f]{8})` \| `0x[0-9A-Fa-f]{8}` \|",
+                                  cell, flags=re.MULTILINE)
+        self.assertEqual(
+            [w.upper() for w in table_inputs], [w.upper() for w in probe_inputs],
+            "the documented inputs must be the probe's VASIN_DOMAIN_INPUTS, in order")
+        self.assertIn("fixtures/vfpu_oracle/vfpu_probe.c", cell)
+        self.assertIn("nakagawa-vfpu-oracle-v1", cell)
+        self.assertIn("vfpu-vasin-domain-arg00", cell)
+        self.assertIn("vfpu-vasin-domain-arg13", cell)
+        self.assertIn('FIXTURE_BUILD_ID "nakagawa-vfpu-oracle-v1"', probe_src)
+
+    def test_compatibility_gpu_row_does_not_contradict_the_vfpu_measurement(self) -> None:
+        rows = [line for line in self.compat.splitlines()
+                if line.startswith("| Graphics / GE |")]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("is unmeasured too", rows[0])
+        self.assertIn("GE's own handling of the resulting non-finite vertex stays unmeasured",
+                      rows[0])
+
     def test_compatibility_names_measured_result_and_open_issue(self) -> None:
         row = self._vfpu_row()
         self.assertIn("measured VASIN at the arc-sine domain boundary", row)
+        self.assertIn("downstream graphics paths drop and count non-finite primitives", row)
         self.assertIn("in the works", row)
         self.assertIn("issues/69", row)
 

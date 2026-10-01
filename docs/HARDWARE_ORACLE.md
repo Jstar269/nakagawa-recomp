@@ -34,11 +34,19 @@ proposals. Each claim covers only the exact fixture named:
   the PPSSPP-derived-table warning stands for every unmeasured encoding.
 - **Out-of-domain transcendental arguments** (issue #69): `HARDWARE_MEASURED`
   for these 14 exact raw words on the authorized PSP-3000-series / 6.61 /
-  ARK-5.1.0 route (2026-09-30). Two fresh USBHostFS/PSPLink sessions returned
-  byte-identical records. The `vasin` implementation's current signed invalid
-  signaling NaN matches every sampled out-of-domain result; the endpoints return
-  themselves. This is evidence for these exact words, not every possible
-  out-of-domain encoding.
+  ARK-5.1.0 route (2026-09-30). Fixture: `fixtures/vfpu_oracle/vfpu_probe.c`
+  (`FIXTURE_BUILD_ID nakagawa-vfpu-oracle-v1`), whose source-owned
+  `VASIN_DOMAIN_INPUTS` list fed the console; each word produced one record,
+  `vfpu-vasin-domain-arg00` through `vfpu-vasin-domain-arg13`, in the table's
+  order. These were two fresh USBHostFS/PSPLink sessions of that single probe
+  (no multi-fixture campaign identifier applies); both returned
+  byte-identical records, and the raw captures and the PRX digest stay
+  private. The project's shared runtime `vasin` helper (`sr_vfpu_asin`)
+  returns the signed invalid signaling NaN that the PSP returned for every
+  sampled out-of-domain word, and the endpoints return themselves. Do not
+  clamp these NaNs in VASIN: downstream handling is required, and both
+  rasterizer paths already drop and count non-finite primitives. This is
+  evidence for these exact words, not every possible out-of-domain encoding.
 
   | Input word | PSP result word |
   | :--- | :--- |
