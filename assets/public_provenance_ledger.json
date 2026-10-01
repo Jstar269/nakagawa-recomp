@@ -1135,7 +1135,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e52ca7ae541fa46f42c886fe2108edbc017a6663bd4b539fa9b0483676809bcd"
+      "sha256": "2b54696936bbca78b1adb05c14cfd9b639c2308a34171ebee1879780470deddb"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -5975,7 +5975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ae20d6009d7dcacf4cc1b77fda88e2afeb077cc4379265ae060f13cbd95a1c7"
+      "sha256": "e22850b96ddb7218c84f19443be99f34f9ec8786581cb34d37009e5bed3491e3"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -5987,7 +5987,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a8ac437e88025efa6c0fdcb7d85fb32ae2a6036bc1f02d35c6155cd9bc28218"
+      "sha256": "1c31910cd8d9e1beba3d021f8c75f04934685ec47760aeb01e1f80171523ec20"
     },
     {
       "path": "tools/host_stubs.py",
@@ -6035,7 +6035,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2402a280b8a8fbae06e40fc18e8296059b3e280ac1402507b5e1337514fa6ebf"
+      "sha256": "246d5c6abbf1d1571d00fb61cb7ee69fc83c2730ffe1afe310748c41b9ffd6c0"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -7735,7 +7735,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7e449767014e3c2b5ed8b8478fcdb1a5d947c910125a5f3bc1ab4eaa0e27a77c"
+      "sha256": "ea672a7dc2365b08dc9dbad924a04962ad8b96d266563dcf5457265133b976b2"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
