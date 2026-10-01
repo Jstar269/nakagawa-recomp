@@ -121,11 +121,11 @@ HANDLER_METADATA = {
     },
     "h_MpegAvcInitYCbCr": {
         "status": "partial",
-        "limitation": "Init accepts only the documented 4:2:0 allocation shape and makes guest bytes deterministic; the firmware-owned header and cache contract are not measured (#302)",
+        "limitation": "Init zeroes a modeled guest allocation; its plane bytes are not asserted to match the PSP header/plane layout (#302)",
     },
     "h_MpegAvcDecodeYCbCr": {
         "status": "partial",
-        "limitation": "Decode produces only a backend-delivered picture and reports delayed/no-data states; the hardware EOS and cache-coherency observations are still required (#302)",
+        "limitation": "Decode marks decoded pictures ready; guest plane bytes remain modeled zeroes, not the PSP layout, while Csc writes the retained decoded picture (#302)",
     },
     "h_MpegAvcDecodeStopYCbCr": {
         "status": "partial",
@@ -133,11 +133,11 @@ HANDLER_METADATA = {
     },
     "h_MpegAvcCopyYCbCr": {
         "status": "partial",
-        "limitation": "Copy handles matching initialized allocations and rejects overlap; the firmware layout and overlap result still need a physical PSP oracle (#302)",
+        "limitation": "Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)",
     },
     "h_MpegAvcCsc": {
         "status": "partial",
-        "limitation": "CSC preflights dynamic source/range/stride geometry and pixel formats; clipping, range conversion, and destination coherency remain hardware-oracle work (#302)",
+        "limitation": "Csc writes the retained decoded picture; guest plane bytes are modeled, not the PSP layout, and range/coherency behavior remains open (#302)",
     },
     "h_MpegQueryPcmEsSize": {
         "status": "partial",
