@@ -10,6 +10,10 @@
 #include "generated/nk_title_catalog.h"
 #include <stdbool.h>
 
+#define NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY \
+    (NK_TITLE_MAX_LOOSE_CONTENT_ROOTS * \
+     (NK_MAX_PATH * 2 + 512 + NK_TITLE_MAX_LOOSE_CONTENT_EXCLUDES * 241) + 1)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -56,6 +60,9 @@ typedef struct {
     char iso_path[NK_MAX_PATH];
     char prepared_root[NK_MAX_PATH];
     char dataroot_path[NK_MAX_PATH];
+    /* Resolved, manifest-owned filesystem.loose_content_roots transport for HLE.
+       Empty when an older manifest omits the optional binding. */
+    char loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY];
     char font_dir[NK_MAX_PATH];
     char user_data_root[NK_MAX_PATH];
     /* Memory Stick root handed to the runtime as SR_MEMSTICK. Resolved by
@@ -67,7 +74,8 @@ typedef struct {
     char memstick_root[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
-    char selected_executable[NK_MAX_EXECUTABLE_PATH];
+    char boot_executable[NK_MAX_EXECUTABLE_PATH];
+    char selected_executable[NK_MAX_SELECTED_EXECUTABLE_PATH];
     uint32_t base_address;
     uint32_t entry_point;
     bool package_launch;
@@ -77,6 +85,10 @@ typedef struct {
 
     /* Runtime configuration */
     NkRuntimeConfig config;
+
+    /* Optional player-owned BOOT_EVENT side channel used to hand focus to the
+       child after its GUI window is ready. Empty for ordinary launch callers. */
+    char boot_event_file_path[NK_MAX_PATH];
 
     /* Live process tracking */
     NkProcessHandle process;

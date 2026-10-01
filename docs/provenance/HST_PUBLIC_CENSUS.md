@@ -12,7 +12,7 @@ states which of them may cross the public-source boundary.
 | `nk.ps1`, `nk_manager.ps1` | Included as tooling | Canonical Windows orchestration with fail-closed, manifest-declared input validation. The retired HST-prefixed wrappers are not part of the public surface. |
 | `tools/nk_*.py`, `tools/nk_*.ps1` | Included as tooling | Source-owned doctor, safety and title-planning modules. They require user-supplied local inputs and contain no retail bytes, captures, saves, keys or derived output. |
 | `tools/title_*` and code-generation helpers | Included as generic tooling | The public contract is deterministic generation from a user-provided ELF/PRX. Generated retail translation units and private executable inputs are never tracked or exported. |
-| `Makefile`, `copy_build_assets.ps1`, runtime build scripts | Included as build contract | Public-safe selection chooses unavailable ISO/audio/PGF/PGD boundaries when the optional implementations are absent. |
+| `Makefile`, `tools/copy_build_assets.ps1`, runtime build scripts | Included as build contract | Public-safe selection chooses unavailable ISO/audio/PGF/PGD boundaries when the optional implementations are absent. |
 | `src/rt/` generic runtime and selftests | Included where enumerated | Runtime behavior is not evidence that HST is playable or that a private route is reproducible. No title image, decrypted module, save, trace, capture or extracted asset is part of this census. |
 | `build/`, `logs/`, `memstick/`, `oracle/`, `keys/`, `place_game_here/`, extracted data and generated chunks | Never-scope | Ignored/private/generated material. The publication audit rejects these paths and the history audit scans reachable blob contents for their accidental reappearance. |
 

@@ -11,6 +11,7 @@ and reproducibility of the committed classification baseline.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 import re
@@ -754,6 +755,173 @@ class EvidenceTierTests(unittest.TestCase):
         tier, _ = hle_manifest.evidence_tier(self._entry(oracle=["PSP-SMOKE-001"]))
         self.assertEqual(tier, "HARDWARE_MEASURED")
 
+    def test_capture_without_accepted_run_does_not_promote_api(self) -> None:
+        manifest = {
+            "tests": [{
+                "id": "PSP-TRANSPORT-001",
+                "status": "implemented",
+                "hardware_evidence": "CAPTURED",
+                "apis": ["sceIoOpen"],
+            }],
+        }
+        oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
+        tier, _ = hle_manifest.evidence_tier(
+            self._entry(oracle=oracle_apis.get("sceIoOpen", ()))
+        )
+        self.assertNotEqual(tier, "HARDWARE_MEASURED")
+
+    def test_missing_hardware_evidence_defaults_to_not_run(self) -> None:
+        self.assertEqual(
+            hle_manifest.oracle_exercised_apis({
+                "tests": [{"id": "PSP-LEGACY-001", "status": "implemented", "apis": ["sceIoOpen"]}],
+            }),
+            {},
+        )
+
+    def test_unknown_hardware_evidence_fails_closed(self) -> None:
+        for evidence in ("accepted", None):
+            with self.subTest(hardware_evidence=evidence):
+                with self.assertRaisesRegex(ManifestError, "unknown hardware_evidence"):
+                    hle_manifest.oracle_exercised_apis({
+                        "tests": [{"id": "PSP-UNKNOWN-001", "hardware_evidence": evidence}],
+                    })
+
+    @staticmethod
+    def _measured_row(**overrides) -> dict:
+        """A MEASURED row citing a committed section that really names its case."""
+        row = {
+            "id": "PSP-CITED-001",
+            "status": "implemented",
+            "hardware_evidence": "MEASURED",
+            "apis": ["sceDisplayGetAccumulatedHcount"],
+            "case_ids": ["display-ge-mask"],
+            "evidence_ref": "docs/ARCHITECTURE.md#clocks",
+            "evidence_cases": ["display-ge-mask", "sceDisplayGetAccumulatedHcount"],
+        }
+        row.update(overrides)
+        return row
+
+    def test_a_resolvable_citation_promotes_the_apis_it_names(self) -> None:
+        oracle_apis = hle_manifest.oracle_exercised_apis({"tests": [self._measured_row()]})
+        self.assertEqual(oracle_apis, {"sceDisplayGetAccumulatedHcount": ["PSP-CITED-001"]})
+
+    def test_an_api_the_citation_does_not_name_is_not_promoted(self) -> None:
+        # A citation of one case must not stand for every API the row lists.
+        row = self._measured_row(apis=["sceDisplayGetAccumulatedHcount", "sceGeSetCallback"])
+        oracle_apis = hle_manifest.oracle_exercised_apis({"tests": [row]})
+        self.assertEqual(oracle_apis, {"sceDisplayGetAccumulatedHcount": ["PSP-CITED-001"]})
+
+    def test_every_case_id_is_cited_or_explicitly_uncited(self) -> None:
+        row = self._measured_row(case_ids=["display-ge-mask", "display-mask-duty"])
+        with self.assertRaisesRegex(ManifestError, "neither cited in evidence_cases nor listed"):
+            hle_manifest.oracle_exercised_apis({"tests": [row]})
+        row["uncited_cases"] = ["display-mask-duty"]
+        self.assertIn("sceDisplayGetAccumulatedHcount",
+                      hle_manifest.oracle_exercised_apis({"tests": [row]}))
+        for bad, message in (
+            (["not-a-case"], "are not its case_ids"),
+            (["display-ge-mask", "display-mask-duty"], "in both evidence_cases and uncited_cases"),
+            ("display-mask-duty", "must be a list"),
+        ):
+            with self.subTest(uncited=bad):
+                row["uncited_cases"] = bad
+                with self.assertRaisesRegex(ManifestError, message):
+                    hle_manifest.oracle_exercised_apis({"tests": [row]})
+
+    def test_citations_resolve_headings_the_way_github_renders_them(self) -> None:
+        text = "\n".join([
+            "# Doc",
+            "## Clocks",
+            "first-clocks-body",
+            "```sh",
+            "# not a heading",
+            "fenced-body",
+            "```",
+            "## Clocks",
+            "second-clocks-body",
+            "",
+        ])
+        policy = mock.Mock()
+        policy.resolve.return_value = mock.Mock(disposition="included", rule="include_paths")
+        with mock.patch.object(hle_manifest.publication_policy, "load_policy", return_value=policy), \
+                mock.patch.object(hle_manifest.Path, "read_text", return_value=text):
+            first = hle_manifest._cited_section("docs/X.md#clocks", "T")
+            second = hle_manifest._cited_section("docs/X.md#clocks-1", "T")
+            with self.assertRaisesRegex(ManifestError, "names no heading"):
+                hle_manifest._cited_section("docs/X.md#not-a-heading", "T")
+        self.assertIn("first-clocks-body", first)
+        self.assertIn("fenced-body", first)
+        self.assertNotIn("second-clocks-body", first)
+        self.assertIn("second-clocks-body", second)
+        self.assertNotIn("first-clocks-body", second)
+
+    def test_measured_without_a_citation_fails_closed(self) -> None:
+        for missing in ("evidence_ref", "evidence_cases"):
+            with self.subTest(missing=missing):
+                row = self._measured_row()
+                del row[missing]
+                with self.assertRaisesRegex(ManifestError, missing):
+                    hle_manifest.oracle_exercised_apis({"tests": [row]})
+
+    def test_measured_citation_must_resolve_to_a_public_section(self) -> None:
+        cases = {
+            "docs/ARCHITECTURE.md": "must be a repo-relative",
+            "docs/ARCHITECTURE.md#no-such-heading": "names no heading",
+            "docs/../secrets.md#clocks": "must be a repo-relative",
+            "docs/PSP_HARDWARE_ORACLE.md#hardware-oracle-plan-a-real-psp-as-an-external-verification-source": "resolves as excluded",
+            "docs/UNCOMMITTED_EVIDENCE.md#clocks": "resolves as unclassified",
+        }
+        for ref, message in cases.items():
+            with self.subTest(ref=ref):
+                with self.assertRaisesRegex(ManifestError, message):
+                    hle_manifest.oracle_exercised_apis({
+                        "tests": [self._measured_row(evidence_ref=ref)],
+                    })
+
+    def test_measured_citation_must_exist_in_the_tree(self) -> None:
+        policy = mock.Mock()
+        policy.resolve.return_value = mock.Mock(
+            disposition="included", rule="include_paths"
+        )
+        with mock.patch.object(
+            hle_manifest.publication_policy, "load_policy", return_value=policy
+        ):
+            with self.assertRaisesRegex(ManifestError, "not readable"):
+                hle_manifest.oracle_exercised_apis({
+                    "tests": [self._measured_row(evidence_ref="docs/GONE.md#clocks")],
+                })
+
+    def test_measured_evidence_cases_must_belong_to_the_row(self) -> None:
+        with self.assertRaisesRegex(ManifestError, "neither its case_ids nor its apis"):
+            hle_manifest.oracle_exercised_apis({
+                "tests": [self._measured_row(evidence_cases=["display-mask-vcount"])],
+            })
+
+    def test_measured_evidence_cases_must_be_named_by_the_citation(self) -> None:
+        with self.assertRaisesRegex(ManifestError, "does not name"):
+            hle_manifest.oracle_exercised_apis({
+                "tests": [self._measured_row(
+                    case_ids=["ge-mask-primary-masked-release"],
+                    evidence_cases=["ge-mask-primary-masked-release"],
+                )],
+            })
+
+    def test_the_committed_manifest_only_promotes_cited_measured_rows(self) -> None:
+        document = json.loads(
+            hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8")
+        )
+        promoted = hle_manifest.oracle_exercised_apis(document)
+        self.assertEqual(
+            sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
+            ["PSP-DISPLAY-001", "PSP-DMAC-001", "PSP-EXCEPTION-001"],
+        )
+        self.assertIn("sceDmacTryMemcpy", promoted)
+        rows = {t["id"]: t for t in document["tests"]}
+        for api, test_ids in promoted.items():
+            for test_id in test_ids:
+                self.assertIn(api, rows[test_id]["apis"])
+                self.assertEqual(rows[test_id]["hardware_evidence"], "MEASURED")
+
     def test_executable_coverage_of_a_dedicated_handler_is_host_tested(self) -> None:
         tier, _ = hle_manifest.evidence_tier(self._entry(selftest=True))
         self.assertEqual(tier, "HOST_TESTED")
@@ -972,6 +1140,132 @@ class CensusTests(unittest.TestCase):
         self.assertGreaterEqual(len(census_handlers), 350)
         self.assertEqual(self.census["summary"]["total_dedicated_handlers"], len(expected_handlers))
 
+    def test_census_totals_are_internally_consistent(self) -> None:
+        # Invariants rather than pinned totals: adding a registration must not need
+        # a hand edit here (the generated inventory block guards the published counts).
+        summary = self.census["summary"]
+        self.assertEqual(sum(summary["registration_classification"].values()),
+                         summary["total_registrations"])
+        self.assertEqual(summary["total_registrations"], len(self.manifest["registrations"]))
+        self.assertEqual(sum(summary["by_status"].values()), summary["total_dedicated_handlers"])
+        self.assertEqual(sum(summary["by_status_registrations"].values()),
+                         summary["total_dedicated_registrations"])
+        self.assertEqual(set(summary["by_status"]), set(summary["by_status_registrations"]))
+        for status, handlers in summary["by_status"].items():
+            with self.subTest(status=status):
+                self.assertLessEqual(handlers, summary["by_status_registrations"][status])
+
+    def test_partial_census_entries_preserve_named_route_evidence(self) -> None:
+        by_handler = {entry["handler"]: entry for entry in self.census["handlers"]}
+        for handler in ("h_DisplaySetFrameBuf", "h_DisplayWaitVblankStart"):
+            with self.subTest(handler=handler):
+                self.assertTrue(by_handler[handler]["evidence"])
+                self.assertTrue(by_handler[handler]["limitation"])
+
+    @staticmethod
+    def _fixture_constant(path: Path, name: str) -> int | tuple[int, ...]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        assignments = {}
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        assignments[target.id] = statement.value
+
+        def resolve(node: ast.expr) -> int | tuple[int, ...]:
+            if isinstance(node, ast.Constant) and type(node.value) is int:
+                return node.value
+            if isinstance(node, ast.Name):
+                if node.id not in assignments:
+                    raise AssertionError(f"{path} refers to undefined constant {node.id!r}")
+                return resolve(assignments[node.id])
+            if isinstance(node, (ast.Tuple, ast.List)):
+                return tuple(resolve(element) for element in node.elts)
+            raise AssertionError(f"{path} has unsupported import constant {name!r}")
+
+        if name not in assignments:
+            raise AssertionError(f"{path} has no {name!r} import constant")
+        return resolve(assignments[name])
+
+    def test_public_smoke_route_imports_are_not_unreviewed(self) -> None:
+        # Covers the production-smoke and display-smoke guests only. The
+        # profile-zero guest's imports (audio, controller, I/O, threads) still
+        # route to unreviewed handlers; that gate is open work under #341.
+        production_nid = self._fixture_constant(
+            ROOT / "fixtures" / "production_smoke" / "generate.py", "NID"
+        )
+        display_nids = self._fixture_constant(
+            ROOT / "fixtures" / "display_smoke" / "generate.py", "NIDS"
+        )
+        route_nids = {production_nid, *display_nids}
+        registrations = {
+            int(reg["nid"], 16): reg for reg in self.manifest["registrations"]
+        }
+        missing = sorted(route_nids - registrations.keys())
+        self.assertEqual(
+            missing,
+            [],
+            "public production-smoke imports must resolve to an HLE registration",
+        )
+        unreviewed = [
+            f"{registrations[nid]['name']} ({nid:#010x})"
+            for nid in sorted(route_nids)
+            if registrations[nid]["status"] == "unreviewed"
+        ]
+        self.assertEqual(
+            unreviewed,
+            [],
+            "public production/display smoke imports must have a reviewed semantic status",
+        )
+
+    def test_documented_hle_census_matches_generated_source(self) -> None:
+        text = (ROOT / "docs" / "HLE_AND_WORKAROUND_INVENTORY.md").read_text(
+            encoding="utf-8"
+        )
+        begin = "<!-- BEGIN GENERATED HLE STATUS CENSUS -->"
+        end = "<!-- END GENERATED HLE STATUS CENSUS -->"
+        self.assertEqual(text.count(begin), 1, "inventory needs one generated census block")
+        self.assertEqual(text.count(end), 1, "inventory needs one generated census block")
+        actual = text.split(begin, 1)[1].split(end, 1)[0].strip("\r\n")
+        expected = hle_manifest.render_census_markdown(
+            self.census, heading_level=3
+        ).rstrip("\r\n")
+        self.assertEqual(
+            actual,
+            expected,
+            "HLE inventory census is stale; regenerate it from tools/hle_manifest.py",
+        )
+
+    def test_partial_with_evidence_still_needs_a_limitation(self) -> None:
+        with mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DisplaySetFrameBuf": ""}):
+            self.assertTrue(meta.HANDLER_EVIDENCE.get("h_DisplaySetFrameBuf"))
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("has no named limitation", str(ctx.exception))
+
+    def test_evidence_anchor_must_exist_in_the_cited_file(self) -> None:
+        for bogus in ("Makefile:display-smoke-run-renamed",
+                      "fixtures/display_smoke/generate.py:verify_renamed",
+                      "tools/test_sched_invariants.py:test_no_such_test_341"):
+            with self.subTest(evidence=bogus):
+                with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DisplaySetFrameBuf": [bogus]}):
+                    with self.assertRaises(ManifestError) as ctx:
+                        hle_manifest.validate_meta(self.raw_regs)
+                self.assertIn("does not define", str(ctx.exception))
+
+    def test_documented_regeneration_command_reproduces_the_inventory_block(self) -> None:
+        import tempfile
+        text = (ROOT / "docs" / "HLE_AND_WORKAROUND_INVENTORY.md").read_text(encoding="utf-8")
+        block = text.split("<!-- BEGIN GENERATED HLE STATUS CENSUS -->", 1)[1]
+        block = block.split("<!-- END GENERATED HLE STATUS CENSUS -->", 1)[0].strip("\r\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "hle_census.md"
+            manifest_out = Path(tmp) / "hle_manifest.json"
+            rc = hle_manifest.main(["--out", str(manifest_out), "--census-markdown", str(out),
+                                    "--census-heading-level", "3"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(out.read_text(encoding="utf-8").strip("\r\n"), block)
+
     def test_complete_without_evidence_is_rejected(self) -> None:
         with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": []}):
             with self.assertRaises(ManifestError) as ctx:
@@ -981,6 +1275,15 @@ class CensusTests(unittest.TestCase):
     def test_complete_with_nonexistent_evidence_file_is_rejected(self) -> None:
         with mock.patch.dict(
             meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": ["tools/test_nonexistent_341.py"]}
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("cites non-existent evidence file", str(ctx.exception))
+
+    def test_partial_with_nonexistent_evidence_file_is_rejected(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE,
+            {"h_DisplaySetFrameBuf": ["fixtures/test_nonexistent_341.py"]},
         ):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
@@ -1007,13 +1310,20 @@ class CensusTests(unittest.TestCase):
     def test_census_cli_output(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as td:
+            manifest_out = Path(td) / "manifest.json"
             json_out = Path(td) / "census.json"
             md_out = Path(td) / "census.md"
-            rc = hle_manifest.main(["--census", str(json_out), "--census-markdown", str(md_out)])
+            rc = hle_manifest.main([
+                "--out", str(manifest_out),
+                "--census", str(json_out),
+                "--census-markdown", str(md_out),
+            ])
             self.assertEqual(rc, 0)
+            self.assertTrue(manifest_out.exists())
             self.assertTrue(json_out.exists())
             self.assertTrue(md_out.exists())
             loaded = json.loads(json_out.read_text(encoding="ascii"))
+            self.assertEqual(loaded["schema"], 2)
             self.assertEqual(loaded["schema"], hle_manifest.CENSUS_SCHEMA)
             self.assertGreaterEqual(loaded["summary"]["total_dedicated_handlers"], 350)
             md_text = md_out.read_text(encoding="utf-8")

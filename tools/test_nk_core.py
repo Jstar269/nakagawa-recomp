@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import nk_cli  # noqa: E402
+import title_manifest  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 from nk_core import (
     CancellationToken,
@@ -216,7 +217,25 @@ class NkCoreTests(unittest.TestCase):
         self.assertFalse(metadata.is_supported)
         self.assertIn("Unqualified revision", metadata.qualification_error)
         self.assertIn("SFO revision changed", metadata.qualification_error)
-        self.assertIn("in the works (#315)", metadata.qualification_error)
+        self.assertIn("--register-local-compatibility-record", metadata.qualification_error)
+        self.assertNotIn("#315", metadata.qualification_error)
+
+    def test_package_refusals_carry_remediation_not_stale_pointer(self) -> None:
+        """The CLI and planner refusals name the remediation flag and no retired #315 pointer."""
+        tools_dir = Path(__file__).resolve().parent
+        cli_source = (tools_dir / "nk_cli.py").read_text(encoding="utf-8")
+        plan_source = (tools_dir / "title_codegen_plan.py").read_text(encoding="utf-8")
+        for source in (cli_source, plan_source):
+            self.assertNotIn("(#315)", source)
+            self.assertNotIn("revision qualification is in the works", source)
+        for refusal in (
+            "Unqualified revision (SFO DISC_VERSION",
+            "Local compatibility record mismatch: ",
+        ):
+            start = cli_source.index(refusal)
+            end = cli_source.index(")\n", start)
+            self.assertIn("--register-local-compatibility-record", cli_source[start:end])
+        self.assertIn("write packages under the per-user data root", plan_source)
 
     def test_iso_inspection_malformed(self) -> None:
         # File too small
@@ -282,6 +301,21 @@ class NkCoreTests(unittest.TestCase):
         stages = [e.stage.value for e in events]
         self.assertIn("INSPECTING_ISO", stages)
         self.assertIn("READY", stages)
+
+    def test_preparation_records_the_selected_boot_executable(self) -> None:
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        iso_file = self.temp_dir / "synthetic-with-eboot.iso"
+        create_test_iso_with_executables(
+            iso_file, build_plain_mips_elf(), disc_id="TEST00001"
+        )
+        result = PreparationEngine(base_dir=self.temp_dir).prepare_game(
+            iso_file, destination_root=self.temp_dir / "installed_games"
+        )
+        self.assertTrue(result.success)
+        with result.manifest_path.open("r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        self.assertEqual(manifest["boot_executable"], "EBOOT.BIN")
 
     def test_preparation_preserves_compatible_revision_identity(self) -> None:
         """A disc matched through a compatible revision keeps its own identity.
@@ -404,6 +438,7 @@ class NkCoreTests(unittest.TestCase):
             "title_id": "synthetic-allegrex-v1",
             "disc_id": "TEST00001",
             "iso_path": str(mock_iso),
+            "boot_executable": "EBOOT.OLD",
         }
         manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
 
@@ -425,6 +460,7 @@ class NkCoreTests(unittest.TestCase):
         assert mock_image is not None
         self.assertEqual(cmd[2], str(mock_image))
         self.assertEqual(env["PSP_ISO"], str(mock_iso))
+        self.assertEqual(env["SR_BOOT_PATH"], "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD")
         self.assertEqual(env["SR_FPS_CAP"], "60")
         self.assertEqual(env["SR_GPU_GE"], "1")
         self.assertEqual(env["SR_DEBUG"], "0x20")
@@ -461,16 +497,19 @@ class NkCoreTests(unittest.TestCase):
                     json.dumps({
                         "title_id": "synthetic-allegrex-v1",
                         "disc_id": "TEST00001",
+                        "boot_executable": "EBOOT.OLD",
                         **iso_field,
                     }),
                     encoding="utf-8",
                 )
                 with patch.dict(os.environ, {
                     "PSP_ISO": "poisoned-parent.iso",
+                    "SR_BOOT_PATH": "poisoned-parent-path",
                     "NK_UNRELATED_SENTINEL": "preserved",
                 }):
                     _, env = launcher.build_launch_plan(game_dir)
                 self.assertIsNone(env.get("PSP_ISO"))
+                self.assertIsNone(env.get("SR_BOOT_PATH"))
                 self.assertEqual(env["NK_UNRELATED_SENTINEL"], "preserved")
 
         resolved_iso = self.temp_dir / "resolved.iso"
@@ -483,6 +522,7 @@ class NkCoreTests(unittest.TestCase):
         with patch.dict(os.environ, {"PSP_ISO": "poisoned-parent.iso"}):
             _, env = launcher.build_launch_plan(game_dir)
         self.assertEqual(env["PSP_ISO"], str(resolved_iso))
+        self.assertIsNone(env.get("SR_BOOT_PATH"))
 
     def test_runtime_launcher_missing_image_fails_closed(self) -> None:
         """No image means no runnable plan, and saying so beats a usage exit."""
@@ -818,6 +858,18 @@ def _load_python_module_from_source(name: str, source: str, package: str = "nk_c
     return module
 
 
+class BootExecutablePathLimitTests(unittest.TestCase):
+    def test_psp_boot_path_limit_is_255_utf8_bytes(self) -> None:
+        from nk_core.launcher import psp_boot_path
+
+        valid = "é" * 127 + "A"
+        self.assertEqual(len(valid.encode("utf-8")), 255)
+        self.assertEqual(
+            psp_boot_path(valid), f"disc0:/PSP_GAME/SYSDIR/{valid}"
+        )
+        self.assertIsNone(psp_boot_path("é" * 128))
+
+
 class GenericLauncherHostileTests(unittest.TestCase):
     """Hostile contract cases for the Python generic launcher (#366)."""
 
@@ -913,6 +965,52 @@ class GenericLauncherHostileTests(unittest.TestCase):
         self.assertEqual(Path(cmd[0]), exe)
         self.assertEqual(Path(cmd[2]), img)
         self.assertEqual(env["PSP_ISO"], str(self.iso))
+
+    def test_loose_root_environment_uses_manifest_and_masks_inherited_value(self) -> None:
+        source = json.loads(
+            (REPO_ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
+        )
+        source["id"] = "launch-loose-roots-v1"
+        source["game_name"] = "launch-loose-roots"
+        source["display_name"] = "Launch Loose Roots"
+        source["filesystem"]["data_root"] = "extracted"
+        source["filesystem"]["loose_content_roots"] = [
+            {"root": "loose", "mount": "", "precedence": 7},
+        ]
+        source_path = self.temp_dir / "loose-roots-title.json"
+        source_path.write_text(json.dumps(source), encoding="utf-8")
+        registry = TitleRegistry(include_defaults=False)
+        registry.load_private_manifest(source_path)
+
+        game_dir = self._game_dir({"title_id": source["id"]}, name="LOOSE_ROOTS")
+        data_root = game_dir / "extracted"
+        loose_root = game_dir / "loose"
+        data_root.mkdir()
+        loose_root.mkdir()
+        exe, _ = _write_title_runtime(self.temp_dir, source["game_name"], exe_ext=".exe")
+
+        with patch.dict(
+            os.environ,
+            {"SR_DATAROOT": "inherited-data-root", "SR_LOOSE_CONTENT_ROOTS": "inherited-root"},
+        ):
+            cmd, env = RuntimeLauncher(
+                repo_root=self.temp_dir, registry=registry
+            ).build_launch_plan(game_dir)
+        expected = title_manifest.encode_loose_content_roots(
+            title_manifest.validate_manifest(source), data_root.resolve()
+        )
+        self.assertEqual(Path(cmd[0]), exe)
+        self.assertEqual(env["SR_DATAROOT"], str(data_root))
+        self.assertEqual(env["SR_LOOSE_CONTENT_ROOTS"], expected)
+        self.assertNotEqual(env["SR_LOOSE_CONTENT_ROOTS"], "inherited-root")
+
+        shutil.rmtree(loose_root)
+        with patch.dict(
+            os.environ,
+            {"SR_DATAROOT": "inherited-data-root", "SR_LOOSE_CONTENT_ROOTS": "inherited-root"},
+        ):
+            with self.assertRaisesRegex(RuntimeLaunchError, "Loose-content root binding #289"):
+                RuntimeLauncher(repo_root=self.temp_dir, registry=registry).build_launch_plan(game_dir)
 
     # Hostile 7: a session whose disc and title identities disagree is rejected
     # before any plan (and therefore before any spawn) is produced.

@@ -31,6 +31,12 @@
  * protection, so it is a hard requirement rather than an option.
  */
 
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
+
 #ifndef SR_CORO_LIFECYCLE_TEST
 #error "hle_thread_selftest requires -DSR_CORO_LIFECYCLE_TEST: the coroutine lifecycle \
 instrumentation is this test's protection against the historical RAM runaway."
@@ -205,6 +211,12 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_RTC_SET_TICK 0x7ed29e40u
 #define NID_SCE_RTC_GET_WIN32_FILETIME 0xcf561893u
 #define NID_SCE_KERNEL_DELAY_THREAD 0xceadeb47u
+#define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD 0xbd123d9eu
+#define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB 0x1181e963u
+#define NID_SCE_KERNEL_TERMINATE_THREAD 0x616403bau
+#define NID_SCE_DISPLAY_WAIT_VBLANK_CB 0x8eb9ec49u
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_CB 0x46f186c3u
+#define TEST_SYSCLOCK_DELAY_ADDR 0x00270000u
 #define NID_DISPLAY_FRAME_PER_SEC 0xdba6c4c4u
 #define NID_SCE_KERNEL_LIBC_CLOCK 0x91e4f6a7u
 #define NID_SCE_AUDIO_CH_RESERVE 0x5ec81c55u
@@ -2978,9 +2990,11 @@ static void test_display_clock_reads_are_observational(void) {
 }
 
 static int s_delay_done;      /* set when the delay guest body returned */
-static uint32_t s_delay_ret;  /* return code of sceKernelDelayThread */
+static uint32_t s_delay_ret;  /* return code of the selected delay import */
+static uint32_t s_delay_nid = NID_SCE_KERNEL_DELAY_THREAD;
+static uint32_t s_delay_argument = 1000u;
 
-/* Guest body for the delay test: enters sceKernelDelayThread through the real
+/* Guest body for the delay test: enters the selected delay import through the real
  * NID inside its own coroutine (the production shape), then parks on the
  * scheduler.  The delay's own switch_to_scheduler() is a genuine child->main
  * switch here, so the coroutine-lifecycle invariant (no suppressed
@@ -2989,8 +3003,8 @@ static void delay_coro_body(void *arg) {
     (void)arg;
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 1000u;   /* 1 ms */
-    s_delay_ret = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD);
+    cpu.r[4] = s_delay_argument;
+    s_delay_ret = sr_syscall(&cpu, s_delay_nid);
     s_delay_done = 1;
     selftest_park_on_scheduler();
 }
@@ -3019,6 +3033,8 @@ static void test_delay_advances_unified_timeline(void) {
     s_vbl_event_period_rem = 0;
     s_delay_done = 0;
     s_delay_ret = 0xFFFFFFFFu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_THREAD;
+    s_delay_argument = 1000u;
 
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -3885,6 +3901,7 @@ static char s_prewarm_root[MAX_PATH];
 
 static void prewarm_env_restore(void) {
     SetEnvironmentVariableA("SR_DATAROOT", NULL);
+    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", NULL);
 }
 
 typedef struct {
@@ -4312,7 +4329,7 @@ static int host_data_bench_make_tree(const char *root, size_t total_files,
                                      size_t *dirs_created) {
     char usrdir[MAX_PATH];
     char loose[MAX_PATH];
-    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\xbdata_extracted", root);
+    int n = snprintf(dataroot, dataroot_capacity, "%s\\USRDIR\\primary", root);
     if (n < 0 || (size_t)n >= dataroot_capacity) return 0;
     n = snprintf(usrdir, sizeof(usrdir), "%s\\USRDIR", root);
     if (n < 0 || (size_t)n >= sizeof(usrdir)) return 0;
@@ -4380,7 +4397,19 @@ static void test_host_data_scan_scaling(void) {
             if (root_path_ok) host_data_bench_remove_tree(root);
             continue;
         }
+        char loose_root[MAX_PATH], loose_binding[MAX_PATH + 32];
+        int loose_root_len = snprintf(loose_root, sizeof(loose_root), "%s\\USRDIR", root);
+        int loose_binding_len = loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root)
+            ? snprintf(loose_binding, sizeof(loose_binding), "%s\t\t10\n", loose_root) : -1;
+        expect(loose_root_len >= 0 && (size_t)loose_root_len < sizeof(loose_root) &&
+               loose_binding_len >= 0 && (size_t)loose_binding_len < sizeof(loose_binding),
+               "the synthetic benchmark loose-root binding fits its bounded environment field");
+        if (loose_binding_len < 0 || (size_t)loose_binding_len >= sizeof(loose_binding)) {
+            host_data_bench_remove_tree(root);
+            continue;
+        }
         SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+        SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", loose_binding);
         sr_hle_test_data_reset(0);
         ULONGLONG started = GetTickCount64();
         int state = sr_host_data_prepare();
@@ -4431,6 +4460,7 @@ static void test_host_data_scan_scaling(void) {
 typedef struct {
     char root[MAX_PATH];
     char dataroot[MAX_PATH];
+    char loose_roots[MAX_PATH + 32];
     char memstick[MAX_PATH];
     char legacy[MAX_PATH];
     char archive[MAX_PATH];
@@ -4444,16 +4474,20 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
     _snprintf(fixture->root, sizeof(fixture->root), "%s\\build\\archive_route_%lu_%llu",
               cwd, (unsigned long)GetCurrentProcessId(),
               (unsigned long long)GetTickCount64());
-    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\xbdata_extracted",
+    _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
              fixture->root);
+    _snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
+              "%s\\" "USRDIR\t\t0\t1\t0\n", fixture->root);
     _snprintf(fixture->memstick, sizeof(fixture->memstick), "%s\\memstick", fixture->root);
     _snprintf(fixture->legacy, sizeof(fixture->legacy), "%s\\legacy", fixture->root);
     _snprintf(fixture->archive, sizeof(fixture->archive), "%s\\assets.xb", fixture->dataroot);
     _snprintf(fixture->hidden, sizeof(fixture->hidden), "%s\\assets.xb.hidden", fixture->dataroot);
 
     static const char *const dirs[] = {
-        "", "\\USRDIR", "\\USRDIR\\xbdata_extracted",
+        "", "\\USRDIR", "\\USRDIR\\primary",
+        "\\USRDIR\\primary\\data", "\\USRDIR\\primary\\data\\menu",
         "\\USRDIR\\data", "\\USRDIR\\data\\menu",
+        "\\USRDIR\\packed_archives", "\\USRDIR\\module",
         "\\USRDIR\\PSP", "\\USRDIR\\PSP\\SAVEDATA",
         "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
         "\\memstick", "\\legacy"
@@ -4478,7 +4512,11 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
         const char *body;
     } loose_files[] = {
         { "\\USRDIR\\data\\menu\\loose.to", "loose-route" },
-        { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" }
+        { "\\USRDIR\\data\\menu\\archived.to", "loose-over-archive-route" },
+        { "\\USRDIR\\primary\\data\\menu\\loose.to", "primary-route" },
+        { "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL", "savedata-route" },
+        { "\\USRDIR\\packed_archives\\packed.xb", "packed-archive" },
+        { "\\USRDIR\\module\\start.prx", "module-file" }
     };
     for (size_t i = 0; i < sizeof(loose_files) / sizeof(loose_files[0]); i++) {
         char path[MAX_PATH];
@@ -4496,10 +4534,16 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
 static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixture) {
     if (!fixture) return;
     static const char *const files[] = {
-        "\\USRDIR\\xbdata_extracted\\assets.xb",
-        "\\USRDIR\\xbdata_extracted\\assets.xb.hidden",
+        "\\USRDIR\\primary\\assets.xb",
+        "\\USRDIR\\primary\\assets.xb.hidden",
+        "\\USRDIR\\primary\\data\\menu\\loose.to",
         "\\USRDIR\\data\\menu\\loose.to",
-        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL"
+        "\\USRDIR\\data\\menu\\archived.to",
+        "\\USRDIR\\data\\dupe.to",
+        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
+        "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA\\GAMEDATA.BDL",
+        "\\USRDIR\\packed_archives\\packed.xb",
+        "\\USRDIR\\module\\start.prx"
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char path[MAX_PATH];
@@ -4507,12 +4551,18 @@ static void hle_archive_route_fixture_remove(const HleArchiveRouteFixture *fixtu
         DeleteFileA(path);
     }
     static const char *const dirs[] = {
+        "\\USRDIR\\data\\menu\\collision.xb.d\\DATA",
+        "\\USRDIR\\data\\menu\\collision.xb.d",
         "\\USRDIR\\data\\menu",
+        "\\USRDIR\\packed_archives",
+        "\\USRDIR\\module",
         "\\USRDIR\\data",
         "\\USRDIR\\PSP\\SAVEDATA\\NAKAGAWAGAMEDATA",
         "\\USRDIR\\PSP\\SAVEDATA",
         "\\USRDIR\\PSP",
-        "\\USRDIR\\xbdata_extracted",
+        "\\USRDIR\\primary\\data\\menu",
+        "\\USRDIR\\primary\\data",
+        "\\USRDIR\\primary",
         "\\USRDIR",
         "\\memstick",
         "\\legacy"
@@ -4550,6 +4600,24 @@ static uint32_t hle_archive_route_open_result(const char *path) {
     return fd;
 }
 
+static int hle_archive_route_file_matches(const char *path, const char *expected) {
+    static const uint32_t content_addr = 0x0910c000u;
+    CpuState cpu;
+    uint32_t fd = disc_route_open(&cpu, path);
+    if (fd < 3u || fd >= 64u) return 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = content_addr;
+    cpu.r[6] = 64u;
+    uint32_t content_size = sr_hle_test_io_read(&cpu);
+    int content_matches = content_size == strlen(expected) &&
+        memcmp((const uint8_t *)(g_mem_base + content_addr), expected,
+               strlen(expected)) == 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    return content_matches && sr_hle_test_io_close(&cpu) == 0u;
+}
+
 static uint32_t hle_archive_route_stat_result(const char *path, uint32_t *size_out) {
     CpuState cpu;
     static const uint32_t path_addr = 0x09109000u;
@@ -4574,18 +4642,54 @@ static uint32_t hle_archive_route_dopen_result(const char *path) {
     return fd;
 }
 
+static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd) {
+    if (!capture || !saved_fd) return 0;
+    *capture = tmpfile();
+    *saved_fd = -1;
+    if (!*capture) return 0;
+    fflush(stderr);
+    *saved_fd = _dup(_fileno(stderr));
+    if (*saved_fd < 0 || _dup2(_fileno(*capture), _fileno(stderr)) < 0) {
+        if (*saved_fd >= 0) _close(*saved_fd);
+        *saved_fd = -1;
+        fclose(*capture);
+        *capture = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
+                                         char *output, size_t output_size) {
+    if (!capture || !output || output_size == 0u) return 0u;
+    fflush(stderr);
+    rewind(capture);
+    size_t length = fread(output, 1u, output_size - 1u, capture);
+    output[length] = '\0';
+    clearerr(capture);
+    if (saved_fd >= 0) {
+        _dup2(saved_fd, _fileno(stderr));
+        _close(saved_fd);
+    }
+    fclose(capture);
+    return length;
+}
+
 static void test_archive_mode_preserves_loose_routes(void) {
     static const char *const paths[] = {
         "ms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
         "fatms0:/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL",
         "disc0:/PSP_GAME/USRDIR/data/menu/loose.to",
+        "host0:data/menu/loose.to",
         "disc0:/PSP_GAME/USRDIR/PSP/SAVEDATA/NAKAGAWAGAMEDATA/GAMEDATA.BDL"
     };
     const size_t path_count = sizeof(paths) / sizeof(paths[0]);
     const char *old_data_value = getenv("SR_DATAROOT");
+    const char *old_loose_value = getenv("SR_LOOSE_CONTENT_ROOTS");
     const char *old_memstick_value = getenv("SR_MEMSTICK");
     const char *old_fs_value = getenv("SR_FSDIR");
     char *old_data = hle_archive_route_env_copy(old_data_value);
+    char *old_loose = hle_archive_route_env_copy(old_loose_value);
     char *old_memstick = hle_archive_route_env_copy(old_memstick_value);
     char *old_fs = hle_archive_route_env_copy(old_fs_value);
     HleArchiveRouteFixture fixture;
@@ -4603,11 +4707,13 @@ static void test_archive_mode_preserves_loose_routes(void) {
            "the archive/loose route fixture was created");
     if (fixture.root[0] == '\0') {
         free(old_data);
+        free(old_loose);
         free(old_memstick);
         free(old_fs);
         return;
     }
     hle_archive_route_set_env("SR_DATAROOT", fixture.dataroot);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", fixture.loose_roots);
     hle_archive_route_set_env("SR_MEMSTICK", fixture.memstick);
     hle_archive_route_set_env("SR_FSDIR", fixture.legacy);
 
@@ -4619,6 +4725,10 @@ static void test_archive_mode_preserves_loose_routes(void) {
     uint32_t archive_size = 0;
     uint32_t loose_dopen = UINT32_MAX;
     uint32_t archive_dopen = UINT32_MAX;
+    size_t migration_entry_count = 0u;
+    unsigned long long migration_scan_names = 0u;
+    unsigned long long migration_scan_probes = 0u;
+    unsigned long migration_walk_calls = 0ul;
     int moved = MoveFileA(fixture.archive, fixture.hidden);
     expect(moved != 0, "the archive is hidden for the loose-mode comparison");
     if (moved) {
@@ -4630,6 +4740,9 @@ static void test_archive_mode_preserves_loose_routes(void) {
             loose_ready = 1;
             for (size_t i = 0; i < path_count; i++)
                 loose_results[i] = hle_archive_route_open_result(paths[i]);
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "the primary extracted tree wins the migration-root duplicate in loose mode");
             loose_stat = hle_archive_route_stat_result(paths[0], &loose_size);
             loose_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
         }
@@ -4644,8 +4757,20 @@ static void test_archive_mode_preserves_loose_routes(void) {
                "the same fixture reaches READY in archive mode");
         if (state == SR_DATA_TEST_STATE_READY) {
             archive_ready = 1;
+            migration_entry_count = sr_hle_test_data_entry_count();
+            migration_scan_names = sr_hle_test_data_scan_names();
+            migration_scan_probes = sr_hle_test_data_scan_probes();
+            migration_walk_calls = sr_hle_test_data_walk_calls();
+            expect(migration_entry_count == 2u && migration_scan_probes == 5u,
+                   "the parent-root migration mounts two archive members and probes all five former sibling files exactly once");
             for (size_t i = 0; i < path_count; i++)
                 archive_results[i] = hle_archive_route_open_result(paths[i]);
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "the primary extracted tree wins the migration-root duplicate in archive mode");
+            expect(hle_archive_route_file_matches("host0:data/menu/archived.to",
+                                                  "loose-over-archive-route"),
+                   "a loose sibling file wins a matching mounted archive member");
             archive_stat = hle_archive_route_stat_result(paths[0], &archive_size);
             archive_dopen = hle_archive_route_dopen_result("ms0:/PSP/SAVEDATA");
         }
@@ -4687,12 +4812,96 @@ static void test_archive_mode_preserves_loose_routes(void) {
                "archive mode serves an archive-only member to a host0: read");
     }
 
+    char filtered_roots[MAX_PATH + 96];
+    int filtered_len = snprintf(filtered_roots, sizeof(filtered_roots),
+        "%s\\" "USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
+    expect(filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots),
+           "the two-exclusion manifest transport fits its bounded environment field");
+    if (filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots)) {
+        hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", filtered_roots);
+        sr_hle_test_data_reset(0);
+        int filtered_state = sr_host_data_prepare();
+        expect(filtered_state == SR_DATA_TEST_STATE_READY,
+               "the same root reaches READY when two irrelevant sibling subtrees are excluded");
+        if (filtered_state == SR_DATA_TEST_STATE_READY) {
+            expect(sr_hle_test_data_entry_count() == 2u &&
+                       sr_hle_test_data_scan_probes() == 3u,
+                   "excluded packed-archive and module subtrees are not probed while the three included sibling files remain");
+            expect(sr_hle_test_data_scan_names() < migration_scan_names &&
+                       sr_hle_test_data_walk_calls() < migration_walk_calls,
+                   "the walker does not enumerate entries inside excluded directories");
+            expect(hle_archive_route_file_matches("host0:data/menu/loose.to",
+                                                  "primary-route"),
+                   "excluding sibling subtrees preserves extracted-primary precedence");
+        }
+    }
+
+    char duplicate_directory[MAX_PATH];
+    char duplicate_data_directory[MAX_PATH];
+    char duplicate_path[MAX_PATH];
+    char duplicate_alias_path[MAX_PATH];
+    int duplicate_paths_ok =
+        snprintf(duplicate_directory, sizeof(duplicate_directory),
+                 "%s\\USRDIR\\data\\menu\\collision.xb.d", fixture.root) > 0 &&
+        snprintf(duplicate_data_directory, sizeof(duplicate_data_directory),
+                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA", fixture.root) > 0 &&
+        snprintf(duplicate_path, sizeof(duplicate_path),
+                 "%s\\USRDIR\\data\\dupe.to", fixture.root) > 0 &&
+        snprintf(duplicate_alias_path, sizeof(duplicate_alias_path),
+                 "%s\\USRDIR\\data\\menu\\collision.xb.d\\DATA\\DUPE.TO",
+                 fixture.root) > 0;
+    if (duplicate_paths_ok) {
+        duplicate_paths_ok = hle_make_directory(duplicate_directory) &&
+                             hle_make_directory(duplicate_data_directory);
+    }
+    if (duplicate_paths_ok) {
+        static const char direct_body[] = "direct-duplicate";
+        static const char alias_body[] = "archive-duplicate";
+        FILE *direct = fopen(duplicate_path, "wb");
+        FILE *alias = fopen(duplicate_alias_path, "wb");
+        duplicate_paths_ok = direct && alias;
+        if (direct) {
+            duplicate_paths_ok = fwrite(direct_body, 1u, sizeof(direct_body) - 1u, direct) ==
+                                 sizeof(direct_body) - 1u && duplicate_paths_ok;
+            if (fclose(direct) != 0) duplicate_paths_ok = 0;
+        }
+        if (alias) {
+            duplicate_paths_ok = fwrite(alias_body, 1u, sizeof(alias_body) - 1u, alias) ==
+                                 sizeof(alias_body) - 1u && duplicate_paths_ok;
+            if (fclose(alias) != 0) duplicate_paths_ok = 0;
+        }
+    }
+    expect(duplicate_paths_ok, "the same-root duplicate-key fixture was created");
+    if (duplicate_paths_ok) {
+        hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", fixture.loose_roots);
+        sr_hle_test_data_reset(0);
+        FILE *capture = NULL;
+        int saved_stderr = -1;
+        int capture_ready = hle_data_stderr_capture_begin(&capture, &saved_stderr);
+        int duplicate_state = sr_host_data_prepare();
+        char captured[4096] = {0};
+        if (capture_ready)
+            (void)hle_data_stderr_capture_end(capture, saved_stderr,
+                                              captured, sizeof(captured));
+        expect(capture_ready, "the duplicate-key refusal can be captured");
+        expect(duplicate_state == SR_DATA_TEST_STATE_FAILED,
+               "a genuine duplicate key within one root fails the complete index closed");
+        expect(strstr(captured,
+                      "duplicate guest-file key 'data/dupe.to' within root 1 at '") != NULL &&
+                   strstr(captured, "data/dupe.to' and '") != NULL &&
+                   strstr(captured, "data/menu/collision.xb.d/DATA/DUPE.TO'; refusing index") != NULL &&
+                   strstr(captured, "<root-relative-unavailable>") == NULL,
+               "the refusal names the duplicate guest key and both root-relative host paths");
+    }
+
     sr_hle_test_data_reset(0);
     hle_archive_route_set_env("SR_DATAROOT", old_data);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", old_loose);
     hle_archive_route_set_env("SR_MEMSTICK", old_memstick);
     hle_archive_route_set_env("SR_FSDIR", old_fs);
     hle_archive_route_fixture_remove(&fixture);
     free(old_data);
+    free(old_loose);
     free(old_memstick);
     free(old_fs);
 }
@@ -4863,15 +5072,9 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
     sr_hle_test_data_reset(0);
 }
 
-/* 2b. The disc route serves the whole namespace the guest addresses, not one
- *     physical tree: the archive-derived keys and the loose content beside the
- *     root land in the same key space, and the declared census keeps describing
- *     the configured root alone.
- *
- *     Fixture: <cwd>/build/disc_route_<pid>/USRDIR/xbdata_extracted/menu\a.xb0.d\data\menu\archived.to
- *              <cwd>/build/disc_route_<pid>/USRDIR/data/sound/bgm/bgm_title.sgb
- *     SR_DATAROOT is the xbdata_extracted tree, so BOTH keys must resolve through
- *     one prepared index, and the archive tree must not appear under a second key. */
+/* 2b. The disc route serves a manifest-declared namespace assembled from the
+ *     primary archive root and two loose roots. Their shared key proves the
+ *     declared precedence rule; a second key proves later roots still contribute. */
 static char s_disc_route_root[MAX_PATH];
 
 static int disc_route_make_fixture(void) {
@@ -4885,14 +5088,17 @@ static int disc_route_make_fixture(void) {
      * fixture cannot depend on an earlier test having left a parent behind. */
     static const char *const dirs[] = {
         "", "\\USRDIR",
-        "\\USRDIR\\xbdata_extracted",
-        "\\USRDIR\\xbdata_extracted\\menu",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data",
-        "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu",
-        "\\USRDIR\\data",
-        "\\USRDIR\\data\\sound",
-        "\\USRDIR\\data\\sound\\bgm"
+        "\\USRDIR\\primary",
+        "\\USRDIR\\primary\\menu",
+        "\\USRDIR\\primary\\menu\\a.xb0.d",
+        "\\USRDIR\\primary\\menu\\a.xb0.d\\data",
+        "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu",
+        "\\USRDIR\\root_a",
+        "\\USRDIR\\root_a\\sound",
+        "\\USRDIR\\root_a\\sound\\bgm",
+        "\\USRDIR\\root_b",
+        "\\USRDIR\\root_b\\sound",
+        "\\USRDIR\\root_b\\sound\\bgm"
     };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         char dir[MAX_PATH];
@@ -4900,8 +5106,10 @@ static int disc_route_make_fixture(void) {
         if (!(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)) return 0;
     }
     static const struct { const char *rel; const char *body; } files[] = {
-        { "\\USRDIR\\xbdata_extracted\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
-        { "\\USRDIR\\data\\sound\\bgm\\bgm_title.sgb", "loose" }
+        { "\\USRDIR\\primary\\menu\\a.xb0.d\\data\\menu\\archived.to", "archived" },
+        { "\\USRDIR\\root_a\\sound\\bgm\\bgm_title.sgb", "first-root" },
+        { "\\USRDIR\\root_b\\sound\\bgm\\bgm_title.sgb", "second-root" },
+        { "\\USRDIR\\root_b\\sound\\bgm\\only_second.bin", "second-only" }
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char file[MAX_PATH];
@@ -4931,8 +5139,14 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     expect(disc_route_make_fixture(), "the disc-route fixture was created");
 
     char dataroot[MAX_PATH];
-    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\xbdata_extracted", s_disc_route_root);
+    char root_a[MAX_PATH], root_b[MAX_PATH], serialized_roots[MAX_PATH * 5];
+    snprintf(dataroot, sizeof dataroot, "%s\\USRDIR\\primary", s_disc_route_root);
+    snprintf(root_a, sizeof root_a, "%s\\USRDIR\\root_a", s_disc_route_root);
+    snprintf(root_b, sizeof root_b, "%s\\USRDIR\\root_b", s_disc_route_root);
+    snprintf(serialized_roots, sizeof serialized_roots,
+             "%s\tdata\t10\n%s\tdata\t20\n", root_a, root_b);
     SetEnvironmentVariableA("SR_DATAROOT", dataroot);
+    SetEnvironmentVariableA("SR_LOOSE_CONTENT_ROOTS", serialized_roots);
     sr_hle_test_data_reset(0);
 
     int state = sr_host_data_prepare();
@@ -4951,10 +5165,25 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
     const char *loose = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/bgm_title.sgb";
     uint32_t loose_fd = disc_route_open(&cpu, loose);
     expect(loose_fd >= 3u && loose_fd < 64u,
-           "a loose asset beside the root resolves through the same disc path");
-    memset(&cpu, 0, sizeof cpu);
-    cpu.r[4] = loose_fd;
-    expect(sr_hle_test_io_close(&cpu) == 0u, "the loose descriptor closes");
+           "a manifest-bound loose root resolves through the production disc path");
+    static const uint32_t data_addr = 0x09106000u;
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = loose_fd; cpu.r[5] = data_addr; cpu.r[6] = 64u;
+    expect(sr_hle_test_io_read(&cpu) == 10u &&
+           memcmp((const uint8_t *)(g_mem_base + data_addr), "first-root", 10u) == 0,
+           "the lower-precedence-number root wins duplicate guest-file keys");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = loose_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the configured loose descriptor closes");
+
+    const char *second_only = "disc0:/PSP_GAME/USRDIR/data/sound/bgm/only_second.bin";
+    uint32_t second_fd = disc_route_open(&cpu, second_only);
+    expect(second_fd >= 3u && second_fd < 64u,
+           "the second declared root also resolves through HLE");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = second_fd; cpu.r[5] = data_addr; cpu.r[6] = 64u;
+    expect(sr_hle_test_io_read(&cpu) == 11u &&
+           memcmp((const uint8_t *)(g_mem_base + data_addr), "second-only", 11u) == 0,
+           "unique files from later roots remain available");
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = second_fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "the second-root descriptor closes");
 
     /* The device-qualified disc form the engine actually issues must normalize to
      * the same relative key as the bare form.  Both strips consume their trailing
@@ -4978,13 +5207,119 @@ static void test_disc_route_serves_archive_and_loose_content_in_one_namespace(vo
         }
     }
 
-    /* ...and the configured root is not enumerated a second time under a key it
-     * never had, which is what the skip exists to prevent. */
-    expect(!sr_hle_test_data_key_seen("xbdata_extracted/"),
-           "the configured root is skipped by the loose walk, not re-indexed");
-
     prewarm_env_restore();
     sr_hle_test_data_reset(0);
+}
+
+static int host_data_duplicate_write_file(const char *root, const char *relative,
+                                          const char *body) {
+    char path[MAX_PATH];
+    int length = snprintf(path, sizeof(path), "%s%s", root, relative);
+    if (length < 0 || (size_t)length >= sizeof(path)) return 0;
+    FILE *file = fopen(path, "wb");
+    if (!file) return 0;
+    size_t body_size = strlen(body);
+    int ok = fwrite(body, 1u, body_size, file) == body_size;
+    if (fclose(file) != 0) ok = 0;
+    return ok;
+}
+
+static void test_primary_extracted_archive_duplicates_match_main(void) {
+    const char *old_data_value = getenv("SR_DATAROOT");
+    const char *old_loose_value = getenv("SR_LOOSE_CONTENT_ROOTS");
+    char *old_data = hle_archive_route_env_copy(old_data_value);
+    char *old_loose = hle_archive_route_env_copy(old_loose_value);
+    char root[MAX_PATH], dataroot[MAX_PATH];
+    root[0] = '\0';
+    dataroot[0] = '\0';
+
+    reset_fixture();
+    sr_hle_init();
+    int root_ok = hle_make_directory("build");
+    char cwd[MAX_PATH];
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) root_ok = 0;
+    if (root_ok) {
+        int length = snprintf(root, sizeof(root), "%s\\build\\primary_archive_dupes_%lu_%llu",
+                              cwd, (unsigned long)GetCurrentProcessId(),
+                              (unsigned long long)GetTickCount64());
+        root_ok = length >= 0 && (size_t)length < sizeof(root);
+    }
+    if (root_ok) {
+        int length = snprintf(dataroot, sizeof(dataroot), "%s\\primary", root);
+        root_ok = length >= 0 && (size_t)length < sizeof(dataroot) &&
+                  hle_make_directory(root) && hle_make_directory(dataroot);
+    }
+
+    static const char *const directories[] = {
+        "\\primary\\zeta", "\\primary\\zeta\\z.xb.d",
+        "\\primary\\zeta\\z.xb.d\\data", "\\primary\\alpha",
+        "\\primary\\alpha\\a.xb.d", "\\primary\\alpha\\a.xb.d\\data"
+    };
+    for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]) && root_ok; i++) {
+        char path[MAX_PATH];
+        int length = snprintf(path, sizeof(path), "%s%s", root, directories[i]);
+        root_ok = length >= 0 && (size_t)length < sizeof(path) && hle_make_directory(path);
+    }
+    if (root_ok) {
+        root_ok = host_data_duplicate_write_file(root,
+                    "\\primary\\zeta\\z.xb.d\\data\\identical.bin", "same-copy") &&
+                  host_data_duplicate_write_file(root,
+                    "\\primary\\alpha\\a.xb.d\\data\\identical.bin", "same-copy") &&
+                  host_data_duplicate_write_file(root,
+                    "\\primary\\zeta\\z.xb.d\\data\\different.bin", "zeta-loses") &&
+                  host_data_duplicate_write_file(root,
+                    "\\primary\\alpha\\a.xb.d\\data\\different.bin", "alpha-wins");
+    }
+    expect(root_ok, "the synthetic primary extracted-archive duplicate tree was created");
+
+    if (root_ok) {
+        hle_archive_route_set_env("SR_DATAROOT", dataroot);
+        hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", "");
+        sr_hle_test_data_reset(0);
+        expect(sr_host_data_prepare() == SR_DATA_TEST_STATE_READY,
+               "cross-archive duplicates in the primary extracted tree do not refuse the index");
+        expect(sr_hle_test_data_entry_count() == 4u,
+               "the primary index retains both copies of each duplicate guest key");
+        expect(hle_archive_route_file_matches("disc0:/data/identical.bin", "same-copy"),
+               "identical cross-archive copies remain readable");
+        expect(hle_archive_route_file_matches("disc0:/data/different.bin", "alpha-wins"),
+               "the bytewise-first extracted archive matches the origin/main winner");
+
+        char direct_directory[MAX_PATH];
+        int length = snprintf(direct_directory, sizeof(direct_directory), "%s\\data", dataroot);
+        int direct_ok = length >= 0 && (size_t)length < sizeof(direct_directory) &&
+                        hle_make_directory(direct_directory) &&
+                        host_data_duplicate_write_file(dataroot, "\\data\\identical.bin",
+                                                       "direct-copy");
+        expect(direct_ok, "the primary-root ambiguity fixture was added");
+        if (direct_ok) {
+            sr_hle_test_data_reset(0);
+            FILE *capture = NULL;
+            int saved_stderr = -1;
+            int capture_ready = hle_data_stderr_capture_begin(&capture, &saved_stderr);
+            int state = sr_host_data_prepare();
+            char captured[4096] = {0};
+            if (capture_ready)
+                (void)hle_data_stderr_capture_end(capture, saved_stderr,
+                                                  captured, sizeof(captured));
+            expect(state == SR_DATA_TEST_STATE_FAILED,
+                   "a loose file colliding with an extracted member in the primary root still refuses");
+            expect(capture_ready &&
+                       strstr(captured,
+                              "duplicate guest-file key 'data/identical.bin' within root 0 at '") != NULL &&
+                       strstr(captured,
+                              "alpha/a.xb.d/data/identical.bin' and 'data/identical.bin'; refusing index") != NULL &&
+                       strstr(captured, "<root-relative-unavailable>") == NULL,
+                   "primary-root duplicate diagnostics report both root-relative paths");
+        }
+    }
+
+    sr_hle_test_data_reset(0);
+    hle_archive_route_set_env("SR_DATAROOT", old_data);
+    hle_archive_route_set_env("SR_LOOSE_CONTENT_ROOTS", old_loose);
+    host_data_bench_remove_tree(root);
+    free(old_data);
+    free(old_loose);
 }
 
 /* 3. Placement proof, not speed proof: even with per-directory pacing inside
@@ -9516,6 +9851,7 @@ static void test_nested_frame_handle_hygiene(void) {
 #define NID_SCE_GE_EDRAM_GET_ADDR           0xe47e40e4u
 #define NID_SCE_GE_EDRAM_GET_SIZE           0x1f6752adu
 #define NID_SCE_GE_LIST_ENQUEUE             0xab49e76au
+#define NID_SCE_GE_LIST_DEQUEUE             0x5fb86ab0u
 #define NID_SCE_GE_LIST_SYNC                0x03444eb4u
 #define NID_SCE_GE_LIST_UPDATE_STALL_ADDR   0xe0d68148u
 #define NID_SCE_GE_GET_CMD                  0xdc93cfefu
@@ -14320,12 +14656,15 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mtx_parks;
         extern int s_pool_parks;
         extern int s_mbx_parks;
-        int expected_parks = 8 + 3 + 3 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
+        int expected_parks = 8 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
         char msg[256];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters + %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
+                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
+                 "+ 1 issue #339 joiner + 1 completed sysclock delay body "
+                 "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
+                 "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
@@ -17066,7 +17405,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 3") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 4") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -17140,6 +17479,420 @@ static void test_flight_recorder_trace(void) {
     SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
 }
 
+static void test_flight_recorder_ge_present_events(void) {
+    const uint32_t list_addr = 0x08980000u;
+    SrFlightSnapshot snapshot;
+    SrFlightEvent event;
+    uint32_t qid;
+    uint32_t ge_events = 0u, present_events = 0u, draw_events = 0u;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_GE | SR_FLIGHT_CLASS_PRESENT, 32u);
+
+    /* Synthetic, zero-vertex draw still exercises the production list walk without
+     * reading vertex memory: PRIM, FINISH, END. */
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    s_cpu->r[5] = 0u;
+    s_cpu->r[6] = 0u;
+    s_cpu->r[7] = 0u;
+    qid = sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xff000000u) == 0x35000000u,
+           "flight GE fixture reaches production list enqueue");
+
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = qid;
+    s_cpu->r[5] = 0u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "flight GE fixture reaches production list sync");
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = 1u;
+    expect(sr_syscall(s_cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "flight GE fixture reaches production draw sync");
+    /* DeQueue has no registered operation in this build. Exercise its recorder
+     * boundary directly; invoking the guest NID would correctly remain fail-closed. */
+    (void)sr_flight_hle_import(NID_SCE_GE_LIST_DEQUEUE, 0u, qid, 0x08980100u, 0u);
+
+    s_test_gui_on = 1;
+    expect(display_set(0x04000000u, 512, 3, 0u) == 0u,
+           "flight present fixture reaches production SetFrameBuf and presenter");
+    s_test_gui_on = 0;
+
+    expect(sr_flight_event_count() == 9,
+           "flight GE/present fixture records seven GE and two present events");
+    for (int i = 0; i < sr_flight_event_count(); ++i) {
+        expect(sr_flight_event_at((uint32_t)i, &event) != 0,
+               "flight GE/present event is readable");
+        if (event.event_class == SR_FLIGHT_CLASS_GE) {
+            ge_events++;
+            if (event.kind == SR_FLIGHT_KIND_GE_DRAW) {
+                draw_events++;
+                expect(event.arg0 == list_addr && event.arg1 == list_addr &&
+                           event.arg2 == 0u && event.arg3 == 0u,
+                       "GE draw event carries list, command, primitive, and vertex count");
+            }
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_ENQUEUE)
+                expect(event.arg0 == list_addr && event.arg1 == 0u && event.arg2 == qid,
+                       "GE enqueue event carries list, stall, and list id");
+            if (event.kind == SR_FLIGHT_KIND_GE_LIST_DEQUEUE)
+                expect(event.arg0 == qid, "GE dequeue event carries the submitted list id");
+        } else if (event.event_class == SR_FLIGHT_CLASS_PRESENT) {
+            present_events++;
+            expect(event.arg0 == 0x04000000u && event.arg1 == 3u &&
+                       event.arg2 == 512u,
+                   "present event carries framebuffer, format, and stride");
+        }
+    }
+    expect(ge_events == 7u && present_events == 2u && draw_events == 1u,
+           "flight GE/present event classes have the expected production counts");
+
+    /* The same production path with the classes disabled remains an empty trace. */
+    reset_fixture();
+    sr_hle_init();
+    sr_flight_test_reset(0u, 32u);
+    MEM_W32(list_addr + 0u, 0x04000000u);
+    MEM_W32(list_addr + 4u, 0x0f000000u);
+    MEM_W32(list_addr + 8u, 0x0c000000u);
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    s_cpu->r[4] = list_addr;
+    (void)sr_syscall(s_cpu, NID_SCE_GE_LIST_ENQUEUE);
+    s_test_gui_on = 1;
+    (void)display_set(0x04000000u, 512, 3, 0u);
+    s_test_gui_on = 0;
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 0u && sr_flight_event_count() == 0,
+           "disabled GE/present classes record zero events on the same route");
+    sr_flight_test_disable();
+}
+
+static uint32_t issue339_create_pending_callback(void) {
+    static const char name[] = "issue339-callback";
+    for (size_t i = 0; i < sizeof(name); i++)
+        MEM_W8(ORACLE_CALLBACK_NAME + (uint32_t)i, (uint8_t)name[i]);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ORACLE_CALLBACK_NAME;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x339u;
+    uint32_t uid = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+    cpu.r[4] = uid;
+    cpu.r[5] = 0x339a11u;
+    if (uid) (void)sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK);
+    return uid;
+}
+
+static void test_issue339_terminate_waiting_thread(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x3390u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t mbx_uid = selftest_mbx_create(0);
+    expect(mbx_uid != 0, "issue #339 termination mailbox created through production dispatch");
+
+    uint32_t target_uid = sched_create_thread(ORACLE_THREAD_ENTRY, 40, 0x2000u);
+    TCB *target = tcb_by_uid(target_uid);
+    expect(target && target_uid != 0, "issue #339 termination target created");
+    if (!target || !mbx_uid) return;
+    target->state = TH_READY;
+    target->started = 1;
+    SelftestMbxWaiterCtx waiter;
+    memset(&waiter, 0, sizeof(waiter));
+    waiter.uid = target_uid;
+    waiter.tcb = target;
+    waiter.mbx_uid = mbx_uid;
+    waiter.outptr = MBX_OUTPTR;
+    target->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &waiter,
+                                  (size_t)4 << 20);
+    expect(target->coro != NULL, "issue #339 blocked target coroutine created");
+    s_cur = (int)(target - s_tcb);
+    if (target->coro) sr_coro_switch(target->coro);
+    expect(!waiter.returned && target->state == TH_WAIT_OBJ &&
+           target->wait_kind == 5,
+           "issue #339 target is blocked in a production mailbox wait");
+    expect(selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 1u,
+           "issue #339 mailbox reports the blocked target as its waiter");
+
+    TCB *joiner = fixture_thread(0x3391u, TH_READY, 35);
+    joiner->started = 1;
+    s_joiner_woken = 0;
+    s_joiner_ret = 0xffffffffu;
+    joiner->coro = sr_coro_create(joiner_coro_body, target, (size_t)4 << 20);
+    expect(joiner->coro != NULL, "issue #339 joiner coroutine created");
+    s_cur = (int)(joiner - s_tcb);
+    if (joiner->coro) sr_coro_switch(joiner->coro);
+    expect(joiner->state == TH_WAIT_OBJ && joiner->join_waiting &&
+           joiner->join_target == target_uid,
+           "issue #339 joiner parks on the target through WaitThreadEnd");
+
+    TCB *dormant = fixture_thread(0x3392u, TH_DORMANT, 40);
+    dormant->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = owner->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x80020197u,
+           "TerminateThread(self) returns ILLEGAL_THID");
+    cpu.r[4] = 0x339fffffu;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x80020198u,
+           "TerminateThread(unknown) returns UNKNOWN_THID");
+    cpu.r[4] = dormant->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0x800201a2u,
+           "TerminateThread(dormant) returns DORMANT");
+
+    s_cur = (int)(owner - s_tcb);
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0,
+           "TerminateThread stops another thread blocked in an object wait");
+    expect(target->state == TH_DORMANT && !target->coro &&
+           target->exit_status == (int32_t)0x800201acu &&
+           target->wait_obj == 0 && target->wait_kind == 0 &&
+           target->pending_wait_kind == 0 && !target->wake_result_valid,
+           "TerminateThread sets THREAD_TERMINATED and clears the target wait state");
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_EXIT_STATUS) == 0x800201acu,
+           "GetThreadExitStatus reports THREAD_TERMINATED after TerminateThread");
+    expect(selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 0u,
+           "TerminateThread removes the target from its mailbox wait queue");
+    expect(joiner->state == TH_READY && !joiner->join_waiting &&
+           joiner->join_result_valid &&
+           joiner->join_result == 0x800201acu && joiner->wait_obj == 0 &&
+           joiner->wait_kind == 0 && joiner->pending_wait_kind == 0,
+           "TerminateThread wakes the joiner with a clean THREAD_TERMINATED result");
+
+    if (joiner->coro) {
+        s_cur = (int)(joiner - s_tcb);
+        sr_coro_switch(joiner->coro);
+        expect(s_joiner_woken && s_joiner_ret == 0x800201acu,
+               "WaitThreadEnd returns THREAD_TERMINATED when resumed");
+        sr_coro_destroy(joiner->coro);
+        joiner->coro = NULL;
+    }
+    s_cur = (int)(owner - s_tcb);
+    uint32_t msg = MBX_MSG_BASE;
+    mbx_init_packet(msg, 0);
+    expect(selftest_mbx_send(mbx_uid, msg) == 0 &&
+           selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
+           MEM_R32(MBX_INFO + 40) == 0u && MEM_R32(MBX_INFO + 44) == 1u,
+           "mailbox send after termination queues a message without a ghost waiter");
+    expect(selftest_mbx_recv(mbx_uid, MBX_OUTPTR, 0) == 0 &&
+           MEM_R32(MBX_OUTPTR) == msg,
+           "mailbox remains usable after its waiter is terminated");
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_THREAD) == 0,
+           "terminated target remains deletable through DeleteThread");
+    expect(selftest_mbx_delete(mbx_uid) == 0,
+           "issue #339 termination mailbox deletes cleanly");
+}
+
+static void test_issue339_sysclock_delay_dispatch(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x3393u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    s_vtime_us = 5000u;
+    s_vbl_next_us = 100000u;
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 1250u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 0u);
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    uint64_t before = s_vtime_us;
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(self->coro != NULL, "issue #339 sysclock delay coroutine created");
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(!s_delay_done && self->state == TH_WAIT_DELAY &&
+           self->wake == before + 1250u,
+           "DelaySysClockThread uses the low-word microsecond duration");
+    sr_hle_advance_time(1250u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done && s_delay_ret == 0,
+           "DelaySysClockThread returns after the same elapsed time as DelayThread");
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD) == 0x800200d3u,
+           "DelaySysClockThread rejects a null SceKernelSysClock pointer");
+
+    /* The high word is significant; leave this long wait parked and terminate it
+     * through the production handler rather than attempting to elapse 2^32 us. */
+    TCB *owner = fixture_thread(0x3394u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *wide = fixture_thread(0x3395u, TH_READY, 40);
+    wide->started = 1;
+    s_vtime_us = 900u;
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 77u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 1u);
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    wide->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(wide->coro != NULL, "wide sysclock delay coroutine created");
+    s_cur = (int)(wide - s_tcb);
+    if (wide->coro) sr_coro_switch(wide->coro);
+    expect(wide->state == TH_WAIT_DELAY &&
+           wide->wake == 900u + UINT64_C(0x10000004d),
+           "DelaySysClockThread includes the full 64-bit SceKernelSysClock value");
+    s_cur = (int)(owner - s_tcb);
+    cpu.r[4] = wide->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0 &&
+           wide->state == TH_DORMANT && wide->wake == 0,
+           "TerminateThread releases a parked full-range sysclock delay");
+}
+
+typedef struct {
+    uint32_t nid;
+    uint32_t ret;
+    int returned;
+} SelftestVblankWaitCtx;
+
+static void selftest_vblank_waiter_fiber_body(void *arg) {
+    SelftestVblankWaitCtx *ctx = (SelftestVblankWaitCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    ctx->ret = sr_syscall(&cpu, ctx->nid);
+    ctx->returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_issue339_callback_wait_dispatch(void) {
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x3396u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    expect(callback_uid != 0, "issue #339 DelaySysClockThreadCB callback created and queued");
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR, 1000u);
+    MEM_W32(TEST_SYSCLOCK_DELAY_ADDR + 4u, 0u);
+    s_vtime_us = 3000u;
+    s_vbl_next_us = 100000u;
+    uint64_t before = s_vtime_us;
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB;
+    s_delay_argument = TEST_SYSCLOCK_DELAY_ADDR;
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_oracle_callback_calls == 1 && self->state == TH_WAIT_DELAY &&
+           self->is_cb_wait && self->wake == before + 1000u,
+           "DelaySysClockThreadCB services its callback and waits the full duration");
+    sr_hle_advance_time(1000u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done && s_delay_ret == 0,
+           "DelaySysClockThreadCB completes after its sysclock duration");
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "issue #339 delay callback unregisters cleanly");
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *in_window = fixture_thread(0x3397u, TH_RUNNING, 32);
+    in_window->started = 1;
+    s_cur = (int)(in_window - s_tcb);
+    s_vtime_us = 800u;
+    s_vbl_count = 1u;
+    s_vbl_last_us = s_vtime_us;
+    callback_uid = issue339_create_pending_callback();
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t vblank_ret = sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_CB);
+    expect(vblank_ret == 1u && s_oracle_callback_calls == 2,
+           "WaitVblankCB services a callback and preserves the in-window fast result");
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "WaitVblankCB callback unregisters cleanly");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x3398u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x3399u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx vblank;
+    memset(&vblank, 0, sizeof(vblank));
+    vblank.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_CB;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &vblank,
+                                  (size_t)4 << 20);
+    s_cur = (int)(waiter - s_tcb);
+    callback_uid = issue339_create_pending_callback();
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(callback_uid != 0 && s_oracle_callback_calls == 3 &&
+           waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+           waiter->is_cb_wait,
+           "WaitVblankStartCB services a callback then blocks on the real vblank wait object");
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    expect(waiter->state == TH_READY && s_vbl_count == 1u,
+           "a delivered vblank wakes the WaitVblankStartCB waiter");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(vblank.returned && vblank.ret == 0 && !waiter->is_cb_wait,
+           "WaitVblankStartCB returns zero after the delivered vblank");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "WaitVblankStartCB callback unregisters cleanly");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_oracle_mode = saved_oracle_mode;
+}
+
+static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
+    reset_fixture();
+    s_cur = -1;
+    uint64_t before = s_vbl_count;
+    expect(sched_wait_vblank_cb(0) < 0 && sched_wait_vblank_cb(1) < 0,
+           "display CB waits refuse when no current thread exists");
+    expect(s_vbl_count == before,
+           "a refused display CB wait does not advance the vblank count");
+}
+
+static void test_issue339_wait_nids_production_dispatch(void) {
+    reset_fixture();
+    sr_hle_init();
+    int all_registered =
+        sr_hle_test_is_registered(NID_SCE_KERNEL_TERMINATE_THREAD) &&
+        sr_hle_test_is_registered(NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD) &&
+        sr_hle_test_is_registered(NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB) &&
+        sr_hle_test_is_registered(NID_SCE_DISPLAY_WAIT_VBLANK_CB) &&
+        sr_hle_test_is_registered(NID_SCE_DISPLAY_WAIT_VBLANK_START_CB);
+    expect(all_registered,
+           "issue #339 first missing-NID batch is registered for production dispatch");
+    if (!all_registered) return; /* Calling an absent import is a fatal dispatch trap. */
+    test_issue339_terminate_waiting_thread();
+    test_issue339_sysclock_delay_dispatch();
+    test_issue339_callback_wait_dispatch();
+    test_issue339_vblank_cb_wait_requires_a_current_thread();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -17193,6 +17946,7 @@ int main(int argc, char **argv) {
     test_explicit_exit_status_exact((int32_t)-17, 0x800200d2u);
     test_explicit_exit_status_exact(0x78, 0x78u);
     test_thread_delete_lifecycle_and_cleanup();
+    test_issue339_wait_nids_production_dispatch();
     test_start_thread_error_semantics();
     test_exit_delete_lifecycle_and_join_result();
     test_wait_thread_end_invalid_targets();
@@ -17236,6 +17990,7 @@ int main(int argc, char **argv) {
     test_route_observer_waits_for_guest_scanout_state();
     test_extracted_data_prepares_before_guest_and_lookup_never_builds();
     test_disc_route_serves_archive_and_loose_content_in_one_namespace();
+    test_primary_extracted_archive_duplicates_match_main();
     test_direct_xb_read_precedence_and_listing();
     test_direct_xb_malformed_archive_fails_closed();
     test_direct_xb_many_members_skip_loose_walk();
@@ -17291,6 +18046,7 @@ int main(int argc, char **argv) {
     test_late_prx_duplicate_base_last_reference();
     test_psmf_rejected_stream_names_the_boundary();
     test_flight_recorder_trace();
+    test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
      * run the same paths terminate the process with status 86 so a wrong reached state can

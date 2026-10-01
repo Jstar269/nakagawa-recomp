@@ -56,7 +56,19 @@ repos:
     rev: 81aff7a638638aae3a659845d089043e1d8fe9ac # v1.9.0
     hooks:
       - id: betterleaks
-        stages: [pre-commit, pre-push]
+        # Directory mode over the hook's file list. pre-commit stashes unstaged
+        # changes before hooks run, so these files hold exactly the staged
+        # content. The upstream entry uses git mode, which exports
+        # GIT_CONFIG_GLOBAL=NUL; Git for Windows only special-cases lowercase
+        # "nul", so every git call failed and the hook scanned nothing on
+        # Windows. Hosted CI still scans reachable history in git mode.
+        # Commit stage only: pre-commit passes no file names at the pre-push stage,
+        # so directory mode there would either walk the whole working tree (including
+        # the private input directories) or fail on a missing path. Every commit is
+        # scanned here and the pushed history is scanned in hosted CI.
+        entry: betterleaks dir --redact --verbose
+        pass_filenames: true
+        stages: [pre-commit]
 
   - repo: local
     hooks:
@@ -103,6 +115,13 @@ repos:
       - id: modified-file-notice-audit
         name: inherited modified-file notice audit
         entry: python tools/modified_file_notice_audit.py --tracked-only
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+      - id: provenance-record-gap-check
+        name: upstream-derived production path disposition gap check
+        entry: python tools/provenance_record_gap.py --check
         language: system
         pass_filenames: false
         always_run: true

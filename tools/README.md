@@ -63,6 +63,11 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
   Normal mode reports `SKIPPED` if GitHub is unavailable; use `--strict` as a live review/merge audit.
   It is deliberately separate from the offline pre-commit hook so lack of network access cannot make
   ordinary local commits nondeterministically fail.
+- **`tree_lint.py`** — dead-file detection for the public tree. It reports tracked files that no other
+  tracked file names; `python tools/tree_lint.py --check` enforces the reviewed reference and allowlist ratchet
+  in the always-on hygiene job; unreferenced files must be removed or have a reviewed allowlist reason in
+  `tools/tree_lint_allow.json`. `mingw32-make tree-lint` runs the reporting form, which exits 0 whatever the
+  tree contains.
 - **`xb_probe.py <archive.xb> [--lookup <inner-key>]`** — bounded, read-only direct-XB
   metadata/lookup prototype (see [`docs/archive/ISSUE196_DIRECT_XB.md`](../docs/archive/ISSUE196_DIRECT_XB.md)). It uses synthetic tests in `test_xb_probe.py`,
   never dumps archive contents by default, and does not participate in production HLE lookup.
@@ -110,7 +115,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `ghidra_scripts/` | Ghidra headless scripts: decompile to C, export the function CSV, list references. |
 | `nk_core/` | Portable preparation and runtime library shared by the tools. |
-| `psp_oracle/` | Host side of the PSP hardware oracle. |
+| `psp_oracle/` | Host side of the PSP hardware oracle, runners and `verify_vfpu_addr.py`. |
 | `psp_threading_oracle/` | Threading analyzer, parser and evidence model. |
 
 <!-- tools-subpackages:end -->
@@ -158,13 +163,14 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `perf_summary_diff.py` | Compare two runtime performance summaries within a tolerance. |
+| `pgf_writer.py` | Deterministic PGF writer for project-generated glyph bitmaps (a fixture generator, never an authenticity claim). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
 | `boot_gate.py` | Summarize machine-readable native boot milestones from a runtime log. |
 | `soak_audit.py` | Judge one soak run from the telemetry the runtime already writes. |
 | `verify_vfpu_provenance.py` | Verify the checked-in VFPU data against its pinned provenance manifest. |
-| `vfpu_coverage_report.py` | Generate the deterministic VFPU compatibility census. |
+| `vfpu_coverage_report.py` | Generate the deterministic VFPU compatibility census; classify an encounter word list (`--encodings`) or the VFPU words a generated AOT route emits (`--route`), failing nonzero on Unsupported/OTHER words. |
 | `vfpu_fuzz_gen.py` | VFPU differential-fuzz case generator. |
 | `vfpu_overlap_diff_gen.py` | Generate the overlap-differential cases header for the VFPU selftest. |
 | `vfpu_synth_gen.py` | Deterministic synthetic VFPU instruction corpus generator. |
@@ -221,7 +227,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `provenance_ledger.py` | Build and validate the explicit public provenance ledger. |
 | `provenance_refresh.py` | Generate the public provenance controls with the hosted attestation logic. |
 | `provenance_attest_verify.py` | Verify a candidate tree's public provenance against external authority. |
-| `provenance_record_gap.py` | Inventory the tracked paths that have no exact trusted provenance record. |
+| `provenance_record_gap.py` | Inventory the tracked paths that have no exact trusted provenance record (`--check-records` gates on it); `--check` is the separate upstream-derived disposition ratchet; the two flags are mutually exclusive (exit 2), so run them as two invocations. |
 | `modified_file_notice_audit.py` | Check the explicit notices recorded in the inherited-file manifest. |
 | `history_audit.py` | Non-destructive full-history secret, proprietary-material and privacy audit. |
 | `betterleaks_canary.py` | Exercise the pinned Betterleaks policy with synthetic, non-secret canaries. |
@@ -242,6 +248,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
 | `portability_inventory.py` | Public-safe portability inventory of the native runtime and build. |
+| `tree_lint.py` | Report tracked files that no other tracked file names; `--check` enforces the reference ratchet. |
 
 ### Performance, frames and runtime diagnostics
 
@@ -354,7 +361,7 @@ compiler default. Findings belong in issue #317.
 | Module | Purpose |
 | --- | --- |
 | `test_vfpu_addressing.py` | VFPU vector-register addressing: hardware agreement and cross-implementation identity. |
-| `test_vfpu_coverage_census.py` | VFPU coverage census schema, decoder coverage and deterministic output. |
+| `test_vfpu_coverage_census.py` | VFPU coverage census schema, decoder coverage, deterministic output and the `--route` emitted-word census. |
 | `test_vfpu_domain_boundary.py` | Contract tests for the out-of-domain transcendental boundary. |
 | `test_vfpu_interp_guards.py` | VFPU interpreter guards: register width rejection and overlap-scan limits. |
 | `test_vfpu_nan_payload.py` | Contract tests for the VFPU NaN/Inf probe fixture. |
@@ -436,6 +443,7 @@ compiler default. Findings belong in issue #317.
 | `test_parse_fuzz.py` | Seeded, deterministic mutation fuzzing over the public offline parsers. |
 | `test_padscript_from_log.py` | Controller log to pad script conversion: press widths and mask-change spans. |
 | `test_perf_summary_diff.py` | Performance summary comparison within a tolerance. |
+| `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |
 | `test_ppmdiff_coverage.py` | Fail-closed coverage tests for the framebuffer diff. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |
 | `test_progress_tracker.py` | Tests for the progress tracker evidence checks. |
@@ -500,6 +508,7 @@ compiler default. Findings belong in issue #317.
 | `test_readme_images.py` | Deterministic checks on the published showcase screenshots. |
 | `test_relocated_clone.py` | Contributor quick check in a checkout whose own path contains spaces. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
+| `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |
 | `test_vulkan_sdk.py` | Vulkan SDK discovery precedence and Makefile wiring. |
 | `test_workspace_paths.py` | Workspace path handling with spaces, Unicode and long paths. |

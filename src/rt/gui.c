@@ -23,14 +23,15 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
-#ifdef SR_SDL3VK
 #include "gpu_sdl3vk/sdl3vk.h"
+#ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
 #include <SDL3/SDL_timer.h>
+#include <SDL3/SDL_video.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -43,6 +44,9 @@
 static int      s_on = 0;
 #ifdef SR_SDL3VK
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
+#endif
+#if defined(SR_SDL3VK) || defined(_WIN32)
+static bool     s_foreground_request_issued;
 #endif
 static int      s_offscreen = 0;        /* explicit host-memory presenter for headless bring-up */
 static uint64_t s_offscreen_frames;
@@ -121,6 +125,50 @@ static void sync_sdl_input(void) {
     s_buttons = sdl3vk_buttons();
     sdl3vk_analog(&s_lx, &s_ly);
     s_pad_present = sdl3vk_pad_present();
+}
+#endif
+
+#if defined(SR_SDL3VK) || defined(_WIN32)
+static bool sr_gui_is_headless_presenter(void) {
+    const char *headless = getenv("SR_HEADLESS");
+    if (headless && headless[0] && strcmp(headless, "0") != 0) return true;
+
+    const char *driver = SDL_GetCurrentVideoDriver();
+    return driver && (strcmp(driver, "dummy") == 0 ||
+                      strcmp(driver, "offscreen") == 0);
+}
+
+#ifdef SR_SDL3VK
+static void sr_gui_raise_sdl_window(void *context) {
+    (void)context;
+    (void)sdl3vk_raise_window();
+}
+#endif
+
+#ifdef _WIN32
+static void sr_gui_raise_gdi_window(void *context) {
+    HWND window = (HWND)context;
+    if (!window) return;
+    BringWindowToTop(window);
+    if (!SetForegroundWindow(window)) {
+        fprintf(stderr, "gui_init: Win32 refused foreground activation for the game window\n");
+    }
+}
+#endif
+
+static void sr_gui_request_launcher_foreground(
+    bool window_visible,
+    void *context,
+    SrGuiForegroundRequestFn raise_window,
+    const char *backend
+) {
+    if (sr_gui_request_launcher_foreground_once(
+            getenv("SR_BOOT_EVENT_FILE"), window_visible,
+            sr_gui_is_headless_presenter(), &s_foreground_request_issued,
+            context, raise_window)) {
+        sr_gui_boot_event("BOOT_EVENT phase=window_foreground_requested backend=%s",
+                          backend);
+    }
 }
 #endif
 
@@ -204,6 +252,9 @@ void gui_init(const char *title) {
                             fprintf(stderr, "gui_init: GPU GE init failed; software GE active\n");
                     }
                 }
+                sr_gui_request_launcher_foreground(true, NULL,
+                                                   sr_gui_raise_sdl_window,
+                                                   "vulkan");
                 sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=vulkan");
                 return;
             }
@@ -236,6 +287,9 @@ void gui_init(const char *title) {
     s_bmi.bmiHeader.biCompression = BI_RGB;
     s_last_ns = SDL_GetTicksNS();
     s_on = 1;
+    sr_gui_request_launcher_foreground(
+        s_hwnd && IsWindowVisible(s_hwnd), s_hwnd,
+        sr_gui_raise_gdi_window, "gdi");
     sr_gui_boot_event("BOOT_EVENT phase=window_ready backend=gdi");
 #else /* !_WIN32: no GDI presenter on this host */
     /* No Win32/GDI window exists here, so there is no fallback to take. The
@@ -272,7 +326,12 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
             uint32_t i = (uint32_t)(y * (int)stride + x);
             int rr, gg, bb;
             if (fmt == 3) {
-                uint32_t p = sr_r32(fbaddr + i * 4);
+                uint32_t p;
+                /* display_host_span_valid checks the complete framebuffer before this
+                 * conversion. Read framebuffer storage literally: sr_r32 reserves the
+                 * GE status port at 0x04084000, which can otherwise replace a pixel when
+                 * a PSP VRAM framebuffer spans that address. */
+                memcpy(&p, SR_HOST(fbaddr + i * 4), sizeof p);
                 rr = p & 0xFF; gg = (p >> 8) & 0xFF; bb = (p >> 16) & 0xFF;
             } else {
                 uint16_t p = sr_r16(fbaddr + i * 2);
