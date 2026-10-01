@@ -9376,8 +9376,9 @@ static int data_validate_archive_index(size_t primary_count) {
     return 1;
 }
 
-static const char *data_index_root_for_precedence(uint32_t precedence) {
-    if (precedence == 0u) return s_data_root_utf8;
+static const char *data_index_root_for_precedence(uint32_t precedence,
+                                                  const char *primary_root_utf8) {
+    if (precedence == 0u) return primary_root_utf8;
     for (size_t i = 0; i < s_data_loose_root_count; i++) {
         if (s_data_loose_roots[i].precedence + 1u == precedence)
             return s_data_loose_roots[i].host_utf8;
@@ -9385,9 +9386,11 @@ static const char *data_index_root_for_precedence(uint32_t precedence) {
     return NULL;
 }
 
-static void data_duplicate_relative_path(const SrAssetIndexEntry *entry,
-                                         char output[161]) {
-    const char *base = entry ? data_index_root_for_precedence(entry->precedence) : NULL;
+static const char *data_index_relative_path(const SrAssetIndexEntry *entry,
+                                           const char *primary_root_utf8) {
+    const char *base = entry
+        ? data_index_root_for_precedence(entry->precedence, primary_root_utf8)
+        : NULL;
     const char *relative = NULL;
     if (entry && entry->host && base) {
         size_t base_len = strlen(base);
@@ -9401,6 +9404,13 @@ static void data_duplicate_relative_path(const SrAssetIndexEntry *entry,
             while (*relative == '/' || *relative == '\\') relative++;
         }
     }
+    return relative;
+}
+
+static void data_duplicate_relative_path(const SrAssetIndexEntry *entry,
+                                         const char *primary_root_utf8,
+                                         char output[161]) {
+    const char *relative = data_index_relative_path(entry, primary_root_utf8);
     if (!relative) relative = "<root-relative-unavailable>";
     size_t length = strlen(relative);
     if (length < 161u) {
@@ -9414,27 +9424,95 @@ static void data_duplicate_relative_path(const SrAssetIndexEntry *entry,
     memcpy(output + 157u, "...", 4u);
 }
 
+/* Return the separator after the first archive-extraction marker recognized by
+ * sr_asset_index_key_from_rel(). The preceding root-relative prefix identifies
+ * one extracted archive; bytewise path comparison matches the finalized index. */
+static const char *data_extracted_archive_relative_end(const char *relative) {
+    if (!relative) return NULL;
+    for (const char *scan = relative;;) {
+        const char *xb = sr_asset_index_find_ci(scan, ".xb");
+        if (!xb) return NULL;
+        const char *suffix = xb + 3;
+        uint64_t parsed_variant = 0;
+        int variant_overflow = 0;
+        while (*suffix >= '0' && *suffix <= '9') {
+            uint64_t digit = (uint64_t)(*suffix - '0');
+            if (parsed_variant > (UINT64_MAX - digit) / 10u)
+                variant_overflow = 1;
+            else
+                parsed_variant = parsed_variant * 10u + digit;
+            suffix++;
+        }
+        if (!variant_overflow && parsed_variant <= (uint64_t)INT_MAX &&
+            suffix[0] == '.' &&
+            (suffix[1] == 'd' || suffix[1] == 'D') &&
+            (suffix[2] == '/' || suffix[2] == '\\')) {
+            return suffix + 2;
+        }
+        scan = xb + 3;
+    }
+}
+
+static int data_extracted_archive_prefix_equal(const char *left,
+                                               const char *left_end,
+                                               const char *right,
+                                               const char *right_end) {
+    size_t left_length = (size_t)(left_end - left);
+    size_t right_length = (size_t)(right_end - right);
+    if (left_length != right_length) return 0;
+    for (size_t i = 0; i < left_length; i++) {
+        char left_char = left[i] == '\\' ? '/' : left[i];
+        char right_char = right[i] == '\\' ? '/' : right[i];
+        if (left_char != right_char) return 0;
+    }
+    return 1;
+}
+
+static int data_primary_duplicate_is_cross_archive(
+    const SrAssetIndexEntry *previous, const SrAssetIndexEntry *entry,
+    const char *primary_root_utf8) {
+    /* The finalized index orders equal key/variant/root entries by host path.
+     * A shared extracted-archive prefix is therefore contiguous in that run. */
+    if (!previous || !entry || previous->precedence != 0u ||
+        entry->precedence != 0u) return 0;
+    const char *previous_relative = data_index_relative_path(previous, primary_root_utf8);
+    const char *entry_relative = data_index_relative_path(entry, primary_root_utf8);
+    const char *previous_end = data_extracted_archive_relative_end(previous_relative);
+    const char *entry_end = data_extracted_archive_relative_end(entry_relative);
+    return previous_end && entry_end &&
+           !data_extracted_archive_prefix_equal(previous_relative, previous_end,
+                                                entry_relative, entry_end);
+}
+
 /* Exact guest-file collisions across manifest roots are intentional overlays:
  * the lower precedence value wins. A collision within one root is ambiguous
- * after guest-key case folding and refuses the whole index. File/directory
- * collisions also fail closed. */
-static int data_validate_duplicate_policy(const SrAssetIndex *index) {
-    if (!index || !index->finalized) return 0;
+ * after guest-key case folding and refuses the whole index. The primary root is
+ * the compatibility exception: different extracted-XB subtrees may expose the
+ * same key, and the index's host-path sort chooses the stable legacy winner. */
+static int data_validate_duplicate_policy(const SrAssetIndex *index,
+                                          const wchar_t *primary_root_wide) {
+    if (!index || !index->finalized || !primary_root_wide) return 0;
+    char *primary_root_utf8 = NULL;
+    if (!sr_wide_to_utf8_alloc(primary_root_wide, &primary_root_utf8)) return 0;
+    int ok = 1;
     for (size_t i = 0; i < index->count; i++) {
         const SrAssetIndexEntry *entry = &index->entries[i];
         if (i > 0u) {
             const SrAssetIndexEntry *previous = &index->entries[i - 1u];
             if (strcmp(previous->key, entry->key) == 0 &&
                 previous->variant == entry->variant &&
-                previous->precedence == entry->precedence) {
+                previous->precedence == entry->precedence &&
+                !data_primary_duplicate_is_cross_archive(previous, entry,
+                                                         primary_root_utf8)) {
                 char previous_path[161], current_path[161];
-                data_duplicate_relative_path(previous, previous_path);
-                data_duplicate_relative_path(entry, current_path);
+                data_duplicate_relative_path(previous, primary_root_utf8, previous_path);
+                data_duplicate_relative_path(entry, primary_root_utf8, current_path);
                 fprintf(stderr,
                         "host_data: duplicate guest-file key '%.*s' within root %u at '%s' and '%s'; refusing index\n",
                         120, entry->key, (unsigned)entry->precedence,
                         previous_path, current_path);
-                return 0;
+                ok = 0;
+                break;
             }
         }
         size_t key_len = strlen(entry->key);
@@ -9446,10 +9524,12 @@ static int data_validate_duplicate_policy(const SrAssetIndex *index) {
             strncmp(index->entries[after].key, entry->key, key_len) == 0 &&
             index->entries[after].key[key_len] == '/') {
             fprintf(stderr, "host_data: guest file/directory key collision; refusing index\n");
-            return 0;
+            ok = 0;
+            break;
         }
     }
-    return 1;
+    free(primary_root_utf8);
+    return ok;
 }
 
 /* Enumerate only roots carried by the validated title filesystem binding.
@@ -9819,7 +9899,7 @@ int sr_host_data_prepare(void) {
             if (walk_ok && temporary.count != 0u &&
                 !sr_asset_index_finalize(&temporary)) walk_ok = 0;
             if (walk_ok && temporary.count != 0u &&
-                !data_validate_duplicate_policy(&temporary)) walk_ok = 0;
+                !data_validate_duplicate_policy(&temporary, root_wide)) walk_ok = 0;
             SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         }
     } else if (walk_ok) {
@@ -9836,7 +9916,7 @@ int sr_host_data_prepare(void) {
         }
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !sr_asset_index_finalize(&temporary)) walk_ok = 0;
-        if (walk_ok && !data_validate_duplicate_policy(&temporary)) walk_ok = 0;
+        if (walk_ok && !data_validate_duplicate_policy(&temporary, root_wide)) walk_ok = 0;
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !data_validate_index(&temporary, primary_count)) walk_ok = 0;

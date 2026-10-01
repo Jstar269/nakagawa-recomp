@@ -51,10 +51,21 @@ neighbor-directory discovery.
 
 Roots that are duplicated or overlap are rejected, including a parent root and
 one of its descendants. Unknown keys, absolute paths, traversal, malformed
-mounts, and duplicate precedence values also fail validation. Within one root,
-case-folded duplicate guest file keys and file/directory key collisions refuse
-the index. The same file key may appear in separate roots; the first available
-file by declared precedence is opened, and unreadable files fail closed.
+mounts, and duplicate precedence values also fail validation. Within one loose
+root, case-folded duplicate guest-file keys and file/directory key collisions
+refuse the index. Duplicate keys within one extracted archive subtree also
+refuse the index.
+
+The primary extracted root preserves the legacy resolution for copies of the
+same guest key and archive variant from distinct extracted-XB subtrees (for
+example, `<archive>.xb.d`). The index retains every copy and sorts equal keys by
+variant, root precedence, then bytewise UTF-8 host path; opening the key selects
+the first path. This makes the lexically first extracted archive path win
+independently of host enumeration order, whether the copies contain identical
+or different bytes. A copy in the primary root wins over copies in loose roots.
+Packed-archive mode has a separate order: archive paths are sorted bytewise,
+then members retain archive insertion order, so the first member with the
+selected key and variant wins. Unreadable selected files fail closed.
 
 For example, a synthetic profile can mount two sibling roots into the same
 guest namespace:
