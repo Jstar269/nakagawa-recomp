@@ -7302,7 +7302,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "56a8d66b5f6ae35d94228126fbffd8ea60e94f80e6d20bfc855cc96ed76bc36e"
+      "sha256": "ef47948cd0871e6618c009c5cbd1303805e85b89181fe1fe7b19e598868e2224"
     },
     {
       "path": "tools/test_dco_policy.py",
