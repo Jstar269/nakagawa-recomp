@@ -738,11 +738,9 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
     return gotFrame > 0 ? 0 : SCE_MPEG_ERROR_NO_DATA;
 }
 /* ---- YCbCr decode path (sceMpegAvc*YCbCr / sceMpegAvcCsc) ----
- * The guest-visible YCbCr allocation is a deterministic, zero-filled contract. The decoded
- * picture is retained separately as RGBA so the existing H.264 backend can stay unchanged; every
- * operation rechecks the allocation address, geometry, guest fingerprint, and decoded-picture
- * state before using that hidden store. Unsupported firmware-visible details fail closed and
- * name #302 instead of being inferred from a title's dimensions. */
+ * Guest-visible plane bytes are zero-filled modeled state, not an established PSP header/plane
+ * layout. The H.264 backend's decoded RGBA picture is retained separately; Csc writes that
+ * decoded picture to the guest destination. Keep plane-layout and cache details under #302. */
 #define YCBCR_HEADER_BYTES 128u
 #define YCBCR_ALIGNMENT 16u
 #define YCBCR_SLOT_COUNT 16
@@ -833,9 +831,9 @@ static int ycbcr_pointer_valid(uint32_t addr, uint32_t size, uint32_t alignment)
     return addr && !(addr & (alignment - 1u)) && sr_guest_span_writable(addr, size);
 }
 
-/* The public PSPSDK MPEG surface uses 4:2:0 YCbCr allocations with a 128-byte header. The
- * dimensions and mode are supplied by the guest; the only hardware-independent contract exposed
- * here is that layout. Firmware values outside it remain an explicit #302 limitation. */
+/* This implementation currently sizes a 128-byte prefix plus tightly packed 4:2:0 plane spans.
+ * No public source cited here establishes that shape as PSP ABI, so report it as a modeled
+ * allocation and keep firmware layout values within the #302 partial boundary. */
 uint32_t mpeg_avc_query_ycbcr_size(uint32_t mpegAddr, uint32_t mode, uint32_t width,
                                    uint32_t height, uint32_t resultAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
@@ -918,7 +916,6 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
         if (r > 0) {
             got = r;
-            b->valid = 1;
             ctx->h264Frames++;
         } else if (r < 0) {
             b->valid = 0;
@@ -936,6 +933,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "no decoded picture at end of stream", SCE_MPEG_ERROR_NO_DATA);
         return 0;
     }
+    b->valid = 1;
     MEM_W32(initAddr, 1u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
@@ -1029,6 +1027,10 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
         const uint8_t *px = b->rgba + ((size_t)((uint32_t)y + row) * b->width + (uint32_t)x) * 4u;
         uint32_t rowAddr = span.first + row * span.row_pitch;
         uint8_t *out = (uint8_t *)SR_HOST(rowAddr);
+#ifdef SR_MPEG_CSC_NO_WRITE_MUTANT
+        (void)px;
+        (void)out;
+#else
         for (uint32_t col = 0; col < (uint32_t)w; col++, px += 4u) {
             unsigned r = px[0], g = px[1], bl = px[2];
             uint16_t v16;
@@ -1050,6 +1052,7 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
                     break;
             }
         }
+#endif
         extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
         sr_gpu_vram_dirty(rowAddr, span.row_bytes);
     }
