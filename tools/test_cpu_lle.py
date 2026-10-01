@@ -338,6 +338,29 @@ class GeneratedLleFatalFlowTests(unittest.TestCase):
         self.assertIn("$(CPU_LLE_AOT_FIXTURE_C)", recipe)
 
 
+# Test-only stand-in for the two SDL3 timer entry points src/rt/sched.c calls.
+# It is used only when SDL3 development headers are absent, so the scheduler
+# proof still runs on a host that cannot build the player.
+SDL_TIMER_SHIM = """\
+#ifndef NK_TEST_SDL_TIMER_SHIM_H
+#define NK_TEST_SDL_TIMER_SHIM_H
+#include <stdint.h>
+#include <time.h>
+static inline uint64_t SDL_GetTicksNS(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static inline void SDL_DelayPrecise(uint64_t ns) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ns / 1000000000ull);
+    ts.tv_nsec = (long)(ns % 1000000000ull);
+    nanosleep(&ts, NULL);
+}
+#endif
+"""
+
+
 @unittest.skipUnless(CC, "gcc is required for the generated scheduler ERET proof")
 class LleSchedulerIntegrationTests(unittest.TestCase):
     """Run generated exception/ERET flow through real dispatch and scheduling."""
@@ -564,6 +587,10 @@ int main(void) {
         env = os.environ.copy()
         compiler = CC
         include_flags = []
+        # A host without SDL3 development headers (the hosted Python gate) gets a
+        # test-only timer shim below; sched.c reaches SDL for its monotonic clock
+        # and precise delay only, and the fixture runs with VBLANK pacing off.
+        sdl_available = os.name == "nt"
         if os.name == "nt":
             msys_bin = Path("C:/msys64/ucrt64/bin")
             msys_usr_bin = Path("C:/msys64/usr/bin")
@@ -582,6 +609,7 @@ int main(void) {
                 )
                 if sdl_flags.returncode == 0:
                     include_flags.extend(sdl_flags.stdout.split())
+                    sdl_available = True
         env["SR_NOVBPACE"] = "1"
 
         with tempfile.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
@@ -589,6 +617,12 @@ int main(void) {
             source_path = work / "fixture.c"
             exe_path = work / "fixture.exe"
             source_path.write_text(source, encoding="ascii", newline="\n")
+            if not sdl_available:
+                shim_dir = work / "sdl_timer_shim"
+                (shim_dir / "SDL3").mkdir(parents=True)
+                (shim_dir / "SDL3" / "SDL_timer.h").write_text(
+                    SDL_TIMER_SHIM, encoding="ascii", newline="\n")
+                include_flags.extend((f"-I{shim_dir}", "-D_POSIX_C_SOURCE=200809L"))
             common = [
                 "-std=c11", "-O0", "-g", "-fno-strict-aliasing",
                 "-ffunction-sections", "-fdata-sections", "-Isrc/rt",
