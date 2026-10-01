@@ -32,7 +32,7 @@ bool nk_json_validate_utf8(const uint8_t *s, size_t len) {
             if ((c2 & 0xC0) != 0x80) return false;
             i += 3;
         } else if ((c & 0xF8) == 0xF0) {
-            if (i + 3 >= len) return false;
+            if (c > 0xF4 || i + 3 >= len) return false;
             uint8_t c1 = s[i + 1];
             uint8_t c2 = s[i + 2];
             uint8_t c3 = s[i + 3];

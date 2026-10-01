@@ -590,6 +590,38 @@ void     sr_exec_span_reset(void);
 int      sr_exec_span_register(uint32_t start, uint32_t end);
 int      sr_exec_span_owns_fetch(uint32_t pc);
 
+#if defined(SR_STACK_CENSUS_ENABLED)
+/* Opt-in dynamic check of guest stack preservation at generated callable
+ * boundaries. Codegen supplies its sorted callable-entry set. Resume entries
+ * share an existing callable frame and are deliberately not counted. */
+typedef enum SrStackCensusStatus {
+    SR_STACK_CENSUS_NOT_OBSERVED = 0,
+    SR_STACK_CENSUS_COMPLETE = 1,
+    SR_STACK_CENSUS_PARTIAL = 2,
+    SR_STACK_CENSUS_FAILED = 3
+} SrStackCensusStatus;
+typedef struct SrStackCensusSummary {
+    SrStackCensusStatus status;
+    uint64_t entries;
+    uint64_t returns;
+    uint64_t excluded;
+    uint64_t unexpected;
+    uint64_t mismatches;
+    uint32_t first_mismatch_entry;
+    uint32_t first_mismatch_expected_sp;
+    uint32_t first_mismatch_actual_sp;
+    uint32_t first_mismatch_flow;
+    int has_mismatch;
+} SrStackCensusSummary;
+void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_count);
+void sr_stack_census_enter(uint32_t entry);
+void sr_stack_census_exit(uint32_t entry, uint32_t expected_sp,
+                          uint32_t actual_sp, uint32_t flow_kind);
+void sr_stack_census_snapshot(SrStackCensusSummary *summary);
+SrStackCensusStatus sr_stack_census_status(void);
+void sr_stack_census_report(void);
+#endif
+
 #define SR_HAS_GUEST_CALL_BOUNDARY 1
 void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume boundary */
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
@@ -767,11 +799,12 @@ int      sched_current_has_pending_wakeup(void);        /* banked sceKernelWakeu
 int      sched_current_join_result_pending(uint32_t uid); /* non-consuming join-result peek */
 void     sched_raise_interrupt(uint32_t source);     /* latch source; delivery occurs at a scheduler boundary */
 uint32_t sched_pending_interrupts(void);             /* source bits not yet serviced */
-void     sched_delay_current(uint32_t usec);        /* block current thread for usec */
+void     sched_delay_current(uint64_t usec);        /* block current thread for usec */
 void     sched_preempt(void);                       /* yield now if a higher-priority thread is ready */
 void     sched_block_on(uint32_t obj);              /* block current thread until sched_wake(obj) */
 void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart: always block to the next vblank start edge */
 int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */
+int      sched_wait_vblank_cb(int wait_start);       /* callback-aware display wait; wait_start selects WaitVblankStart semantics */
 int      sched_block_on_timeout(uint32_t obj, uint32_t usec);  /* returns 1 if timed out */
 void     sched_wake(uint32_t obj);                  /* ready all threads blocked on obj */
 void     sched_wake_with_result(uint32_t obj, uint32_t result); /* sched_wake + a wait result */
