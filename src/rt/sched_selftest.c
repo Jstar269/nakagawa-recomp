@@ -749,6 +749,8 @@ static void test_delivered_vblank_writes_no_guest_memory(void) {
     reset_sched();
     uint32_t frame = 0, vsync = 0;
     int configured = sr_title_config_vblank_counters(&frame, &vsync);
+    expect(configured == (cfg_has(SR_TITLE_CFG_VBLANK_COUNTERS) ? 1 : 0),
+           "the retired counter binding is still carried and matches its validity bit");
     for (size_t i = 0; i < sizeof(k_candidate_counters) / sizeof(k_candidate_counters[0]); i++) {
         MEM_W32(k_candidate_counters[i], 0u);
     }

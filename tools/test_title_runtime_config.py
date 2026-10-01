@@ -1062,9 +1062,11 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
         driver = (ROOT / "src" / "rt" / "driver.c").read_text(encoding="utf-8")
         sched = (ROOT / "src" / "rt" / "sched.c").read_text(encoding="utf-8")
         self.assertIn("sr_title_config_fallback_entry()", driver)
-        for name in ("sr_title_config_is_worker_entry", "sr_title_config_is_launcher_entry",
-                     "sr_title_config_vblank_counters"):
+        for name in ("sr_title_config_is_worker_entry", "sr_title_config_is_launcher_entry"):
             self.assertIn(name, sched)
+        # The VBLANK counter binding is retired: the scheduler must not consume it, so a
+        # delivered VBLANK cannot write title-named guest words again.
+        self.assertNotIn("sr_title_config_vblank_counters", sched)
         # Only title_config.c may see the generated artifact.
         for relative in ("src/rt/driver.c", "src/rt/sched.c"):
             self.assertNotIn(

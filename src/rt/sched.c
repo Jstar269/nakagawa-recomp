@@ -1377,11 +1377,13 @@ static void deliver_vblank(void) {
     sr_perf_vblank();
 
     /* A delivered VBLANK writes NO guest memory. The guest's own VBLANK sub-interrupt
-     * handler (dispatched below) is the only thing that advances a guest's frame or
-     * vsync words; on the PSP nothing else does. An earlier build also added one to a
-     * title-named pair of words here, which counted every VBLANK twice for a guest whose
-     * handler maintains the same words, so a frame loop gated on "two VBLANKs elapsed"
-     * passed after one and the guest's logic ran at twice its intended rate. */
+     * handler (dispatched below) advances its frame/vsync words; the runtime has no
+     * evidence that PSP firmware writes title memory at VBLANK (assumed from the
+     * documented sub-interrupt model, not measured). An earlier build also added one to
+     * a title-named pair of words here, so a guest whose handler maintains the same words
+     * saw every VBLANK counted twice and a loop gated on "two VBLANKs elapsed" passed after
+     * one. Measured on the flagship title screen against PPSSPP: 55.16 vs 30.0 game
+     * frames/s before (1.84x), 27.75 after. */
 
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
