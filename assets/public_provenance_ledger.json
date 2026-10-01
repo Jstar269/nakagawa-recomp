@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94f7421dc2f5971485aed9313f24e1538bc9765070d30b8f5f421549ecbeba90"
+      "sha256": "4f17e53db8ffa9db4376712e003d0fa98f4e070e92ebbc8c10edb7060cf04411"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "60fb21152b3bece47804348c1a9cd39d46483c28ad10e0243dee8f67a2bebb36"
+      "sha256": "1db8a34b4bf3356344ec4cda339dde16522899957295761fcd594c9e913d07ca"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -4481,7 +4481,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8bc60c5ba98f5fdcfae61d842ea26f509c60ae94c57ad09086d0c6f0df6c56f2"
+      "sha256": "5ed4c5d12b895a5ca63a499406500f0e3a8c3e2f9a4d87723cdc286c814d01c5"
     },
     {
       "path": "src/rt/h264_mf.c",
