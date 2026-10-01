@@ -360,7 +360,7 @@ def inspect_iso(
                 qualification_error = (
                     f"Unqualified revision (SFO DISC_VERSION {version}) for manifest/profile "
                     f"'{matched.id}': an explicit local compatibility record is required. "
-                    "Revision qualification is in the works (#315)."
+                    "Register it with --register-local-compatibility-record after reviewing the local inputs."
                 )
             else:
                 prior = recorded["disc"]
@@ -378,7 +378,7 @@ def inspect_iso(
                     qualification_error = (
                         f"Unqualified revision (SFO DISC_VERSION {version}): {changed}; "
                         "an explicit local compatibility record is required. "
-                        "Revision qualification is in the works (#315)."
+                        "Register it with --register-local-compatibility-record after reviewing the local inputs."
                     )
 
         return IsoMetadata(
