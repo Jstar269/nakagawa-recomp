@@ -138,11 +138,14 @@ class TestAssetIndexSelftestC(unittest.TestCase):
         self.assertIn("pgf_open_w", hle)
         self.assertNotIn('pgf_open("font/', hle)
 
-    def test_production_data_root_is_wide_and_executable_anchored(self):
+    def test_production_data_root_is_wide_and_configured(self):
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
-        self.assertIn("sr_wide_module_data_root(&root_wide)", hle)
+        # Issue #289: generic HLE no longer infers a data root beside the executable; the
+        # title manifest / launcher must configure SR_DATAROOT, and its absence is refused.
+        self.assertNotIn("sr_wide_module_data_root(&root_wide)", hle)
+        self.assertNotIn("host_data: executable-relative data root could not be resolved", hle)
+        self.assertIn("host_data: extracted-data census requires a configured SR_DATAROOT", hle)
         self.assertIn("host_data: SR_DATAROOT is configured but is not a valid absolute path", hle)
-        self.assertIn("host_data: executable-relative data root could not be resolved", hle)
         self.assertIn("sr_wide_env_alloc(L\"SR_DATAROOT\"", hle)
         self.assertIn("sr_wide_configured_root_wide_alloc(configured_root", hle)
         self.assertIn("sr_utf8_env_alloc(L\"SR_FSDIR\"", hle)

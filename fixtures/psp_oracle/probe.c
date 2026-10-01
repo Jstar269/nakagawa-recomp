@@ -18,6 +18,12 @@
 #include <stdio.h>
 #include <string.h>
 
+/* source_commit is device-reported build identity, not a host-side rewrite.
+   The Makefile supplies the full object id only from a clean checkout. */
+#ifndef PROBE_BUILD_COMMIT
+#error "PROBE_BUILD_COMMIT must be the full git object id this probe was built from"
+#endif
+
 PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 
 #define FIXTURE_BUILD_ID "nakagawa-psp-oracle-v1"
@@ -54,6 +60,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX 53
 #define PSP_ORACLE_CASE_MODEL_PROFILE 54
 #define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL 55
+#define PSP_ORACLE_CASE_MBX_DELETE_WAIT 56
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -184,6 +191,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/dmac_invalid_tail_try_src_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TRANSPORT_WRITE
 #define PROBE_HOST0_LOG "host0:/transport_write_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MBX_DELETE_WAIT
+#define PROBE_HOST0_LOG "host0:/mbx_delete_wait_log.txt"
 #endif
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
@@ -3627,6 +3636,249 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MBX_DELETE_WAIT
+#define MBX_RECEIVE_TIMEOUT_US 500000u
+#define MBX_RECEIVE_JOIN_TIMEOUT_US 1500000u
+#define MBX_CONTROL_TIMEOUT_US 50000u
+#define MBX_NOT_CAPTURED 0xffffffffu
+
+/*
+   Record contract:
+   mbx-delete-wait result = raw DeleteMbx; out0..out25 are mailbox UID,
+   receiver TID, StartThread rc, pre-delete ReferThreadStatus rc/status/
+   waitType/waitId/completion count, raw ReceiveMbx rc, output message pointer,
+   sentinel-unchanged bit, requested/remaining timeout, receive-entry-to-delete-
+   entry elapsed, delete-entry-to-receive-return elapsed, receive-entry-to-return
+   elapsed, bounded WaitThreadEnd rc, post-join completion count,
+   post-join ReferThreadStatus rc/status/waitType/waitId, worker cleanup rc
+   (DeleteThread after a successful join, otherwise TerminateDeleteThread),
+   post-delete ReferMbxStatus rc, raw waiter count (not-captured if query fails),
+   and final mailbox cleanup rc (zero means the first DeleteMbx already
+   removed the object; otherwise this field records one cleanup retry).
+
+   mbx-timeout-control result = raw ReceiveMbx; out0..out7 are its separate
+   mailbox UID, output pointer, sentinel-unchanged bit, requested/remaining
+   timeout, elapsed time, pre-cleanup ReferMbxStatus rc, and cleanup DeleteMbx
+   rc. PASS gates only the probe's setup, blocked-state, completion, and cleanup
+   integrity checks. The ReceiveMbx result and message pointers remain raw
+   observations; no WAIT_DELETE return code is treated as an expected result.
+*/
+static volatile int s_mbx_delete_wait_uid;
+static volatile uint32_t s_mbx_receive_entry_us;
+static volatile uint32_t s_mbx_receive_return_us;
+static volatile uint32_t s_mbx_receive_remaining_us;
+static volatile uint32_t s_mbx_receive_completion_count;
+static volatile int s_mbx_receive_rc;
+static void * volatile s_mbx_receive_message;
+static uint32_t s_mbx_message_sentinel;
+
+static int mbx_delete_wait_receiver(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+
+    SceUInt timeout = MBX_RECEIVE_TIMEOUT_US;
+    void *message = &s_mbx_message_sentinel;
+    s_mbx_receive_entry_us = sceKernelGetSystemTimeLow();
+    s_mbx_receive_rc = sceKernelReceiveMbx(
+        (SceUID)s_mbx_delete_wait_uid, &message, &timeout);
+    s_mbx_receive_message = message;
+    s_mbx_receive_remaining_us = timeout;
+    s_mbx_receive_return_us = sceKernelGetSystemTimeLow();
+    s_mbx_receive_completion_count++;
+    return 0;
+}
+
+static uint32_t run_mbx_delete_wait(int emulated) {
+    uint32_t out[26];
+    for (size_t i = 0; i < sizeof(out) / sizeof(out[0]); i++) {
+        out[i] = MBX_NOT_CAPTURED;
+    }
+
+    s_mbx_receive_entry_us = 0;
+    s_mbx_receive_return_us = 0;
+    s_mbx_receive_remaining_us = MBX_NOT_CAPTURED;
+    s_mbx_receive_completion_count = 0;
+    s_mbx_receive_rc = (int)MBX_NOT_CAPTURED;
+    s_mbx_message_sentinel = 0x4d425853u;
+    s_mbx_receive_message = &s_mbx_message_sentinel;
+
+    const SceUID mbx = sceKernelCreateMbx("oracle-delete-mbx", 0, NULL);
+    int delete_rc = (int)MBX_NOT_CAPTURED;
+    int start_rc = (int)MBX_NOT_CAPTURED;
+    int pre_status_rc = (int)MBX_NOT_CAPTURED;
+    int wait_rc = (int)MBX_NOT_CAPTURED;
+    int thread_cleanup_rc = (int)MBX_NOT_CAPTURED;
+    uint32_t delete_entry_us = 0;
+    uint32_t receive_entry_at_delete = 0;
+    uint32_t receive_elapsed_us = 0;
+    int receiver_started = 0;
+    SceUID receiver = -1;
+    uint32_t pre_status = MBX_NOT_CAPTURED;
+
+    out[0] = (uint32_t)mbx;
+    if (mbx >= 0) {
+        s_mbx_delete_wait_uid = mbx;
+        receiver = sceKernelCreateThread(
+            "oracle-mbx-rx", mbx_delete_wait_receiver, 0x10, 0x1000,
+            THREAD_ATTR_USER, NULL);
+    }
+    out[1] = (uint32_t)receiver;
+
+    if (mbx >= 0 && receiver >= 0) {
+        start_rc = sceKernelStartThread(receiver, 0, NULL);
+        if (start_rc == 0) {
+            receiver_started = 1;
+            SceKernelThreadInfo before;
+            memset(&before, 0, sizeof(before));
+            before.size = sizeof(before);
+            pre_status_rc = sceKernelReferThreadStatus(receiver, &before);
+            pre_status = (uint32_t)before.status;
+            out[4] = pre_status;
+            out[5] = (uint32_t)before.waitType;
+            out[6] = (uint32_t)before.waitId;
+        }
+    }
+    out[2] = (uint32_t)start_rc;
+    out[3] = (uint32_t)pre_status_rc;
+    out[7] = s_mbx_receive_completion_count;
+
+    if (mbx >= 0) {
+        delete_entry_us = sceKernelGetSystemTimeLow();
+        receive_entry_at_delete = s_mbx_receive_entry_us;
+        if (receiver_started) {
+            out[13] = delete_entry_us - receive_entry_at_delete;
+        }
+        delete_rc = sceKernelDeleteMbx(mbx);
+
+        if (receiver_started) {
+            SceUInt join_timeout = MBX_RECEIVE_JOIN_TIMEOUT_US;
+            wait_rc = sceKernelWaitThreadEnd(receiver, &join_timeout);
+            out[16] = (uint32_t)wait_rc;
+            out[17] = s_mbx_receive_completion_count;
+            out[8] = (uint32_t)s_mbx_receive_rc;
+            out[9] = (uint32_t)(uintptr_t)s_mbx_receive_message;
+            out[10] = (uint32_t)(
+                s_mbx_receive_message == &s_mbx_message_sentinel);
+            out[11] = MBX_RECEIVE_TIMEOUT_US;
+            out[12] = s_mbx_receive_remaining_us;
+
+            if (s_mbx_receive_completion_count == 1) {
+                receive_elapsed_us = s_mbx_receive_return_us - receive_entry_at_delete;
+                out[14] = s_mbx_receive_return_us - delete_entry_us;
+                out[15] = receive_elapsed_us;
+            }
+
+            SceKernelThreadInfo after;
+            memset(&after, 0, sizeof(after));
+            after.size = sizeof(after);
+            out[18] = (uint32_t)sceKernelReferThreadStatus(receiver, &after);
+            out[19] = (uint32_t)after.status;
+            out[20] = (uint32_t)after.waitType;
+            out[21] = (uint32_t)after.waitId;
+
+            if (wait_rc == 0) {
+                thread_cleanup_rc = sceKernelDeleteThread(receiver);
+            } else {
+                thread_cleanup_rc = sceKernelTerminateDeleteThread(receiver);
+            }
+        } else if (receiver >= 0) {
+            thread_cleanup_rc = sceKernelDeleteThread(receiver);
+        }
+    }
+
+    out[22] = (uint32_t)thread_cleanup_rc;
+    out[11] = MBX_RECEIVE_TIMEOUT_US;
+    if (mbx >= 0) {
+        SceKernelMbxInfo after_delete;
+        memset(&after_delete, 0, sizeof(after_delete));
+        after_delete.size = sizeof(after_delete);
+        const int refer_mbx_rc = sceKernelReferMbxStatus(mbx, &after_delete);
+        out[23] = (uint32_t)refer_mbx_rc;
+        if (refer_mbx_rc == 0) {
+            out[24] = (uint32_t)after_delete.numWaitThreads;
+        }
+        out[25] = (uint32_t)(delete_rc == 0 ? 0 : sceKernelDeleteMbx(mbx));
+    }
+
+    const int primary_pass =
+        mbx >= 0 &&
+        receiver >= 0 &&
+        start_rc == 0 &&
+        pre_status_rc == 0 &&
+        (pre_status & PSP_THREAD_WAITING) != 0 &&
+        out[5] == 5u &&
+        out[6] == (uint32_t)mbx &&
+        out[7] == 0u &&
+        delete_rc == 0 &&
+        wait_rc == 0 &&
+        out[17] == 1u &&
+        out[13] < MBX_RECEIVE_TIMEOUT_US &&
+        out[14] < MBX_RECEIVE_TIMEOUT_US &&
+        receive_elapsed_us < MBX_RECEIVE_TIMEOUT_US &&
+        out[18] == 0u &&
+        out[22] == 0u &&
+        out[25] == 0u;
+    emit_record_extended(emulated, "PSP-KERNEL-001", "mbx-delete-wait",
+                         primary_pass ? "PASS" : "FAIL",
+                         (uint32_t)delete_rc, out,
+                         sizeof(out) / sizeof(out[0]));
+
+    uint32_t control_out[8];
+    for (size_t i = 0; i < sizeof(control_out) / sizeof(control_out[0]); i++) {
+        control_out[i] = MBX_NOT_CAPTURED;
+    }
+    const SceUID control_mbx =
+        sceKernelCreateMbx("oracle-mbx-timeout", 0, NULL);
+    int control_receive_rc = (int)MBX_NOT_CAPTURED;
+    int control_status_rc = (int)MBX_NOT_CAPTURED;
+    int control_cleanup_rc = (int)MBX_NOT_CAPTURED;
+    uint32_t control_elapsed_us = 0;
+    int control_receive_called = 0;
+    control_out[0] = (uint32_t)control_mbx;
+
+    if (control_mbx >= 0) {
+        uint32_t control_sentinel = 0x4d425843u;
+        void *control_message = &control_sentinel;
+        SceUInt control_timeout = MBX_CONTROL_TIMEOUT_US;
+        const uint32_t control_start_us = sceKernelGetSystemTimeLow();
+        control_receive_rc =
+            sceKernelReceiveMbx(control_mbx, &control_message, &control_timeout);
+        control_elapsed_us = sceKernelGetSystemTimeLow() - control_start_us;
+        control_receive_called = 1;
+        control_out[1] = (uint32_t)(uintptr_t)control_message;
+        control_out[2] = (uint32_t)(control_message == &control_sentinel);
+        control_out[3] = MBX_CONTROL_TIMEOUT_US;
+        control_out[4] = control_timeout;
+        control_out[5] = control_elapsed_us;
+
+        SceKernelMbxInfo control_info;
+        memset(&control_info, 0, sizeof(control_info));
+        control_info.size = sizeof(control_info);
+        control_status_rc =
+            sceKernelReferMbxStatus(control_mbx, &control_info);
+        control_cleanup_rc = sceKernelDeleteMbx(control_mbx);
+        control_out[6] = (uint32_t)control_status_rc;
+        control_out[7] = (uint32_t)control_cleanup_rc;
+    }
+
+    const int control_pass =
+        control_mbx >= 0 &&
+        control_receive_called &&
+        control_status_rc == 0 &&
+        control_cleanup_rc == 0;
+    emit_record_extended(emulated, "PSP-KERNEL-001", "mbx-timeout-control",
+                         control_pass ? "PASS" : "FAIL",
+                         (uint32_t)control_receive_rc, control_out,
+                         sizeof(control_out) / sizeof(control_out[0]));
+
+    uint32_t done_out[1] = {2u};
+    emit_record_extended(emulated, "PSP-KERNEL-001", "mbx-done", "PASS",
+                         0, done_out, sizeof(done_out) / sizeof(done_out[0]));
+
+    return (uint32_t)(primary_pass && control_pass);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -3644,11 +3896,14 @@ int main(int argc, char *argv[]) {
     char line[320];
 
     /* uint32_t is `unsigned long` in the PSP newlib ABI, so %x must be fed an
-       explicitly-converted unsigned int or psp-gcc warns under -Wformat. */
+       explicitly-converted unsigned int or psp-gcc warns under -Wformat.
+       The device reports its build commit so the host can compare it with the
+       staged source. It cannot hash its module image, so binary_sha256 remains
+       an explicit placeholder and is recorded as a host-measured digest. */
     snprintf(line, sizeof(line),
              "NAKAGAWA_PSP_META schema=1 source=%s model=unknown firmware=unknown "
              "binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 "
-             "source_commit=0000000000000000000000000000000000000000 fixture=%s\n",
+             "source_commit=" PROBE_BUILD_COMMIT " fixture=%s\n",
              emulated ? "ppsspp" : "psp", FIXTURE_BUILD_ID);
     emit(emulated, line);
 #ifdef PROBE_HOST0_LOG
@@ -3777,6 +4032,8 @@ int main(int argc, char *argv[]) {
     emit_mutex_test(emulated, "mutex-priority-inheritance", pass, pass ? 1u : 0u, out, 7);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
     run_mutex_interrupt_context_case(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MBX_DELETE_WAIT
+    run_mbx_delete_wait(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

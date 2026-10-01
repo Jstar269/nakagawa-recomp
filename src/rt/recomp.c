@@ -1306,6 +1306,260 @@ RecompFn sr_lookup(uint32_t addr) {
     return fn && sr_exec_span_owns_fetch(addr) ? fn : NULL;
 }
 
+#if defined(SR_STACK_CENSUS_ENABLED)
+/* The stack census is enabled only by the opt-in codegen flag. The expected
+ * address vector is generated, sorted, and immutable for the process lifetime;
+ * binary search keeps the diagnostic path bounded even for large images. */
+static atomic_flag s_stack_census_lock = ATOMIC_FLAG_INIT;
+static const uint32_t *s_stack_census_expected;
+static unsigned char *s_stack_census_observed_expected;
+static uint32_t s_stack_census_expected_count;
+static uint32_t s_stack_census_unobserved;
+static uint64_t s_stack_census_entries;
+static uint64_t s_stack_census_returns;
+static uint64_t s_stack_census_excluded;
+static uint64_t s_stack_census_unexpected;
+static uint64_t s_stack_census_mismatches;
+static uint32_t s_stack_census_first_mismatch_entry;
+static uint32_t s_stack_census_first_mismatch_expected_sp;
+static uint32_t s_stack_census_first_mismatch_actual_sp;
+static uint32_t s_stack_census_first_mismatch_flow;
+static int s_stack_census_has_mismatch;
+static int s_stack_census_invalid_expected;
+static int s_stack_census_tracking_unavailable;
+static int s_stack_census_unobserved_known;
+static int s_stack_census_armed;
+static int s_stack_census_atexit_registered;
+static int s_stack_census_reported;
+
+static void sr_stack_census_lock(void) {
+    while (atomic_flag_test_and_set_explicit(
+        &s_stack_census_lock, memory_order_acquire)) {
+    }
+}
+
+static void sr_stack_census_unlock(void) {
+    atomic_flag_clear_explicit(&s_stack_census_lock, memory_order_release);
+}
+
+static int sr_stack_census_expected_matches(const uint32_t *entries,
+                                           uint32_t count) {
+    if (count != s_stack_census_expected_count
+        || (count != 0u && (entries == NULL || s_stack_census_expected == NULL))) {
+        return 0;
+    }
+    for (uint32_t i = 0u; i < count; i++) {
+        if (entries[i] != s_stack_census_expected[i]) return 0;
+    }
+    return 1;
+}
+
+static uint32_t sr_stack_census_expected_index(uint32_t entry) {
+    uint32_t lo = 0u;
+    uint32_t hi = s_stack_census_expected_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        uint32_t value = s_stack_census_expected[mid];
+        if (value < entry) lo = mid + 1u;
+        else hi = mid;
+    }
+    return lo < s_stack_census_expected_count
+        && s_stack_census_expected[lo] == entry ? lo : UINT32_MAX;
+}
+
+void sr_stack_census_begin(const uint32_t *expected_entries, uint32_t expected_count) {
+    sr_stack_census_lock();
+    if (s_stack_census_armed) {
+        /* Generated registration can run once per cosim case. Preserve the
+         * accumulated observations; a changed entry set is uncertainty, not
+         * permission to silently restart the census. */
+        if (!sr_stack_census_expected_matches(expected_entries, expected_count)) {
+            s_stack_census_invalid_expected = 1;
+        }
+        sr_stack_census_unlock();
+        return;
+    }
+    s_stack_census_expected = expected_entries;
+    s_stack_census_expected_count = expected_count;
+    s_stack_census_observed_expected = NULL;
+    s_stack_census_unobserved = expected_count;
+    s_stack_census_unobserved_known = 1;
+    s_stack_census_entries = 0u;
+    s_stack_census_returns = 0u;
+    s_stack_census_excluded = 0u;
+    s_stack_census_unexpected = 0u;
+    s_stack_census_mismatches = 0u;
+    s_stack_census_has_mismatch = 0;
+    s_stack_census_invalid_expected =
+        (expected_count != 0u && expected_entries == NULL);
+    for (uint32_t i = 0u; !s_stack_census_invalid_expected && i < expected_count; i++) {
+        if ((expected_entries[i] & 3u) != 0u
+            || (i != 0u && expected_entries[i - 1u] >= expected_entries[i])) {
+            s_stack_census_invalid_expected = 1;
+        }
+    }
+    if (s_stack_census_invalid_expected) {
+        s_stack_census_unobserved_known = 0;
+    } else if (expected_count != 0u) {
+        s_stack_census_observed_expected = calloc(
+            expected_count, sizeof(*s_stack_census_observed_expected));
+        if (s_stack_census_observed_expected == NULL) {
+            s_stack_census_tracking_unavailable = 1;
+            s_stack_census_unobserved_known = 0;
+        }
+    }
+    s_stack_census_armed = 1;
+    s_stack_census_reported = 0;
+    int register_atexit = !s_stack_census_atexit_registered;
+    sr_stack_census_unlock();
+
+    if (register_atexit && atexit(sr_stack_census_report) == 0) {
+        sr_stack_census_lock();
+        s_stack_census_atexit_registered = 1;
+        sr_stack_census_unlock();
+    } else if (register_atexit) {
+        sr_stack_census_lock();
+        s_stack_census_invalid_expected = 1;
+        sr_stack_census_unlock();
+    }
+}
+
+void sr_stack_census_enter(uint32_t entry) {
+    sr_stack_census_lock();
+    if (s_stack_census_armed) {
+        s_stack_census_entries++;
+        uint32_t expected_index = s_stack_census_invalid_expected
+            ? UINT32_MAX : sr_stack_census_expected_index(entry);
+        if (expected_index == UINT32_MAX) {
+            s_stack_census_unexpected++;
+        } else if (!s_stack_census_tracking_unavailable
+                   && s_stack_census_observed_expected[expected_index] == 0u) {
+            s_stack_census_observed_expected[expected_index] = 1u;
+            s_stack_census_unobserved--;
+        }
+    }
+    sr_stack_census_unlock();
+}
+
+void sr_stack_census_exit(uint32_t entry, uint32_t expected_sp,
+                          uint32_t actual_sp, uint32_t flow_kind) {
+    sr_stack_census_lock();
+    if (s_stack_census_armed) {
+        /* `unexpected` is counted once per invocation, at enter. */
+        s_stack_census_returns++;
+        if (flow_kind != 0u) {
+            /* Exception/ERET/fatal exits do not have a proven ordinary return
+             * contract. Preserve that uncertainty as PARTIAL, never PASS. */
+            s_stack_census_excluded++;
+        } else if (expected_sp != actual_sp) {
+            if (!s_stack_census_has_mismatch) {
+                s_stack_census_has_mismatch = 1;
+                s_stack_census_first_mismatch_entry = entry;
+                s_stack_census_first_mismatch_expected_sp = expected_sp;
+                s_stack_census_first_mismatch_actual_sp = actual_sp;
+                s_stack_census_first_mismatch_flow = flow_kind;
+            }
+            s_stack_census_mismatches++;
+        }
+    }
+    sr_stack_census_unlock();
+}
+
+static SrStackCensusStatus sr_stack_census_status_locked(void) {
+    if (!s_stack_census_armed
+        || (s_stack_census_entries == 0u && s_stack_census_returns == 0u)) {
+        return SR_STACK_CENSUS_NOT_OBSERVED;
+    } else if (s_stack_census_mismatches != 0u) {
+        return SR_STACK_CENSUS_FAILED;
+    } else if (s_stack_census_invalid_expected
+        || s_stack_census_tracking_unavailable
+        || !s_stack_census_unobserved_known
+        || s_stack_census_unobserved != 0u
+        || s_stack_census_unexpected != 0u
+        || s_stack_census_excluded != 0u
+        || s_stack_census_entries != s_stack_census_returns) {
+        return SR_STACK_CENSUS_PARTIAL;
+    }
+    return SR_STACK_CENSUS_COMPLETE;
+}
+
+void sr_stack_census_snapshot(SrStackCensusSummary *summary) {
+    if (summary == NULL) return;
+    sr_stack_census_lock();
+    summary->status = sr_stack_census_status_locked();
+    summary->unobserved = s_stack_census_unobserved;
+    summary->unobserved_known = s_stack_census_unobserved_known;
+    summary->entries = s_stack_census_entries;
+    summary->returns = s_stack_census_returns;
+    summary->excluded = s_stack_census_excluded;
+    summary->unexpected = s_stack_census_unexpected;
+    summary->mismatches = s_stack_census_mismatches;
+    summary->first_mismatch_entry = s_stack_census_first_mismatch_entry;
+    summary->first_mismatch_expected_sp = s_stack_census_first_mismatch_expected_sp;
+    summary->first_mismatch_actual_sp = s_stack_census_first_mismatch_actual_sp;
+    summary->first_mismatch_flow = s_stack_census_first_mismatch_flow;
+    summary->has_mismatch = s_stack_census_has_mismatch;
+    sr_stack_census_unlock();
+}
+
+SrStackCensusStatus sr_stack_census_status(void) {
+    SrStackCensusSummary summary;
+    sr_stack_census_snapshot(&summary);
+    return summary.status;
+}
+
+void sr_stack_census_report(void) {
+    uint64_t entries, returns, excluded, unexpected, mismatches;
+    uint32_t unobserved;
+    uint32_t mismatch_entry, mismatch_expected_sp, mismatch_actual_sp, mismatch_flow;
+    int has_mismatch, unobserved_known;
+    SrStackCensusStatus status;
+    sr_stack_census_lock();
+    if (!s_stack_census_armed || s_stack_census_reported) {
+        sr_stack_census_unlock();
+        return;
+    }
+    s_stack_census_reported = 1;
+    unobserved = s_stack_census_unobserved;
+    unobserved_known = s_stack_census_unobserved_known;
+    entries = s_stack_census_entries;
+    returns = s_stack_census_returns;
+    excluded = s_stack_census_excluded;
+    unexpected = s_stack_census_unexpected;
+    mismatches = s_stack_census_mismatches;
+    has_mismatch = s_stack_census_has_mismatch;
+    mismatch_entry = s_stack_census_first_mismatch_entry;
+    mismatch_expected_sp = s_stack_census_first_mismatch_expected_sp;
+    mismatch_actual_sp = s_stack_census_first_mismatch_actual_sp;
+    mismatch_flow = s_stack_census_first_mismatch_flow;
+    status = sr_stack_census_status_locked();
+    sr_stack_census_unlock();
+
+    const char *name = status == SR_STACK_CENSUS_COMPLETE ? "COMPLETE"
+        : status == SR_STACK_CENSUS_PARTIAL ? "PARTIAL"
+        : status == SR_STACK_CENSUS_FAILED ? "FAILED" : "NOT_OBSERVED";
+    fprintf(stderr,
+        "STACK_CENSUS status=%s entries=%llu returns=%llu excluded=%llu "
+        "unexpected=%llu mismatches=%llu unobserved=",
+        name, (unsigned long long)entries, (unsigned long long)returns,
+        (unsigned long long)excluded, (unsigned long long)unexpected,
+        (unsigned long long)mismatches);
+    if (unobserved_known) {
+        fprintf(stderr, "%u\n", unobserved);
+    } else {
+        fprintf(stderr, "unknown\n");
+    }
+    fflush(stderr);
+    if (has_mismatch) {
+        fprintf(stderr,
+            "STACK_CENSUS first_mismatch entry=0x%08x expected_sp=0x%08x "
+            "actual_sp=0x%08x flow=%u\n",
+            mismatch_entry, mismatch_expected_sp, mismatch_actual_sp, mismatch_flow);
+        fflush(stderr);
+    }
+}
+#endif
+
 /* Recover the guest address of the call instruction that reached dispatch().
  *
  * s->pc is NOT it.  Generated code only assigns s->pc inside SR_YIELD, and SR_YIELD
@@ -1613,8 +1867,8 @@ static int dispatch_try_with_boundary(
      * A miss that survives the reloc/kseg fixups above is usually a call into a
      * runtime-loaded module (dynamic import stub, e.g. launcher pc 0x0000efec) whose
      * export table was populated after static codegen. Ask the late-import registry:
-     *   - a rebased guest export address: patch the dispatch table so every future
-     *     lookup of this target hits directly, then continue on the normal hit path;
+     *   - a rebased guest export address: resolve the current body for this call,
+     *     then continue on the normal hit path;
      *   - SR_HLE_LATE_BUILTIN: the id is a built-in HLE handler — trap into sr_syscall
      *     with the standard HLE return convention (v0 = result, pc = ra);
      *   - 0: unresolved — fall through to the existing miss handling unchanged. */
@@ -1639,14 +1893,13 @@ static int dispatch_try_with_boundary(
                 fn = sr_lookup(resolved);
             }
             if (fn) {
-                /* Patch the runtime table: alias the missed target to the resolved
-                 * body so subsequent dispatches skip the registry walk entirely. */
-                sr_register(target, fn);
-                static int late_patch_n = 0;
-                if (late_patch_n < 20) {
-                    fprintf(stderr, "LATE_IMPORT_PATCH: target=0x%08x -> 0x%08x (table patched)\n",
+                /* The registry owns this binding's lifetime. A persistent table
+                 * alias would bypass unload and same-address reload (#593). */
+                static int late_resolve_n = 0;
+                if (late_resolve_n < 20) {
+                    fprintf(stderr, "LATE_IMPORT_RESOLVE: target=0x%08x -> 0x%08x\n",
                             target, resolved);
-                    late_patch_n++;
+                    late_resolve_n++;
                 }
                 target = resolved;  /* use resolved target for logging below */
             } else {

@@ -253,16 +253,38 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def test_source_retrieval_date_cannot_predate_the_snapshot(self):
+        document = {
+            "schema_version": 1,
+            "retrieved_utc": "2026-09-25",
+            "sources": [{
+                "url": "https://pypi.org/pypi/ruff/0.16.9/json",
+                "name": "ruff",
+                "version": "0.16.9",
+                "retrieved_utc": "2026-09-24",
+                "artifacts": [{"filename": "ruff-0.16.9.tar.gz", "sha256": "0" * 64}],
+            }],
+        }
+        with self.assertRaisesRegex(generate_sbom.LockfileParseError, "predates"):
+            generate_sbom._parse_pypi_release_index(document, "test")
+        document["sources"][0]["retrieved_utc"] = "2026-09-30"
+        generate_sbom._parse_pypi_release_index(document, "test")
+        document["sources"][0]["retrieved_utc"] = "30-09-2026"
+        with self.assertRaises(generate_sbom.LockfileParseError):
+            generate_sbom._parse_pypi_release_index(document, "test")
+
     def test_repository_lock_matches_every_trusted_artifact(self):
         packages = generate_sbom.parse_python_lockfile(
             generate_sbom.ROOT / "tools" / "requirements-lock.txt")
         metadata = self._metadata()
         self.assertEqual(metadata["retrieved_utc"], "2026-09-25")
+        ruff_source = next(s for s in metadata["sources"] if s["name"] == "ruff")
+        self.assertEqual(ruff_source["retrieved_utc"], "2026-09-30")
         self.assertEqual(
             [source["url"] for source in metadata["sources"]],
             [
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
-                "https://pypi.org/pypi/ruff/0.16.8/json",
+                "https://pypi.org/pypi/ruff/0.16.9/json",
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/bashlex/0.18/json",
             ],
@@ -303,7 +325,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("malformed SHA-256 hash", str(ctx.exception))
 
     def test_old_sequential_ruff_hash_fails_as_unmatched(self):
-        text = f"ruff==0.16.8 --hash=sha256:{self.OLD_RUFF_HASH}\n"
+        text = f"ruff==0.16.9 --hash=sha256:{self.OLD_RUFF_HASH}\n"
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             self._parse(text)
         self.assertIn("matches no trusted artifact", str(ctx.exception))

@@ -46,9 +46,12 @@ otherwise incomplete. A failed hygiene/security job is never hidden by the
 aggregate. Python/native jobs also wait for hygiene, so an early full-tree
 failure does not spend additional runner time on dependent expensive gates.
 
-The full-tree pre-commit run retains the publication audit and the separate
-Betterleaks current-tree scan. Hygiene then runs an explicit Betterleaks
-reachable-history scan and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
+The full-tree pre-commit run retains the publication audit and the Betterleaks
+current-tree scan; the hook runs Betterleaks in directory mode over the files it
+is given (every tracked file under `--all-files`, the staged files at the commit
+stage). The hook is commit-stage only: at pre-push pre-commit supplies no file
+names, which would turn directory mode into a whole-working-tree scan. Hygiene then runs an explicit Betterleaks reachable-history
+scan in git mode and the synthetic canary gate. Markdown linting is separate from the native and Windows jobs. Those jobs remain
 synthetic/public-input gates; no private game input is put in Actions.
 
 The Windows job also runs `mingw32-make production-smoke` in the existing MSYS2 UCRT64/GCC,
@@ -76,13 +79,19 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
-The Linux `native_tools` job also builds SDL3 from its pinned 3.4.8 release commit, installs
-Vulkan development headers, and downloads the PSPDEV archive identified by
-[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its SHA-256 before use. It
-then runs `make CC=gcc showcase-linux`, which builds and boots the two source-owned showcase
-packages with dummy SDL video and audio drivers. This is Linux runtime build-and-boot evidence
-for those fixtures; it does not establish general consumer-title compatibility or PSP hardware
-acceptance.
+The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit and installs
+Vulkan development headers. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
+runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
+archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
+SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
+source-owned showcase packages with dummy SDL video and audio drivers, then passes the generated
+TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requires
+`STAGING_RESULT status=PASS`. This is build, test, and headless staging evidence for the named
+synthetic fixtures. The CMake player is configured with CMake's default, unoptimized build type, so
+the gate covers only that configuration: an optimized Release configuration fails under the global
+`-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
+job does not claim that configuration builds. Consumer ISO compatibility remains in the works
+(#306); these checks do not establish PSP hardware acceptance or interactive desktop presentation.
 
 ## Local readiness before opening a pull request
 
@@ -99,20 +108,30 @@ the strict authority-bound gate:
 mingw32-make --no-print-directory check
 ```
 
-`check` covers documentation and policy checks, both publication-audit legs,
-the native host-core tests, and a fast Python subset. It does not replace
-`make readiness`: readiness additionally verifies the exact candidate against
-the external detailed ledger and therefore remains `BLOCKED` when
-`NK_TRUSTED_LEDGER` is unavailable. `make provenance-refresh` is the single
-local command for regenerating the tracked public controls. It calls the same
-`generate_ephemeral_controls()` implementation as the hosted provenance
-attestation, reads the trusted public ledger from the exact base commit, and
-requires the external detailed ledger through `NK_TRUSTED_LEDGER`. Stage the
-intended candidate changes first. The target stages the generated controls and
-the profile when `--apply-policy` is requested; it does not stage the rest of
-the worktree. It writes a refresh audit block for
-the changed existing public paths and computes the export from those generated
-ledger bytes in the same invocation, so a second pass is not needed.
+`check` covers documentation and policy checks, the provenance record and
+disposition gap check, both publication-audit legs, the native host-core tests,
+and a fast Python subset. It does not replace `make readiness`: readiness
+additionally verifies the exact candidate against the external detailed ledger
+and therefore remains `BLOCKED` when `NK_TRUSTED_LEDGER` is unavailable.
+`make provenance-refresh` is the single local command for regenerating the
+tracked public controls. It calls the same `generate_ephemeral_controls()`
+implementation as the hosted provenance attestation, reads the trusted public
+ledger from the exact base commit, and requires the external detailed ledger
+through `NK_TRUSTED_LEDGER`. Stage the intended candidate changes first. The
+target stages the generated controls and the profile when `--apply-policy` is
+requested; it does not stage the rest of the worktree. The committed ledger
+stays a per-path document (no `refresh` audit block), and the export is computed
+from those generated ledger bytes in the same invocation, so a second pass is
+not needed.
+
+The `provenance_record_gap.py --check` gate (`make provenance-record-gap-check`)
+enforces that every upstream-derived production code path (under `src/` or
+`tools/`, excluding `.md`/`.txt` notice and format documents) has an explicit
+disposition in [`docs/INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md). Paths with
+`status=missing` fail closed. A reviewed baseline (`KNOWN_DISPOSITION_GAPS`)
+allows existing gaps to shrink but never grow; stale baseline entries fail
+closed. The check is wired into `make check`, `make readiness`, pre-commit, and
+hosted CI (`native_tools` and `main_smoke`).
 
 The base defaults to `merge-base(HEAD, origin/main)`. When the pull request's
 exact base differs, set `PROVENANCE_BASE_SHA` to its full 40-character commit
@@ -138,6 +157,7 @@ at the first failure. Prefer it to assembling the checklist by hand.
 ```bash
 python tools/policy_sync.py
 python tools/lint_docs.py
+python tools/provenance_record_gap.py --check
 python tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python tools/provenance_attest_verify.py --repo . --candidate <exact HEAD sha> --base <exact BASE sha>     --require-immutable-revisions --trusted-ledger <external detailed ledger>     --workdir <scratch outside the repo>

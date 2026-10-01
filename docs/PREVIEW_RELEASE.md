@@ -126,8 +126,8 @@ python tools/build_public_export.py --public-safe-profile --export-dir $Source -
 
 New-Item -ItemType Directory -Path $Bin, $PackageDocs -Force | Out-Null
 Copy-Item build\nakagawa_player.exe, build\production-smoke\production_smoke.exe $Bin
-& .\copy_build_assets.ps1 -BuildDir $Bin -ExcludeOptionalFonts
-if ($LASTEXITCODE -ne 0) { throw "copy_build_assets.ps1 failed with exit code $LASTEXITCODE" }
+& .\tools\copy_build_assets.ps1 -BuildDir $Bin -ExcludeOptionalFonts
+if ($LASTEXITCODE -ne 0) { throw "tools\copy_build_assets.ps1 failed with exit code $LASTEXITCODE" }
 python tools/stage_runtime_dlls.py --target $Bin
 if ($LASTEXITCODE -ne 0) { throw "stage_runtime_dlls.py failed with exit code $LASTEXITCODE" }
 Copy-Item LICENSE, NOTICE.md (Join-Path $Stage '.')

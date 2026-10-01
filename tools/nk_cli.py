@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 
 def _ensure_cli_module_path() -> None:
@@ -39,6 +40,7 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
+from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
     MAX_LIBRARY_JSON_BYTES,
@@ -73,6 +75,225 @@ PACKAGE_CACHE_MARKER = ".nk-aot-package-cache-v1"
 MAX_GUEST_MODULES = 32
 MAX_GUEST_MODULE_BYTES = 256 * 1024 * 1024
 MAX_GUEST_MODULE_SET_BYTES = 512 * 1024 * 1024
+_VRAM_BASE = 0x04000000
+_VRAM_SIZE = 2 * 1024 * 1024
+_VRAM_FORMATS = {
+    "5650": 0, "5551": 1, "4444": 2, "8888": 3,
+    "CLUT4": 4, "CLUT8": 5, "CLUT16": 6, "CLUT32": 7,
+    "DXT1": 8, "DXT3": 9, "DXT5": 10, "DEPTH16": 11,
+}
+
+
+def _vram_address(value: str) -> int:
+    try:
+        address = int(value, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("address must be a decimal or 0x-prefixed integer") from exc
+    if not 0 <= address <= 0xFFFFFFFF:
+        raise argparse.ArgumentTypeError("address must fit in 32 bits")
+    return address
+
+
+def _clut_format(value: str) -> int:
+    named = {"5650": 0, "5551": 1, "4444": 2, "8888": 3}
+    if value.upper() in named:
+        return named[value.upper()]
+    try:
+        result = int(value, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("CLUT format must be 5650, 5551, 4444, 8888, or a format word") from exc
+    if not 0 <= result <= 0xFFFFFF:
+        raise argparse.ArgumentTypeError("CLUT format word must fit in 24 bits")
+    return result
+
+
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    return (struct.pack(">I", len(payload)) + kind + payload +
+            struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
+
+
+def _write_rgba_png(path: Path, width: int, height: int, rgba: bytes) -> None:
+    if width <= 0 or height <= 0 or len(rgba) != width * height * 4:
+        raise ValueError("decoded RGBA dimensions do not match the pixel buffer")
+    row_bytes = width * 4
+    scanlines = b"".join(b"\0" + rgba[y * row_bytes:(y + 1) * row_bytes]
+                         for y in range(height))
+    payload = (b"\x89PNG\r\n\x1a\n" +
+               _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) +
+               _png_chunk(b"IDAT", zlib.compress(scanlines)) +
+               _png_chunk(b"IEND", b""))
+    path.write_bytes(payload)
+
+
+def _build_vram_decoder(temp_dir: Path) -> Path:
+    compiler = shutil.which("gcc")
+    if compiler is None:
+        raise ValueError("vram decoder requires GCC on PATH (UCRT64 GCC on Windows)")
+    source = ROOT / "src" / "rt" / "ge.c"
+    executable = temp_dir / ("ge-vram-decoder.exe" if os.name == "nt" else "ge-vram-decoder")
+    command = [
+        compiler, "-std=c99", "-O2", "-flto", "-ffunction-sections", "-fdata-sections",
+        "-DSR_GE_VRAM_DECODER_CLI", "-Isrc/rt", "-Isrc/core", "-Isrc/core/generated",
+        "-Isrc/player", str(source), "-Wl,--gc-sections", "-lm", "-o", str(executable),
+    ]
+    built = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    if built.returncode:
+        detail = (built.stderr or built.stdout).strip()
+        raise ValueError(f"could not build the existing GE texture decoder: {detail}")
+    return executable
+
+
+def _decode_vram_surface(
+    decoder: Path, image: Path, output: Path, *, addr: int, width: int,
+    height: int, stride: int, format_code: int, swizzled: bool,
+    clut_addr: int = 0, clut_format: int = 0, clut_file: Path | None = None,
+) -> None:
+    raw_output = output.with_suffix(".rgba")
+    command = [
+        str(decoder), str(image), hex(addr), str(width), str(height), str(stride),
+        str(format_code), "1" if swizzled else "0", hex(clut_addr), str(clut_format),
+        str(clut_file) if clut_file else "-", str(raw_output),
+    ]
+    decoded = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    if decoded.returncode:
+        raw_output.unlink(missing_ok=True)
+        raise ValueError((decoded.stderr or decoded.stdout).strip() or
+                         f"GE texture decoder exited {decoded.returncode}")
+    try:
+        rgba = raw_output.read_bytes()
+        _write_rgba_png(output, width, height, rgba)
+    finally:
+        raw_output.unlink(missing_ok=True)
+
+
+def cmd_vram(args: argparse.Namespace) -> int:
+    try:
+        if args.from_sidecar:
+            if args.out_dir is None:
+                raise ValueError("--from-sidecar requires --out-dir")
+            _cmd_vram_sidecar(args.from_sidecar, args.out_dir)
+        else:
+            if not args.image or args.addr is None or not args.width or not args.height:
+                raise ValueError("direct vram export requires IMAGE, --addr, --width, --height, and --output")
+            if args.output is None:
+                raise ValueError("direct vram export requires --output")
+            if not args.stride:
+                args.stride = args.width
+            if args.format in ("CLUT4", "CLUT8", "CLUT16", "CLUT32") and args.clut_addr is None:
+                raise ValueError("CLUT formats require --clut-addr")
+            image = args.image.resolve(strict=True)
+            if image.stat().st_size != _VRAM_SIZE:
+                raise ValueError("input VRAM image must be exactly 2 MiB")
+            if args.clut_addr is not None and args.clut_addr < _VRAM_BASE:
+                raise ValueError("--clut-addr must be in the captured 2 MiB VRAM address range")
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="nk-vram-decoder-") as temporary:
+                decoder = _build_vram_decoder(Path(temporary))
+                _decode_vram_surface(
+                    decoder, image, args.output, addr=args.addr, width=args.width,
+                    height=args.height, stride=args.stride,
+                    format_code=_VRAM_FORMATS[args.format], swizzled=args.swizzled,
+                    clut_addr=args.clut_addr or 0, clut_format=args.clut_format,
+                )
+            print(f"VRAM_PNG status=PASS output={args.output}")
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"VRAM_PNG status=FAIL reason={exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_vram_sidecar(sidecar_path: Path, output_dir: Path) -> None:
+    sidecar_path = sidecar_path.resolve(strict=True)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    if sidecar.get("schema") != "nakagawa-vram-dump-v1":
+        raise ValueError("unsupported VRAM sidecar schema")
+    vram_info = sidecar.get("vram", {})
+    if vram_info.get("size_bytes") != _VRAM_SIZE:
+        raise ValueError("sidecar does not describe an exact 2 MiB VRAM image")
+    image_name = vram_info.get("image_file")
+    if not isinstance(image_name, str) or Path(image_name).name != image_name:
+        raise ValueError("sidecar image_file must be a basename next to the JSON file")
+    image = (sidecar_path.parent / image_name).resolve(strict=True)
+    if image.stat().st_size != _VRAM_SIZE:
+        raise ValueError("sidecar VRAM image must be exactly 2 MiB")
+    surfaces = sidecar.get("surfaces")
+    if not isinstance(surfaces, list):
+        raise ValueError("sidecar surfaces must be an array")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    unavailable = [
+        item for item in sidecar.get("texture_levels", [])
+        if isinstance(item, dict) and item.get("in_vram") is False
+    ]
+    for item in unavailable:
+        print(f"VRAM_SURFACE_UNAVAILABLE name=texture_level_{item.get('level')} "
+              "reason=outside_snapshot issue=#314", file=sys.stderr)
+    clut = sidecar.get("clut", {})
+    clut_data = clut.get("loaded_data_hex", "")
+    clut_path = None
+    with tempfile.TemporaryDirectory(prefix="nk-vram-decoder-") as temporary:
+        temporary_path = Path(temporary)
+        decoder = _build_vram_decoder(temporary_path)
+        if clut_data:
+            if len(clut_data) % 2 or len(clut_data) > 4096:
+                raise ValueError("sidecar CLUT byte data is malformed or exceeds 2048 bytes")
+            clut_path = temporary_path / "clut.bin"
+            clut_path.write_bytes(bytes.fromhex(clut_data))
+        exported = 0
+        failed: list[str] = []
+        for surface in surfaces:
+            if not isinstance(surface, dict):
+                raise ValueError("sidecar surface entry must be an object")
+            name = surface.get("name")
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
+                raise ValueError("sidecar surface name is not a safe output basename")
+            try:
+                width = int(surface["width"])
+                height = int(surface["height"])
+                stride = int(surface["stride"])
+                addr = int(surface["addr"], 0)
+                format_code = int(surface["format_code"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"sidecar surface {name!r} has invalid dimensions or format") from exc
+            if format_code not in range(12) or not width or not height or width > 4096 or height > 4096:
+                raise ValueError(f"sidecar surface {name!r} has unsupported dimensions or format")
+            output = output_dir / f"{name}.png"
+            if surface.get("kind") == "palette" and surface.get("data_hex"):
+                palette_bytes = bytes.fromhex(surface["data_hex"])
+                if len(palette_bytes) > _VRAM_SIZE:
+                    raise ValueError("sidecar palette exceeds the captured VRAM size")
+                palette_image = temporary_path / f"{name}-palette.bin"
+                palette_image.write_bytes(palette_bytes + bytes(_VRAM_SIZE - len(palette_bytes)))
+                image_for_surface = palette_image
+                addr = _VRAM_BASE
+            else:
+                image_for_surface = image
+            try:
+                _decode_vram_surface(
+                    decoder, image_for_surface, output, addr=addr, width=width,
+                    height=height, stride=stride, format_code=format_code,
+                    swizzled=bool(surface.get("swizzled", False)),
+                    clut_addr=int(clut.get("addr", "0"), 0) if clut_path is None else 0,
+                    clut_format=int(clut.get("format_word", clut.get("format_code", 0)), 0)
+                    if isinstance(clut.get("format_word", clut.get("format_code", 0)), str)
+                    else int(clut.get("format_word", clut.get("format_code", 0))),
+                    clut_file=clut_path if format_code in (4, 5, 6, 7) else None,
+                )
+            except ValueError as exc:
+                # One surface the decoder rejects (an extent that leaves the captured
+                # span, say) must not abandon the surfaces after it -- the display
+                # framebuffer is the one these diagnostics exist for.
+                detail = " ".join(str(exc).split())[:160]
+                print(f"VRAM_SURFACE_UNAVAILABLE name={name} reason=decoder_rejected "
+                      f"detail={detail!r} issue=#314", file=sys.stderr)
+                failed.append(name)
+                continue
+            exported += 1
+            print(f"VRAM_PNG status=PASS surface={name} output={output}")
+        if failed:
+            print(f"VRAM_EXPORT_PARTIAL exported={exported} unavailable={len(failed)}",
+                  file=sys.stderr)
+        if surfaces and not exported:
+            raise ValueError("no sidecar surface could be decoded")
 
 
 class PackageBuildError(ValueError):
@@ -383,6 +604,11 @@ def _load_library_entry(user_root: Path, disc_id: str) -> dict:
             raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building (#297).")
     if not isinstance(entry.get("selected_executable", ""), str):
         raise PackageBuildError(f"Library entry {disc_id} has an invalid selected_executable (#297).")
+    boot_executable = entry.get("boot_executable", "")
+    if not isinstance(boot_executable, str) or (
+        boot_executable and _psp_boot_path(boot_executable) is None
+    ):
+        raise PackageBuildError(f"Library entry {disc_id} has an invalid boot_executable.")
     if type(entry.get("is_experimental", False)) is not bool:
         raise PackageBuildError(f"Library entry {disc_id} has an invalid experimental marker.")
     return entry
@@ -1016,8 +1242,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 f"Unqualified revision (SFO DISC_VERSION {metadata.version}): this manifest requires "
                 "an explicit local compatibility record. Rebuild with "
-                "--register-local-compatibility-record after reviewing the selected local inputs; "
-                "revision qualification is in the works (#315)."
+                "--register-local-compatibility-record after reviewing the selected local inputs."
             )
         if (requires_local_identity and recorded_identity is not None and
             recorded_identity["disc"]["disc_version"] != metadata.version and
@@ -1025,7 +1250,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 f"Unqualified revision (SFO DISC_VERSION {metadata.version}): the local compatibility "
                 "record names a different SFO revision. Review and register this revision explicitly "
-                "with --register-local-compatibility-record; revision qualification is in the works (#315)."
+                "with --register-local-compatibility-record."
             )
         reporter.report("preflight", "PASS", "Library entry and manifest validated")
         reporter.report("extract", "START", "Extracting executable and guest modules...")
@@ -1092,7 +1317,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         ):
             if module_dir is None or not (module_dir / module["name"]).is_file():
                 raise PackageBuildError(
-                    f"Required guest PRX {module['name']} is unavailable for title identity (#315)."
+                    f"Required guest PRX {module['name']} is unavailable for title identity."
                 )
             identity_modules.append({
                 "name": module["name"],
@@ -1126,7 +1351,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 raise PackageBuildError(
                     "Local compatibility record mismatch: " + ", ".join(identity_changes) +
                     ". Review and register the changed inputs with "
-                    "--register-local-compatibility-record; revision qualification is in the works (#315)."
+                    "--register-local-compatibility-record."
                 )
         identity_path = cache_dir / "title-input-identity.json"
         _write_private_file(
@@ -1497,6 +1722,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         print(f"Executable: {cmd[0]}")
         print(f"PSP_ISO:    {env.get('PSP_ISO')}")
         print(f"DATAROOT:   {env.get('SR_DATAROOT')}")
+        print(f"LOOSE_ROOTS: {env.get('SR_LOOSE_CONTENT_ROOTS')}")
         print(f"FPS_CAP:    {env.get('SR_FPS_CAP')}")
         return 0
     except Exception as exc:
@@ -1597,7 +1823,11 @@ def _new_bringup_report() -> dict:
         "unsupported_imports": [],
         "runtime_imports": [],
         "runtime_output_kind": "NOT_RUN",
-        "presentation": {"status": "NOT_RUN", "frame_submissions": 0},
+        "presentation": {
+            "status": "NOT_RUN",
+            "frame_submissions": 0,
+            "backend": "unknown",
+        },
         "process_exit_code": None,
         "counts": {
             "functions": None,
@@ -1703,9 +1933,15 @@ def _bringup_human_summary(report: dict) -> str:
     )
     if report["failure_class"] == "NONE":
         submissions = report["presentation"]["frame_submissions"]
+        backend = report["presentation"].get("backend", "unknown")
+        presenter = (
+            f"{backend} presenter accepted"
+            if backend != "unknown"
+            else "GUI presenter received"
+        )
         return (
             f"{cfw_prefix}Bring-up reached {report['reached_stage']}; launch "
-            f"{report['exit_classification'].lower()}; GUI presenter received "
+            f"{report['exit_classification'].lower()}; {presenter} "
             f"{submissions} frame submission(s). Visual contents are not verified."
         )
     if report["failure_class"] == "MODIFIED_DUMP_CFW_LOADER":
@@ -1764,7 +2000,8 @@ def _bringup_human_summary(report: dict) -> str:
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
-                           selected: str, is_experimental: bool) -> None:
+                           selected: str, is_experimental: bool,
+                           boot_executable: str = "") -> None:
     library_path = user_root / "library.json"
     games = []
     if library_path.exists():
@@ -1791,6 +2028,7 @@ def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: 
         "title_id": title_id,
         "iso_path": str(iso_path),
         "selected_executable": selected,
+        "boot_executable": boot_executable,
         "is_experimental": is_experimental,
     })
     if len(games) > MAX_LIBRARY_GAMES:
@@ -1886,8 +2124,6 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
                     line.strip())
            for line in output.splitlines()):
         return "DISPATCH_MISS"
-    if "no available video device" in folded or "video driver" in folded:
-        return "VIDEO_UNAVAILABLE"
     if "unsupported instruction" in folded or "aot-gap" in folded:
         return "UNSUPPORTED_INSTRUCTION"
     if any(re.match(r"^sr_unimplemented: function 0x[0-9a-f]{8}: ", line.strip())
@@ -1917,6 +2153,10 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
         return "DRIVER_ARGUMENT_FAILURE"
     if "=== PSP RECOMPILER CRASH REPORT ===" in output:
         return "NATIVE_CRASH_REPORT"
+    # SDL's generic dummy-driver diagnostic can accompany a more useful PSP
+    # boundary. Keep it as a fallback so it cannot mask named runtime failures.
+    if "no available video device" in folded or "video driver" in folded:
+        return "VIDEO_UNAVAILABLE"
     return "EMPTY" if not output.strip() else "OTHER"
 
 
@@ -1924,18 +2164,71 @@ _HOST_PRESENT_SUBMITTED = re.compile(
     r"^HOST_PRESENT_SUBMITTED f=\d+ buf=0x[0-9a-fA-F]{8} "
     r"fmt=[0-3] stride=\d+$"
 )
+_OFFSCREEN_FRAME_PRESENT = re.compile(
+    r"^BOOT_EVENT phase=frame_present backend=offscreen frame=\d+"
+    r"(?: t_ns=\d+)?$"
+)
+_WINDOW_READY_BACKEND = re.compile(
+    r"^BOOT_EVENT phase=window_ready backend=([A-Za-z0-9_-]+)"
+    r"(?: t_ns=\d+)?$"
+)
+_PRESENTER_BACKENDS = frozenset({"offscreen", "vulkan", "gdi", "none"})
+_ACCEPTING_PRESENTER_BACKENDS = frozenset({"offscreen"})
 
 
-def _set_bringup_presentation(report: dict, output: str) -> None:
-    """Count validated calls from the runtime into its GUI presenter."""
-    submissions = sum(
-        1 for line in output.splitlines()
-        if _HOST_PRESENT_SUBMITTED.fullmatch(line.strip())
+def _set_bringup_presentation(report: dict, output: str) -> bool:
+    """Record presenter identity and accept only ordered, validated evidence."""
+    lines = [line.strip() for line in output.splitlines()]
+    submission_indices: list[int] = []
+    malformed_submission = False
+    for index, line in enumerate(lines):
+        if not line.startswith("HOST_PRESENT_SUBMITTED "):
+            continue
+        if _HOST_PRESENT_SUBMITTED.fullmatch(line):
+            submission_indices.append(index)
+        else:
+            malformed_submission = True
+
+    frame_indices: list[int] = []
+    malformed_frame = False
+    for index, line in enumerate(lines):
+        if not line.startswith("BOOT_EVENT phase=frame_present backend=offscreen "):
+            continue
+        if _OFFSCREEN_FRAME_PRESENT.fullmatch(line):
+            frame_indices.append(index)
+        else:
+            malformed_frame = True
+
+    backends = {
+        match.group(1)
+        for line in lines
+        if (match := _WINDOW_READY_BACKEND.fullmatch(line))
+    }
+    backend_candidate = next(iter(backends), None)
+    backend = (
+        backend_candidate
+        if len(backends) == 1 and backend_candidate in _PRESENTER_BACKENDS
+        else "unknown"
+    )
+    # cmd_bringup pins SR_VIDEO=offscreen, so a different recognized backend is
+    # still a truthful identity but cannot satisfy this route's host-sink proof.
+    evidence_ok = (
+        backend in _ACCEPTING_PRESENTER_BACKENDS
+        and not malformed_submission
+        and not malformed_frame
+        and bool(frame_indices)
+        and len(frame_indices) == len(submission_indices)
+        and all(
+            frame < submission
+            for frame, submission in zip(frame_indices, submission_indices, strict=True)
+        )
     )
     report["presentation"] = {
-        "status": "FRAME_SUBMITTED" if submissions else "NO_FRAME_SUBMISSIONS",
-        "frame_submissions": submissions,
+        "status": "FRAME_SUBMITTED" if evidence_ok else "NO_FRAME_SUBMISSIONS",
+        "frame_submissions": len(submission_indices) if evidence_ok else 0,
+        "backend": backend,
     }
+    return evidence_ok
 
 
 def _flight_has_hle_import(path: Path | None) -> bool | None:
@@ -2096,6 +2389,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         exec_issues = checks.get("EXECUTABLE", {}).get("issue_numbers", [])
         failure = "EXECUTABLE_UNSUPPORTED" if exec_issues else "INVALID_ISO"
         _fail_bringup(report, "inspect", failure, exec_issues,
+                      int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    boot_path = _psp_boot_path(preflight.get("selected_executable_source"))
+    if boot_path is None:
+        _fail_bringup(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -2268,7 +2568,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
         library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
         _write_bringup_library(
-            user_root, iso_path, metadata, title_id, library_executable, is_experimental
+            user_root, iso_path, metadata, title_id, library_executable,
+            is_experimental, str(preflight["selected_executable_source"]),
         )
     except Exception as exc:
         failure = "EXPERIMENTAL_IMPORT_FAILED"
@@ -2404,6 +2705,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         if not executable.is_file():
             raise PackageBuildError("The generated package executable is missing.")
         env = os.environ.copy()
+        env.pop("SR_DATAROOT", None)
+        env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+        data_root = (ROOT / manifest["filesystem"]["data_root"]).resolve(strict=False)
+        try:
+            loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)
+        except (OSError, ValueError) as exc:
+            _fail_bringup(
+                report, "launch", "LOOSE_CONTENT_ROOTS_UNAVAILABLE", [289],
+                int((time.perf_counter() - started) * 1000),
+            )
+            print(str(exc), file=sys.stderr)
+            _write_bringup_report(report, report_path)
+            print(_bringup_human_summary(report))
+            return 1
         env.update({
             # SDL3 prefers the singular selector names. Pin both spellings so
             # an inherited modern or legacy selector cannot replace the
@@ -2412,8 +2727,16 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "SDL_VIDEODRIVER": "dummy",
             "SDL_AUDIO_DRIVER": "dummy",
             "SDL_AUDIODRIVER": "dummy",
+            # Bring-up still uses the production --gui scheduler route so the
+            # display latch and presenter boundary execute. Select the explicit
+            # host-memory sink instead of asking that route to create a window
+            # or a Vulkan-presentable surface. Interactive launches do not use
+            # this policy.
+            "SR_VIDEO": "offscreen",
             "PSP_ISO": str(iso_path),
-            "SR_DATAROOT": str(package.get("required_local_assets", [{}])[0].get("path", "data")),
+            "SR_DATAROOT": str(data_root),
+            "SR_LOOSE_CONTENT_ROOTS": loose_roots,
+            "SR_BOOT_PATH": boot_path,
         })
         flight_output: Path | None = None
         try:
@@ -2422,7 +2745,10 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             )
             os.close(flight_fd)
             flight_output = Path(flight_name)
-            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal;4096"
+            # media is in the class list so a named media boundary (for example a PSMF
+            # stream the demuxer refused) is retained as a structured event in the flight
+            # bundle instead of existing only as text in this run's output.
+            env["SR_FLIGHT"] = "hle,sched,prx,unsupported,fault,fatal,media;4096"
             env["SR_FLIGHT_OUTPUT"] = str(flight_output)
         except OSError:
             env.pop("SR_FLIGHT", None)
@@ -2451,7 +2777,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
-            _set_bringup_presentation(report, launch_output)
+            presentation_evidence_ok = _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
             report["runtime_output_kind"] = _runtime_output_kind(
                 launch_output, report["runtime_imports"]
@@ -2485,7 +2811,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                             int((time.perf_counter() - started) * 1000),
                         )
                     else:
-                        if report["presentation"]["frame_submissions"] == 0:
+                        if not presentation_evidence_ok:
                             _fail_bringup(
                                 report, "launch", "NO_FRAME_SUBMISSIONS", [297, 308],
                                 int((time.perf_counter() - started) * 1000),
@@ -2495,10 +2821,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                                                int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
-                if "no available video device" in folded or "video driver" in folded:
-                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
-                    report["exit_classification"] = "HEADLESS_UNAVAILABLE"
-                elif (report["runtime_imports"] or "unknown nid" in folded
+                if (report["runtime_imports"] or "unknown nid" in folded
                       or "unimplemented import" in folded):
                     failure, issues = "UNSUPPORTED_IMPORT", [308]
                 elif (report["runtime_output_kind"] == "UNSUPPORTED_INSTRUCTION"
@@ -2518,6 +2841,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     failure, issues = "NATIVE_RUNTIME_CRASH", [297]
                 elif report["runtime_output_kind"] == "DISPATCH_MISS":
                     failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
+                elif report["runtime_output_kind"] == "VIDEO_UNAVAILABLE":
+                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
+                    report["exit_classification"] = "HEADLESS_UNAVAILABLE"
                 else:
                     failure, issues = "LAUNCH_FAILED", [297]
                 _fail_bringup(report, "launch", failure, issues,
@@ -2606,6 +2932,27 @@ def main() -> int:
     p_bringup.add_argument("--private-sweep-import-report", type=Path, default=None,
                            help=argparse.SUPPRESS)
     p_bringup.set_defaults(func=cmd_bringup)
+
+    p_vram = subparsers.add_parser("vram", help="Decode a captured PSP VRAM image to PNG")
+    p_vram.add_argument("image", nargs="?", type=Path,
+                        help="exact 2 MiB raw VRAM image (omit with --from-sidecar)")
+    p_vram.add_argument("--from-sidecar", type=Path,
+                        help="export every surface described by a runtime capture sidecar")
+    p_vram.add_argument("--out-dir", type=Path,
+                        help="destination directory for sidecar exports")
+    p_vram.add_argument("--addr", type=_vram_address, help="surface guest address (decimal or 0x hex)")
+    p_vram.add_argument("--width", type=int, help="surface width in pixels")
+    p_vram.add_argument("--height", type=int, help="surface height in pixels")
+    p_vram.add_argument("--stride", type=int, help="row stride in pixels; defaults to width")
+    p_vram.add_argument("--format", choices=tuple(_VRAM_FORMATS),
+                        help="5650, 5551, 4444, 8888, CLUT4/8/16/32, DXT1/3/5, or DEPTH16")
+    p_vram.add_argument("--clut-addr", type=_vram_address,
+                        help="CLUT guest address for indexed texture formats")
+    p_vram.add_argument("--clut-format", type=_clut_format, default=0,
+                        help="palette format (5650/5551/4444/8888 or a GE format word)")
+    p_vram.add_argument("--swizzled", action="store_true", help="decode PSP swizzled texture storage")
+    p_vram.add_argument("--output", type=Path, help="destination PNG for a direct surface export")
+    p_vram.set_defaults(func=cmd_vram)
 
     args = parser.parse_args()
     return args.func(args)

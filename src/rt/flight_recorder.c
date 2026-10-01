@@ -225,6 +225,8 @@ static const SrFlightClassName s_flight_class_names[] = {
     {SR_FLIGHT_CLASS_FAULT, "fault"},
     {SR_FLIGHT_CLASS_FATAL, "fatal"},
     {SR_FLIGHT_CLASS_MEDIA, "media"},
+    {SR_FLIGHT_CLASS_GE, "ge"},
+    {SR_FLIGHT_CLASS_PRESENT, "present"},
 };
 
 static int token_is(const char *text, size_t length, const char *name) {
@@ -356,6 +358,13 @@ uint64_t sr_flight_hle_import(uint32_t nid, uint32_t uid, uint32_t object_uid, u
     uint64_t sequence = 0u;
     if (classes & SR_FLIGHT_CLASS_HLE) {
         sequence = record_locked(SR_FLIGHT_CLASS_HLE, SR_FLIGHT_KIND_HLE_IMPORT, nid, uid, pc, ra);
+    }
+    if ((classes & SR_FLIGHT_CLASS_GE) && nid == 0x5fb86ab0u) {
+        /* sceGeListDeQueue is an HLE boundary even on builds where its guest
+         * operation has no registered implementation. Preserve the submitted
+         * list id and call site without changing dispatch behavior. */
+        (void)record_locked(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_DEQUEUE,
+                            object_uid, pc, 0u, 0u);
     }
     if (!(classes & SR_FLIGHT_CLASS_PRX)) return sequence;
     uint32_t kind = 0u;

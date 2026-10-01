@@ -444,7 +444,7 @@ class LegacyToolingRetirementTests(unittest.TestCase):
         retired_names = tuple(self.RETIRED_PATHS)
         paths = [
             ROOT / "Makefile",
-            ROOT / "copy_build_assets.ps1",
+            ROOT / "tools" / "copy_build_assets.ps1",
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "assets" / "titles" / "README.md",

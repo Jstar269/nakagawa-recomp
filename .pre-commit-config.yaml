@@ -44,7 +44,7 @@ repos:
         args: [--maxkb=25600]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 2eeb5678de71a00c0902cbda7105d328432f72cb # v0.16.8
+    rev: a56c0b927e6465d37cae3e97d35d4d18ab2b96cd # v0.16.9
     hooks:
       - id: ruff-check
         files: ^(tools|fixtures)/.*\.py$
@@ -53,10 +53,22 @@ repos:
   # The project-owned native config keeps default detection enabled and limits
   # the synthetic history-audit exception to its exact value and path.
   - repo: https://github.com/betterleaks/betterleaks
-    rev: ed69eef5c9d16d1b39f136846b7bbe5fb8471ef5 # v1.7.4
+    rev: 81aff7a638638aae3a659845d089043e1d8fe9ac # v1.9.0
     hooks:
       - id: betterleaks
-        stages: [pre-commit, pre-push]
+        # Directory mode over the hook's file list. pre-commit stashes unstaged
+        # changes before hooks run, so these files hold exactly the staged
+        # content. The upstream entry uses git mode, which exports
+        # GIT_CONFIG_GLOBAL=NUL; Git for Windows only special-cases lowercase
+        # "nul", so every git call failed and the hook scanned nothing on
+        # Windows. Hosted CI still scans reachable history in git mode.
+        # Commit stage only: pre-commit passes no file names at the pre-push stage,
+        # so directory mode there would either walk the whole working tree (including
+        # the private input directories) or fail on a missing path. Every commit is
+        # scanned here and the pushed history is scanned in hosted CI.
+        entry: betterleaks dir --redact --verbose
+        pass_filenames: true
+        stages: [pre-commit]
 
   - repo: local
     hooks:
@@ -103,6 +115,13 @@ repos:
       - id: modified-file-notice-audit
         name: inherited modified-file notice audit
         entry: python tools/modified_file_notice_audit.py --tracked-only
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
+      - id: provenance-record-gap-check
+        name: upstream-derived production path disposition gap check
+        entry: python tools/provenance_record_gap.py --check
         language: system
         pass_filenames: false
         always_run: true

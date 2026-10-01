@@ -448,6 +448,38 @@ void nk_input_profile_init_default(NkInputProfile *profile) {
  * Profile Validation & Conflict Detection
  * -------------------------------------------------------------------------- */
 
+/* Refuse a binding whose host index is outside the host device, before the
+ * conflict pass runs. The conflict pass used to be the only place an
+ * out-of-range index was caught, and it reported it as a conflict between two
+ * names it no longer had, formatting two NULL strings where the named
+ * diagnostic should have been. An out-of-range index handed in by a caller
+ * (the player, a future writer) now fails closed naming the field. */
+static bool check_binding_index_range(
+    const NkBindingSource *src,
+    const char *owner_kind,
+    int owner_idx,
+    char *diag_buf,
+    size_t diag_buf_sz
+) {
+    if (!src || src->type == NK_BINDING_NONE) return true;
+    if (src->type == NK_BINDING_HOST_BUTTON) {
+        if (src->index < 0 || src->index >= NK_HOST_BUTTON_COUNT) {
+            diag_set(diag_buf, diag_buf_sz,
+                     "%s %d binds host button index %d, out of range [0, %d]",
+                     owner_kind, owner_idx, src->index, NK_HOST_BUTTON_COUNT - 1);
+            return false;
+        }
+        return true;
+    }
+    if (src->index < 0 || src->index >= NK_HOST_AXIS_COUNT) {
+        diag_set(diag_buf, diag_buf_sz,
+                 "%s %d binds host axis index %d, out of range [0, %d]",
+                 owner_kind, owner_idx, src->index, NK_HOST_AXIS_COUNT - 1);
+        return false;
+    }
+    return true;
+}
+
 static bool check_source_conflict(
     const NkBindingSource *src,
     int owner_idx,
@@ -462,7 +494,16 @@ static bool check_source_conflict(
     if (!src || src->type == NK_BINDING_NONE) return true;
 
     if (src->type == NK_BINDING_HOST_BUTTON) {
-        if (src->index < 0 || src->index >= NK_HOST_BUTTON_COUNT) return false;
+        if (src->index < 0 || src->index >= NK_HOST_BUTTON_COUNT) {
+            /* Unreachable: nk_input_profile_validate range-checks every binding
+             * index before this conflict pass, and names the offending field
+             * there. The guard stays, but never hands the caller's %s
+             * arguments a NULL, which is what the diagnostic below formats. */
+            *out_conflict_owner = owner_idx;
+            *out_kind = "button";
+            *out_name = nk_host_button_name(NK_HOST_BUTTON_INVALID);
+            return false;
+        }
         if (button_owners[src->index] != -1 && button_owners[src->index] != owner_idx) {
             *out_conflict_owner = button_owners[src->index];
             *out_kind = "button";
@@ -471,7 +512,12 @@ static bool check_source_conflict(
         }
         button_owners[src->index] = owner_idx;
     } else if (src->type == NK_BINDING_HOST_TRIGGER) {
-        if (src->index < 0 || src->index >= NK_HOST_AXIS_COUNT) return false;
+        if (src->index < 0 || src->index >= NK_HOST_AXIS_COUNT) {
+            *out_conflict_owner = owner_idx;
+            *out_kind = "trigger";
+            *out_name = nk_host_axis_name(NK_HOST_AXIS_INVALID);
+            return false;
+        }
         if (trigger_owners[src->index] != -1 && trigger_owners[src->index] != owner_idx) {
             *out_conflict_owner = trigger_owners[src->index];
             *out_kind = "trigger";
@@ -480,7 +526,12 @@ static bool check_source_conflict(
         }
         trigger_owners[src->index] = owner_idx;
     } else if (src->type == NK_BINDING_HOST_AXIS_POS) {
-        if (src->index < 0 || src->index >= NK_HOST_AXIS_COUNT) return false;
+        if (src->index < 0 || src->index >= NK_HOST_AXIS_COUNT) {
+            *out_conflict_owner = owner_idx;
+            *out_kind = "axis_pos";
+            *out_name = nk_host_axis_name(NK_HOST_AXIS_INVALID);
+            return false;
+        }
         if (axis_pos_owners[src->index] != -1 && axis_pos_owners[src->index] != owner_idx) {
             *out_conflict_owner = axis_pos_owners[src->index];
             *out_kind = "axis_pos";
@@ -489,7 +540,12 @@ static bool check_source_conflict(
         }
         axis_pos_owners[src->index] = owner_idx;
     } else if (src->type == NK_BINDING_HOST_AXIS_NEG) {
-        if (src->index < 0 || src->index >= NK_HOST_AXIS_COUNT) return false;
+        if (src->index < 0 || src->index >= NK_HOST_AXIS_COUNT) {
+            *out_conflict_owner = owner_idx;
+            *out_kind = "axis_neg";
+            *out_name = nk_host_axis_name(NK_HOST_AXIS_INVALID);
+            return false;
+        }
         if (axis_neg_owners[src->index] != -1 && axis_neg_owners[src->index] != owner_idx) {
             *out_conflict_owner = axis_neg_owners[src->index];
             *out_kind = "axis_neg";
@@ -590,6 +646,24 @@ NkResult nk_input_profile_validate(
                  "conflicting axis binding: host axis '%s' is bound to both 'analog_x' and 'analog_y'",
                  nk_host_axis_name(profile->axes[NK_PSP_AXIS_ANALOG_X].host_axis));
         return NK_ERROR_GENERIC;
+    }
+
+    /* Host binding indices are range-checked before the conflict pass. */
+    for (int i = 0; i < NK_PSP_BTN_COUNT; i++) {
+        if (!check_binding_index_range(&profile->psp_buttons[i].primary, "PSP button", i,
+                                       diag_buf, diag_buf_sz) ||
+            !check_binding_index_range(&profile->psp_buttons[i].secondary, "PSP button", i,
+                                       diag_buf, diag_buf_sz)) {
+            return NK_ERROR_GENERIC;
+        }
+    }
+    for (int i = 0; i < NK_NAV_ACTION_COUNT; i++) {
+        if (!check_binding_index_range(&profile->nav_bindings[i].primary, "navigation action", i,
+                                       diag_buf, diag_buf_sz) ||
+            !check_binding_index_range(&profile->nav_bindings[i].secondary, "navigation action", i,
+                                       diag_buf, diag_buf_sz)) {
+            return NK_ERROR_GENERIC;
+        }
     }
 
     /* Conflict detection across PSP digital buttons */
@@ -899,24 +973,49 @@ static bool parse_binding_node(
     out_binding->secondary.type = NK_BINDING_NONE;
 
     if (node->type == JSON_STRING) {
+        if (node->u.str_val[0] == '\0') {
+            diag_set(diag_buf, diag_buf_sz,
+                     "binding is an empty string; write \"none\" to leave a control unbound");
+            return false;
+        }
         return parse_binding_source_str(node->u.str_val, &out_binding->primary, diag_buf, diag_buf_sz);
     }
 
     if (node->type == JSON_OBJECT) {
         JsonNode *pri = obj_get(node, "primary");
+        JsonNode *sec = obj_get(node, "secondary");
+        /* An entry that names a control but not what it binds would otherwise
+         * load as a control the guest can never press, with no diagnostic:
+         * a mapping the player cannot see is indistinguishable from a frozen
+         * game. "none" is how a control is deliberately left unbound. */
+        if (!pri && !sec) {
+            diag_set(diag_buf, diag_buf_sz,
+                     "binding object names neither 'primary' nor 'secondary'; "
+                     "write \"none\" to leave a control unbound");
+            return false;
+        }
         if (pri) {
             if (pri->type != JSON_STRING) {
                 diag_set(diag_buf, diag_buf_sz, "binding 'primary' must be string");
+                return false;
+            }
+            if (pri->u.str_val[0] == '\0') {
+                diag_set(diag_buf, diag_buf_sz,
+                         "binding 'primary' is an empty string; write \"none\" to leave a control unbound");
                 return false;
             }
             if (!parse_binding_source_str(pri->u.str_val, &out_binding->primary, diag_buf, diag_buf_sz)) {
                 return false;
             }
         }
-        JsonNode *sec = obj_get(node, "secondary");
         if (sec) {
             if (sec->type != JSON_STRING) {
                 diag_set(diag_buf, diag_buf_sz, "binding 'secondary' must be string");
+                return false;
+            }
+            if (sec->u.str_val[0] == '\0') {
+                diag_set(diag_buf, diag_buf_sz,
+                         "binding 'secondary' is an empty string; write \"none\" to leave a control unbound");
                 return false;
             }
             if (!parse_binding_source_str(sec->u.str_val, &out_binding->secondary, diag_buf, diag_buf_sz)) {
@@ -1590,7 +1689,7 @@ static NkResult profile_document_write(
 
     if (fflush(f) != 0) {
         fclose(f);
-        remove(tmp_path);
+        nk_remove_utf8(tmp_path);
         diag_set(diag_buf, diag_buf_sz, "failed to flush temporary profile file '%s'", tmp_path);
         return NK_ERROR_IO;
     }
@@ -1608,7 +1707,7 @@ static NkResult profile_document_write(
     WCHAR wtmp[32768], wtarget[32768];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 32768) <= 0 ||
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, file_path, -1, wtarget, 32768) <= 0) {
-        DeleteFileA(tmp_path);
+        nk_remove_utf8(tmp_path);
         diag_set(diag_buf, diag_buf_sz, "failed UTF-8 conversion for path '%s'", file_path);
         return NK_ERROR_IO;
     }

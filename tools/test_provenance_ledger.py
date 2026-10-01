@@ -425,7 +425,7 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         self.assertEqual(evidence["record_id"], "PROV-UPSTREAM")
 
     def test_is_implementation_path(self) -> None:
-        for impl in ("src/rt/x.c", "tools/x.py", "nk.ps1", "copy_build_assets.ps1",
+        for impl in ("src/rt/x.c", "tools/x.py", "nk.ps1", "nk_manager.ps1",
                      "src/lib/x.ts", "tools/scripts/run.mjs"):
             with self.subTest(impl=impl):
                 self.assertTrue(provenance_ledger.is_implementation_path(impl), impl)

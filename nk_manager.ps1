@@ -959,6 +959,54 @@ try {
         return $true
     }
 
+    function Set-NkRuntimeFilesystemEnvironment {
+        param([AllowNull()][string]$ResolvedDataRootPath)
+
+        # Direct runtime launches must not inherit another title's roots.
+        $env:SR_DATAROOT = $null
+        if (-not [string]::IsNullOrWhiteSpace($ResolvedDataRootPath)) {
+            $env:SR_DATAROOT = $ResolvedDataRootPath
+        }
+        $env:SR_LOOSE_CONTENT_ROOTS = $null
+
+        if ([string]::IsNullOrWhiteSpace($TitleManifest)) {
+            return
+        }
+
+        $manifestTool = Join-Path $PSScriptRoot "tools\title_manifest.py"
+        $encoderArgs = @($manifestTool, $TitleManifest, "--encode-loose-content-roots")
+        if (-not [string]::IsNullOrWhiteSpace($ResolvedDataRootPath)) {
+            $encoderArgs += @("--resolved-data-root", $ResolvedDataRootPath)
+        }
+        $encoderOutput = @(& python @encoderArgs 2>&1)
+        $encoderExitCode = $LASTEXITCODE
+        if ($encoderExitCode -ne 0) {
+            $detail = ($encoderOutput -join " ").Trim()
+            if (-not $detail) {
+                $detail = "manifest encoder could not resolve the declared roots."
+            }
+            if ($detail -notmatch "Loose-content root binding #289") {
+                $detail = "Loose-content root binding #289 (in the works): $detail"
+            }
+            throw $detail
+        }
+
+        $encodedJson = ($encoderOutput -join "`n").Trim()
+        try {
+            $looseRoots = if ($encodedJson -eq '""') {
+                ""
+            } else {
+                ConvertFrom-Json -InputObject $encodedJson -ErrorAction Stop
+            }
+        } catch {
+            throw "Loose-content root binding #289 (in the works): manifest encoder returned an invalid value."
+        }
+        if ($null -eq $looseRoots) {
+            throw "Loose-content root binding #289 (in the works): manifest encoder returned no value."
+        }
+        $env:SR_LOOSE_CONTENT_ROOTS = [string]$looseRoots
+    }
+
     function Invoke-DiffFunc {
         param(
             [string]$Target,
@@ -979,6 +1027,15 @@ try {
         $imagePath = $ImagePath
         $args = @("--image", $imagePath, "0", (Get-NkRunEntry), $outTrace, "none",
                   "--diff-func=0x$addr", "--diff-oracle=$Oracle", "--diff-step=$Step")
+        $resolvedDataRoot = $null
+        if ($script:TitleDataRoot) {
+            $resolved = $null
+            try { $resolved = Resolve-Path -LiteralPath $script:TitleDataRoot -ErrorAction Stop } catch { $resolved = $null }
+            if ($resolved -and (Test-Path -LiteralPath $resolved.Path -PathType Container)) {
+                $resolvedDataRoot = $resolved.Path
+            }
+        }
+        Set-NkRuntimeFilesystemEnvironment -ResolvedDataRootPath $resolvedDataRoot
         $proc = Start-Process -FilePath $ExePath -ArgumentList $args -PassThru -NoNewWindow -Wait `
             -RedirectStandardError "$LogDir/difffunc_err.log"
         Write-Host "DiffFunc finished (exit $($proc.ExitCode)). Output: $outTrace" -ForegroundColor $(if ($proc.ExitCode -eq 0) { "Green" } else { "Yellow" })
@@ -1201,13 +1258,11 @@ try {
         Remove-Item "$LogDir/stdout_run.log", "$LogDir/stderr_run.log" -ErrorAction SilentlyContinue
 
         if ($GameIsoPath) { $env:PSP_ISO = $GameIsoPath }
-        # The runtime requires an absolute data root. Clear an inherited value
-        # first so a title without a usable declaration cannot accidentally
-        # launch against a previous title's tree.
-        $env:SR_DATAROOT = $null
-        if ($resolvedDataRoot) {
-            $env:SR_DATAROOT = $resolvedDataRoot.Path
-        }
+        # The runtime requires absolute roots. Clear inherited values first,
+        # then encode this manifest's validated loose roots through the shared
+        # title-manifest encoder used by the native launcher.
+        $resolvedDataRootPath = if ($resolvedDataRoot) { $resolvedDataRoot.Path } else { $null }
+        Set-NkRuntimeFilesystemEnvironment -ResolvedDataRootPath $resolvedDataRootPath
         $env:PSP_VFPU_TABLES = "assets/vfpu"
 
         $env:SR_QUIET = $null

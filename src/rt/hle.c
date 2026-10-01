@@ -62,6 +62,7 @@
 #include "flight_recorder.h"
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
+#include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1840,9 +1841,8 @@ static uint32_t h_DelayThread(CpuState *s) {
     sched_delay_current(A0);
     return 0;
 }
-static uint32_t h_DelayThreadCB(CpuState *s) {
+static uint32_t h_DelayThreadCBForUsec(uint64_t usec) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;  /* L6/L7 */
-    uint32_t usec = A0;
     uint32_t thread_uid = sched_current_uid();
     sched_vtime_refresh();
     uint64_t end_time = sched_vtime_deadline_after(usec);
@@ -1855,11 +1855,51 @@ static uint32_t h_DelayThreadCB(CpuState *s) {
         }
         uint64_t remaining = end_time - sched_vtime_us();
         sched_set_current_cb_wait(1);
-        sched_delay_current((uint32_t)remaining);
+        sched_delay_current(remaining);
         sched_set_current_cb_wait(0);
         sched_vtime_refresh();
     }
     return 0;
+}
+static uint32_t h_DelayThreadCB(CpuState *s) {
+    return h_DelayThreadCBForUsec(A0);
+}
+
+/* PSP's public pspkerror.h names ILLEGAL_ADDR as 0x800200D3 for kernel APIs.
+ * Keep it distinct from the subsystem-specific 0x80000103 memory error used by
+ * several HLE objects below. */
+#define SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR 0x800200d3u
+
+static uint32_t h_ReadSysClockDelay(uint32_t addr, uint64_t *usec_out) {
+    if (!addr || !usec_out || !sr_guest_span_readable(addr, 8u))
+        return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
+    uint64_t low = MEM_R32(addr);
+    uint64_t high = MEM_R32(addr + 4u);
+    *usec_out = low | (high << 32);
+    return 0;
+}
+
+/* Public PSPSDK pspthreadman.h: int sceKernelDelaySysClockThread(SceKernelSysClock *delay)
+ * and int sceKernelDelaySysClockThreadCB(SceKernelSysClock *delay). The only argument is
+ * the pointer in $a0; the SceKernelSysClock it names (low word, high word) is the delay in
+ * microseconds, so $a1 is not an argument of either call. */
+static uint32_t h_DelaySysClockThread(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    sched_delay_current(usec);
+    return 0;
+}
+
+static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    uint64_t usec;
+    uint32_t result = h_ReadSysClockDelay(A0, &usec);
+    if (result != 0u) return result;
+    return h_DelayThreadCBForUsec(usec);
 }
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
@@ -1869,6 +1909,12 @@ static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
     return sched_delete_thread(A0);
+}
+static uint32_t h_TerminateThread(CpuState *s) {
+    /* DORMANT and invalid/self targets have distinct public PSPSDK error
+     * classes; sched_terminate_thread supplies ILLEGAL_THID/UNKNOWN_THID. */
+    if (sched_is_dormant(A0)) return 0x800201a2u; /* SCE_KERNEL_ERROR_DORMANT */
+    return sched_terminate_thread(A0);
 }
 static uint32_t h_DeleteThread(CpuState *s) {
     return sched_delete_thread(A0);
@@ -2877,6 +2923,10 @@ typedef struct {
     uint32_t videoFramesOut, audioBlocksOut, videoErrors, audioErrors;
     uint32_t audioUpmixBlocks, audioFormatRejects;
     int videoDrained;
+    /* The demuxer refusal has already been named on stderr for this stream.  Latched
+     * with the same lifetime as the producer's own failure state, so one rejected
+     * element produces exactly one message and a reset stream can report the next one. */
+    int rejectNamed;
     char path[512]; SrPsmfQueue q[PSMF_TRACKS][PSMF_Q_STAGES];
 } SrPsmfPlayer;
 static SrPsmfPlayer s_psmf_players[4];
@@ -2922,12 +2972,35 @@ static int64_t psmf_be_timestamp(const uint8_t *p) {
 }
 static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEGLOG") ? 1 : 0; return v; }
 
+/* A rejected stream is a product boundary, not a debug event.  The producer fails closed
+ * and never reaches EOF, so without a named boundary the consumer only sees the picture
+ * freeze with nothing in the log: the one thing this runtime must not do.  The message is
+ * always on (SR_MPEGLOG is for counters, not for the reason playback stopped), once per
+ * stream, and it states the guest-visible consequence instead of hiding it.  The same edge
+ * goes to the flight recorder so a bring-up or library sweep can classify the run from a
+ * structured record rather than by scraping text. */
+static void psmf_name_rejection(SrPsmfPlayer *p) {
+    if (!p || !p->producer || p->rejectNamed) return;
+    if (!sr_psmf_producer_failed(p->producer)) return;
+    p->rejectNamed = 1;
+    const char *reason = sr_psmf_producer_fail_reason(p->producer);
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+    fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
+            "at source offset %llu; no further access unit is decoded and the player keeps "
+            "its current status; in the works (#288)\n",
+            reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
+                           (uint32_t)st.fail_offset,
+                           (uint32_t)(st.fail_offset >> 32), 0u, 0u);
+}
+
 /* Move access units from the producer into the player's per-track queues.  The producer's
  * own bounded queue is the only place work is throttled: an AU is never dropped here, a full
  * player queue simply leaves the next access unit upstream until the decoder drains it. */
 static void psmf_produce(SrPsmfPlayer *p) {
     if (!p || !p->producer) return;
     sr_psmf_producer_pump(p->producer, 16);
+    psmf_name_rejection(p);
     for (unsigned track = 0; track < PSMF_TRACKS; track++) {
         SrPsmfQueue *q = &p->q[track][PSMF_Q_AU];
         while (q->count < PSMF_Q_DEPTH) {
@@ -2956,6 +3029,8 @@ static void psmf_produce(SrPsmfPlayer *p) {
              * run instead of guessed from it.  vpts is the last displaypts delivered. */
             fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
                     " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
+                    " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
                     " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
                     " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
                     (unsigned)sr_audio_vbl(),
@@ -2967,6 +3042,18 @@ static void psmf_produce(SrPsmfPlayer *p) {
                     (unsigned long long)st.audio_resync_bytes,
                     p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
                     p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
+                    (unsigned long long)st.video_submitted,
+                    (unsigned long long)st.video_decoded,
+                    (unsigned long long)st.video_delivered,
+                    (unsigned long long)st.video_warmup_held,
+                    (unsigned long long)st.video_eos_drained,
+                    (unsigned long long)st.video_rejected,
+                    (unsigned long long)st.audio_submitted,
+                    (unsigned long long)st.audio_decoded,
+                    (unsigned long long)st.audio_delivered,
+                    (unsigned long long)st.audio_warmup_held,
+                    (unsigned long long)st.audio_eos_drained,
+                    (unsigned long long)st.audio_rejected,
                     (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
                     p->videoErrors, p->audioErrors,
                     (long long)p->videoClock, (long long)p->audioClock,
@@ -3000,6 +3087,9 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
     p->displayPts = 0; p->videoDrained = 0;
     p->videoFramesOut = p->audioBlocksOut = p->videoErrors = p->audioErrors = 0;
     p->audioUpmixBlocks = p->audioFormatRejects = 0;
+    /* Every caller resets or replaces the producer in the same breath, so the named
+     * boundary goes with it: a fresh stream may be rejected, and may say so once. */
+    p->rejectNamed = 0;
 }
 
 /* Presentation time of one submitted picture.  A packet that carried a PTS sets the clock;
@@ -3033,11 +3123,18 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             }
         }
         if (p->h264 >= 0) {
-            if (slot->hostData && slot->bytes &&
-                sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData, slot->bytes) < 0)
-                p->videoErrors++;
-            else
+            if (slot->hostData && slot->bytes) {
+                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                             SR_PSMF_MEDIA_SUBMITTED);
+                if (sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData,
+                                      slot->bytes) < 0) {
+                    p->videoErrors++;
+                } else {
+                    psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+                }
+            } else {
                 psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
+            }
         }
         free(slot->hostData);
         slot->hostData = NULL;
@@ -3063,9 +3160,13 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
                   sr_h264_frame_ex(p->h264, 0, &target, &info);
     if (r < 0) { p->videoErrors++; return -1; }
     if (r == 0) { if (eos) p->videoDrained = 1; return 0; }
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 SR_PSMF_MEDIA_DECODED);
     if (info.width <= 0 || info.height <= 0 || info.stride <= 0 ||
         info.delivered_format < SR_H264_PIXEL_5650 ||
         info.delivered_format > SR_H264_PIXEL_8888) {
+        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                     SR_PSMF_MEDIA_REJECTED);
         p->videoErrors++;
         return -1;
     }
@@ -3078,6 +3179,9 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
     if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
     p->displayPts = value;
     *pts_out = value;
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
+                                 eos ? SR_PSMF_MEDIA_EOS_DRAINED :
+                                       SR_PSMF_MEDIA_DELIVERED);
     p->videoFramesOut++;
     return 1;
 }
@@ -3115,10 +3219,19 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                                                         PSMF_AUDIO_SAMPLES * sizeof(int16_t));
                     if (p->atrac && p->audioPcm) {
                         int samples = 0;
+                        sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                     SR_PSMF_MEDIA_SUBMITTED);
                         int rc = atrac3p_bridge_decode(p->atrac, frame + 8, (int)data,
                                                        p->audioPcm, &samples);
-                        if (rc == 0 && samples == PSMF_AUDIO_SAMPLES) {
-                            if (channels == 2) {
+                        if (rc == 0) {
+                            sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                         SR_PSMF_MEDIA_DECODED);
+                            p->audioPcmSampleCount = 0;
+                            if (samples != PSMF_AUDIO_SAMPLES) {
+                                p->audioFormatRejects++;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
+                            } else if (channels == 2) {
                                 p->audioPcmSampleCount = samples;
                             } else if (channels == 1) {
                                 /* The PSP block is stereo; a mono stream is duplicated into both
@@ -3133,6 +3246,8 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                             } else {
                                 p->audioFormatRejects++;
                                 p->audioPcmSampleCount = 0;
+                                sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                                             SR_PSMF_MEDIA_REJECTED);
                             }
                             if (p->audioPcmSampleCount == PSMF_AUDIO_SAMPLES) {
                                 if (slot->flags & 1u) { p->audioClock = slot->pts; p->audioClockValid = 1; }
@@ -3229,7 +3344,8 @@ static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
  * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
  * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
- * public PSP player contract. */
+ * public PSP player contract. Its initial NO_DATA gate precedes decode, so no decoded picture
+ * enters the warm-up-held disposition on this path. */
 static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
 /* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
  * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
@@ -3243,6 +3359,8 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     if(!psmf_audio_fill(p)){sched_delay_current(10000);return PSMF_ERR_NO_DATA;}
     const uint8_t*src=(const uint8_t*)p->audioPcm;
     for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
+    sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
+                                 SR_PSMF_MEDIA_DELIVERED);
     p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
     sched_delay_current(30000);
     return 0;}
@@ -4150,28 +4268,6 @@ static int sr_wide_module_font_root(wchar_t **out) {
     return ok;
 }
 
-/* The managed HST executable lives at <repo>/build/hst/hst.exe.  Resolve the
- * default data tree from that executable location, never from process CWD. */
-static int sr_wide_module_data_root(wchar_t **out) {
-    if (!out) return 0;
-    *out = NULL;
-    wchar_t *module_dir = NULL, *build_dir = NULL, *repo_dir = NULL;
-    wchar_t *candidate = NULL, *next = NULL;
-    int ok = sr_wide_module_dir_alloc(&module_dir) &&
-             sr_wide_parent_alloc(module_dir, &build_dir) &&
-             sr_wide_parent_alloc(build_dir, &repo_dir) &&
-             sr_wide_join_alloc(repo_dir, L"place_game_here", &candidate) &&
-             sr_wide_join_alloc(candidate,
-                                L"EXTRACTED\\PSP_GAME\\USRDIR\\xbdata_extracted", &next) &&
-             sr_wide_extended_absolute_alloc(next, out);
-    free(module_dir);
-    free(build_dir);
-    free(repo_dir);
-    free(candidate);
-    free(next);
-    return ok;
-}
-
 static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode) {
     wchar_t *wide = NULL;
     if (!mode || !sr_wide_path_alloc(path, &wide)) return NULL;
@@ -4642,25 +4738,6 @@ static int sr_wide_module_font_root(wchar_t **out) {
     free(module_dir);
     free(repo_dir);
     free(candidate);
-    return ok;
-}
-
-static int sr_wide_module_data_root(wchar_t **out) {
-    if (!out) return 0;
-    wchar_t *module_dir = NULL, *build_dir = NULL, *repo_dir = NULL;
-    wchar_t *candidate = NULL, *next = NULL;
-    int ok = sr_wide_module_dir_alloc(&module_dir) &&
-             sr_wide_parent_alloc(module_dir, &build_dir) &&
-             sr_wide_parent_alloc(build_dir, &repo_dir) &&
-             sr_wide_join_alloc(repo_dir, L"place_game_here", &candidate) &&
-             sr_wide_join_alloc(candidate,
-                                L"EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted", &next) &&
-             sr_wide_extended_absolute_alloc(next, out);
-    free(module_dir);
-    free(build_dir);
-    free(repo_dir);
-    free(candidate);
-    free(next);
     return ok;
 }
 
@@ -7219,7 +7296,7 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
  * the settle, fire the UMD-ready signal so any waiting thread and the registered callback fire. */
 static uint32_t h_UmdActivate(CpuState *s) {
     (void)s;
-    extern void sched_delay_current(uint32_t);
+    extern void sched_delay_current(uint64_t);
     /* 30 ms virtual delay keeps the loader's stat-read interleaving realistic. */
     sched_delay_current(30000);
     sr_umd_signal_ready();
@@ -7319,10 +7396,12 @@ void sr_callback_unregister_owner(uint32_t thread_uid) {
 }
 
 extern void sr_mutex_release_thread(uint32_t thread_uid);
+static void mbx_remove_thread_waiters(uint32_t thread_uid);
 
 void sr_hle_release_thread_resources(uint32_t thread_uid) {
     sr_mutex_release_thread(thread_uid);
     if (thread_uid) {
+        mbx_remove_thread_waiters(thread_uid);
         for (int i = 0; i < FPL_MAX; i++) {
             if (s_fpls[i].used) fpl_remove_waiter(&s_fpls[i], thread_uid);
         }
@@ -8229,24 +8308,20 @@ typedef struct {
 } DirFd;
 static DirFd s_dirfds[32];
 
-/* ---- Data-root lookup: serve files extracted from the game's XB archives -------------
+/* ---- Data-root lookup: serve files extracted from XB archives ------------------------
  *
- * The game requests paths like "data/menu/text/CommonText_Acce.to" which exist on the
- * ISO ONLY as packed XB archives (xbdata/<subdir>/<archive>.xb{,0,2,3}). The dev workflow
- * extracts those archives once with tools/extract_xb.py into xbdata_extracted/, producing
- * the tree:
- *     <SR_DATAROOT>/<subdir>/<archive>.xb[0-9].d/<relpath-as-on-disc>
- *
- * To serve those files through h_IoOpen / h_IoGetstat we build (once) a sorted relative-path
- * -> host-path cache by walking SR_DATAROOT recursively. Lookup is then O(log N).
+ * The development workflow extracts packed XB archive members under
+ * <SR_DATAROOT>/<archive>.xb[0-9].d/<relative-path>. To serve those files through
+ * h_IoOpen / h_IoGetstat we build a sorted relative-path -> host-path cache by
+ * walking the explicitly configured data root. Lookup is then O(log N).
  * The cache is published only after the walk, sort, expected-count, and
  * enumerated-size checks succeed; an enumeration or allocation failure destroys
  * the temporary table and permanently fails the data-root route. The actual
  * file open is deferred until the guest requests an entry and fails closed if
  * the indexed host path is no longer readable.
  *
- * SR_DATAROOT defaults to the executable-relative
- * "place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted" tree.
+ * SR_DATAROOT is supplied by the native launcher's validated title filesystem
+ * binding. Without it, the generic runtime does not infer a title directory.
  */
 
 static SrAssetIndex s_data_index;
@@ -8326,6 +8401,273 @@ static char *data_rel_join(const char *prefix, const char *name) {
     return sr_utf8_join_alloc(prefix, name, '/');
 }
 
+#define SR_DATA_MAX_LOOSE_ROOTS 16u
+#define SR_DATA_MAX_LOOSE_ROOT_EXCLUDES 2u
+typedef struct {
+    wchar_t *host_wide;
+    char *host_utf8;
+    char *mount;
+    uint32_t precedence;
+    int skip_primary_root;
+    char exclude[SR_DATA_MAX_LOOSE_ROOT_EXCLUDES][241];
+    size_t exclude_count;
+} SrDataLooseRoot;
+
+static SrDataLooseRoot s_data_loose_roots[SR_DATA_MAX_LOOSE_ROOTS];
+static size_t s_data_loose_root_count;
+
+static int data_relative_path_equal(const char *a, const char *b) {
+    return a && b && strlen(a) == strlen(b) &&
+           sr_vfs_strnicmp(a, b, strlen(a)) == 0;
+}
+
+static void data_loose_roots_clear(void) {
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        free(s_data_loose_roots[i].host_wide);
+        free(s_data_loose_roots[i].host_utf8);
+        free(s_data_loose_roots[i].mount);
+        memset(&s_data_loose_roots[i], 0, sizeof(s_data_loose_roots[i]));
+    }
+    s_data_loose_root_count = 0;
+}
+
+static int data_loose_mount_valid(const char *mount) {
+    if (!mount) return 0;
+    if (!mount[0]) return 1;
+    const char *part = mount;
+    for (const char *p = mount;; p++) {
+        if (*p == '/' || *p == '\0') {
+            size_t len = (size_t)(p - part);
+            if (len == 0u || (len == 1u && part[0] == '.') ||
+                (len == 2u && part[0] == '.' && part[1] == '.')) return 0;
+            for (size_t i = 0; i < len; i++) {
+                char c = part[i];
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')) return 0;
+            }
+            if (!*p) break;
+            part = p + 1;
+        }
+    }
+    return 1;
+}
+
+static int data_wide_path_overlaps(const wchar_t *a, const wchar_t *b) {
+    size_t a_len = wcslen(a), b_len = wcslen(b);
+    while (a_len > 1u && (a[a_len - 1u] == L'/' || a[a_len - 1u] == L'\\')) a_len--;
+    while (b_len > 1u && (b[b_len - 1u] == L'/' || b[b_len - 1u] == L'\\')) b_len--;
+    size_t common = a_len < b_len ? a_len : b_len;
+    for (size_t i = 0; i < common; i++) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca == L'/') ca = L'\\';
+        if (cb == L'/') cb = L'\\';
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return 0;
+    }
+    if (a_len == b_len) return 1;
+    return a_len < b_len ? (b[common] == L'/' || b[common] == L'\\')
+                         : (a[common] == L'/' || a[common] == L'\\');
+}
+
+static int data_wide_path_equal(const wchar_t *a, const wchar_t *b) {
+    if (!a || !b) return a == b;
+    size_t a_len = wcslen(a), b_len = wcslen(b);
+    while (a_len > 1u && (a[a_len - 1u] == L'/' || a[a_len - 1u] == L'\\')) a_len--;
+    while (b_len > 1u && (b[b_len - 1u] == L'/' || b[b_len - 1u] == L'\\')) b_len--;
+    if (a_len != b_len) return 0;
+    for (size_t i = 0; i < a_len; i++) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca == L'/') ca = L'\\';
+        if (cb == L'/') cb = L'\\';
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
+static int data_parse_precedence(const wchar_t *text, uint32_t *out) {
+    if (!text || !text[0] || !out) return 0;
+    uint32_t value = 0;
+    for (const wchar_t *p = text; *p; p++) {
+        if (*p < L'0' || *p > L'9') return 0;
+        uint32_t digit = (uint32_t)(*p - L'0');
+        if (value > (65535u - digit) / 10u) return 0;
+        value = value * 10u + digit;
+    }
+    *out = value;
+    return 1;
+}
+
+static int data_parse_boolean_flag(const wchar_t *text, int *out) {
+    if (!text || !out) return 0;
+    if (wcscmp(text, L"0") == 0) *out = 0;
+    else if (wcscmp(text, L"1") == 0) *out = 1;
+    else return 0;
+    return 1;
+}
+
+static int data_loose_root_parse(const wchar_t *primary_root) {
+    data_loose_roots_clear();
+    wchar_t *serialized = NULL;
+    int present = 0;
+    if (!sr_wide_env_alloc(L"SR_LOOSE_CONTENT_ROOTS", &serialized, &present)) return 0;
+    if (!present || !serialized || !serialized[0]) {
+        free(serialized);
+        return 1;
+    }
+    size_t serialized_len = wcslen(serialized);
+    if (serialized_len > 32767u || !primary_root) {
+        fprintf(stderr, "host_data: loose-content binding #289 (in the works) exceeds its limit\n");
+        free(serialized);
+        return 0;
+    }
+    wchar_t *primary_parent = NULL;
+    if (!sr_wide_parent_alloc(primary_root, &primary_parent)) {
+        free(serialized);
+        return 0;
+    }
+    int ok = 1;
+    wchar_t *cursor = serialized;
+    wchar_t *serialized_end = serialized + serialized_len;
+    while (cursor < serialized_end && ok) {
+        wchar_t *line_end = wcschr(cursor, L'\n');
+        if (!line_end) line_end = serialized_end;
+        wchar_t saved_end = *line_end;
+        *line_end = L'\0';
+        if (line_end > cursor && line_end[-1] == L'\r') line_end[-1] = L'\0';
+        wchar_t *fields[5u + SR_DATA_MAX_LOOSE_ROOT_EXCLUDES] = {0};
+        size_t field_count = 1u;
+        fields[0] = cursor;
+        for (wchar_t *p = cursor; *p; p++) {
+            if (*p == L'\t') {
+                *p = L'\0';
+                if (field_count >= sizeof(fields) / sizeof(fields[0])) {
+                    ok = 0;
+                    break;
+                }
+                fields[field_count++] = p + 1;
+            }
+        }
+        if (!ok || !cursor[0] || (field_count != 3u && field_count < 5u)) {
+            ok = 0;
+        } else {
+            uint32_t precedence = 0;
+            size_t mount_len = wcslen(fields[1]);
+            char mount[241];
+            if (mount_len > 240u || !data_parse_precedence(fields[2], &precedence)) {
+                ok = 0;
+            } else {
+                for (size_t i = 0; i < mount_len; i++) {
+                    if ((uint32_t)fields[1][i] > 0x7fu) { ok = 0; break; }
+                    mount[i] = (char)fields[1][i];
+                }
+                mount[mount_len] = '\0';
+                if (ok && !data_loose_mount_valid(mount)) ok = 0;
+            }
+            int legacy_row = field_count == 3u;
+            int skip_primary = 0;
+            char excludes[SR_DATA_MAX_LOOSE_ROOT_EXCLUDES][241] = {{0}};
+            size_t exclude_count = 0u;
+            if (!legacy_row) {
+                uint32_t declared_excludes = 0u;
+                if (!data_parse_boolean_flag(fields[3], &skip_primary) ||
+                    !data_parse_precedence(fields[4], &declared_excludes) ||
+                    declared_excludes > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+                    field_count != 5u + declared_excludes) {
+                    ok = 0;
+                } else {
+                    exclude_count = declared_excludes;
+                    for (size_t exclude_index = 0; exclude_index < exclude_count; exclude_index++) {
+                        const wchar_t *field = fields[5u + exclude_index];
+                        size_t exclude_len = wcslen(field);
+                        if (exclude_len == 0u || exclude_len > 240u) { ok = 0; break; }
+                        for (size_t char_index = 0; char_index < exclude_len; char_index++) {
+                            if ((uint32_t)field[char_index] > 0x7fu) { ok = 0; break; }
+                            excludes[exclude_index][char_index] = (char)field[char_index];
+                        }
+                        excludes[exclude_index][exclude_len] = '\0';
+                        if (ok && !data_loose_mount_valid(excludes[exclude_index])) ok = 0;
+                        for (size_t previous = 0; previous < exclude_index && ok; previous++) {
+                            if (data_relative_path_equal(excludes[previous],
+                                                         excludes[exclude_index]))
+                                ok = 0;
+                        }
+                        if (!ok) break;
+                    }
+                }
+            }
+            wchar_t *host_wide = NULL;
+            char *host_utf8 = NULL;
+            if (ok && (!cursor[0] || wcschr(cursor, L'\t') ||
+                       !sr_wide_configured_root_wide_alloc(cursor, &host_wide) ||
+                       !sr_wide_to_utf8_alloc(host_wide, &host_utf8))) ok = 0;
+            if (ok) {
+#ifdef _WIN32
+                DWORD attributes = GetFileAttributesW(host_wide);
+                if (attributes == INVALID_FILE_ATTRIBUTES ||
+                    !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+                    (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) ok = 0;
+#else
+                struct stat st, link;
+                if (lstat(host_utf8, &link) != 0 || S_ISLNK(link.st_mode) ||
+                    stat(host_utf8, &st) != 0 || !S_ISDIR(st.st_mode)) ok = 0;
+#endif
+            }
+            if (ok) {
+                int same_parent = data_wide_path_equal(host_wide, primary_parent);
+                int overlaps_primary = data_wide_path_overlaps(host_wide, primary_root);
+                if (legacy_row) skip_primary = same_parent;
+                if ((overlaps_primary && !same_parent) ||
+                    (skip_primary && !same_parent) || (same_parent && !skip_primary)) ok = 0;
+                for (size_t i = 0; i < s_data_loose_root_count && ok; i++) {
+                    if (data_wide_path_overlaps(host_wide, s_data_loose_roots[i].host_wide))
+                        ok = 0;
+                    if (s_data_loose_roots[i].precedence == precedence) ok = 0;
+                }
+            }
+            if (ok && s_data_loose_root_count < SR_DATA_MAX_LOOSE_ROOTS) {
+                SrDataLooseRoot *root = &s_data_loose_roots[s_data_loose_root_count++];
+                root->host_wide = host_wide; host_wide = NULL;
+                root->host_utf8 = host_utf8; host_utf8 = NULL;
+                root->mount = sr_asset_index_strdup(mount);
+                root->precedence = precedence;
+                root->skip_primary_root = skip_primary;
+                root->exclude_count = exclude_count;
+                memcpy(root->exclude, excludes, sizeof(root->exclude));
+                if (!root->mount) ok = 0;
+            } else if (ok) {
+                ok = 0;
+            }
+            free(host_wide);
+            free(host_utf8);
+        }
+        if (!ok) {
+            fprintf(stderr, "host_data: loose-content binding #289 (in the works) is malformed, overlapping, or unavailable\n");
+            break;
+        }
+        cursor = (saved_end == L'\n') ? line_end + 1 : serialized_end;
+    }
+    free(primary_parent);
+    free(serialized);
+    if (!ok) {
+        data_loose_roots_clear();
+        return 0;
+    }
+    for (size_t i = 1; i < s_data_loose_root_count; i++) {
+        size_t j = i;
+        while (j > 0 && s_data_loose_roots[j].precedence <
+                            s_data_loose_roots[j - 1].precedence) {
+            SrDataLooseRoot swap = s_data_loose_roots[j];
+            s_data_loose_roots[j] = s_data_loose_roots[j - 1];
+            s_data_loose_roots[j - 1] = swap;
+            j--;
+        }
+    }
+    return 1;
+}
+
 typedef struct {
     wchar_t *host;
     char *rel;
@@ -8350,24 +8692,37 @@ static int data_walk_push(DataWalkDir **stack, size_t *count, size_t *capacity,
     return 1;
 }
 
+static int data_loose_path_excluded(const char *relative,
+                                   const char exclude_paths[][241],
+                                   size_t exclude_count) {
+    if (!relative || !exclude_paths) return 0;
+    for (size_t i = 0; i < exclude_count; i++) {
+        if (data_relative_path_equal(relative, exclude_paths[i])) return 1;
+    }
+    return 0;
+}
+
 /* Iterative depth-first walk of `root`, recording every regular file's relative
  * path and absolute host path.  An explicit heap stack keeps a crafted 32k
  * extended path from consuming the host thread's call stack.
  *
- * `skip_top_name` (optional) names one directory directly under `root` that the
- * walk does not descend into, by case-insensitive comparison.  It exists for the
- * route that adds a second root beside the first: that root is a parent of the
- * first, so the first root's own subtree would otherwise be enumerated twice. */
+ * `skip_top_name` (optional) names the primary root directly under `root`.
+ * `exclude_paths` name additional root-relative paths that are not entered.
+ * `mount` affects guest keys only; the walk stack always keeps host-relative
+ * paths so exclusions do not depend on the guest namespace prefix. */
 #ifdef _WIN32
-static int data_walk(const wchar_t *root, const char *relprefix,
-                     const wchar_t *skip_top_name, SrAssetIndex *index) {
-    if (!root || !relprefix || !index) return 0;
+static int data_walk(const wchar_t *root, const char *mount,
+                     const wchar_t *skip_top_name,
+                     const char exclude_paths[][241], size_t exclude_count,
+                     SrAssetIndex *index, uint32_t precedence) {
+    if (!root || !mount || !index || exclude_count > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+        (exclude_count != 0u && !exclude_paths)) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
     size_t root_len = wcslen(root);
     if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
     wchar_t *initial_host = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial_host));
-    char *initial_rel = sr_asset_index_strdup(relprefix);
+    char *initial_rel = sr_asset_index_strdup("");
     if (!initial_host || !initial_rel) {
         free(initial_host);
         free(initial_rel);
@@ -8430,8 +8785,10 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     if (skip_top_name && current.rel[0] == '\0' &&
                         _wcsicmp(fd.cFileName, skip_top_name) == 0) {
-                        /* Already enumerated from its own root; do not pay for it
-                         * twice. On this title that subtree is 56,672 entries. */
+                        /* The primary data root is walked separately. */
+                    } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                        exclude_count)) {
+                        /* Excluded directories are never pushed onto the walk stack. */
                     } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                         fprintf(stderr, "host_data: refusing reparse-point directory\n");
                         ok = 0;
@@ -8443,6 +8800,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         child_host = NULL;
                         child_rel = NULL;
                     }
+                } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                    exclude_count)) {
+                    /* An excluded file is not indexed or opened. */
                 } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
                     fprintf(stderr, "host_data: refusing reparse-point file\n");
                     ok = 0;
@@ -8468,19 +8828,24 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                     int variant = -1;
                     uint64_t file_size = ((uint64_t)fd.nFileSizeHigh << 32) |
                                          (uint64_t)fd.nFileSizeLow;
+                    char *key_relative = mount[0]
+                        ? data_rel_join(mount, child_rel)
+                        : sr_asset_index_strdup(child_rel);
                     if (file_size > UINT32_MAX) {
                         fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
                         ok = 0;
-                    } else if (!sr_asset_index_key_from_rel(child_rel, &key, &variant)) {
+                    } else if (!key_relative ||
+                               !sr_asset_index_key_from_rel(key_relative, &key, &variant)) {
                         fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
                                 index->count);
                         ok = 0;
-                    } else if (!sr_asset_index_add_sized(index, key, host_utf8, variant,
-                                                         file_size)) {
+                    } else if (!sr_asset_index_add_sized_precedence(
+                                   index, key, host_utf8, variant, file_size, precedence)) {
                         fprintf(stderr, "host_data: index allocation failed after %zu files\n",
                                 index->count);
                         ok = 0;
                     }
+                    free(key_relative);
                 }
                 free(name);
                 free(child_rel);
@@ -8517,15 +8882,18 @@ static int data_walk(const wchar_t *root, const char *relprefix,
  * host's redirect, so it is refused exactly where the Windows walk refuses a
  * reparse point, and a regular file is still read-open probed so a race cannot
  * publish an entry the guest cannot later open. */
-static int data_walk(const wchar_t *root, const char *relprefix,
-                     const wchar_t *skip_top_name, SrAssetIndex *index) {
-    if (!root || !relprefix || !index) return 0;
+static int data_walk(const wchar_t *root, const char *mount,
+                     const wchar_t *skip_top_name,
+                     const char exclude_paths[][241], size_t exclude_count,
+                     SrAssetIndex *index, uint32_t precedence) {
+    if (!root || !mount || !index || exclude_count > SR_DATA_MAX_LOOSE_ROOT_EXCLUDES ||
+        (exclude_count != 0u && !exclude_paths)) return 0;
     DataWalkDir *stack = NULL;
     size_t stack_count = 0, stack_capacity = 0;
     size_t root_len = wcslen(root);
     if (root_len == SIZE_MAX || root_len + 1u > SIZE_MAX / sizeof(wchar_t)) return 0;
     wchar_t *initial_host = (wchar_t *)malloc((root_len + 1u) * sizeof(*initial_host));
-    char *initial_rel = sr_asset_index_strdup(relprefix);
+    char *initial_rel = sr_asset_index_strdup("");
     if (!initial_host || !initial_rel) {
         free(initial_host);
         free(initial_rel);
@@ -8598,6 +8966,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         sr_wide_stricmp(name, skip_top_name) == 0) {
                         /* Already enumerated from its own root; do not pay for
                          * it twice. */
+                    } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                        exclude_count)) {
+                        /* Excluded directories are never pushed onto the walk stack. */
                     } else if (!data_walk_push(&stack, &stack_count, &stack_capacity,
                                                child_host, child_rel)) {
                         fprintf(stderr, "host_data: directory-stack allocation failed\n");
@@ -8609,6 +8980,9 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                 } else if (!S_ISREG(st.st_mode)) {
                     fprintf(stderr, "host_data: refusing non-regular entry %s\n", child_utf8);
                     ok = 0;
+                } else if (data_loose_path_excluded(child_rel, exclude_paths,
+                                                    exclude_count)) {
+                    /* An excluded file is not indexed or opened. */
                 } else {
                     int probe_fd = openat(dirfd(dir), entry->d_name,
                                           O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -8623,19 +8997,25 @@ static int data_walk(const wchar_t *root, const char *relprefix,
                         ok = 0;
                     } else {
                         int variant = -1;
+                        char *key_relative = mount[0]
+                            ? data_rel_join(mount, child_rel)
+                            : sr_asset_index_strdup(child_rel);
                         if ((uint64_t)st.st_size > UINT32_MAX) {
                             fprintf(stderr, "host_data: indexed file exceeds guest size limit\n");
                             ok = 0;
-                        } else if (!sr_asset_index_key_from_rel(child_rel, &key, &variant)) {
+                        } else if (!key_relative ||
+                                   !sr_asset_index_key_from_rel(key_relative, &key, &variant)) {
                             fprintf(stderr, "host_data: index-key conversion failed after %zu files\n",
                                     index->count);
                             ok = 0;
-                        } else if (!sr_asset_index_add_sized(index, key, child_utf8, variant,
-                                                             (uint64_t)st.st_size)) {
+                        } else if (!sr_asset_index_add_sized_precedence(
+                                       index, key, child_utf8, variant,
+                                       (uint64_t)st.st_size, precedence)) {
                             fprintf(stderr, "host_data: index allocation failed after %zu files\n",
                                     index->count);
                             ok = 0;
                         }
+                        free(key_relative);
                     }
                 }
             }
@@ -9044,107 +9424,198 @@ static int data_validate_archive_index(size_t primary_count) {
     return 1;
 }
 
-/* Fold the loose content tree beside the configured root into the same namespace.
- *
- * The guest addresses one disc namespace, rooted at USRDIR: it asks for
- * `disc0:/PSP_GAME/USRDIR/<rel>` and `host0:<rel>`, and the canonical prepared
- * layout splits that namespace across two physical trees -- the
- * extracted-archive root (`<...>/USRDIR/xbdata_extracted`, i.e. SR_DATAROOT) and
- * the loose content beside it (`<...>/USRDIR/data`, `movie_us/`, `module/`,
- * `bundle_data/`, `umd.ufl`).  Keys are relative to whichever root produced
- * them, so both trees land in one key space no matter which root served the file.
- *
- * A loose asset can legitimately be outside the configured extracted tree, so
- * the index must include that adjacent content rather than treating a miss as a
- * decoder or player failure.  The synthetic regression below proves the two
- * sources resolve through one namespace without requiring retail bytes.
- *
- * Deliberately narrow: applying a second walk to the parent unconditionally would
- * be unbounded (`SR_DATAROOT=C:\extracted` would enumerate `C:\`).  So it applies
- * only when the configured root really is the canonical prepared layout -- an
- * extracted-archive directory named `xbdata_extracted`/`xbdata` whose parent is a
- * `USRDIR`.  Any other root keeps the single-root behaviour untouched.
- *
- * Returns 1 when the route is not applicable or the walk completed, and only 0
- * when the walk applied and failed, because a partially enumerated extra root
- * must refuse the index rather than publish it. */
-#ifdef _WIN32
-static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
-    wchar_t *parent = NULL;
-    wchar_t *primary_name = NULL;
-    wchar_t *parent_name = NULL;
-    int applied = 0;
-    int ok = 1;
-    if (sr_wide_parent_alloc(primary_root, &parent) &&
-        sr_wide_basename_alloc(primary_root, &primary_name) &&
-        sr_wide_basename_alloc(parent, &parent_name) &&
-        (_wcsicmp(primary_name, L"xbdata_extracted") == 0 ||
-         _wcsicmp(primary_name, L"xbdata") == 0) &&
-        _wcsicmp(parent_name, L"USRDIR") == 0) {
-        DWORD attributes = GetFileAttributesW(parent);
-        if (attributes != INVALID_FILE_ATTRIBUTES &&
-            (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
-            !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-            applied = 1;
-            fprintf(stderr, "host_data: also indexing the loose content beside the "
-                            "extracted-archive root\n");
-            ok = data_walk(parent, "", primary_name, index);
-        }
+static const char *data_index_root_for_precedence(uint32_t precedence,
+                                                  const char *primary_root_utf8) {
+    if (precedence == 0u) return primary_root_utf8;
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        if (s_data_loose_roots[i].precedence + 1u == precedence)
+            return s_data_loose_roots[i].host_utf8;
     }
-    if (applied && !ok) {
-        fprintf(stderr, "host_data: loose-content enumeration failed; refusing partial index\n");
-    }
-    free(parent);
-    free(primary_name);
-    free(parent_name);
-    return ok;
+    return NULL;
 }
-#else /* !_WIN32: the same loose-content rules over POSIX stat ------------------ */
-static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
-    wchar_t *parent = NULL;
-    wchar_t *primary_name = NULL;
-    wchar_t *parent_name = NULL;
-    int applied = 0;
-    int ok = 1;
-    if (sr_wide_parent_alloc(primary_root, &parent) &&
-        sr_wide_basename_alloc(primary_root, &primary_name) &&
-        sr_wide_basename_alloc(parent, &parent_name) &&
-        (sr_wide_stricmp(primary_name, L"xbdata_extracted") == 0 ||
-         sr_wide_stricmp(primary_name, L"xbdata") == 0) &&
-        sr_wide_stricmp(parent_name, L"USRDIR") == 0) {
-        char *parent_utf8 = NULL;
-        if (parent && sr_wide_to_utf8_alloc(parent, &parent_utf8)) {
-            struct stat st, link;
-            int is_link = lstat(parent_utf8, &link) == 0 && S_ISLNK(link.st_mode);
-            if (stat(parent_utf8, &st) == 0 && S_ISDIR(st.st_mode) && !is_link) {
-                applied = 1;
-                fprintf(stderr, "host_data: also indexing the loose content beside the "
-                                "extracted-archive root\n");
-                ok = data_walk(parent, "", primary_name, index);
-            }
-            free(parent_utf8);
-        }
-    }
-    if (applied && !ok) {
-        fprintf(stderr, "host_data: loose-content enumeration failed; refusing partial index\n");
-    }
-    free(parent);
-    free(primary_name);
-    free(parent_name);
-    return ok;
-}
-#endif /* _WIN32 */
 
-static char *data_loose_path_alloc(const char *key) {
-    if (!s_data_root_utf8 || !key) return NULL;
-    if (!key[0]) return sr_asset_index_strdup(s_data_root_utf8);
-    size_t root_len = strlen(s_data_root_utf8);
+static const char *data_index_relative_path(const SrAssetIndexEntry *entry,
+                                           const char *primary_root_utf8) {
+    const char *base = entry
+        ? data_index_root_for_precedence(entry->precedence, primary_root_utf8)
+        : NULL;
+    const char *relative = NULL;
+    if (entry && entry->host && base) {
+        size_t base_len = strlen(base);
+        size_t host_len = strlen(entry->host);
+        while (base_len > 1u && (base[base_len - 1u] == '/' || base[base_len - 1u] == '\\'))
+            base_len--;
+        if (host_len >= base_len && sr_vfs_strnicmp(entry->host, base, base_len) == 0 &&
+            (entry->host[base_len] == '\0' || entry->host[base_len] == '/' ||
+             entry->host[base_len] == '\\')) {
+            relative = entry->host + base_len;
+            while (*relative == '/' || *relative == '\\') relative++;
+        }
+    }
+    return relative;
+}
+
+static void data_duplicate_relative_path(const SrAssetIndexEntry *entry,
+                                         const char *primary_root_utf8,
+                                         char output[161]) {
+    const char *relative = data_index_relative_path(entry, primary_root_utf8);
+    if (!relative) relative = "<root-relative-unavailable>";
+    size_t length = strlen(relative);
+    if (length < 161u) {
+        for (size_t i = 0; i < length; i++)
+            output[i] = relative[i] == '\\' ? '/' : relative[i];
+        output[length] = '\0';
+        return;
+    }
+    for (size_t i = 0; i < 157u; i++)
+        output[i] = relative[i] == '\\' ? '/' : relative[i];
+    memcpy(output + 157u, "...", 4u);
+}
+
+/* Return the separator after the first archive-extraction marker recognized by
+ * sr_asset_index_key_from_rel(). The preceding root-relative prefix identifies
+ * one extracted archive; bytewise path comparison matches the finalized index. */
+static const char *data_extracted_archive_relative_end(const char *relative) {
+    if (!relative) return NULL;
+    for (const char *scan = relative;;) {
+        const char *xb = sr_asset_index_find_ci(scan, ".xb");
+        if (!xb) return NULL;
+        const char *suffix = xb + 3;
+        uint64_t parsed_variant = 0;
+        int variant_overflow = 0;
+        while (*suffix >= '0' && *suffix <= '9') {
+            uint64_t digit = (uint64_t)(*suffix - '0');
+            if (parsed_variant > (UINT64_MAX - digit) / 10u)
+                variant_overflow = 1;
+            else
+                parsed_variant = parsed_variant * 10u + digit;
+            suffix++;
+        }
+        if (!variant_overflow && parsed_variant <= (uint64_t)INT_MAX &&
+            suffix[0] == '.' &&
+            (suffix[1] == 'd' || suffix[1] == 'D') &&
+            (suffix[2] == '/' || suffix[2] == '\\')) {
+            return suffix + 2;
+        }
+        scan = xb + 3;
+    }
+}
+
+static int data_extracted_archive_prefix_equal(const char *left,
+                                               const char *left_end,
+                                               const char *right,
+                                               const char *right_end) {
+    size_t left_length = (size_t)(left_end - left);
+    size_t right_length = (size_t)(right_end - right);
+    if (left_length != right_length) return 0;
+    for (size_t i = 0; i < left_length; i++) {
+        char left_char = left[i] == '\\' ? '/' : left[i];
+        char right_char = right[i] == '\\' ? '/' : right[i];
+        if (left_char != right_char) return 0;
+    }
+    return 1;
+}
+
+static int data_primary_duplicate_is_cross_archive(
+    const SrAssetIndexEntry *previous, const SrAssetIndexEntry *entry,
+    const char *primary_root_utf8) {
+    /* The finalized index orders equal key/variant/root entries by host path.
+     * A shared extracted-archive prefix is therefore contiguous in that run. */
+    if (!previous || !entry || previous->precedence != 0u ||
+        entry->precedence != 0u) return 0;
+    const char *previous_relative = data_index_relative_path(previous, primary_root_utf8);
+    const char *entry_relative = data_index_relative_path(entry, primary_root_utf8);
+    const char *previous_end = data_extracted_archive_relative_end(previous_relative);
+    const char *entry_end = data_extracted_archive_relative_end(entry_relative);
+    return previous_end && entry_end &&
+           !data_extracted_archive_prefix_equal(previous_relative, previous_end,
+                                                entry_relative, entry_end);
+}
+
+/* Exact guest-file collisions across manifest roots are intentional overlays:
+ * the lower precedence value wins. A collision within one root is ambiguous
+ * after guest-key case folding and refuses the whole index. The primary root is
+ * the compatibility exception: different extracted-XB subtrees may expose the
+ * same key, and the index's host-path sort chooses the stable legacy winner. */
+static int data_validate_duplicate_policy(const SrAssetIndex *index,
+                                          const wchar_t *primary_root_wide) {
+    if (!index || !index->finalized || !primary_root_wide) return 0;
+    char *primary_root_utf8 = NULL;
+    if (!sr_wide_to_utf8_alloc(primary_root_wide, &primary_root_utf8)) return 0;
+    int ok = 1;
+    for (size_t i = 0; i < index->count; i++) {
+        const SrAssetIndexEntry *entry = &index->entries[i];
+        if (i > 0u) {
+            const SrAssetIndexEntry *previous = &index->entries[i - 1u];
+            if (strcmp(previous->key, entry->key) == 0 &&
+                previous->variant == entry->variant &&
+                previous->precedence == entry->precedence &&
+                !data_primary_duplicate_is_cross_archive(previous, entry,
+                                                         primary_root_utf8)) {
+                char previous_path[161], current_path[161];
+                data_duplicate_relative_path(previous, primary_root_utf8, previous_path);
+                data_duplicate_relative_path(entry, primary_root_utf8, current_path);
+                fprintf(stderr,
+                        "host_data: duplicate guest-file key '%.*s' within root %u at '%s' and '%s'; refusing index\n",
+                        120, entry->key, (unsigned)entry->precedence,
+                        previous_path, current_path);
+                ok = 0;
+                break;
+            }
+        }
+        size_t key_len = strlen(entry->key);
+        size_t first = sr_asset_index_lower_bound(index, entry->key);
+        size_t after = first;
+        while (after < index->count &&
+               strcmp(index->entries[after].key, entry->key) == 0) after++;
+        if (after < index->count &&
+            strncmp(index->entries[after].key, entry->key, key_len) == 0 &&
+            index->entries[after].key[key_len] == '/') {
+            fprintf(stderr, "host_data: guest file/directory key collision; refusing index\n");
+            ok = 0;
+            break;
+        }
+    }
+    free(primary_root_utf8);
+    return ok;
+}
+
+/* Enumerate only roots carried by the validated title filesystem binding.
+ * The manifest default is an empty set; generic HLE performs no directory
+ * discovery. Lower precedence numbers win duplicate guest-file keys. */
+static int data_loose_content_walk(const wchar_t *primary_root, SrAssetIndex *index) {
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        SrDataLooseRoot *root = &s_data_loose_roots[i];
+        wchar_t *primary_name = NULL;
+        const wchar_t *skip = NULL;
+        if (root->skip_primary_root) {
+            if (!sr_wide_basename_alloc(primary_root, &primary_name)) return 0;
+            skip = primary_name;
+        }
+        /* The manifest rank orders loose roots after the primary data root;
+         * primary is 0 and declared ranks occupy 1..65536. */
+        int ok = data_walk(root->host_wide, root->mount, skip,
+                           root->exclude, root->exclude_count, index,
+                           root->precedence + 1u);
+        free(primary_name);
+        if (!ok) {
+            fprintf(stderr, "host_data: configured loose-content root failed; refusing partial index\n");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static char *data_loose_path_alloc(const char *root_utf8, const char *key) {
+    if (!root_utf8 || !key) return NULL;
+    if (!key[0]) return sr_asset_index_strdup(root_utf8);
+    size_t root_len = strlen(root_utf8);
     size_t key_len = strlen(key);
     if (root_len > SIZE_MAX - key_len - 2u) return NULL;
     size_t capacity = root_len + key_len + 2u;
     char *path = (char *)malloc(capacity);
     if (!path) return NULL;
-    if (sr_vfs_host_dir_path(s_data_root_utf8, key, path, capacity, '\\') <= 0) {
+    if (sr_vfs_host_dir_path(root_utf8, key, path, capacity, '\\') <= 0) {
         free(path);
         return NULL;
     }
@@ -9152,12 +9623,12 @@ static char *data_loose_path_alloc(const char *key) {
 }
 
 #ifdef _WIN32
-static int data_loose_file_open(const char *key, FILE **file_out,
-                                uint32_t *size_out) {
+static int data_loose_file_open_at(const char *root_utf8, const char *key,
+                                   FILE **file_out, uint32_t *size_out) {
     if (file_out) *file_out = NULL;
     if (size_out) *size_out = 0;
-    if (!s_data_root_utf8 || !key || !key[0]) return 0;
-    char *path = data_loose_path_alloc(key);
+    if (!root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(root_utf8, key);
     if (!path) return -1;
     wchar_t *wide = NULL;
     if (!sr_wide_path_alloc(path, &wide)) {
@@ -9191,12 +9662,12 @@ static int data_loose_file_open(const char *key, FILE **file_out,
     return 1;
 }
 #else /* !_WIN32: the same open, refusing directories and symlinks ------------- */
-static int data_loose_file_open(const char *key, FILE **file_out,
-                                uint32_t *size_out) {
+static int data_loose_file_open_at(const char *root_utf8, const char *key,
+                                   FILE **file_out, uint32_t *size_out) {
     if (file_out) *file_out = NULL;
     if (size_out) *size_out = 0;
-    if (!s_data_root_utf8 || !key || !key[0]) return 0;
-    char *path = data_loose_path_alloc(key);
+    if (!root_utf8 || !key || !key[0]) return 0;
+    char *path = data_loose_path_alloc(root_utf8, key);
     if (!path) return -1;
     /* Open first and judge the opened file: O_NOFOLLOW refuses a symlink (ELOOP), fstat
      * refuses a directory or special file, so no check can be raced by a path swap. */
@@ -9225,11 +9696,39 @@ static int data_loose_file_open(const char *key, FILE **file_out,
 }
 #endif /* _WIN32 */
 
+static const char *data_loose_key_for_mount(const char *key, const char *mount) {
+    if (!key || !mount) return NULL;
+    if (!mount[0]) return key;
+    size_t mount_len = strlen(mount);
+    if (sr_vfs_strnicmp(key, mount, mount_len) != 0) return NULL;
+    if (key[mount_len] == '\0') return "";
+    return key[mount_len] == '/' ? key + mount_len + 1u : NULL;
+}
+
+static int data_loose_file_open(const char *key, FILE **file_out,
+                                uint32_t *size_out) {
+    if (file_out) *file_out = NULL;
+    if (size_out) *size_out = 0;
+    if (!key || !key[0]) return 0;
+    int primary_result = data_loose_file_open_at(s_data_root_utf8, key,
+                                                  file_out, size_out);
+    if (primary_result != 0) return primary_result;
+    for (size_t i = 0; i < s_data_loose_root_count; i++) {
+        const char *relative = data_loose_key_for_mount(key,
+                                                        s_data_loose_roots[i].mount);
+        if (!relative || !relative[0]) continue;
+        int result = data_loose_file_open_at(s_data_loose_roots[i].host_utf8,
+                                             relative, file_out, size_out);
+        if (result != 0) return result;
+    }
+    return 0;
+}
+
 #ifdef _WIN32
 static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
     if (found_out) *found_out = 0;
     if (!s_data_root_utf8 || !list) return -1;
-    char *path = data_loose_path_alloc(key ? key : "");
+    char *path = data_loose_path_alloc(s_data_root_utf8, key ? key : "");
     if (!path) return -1;
     wchar_t *wide = NULL;
     wchar_t *pattern = NULL;
@@ -9303,7 +9802,7 @@ static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_
 static int data_loose_merge_dir(const char *key, SrVfsDirList *list, int *found_out) {
     if (found_out) *found_out = 0;
     if (!s_data_root_utf8 || !list) return -1;
-    char *path = data_loose_path_alloc(key ? key : "");
+    char *path = data_loose_path_alloc(s_data_root_utf8, key ? key : "");
     if (!path) return -1;
     struct stat st, link;
     int is_link = lstat(path, &link) == 0 && S_ISLNK(link.st_mode);
@@ -9386,11 +9885,13 @@ int sr_host_data_prepare(void) {
          * already terminal or being prepared is never re-scanned here. */
         return atomic_load_explicit(&s_data_state, memory_order_acquire);
     }
+    data_loose_roots_clear();
     wchar_t *configured_root = NULL;
     int configured_present = 0;
     int env_ok = sr_wide_env_alloc(L"SR_DATAROOT", &configured_root, &configured_present);
     if (!configured_present && sr_title_config_expected_data_file_count() == 0) {
         free(configured_root);
+        data_loose_roots_clear();
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_DISABLED, memory_order_release);
         fprintf(stderr, "host_data: disabled (no SR_DATAROOT configured and this profile "
                         "declares no extracted-data census); guest lookups will fall back "
@@ -9404,23 +9905,22 @@ int sr_host_data_prepare(void) {
     free(s_data_root_utf8);
     s_data_root_utf8 = NULL;
     s_data_archive_mode = 0;
-    const char *root_label = configured_present ? "<configured SR_DATAROOT>" :
-        "<executable>/../../place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted";
+    const char *root_label = "<configured SR_DATAROOT>";
     fprintf(stderr, "host_data: scanning %s ...\n", root_label);
     wchar_t *root_wide = NULL;
-    int root_ok = env_ok && (configured_present ?
-        (configured_root[0] && sr_wide_configured_root_wide_alloc(configured_root, &root_wide)) :
-        sr_wide_module_data_root(&root_wide));
+    int root_ok = env_ok && configured_present && configured_root && configured_root[0] &&
+                  sr_wide_configured_root_wide_alloc(configured_root, &root_wide);
     if (!root_ok) {
         if (!env_ok)
             fprintf(stderr, "host_data: SR_DATAROOT could not be read\n");
         else if (configured_present)
             fprintf(stderr, "host_data: SR_DATAROOT is configured but is not a valid absolute path\n");
         else
-            fprintf(stderr, "host_data: executable-relative data root could not be resolved\n");
+            fprintf(stderr, "host_data: extracted-data census requires a configured SR_DATAROOT\n");
     }
     free(configured_root);
-    if (root_ok && !data_root_validate(root_wide, configured_present)) root_ok = 0;
+    if (root_ok && !data_root_validate(root_wide, 1)) root_ok = 0;
+    if (root_ok && !data_loose_root_parse(root_wide)) root_ok = 0;
     size_t primary_count = 0;
     size_t archive_count = 0;
     int archive_mode = 0;
@@ -9446,13 +9946,15 @@ int sr_host_data_prepare(void) {
             SR_DATA_TEST_PHASE_START(phase_started);
             if (walk_ok && temporary.count != 0u &&
                 !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+            if (walk_ok && temporary.count != 0u &&
+                !data_validate_duplicate_policy(&temporary, root_wide)) walk_ok = 0;
             SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         }
     } else if (walk_ok) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         sr_archive_vfs_init(&s_archive_vfs);
         SR_DATA_TEST_PHASE_START(phase_started);
-        walk_ok = data_walk(root_wide, "", NULL, &temporary);
+        walk_ok = data_walk(root_wide, "", NULL, NULL, 0u, &temporary, 0u);
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_PRIMARY_WALK, phase_started);
         if (walk_ok) {
             primary_count = temporary.count;
@@ -9462,6 +9964,7 @@ int sr_host_data_prepare(void) {
         }
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !sr_asset_index_finalize(&temporary)) walk_ok = 0;
+        if (walk_ok && !data_validate_duplicate_policy(&temporary, root_wide)) walk_ok = 0;
         SR_DATA_TEST_PHASE_STOP(SR_DATA_TEST_PHASE_FINALIZE, phase_started);
         SR_DATA_TEST_PHASE_START(phase_started);
         if (walk_ok && !data_validate_index(&temporary, primary_count)) walk_ok = 0;
@@ -9474,6 +9977,7 @@ int sr_host_data_prepare(void) {
         sr_archive_vfs_destroy(&s_archive_vfs);
         free(s_data_root_utf8);
         s_data_root_utf8 = NULL;
+        data_loose_roots_clear();
         s_data_archive_mode = 0;
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
@@ -9491,6 +9995,7 @@ int sr_host_data_prepare(void) {
             sr_archive_vfs_destroy(&s_archive_vfs);
             free(s_data_root_utf8);
             s_data_root_utf8 = NULL;
+            data_loose_roots_clear();
             s_data_archive_mode = 0;
             atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
             return SR_DATA_STATE_FAILED;
@@ -9512,6 +10017,7 @@ int sr_host_data_prepare(void) {
         fprintf(stderr, "host_data: failed to publish finalized index\n");
         sr_asset_index_destroy(&temporary);
         sr_archive_vfs_destroy(&s_archive_vfs);
+        data_loose_roots_clear();
         atomic_store_explicit(&s_data_state, SR_DATA_STATE_FAILED, memory_order_release);
         return SR_DATA_STATE_FAILED;
     }
@@ -9520,7 +10026,7 @@ int sr_host_data_prepare(void) {
     fprintf(stderr, "host_data: indexed %zu files under %s\n", s_data_index.count, root_label);
     if (s_data_index.count != primary_count) {
         fprintf(stderr, "host_data: configured root contributed %zu of them; %zu came from "
-                        "the loose content beside it\n",
+                        "configured loose roots\n",
                 primary_count, s_data_index.count - primary_count);
     }
     data_report_phases();
@@ -9583,6 +10089,7 @@ void sr_hle_test_data_reset(int pace_ms) {
     sr_archive_vfs_init(&s_archive_vfs);
     free(s_data_root_utf8);
     s_data_root_utf8 = NULL;
+    data_loose_roots_clear();
     s_data_archive_mode = 0;
     atomic_store_explicit(&s_data_state, SR_DATA_STATE_UNINITIALIZED, memory_order_release);
     s_data_test_walk_calls = 0;
@@ -9689,7 +10196,10 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
          * is a name sceIoOpen resolves under the identical variant. */
         if (!sr_asset_index_variant_selected(candidate->variant, wanted_variant)) continue;
         if (wanted_variant >= 0) { chosen = candidate; break; }
-        if (!chosen || candidate->variant == -1 ||
+        if (!chosen ||
+            (candidate->variant == -1 && chosen->variant != -1) ||
+            (candidate->variant == chosen->variant &&
+             candidate->precedence < chosen->precedence) ||
             (chosen->variant != -1 && candidate->variant < chosen->variant)) {
             chosen = candidate;
         }
@@ -12956,12 +13466,17 @@ static void display_present_active(void) {
                 s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         return;
     }
-    if (getenv("SR_PRESENT_TRACE"))
-        fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
-                s_vcount, s_display_active.addr, s_display_active.fmt,
-                s_display_active.stride);
-    gui_present(s_display_active.addr, s_display_active.fmt,
-                (uint32_t)s_display_active.stride);
+    int presented = gui_present(s_display_active.addr, s_display_active.fmt,
+                                (uint32_t)s_display_active.stride);
+    if (presented) {
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_FRAME,
+                               s_display_active.addr, (uint32_t)s_display_active.fmt,
+                               (uint32_t)s_display_active.stride, s_vcount);
+        if (getenv("SR_PRESENT_TRACE"))
+            fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
+                    s_vcount, s_display_active.addr, s_display_active.fmt,
+                    s_display_active.stride);
+    }
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------
@@ -13155,6 +13670,86 @@ static int s_fbsnap_win_n = 0;
 static char s_fbcap_armed[128];  /* path armed for the CURRENT frame's present ("" = none) */
 static char s_fbcap_legacy[64];  /* legacy snap_*.ppm path for the same frame ("" = none) */
 
+#define SR_VRAMDUMP_MAX_VBLANKS 8
+static uint32_t s_vramdump_vblanks[SR_VRAMDUMP_MAX_VBLANKS];
+static unsigned s_vramdump_count;
+static unsigned s_vramdump_done;
+static char s_vramdump_dir[768];
+
+static void vramdump_init_once(void) {
+    static int initialized;
+    const char *selection, *directory;
+    const char *cursor;
+    if (initialized) return;
+    initialized = 1;
+    selection = getenv("SR_VRAMDUMP");
+    if (!selection || !selection[0]) return;
+    directory = getenv("SR_VRAMDUMP_DIR");
+    if (!directory || !directory[0] || strlen(directory) >= sizeof s_vramdump_dir) {
+        fprintf(stderr, "VRAMDUMP CONFIG_FAIL (SR_VRAMDUMP_DIR must name an existing output directory)\n");
+        return;
+    }
+    memcpy(s_vramdump_dir, directory, strlen(directory) + 1u);
+    cursor = selection;
+    while (*cursor) {
+        char *end = NULL;
+        unsigned long value;
+        if (s_vramdump_count >= SR_VRAMDUMP_MAX_VBLANKS || *cursor < '0' || *cursor > '9')
+            goto invalid;
+        errno = 0;
+        value = strtoul(cursor, &end, 10);
+        if (errno == ERANGE || end == cursor || value > UINT32_MAX || (*end && *end != ','))
+            goto invalid;
+        for (unsigned i = 0; i < s_vramdump_count; i++)
+            if (s_vramdump_vblanks[i] == (uint32_t)value) goto invalid;
+        s_vramdump_vblanks[s_vramdump_count++] = (uint32_t)value;
+        if (!*end) break;
+        cursor = end + 1;
+        if (!*cursor) goto invalid;
+    }
+    if (!s_vramdump_count) goto invalid;
+    fprintf(stderr, "VRAMDUMP enabled selections=%u\n", s_vramdump_count);
+    return;
+
+invalid:
+    s_vramdump_count = 0;
+    fprintf(stderr, "VRAMDUMP CONFIG_FAIL (expected up to %u unique decimal vblank values)\n",
+            SR_VRAMDUMP_MAX_VBLANKS);
+}
+
+static void vramdump_try_present(uint32_t vcount, const DisplayFrameState *fb) {
+    vramdump_init_once();
+    if (!s_vramdump_count || !fb) return;
+    /* PASS must only ever mean a presented frame: apply the conditions
+     * display_present_active() applies before it hands a frame to the presenter. A
+     * vblank where it would decline stays selected and is reported NOT_CAPTURED. */
+    if (!gui_on() || !fb->addr || !display_host_span_valid(fb)) return;
+    for (unsigned i = 0; i < s_vramdump_count; i++) {
+        unsigned bit = 1u << i;
+        if (s_vramdump_vblanks[i] != vcount || (s_vramdump_done & bit)) continue;
+        s_vramdump_done |= bit;
+        if (ge_vramdump_write(s_vramdump_dir, vcount, fb->addr,
+                              (uint32_t)fb->stride, (uint32_t)fb->fmt))
+            fprintf(stderr, "VRAMDUMP vblank=%u PASS\n", vcount);
+        else
+            fprintf(stderr, "VRAMDUMP vblank=%u FAIL (see diagnostic above)\n", vcount);
+        break;
+    }
+}
+
+static void vramdump_note_vblank(uint32_t vcount) {
+    vramdump_init_once();
+    if (!s_vramdump_count) return;
+    for (unsigned i = 0; i < s_vramdump_count; i++) {
+        unsigned bit = 1u << i;
+        if (!(s_vramdump_done & bit) && s_vramdump_vblanks[i] < vcount) {
+            s_vramdump_done |= bit;
+            fprintf(stderr, "VRAMDUMP vblank=%u NOT_CAPTURED (no frame was presented at that vblank)\n",
+                    s_vramdump_vblanks[i]);
+        }
+    }
+}
+
 static void fbcap_parse_windows_once(void) {
     static int done = 0;
     if (done) return;
@@ -13254,6 +13849,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     int32_t stride = (int32_t)A1;
     int32_t fmt = (int32_t)A2;
     uint32_t sync = A3;
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_SET_FRAMEBUF,
+                           addr, (uint32_t)fmt, (uint32_t)stride, s_vcount);
     if (ge_log_on())
         fprintf(stderr, "DISPLAY_SET_FB: buf=0x%08x stride=%d fmt=%d sync=%u vcount=%u\n",
                 addr, stride, fmt, sync, s_vcount);
@@ -13295,6 +13892,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
+        vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     } else {
         s_setfb.latched++;
@@ -13489,9 +14087,8 @@ static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t str
  * sceDisplayWaitVblank succeeds with 1 (L323) while sceDisplayWaitVblankStart
  * returns ILLEGAL_CONTEXT (L325). Those cells are `NOT RUN` against this runtime
  * in docs/PSP_INTR_WAITS_MATRIX.md and belong to the interrupt-context work.
- * The CB variants (0x46f186c3, 0xdba6c4c4's neighbours) remain unregistered
- * until the callback-aware wait transaction lands; splitting these two handlers
- * does not change that. */
+ * The callback variants below use the same measured wait split, while the
+ * scheduler keeps servicing callbacks until a delivered VBLANK satisfies it. */
 static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
     (void)s;
     if (ge_log_on()) fprintf(stderr, "HLE: WaitVblankStart (vcount=%u)\n", s_vcount);
@@ -13506,6 +14103,20 @@ static uint32_t h_DisplayWaitVblank(CpuState *s) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     /* 1 when the caller was already inside the interval and did not block. */
     return (uint32_t)sched_wait_vblank();
+}
+
+static uint32_t h_DisplayWaitVblankStartCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(1);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : 0u;
+}
+
+static uint32_t h_DisplayWaitVblankCB(CpuState *s) {
+    (void)s;
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    int result = sched_wait_vblank_cb(0);
+    return result < 0 ? SCE_KERNEL_ERROR_CAN_NOT_WAIT : (uint32_t)result;
 }
 static uint32_t h_DisplayGetMode(CpuState *s) {
     if (A0) MEM_W32(A0, 0);  /* mode 0 */
@@ -13584,10 +14195,12 @@ void sr_vblank_tick(void) {
          * double-buffering title (which flips at VBLANK, not synchronously) with no
          * present-truthful capture at all. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
+        vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     }
     if (ge_log_on() && (s_vcount & 0x3f) == 0)
         fprintf(stderr, "VBLANK tick %u\n", s_vcount);
+    vramdump_note_vblank(s_vcount);
     /* Full guest-PC dumps contain thousands of rows and synchronous five-second cadence
      * materially distorts the route being profiled. Keep periodic capture opt-in and let the
      * canonical manager choose a bounded default for runs that may be force-stopped before
@@ -14095,6 +14708,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     uint32_t cbid = A2;
     uint32_t cbarg = A3;
     uint32_t list_id = 0x35000000u | (s_ge_list_next++ & 0x00ffffffu);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_ENQUEUE,
+                           list, stall, list_id, cbid);
 
     ge_enqueue_trace_emit(s, "enqueue", list_id, list, stall, cbid);
 
@@ -14145,6 +14760,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, list, stall, next_pc);
         ge_finish_callback(s, cbid, list_id, cbarg);
     } else {
         /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
@@ -14175,6 +14792,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                           slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
                           new_stall,
                           slot >= 0 ? s_ge_lists[slot].cbid : 0u);
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_STALL_UPDATE,
+                           list_id, slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
+                           new_stall, slot >= 0 ? s_ge_lists[slot].stall_addr : 0u);
 
     if (slot == -1) {
         ge_enqueue_trace_result(s, "update_stall", list_id, "not_found", 0u, 0);
@@ -14218,6 +14838,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
     if (next_pc == 0) {
         s_ge_lists[slot].executed = 1;
         s_ge_lists[slot].status = 2; // completed
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               list_id, s_ge_lists[slot].start_pc,
+                               s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
         ge_finish_callback(s, s_ge_lists[slot].cbid, list_id, s_ge_lists[slot].cbarg);
@@ -14237,6 +14860,9 @@ static uint32_t h_GeListSync(CpuState *s) {
     uint32_t syncType = A1;
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].uid == qid) {
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                                   qid, s_ge_lists[i].start_pc,
+                                   s_ge_lists[i].stall_addr, syncType);
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
@@ -14248,6 +14874,8 @@ static uint32_t h_GeListSync(CpuState *s) {
             }
         }
     }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                           qid, 0u, 0u, syncType);
     if (ge_log_on())
         fprintf(stderr, "GE_SYNC: qid=0x%08x NOT FOUND in list table\n", qid);
     return 0;
@@ -14285,6 +14913,8 @@ static uint32_t h_GeDrawSync(CpuState *s) {
     int busy = 0;
     for (int i = 0; i < GE_LIST_MAX; i++)
         if (s_ge_lists[i].status == 1) { busy = 1; break; }
+    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
+                           mode, (uint32_t)busy, 0u, 0u);
     if (mode == 1u) return busy ? 1u : 0u;
     if (busy) sched_delay_current(1000);
     return 0;
@@ -15273,6 +15903,12 @@ static void mbx_remove_waiter(Mbx *m, uint32_t thid) {
             m->nwaiters--;
             break;
         }
+    }
+}
+
+static void mbx_remove_thread_waiters(uint32_t thread_uid) {
+    for (int i = 0; i < MBX_MAX; i++) {
+        if (s_mbx[i].used) mbx_remove_waiter(&s_mbx[i], thread_uid);
     }
 }
 
@@ -17109,9 +17745,14 @@ static void hle_register_selftest_oracle_handlers(void) {
 static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xceadeb47, "sceKernelDelayThread", h_DelayThread);
     sr_hle_register(0x68da9e36, "sceKernelDelayThreadCB", h_DelayThreadCB);
+    sr_hle_register(0xbd123d9e, "sceKernelDelaySysClockThread", h_DelaySysClockThread);
+    sr_hle_register(0x1181e963, "sceKernelDelaySysClockThreadCB", h_DelaySysClockThreadCB);
+    sr_hle_register(0x616403ba, "sceKernelTerminateThread", h_TerminateThread);
     sr_hle_register(0x82826f70, "sceKernelSleepThreadCB", h_SleepThreadCB);
     sr_hle_register(0x36cdfade, "sceDisplayWaitVblank", h_DisplayWaitVblank);
     sr_hle_register(0x984c27e7, "sceDisplayWaitVblankStart", h_DisplayWaitVblankStart);
+    sr_hle_register(0x8eb9ec49, "sceDisplayWaitVblankCB", h_DisplayWaitVblankCB);
+    sr_hle_register(0x46f186c3, "sceDisplayWaitVblankStartCB", h_DisplayWaitVblankStartCB);
     sr_hle_register(0x4e3a1105, "sceKernelWaitSema", h_WaitSema);
     sr_hle_register(0x6d212bac, "sceKernelWaitSemaCB", h_WaitSemaCB);
     sr_hle_register(0x55c20a00, "sceKernelCreateEventFlag", h_CreateEventFlag);
@@ -17463,11 +18104,44 @@ static void hle_register_mpeg_shared_handlers(void) {
     sr_hle_register(0x4571cc64, "sceMpegAvcDecodeFlush", h_MpegAvcDecodeFlush);
 }
 
+/* These YCbCr handlers are registered by the focused media fixture and by the full registry,
+ * so the fixture reaches the same production argument marshalling through sr_syscall(). */
+static void hle_register_mpeg_ycbcr_handlers(void) {
+    sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
+    sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
+    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_MpegAvcDecodeMode);
+    sr_hle_register(0xf0eb1125, "sceMpegAvcDecodeYCbCr", h_MpegAvcDecodeYCbCr);
+    sr_hle_register(0xf2930c9c, "sceMpegAvcDecodeStopYCbCr", h_MpegAvcDecodeStopYCbCr);
+    sr_hle_register(0x0558b075, "sceMpegAvcCopyYCbCr", h_MpegAvcCopyYCbCr);
+    sr_hle_register(0x31bd0272, "sceMpegAvcCsc", h_MpegAvcCsc);
+}
+
 /* sceImpose language/confirm-button mode (see h_ImposeSetLanguageMode). One definition, called
  * by both registry branches, so the executable harness dispatches the production mapping. */
 static void hle_register_impose_handlers(void) {
     sr_hle_register(0x36aa6e91, "sceImposeSetLanguageMode", h_ImposeSetLanguageMode);
     sr_hle_register(0x24fd7bcf, "sceImposeGetLanguageMode", h_ImposeGetLanguageMode);
+}
+
+/* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
+ * implemented here; decoder output remains a separate fail-closed stage.  One definition,
+ * called by both registry branches, so the executable harness dispatches the production
+ * mapping and the named media boundaries are reachable from a production-path test. */
+static void hle_register_psmf_player_handlers(void) {
+    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
+    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
+    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
+    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
+    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
+    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
+    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
+    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
+    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
+    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
+    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
+    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
+    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
+    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
 void sr_hle_init(void) {
@@ -17477,6 +18151,9 @@ void sr_hle_init(void) {
         while (atomic_load_explicit(&s_hle_init_state, memory_order_acquire) != 2) { }
         return;
     }
+#ifdef SR_MPEG_MEDIA_SELFTEST
+    hle_register_mpeg_ycbcr_handlers();
+#else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;
     hle_register_bulk_memory_handlers();
@@ -17507,6 +18184,7 @@ void sr_hle_init(void) {
     hle_register_power_lock_handlers();
     hle_register_gpi_gpo_handlers();
     hle_register_mpeg_shared_handlers();
+    hle_register_psmf_player_handlers();
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
@@ -17592,13 +18270,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
     sr_hle_register(0x769bebb6, "sceMpegRingbufferQueryPackNum", h_MpegRingbufferQueryPackNum);
-    sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
-    sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
-    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_MpegAvcDecodeMode);
-    sr_hle_register(0xf0eb1125, "sceMpegAvcDecodeYCbCr", h_MpegAvcDecodeYCbCr);
-    sr_hle_register(0xf2930c9c, "sceMpegAvcDecodeStopYCbCr", h_MpegAvcDecodeStopYCbCr);
-    sr_hle_register(0x0558b075, "sceMpegAvcCopyYCbCr", h_MpegAvcCopyYCbCr);
-    sr_hle_register(0x31bd0272, "sceMpegAvcCsc", h_MpegAvcCsc);
+    hle_register_mpeg_ycbcr_handlers();
     sr_hle_register(0xc02cf6b5, "sceMpegQueryPcmEsSize", h_MpegQueryPcmEsSize);
     sr_hle_register(0x8c1e027d, "sceMpegGetPcmAu", h_MpegGetPcmAu);
     sr_hle_register(0x9dcfb7ea, "sceMpegChangeGetAuMode", h_MpegChangeGetAuMode);
@@ -17619,20 +18291,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xf8dcb679, "sceMpegQueryAtracEsSize", h_MpegQueryAtracEsSize);
     /* scePsmfPlayer: lifecycle, bounded source/demux production, and queue ownership are
      * implemented here; decoder output remains a separate fail-closed stage. */
-    sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
-    sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
-    sr_hle_register(0x235d8787, "scePsmfPlayerCreate", h_PsmfCreate);
-    sr_hle_register(0x2beb1569, "scePsmfPlayerBreak", h_PsmfBreak);
-    sr_hle_register(0x2d0e4e0a, "scePsmfPlayerSetTempBuf", h_PsmfSetTempBuf);
-    sr_hle_register(0x3ea82a4b, "scePsmfPlayerGetAudioOutSize", h_PsmfAudioOutSize);
-    sr_hle_register(0x46f61f8b, "scePsmfPlayerGetVideoData", h_PsmfGetVideo);
-    sr_hle_register(0x58b83577, "scePsmfPlayerSetPsmfCB", h_PsmfSetPsmfCB);
-    sr_hle_register(0x95a84ee5, "scePsmfPlayerStart", h_PsmfStart);
-    sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
-    sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
-    sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
-    sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
-    sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+    hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
     sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
     sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
@@ -17763,6 +18422,7 @@ void sr_hle_init(void) {
 
     hle_register_atrac_handlers();
     hle_register_sas_handlers();
+#endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
 }
 

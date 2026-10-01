@@ -1848,6 +1848,41 @@ int main(int argc, char **argv) {
 
     g_failures += run_fpu_reference_oracle();
     g_failures += run_negative_corpus();
+#if defined(SR_STACK_CENSUS_ENABLED)
+    SrStackCensusSummary stack_census;
+    sr_stack_census_snapshot(&stack_census);
+    const CosimCase *stack_leak_control = NULL;
+    for (unsigned i = 0; i < g_case_count; i++) {
+        if (strcmp(g_cases[i].name, "spleak") == 0) {
+            stack_leak_control = &g_cases[i];
+            break;
+        }
+    }
+    if (stack_leak_control == NULL
+        || stack_census.status != SR_STACK_CENSUS_FAILED
+        || stack_census.mismatches != 1u
+        || stack_census.entries == 0u
+        || stack_census.entries != stack_census.returns
+        || !stack_census.unobserved_known
+        || stack_census.excluded != 0u
+        || stack_census.unexpected != 0u
+        || !stack_census.has_mismatch
+        || stack_census.first_mismatch_entry != stack_leak_control->address
+        || stack_census.first_mismatch_expected_sp
+            < stack_census.first_mismatch_actual_sp
+        || stack_census.first_mismatch_expected_sp
+            - stack_census.first_mismatch_actual_sp != 32u) {
+        sr_stack_census_report();
+        fprintf(stderr,
+                "cosim: stack census positive control failed or expected-entry coverage was unknown\n");
+        return 1;
+    }
+    sr_stack_census_report();
+    fprintf(stderr,
+            "cosim: stack census caught the declared spleak control at 0x%08x; "
+            "unobserved=%u, all other observed entries balanced\n",
+            stack_leak_control->address, stack_census.unobserved);
+#endif
     fprintf(stderr, "\ncosim: %u comparison cases, %d divergence report(s)\n",
             executed, g_failures);
     if (g_failures != 0) {

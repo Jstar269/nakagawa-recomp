@@ -9,9 +9,9 @@ headless showcase route for the runtime. For an ISO/player workflow, start with
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
-The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.8,
+The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.16,
 and PSPDEV v20260501 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
-3.4.8 release commit and verifies the PSPDEV archive against
+3.4.16 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
 Run the showcase from the repository root:
@@ -101,7 +101,7 @@ tree when a user-profile path or a workspace root appears in a first-party file.
 
 ### Runtime DLLs (SDL3.dll, SDL3_ttf.dll & vulkan-1.dll)
 
-The native player (`nakagawa_player.exe`) requires `SDL3.dll` and the host Vulkan loader (`vulkan-1.dll`). It also loads `SDL3_ttf.dll` at run time for the readable UI font: `mingw32-make player` stages `SDL3_ttf.dll` and its full runtime dependency closure beside `build\nakagawa_player.exe` (`tools/stage_runtime_dlls.py`, with `SDL3_TTF_DLL` as the override in the same pattern as `SDL3_DLL`), so the same TTF font path is used whether the player is started from Explorer, a plain `cmd.exe` with no MSYS2 on `PATH`, a built title package, or the release layout. In a release archive, the matching `SDL3.dll`, `SDL3_ttf.dll` and its closure are already beside `bin/nakagawa_player.exe`; leave those files in `bin/`. In a source checkout, `copy_build_assets.ps1` copies SDL3 and any imported MinGW runtime DLLs beside the built game executable and generates their third-party notices; the player target stages its own typography runtime the same way. Without `SDL3_ttf.dll` the player still runs, but falls back to the 8x8 SDL bitmap font and logs the failing step once to stderr — the fallback is never silent — and the workspace doctor reports it as `RUNTIME_SDL3_TTF`.
+The native player (`nakagawa_player.exe`) requires `SDL3.dll` and the host Vulkan loader (`vulkan-1.dll`). It also loads `SDL3_ttf.dll` at run time for the readable UI font: `mingw32-make player` stages `SDL3_ttf.dll` and its full runtime dependency closure beside `build\nakagawa_player.exe` (`tools/stage_runtime_dlls.py`, with `SDL3_TTF_DLL` as the override in the same pattern as `SDL3_DLL`), so the same TTF font path is used whether the player is started from Explorer, a plain `cmd.exe` with no MSYS2 on `PATH`, a built title package, or the release layout. In a release archive, the matching `SDL3.dll`, `SDL3_ttf.dll` and its closure are already beside `bin/nakagawa_player.exe`; leave those files in `bin/`. In a source checkout, `tools/copy_build_assets.ps1` copies SDL3 and any imported MinGW runtime DLLs beside the built game executable and generates their third-party notices; the player target stages its own typography runtime the same way. Without `SDL3_ttf.dll` the player still runs, but falls back to the 8x8 SDL bitmap font and logs the failing step once to stderr — the fallback is never silent — and the workspace doctor reports it as `RUNTIME_SDL3_TTF`.
 
 #### 1. SDL3.dll
 
@@ -494,7 +494,7 @@ SDL3 gamepads use the south/east/west/north face buttons as Cross/Circle/Square/
 Short presses are latched until one PSP controller sample consumes them, so normal taps work
 even while a frame is slow.
 
-The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
+The full `make verify` command needs external trace data that is not in the repository. Missing `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` inputs report `NOT_RUN` with a non-zero result. The hardware differential gate is optional: with neither `PSP_HARDWARE_TRACE` nor `LOCAL_COSIM_TRACE` it reports `NOT_RUN` without changing the result, supplying only one fails, and a matching pair reports `STRICT_V2_AGREEMENT` from the traces' own tier metadata, which is not device attestation. Legacy v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
 
 ### Public synthetic verification routes
 
@@ -561,9 +561,11 @@ The pinned candidate download set is recorded in
 and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
 readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
 Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
-totaling 100,499,173 bytes. Package hashes and
+totaling 100,665,604 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
-python.org's release page. `tools/requirements-lock.txt` contains developer and
+python.org's release page. The manifest's `source_snapshot_date` dates the MSYS2
+package pins only; the locked developer-tool pins carry their own retrieval
+date in `assets/pypi_tool_metadata_*.json`. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.
 
@@ -637,7 +639,12 @@ installs that script into a user `Scripts/` directory that is frequently absent 
 Windows, so the bare form fails with "command not found" immediately after a successful install.
 The module form works regardless of `PATH`.
 
-These hooks install their own pinned Ruff and Betterleaks environments. C formatting is defined by
+These hooks install their own pinned Ruff and Betterleaks environments. The
+Betterleaks hook runs at the commit stage in directory mode over the staged files, which works the
+same on Windows and Linux; it is not a pre-push hook, because pre-commit passes no file names at
+that stage and directory mode would then scan the whole working tree, including the private input
+directories (the pushed history is scanned in hosted CI); its upstream git mode sets `GIT_CONFIG_GLOBAL=NUL`,
+which Git for Windows rejects, so that mode scanned nothing on Windows. C formatting is defined by
 `.clang-format` but is not currently an automatic pre-commit hook. A mypy configuration remains in
 `pyproject.toml`, but mypy is **not** a shared gate while the pre-existing Python typing baseline is being corrected. Do not describe a known-failing type check as a required
 contributor hook. These tools are not core runtime dependencies.
@@ -701,7 +708,7 @@ outside the published repository.
 
 - **Preflight diagnostics:** run `.\nk.ps1 Doctor -TitleManifest C:\path\to\manifest.json -GameName game` (or `python tools/nk_doctor.py --title-manifest C:\path\to\manifest.json --game-name game`) to validate the toolchain, build dependencies, and the selected title's local inputs. Without a title selection, Doctor uses the public synthetic manifest.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
-- **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
+- **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `tools/copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
 - **Retro 8x8 bitmap font in the player UI:** the readable-font path needs `SDL3_ttf.dll` and its dependency closure beside `nakagawa_player.exe` (or on `PATH`). Install the MSYS2 UCRT64 `sdl3-ttf` package and re-run `mingw32-make player`, which stages the whole closure and its licence notices; the workspace doctor reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`, and the player itself logs the failing step once to stderr when it falls back. `NK_UI_NO_TTF=1` forces the bitmap fallback on purpose.
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime still refuses encrypted `~PSP` executables because decryption happens earlier, in the player/CLI boundary that requires your own key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).

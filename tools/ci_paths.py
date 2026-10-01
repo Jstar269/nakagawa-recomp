@@ -106,19 +106,22 @@ def _is_generated_public_metadata(path: str) -> bool:
 
 
 def _is_security_publication(path: str) -> bool:
-    name = PurePosixPath(path).name
+    logical_path = _logical_tool_path(path) or path
+    name = PurePosixPath(logical_path).name
     return (
-        path.startswith(".github/ISSUE_TEMPLATE/")
+        logical_path.startswith(".github/ISSUE_TEMPLATE/")
         or name in {"SECURITY.md", "SECURITY.txt", "NOTICE", "NOTICE.md", "LICENSE", "LICENSE.md"}
-        or path.startswith("docs/PUBLICATION")
-        or path.startswith("docs/LEGAL")
-        or path == "docs/provenance/MODIFIED_FILE_NOTICES.json"
-        or _is_generated_public_metadata(path)
-        or path in {
+        or logical_path.startswith("docs/PUBLICATION")
+        or logical_path.startswith("docs/LEGAL")
+        or logical_path.startswith("docs/provenance/")
+        or logical_path == "docs/INDEPENDENCE_CAMPAIGN.md"
+        or _is_generated_public_metadata(logical_path)
+        or logical_path in {
             "tools/publish_audit.py",
             "tools/generate_sbom.py",
             "tools/verify_key_scrub.py",
             "tools/modified_file_notice_audit.py",
+            "tools/provenance_record_gap.py",
         }
     )
 
@@ -277,6 +280,16 @@ def _is_python_tool(path: str) -> bool:
     # validates these files -- test_hle_manifest asserts the baseline is current
     # and reproducible -- so classifying them here neither skips nor weakens a
     # check that was doing real work.
+    #
+    # `tools/README.md` is Markdown, not Python, but it is the *subject* of a
+    # Python regression: `tools/test_lint_docs.py` compares its module index
+    # against the tracked `tools/` module set and fails closed on drift. Routing
+    # the file whose content can break that test is what makes the check enforced
+    # rather than advisory -- otherwise the hosted `python_tests` job is skipped
+    # for exactly the edit that breaks it, and the check only runs in the change
+    # that introduces it. It is named individually instead of through the
+    # `markdown` flag so every other Markdown-only edit keeps skipping the Python
+    # matrix.
     return (
         path.startswith("tools/")
         and (path.endswith(".py") or path.endswith(".json") or path.endswith(".toml"))
@@ -288,6 +301,7 @@ def _is_python_tool(path: str) -> bool:
             "Pipfile",
             "Pipfile.lock",
             "poetry.lock",
+            "tools/README.md",
         }
     )
 

@@ -10,6 +10,8 @@
 #include <stdint.h>
 
 #define NK_TITLE_CATALOG_SCHEMA_VERSION 1
+#define NK_TITLE_MAX_LOOSE_CONTENT_ROOTS 16
+#define NK_TITLE_MAX_LOOSE_CONTENT_EXCLUDES 2
 #define NK_TITLE_CATALOG_DIGEST "787483f1038b7475"
 
 typedef enum {
@@ -25,6 +27,15 @@ typedef struct {
 } NkModuleDefinition;
 
 typedef struct {
+    const char *root;       /* Relative to the resolved data root's parent; '.' names that parent. */
+    const char *mount;      /* Guest-relative prefix; empty mounts at the namespace root. */
+    uint32_t precedence;   /* Lower values win duplicate guest-file keys. */
+    bool skip_primary_root;
+    const char * const *exclude;
+    int exclude_count;
+} NkLooseContentRoot;
+
+typedef struct {
     const char *id;                     /* e.g. "synthetic-allegrex-v1" */
     const char *game_name;              /* portable build/launch name */
     const char *display_name;
@@ -36,6 +47,8 @@ typedef struct {
     uint32_t run_entry;                 /* where a run starts: runtime_bindings.fallback_entry when declared, else executable_entry (title_codegen_plan._resolve_run_entry) */
     const char *bss_metadata_source;
     const char *data_root;
+    const NkLooseContentRoot *loose_content_roots;
+    int loose_content_root_count;
     const char *memory_stick_root;
     const char *hle_profile;
     const char *codegen_profile;

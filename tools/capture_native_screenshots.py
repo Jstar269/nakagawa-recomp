@@ -2,6 +2,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
+"""Capture the native player screenshot matrix into ``docs/ui-baseline/``.
+
+One capture per view, resolution and error state the player can be driven into, each
+through ``--screenshot=<bmp>`` on a throwaway per-user data root, so a capture never
+inspects or mutates the real library.  Exit 0 requires every view to have produced a
+PNG; a missing player binary is an error, not an empty matrix.
+"""
+
 import argparse
 import os
 import subprocess

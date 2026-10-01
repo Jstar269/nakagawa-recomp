@@ -25,6 +25,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
 GENERATOR_PATH = ROOT / "fixtures" / "production_smoke" / "generate.py"
+DISPLAY_GENERATOR_PATH = ROOT / "fixtures" / "display_smoke" / "generate.py"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
@@ -50,10 +51,18 @@ if SPEC is None or SPEC.loader is None:
 generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 
+DISPLAY_SPEC = importlib.util.spec_from_file_location(
+    "display_smoke_generator", DISPLAY_GENERATOR_PATH
+)
+if DISPLAY_SPEC is None or DISPLAY_SPEC.loader is None:
+    raise RuntimeError(f"cannot load {DISPLAY_GENERATOR_PATH}")
+display_generator = importlib.util.module_from_spec(DISPLAY_SPEC)
+DISPLAY_SPEC.loader.exec_module(display_generator)
 
-EXPECTED_PRX_SHA256 = "0e70188438318b1dd7324d9d08237634b4cb9f42b0078b189f72c569df9d9ace"
-EXPECTED_PSP_SHA256 = "835e63d84cc41a67a868dd34d57b2cb39fdc153039f1c8c4dba781e54ae257e3"
-GAP_EXPECTED_PRX_SHA256 = "065cfc9092448d5689c922482e1b56d25b2abf56e52568c9582baea7f72f74c4"
+
+EXPECTED_PRX_SHA256 = "bcbc14f27058263bdfbe086f542c22f3d6274539966b521c25c3d90679c546f6"
+EXPECTED_PSP_SHA256 = "678288e4c033fb4b3ba6cd9ff0a857daa959aafcc0acfac26e2450e3cc976c5d"
+GAP_EXPECTED_PRX_SHA256 = "ebc81e3a82ea47d1745e07d8ae5ffa0133bc74adbfd919db7c64eb1d7305c06f"
 
 
 def build_synthetic_cfw_loader(library: bytes = b"SystemCtrlForKernel") -> bytes:
@@ -156,7 +165,7 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertEqual(manifest["kind"], "source-owned-psp-production-smoke")
         self.assertEqual(manifest["mode"], "aot")
         self.assertEqual(manifest["load_segments"], 2)
-        self.assertEqual(manifest["relocation_count"], 10)
+        self.assertEqual(manifest["relocation_count"], 18)
         self.assertEqual(manifest["bss_size"], 0x40)
 
     def test_gap_fixture_is_pinned_and_keeps_guest_bytes(self):
@@ -169,22 +178,23 @@ class TestProductionSmoke(unittest.TestCase):
         )
         # The omitted region keeps its full body in the guest IMAGE bytes: an
         # AOT gap is an emission choice, never a byte removal.
-        raw_helper = generator.build_text_segment("aot-gap")[0x28:0x80]
-        self.assertIn(struct.pack("<I", 0x08000016), raw_helper)  # j REGION_B
+        helper_off = generator.HELPER - generator.BASE
+        raw_helper = generator.build_text_segment("aot-gap")[helper_off:helper_off + 0x68]
+        self.assertIn(struct.pack("<I", 0x08000026), raw_helper)  # j REGION_B
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x08)[0], 0x24091234)
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x0C)[0], 0xAD090000)
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x10)[0], 0x8D020000)
         self.assertEqual(struct.unpack_from("<I", raw_helper, 0x18)[0], 0x24420001)
         manifest = json.loads((gap_dir / "manifest.json").read_text(encoding="ascii"))
-        self.assertEqual(manifest["relocation_count"], 12)
+        self.assertEqual(manifest["relocation_count"], 20)
 
     def test_real_loader_analyzer_and_import_parser_accept_fixture(self):
         loaded = prxload.Prx(self.prx_path, generator.BASE, psp_header=self.psp_path)
         load_segments = [segment for segment in loaded.segments if segment["type"] == 1]
         self.assertEqual(len(load_segments), 2)
         self.assertEqual(loaded.psp_bss_size, 0x40)
-        self.assertEqual(loaded.relocate(), 10)
-        self.assertEqual(len(loaded.mem), 0x10B0)
+        self.assertEqual(loaded.relocate(), 18)
+        self.assertEqual(len(loaded.mem), 0x10B8)
         pointer_offset = generator.RESULT_POINTER - generator.BASE
         result_offset = generator.RESULT - generator.BASE
         self.assertEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0], generator.RESULT)
@@ -195,18 +205,21 @@ class TestProductionSmoke(unittest.TestCase):
         starts, ranges = analyze.analyze(elf)
         self.assertEqual(
             starts,
-            {generator.ENTRY, generator.HELPER, generator.IMPORT_STUB},
+            {generator.ENTRY, generator.HELPER, generator.IMPORT_STUB,
+             generator.STUB_SET, generator.STUB_GET},
         )
         self.assertEqual(
             ranges,
             [
-                (generator.BASE, generator.BASE + 0x48),
-                (generator.IMPORT_STUB, generator.IMPORT_STUB + 8),
+                (generator.BASE, generator.BASE + generator.TEXT_SECTION_SIZE_AOT),
+                (generator.IMPORT_STUB, generator.STUB_GET + 8),
             ],
         )
         self.assertEqual(
             imports_tool.parse_imports(elf),
-            {generator.IMPORT_STUB: (generator.LIBRARY, generator.NID)},
+            {generator.IMPORT_STUB: (generator.LIBRARY, generator.NID),
+             generator.STUB_SET: (generator.LIBRARY, generator.NID_SET),
+             generator.STUB_GET: (generator.LIBRARY, generator.NID_GET)},
         )
 
     def test_plain_elf_without_section_names_keeps_imports_as_hle_stubs(self):
@@ -287,7 +300,7 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertIn(f"f_{generator.REGION_B:08x}(", omitted_text)
         self.assertIn(
             f"sr_exec_span_register(0x{generator.BASE:08x}u, "
-            f"0x{generator.IMPORT_STUB + 8:08x}u)",
+            f"0x{generator.STUB_GET + 8:08x}u)",
             omitted_text,
         )
         self.assertEqual(omitted_text.count("sr_exec_span_register("), 1)
@@ -298,16 +311,17 @@ class TestProductionSmoke(unittest.TestCase):
         record_index = len(generator.relocation_records()) - 1
         record_offset = generator.RELOCATION_FILE_OFFSET + record_index * 8
         offset, info = struct.unpack_from("<II", mutated, record_offset)
-        self.assertEqual(offset, 0x68)
+        self.assertEqual(offset, 0x70)
         self.assertEqual(info & 0xF, generator.R_MIPS_32)
         struct.pack_into("<II", mutated, record_offset, offset, info & ~0xF)
         mutated_path = self.out_dir / "guest-no-result-relocation.prx"
         mutated_path.write_bytes(mutated)
 
         loaded = prxload.Prx(mutated_path, generator.BASE, psp_header=self.psp_path)
-        self.assertEqual(loaded.relocate(), 10)
+        self.assertEqual(loaded.relocate(), 18)
         pointer_offset = generator.RESULT_POINTER - generator.BASE
-        self.assertEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0], 0x6C)
+        self.assertEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0],
+                         generator.RESULT - generator.DATA_BASE)
         self.assertNotEqual(struct.unpack_from("<I", loaded.mem, pointer_offset)[0], generator.RESULT)
 
     def test_unknown_run_mode_is_refused(self):
@@ -324,6 +338,16 @@ class TestProductionSmoke(unittest.TestCase):
             f"GUEST_INTERP_AOT_HANDOFF pc=0x{generator.REGION_B:08x} instructions=7\n"
             f"DISPATCH 0x{generator.REGION_B:08x} from 0x{generator.REGION_B:08x}\n"
             f"HLE: calling sceKernelSetCompiledSdkVersion (0x{generator.NID:08x})\n"
+            f"HLE: calling sceImposeSetLanguageMode (0x{generator.NID_SET:08x})\n"
+            f"sceImposeSetLanguageMode: language={generator.IMPOSE_LANG} "
+            f"buttonConfirm={generator.IMPOSE_BTN}\n"
+            f"HLE: calling sceImposeGetLanguageMode (0x{generator.NID_GET:08x})\n"
+            f"DRIVER_EXPECT_U32 addr=0x{generator.SLOT_LANG:08x} "
+            f"got=0x{generator.IMPOSE_LANG:08x} "
+            f"expected=0x{generator.IMPOSE_LANG:08x} status=PASS\n"
+            f"DRIVER_EXPECT_U32 addr=0x{generator.SLOT_BTN:08x} "
+            f"got=0x{generator.IMPOSE_BTN:08x} "
+            f"expected=0x{generator.IMPOSE_BTN:08x} status=PASS\n"
             f"DRIVER_EXPECT_U32 addr=0x{generator.RESULT:08x} "
             f"got=0x{generator.INTERP_RESULT:08x} "
             f"expected=0x{generator.INTERP_RESULT:08x} status=PASS\n"
@@ -343,6 +367,20 @@ class TestProductionSmoke(unittest.TestCase):
                 "AOT_REGION_B_SKIPPED",
             ),
             "old-fatal-miss": good + "NONPLT_MISS\n",
+            "no-impose-dispatch": good.replace(
+                f"HLE: calling sceImposeSetLanguageMode (0x{generator.NID_SET:08x})\n",
+                "",
+            ),
+            "impose-setter-silent": good.replace(
+                f"sceImposeSetLanguageMode: language={generator.IMPOSE_LANG} "
+                f"buttonConfirm={generator.IMPOSE_BTN}\n",
+                "",
+            ),
+            "impose-roundtrip-lost": good.replace(
+                f"got=0x{generator.IMPOSE_LANG:08x} expected=0x{generator.IMPOSE_LANG:08x} status=PASS",
+                f"got=0xDEADBEEF expected=0x{generator.IMPOSE_LANG:08x} status=FAIL",
+            ),
+            "unimplemented-nid": good + "HLE: unimplemented nid 0x24fd7bcf (sceImposeGetLanguageMode)\n",
             "delay-slot-skipped": good.replace(
                 f"got=0x{generator.INTERP_RESULT:08x} expected=0x{generator.INTERP_RESULT:08x} status=PASS",
                 f"got=0x{generator.INTERP_STORE:08x} expected=0x{generator.INTERP_RESULT:08x} status=FAIL",
@@ -362,7 +400,7 @@ class TestProductionSmoke(unittest.TestCase):
         fixture.mkdir()
         self.assertEqual(generator.generate(fixture), 0)
 
-        image = bytearray(0x10B0)
+        image = bytearray(0x10B8)
         struct.pack_into("<I", image, generator.RESULT_POINTER - generator.BASE, generator.RESULT)
         helper_bytes = generator.expected_helper_bytes("aot")
         image[generator.HELPER - generator.BASE:generator.HELPER - generator.BASE + len(helper_bytes)] = helper_bytes
@@ -373,10 +411,11 @@ class TestProductionSmoke(unittest.TestCase):
             f"sr_exec_span_register(0x{generator.BASE:08x}u, "
             f"0x{generator.BASE + generator.TEXT_SECTION_SIZE_AOT:08x}u);\n"
             f"sr_exec_span_register(0x{generator.IMPORT_STUB:08x}u, "
-            f"0x{generator.IMPORT_STUB + 8:08x}u);\n"
+            f"0x{generator.STUB_GET + 8:08x}u);\n"
             'fprintf(stderr, "sr_register_all: registered 2 executable span(s)\\n");\n'
-            'fprintf(stderr, "sr_register_all: starting 3 registrations\\n");\n'
-            "sr_register_chunk_0();\nsr_register_chunk_1();\nsr_register_chunk_2();\n",
+            'fprintf(stderr, "sr_register_all: starting 5 registrations\\n");\n'
+            "sr_register_chunk_0();\nsr_register_chunk_1();\nsr_register_chunk_2();\n"
+            "sr_register_chunk_3();\nsr_register_chunk_4();\n",
             encoding="ascii",
         )
         (build_dir / "production_smoke_recomp_funcs.h").write_text(
@@ -386,13 +425,18 @@ class TestProductionSmoke(unittest.TestCase):
             f"void f_{generator.ENTRY:08x}(CpuState *s) {{}}\n"
             f"void f_{generator.HELPER:08x}(CpuState *s) {{}}\n"
             f"void f_{generator.IMPORT_STUB:08x}(CpuState *s) {{}}\n"
+            f"void f_{generator.STUB_SET:08x}(CpuState *s) {{}}\n"
+            f"void f_{generator.STUB_GET:08x}(CpuState *s) {{}}\n"
             f"sr_syscall(s, 0x{generator.NID:08x}u);\n"
+            f"sr_syscall(s, 0x{generator.NID_SET:08x}u);\n"
+            f"sr_syscall(s, 0x{generator.NID_GET:08x}u);\n"
         )
-        for index in range(3):
+        for index in range(5):
             (build_dir / f"production_smoke_recomp_{index}.c").write_text(generated, encoding="ascii")
             (build_dir / f"production_smoke_recomp_{index}.o").write_bytes(b"\0")
         (build_dir / "production_smoke_imports.toml").write_text(
-            f'{generator.LIBRARY} = ["0x{generator.NID:08x}"]\n', encoding="ascii"
+            f'{generator.LIBRARY} = ["0x{generator.NID:08x}", '
+            f'"0x{generator.NID_SET:08x}", "0x{generator.NID_GET:08x}"]\n', encoding="ascii"
         )
 
         required = [
@@ -400,6 +444,8 @@ class TestProductionSmoke(unittest.TestCase):
             "production_smoke_recomp_0.o",
             "production_smoke_recomp_1.o",
             "production_smoke_recomp_2.o",
+            "production_smoke_recomp_3.o",
+            "production_smoke_recomp_4.o",
             "ge.o", "flight_recorder.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
             "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
@@ -1065,6 +1111,137 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertFalse((bad_output / "build-report.json").exists())
 
 
+class TestPresenterContract(unittest.TestCase):
+    def test_gdi_acceptance_requires_window_dc_and_positive_scanlines(self):
+        """The headless suite cannot open GDI, so pin its acceptance contract in source."""
+        source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
+        presenter = source[source.index("int gui_present"):]
+        gdi = presenter[:presenter.index("#else")]
+        self.assertIn("if (!s_hwnd) return 0;", gdi)
+        self.assertIn("HDC dc = GetDC(s_hwnd);", gdi)
+        self.assertIn("if (!dc) return 0;", gdi)
+        self.assertRegex(
+            gdi,
+            r"if \(!GetClientRect\(s_hwnd, &cr\)\)\s*\{\s*"
+            r"ReleaseDC\(s_hwnd, dc\);\s*return 0;\s*\}",
+        )
+        self.assertLess(
+            gdi.index("if (!GetClientRect(s_hwnd, &cr))"),
+            gdi.index("int scanlines = StretchDIBits"),
+        )
+        self.assertIn("int scanlines = StretchDIBits", gdi)
+        self.assertIn("if (scanlines <= 0) return 0;", gdi)
+
+    def test_offscreen_frame_event_is_quiet_without_present_trace(self):
+        source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
+        presenter = source[source.index("int gui_present"):]
+        offscreen = presenter[presenter.index("if (s_offscreen)"):presenter.index("int accepted")]
+        self.assertRegex(
+            offscreen,
+            r'if \(getenv\("SR_PRESENT_TRACE"\)\)\s*\{\s*'
+            r'sr_gui_boot_event\("BOOT_EVENT phase=frame_present backend=offscreen',
+        )
+
+    def test_display_smoke_offscreen_pins_inherited_sdl_selectors(self):
+        inherited = {
+            "SDL_VIDEO_DRIVER": "windows",
+            "SDL_VIDEODRIVER": "windows",
+            "SDL_AUDIO_DRIVER": "wasapi",
+            "SDL_AUDIODRIVER": "wasapi",
+        }
+        expected = f"0x{display_generator.final_frame_first_pixel(1):08x}"
+        combined = (
+            "BOOT_EVENT phase=init public_safe=1\n"
+            "BOOT_EVENT phase=image_loaded entry=0x08810000\n"
+            "BOOT_EVENT phase=runtime_registered entry=0x08810000\n"
+            f"DRIVER_EXPECT_U32 addr=0x04000000 got={expected} "
+            f"expected={expected} status=PASS\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED f=2 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["env"] = dict(kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, combined, "")
+
+        with tempfile.TemporaryDirectory(prefix="display-smoke-env-") as temp_dir:
+            build_dir = Path(temp_dir)
+            fixture = build_dir / "fixture"
+            fixture.mkdir()
+            (fixture / "manifest.json").write_text('{"frames": 1}\n', encoding="ascii")
+            suffix = ".exe" if os.name == "nt" else ""
+            (build_dir / f"{display_generator.ARTIFACT_STEM}{suffix}").write_bytes(b"runtime")
+            (build_dir / f"{display_generator.ARTIFACT_STEM}_image.bin").write_bytes(b"image")
+            with mock.patch.dict(os.environ, inherited):
+                with mock.patch.object(
+                    display_generator.subprocess, "run", side_effect=fake_run
+                ):
+                    status = display_generator.run(build_dir, gui=True, offscreen=True)
+
+        self.assertEqual(status, 0)
+        for selector in inherited:
+            self.assertEqual(captured["env"][selector], "dummy")
+        self.assertEqual(captured["env"]["SR_VIDEO"], "offscreen")
+        self.assertEqual(captured["env"]["SR_PRESENT_TRACE"], "1")
+
+    def test_display_smoke_routes_keep_separate_logs(self):
+        expected = f"0x{display_generator.final_frame_first_pixel(1):08x}"
+        combined = (
+            "BOOT_EVENT phase=init public_safe=1\n"
+            "BOOT_EVENT phase=image_loaded entry=0x08810000\n"
+            "BOOT_EVENT phase=runtime_registered entry=0x08810000\n"
+            f"DRIVER_EXPECT_U32 addr=0x04000000 got={expected} "
+            f"expected={expected} status=PASS\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED f=2 buf=0x04000000 fmt=3 stride=512\n"
+        )
+
+        def fake_run(command, **kwargs):
+            route = "offscreen" if kwargs["env"].get("SR_VIDEO") == "offscreen" else "headless"
+            return subprocess.CompletedProcess(command, 0, f"{route}\n{combined}", "")
+
+        with tempfile.TemporaryDirectory(prefix="display-smoke-logs-") as temp_dir:
+            build_dir = Path(temp_dir)
+            fixture = build_dir / "fixture"
+            fixture.mkdir()
+            (fixture / "manifest.json").write_text('{"frames": 1}\n', encoding="ascii")
+            suffix = ".exe" if os.name == "nt" else ""
+            (build_dir / f"{display_generator.ARTIFACT_STEM}{suffix}").write_bytes(b"runtime")
+            (build_dir / f"{display_generator.ARTIFACT_STEM}_image.bin").write_bytes(b"image")
+            with mock.patch.object(display_generator.subprocess, "run", side_effect=fake_run):
+                self.assertEqual(display_generator.run(build_dir), 0)
+                self.assertEqual(display_generator.run(build_dir, gui=True, offscreen=True), 0)
+            stem = display_generator.ARTIFACT_STEM
+            headless = (build_dir / f"{stem}.stdout.log").read_text(encoding="utf-8")
+            offscreen = (build_dir / f"{stem}.gui-offscreen.stdout.log").read_text(encoding="utf-8")
+        self.assertTrue(headless.startswith("headless\n"))
+        self.assertTrue(offscreen.startswith("offscreen\n"))
+
+    def test_display_smoke_offscreen_without_gui_is_a_usage_error(self):
+        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(None):
+            display_generator.parse_args(["run", "--build-dir", "x", "--offscreen"])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_offscreen_present_evidence_rejects_malformed_submission_marker(self):
+        combined = (
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED nonsense\n"
+        )
+        failure = display_generator.offscreen_present_evidence_failure(combined)
+        self.assertIsNotNone(failure)
+        self.assertIn("malformed HOST_PRESENT_SUBMITTED marker", failure)
+
+    def test_offscreen_present_evidence_rejects_malformed_frame_marker(self):
+        combined = (
+            "BOOT_EVENT phase=frame_present backend=offscreen BROKEN\n"
+            "HOST_PRESENT_SUBMITTED f=2 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        failure = display_generator.offscreen_present_evidence_failure(combined)
+        self.assertIsNotNone(failure)
+        self.assertIn("malformed offscreen frame_present marker", failure)
+
+
 class TestSanitizedBringup(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-bringup-report-")
@@ -1148,7 +1325,11 @@ class TestSanitizedBringup(unittest.TestCase):
                 }), encoding="utf-8")
             output = launch_output
             if not output and launch_code == 0:
-                output = "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+                output = (
+                    "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                    "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+                    "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+                )
             return FakeProcess(output)
 
         completed = subprocess.CompletedProcess(["synthetic-codegen"], 1 if failure == "codegen" else 0, "", "")
@@ -1194,23 +1375,80 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertRegex(command[3], r"^(?:0|0x[0-9a-f]{8})$")
         self.assertRegex(command[4], r"^0x[0-9a-f]{8}$")
         self.assertEqual(command[5:], ["none", "none", "--sched", "--gui"])
-        self.assertEqual(self.last_launch_env["SR_PRESENT_TRACE"], "1")
+        self.assertEqual(self.last_launch_env.get("SR_PRESENT_TRACE"), "1")
         for selector in (
             "SDL_VIDEO_DRIVER",
             "SDL_VIDEODRIVER",
             "SDL_AUDIO_DRIVER",
             "SDL_AUDIODRIVER",
         ):
-            self.assertEqual(self.last_launch_env[selector], "dummy")
+            self.assertEqual(self.last_launch_env.get(selector), "dummy")
+        self.assertEqual(self.last_launch_env.get("SR_VIDEO"), "offscreen")
         self.assertNotIn("SR_GEWATCH", self.last_launch_env)
         self.assertEqual(report["presentation"], {
             "status": "FRAME_SUBMITTED",
             "frame_submissions": 1,
+            "backend": "offscreen",
         })
         summary = nk_cli._bringup_human_summary(report)
-        self.assertIn("GUI presenter received 1 frame submission(s)", summary)
+        self.assertIn("offscreen presenter accepted 1 frame submission(s)", summary)
         self.assertIn("Visual contents are not verified", summary)
         self.assertFalse(self.last_build_arguments.instruction_trace)
+        nk_cli.validate_bringup_report(report)
+
+    def test_invalid_selected_boot_sources_write_schema_valid_unsupported_report(self):
+        invalid_sources = (".", "..", "BAD/NAME", "BAD\x01NAME", "A" * 256)
+        for index, source in enumerate(invalid_sources):
+            with self.subTest(source=repr(source)):
+                case_root = self.root / f"invalid-boot-source-{index}"
+                report_path = case_root / "bringup.json"
+                args = argparse.Namespace(
+                    iso=str(self.iso),
+                    work_dir=str(case_root / "work"),
+                    report=str(report_path),
+                    launch_timeout=1,
+                    instruction_trace=False,
+                )
+                preflight = {
+                    "checks": [
+                        {"code": "DISC_SFO", "status": "OK", "issues": []},
+                        {"code": "EXECUTABLE", "status": "OK", "issues": []},
+                    ],
+                    "selected_executable": "EBOOT.BIN",
+                    "selected_executable_source": source,
+                    "modified_dump_cfw_loader": False,
+                }
+                with (
+                    mock.patch.object(
+                        nk_cli, "inspect_compatibility_preflight", return_value=preflight
+                    ),
+                    mock.patch("builtins.print"),
+                ):
+                    status = nk_cli.cmd_bringup(args)
+
+                self.assertEqual(status, 1)
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                nk_cli.validate_bringup_report(report)
+                self.assertEqual(report["reached_stage"], "inspect")
+                self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
+                self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
+                self.assertEqual(report["issue_numbers"], [285])
+
+    def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=offscreen t_ns=100\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1 t_ns=101\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        with mock.patch.dict(os.environ, {"SR_PERF": "1"}):
+            status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["presentation"], {
+            "status": "FRAME_SUBMITTED",
+            "frame_submissions": 1,
+            "backend": "offscreen",
+        })
         nk_cli.validate_bringup_report(report)
 
     def test_headless_bringup_overrides_inherited_sdl3_selectors(self):
@@ -1226,7 +1464,66 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 0, report)
         self.assertEqual(report["failure_class"], "NONE")
         for selector in inherited:
-            self.assertEqual(self.last_launch_env[selector], "dummy")
+            self.assertEqual(self.last_launch_env.get(selector), "dummy")
+
+    def test_headless_bringup_overrides_inherited_video_presenter(self):
+        with mock.patch.dict(os.environ, {"SR_VIDEO": "windows"}):
+            status, report = self._run_case()
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(self.last_launch_env.get("SR_VIDEO"), "offscreen")
+
+    def test_zero_exit_with_unrecognized_presenter_backend_is_not_success(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=unknown-host\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+            "backend": "unknown",
+        })
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_submission_before_frame_is_not_success(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+        )
+        status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+            "backend": "offscreen",
+        })
+        nk_cli.validate_bringup_report(report)
+
+    def test_zero_exit_with_malformed_frame_marker_is_not_success(self):
+        output = (
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "BOOT_EVENT phase=frame_present backend=offscreen BROKEN\n"
+            "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+        )
+        status, report = self._run_case(launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
+        self.assertEqual(report["presentation"], {
+            "status": "NO_FRAME_SUBMISSIONS",
+            "frame_submissions": 0,
+            "backend": "offscreen",
+        })
+        nk_cli.validate_bringup_report(report)
 
     def test_zero_exit_with_framebuffer_setup_but_no_gui_submission_is_not_success(self):
         status, report = self._run_case(launch_output="synthetic runtime had no GUI submission\n")
@@ -1235,12 +1532,34 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["presentation"], {
             "status": "NO_FRAME_SUBMISSIONS",
             "frame_submissions": 0,
+            "backend": "unknown",
         })
         self.assertEqual(report["failure_class"], "NO_FRAME_SUBMISSIONS")
         self.assertIn(308, report["issue_numbers"])
         self.assertIn("no validated framebuffer was submitted",
                       nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
+
+    def test_dummy_video_driver_message_does_not_mask_named_runtime_boundary(self):
+        output = (
+            "Vulkan support is not available in current SDL video driver (dummy)\n"
+            "unsupported instruction: DIV.S at 0x08801234\n"
+        )
+        status, report = self._run_case(launch_code=1, launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["runtime_output_kind"], "UNSUPPORTED_INSTRUCTION")
+        self.assertEqual(report["failure_class"], "UNSUPPORTED_INSTRUCTION")
+        self.assertIn(118, report["issue_numbers"])
+        self.assertNotIn(297, report["issue_numbers"])
+
+    def test_dummy_video_driver_message_remains_headless_fallback(self):
+        output = "Vulkan support is not available in current SDL video driver (dummy)\n"
+        status, report = self._run_case(launch_code=1, launch_output=output)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["runtime_output_kind"], "VIDEO_UNAVAILABLE")
+        self.assertEqual(report["failure_class"], "HEADLESS_UNAVAILABLE")
 
     def test_instruction_trace_is_opt_in_and_stays_under_private_work_dir(self):
         status, report = self._run_case(instruction_trace=True)
@@ -1373,7 +1692,11 @@ class TestSanitizedBringup(unittest.TestCase):
             returncode = 0
 
             def communicate(self, timeout=None):
-                return "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n", None
+                return (
+                    "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                    "BOOT_EVENT phase=frame_present backend=offscreen frame=1\n"
+                    "HOST_PRESENT_SUBMITTED f=1 buf=0x04000000 fmt=3 stride=512\n"
+                ), None
 
         def fake_package_build(build_args, stage_observer=None):
             stage_observer("compile", "PASS", 1)
@@ -1581,6 +1904,11 @@ class TestSanitizedBringup(unittest.TestCase):
         )
         self.assertEqual(preflight["selected_executable_source"], "EBOOT.OLD")
         self.assertEqual(preflight["selected_executable"], "EBOOT.elf")
+        self.assertEqual(
+            nk_cli._psp_boot_path(preflight["selected_executable_source"]),
+            "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD",
+        )
+        self.assertIsNone(nk_cli._psp_boot_path("../outside.elf"))
         cfw_check = next(
             check for check in preflight["checks"]
             if check["code"] == "MODIFIED_DUMP_CFW_LOADER"
@@ -1609,6 +1937,12 @@ class TestSanitizedBringup(unittest.TestCase):
             summary,
         )
         self.assertIn("in the works (#308)", summary)
+        library = json.loads(
+            (work_root / "work" / "user-data" / "library.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(library["games"][0]["selected_executable"], "EBOOT.BIN")
+        self.assertEqual(library["games"][0]["boot_executable"], "EBOOT.OLD")
         nk_cli.validate_bringup_report(report)
 
     def test_relocatable_main_entry_is_rebased_to_guest_address(self):

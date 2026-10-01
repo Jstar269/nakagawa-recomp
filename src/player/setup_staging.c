@@ -544,7 +544,7 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
     if (!source || !destination) {
         if (source) fclose(source);
         if (destination) fclose(destination);
-        remove(destination_path);
+        nk_remove_utf8(destination_path);
         stage_error(context, NK_ERROR_IO, "cannot open PRX staging file");
         return false;
     }
@@ -567,7 +567,7 @@ static bool copy_prx_file(PlayerStageContext *context, const char *source_path,
     int source_close_failed = fclose(source) != 0;
     int destination_close_failed = fclose(destination) != 0;
     if (!okay || remaining != 0 || source_close_failed || destination_close_failed) {
-        remove(destination_path);
+        nk_remove_utf8(destination_path);
         if (context->callback_result == NK_ERROR_CANCELLED) return false;
         stage_error(context, NK_ERROR_IO, "failed while copying decrypted PRX");
         return false;
@@ -690,6 +690,8 @@ static bool iso_progress(const char *relative_path, uint64_t bytes_complete,
 
 NkResult player_stage_game_with_summary(const char *iso_path,
                                         const char *staging_root,
+                                        const char *const *loose_content_roots,
+                                        size_t loose_content_root_count,
                                         const PlayerStageCallbacks *callbacks,
                                         PlayerStageSummary *summary,
                                         char *error_message,
@@ -725,8 +727,10 @@ NkResult player_stage_game_with_summary(const char *iso_path,
     context.callback_result = NK_OK;
     if (callbacks) context.callbacks = *callbacks;
 
-    NkResult result = nk_iso_extract_game(iso_path, staging_root, iso_progress,
-                                          &context);
+    NkResult result = nk_iso_extract_game(iso_path, staging_root,
+                                          loose_content_roots,
+                                          loose_content_root_count,
+                                          iso_progress, &context);
     if (result != NK_OK && context.callback_result != NK_OK) {
         result = context.callback_result;
     }
@@ -749,9 +753,13 @@ NkResult player_stage_game_with_summary(const char *iso_path,
 }
 
 NkResult player_stage_game(const char *iso_path, const char *staging_root,
+                           const char *const *loose_content_roots,
+                           size_t loose_content_root_count,
                            const PlayerStageCallbacks *callbacks,
                            char *error_message, size_t error_message_size) {
-    return player_stage_game_with_summary(iso_path, staging_root, callbacks,
-                                          NULL, error_message,
+    return player_stage_game_with_summary(iso_path, staging_root,
+                                          loose_content_roots,
+                                          loose_content_root_count,
+                                          callbacks, NULL, error_message,
                                           error_message_size);
 }

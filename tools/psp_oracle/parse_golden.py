@@ -10,6 +10,10 @@ messages, its exception type, its field names, its field ordering and its
 constants unchanged; each section below is the former module verbatim apart from
 the per-probe constant prefixes described next.
 
+The mailbox delete/wait parser is a new strict record contract for the
+source-owned PSP kernel-object probe.  It validates stream completeness and
+exact field sets without asserting any measured PSP return code.
+
 Two constant names were defined by several of those modules with *different*
 values, so each keeps its own value under a distinct per-probe name rather than
 being merged: ``EXPECTED_TEST_ID`` and ``EXPECTED_TERMINAL_COUNT`` (audio, cache,
@@ -283,6 +287,90 @@ def parse_io_matrix_output(text: str, *, require_complete: bool = True) -> IoMat
         open_fd=_observable(sequence, "io-open-create", "out0"),
         removed_rc=_observable(sequence, "io-errors", "out2"),
     )
+
+
+# ---------------------------------------------------------------------------
+# PSP-KERNEL-001 mailbox delete/wait measurement
+#
+# The two ordered semantic rows record raw values from the isolated
+# ``mbx-delete-wait`` fixture case.  The parser checks only that the complete
+# measurement stream and its exact output fields arrived; none of the observed
+# return codes, pointer values, wait states, or timing values are PSP
+# expectations.
+# ---------------------------------------------------------------------------
+
+MBX_DELETE_WAIT_SPEC = StreamSpec(
+    test_id="PSP-KERNEL-001",
+    semantic_cases=("mbx-delete-wait", "mbx-timeout-control"),
+    terminal_case="mbx-done",
+)
+MBX_DELETE_WAIT_EXPECTED_FIELDS = {
+    "mbx-delete-wait": frozenset(
+        {"result", *(f"out{i}" for i in range(26))}
+    ),
+    "mbx-timeout-control": frozenset(
+        {"result", *(f"out{i}" for i in range(8))}
+    ),
+    "mbx-done": frozenset({"result", "out0"}),
+}
+
+
+@dataclass(frozen=True)
+class MbxDeleteWaitReport:
+    sequence: SequenceReport
+
+    @property
+    def complete(self) -> bool:
+        return self.sequence.complete
+
+    @property
+    def terminal_present(self) -> bool:
+        return self.sequence.terminal_present
+
+    @property
+    def all_passed(self) -> bool:
+        return self.sequence.all_passed
+
+    @property
+    def record_count(self) -> int:
+        return self.sequence.record_count
+
+    @property
+    def results(self):
+        return self.sequence.results
+
+
+def parse_mbx_delete_wait_output(
+    text: str, *, require_complete: bool = True
+) -> MbxDeleteWaitReport:
+    """Parse one exact mailbox delete/wait observation stream.
+
+    This parser validates stream completeness and exact record fields.  It does
+    not qualify transport or PSP semantics; raw API outcomes remain
+    observations for later PSP-versus-HLE review, not parser constants.
+    """
+
+    sequence = parse_sequence(
+        text, MBX_DELETE_WAIT_SPEC, require_complete=require_complete
+    )
+    for case_id, expected_fields in MBX_DELETE_WAIT_EXPECTED_FIELDS.items():
+        record = sequence.results.get(case_id)
+        if record is None:
+            continue
+        actual_fields = set(dict(record.values))
+        if actual_fields != expected_fields:
+            missing = sorted(expected_fields - actual_fields)
+            unexpected = sorted(actual_fields - expected_fields)
+            details = []
+            if missing:
+                details.append(f"missing {', '.join(missing)}")
+            if unexpected:
+                details.append(f"unexpected {', '.join(unexpected)}")
+            raise ProtocolError(
+                f"{MBX_DELETE_WAIT_SPEC.test_id}: {case_id} field set mismatch: "
+                + "; ".join(details)
+            )
+    return MbxDeleteWaitReport(sequence=sequence)
 
 
 # ---------------------------------------------------------------------------
