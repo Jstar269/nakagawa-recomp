@@ -184,10 +184,12 @@ HANDLER_METADATA = {
     # regression-tested through production dispatch: the illegal-size and
     # illegal-address classes, whole-span validation with overflow-safe
     # arithmetic, failure atomicity (no byte written, no GPU dirty),
-    # memmove-correct same-pointer and overlapping copies, and the measured
-    # 0xC000 effective prefix ceiling. The handlers remain partial because
-    # concurrent-DMA BUSY behavior and the precedence of validation for an
-    # invalid truncated tail are not established by the available evidence.
+    # memmove-correct same-pointer and overlapping copies, and full-span copies
+    # (the PSP-3000 size matrix copied fully valid spans completely through
+    # 0x100000; there is no API-wide 0xC000 ceiling, see docs/ARCHITECTURE.md).
+    # The handlers remain partial because concurrent-DMA BUSY behavior and the
+    # precedence of validation for an invalid truncated tail are not established
+    # by the available evidence.
     "h_DmacMemcpy": {
         "status": "partial",
         "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
