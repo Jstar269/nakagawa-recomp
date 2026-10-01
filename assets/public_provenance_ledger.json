@@ -5532,7 +5532,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2c26f67763ee18cee300df44decbfa961ebfcf5cb90c167590a8f0de9f31afd9"
+      "sha256": "6326940f71dc1176cffdc877d991bba9c6cc398b9ddf25b2595429f69b681eb1"
     },
     {
       "path": "tools/analyze.py",
@@ -9074,7 +9074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4b515c58d4f240e8d1144f576d5c1fe6d636060195b6103fef122d4016aff58"
+      "sha256": "614d93884fabbca938729805b56d7bfa82d85f34cacb4b53f80dd309ec652dfe"
     },
     {
       "path": "tools/test_tree_lint.py",
