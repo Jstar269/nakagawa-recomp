@@ -1141,6 +1141,23 @@ class TestFlightSmokeProjection(unittest.TestCase):
         self.assertNotEqual(first, second)
 
 
+    def test_projection_leaves_ge_event_arguments_untouched(self):
+        """The draw-count mutation check depends on arg3 surviving outside SetFrameBuf."""
+        bundle = self._bundle([(0x04000000, 32)])
+        bundle["events"][0].update({"kind": 25, "arg3": 7})
+        projected = display_generator._without_host_present_events(bundle)
+        self.assertEqual(projected["events"][0]["arg3"], 7)
+
+    def test_a_stalled_vblank_count_is_refused(self):
+        display_generator._require_vblank_progress(
+            self._bundle([(0x04000000, 30), (0x04088000, 30), (0x04000000, 31)]), "healthy")
+        for counts in ((30, 30, 30), (31, 30, 32)):
+            with self.subTest(counts=counts):
+                bundle = self._bundle([(0x04000000, count) for count in counts])
+                with self.assertRaises(RuntimeError):
+                    display_generator._require_vblank_progress(bundle, "stalled")
+
+
 class TestPresenterContract(unittest.TestCase):
     def test_gdi_acceptance_requires_window_dc_and_positive_scanlines(self):
         """The headless suite cannot open GDI, so pin its acceptance contract in source."""

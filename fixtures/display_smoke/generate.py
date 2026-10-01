@@ -955,6 +955,23 @@ def _without_host_present_events(bundle: dict) -> dict:
     return projected
 
 
+def _require_vblank_progress(bundle: dict, label: str) -> None:
+    """Refuse a run whose SetFrameBuf VBLANK counts never advance.
+
+    The repeatability comparison zeroes this host-paced count, so this keeps a
+    stalled VBLANK clock visible: the counts must be non-decreasing and the last
+    must exceed the first.
+    """
+    counts = [event["arg3"] for event in bundle["events"]
+              if event["class"] == "present" and event["kind"] == FLIGHT_KIND_PRESENT_SET_FRAMEBUF]
+    if not counts:
+        raise RuntimeError(f"{label} flight bundle has no SetFrameBuf events")
+    if any(later < earlier for earlier, later in zip(counts, counts[1:], strict=False)):
+        raise RuntimeError(f"{label} flight bundle: SetFrameBuf VBLANK counts went backwards: {counts}")
+    if counts[-1] <= counts[0]:
+        raise RuntimeError(f"{label} flight bundle: VBLANK count never advanced ({counts[0]} throughout)")
+
+
 def flight_smoke(build_dir: Path) -> int:
     """Record and compare repeatable GE/present evidence from the public guest."""
     build_dir = build_dir.resolve()
@@ -977,6 +994,7 @@ def flight_smoke(build_dir: Path) -> int:
                 raise RuntimeError(f"{label} flight bundle has unexpected class coverage")
             if bundle["recorder"]["dropped"] != 0:
                 raise RuntimeError(f"{label} flight bundle dropped events")
+            _require_vblank_progress(bundle, label)
 
         kind_counts = Counter((event["class"], event["kind"]) for event in first["events"])
         expected = {
