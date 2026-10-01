@@ -219,6 +219,23 @@ class NkCoreTests(unittest.TestCase):
         self.assertIn("--register-local-compatibility-record", metadata.qualification_error)
         self.assertNotIn("#315", metadata.qualification_error)
 
+    def test_package_refusals_carry_remediation_not_stale_pointer(self) -> None:
+        """The CLI and planner refusals name the remediation flag and no retired #315 pointer."""
+        tools_dir = Path(__file__).resolve().parent
+        cli_source = (tools_dir / "nk_cli.py").read_text(encoding="utf-8")
+        plan_source = (tools_dir / "title_codegen_plan.py").read_text(encoding="utf-8")
+        for source in (cli_source, plan_source):
+            self.assertNotIn("(#315)", source)
+            self.assertNotIn("revision qualification is in the works", source)
+        for refusal in (
+            "Unqualified revision (SFO DISC_VERSION",
+            "Local compatibility record mismatch: ",
+        ):
+            start = cli_source.index(refusal)
+            end = cli_source.index(")\n", start)
+            self.assertIn("--register-local-compatibility-record", cli_source[start:end])
+        self.assertIn("write packages under the per-user data root", plan_source)
+
     def test_iso_inspection_malformed(self) -> None:
         # File too small
         tiny_file = self.temp_dir / "tiny.iso"
