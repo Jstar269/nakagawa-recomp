@@ -1375,7 +1375,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "618e23b043613b2ad4b064333d8c6bb8da6a60c6043511db25f797082cd24635"
+      "sha256": "c5b05fa6f5be0b53f104a08eb870bfdf30ffe0e303c3c660ec2ecc3a7c053028"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -4882,7 +4882,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1828d0393137e51b5316270011ca0e1a7a8353790da0636c301b81d20900869b"
+      "sha256": "4c6408b220ac3295d71288e14c0a8bcee4c0de3bc384ef65cbc4004634c5dbed"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -4894,7 +4894,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "34717527e41a9b79d17585465cbe905cd98dad512917189f2eb56802a8b65b67"
+      "sha256": "b91755052fdeca221d653f61e9f3e52ca1ce123eabc02644f6314c7916d2ce41"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -5050,7 +5050,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "828fb9a16c705bbb06de55e755753dae1ad81a9e9b7e70a84d6b72dd2e656f36"
+      "sha256": "79ac2e90179ec1f58396a9a04e688c0330c1279f33015a48760798343ead7805"
     },
     {
       "path": "src/rt/vfpu_addr_selftest.c",
@@ -8972,7 +8972,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6de57b612cd66092844ce315aebaa0d9703f9add09d79e2d531a9ca3d25f1edd"
+      "sha256": "43bbacc9947682617a0341fbf4588006b33932905c11dee2e0c0d626a22508d9"
     },
     {
       "path": "tools/test_trace_window_probe.py",
