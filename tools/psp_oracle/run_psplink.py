@@ -37,6 +37,7 @@ try:
         compare_texts,
         decode_psp_model_code,
         dump_json,
+        ge_corpus_report,
         parse_output,
         provenance_issues,
         validate_dmac_size_matrix,
@@ -48,6 +49,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         compare_texts,
         decode_psp_model_code,
         dump_json,
+        ge_corpus_report,
         parse_output,
         provenance_issues,
         validate_dmac_size_matrix,
@@ -72,6 +74,8 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RESULTS = ROOT / "oracle" / "hardware-results"
+DEFAULT_GE_CORPUS = ROOT / "fixtures" / "psp_oracle" / "ge_corpus.json"
+DEFAULT_GE_CORPUS_SCHEMA = ROOT / "assets" / "ge_corpus.schema.json"
 TERMINAL_OUTCOMES = frozenset({"HANG", "RESET"})
 _TEST_RECORD_RE = re.compile(
     r"^NAKAGAWA_PSP_TEST\b.*\bstatus=([A-Z]+)\b", re.MULTILINE
@@ -1678,6 +1682,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="validate --host0-output as the complete PSP-DMAC-001 size matrix",
     )
+    parser.add_argument(
+        "--ge-corpus-gate",
+        action="store_true",
+        help="validate the source-owned GE corpus and report per-case evidence status without hardware access",
+    )
+    parser.add_argument("--ge-corpus", type=Path, help="GE corpus JSON under fixtures/psp_oracle")
+    parser.add_argument("--ge-corpus-schema", type=Path, help="GE corpus schema JSON under assets")
     parser.add_argument("--binary", type=Path, help="source-owned PRX used to replace fixture metadata")
     parser.add_argument("--source-commit", help="exact source commit recorded in the result metadata")
     parser.add_argument("--model", help="human-recorded PSP model identifier")
@@ -1721,6 +1732,46 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.ge_corpus_gate:
+        if any((
+            args.prx, args.remote_command, args.command, args.psp_output, args.nakagawa_output,
+            args.host0_output, args.validate_dmac_size_matrix, args.binary, args.source_commit,
+            args.model, args.model_code is not None, args.firmware, args.campaign_case,
+            args.host0_root, args.out, args.annotate_report, args.observed_terminal_outcome,
+            args.dry_run,
+        )):
+            parser.error("--ge-corpus-gate cannot be combined with PSPLink execution or capture options")
+        corpus_path = (args.ge_corpus or DEFAULT_GE_CORPUS).resolve()
+        schema_path = (args.ge_corpus_schema or DEFAULT_GE_CORPUS_SCHEMA).resolve()
+        allowed_corpus_root = (ROOT / "fixtures" / "psp_oracle").resolve()
+        allowed_schema_root = (ROOT / "assets").resolve()
+        try:
+            corpus_path.relative_to(allowed_corpus_root)
+        except ValueError:
+            parser.error("--ge-corpus must stay under fixtures/psp_oracle")
+        try:
+            schema_path.relative_to(allowed_schema_root)
+        except ValueError:
+            parser.error("--ge-corpus-schema must stay under assets")
+        try:
+            corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            report = {
+                "status": "REFUSED",
+                "semantic_boundary": "GE_RASTER_PIXEL_CONFORMANCE",
+                "tracking_issue": 343,
+                "cases": [{
+                    "case_id": "<corpus>",
+                    "status": "REFUSED",
+                    "reason": f"could not read GE corpus or schema: {type(exc).__name__}: {exc}",
+                }],
+            }
+            sys.stdout.write(dump_json(report))
+            return 2
+        report = ge_corpus_report(corpus, schema)
+        sys.stdout.write(dump_json(report))
+        return 2 if report["status"] == "REFUSED" else 0
     args.results_directory = args.results_directory.resolve()
     try:
         args.results_directory.relative_to(ROOT.resolve())

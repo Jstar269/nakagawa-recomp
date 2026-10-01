@@ -14,6 +14,22 @@ are estimates and labelled as such. This document is a plan in the same sense as
 > (`CODEGEN_ORACLE`/`MICROTEST_ORACLE` capture on real silicon), which the scalar probe does not
 > provide.
 
+## GE raster pixel corpus (#343)
+
+`assets/ge_corpus.schema.json` defines version 1 of the source-owned GE case corpus. The first
+case is an untextured solid triangle in a 16×16 8888 framebuffer. Its selected pixels and full
+framebuffer digest are deliberately unset until a qualified PSP run records them. The case uses
+the PSP GE command word layout; address operands are explicit relocations to its source-owned
+vertex words. A result records `framebuffer_sha256` and one `pixel_<x>_<y>` value for each selected
+coordinate, packed according to the case framebuffer format.
+
+Run `python tools/psp_oracle/run_psplink.py --ge-corpus-gate` to validate the corpus and report each
+case. A case is `MEASURED` only when its source tier is `PSP_HARDWARE`, the oracle envelope is
+acceptance-eligible, and the raw result protocol identifies `source=psp`. Software, Vulkan, or
+PPSSPP data cannot be promoted by setting a hardware label. The current case reports `NOT_RUN`.
+**GE raster pixel conformance is IN THE WORKS (#343);** a real run still depends on the resident
+runner and recovery substrate tracked by #352.
+
 ## Measured to date (index — exact cells only, do not generalize)
 
 The loops below are proposals. These cells are already measured; they are not

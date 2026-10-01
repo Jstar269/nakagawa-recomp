@@ -182,6 +182,99 @@ class PspOracleProtocolTests(unittest.TestCase):
                     parse_output(text)
 
 
+class GeCorpusGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.corpus = json.loads(
+            (self.root / "fixtures" / "psp_oracle" / "ge_corpus.json").read_text(encoding="utf-8")
+        )
+
+    def _run_gate(self, document: dict | None = None) -> subprocess.CompletedProcess[str]:
+        command = [sys.executable, str(self.root / "tools" / "psp_oracle" / "run_psplink.py"), "--ge-corpus-gate"]
+        if document is None:
+            return subprocess.run(command, capture_output=True, text=True, check=False)
+        fixture_dir = self.root / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="ge-corpus-gate-", dir=fixture_dir) as scratch:
+            corpus_path = Path(scratch) / "corpus.json"
+            corpus_path.write_text(json.dumps(document), encoding="utf-8")
+            command.extend(["--ge-corpus", str(corpus_path)])
+            return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    def _report(self, completed: subprocess.CompletedProcess[str]) -> dict:
+        self.assertTrue(completed.stdout, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_unmeasured_ge_case_reports_not_run(self) -> None:
+        completed = self._run_gate()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = self._report(completed)
+        self.assertEqual(report["semantic_boundary"], "GE_RASTER_PIXEL_CONFORMANCE")
+        self.assertEqual(report["tracking_issue"], 343)
+        self.assertEqual(report["cases"][0]["status"], "NOT_RUN")
+
+    def test_software_record_labelled_psp_hardware_is_refused(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["source_tier"] = "PSP_HARDWARE"
+        case["framebuffer_sha256"] = "a" * 64
+        for pixel in case["selected_pixels"]:
+            pixel["pixel_value"] = 0xFF0000FF if (pixel["x"], pixel["y"]) == (4, 4) else 0
+        raw_result = stream("nakagawa") + (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-001 "
+            f"case_id={case['case_id']} status=PASS framebuffer_sha256={'a' * 64} "
+            "pixel_0_0=0x00000000 pixel_4_4=0xff0000ff pixel_12_12=0x00000000\n"
+        )
+        case["evidence_envelope"] = {
+            "EVIDENCE_CLASS": "PSP_HARDWARE",
+            "ACCEPTANCE_ELIGIBLE": True,
+            "CASE_ID": case["case_id"],
+            "CONSOLE_MODEL": "PSP-3000",
+            "FW": "6.61-ARK",
+            "SOURCE_COMMIT": MEASURED_COMMIT,
+            "BINARY_SHA256": MEASURED_SHA,
+            "RAW_RESULT": raw_result,
+        }
+        completed = self._run_gate(document)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        report = self._report(completed)
+        result = report["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("source 'nakagawa'", result["reason"])
+
+    def test_hardware_label_requires_acceptance_eligible_envelope(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        case = document["cases"][0]
+        case["source_tier"] = "PSP_HARDWARE"
+        case["framebuffer_sha256"] = "a" * 64
+        for pixel in case["selected_pixels"]:
+            pixel["pixel_value"] = 0
+        case["evidence_envelope"] = {
+            "EVIDENCE_CLASS": "PSP_HARDWARE",
+            "ACCEPTANCE_ELIGIBLE": False,
+            "CASE_ID": case["case_id"],
+            "CONSOLE_MODEL": "PSP-3000",
+            "FW": "6.61-ARK",
+            "SOURCE_COMMIT": MEASURED_COMMIT,
+            "BINARY_SHA256": MEASURED_SHA,
+            "RAW_RESULT": stream("psp"),
+        }
+        completed = self._run_gate(document)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        result = self._report(completed)["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("not acceptance-eligible", result["reason"])
+
+    def test_schema_violation_is_refused_with_case_field_name(self) -> None:
+        document = json.loads(json.dumps(self.corpus))
+        document["cases"][0]["framebuffer"]["format"] = "888x"
+        completed = self._run_gate(document)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        report = self._report(completed)
+        result = report["cases"][0]
+        self.assertEqual(result["status"], "REFUSED")
+        self.assertIn("framebuffer.format", result["reason"])
+
+
 class PspDmacProtocolTests(unittest.TestCase):
     def test_size_matrix_validator_requires_all_sizes_and_trials(self) -> None:
         parsed = validate_dmac_size_matrix(dmac_matrix_stream())

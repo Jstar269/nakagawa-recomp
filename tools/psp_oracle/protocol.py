@@ -602,3 +602,289 @@ def dump_json(value: Any) -> str:
     """Canonical JSON used by the runner and tests."""
 
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+
+
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "null":
+        return value is None
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return False
+
+
+def _json_schema_errors(
+    value: Any,
+    schema: dict[str, Any],
+    root_schema: dict[str, Any],
+    path: str = "",
+) -> list[tuple[str, str]]:
+    """Validate the JSON Schema keywords used by the checked-in GE contract."""
+
+    errors: list[tuple[str, str]] = []
+    reference = schema.get("$ref")
+    if reference is not None:
+        prefix = "#/$defs/"
+        definitions = root_schema.get("$defs")
+        name = reference[len(prefix):] if isinstance(reference, str) and reference.startswith(prefix) else None
+        target = definitions.get(name) if isinstance(definitions, dict) and name else None
+        if not isinstance(target, dict):
+            return [(path, f"unsupported or missing schema reference {reference!r}")]
+        return _json_schema_errors(value, target, root_schema, path)
+
+    expected_type = schema.get("type")
+    expected_types = expected_type if isinstance(expected_type, list) else [expected_type]
+    expected_types = [item for item in expected_types if isinstance(item, str)]
+    if expected_types and not any(_schema_type_matches(value, item) for item in expected_types):
+        actual = "null" if value is None else type(value).__name__
+        return [(path, f"must have type {' or '.join(expected_types)} (got {actual})")]
+
+    if "const" in schema and (type(value) is not type(schema["const"]) or value != schema["const"]):
+        errors.append((path, f"must equal {schema['const']!r}"))
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and not any(
+        type(value) is type(candidate) and value == candidate for candidate in enum_values
+    ):
+        errors.append((path, f"must be one of {enum_values!r}"))
+
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        if isinstance(required, list):
+            for name in required:
+                if isinstance(name, str) and name not in value:
+                    errors.append((f"{path}.{name}" if path else name, "is required"))
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            properties = {}
+        for name, child in properties.items():
+            if name in value and isinstance(child, dict):
+                child_path = f"{path}.{name}" if path else name
+                errors.extend(_json_schema_errors(value[name], child, root_schema, child_path))
+        if schema.get("additionalProperties") is False:
+            for name in sorted(set(value) - set(properties)):
+                child_path = f"{path}.{name}" if path else name
+                errors.append((child_path, "is not allowed by the schema"))
+    elif isinstance(value, list):
+        minimum = schema.get("minItems")
+        maximum = schema.get("maxItems")
+        if isinstance(minimum, int) and len(value) < minimum:
+            errors.append((path, f"must contain at least {minimum} item(s)"))
+        if isinstance(maximum, int) and len(value) > maximum:
+            errors.append((path, f"must contain at most {maximum} item(s)"))
+        if schema.get("uniqueItems") is True:
+            serialized = [json.dumps(item, sort_keys=True, separators=(",", ":")) for item in value]
+            if len(serialized) != len(set(serialized)):
+                errors.append((path, "items must be unique"))
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                errors.extend(_json_schema_errors(item, item_schema, root_schema, f"{path}[{index}]"))
+    elif isinstance(value, str):
+        minimum = schema.get("minLength")
+        maximum = schema.get("maxLength")
+        if isinstance(minimum, int) and len(value) < minimum:
+            errors.append((path, f"must contain at least {minimum} character(s)"))
+        if isinstance(maximum, int) and len(value) > maximum:
+            errors.append((path, f"must contain at most {maximum} character(s)"))
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str):
+            try:
+                matches = re.fullmatch(pattern, value) is not None
+            except re.error:
+                matches = False
+                errors.append((path, "schema contains an invalid pattern"))
+            else:
+                if not matches:
+                    errors.append((path, f"does not match required pattern {pattern!r}"))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            errors.append((path, f"must be at least {minimum}"))
+        if isinstance(maximum, (int, float)) and value > maximum:
+            errors.append((path, f"must be at most {maximum}"))
+    return errors
+
+
+def _ge_case_semantic_errors(case: dict[str, Any], path: str) -> list[tuple[str, str]]:
+    errors: list[tuple[str, str]] = []
+    framebuffer = case.get("framebuffer")
+    pixels = case.get("selected_pixels")
+    commands = case.get("command_words")
+    relocations = case.get("relocations")
+    if isinstance(framebuffer, dict):
+        width = framebuffer.get("width")
+        height = framebuffer.get("height")
+        stride = framebuffer.get("stride_pixels")
+        if all(isinstance(item, int) and not isinstance(item, bool) for item in (width, height, stride)):
+            if stride < width:
+                errors.append((f"{path}.framebuffer.stride_pixels", "must be at least framebuffer.width"))
+            if isinstance(pixels, list):
+                seen_positions: set[tuple[int, int]] = set()
+                for index, pixel in enumerate(pixels):
+                    if not isinstance(pixel, dict):
+                        continue
+                    x, y = pixel.get("x"), pixel.get("y")
+                    if not all(isinstance(item, int) and not isinstance(item, bool) for item in (x, y)):
+                        continue
+                    pixel_path = f"{path}.selected_pixels[{index}]"
+                    if x >= width or y >= height:
+                        errors.append((pixel_path, "coordinate is outside the framebuffer"))
+                    if (x, y) in seen_positions:
+                        errors.append((pixel_path, "coordinate is duplicated"))
+                    seen_positions.add((x, y))
+    if isinstance(commands, list) and isinstance(relocations, list):
+        for index, relocation in enumerate(relocations):
+            if not isinstance(relocation, dict):
+                continue
+            command_index = relocation.get("command_index")
+            if not isinstance(command_index, int) or isinstance(command_index, bool):
+                continue
+            relocation_path = f"{path}.relocations[{index}]"
+            if command_index >= len(commands):
+                errors.append((relocation_path + ".command_index", "is outside command_words"))
+                continue
+            command = commands[command_index]
+            opcode = {"BASE": "10", "VADDR": "01"}.get(relocation.get("part"))
+            if isinstance(command, str) and opcode and command[2:4] != opcode:
+                errors.append((relocation_path + ".part", f"does not point to GE command {opcode}"))
+    return errors
+
+
+def _ge_case_status(case: dict[str, Any]) -> tuple[str, str]:
+    case_id = case["case_id"]
+    source_tier = case["source_tier"]
+    envelope = case["evidence_envelope"]
+    outputs_present = bool(case["framebuffer_sha256"]) and all(
+        pixel["pixel_value"] is not None for pixel in case["selected_pixels"]
+    )
+    if envelope is None:
+        if source_tier == "PSP_HARDWARE":
+            return "REFUSED", "case is labelled PSP_HARDWARE but has no evidence envelope."
+        detail = "unbound output values are not evidence" if outputs_present else "no result is recorded"
+        return "NOT_RUN", f"IN THE WORKS (#343): no PSP_HARDWARE evidence envelope is present; {detail}."
+
+    envelope_class = envelope["EVIDENCE_CLASS"]
+    hardware_claimed = source_tier == "PSP_HARDWARE" or envelope_class == "PSP_HARDWARE"
+    if not hardware_claimed:
+        if source_tier in {"LOCAL_COSIM", "PPSSPP_CORROBORATIVE"}:
+            return "NOT_RUN", f"source tier {source_tier} has no PSP hardware raster record."
+        return "REFUSED", "evidence envelope is present without a recognized source tier."
+    if source_tier != "PSP_HARDWARE":
+        return "REFUSED", "evidence envelope is labelled PSP_HARDWARE but the case source_tier disagrees."
+    if envelope_class != "PSP_HARDWARE":
+        return "REFUSED", "case source_tier is PSP_HARDWARE but EVIDENCE_CLASS is not PSP_HARDWARE."
+    if envelope["ACCEPTANCE_ELIGIBLE"] is not True:
+        return "REFUSED", "PSP_HARDWARE envelope is not acceptance-eligible."
+    if not outputs_present:
+        return "REFUSED", "accepted PSP_HARDWARE envelope has no complete pixel vector and framebuffer digest."
+
+    try:
+        parsed = parse_output(envelope["RAW_RESULT"])
+    except ProtocolError as exc:
+        return "REFUSED", f"raw result protocol is invalid: {exc}"
+    metadata = parsed.metadata_dict()
+    if metadata.get("source") != "psp":
+        return "REFUSED", f"raw result source {metadata.get('source')!r} is not PSP hardware."
+    if metadata.get("model") != envelope["CONSOLE_MODEL"]:
+        return "REFUSED", "raw result model does not match CONSOLE_MODEL."
+    if metadata.get("firmware") != envelope["FW"]:
+        return "REFUSED", "raw result firmware does not match FW."
+    if metadata.get("source_commit") != envelope["SOURCE_COMMIT"]:
+        return "REFUSED", "raw result source_commit does not match SOURCE_COMMIT."
+    if metadata.get("binary_sha256") != envelope["BINARY_SHA256"]:
+        return "REFUSED", "raw result binary_sha256 does not match BINARY_SHA256."
+    metadata_problems = provenance_issues(metadata)
+    if metadata_problems:
+        return "REFUSED", "raw result has unmeasured identity: " + "; ".join(metadata_problems)
+    if envelope["CASE_ID"] != case_id:
+        return "REFUSED", "oracle CASE_ID does not match the corpus case_id."
+    records = [
+        record for record in parsed.results
+        if record.test_id == "PSP-GE-001" and record.case_id == case_id
+    ]
+    if len(records) != 1 or records[0].status != "PASS":
+        return "REFUSED", "raw result lacks one passing PSP-GE-001 record for this case."
+    result_values = dict(records[0].values)
+    digest = case["framebuffer_sha256"]
+    if result_values.get("framebuffer_sha256") != digest:
+        return "REFUSED", "raw result framebuffer_sha256 does not match the case digest."
+    for pixel in case["selected_pixels"]:
+        key = f"pixel_{pixel['x']}_{pixel['y']}"
+        observed = result_values.get(key)
+        if not isinstance(observed, str) or not re.fullmatch(r"0x[0-9a-f]{8}", observed):
+            return "REFUSED", f"raw result is missing a valid {key} selected-pixel value."
+        if int(observed, 16) != pixel["pixel_value"]:
+            return "REFUSED", f"raw result {key} does not match the case pixel vector."
+    return "MEASURED", "acceptance-eligible PSP_HARDWARE record matches this case and its pixel results."
+
+
+def ge_corpus_report(corpus: Any, schema: Any) -> dict[str, Any]:
+    """Validate a GE corpus against its checked-in schema and classify each case."""
+
+    boundary = "GE_RASTER_PIXEL_CONFORMANCE"
+    issue = 343
+    if not isinstance(schema, dict):
+        return {
+            "status": "REFUSED",
+            "semantic_boundary": boundary,
+            "tracking_issue": issue,
+            "cases": [{"case_id": "<schema>", "status": "REFUSED", "reason": "schema document is not an object."}],
+        }
+    schema_errors = _json_schema_errors(corpus, schema, schema)
+    if not isinstance(corpus, dict):
+        schema_errors.append(("", "corpus document must be an object"))
+    cases = corpus.get("cases") if isinstance(corpus, dict) else None
+    if not isinstance(cases, list):
+        cases = []
+    root_errors = [(path, reason) for path, reason in schema_errors if not path.startswith("cases[")]
+    if root_errors:
+        reason = "; ".join(
+            f"{path or 'corpus'}: {message}" for path, message in root_errors
+        )
+        return {
+            "status": "REFUSED",
+            "semantic_boundary": boundary,
+            "tracking_issue": issue,
+            "cases": [{"case_id": "<corpus>", "status": "REFUSED", "reason": reason}],
+        }
+
+    case_reports: list[dict[str, str]] = []
+    seen_case_ids: set[str] = set()
+    for index, item in enumerate(cases):
+        case_id = item.get("case_id") if isinstance(item, dict) else None
+        report_id = case_id if isinstance(case_id, str) else f"case[{index}]"
+        path_prefix = f"cases[{index}]"
+        errors = [
+            (path, reason) for path, reason in schema_errors if path.startswith(path_prefix)
+        ]
+        if isinstance(item, dict):
+            errors.extend(_ge_case_semantic_errors(item, path_prefix))
+        if isinstance(case_id, str):
+            if case_id in seen_case_ids:
+                errors.append((path_prefix + ".case_id", "duplicates an earlier case id"))
+            seen_case_ids.add(case_id)
+        if errors:
+            reason = "; ".join(
+                f"schema violation at {path}: {message}" for path, message in errors
+            )
+            case_reports.append({"case_id": report_id, "status": "REFUSED", "reason": reason})
+        else:
+            status, reason = _ge_case_status(item)
+            case_reports.append({"case_id": report_id, "status": status, "reason": reason})
+    report_status = "REFUSED" if any(item["status"] == "REFUSED" for item in case_reports) else "IN_THE_WORKS"
+    return {
+        "status": report_status,
+        "semantic_boundary": boundary,
+        "tracking_issue": issue,
+        "cases": case_reports,
+    }
