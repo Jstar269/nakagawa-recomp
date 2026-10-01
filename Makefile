@@ -528,16 +528,21 @@ RUNTIME_PROFILE_MANIFEST := $(BUILD_DIR)/runtime_profile.json
 RECOMP_PROFILE_MANIFEST := $(BUILD_DIR)/recomp_profile.json
 CODEGEN_PROFILE_MANIFEST := $(BUILD_DIR)/codegen_profile.json
 
-# Verification-gate inputs. These are PPSSPP-captured golden traces + (for the microtest
-# gate) a PSP-compiled test module. They are external assets not committed to the repo, so
-# `make verify` is meant to be run in CI with them supplied on the command line, e.g.:
+# Verification-gate inputs. Codegen/microtest oracle traces remain external inputs; v1
+# traces are accepted for those non-hardware comparisons and reported as corroborative.
+# The hardware gate requires a strict v2 PSP_HARDWARE + LOCAL_COSIM pair.
 #   make verify GAME_NAME=hst GAME_ELF=eboot.elf GAME_BASE=0 GAME_ENTRY=0 \
 #     CODEGEN_ORACLE=oracle/eboot.trace \
-#     MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace
-# When an input is absent the corresponding gate reports BLOCKED with a real (non-zero) signal.
+#     MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace \
+#     PSP_HARDWARE_TRACE=oracle/psp-hardware.trace LOCAL_COSIM_TRACE=oracle/local-cosim.trace
+# When a codegen/microtest input is absent that gate reports NOT_RUN with a non-zero signal.
+# The hardware pair is optional: with neither trace set it reports NOT_RUN without failing
+# the target, so `make verify` can still succeed; setting only one of the two fails.
 CODEGEN_ORACLE   ?=
 MICROTEST_MODULE ?=
 MICROTEST_ORACLE ?=
+PSP_HARDWARE_TRACE ?=
+LOCAL_COSIM_TRACE ?=
 RUN_ELF_EXE      ?= $(BUILD_DIR)/run_elf.exe
 VERIFY_WORKDIR   ?= $(BUILD_DIR)/verify
 
@@ -2283,9 +2288,9 @@ psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 	$(PYTHON) tools/psp_oracle/run_nakagawa_vfpu.py --executable "$(PSP_VFPU_ORACLE_EXE)" --output "$(PSP_VFPU_ORACLE_OUT)" -- --model "$(PSP_VFPU_ORACLE_MODEL)" --firmware "$(PSP_VFPU_ORACLE_FIRMWARE)" --source-commit "$(PSP_VFPU_ORACLE_COMMIT)"
 
 # verify — differential smoke gates (no recompiler build needed; runs Python analysis tools
-# and the host reference interpreter). These are differential tests: each compares the
-# recompiler/reference output against a PPSSPP-captured oracle trace. The oracle inputs are
-# external and supplied via the *ORACLE / *MODULE variables above.
+# and the host reference interpreter). Codegen and microtest compare project output against
+# their supplied traces. The hardware gate separately requires a matching v2 PSP_HARDWARE
+# and LOCAL_COSIM pair; PPSSPP_CORROBORATIVE and v1 traces cannot satisfy it.
 #
 # Correct gate signatures (see tools/codegen_gate.py and tools/microtest_gate.py):
 #   codegen_gate.py   <elf> <oracle.trace> <workdir>
@@ -2293,12 +2298,14 @@ psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 #
 # Usage: make verify GAME_NAME=hst GAME_ELF=eboot.elf GAME_BASE=0 GAME_ENTRY=0 \
 #          CODEGEN_ORACLE=oracle/eboot.trace \
-#          MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace
+#          MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace \
+#          PSP_HARDWARE_TRACE=oracle/psp-hardware.trace LOCAL_COSIM_TRACE=oracle/local-cosim.trace
 verify: run_elf
 	$(PYTHON) tools/verify_gates.py --cc "$(CC)" --env-elf \
 		--run-elf "$(RUN_ELF_EXE)" --workdir "$(VERIFY_WORKDIR)" \
 		--codegen-oracle "$(CODEGEN_ORACLE)" --microtest-module "$(MICROTEST_MODULE)" \
-		--microtest-oracle "$(MICROTEST_ORACLE)"
+		--microtest-oracle "$(MICROTEST_ORACLE)" \
+		--psp-hardware-trace "$(PSP_HARDWARE_TRACE)" --local-cosim-trace "$(LOCAL_COSIM_TRACE)"
 
 # run_elf — host reference-interpreter driver used by microtest_gate. Built WITHOUT
 # -DSR_SELFTEST_ONLY so run_elf.cpp's main() (ELF loader + trace driver) is included.
