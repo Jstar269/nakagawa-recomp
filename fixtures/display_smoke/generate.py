@@ -925,16 +925,26 @@ def run_vramdump(build_dir: Path) -> int:
           "present_bytes=IDENTICAL png_pixels=IDENTICAL")
 
 
+FLIGHT_KIND_PRESENT_SET_FRAMEBUF = 28
 FLIGHT_KIND_PRESENT_FRAME = 29
 
 
 def _without_host_present_events(bundle: dict) -> dict:
-    """Project out successful-present events and renumber the rest as a complete run."""
+    """Project out successful-present events and renumber the rest as a complete run.
+
+    SetFrameBuf events keep their buffer, format and stride, but their arg3 is the
+    VBLANK count at the call. Paced runs service VBLANKs on the host clock, so that
+    count differs between two identical runs on a loaded runner; it is zeroed here
+    and the guest-determined arguments are still compared.
+    """
     projected = json.loads(json.dumps(bundle))
     kept = [
         event for event in projected["events"]
         if not (event["class"] == "present" and event["kind"] == FLIGHT_KIND_PRESENT_FRAME)
     ]
+    for event in kept:
+        if event["class"] == "present" and event["kind"] == FLIGHT_KIND_PRESENT_SET_FRAMEBUF:
+            event["arg3"] = 0
     for index, event in enumerate(kept, start=1):
         event["sequence"] = index
     projected["events"] = kept

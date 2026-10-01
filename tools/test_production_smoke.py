@@ -1111,6 +1111,36 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertFalse((bad_output / "build-report.json").exists())
 
 
+class TestFlightSmokeProjection(unittest.TestCase):
+    @staticmethod
+    def _bundle(set_fb_args):
+        events = [{"class": "ge", "kind": 20, "sequence": 1,
+                   "arg0": 1, "arg1": 0, "arg2": 0, "arg3": 0}]
+        for args in set_fb_args:
+            events.append({"class": "present", "kind": 28, "sequence": len(events) + 1,
+                           "arg0": args[0], "arg1": 3, "arg2": 512, "arg3": args[1]})
+            events.append({"class": "present", "kind": 29, "sequence": len(events) + 1,
+                           "arg0": 0, "arg1": 0, "arg2": 0, "arg3": 0})
+        return {"events": events, "recorder": {"recorded": len(events), "dropped": 0},
+                "terminal": {"sequence": len(events)}}
+
+    def test_set_framebuf_vblank_count_is_not_compared(self):
+        """The VBLANK count at SetFrameBuf follows host pacing; two identical runs differ in it."""
+        first = display_generator._without_host_present_events(
+            self._bundle([(0x04000000, 32), (0x04088000, 33)]))
+        second = display_generator._without_host_present_events(
+            self._bundle([(0x04000000, 28), (0x04088000, 30)]))
+        self.assertEqual(first, second)
+        self.assertEqual([e["kind"] for e in first["events"]], [20, 28, 28])
+
+    def test_set_framebuf_buffer_address_is_still_compared(self):
+        first = display_generator._without_host_present_events(
+            self._bundle([(0x04000000, 32)]))
+        second = display_generator._without_host_present_events(
+            self._bundle([(0x04088000, 32)]))
+        self.assertNotEqual(first, second)
+
+
 class TestPresenterContract(unittest.TestCase):
     def test_gdi_acceptance_requires_window_dc_and_positive_scanlines(self):
         """The headless suite cannot open GDI, so pin its acceptance contract in source."""
