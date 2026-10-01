@@ -1135,7 +1135,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2b54696936bbca78b1adb05c14cfd9b639c2308a34171ebee1879780470deddb"
+      "sha256": "cd62aa70f33f8054002e4228f8f57561b879efe5ca72b3544974231a0fd6042b"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -5975,7 +5975,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e22850b96ddb7218c84f19443be99f34f9ec8786581cb34d37009e5bed3491e3"
+      "sha256": "6cb3d9ace68e6e5fcccbe73d0ae905911d025637dff851147c17b4e7f96ddf84"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -7735,7 +7735,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ea672a7dc2365b08dc9dbad924a04962ad8b96d266563dcf5457265133b976b2"
+      "sha256": "71eb6aecf8d7320e09d1ab5ffb9fcc09b43bb3d385e464d4d629111992d58bf5"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
