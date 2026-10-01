@@ -4477,7 +4477,7 @@ static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
     _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
              fixture->root);
     _snprintf(fixture->loose_roots, sizeof(fixture->loose_roots),
-              "%s\\USRDIR\t\t0\t1\t0\n", fixture->root);
+              "%s\\" "USRDIR\t\t0\t1\t0\n", fixture->root);
     _snprintf(fixture->memstick, sizeof(fixture->memstick), "%s\\memstick", fixture->root);
     _snprintf(fixture->legacy, sizeof(fixture->legacy), "%s\\legacy", fixture->root);
     _snprintf(fixture->archive, sizeof(fixture->archive), "%s\\assets.xb", fixture->dataroot);
@@ -4814,7 +4814,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
 
     char filtered_roots[MAX_PATH + 96];
     int filtered_len = snprintf(filtered_roots, sizeof(filtered_roots),
-        "%s\\USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
+        "%s\\" "USRDIR\t\t0\t1\t2\tpacked_archives\tmodule\n", fixture.root);
     expect(filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots),
            "the two-exclusion manifest transport fits its bounded environment field");
     if (filtered_len > 0 && (size_t)filtered_len < sizeof(filtered_roots)) {

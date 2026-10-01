@@ -1029,7 +1029,8 @@ try {
                   "--diff-func=0x$addr", "--diff-oracle=$Oracle", "--diff-step=$Step")
         $resolvedDataRoot = $null
         if ($script:TitleDataRoot) {
-            $resolved = Resolve-Path -LiteralPath $script:TitleDataRoot -ErrorAction SilentlyContinue
+            $resolved = $null
+            try { $resolved = Resolve-Path -LiteralPath $script:TitleDataRoot -ErrorAction Stop } catch { $resolved = $null }
             if ($resolved -and (Test-Path -LiteralPath $resolved.Path -PathType Container)) {
                 $resolvedDataRoot = $resolved.Path
             }
