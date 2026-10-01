@@ -492,7 +492,7 @@ SDL3 gamepads use the south/east/west/north face buttons as Cross/Circle/Square/
 Short presses are latched until one PSP controller sample consumes them, so normal taps work
 even while a frame is slow.
 
-The full `make verify` command needs external oracle data that is not in the repository. Its blocked result is expected when `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` is absent.
+The full `make verify` command needs external trace data that is not in the repository. Missing `CODEGEN_ORACLE`, `MICROTEST_MODULE`, or `MICROTEST_ORACLE` inputs report `NOT_RUN` with a non-zero result. The hardware differential gate is optional: with neither `PSP_HARDWARE_TRACE` nor `LOCAL_COSIM_TRACE` it reports `NOT_RUN` without changing the result, supplying only one fails, and a matching pair reports `STRICT_V2_AGREEMENT` from the traces' own tier metadata, which is not device attestation. Legacy v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
 
 ### Public synthetic verification routes
 
@@ -559,9 +559,11 @@ The pinned candidate download set is recorded in
 and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
 readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
 Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
-totaling 100,499,173 bytes. Package hashes and
+totaling 100,665,604 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
-python.org's release page. `tools/requirements-lock.txt` contains developer and
+python.org's release page. The manifest's `source_snapshot_date` dates the MSYS2
+package pins only; the locked developer-tool pins carry their own retrieval
+date in `assets/pypi_tool_metadata_*.json`. `tools/requirements-lock.txt` contains developer and
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.
 

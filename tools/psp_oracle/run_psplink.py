@@ -38,6 +38,7 @@ try:
         decode_psp_model_code,
         dump_json,
         ge_corpus_report,
+        model_identity_fields,
         parse_output,
         provenance_issues,
         validate_dmac_size_matrix,
@@ -50,6 +51,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         decode_psp_model_code,
         dump_json,
         ge_corpus_report,
+        model_identity_fields,
         parse_output,
         provenance_issues,
         validate_dmac_size_matrix,
@@ -410,6 +412,35 @@ def _campaign_completeness_contract(case_id: str) -> str:
     if case_id in {"transport-write", "model-profile"}:
         return "exactly-one-known-record"
     return "unregistered-no-completion-contract"
+
+
+def _model_profile_raw_value(parsed) -> str | None:
+    """Return the exact raw model scalar reported by the model-profile probe."""
+
+    profiles = [
+        item for item in parsed.results
+        if item.test_id == "PSP-SYSTEM-001" and item.case_id == "model-profile"
+    ]
+    if not profiles:
+        return None
+    if len(profiles) != 1:
+        raise ProtocolError("model-profile stream contains duplicate model observations")
+    values = dict(profiles[0].values)
+    raw_value = values.get("out0")
+    result_value = values.get("result")
+    if raw_value is None or result_value is None:
+        raise ProtocolError("model-profile stream is missing its raw model result")
+    if int(raw_value, 0) != int(result_value, 0):
+        raise ProtocolError("model-profile result does not match its raw out0 value")
+    return raw_value
+
+
+def _validate_model_code_expectation(raw_value: str | None, expected: int | None) -> None:
+    if raw_value is not None and expected is not None and int(raw_value, 0) != expected:
+        raise ProtocolError(
+            f"device model-profile out0={raw_value} does not match "
+            f"the supplied raw model value {expected}"
+        )
 
 
 def _render_argv(template: list[str], **values: str) -> list[str]:
@@ -972,6 +1003,7 @@ class PsplinkCampaignRunner:
 
         host0_parsed = None
         stdout_parsed = None
+        device_model_raw_value: str | None = None
         identity: dict[str, object] = {
             "DEVICE_REPORTED_SOURCE_COMMIT": None,
             "DEVICE_REPORTED_BINARY_SHA256": None,
@@ -996,6 +1028,8 @@ class PsplinkCampaignRunner:
                 host0_parsed = _parse_campaign_records(
                     _normalise_unbound_identity_fields(host0_text), case.case_id
                 )
+                device_model_raw_value = _model_profile_raw_value(host0_parsed)
+                _validate_model_code_expectation(device_model_raw_value, self.model_code)
                 canonical = _canonicalize_psp(host0_text, metadata_args)
                 canonical_parsed = _parse_campaign_records(canonical, case.case_id)
                 parsed_ok = bool(canonical_parsed.results) and all(
@@ -1009,7 +1043,13 @@ class PsplinkCampaignRunner:
                         "captured metadata is not acceptance-eligible: "
                         + "; ".join(metadata_problems)
                     )
-            except (ProtocolError, OSError, UnicodeError, ValueError):
+            except ProtocolError as exc:
+                disqualify(
+                    "host0 schema records failed strict protocol validation: "
+                    + str(exc)
+                )
+                canonical = host0_record_text
+            except (OSError, UnicodeError, ValueError):
                 disqualify("host0 schema records failed strict protocol validation")
                 canonical = host0_record_text
         else:
@@ -1042,10 +1082,12 @@ class PsplinkCampaignRunner:
             blockers.append("transport-write probe did not report a passing host0 round-trip")
         acceptance_eligible = parsed_ok and not blockers
         case_qualified = not qualification_blockers
+        model_raw_value: str | int | None = (
+            device_model_raw_value if device_model_raw_value is not None else self.model_code
+        )
         return {
-            "CONSOLE_MODEL": self.console_model,
+            **model_identity_fields(self.console_model, model_raw_value),
             "MODEL_SOURCE": "operator-recorded label; no serial or MAC stored",
-            "SOFTWARE_MODEL_RAW_VALUE": str(self.model_code) if self.model_code is not None else "NOT_CAPTURED",
             "FW": self.firmware or "NOT_CAPTURED",
             "TRANSPORT_PROFILE": "standalone-psplink-usbhostfs-host0",
             "SOURCE_COMMIT": self.source_commit,
@@ -1594,7 +1636,15 @@ def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
     match. An all-zero or absent device commit may be replaced in the parsed view
     by the host expectation, but ``_device_identity`` records that it was not
     device-bound and closes acceptance.
+
+    A supplied model code is checked against the model-profile row when present;
+    the row's exact ``out0`` spelling remains authoritative in the metadata.
     """
+
+    parsed = parse_output(_normalise_unbound_identity_fields(text))
+    device_model_raw_value = _model_profile_raw_value(parsed)
+    model_code = getattr(args, "model_code", None)
+    _validate_model_code_expectation(device_model_raw_value, model_code)
 
     if not any(getattr(args, flag, None) for flag in PROVENANCE_FLAGS):
         return text
@@ -1608,10 +1658,19 @@ def _canonicalize_psp(text: str, args: argparse.Namespace) -> str:
     model = getattr(args, "model", None) or device.get("model", "unknown")
     firmware = getattr(args, "firmware", None) or device.get("firmware", "unknown")
     model_fields = f"model={model}"
-    model_code = getattr(args, "model_code", None)
-    if model_code is not None:
-        generation, _retail = decode_psp_model_code(model_code)
-        model_fields += f" model_code=0x{model_code:02x} model_generation={generation}"
+    raw_model_code = (
+        device_model_raw_value
+        if device_model_raw_value is not None
+        else str(model_code) if model_code is not None else None
+    )
+    if raw_model_code is not None:
+        model_fields += f" model_code={raw_model_code}"
+        try:
+            generation, _retail = decode_psp_model_code(int(raw_model_code, 0))
+        except ValueError:
+            pass
+        else:
+            model_fields += f" model_generation={generation}"
 
     reported_commit = device.get("source_commit")
     if _is_measured_identity(reported_commit, _FULL_COMMIT_RE):
@@ -1691,13 +1750,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ge-corpus-schema", type=Path, help="GE corpus schema JSON under assets")
     parser.add_argument("--binary", type=Path, help="source-owned PRX used to replace fixture metadata")
     parser.add_argument("--source-commit", help="exact source commit recorded in the result metadata")
-    parser.add_argument("--model", help="human-recorded PSP model identifier")
+    parser.add_argument("--model", help="operator-declared physical PSP model label")
     parser.add_argument(
         "--model-code",
         type=lambda value: int(value, 0),
         help=(
-            "PSPSDK/kubridge PspModel ordinal; derives the generation and retail family "
-            "(do not use for sceKernelGetModel's original/slim return)"
+            "raw PSPSDK/kubridge PspModel ordinal returned by the device; interpreted "
+            "separately from --model (do not use for sceKernelGetModel's original/slim return)"
         ),
     )
     parser.add_argument("--firmware", help="human-recorded PSP firmware identifier")
@@ -1778,16 +1837,6 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError:
         parser.error("--results-directory must be inside the repository root")
 
-    model_was_derived = args.model_code is not None
-    if model_was_derived:
-        if args.model:
-            parser.error("--model and --model-code are mutually exclusive")
-        try:
-            generation, retail = decode_psp_model_code(args.model_code)
-        except ValueError as exc:
-            parser.error(str(exc))
-        args.model = f"{retail}-{generation}"
-
     if args.campaign_case:
         if (
             args.command or args.annotate_report or args.psp_output or args.nakagawa_output
@@ -1795,7 +1844,7 @@ def main(argv: list[str] | None = None) -> int:
         ):
             parser.error("campaign mode cannot be combined with single-capture or annotation options")
         if not args.host0_root or not args.model or not args.source_commit:
-            parser.error("campaign mode requires --host0-root, --model/--model-code, and --source-commit")
+            parser.error("campaign mode requires --host0-root, operator-declared --model, and --source-commit")
         if not _FULL_COMMIT_RE.fullmatch(args.source_commit):
             parser.error("--source-commit must be a full 40- or 64-digit object id")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,48}", args.model):
@@ -1879,13 +1928,13 @@ def main(argv: list[str] | None = None) -> int:
     supplied = [
         flag
         for flag in PROVENANCE_FLAGS
-        if getattr(args, flag) and not (flag == "model" and model_was_derived)
+        if getattr(args, flag)
     ]
-    required_provenance_count = len(PROVENANCE_FLAGS) - (1 if model_was_derived else 0)
+    required_provenance_count = len(PROVENANCE_FLAGS)
     if supplied and len(supplied) != required_provenance_count:
         missing_flags = [
             flag for flag in PROVENANCE_FLAGS
-            if flag not in supplied and not (flag == "model" and model_was_derived)
+            if flag not in supplied
         ]
         missing = ", ".join("--" + flag.replace("_", "-") for flag in missing_flags)
         parser.error(f"provenance metadata is all-or-nothing; missing {missing}")
