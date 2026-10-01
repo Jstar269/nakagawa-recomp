@@ -596,6 +596,15 @@
       "sha256": "0716570dbc884ff0acce41dfbce616990b1026b8c1bcba1a3fae7c6d9409bf83"
     },
     {
+      "path": "assets/ge_corpus.schema.json",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "657f8a7b8d85f56dff8102a32f914282461c743531d7ca4fcbabaa3968d78045"
+    },
+    {
       "path": "assets/history_audit_reviewed.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -658,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "cf7d10448e4b6cea9e34dfb8e71eb05e14425b5cc7f20288fa6462d431a1582a"
+      "sha256": "ac05b297ef9593c991de0649868a5c293257ea0c2ebb4ca6fbf7efecb0bdd9b4"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1117,7 +1126,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c06550308f41302c2cdff880a57be1d8e96a07a905d5e018d42d4527518ff9c4"
+      "sha256": "868b79bbcb75f734e168317d9c24c5f5d79cad9efec32ba0bd9cc60907cf778f"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1805,6 +1814,15 @@
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "36eb56b7a029ab42e6e49688a5126455b94a34ce1153cde11f34eae57bdb6ff2"
+    },
+    {
+      "path": "fixtures/psp_oracle/ge_corpus.json",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "bb3b7ea498e0e5809d0e3496409b185493bd04e783791d6028a0e9c9f1f06b94"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -6677,7 +6695,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d406f4dc2fc8830cc51440f56d768897107908c6944a36d373d6eea1a3ac8cf3"
+      "sha256": "f3f4d5954a5e6cd6684139e0c8b707b9978baac2202aaeb9a05195a995e91e58"
     },
     {
       "path": "tools/psp_oracle/run_nakagawa.py",
@@ -6713,7 +6731,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "603ff521b0aaa9e18cec12eee64a97ee44b813cc2c575e5a6bad38301e43482b"
+      "sha256": "50dcc537f64bbed946c915935402998ab1515345edb87630bf9617e5e82b2c38"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -8467,7 +8485,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fb5293ebc78607e20e0fdbe438786f0678bfca7372d349125d8194c4a5b4e921"
+      "sha256": "5e9354f99a6423bf1bf87ff5a8a3c9a441e3118fbe77d02c79ce9c628cadfeb3"
     },
     {
       "path": "tools/test_psp_parsers.py",
