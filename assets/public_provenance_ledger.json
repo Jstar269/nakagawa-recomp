@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ba9ddd9d44ce6a5b73684cc22bb116138ae324ee3451e226abbc501e20d0049b"
+      "sha256": "375d59bfaae570495a1a38664b00b72fa767ababfcd43531f47b4daa99516a9c"
     },
     {
       "path": "NOTICE.md",
@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a4f932db844e1ee3a1a30c375adf35538a17149b7cf9e6b492fceaa80d17b39c"
+      "sha256": "60fb21152b3bece47804348c1a9cd39d46483c28ad10e0243dee8f67a2bebb36"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -4481,7 +4481,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1f4b639045a65b35ee3312b4cf416a855994955d60bb1813bc926623e49eecb9"
+      "sha256": "8bc60c5ba98f5fdcfae61d842ea26f509c60ae94c57ad09086d0c6f0df6c56f2"
     },
     {
       "path": "src/rt/h264_mf.c",
