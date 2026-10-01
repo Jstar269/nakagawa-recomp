@@ -1970,8 +1970,10 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	@$(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe > $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log 2>&1; result=$$?; \
 		if test $$result -eq 0; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc no-write mutant unexpectedly passed" >&2; exit 1; fi; \
-		if ! grep -Fq "FAIL: guest CSC writes decoded I_PCM pixels into the guest destination" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the pixel assertion" >&2; exit 1; fi; \
-		echo "psmf-media-selftest-csc-mutant: killed by the guest pixel assertion"
+		if ! grep -Fq "FAIL: CSC writes the retained host picture deterministically" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the decoder-independent CSC write assertion" >&2; exit 1; fi; \
+		if ! grep -Fq "SKIP: guest Decode/Copy/CSC pixel assertions need an H.264 backend" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log && \
+		   ! grep -Fq "FAIL: guest CSC writes decoded I_PCM pixels into the guest destination" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
+		echo "psmf-media-selftest-csc-mutant: killed by the CSC write assertions"
 
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \

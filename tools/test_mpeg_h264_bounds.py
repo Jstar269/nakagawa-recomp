@@ -158,9 +158,8 @@ class TestMpegYcbcrContracts(unittest.TestCase):
         self.assertIn("test_mpeg_ycbcr_guest_contract", PSMF_MEDIA)
         self.assertIn("sr_syscall(&cpu, nid)", PSMF_MEDIA)
         self.assertIn("guest CSC writes decoded I_PCM pixels into the guest destination", PSMF_MEDIA)
-        self.assertIn("guest-visible plane bytes are zero-filled modeled state", block.lower())
-        self.assertIn("Csc writes that", block)
-        self.assertIn("decoded picture to the guest destination", block)
+        self.assertIn("test_mpeg_ycbcr_fail_closed_paths", PSMF_MEDIA)
+        self.assertIn("guest mutation cannot reuse hidden RGBA state", PSMF_MEDIA)
         decode = block[block.index("uint32_t mpeg_avc_decode_ycbcr") : block.index("uint32_t mpeg_avc_decode_stop_ycbcr")]
         self.assertIn("b->valid = 1;", decode)
         self.assertIn("MEM_W32(initAddr, 1u);", decode)

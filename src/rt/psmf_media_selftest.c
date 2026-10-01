@@ -1404,6 +1404,84 @@ static void test_multistream_selection(void) {
     free(bytes);
 }
 
+/* Decoder-independent fail-closed paths of the #302 YCbCr contract. These run on every host,
+ * including ones without an H.264 backend, so the refusals and the hidden-state guard keep
+ * runtime coverage when the guest-picture probe below SKIPs. */
+static void test_mpeg_ycbcr_fail_closed_paths(void) {
+    enum {
+        FC_DESC = 0x08200000u,
+        FC_DATA = 0x08210000u,
+        FC_SIZE = 0x08220000u,
+        FC_YCBCR = 0x08230000u,
+        FC_RANGE = 0x08240000u,
+        FC_DEST = 0x08250000u,
+        FC_PTR = 0x08260000u,
+        FC_INIT = 0x08270000u,
+        FC_AU = 0x08280000u,
+    };
+    MEM_W32(FC_DESC, 0u);
+    CHECK(mpeg_create(FC_DESC, FC_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "fail-closed fixture creates a decoder-less MPEG context");
+    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 64u, 32u, FC_SIZE) == 0 &&
+              MEM_R32(FC_SIZE) == 3200u,
+          "YCbCr query returns the checked planar size");
+    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 17u, 32u, FC_SIZE) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "YCbCr query rejects unsupported geometry");
+    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 64u, 32u, FC_SIZE + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "YCbCr query rejects an unaligned result pointer");
+    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR) == 0,
+          "YCbCr init accepts an aligned allocation");
+    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR + 1u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "YCbCr init rejects an unaligned allocation");
+    YcbcrBuf *state = ycbcr_find(FC_DESC, FC_YCBCR);
+    CHECK(state != NULL && state->rgba != NULL, "YCbCr init retains host picture state");
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(FC_PTR, FC_YCBCR);
+    MEM_W32(FC_RANGE, 0u);
+    MEM_W32(FC_RANGE + 4u, 0u);
+    MEM_W32(FC_RANGE + 8u, 64u);
+    MEM_W32(FC_RANGE + 12u, 32u);
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, 0u, 64u, FC_DEST) == SCE_MPEG_ERROR_INVALID_VALUE,
+          "CSC rejects an invalid range pointer");
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == 0 &&
+              MEM_R8(FC_DEST) == 0x40u,
+          "CSC writes the retained host picture deterministically");
+    CHECK(mpeg_avc_copy_ycbcr(FC_DESC, FC_YCBCR, FC_YCBCR + 0x10000u) ==
+              SCE_MPEG_ERROR_INVALID_VALUE,
+          "Copy rejects an uninitialized source");
+    MEM_W32(FC_INIT, 0xdeadbeefu);
+    CHECK(mpeg_avc_decode_ycbcr(FC_DESC, FC_AU, FC_PTR, FC_INIT) == SCE_MPEG_ERROR_NO_DATA &&
+              MEM_R32(FC_INIT) == 0u,
+          "Decode reports no picture and clears ready without a decoder");
+    state = ycbcr_find(FC_DESC, FC_YCBCR);
+    if (state) state->valid = 1;
+    MEM_W32(FC_RANGE + 8u, 80u);
+    MEM_W32(FC_RANGE + 12u, 40u);
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == 0,
+          "CSC clips a partial source range");
+    MEM_W32(FC_INIT, 0xdeadbeefu);
+    CHECK(mpeg_avc_decode_stop_ycbcr(FC_DESC, FC_YCBCR, FC_INIT) == 0 && MEM_R32(FC_INIT) == 0u,
+          "Stop clears the tracked picture state");
+    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR) == 0,
+          "YCbCr reinitialization resets the allocation");
+    state = ycbcr_find(FC_DESC, FC_YCBCR);
+    if (state) {
+        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
+        state->valid = 1;
+    }
+    MEM_W32(FC_RANGE + 8u, 64u);
+    MEM_W32(FC_RANGE + 12u, 32u);
+    MEM_W8(FC_YCBCR, 0xa5u);
+    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == SCE_MPEG_ERROR_INVALID_VALUE,
+          "guest mutation cannot reuse hidden RGBA state");
+}
+
 static void test_mpeg_ycbcr_guest_contract(void) {
     enum {
         TD_MPEG_DESC = 0x08100000u,
@@ -1482,7 +1560,7 @@ static void test_mpeg_ycbcr_guest_contract(void) {
     MEM_W32(TD_MPEG_RANGE + 4u, 0u);
     MEM_W32(TD_MPEG_RANGE + 8u, width);
     MEM_W32(TD_MPEG_RANGE + 12u, height);
-    MEM_W32(TD_MPEG_INIT, 1u);
+    MEM_W32(TD_MPEG_INIT, 0xdeadbeefu);
     uint32_t decode_result = guest_mpeg_import(0xf0eb1125u, TD_MPEG_DESC, TD_MPEG_AU,
                                                TD_MPEG_PTR, TD_MPEG_INIT, 0u);
     if (decoder_available) {
@@ -1556,6 +1634,7 @@ int main(int argc, char **argv) {
     test_backend_registry_fail_closed();
     test_backend_reset_and_restart();
     test_backend_malformed_input();
+    test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 
