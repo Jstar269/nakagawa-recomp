@@ -17630,6 +17630,18 @@ static void hle_register_mpeg_shared_handlers(void) {
     sr_hle_register(0x4571cc64, "sceMpegAvcDecodeFlush", h_MpegAvcDecodeFlush);
 }
 
+/* These YCbCr handlers are registered by the focused media fixture and by the full registry,
+ * so the fixture reaches the same production argument marshalling through sr_syscall(). */
+static void hle_register_mpeg_ycbcr_handlers(void) {
+    sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
+    sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
+    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_MpegAvcDecodeMode);
+    sr_hle_register(0xf0eb1125, "sceMpegAvcDecodeYCbCr", h_MpegAvcDecodeYCbCr);
+    sr_hle_register(0xf2930c9c, "sceMpegAvcDecodeStopYCbCr", h_MpegAvcDecodeStopYCbCr);
+    sr_hle_register(0x0558b075, "sceMpegAvcCopyYCbCr", h_MpegAvcCopyYCbCr);
+    sr_hle_register(0x31bd0272, "sceMpegAvcCsc", h_MpegAvcCsc);
+}
+
 /* sceImpose language/confirm-button mode (see h_ImposeSetLanguageMode). One definition, called
  * by both registry branches, so the executable harness dispatches the production mapping. */
 static void hle_register_impose_handlers(void) {
@@ -17665,6 +17677,9 @@ void sr_hle_init(void) {
         while (atomic_load_explicit(&s_hle_init_state, memory_order_acquire) != 2) { }
         return;
     }
+#ifdef SR_MPEG_MEDIA_SELFTEST
+    hle_register_mpeg_ycbcr_handlers();
+#else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;
     hle_register_bulk_memory_handlers();
@@ -17781,13 +17796,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x611e9e11, "sceMpegQueryStreamSize", h_MpegQueryStreamSize);
     sr_hle_register(0xd7a29f46, "sceMpegRingbufferQueryMemSize", h_MpegRingbufferQueryMemSize);
     sr_hle_register(0x769bebb6, "sceMpegRingbufferQueryPackNum", h_MpegRingbufferQueryPackNum);
-    sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
-    sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
-    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_MpegAvcDecodeMode);
-    sr_hle_register(0xf0eb1125, "sceMpegAvcDecodeYCbCr", h_MpegAvcDecodeYCbCr);
-    sr_hle_register(0xf2930c9c, "sceMpegAvcDecodeStopYCbCr", h_MpegAvcDecodeStopYCbCr);
-    sr_hle_register(0x0558b075, "sceMpegAvcCopyYCbCr", h_MpegAvcCopyYCbCr);
-    sr_hle_register(0x31bd0272, "sceMpegAvcCsc", h_MpegAvcCsc);
+    hle_register_mpeg_ycbcr_handlers();
     sr_hle_register(0xc02cf6b5, "sceMpegQueryPcmEsSize", h_MpegQueryPcmEsSize);
     sr_hle_register(0x8c1e027d, "sceMpegGetPcmAu", h_MpegGetPcmAu);
     sr_hle_register(0x9dcfb7ea, "sceMpegChangeGetAuMode", h_MpegChangeGetAuMode);
@@ -17939,6 +17948,7 @@ void sr_hle_init(void) {
 
     hle_register_atrac_handlers();
     hle_register_sas_handlers();
+#endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
 }
 
