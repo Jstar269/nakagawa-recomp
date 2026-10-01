@@ -358,16 +358,26 @@ DISPLAY_SMOKE_DEMO_FRAMES := 1800
 
 # The AOT-gap mode of the same fixture: identical guest addresses, but the
 # helper is omitted from native emission (--omit-aot) so region A reaches it
-# through the ordinary production dispatch() seam.
+# through the ordinary production dispatch() seam. The address must match
+# HELPER in fixtures/production_smoke/generate.py (it moved to 0x08804068 when
+# the sceImpose language round trip extended region A).
 PRODUCTION_SMOKE_GAP_DIR       := build/production-smoke-gap
 PRODUCTION_SMOKE_GAP_FIXTURE   := $(PRODUCTION_SMOKE_GAP_DIR)/fixture
 PRODUCTION_SMOKE_GAP_MAP       := $(PRODUCTION_SMOKE_GAP_DIR)/production_smoke_gap.map
-PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804028
+PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804068
 
 # Caller-supplied extra codegen arguments (build-time codegen choices such as
 # the smoke's --omit-aot). Empty by default; carried into the codegen profile
 # hash so changing it regenerates instead of reusing stale output.
 CODEGEN_USER_ARGS ?=
+
+# Stack census declarations and runtime support are compiled only for builds
+# whose generated code contains the opt-in instrumentation.
+STACK_CENSUS_CFLAG :=
+ifneq ($(filter --stack-census,$(CODEGEN_USER_ARGS)),)
+STACK_CENSUS_CFLAG := -DSR_STACK_CENSUS_ENABLED
+override CFLAGS += $(STACK_CENSUS_CFLAG)
+endif
 
 # SR_NAN_TRAP: build-time NaN/Inf origin diagnostic (issue #69). Off by default
 # and zero cost when off. `make NAN_TRAP=1` turns on BOTH halves at once:
@@ -1477,6 +1487,7 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
 RECOMP_OPT ?= -O0
 RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
 override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 TRACE ?= 0
 ifeq ($(TRACE),1)
@@ -1646,6 +1657,7 @@ cosim-selftest:
 		GAME_PSP_HEADER=$(COSIM_FIXTURE)/guest.psp \
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
+		CODEGEN_USER_ARGS=--stack-census \
 		CODEGEN_TOOL=$(CODEGEN_TOOL)
 	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
 	$(MAKE) cosim-selftest-run \
@@ -1656,7 +1668,8 @@ cosim-selftest:
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		COSIM_INTERP_SRC=$(COSIM_INTERP_SRC) \
 		COSIM_FP_CONVERT_PRELUDE=$(COSIM_FP_CONVERT_PRELUDE) \
-		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC)
+		COSIM_FPU_REFERENCE_SRC=$(COSIM_FPU_REFERENCE_SRC) \
+		CODEGEN_USER_ARGS=--stack-census
 
 # Second phase: CHUNK_OBJS is derived with $(wildcard) at parse time, so the
 # generated chunk sources must already exist before this target is parsed.
@@ -1959,6 +1972,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nest
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
 hle-thread-selftest: hle-thread-selftest-build
@@ -1992,6 +2006,7 @@ hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py 
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
 
@@ -2022,6 +2037,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
 

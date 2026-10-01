@@ -9,7 +9,53 @@
 # malformed input. The first divergence is reported with the guest PC where it happened,
 # which is the located bug for differential testing against the PPSSPP oracle.
 
+import re
 import sys
+
+
+HARDWARE_TRACE_MAX_STEPS = 1_000_000
+HARDWARE_TRACE_MAX_DECIMAL_DIGITS = len(str(HARDWARE_TRACE_MAX_STEPS))
+HARDWARE_TRACE_SOURCES = frozenset({
+    "LOCAL_COSIM",
+    "PPSSPP_CORROBORATIVE",
+    "PSP_HARDWARE",
+})
+HARDWARE_TRACE_SHARED_FIELDS = (
+    "fixture_id",
+    "cell_id",
+    "binary_sha256",
+    "source_commit",
+    "model",
+    "firmware",
+    "start_pc",
+    "steps",
+    "complete",
+)
+HARDWARE_TRACE_REQUIRED_FIELDS = frozenset(("source_tier",) + HARDWARE_TRACE_SHARED_FIELDS)
+HARDWARE_TRACE_ID_RE = re.compile(r"^[A-Za-z0-9_.:/+-]{1,96}$")
+HARDWARE_TRACE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+HARDWARE_TRACE_COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
+HARDWARE_TRACE_PC_RE = re.compile(r"^0x[0-9a-f]{8}$")
+HARDWARE_TRACE_HEX32_RE = re.compile(r"^0x[0-9a-f]{8}$")
+HARDWARE_TRACE_MEMORY_RE = re.compile(r"^m(8|16|32)\[0x[0-9a-f]{8}\]$")
+HARDWARE_TRACE_REGISTER_RE = re.compile(
+    r"^(?:r(?:[1-9]|[12][0-9]|3[01])|hi|lo|f(?:[0-9]|[12][0-9]|3[01])|"
+    r"fcr31|v(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])|"
+    r"epc|cause|badvaddr|status)$"
+)
+HARDWARE_TRACE_UNMEASURED = frozenset({
+    "unknown",
+    "unset",
+    "placeholder",
+    "none",
+    "n/a",
+    "na",
+    "tbd",
+})
+
+
+class HardwareTraceError(ValueError):
+    """A strict v2 hardware trace violates its identity or stream contract."""
 
 
 def parse_step_line(line, lineno, path):
@@ -59,6 +105,239 @@ def load(path):
     return header, steps
 
 
+def _hardware_error(path, lineno, message):
+    location = f"{path}:{lineno}" if lineno is not None else str(path)
+    raise HardwareTraceError(f"{location}: {message}")
+
+
+def _is_identity_header(line):
+    """Report whether a comment line declares a psp-recomp trace identity header."""
+
+    parts = line[1:].split()
+    return parts[:2] == ["psp-recomp", "trace"]
+
+
+def _parse_hardware_decimal(value, path, lineno, field, minimum, maximum):
+    """Convert a bounded decimal field so bad metadata cannot escape the contract.
+
+    The length bound is applied before ``int()`` so an oversized value is a named
+    rejection instead of an interpreter-level conversion error.
+    """
+
+    if not re.fullmatch(r"[0-9]+", value):
+        _hardware_error(path, lineno, f"{field} must be a decimal integer: {value!r}")
+    if len(value) > HARDWARE_TRACE_MAX_DECIMAL_DIGITS:
+        _hardware_error(
+            path,
+            lineno,
+            f"{field} exceeds the {HARDWARE_TRACE_MAX_DECIMAL_DIGITS}-digit decimal "
+            f"bound for a maximum of {maximum}",
+        )
+    number = int(value, 10)
+    if number < minimum or number > maximum:
+        _hardware_error(path, lineno, f"{field} must be between {minimum} and {maximum}")
+    return number
+
+
+def _parse_hardware_header(line, path, lineno):
+    """Parse the exact v2 identity envelope used by strict comparisons."""
+
+    parts = line[2:].split() if line.startswith("# ") else []
+    if len(parts) < 3 or parts[:3] != ["psp-recomp", "trace", "v2"]:
+        _hardware_error(path, lineno, "expected '# psp-recomp trace v2' header")
+    fields = {}
+    for token in parts[3:]:
+        name, equals, value = token.partition("=")
+        if equals != "=" or not name or not value or name in fields:
+            _hardware_error(path, lineno, f"malformed or duplicate v2 metadata field {token!r}")
+        fields[name] = value
+    unknown = sorted(set(fields) - HARDWARE_TRACE_REQUIRED_FIELDS)
+    if unknown:
+        _hardware_error(path, lineno, f"unknown v2 metadata field(s): {', '.join(unknown)}")
+    missing = sorted(HARDWARE_TRACE_REQUIRED_FIELDS - set(fields))
+    if missing:
+        _hardware_error(path, lineno, f"missing v2 metadata field(s): {', '.join(missing)}")
+
+    source = fields["source_tier"]
+    if source not in HARDWARE_TRACE_SOURCES:
+        _hardware_error(path, lineno, f"unsupported source_tier {source!r}")
+    for field in ("fixture_id", "cell_id", "model", "firmware"):
+        value = fields[field]
+        if not HARDWARE_TRACE_ID_RE.fullmatch(value):
+            _hardware_error(path, lineno, f"{field} has invalid metadata value {value!r}")
+        if value.casefold() in HARDWARE_TRACE_UNMEASURED:
+            _hardware_error(path, lineno, f"{field} carries an unmeasured placeholder {value!r}")
+    digest = fields["binary_sha256"]
+    if not HARDWARE_TRACE_SHA256_RE.fullmatch(digest):
+        _hardware_error(path, lineno, "binary_sha256 must be lowercase SHA-256")
+    if set(digest) == {"0"}:
+        _hardware_error(path, lineno, "binary_sha256 cannot be an all-zero placeholder")
+    commit = fields["source_commit"]
+    if not HARDWARE_TRACE_COMMIT_RE.fullmatch(commit):
+        _hardware_error(path, lineno, "source_commit must be a lowercase git object id")
+    if set(commit) == {"0"}:
+        _hardware_error(path, lineno, "source_commit cannot be an all-zero placeholder")
+    if not HARDWARE_TRACE_PC_RE.fullmatch(fields["start_pc"]):
+        _hardware_error(path, lineno, "start_pc must be lowercase 0x plus eight hex digits")
+    _parse_hardware_decimal(fields["steps"], path, lineno, "steps", 1, HARDWARE_TRACE_MAX_STEPS)
+    if fields["complete"] != "1":
+        _hardware_error(path, lineno, "complete must be 1 for a hardware comparison stream")
+    return fields
+
+
+def _parse_hardware_step(line, path, lineno):
+    """Parse a v2 step without using the v1 process-exiting parser."""
+
+    parts = line.split()
+    if len(parts) < 3:
+        _hardware_error(path, lineno, "step line has fewer than 3 fields")
+    if not parts[1].startswith("pc=") or not parts[2].startswith("op="):
+        _hardware_error(path, lineno, "expected 'pc=' then 'op='")
+    step = _parse_hardware_decimal(parts[0], path, lineno, "step index", 0, HARDWARE_TRACE_MAX_STEPS)
+    pc = parts[1][3:]
+    op = parts[2][3:]
+    if not HARDWARE_TRACE_HEX32_RE.fullmatch(pc):
+        _hardware_error(path, lineno, f"pc is not a lowercase 32-bit address: {pc!r}")
+    if not HARDWARE_TRACE_HEX32_RE.fullmatch(op):
+        _hardware_error(path, lineno, f"op is not a lowercase 32-bit word: {op!r}")
+    writes = {}
+    for token in parts[3:]:
+        name, equals, value = token.partition("=")
+        if equals != "=" or not name or not value or name in writes:
+            _hardware_error(path, lineno, f"malformed or duplicate write token {token!r}")
+        memory = HARDWARE_TRACE_MEMORY_RE.fullmatch(name)
+        register = HARDWARE_TRACE_REGISTER_RE.fullmatch(name)
+        if not memory and not register:
+            _hardware_error(path, lineno, f"unknown write field {name!r}")
+        width = int(memory.group(1), 10) // 4 if memory else 8
+        if not re.fullmatch(rf"0x[0-9a-f]{{{width}}}", value):
+            _hardware_error(path, lineno, f"invalid value for {name}: {value!r}")
+        writes[name] = value
+    return step, pc, op, writes
+
+
+def _decode_trace_lines(handle, path):
+    """Yield stripped trace lines, turning a decode failure into a contract error."""
+
+    try:
+        for lineno, raw in enumerate(handle, start=1):
+            yield lineno, raw.rstrip("\r\n")
+    except UnicodeDecodeError as exc:
+        _hardware_error(path, None, f"trace is not valid UTF-8 text: {exc}")
+
+
+def _load_hardware(path):
+    """Load and completely validate one v2 stream before comparing it."""
+
+    steps = []
+    header = None
+    header_line = None
+    declared_steps = None
+    try:
+        handle = open(path, "r", encoding="utf-8")
+    except OSError as exc:
+        raise HardwareTraceError(f"{path}: cannot read trace: {exc}") from exc
+    with handle:
+        for lineno, line in _decode_trace_lines(handle, path):
+            if line.strip() == "":
+                continue
+            if line.startswith("#"):
+                if header is None:
+                    header = _parse_hardware_header(line, path, lineno)
+                    header_line = lineno
+                    declared_steps = _parse_hardware_decimal(
+                        header["steps"], path, lineno, "steps", 1, HARDWARE_TRACE_MAX_STEPS
+                    )
+                elif _is_identity_header(line):
+                    _hardware_error(
+                        path,
+                        lineno,
+                        "duplicate trace identity header: exactly one v2 identity "
+                        f"header is allowed per stream (first one at line {header_line})",
+                    )
+                continue
+            if header is None:
+                _hardware_error(path, lineno, "step record appears before the v2 header")
+            steps.append(_parse_hardware_step(line, path, lineno))
+            if len(steps) > declared_steps:
+                _hardware_error(
+                    path,
+                    lineno,
+                    f"stream exceeds its step budget: header declares {declared_steps} steps, captured more",
+                )
+    if header is None:
+        _hardware_error(path, None, "missing required v2 hardware trace header")
+    if len(steps) < declared_steps:
+        _hardware_error(
+            path,
+            header_line,
+            f"stream is truncated: header declares {declared_steps} steps, captured {len(steps)}",
+        )
+    if len(steps) > declared_steps:
+        _hardware_error(
+            path,
+            header_line,
+            f"stream exceeds its step budget: header declares {declared_steps} steps, captured {len(steps)}",
+        )
+    for expected, record in enumerate(steps):
+        if record[0] != expected:
+            _hardware_error(
+                path,
+                header_line,
+                f"step sequence is not complete at index {expected}: record says {record[0]}",
+            )
+    if steps[0][1] != header["start_pc"]:
+        _hardware_error(
+            path,
+            header_line,
+            f"start_pc {header['start_pc']} does not match first record PC {steps[0][1]}",
+        )
+    return header, steps
+
+
+def strict_hardware_diff(path_a, path_b):
+    """Compare complete v2 traces with exact identity and evidence-tier checks.
+
+    One side must be ``PSP_HARDWARE``.  The other side may be a matching
+    ``LOCAL_COSIM`` trace or another hardware capture.  A PPSSPP trace remains
+    useful for corroboration, but it is deliberately refused by this gate.
+    """
+
+    header_a, a = _load_hardware(path_a)
+    header_b, b = _load_hardware(path_b)
+    for field in HARDWARE_TRACE_SHARED_FIELDS:
+        if header_a[field] != header_b[field]:
+            raise HardwareTraceError(
+                f"identity mismatch for {field}: A={header_a[field]!r} B={header_b[field]!r}"
+            )
+    sources = {header_a["source_tier"], header_b["source_tier"]}
+    if "PSP_HARDWARE" not in sources:
+        raise HardwareTraceError(
+            "strict hardware comparison requires at least one source_tier=PSP_HARDWARE"
+        )
+    if "PPSSPP_CORROBORATIVE" in sources:
+        raise HardwareTraceError(
+            "PPSSPP_CORROBORATIVE traces cannot satisfy the PSP_HARDWARE comparison gate"
+        )
+    # _load_hardware already proved each record's step index equals its
+    # position and both headers declare the same step count, so records are
+    # compared by position; a step-index difference cannot reach this loop.
+    n = len(a)
+    for i in range(n):
+        _, pc_a, op_a, writes_a = a[i]
+        _, pc_b, op_b, writes_b = b[i]
+        if pc_a != pc_b:
+            return (i, pc_a, f"pc {pc_a} vs {pc_b}")
+        if op_a != op_b:
+            return (i, pc_a, f"op {op_a} vs {op_b}")
+        if writes_a != writes_b:
+            only_a = {k: v for k, v in writes_a.items() if writes_b.get(k) != v}
+            only_b = {k: v for k, v in writes_b.items() if writes_a.get(k) != v}
+            detail = f"writes differ: A[{describe_writes(only_a)}] B[{describe_writes(only_b)}]"
+            return (i, pc_a, detail)
+    return None
+
+
 def describe_writes(writes):
     return " ".join(f"{name}={writes[name]}" for name in sorted(writes))
 
@@ -90,8 +369,27 @@ def diff(path_a, path_b):
 
 
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "--strict-hardware":
+        if len(argv) != 4:
+            sys.stderr.write(
+                "usage: tracediff.py --strict-hardware <trace-a> <trace-b>\n"
+            )
+            return 2
+        try:
+            result = strict_hardware_diff(argv[2], argv[3])
+        except HardwareTraceError as exc:
+            print(f"REJECTED: {exc}", file=sys.stderr)
+            return 2
+        if result is None:
+            print("OK: strict hardware traces identical, zero divergences")
+            return 0
+        step, pc, detail = result
+        print(f"DIVERGENCE at step {step}, pc {pc}: {detail}")
+        return 1
     if len(argv) != 3:
-        sys.stderr.write("usage: tracediff.py <trace-a> <trace-b>\n")
+        sys.stderr.write(
+            "usage: tracediff.py [--strict-hardware] <trace-a> <trace-b>\n"
+        )
         return 2
     result = diff(argv[1], argv[2])
     if result is None:

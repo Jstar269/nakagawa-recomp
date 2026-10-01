@@ -912,9 +912,12 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
                 add_edge(address, None, "unresolved-indirect", "computed-jump")
                 row["terminator"] = "indirect-jump"
         elif op == 0 and funct == 9:
-            add_edge(address, None, "unresolved-indirect", "computed-call")
-            if address + 8 in nodes:
-                add_edge(address, address + 8, "fallthrough", "call-return")
+            if (word >> 11) & 0x1F:
+                add_edge(address, None, "unresolved-indirect", "computed-call")
+                if address + 8 in nodes:
+                    add_edge(address, address + 8, "fallthrough", "call-return")
+            else:
+                add_edge(address, None, "unresolved-indirect", "computed-tail-transfer")
         elif address not in delay_owner and address + 4 in nodes:
             add_edge(address, address + 4, "fallthrough", "linear")
 
@@ -1065,6 +1068,14 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
         "interior_entries": sorted(interior_entries, key=lambda item: (item["address"], item["source"], item["owner"])),
         "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
         "ownership_conflicts": conflicts,
+        "ownership_map": [
+            {
+                "address": address,
+                "classification": nodes[address]["classification"],
+                "owners": sorted(owners.get(address, ())),
+            }
+            for address in sorted(nodes)
+        ],
         "byte_classification": byte_classification,
         "padding": padding,
         "unowned_executable": unowned_executable,
@@ -1101,6 +1112,7 @@ _CFG_DETAIL_NAMES = (
     "computed-call",
     "linear",
     "known-entry-tail-transfer",
+    "computed-tail-transfer",
 )
 _CFG_DETAIL_IDS = {name: index for index, name in enumerate(_CFG_DETAIL_NAMES)}
 _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
@@ -1351,6 +1363,14 @@ class CanonicalCfgState:
             ],
             "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
             "ownership_conflicts": conflicts,
+            "ownership_map": [
+                {
+                    "address": address,
+                    "classification": self._classification(index),
+                    "owners": list(self._owners_for_index(index)),
+                }
+                for index, address in enumerate(self.addresses)
+            ],
             "byte_classification": byte_classification,
             "padding": [
                 address for index, address in enumerate(self.addresses)
@@ -1479,9 +1499,14 @@ def canonical_cfg_state(image, ranges=None, entries=None):
                     add_edge(source_index, None, "unresolved-indirect", "computed-jump")
                     state.terminators[source_index] = 2
             elif op == 0 and funct == 9:
-                add_edge(source_index, None, "unresolved-indirect", "computed-call")
-                if node_index.get(address + 8) is not None:
-                    add_edge(source_index, address + 8, "fallthrough", "call-return")
+                if (word >> 11) & 0x1F:
+                    add_edge(source_index, None, "unresolved-indirect", "computed-call")
+                    if node_index.get(address + 8) is not None:
+                        add_edge(source_index, address + 8, "fallthrough", "call-return")
+                else:
+                    add_edge(
+                        source_index, None, "unresolved-indirect", "computed-tail-transfer"
+                    )
             elif state.delay_of[source_index] == _CFG_NONE and next_index is not None:
                 add_edge(source_index, address + 4, "fallthrough", "linear")
 
@@ -1955,6 +1980,41 @@ def verify_canonical_cfg_report(report):
             finding("owner-classification-mismatch", node)
         if len(owners) <= 1 and node.get("classification") == "owner-conflict":
             finding("owner-classification-mismatch", node)
+    if "ownership_map" in report:
+        ownership_rows = report.get("ownership_map")
+        if not isinstance(ownership_rows, list):
+            finding("ownership-map-type", ownership_rows)
+        else:
+            actual_ownership = []
+            seen_ownership = set()
+            for row in ownership_rows:
+                if not isinstance(row, dict):
+                    finding("ownership-map-row-invalid", row)
+                    continue
+                address = row.get("address")
+                classification = row.get("classification")
+                owners = row.get("owners")
+                if type(address) is not int or address not in node_by_address:
+                    finding("ownership-map-address-invalid", row)
+                    continue
+                if address in seen_ownership:
+                    finding("ownership-map-duplicate", row)
+                seen_ownership.add(address)
+                if classification not in allowed_classifications:
+                    finding("ownership-map-classification-invalid", row)
+                if not isinstance(owners, list) or any(type(owner) is not int for owner in owners):
+                    finding("ownership-map-owners-invalid", row)
+                    continue
+                node = node_by_address[address]
+                if classification != node.get("classification") or owners != node.get("owners"):
+                    finding("ownership-map-node-mismatch", row)
+                actual_ownership.append((address, classification, tuple(owners)))
+            expected_ownership = [
+                (address, node.get("classification"), tuple(node.get("owners", ())))
+                for address, node in sorted(node_by_address.items())
+            ]
+            if sorted(actual_ownership) != expected_ownership:
+                finding("ownership-map-projection-mismatch", ownership_rows)
     for conflict in conflicts:
         address = conflict.get("address") if isinstance(conflict, dict) else None
         node = node_by_address.get(address)
@@ -1980,6 +2040,63 @@ def canonical_cfg_json(report):
     """Serialize a CFG report deterministically for regression/build-cache use."""
     import json
     return json.dumps(report, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def canonical_cfg_gate(report):
+    """Return fail-closed ownership-gate findings for a CFG report.
+
+    ``verify_canonical_cfg_report`` checks that the serialized projections agree
+    with one another. This gate requires every known in-range successor of an
+    owned instruction to have an owner, and keeps ambiguous ownership or
+    unmapped entries fail-closed. Non-padding words that are not reached from
+    the supplied entries remain explicitly classified as unowned; that is not
+    proof that no dynamic entry exists, but file adjacency alone is not a
+    control-flow edge. Continuation/interior entries are valid classifications.
+    """
+    findings = verify_canonical_cfg_report(report)
+    if findings:
+        return findings
+    if not isinstance(report, dict):
+        return [{"code": "report-invalid", "message": "CFG report is not an object"}]
+    if "ownership_map" not in report:
+        findings.append({
+            "code": "ownership-map-missing",
+            "message": "machine-readable ownership map is absent",
+        })
+
+    node_by_address = {
+        node["address"]: node
+        for node in report.get("instructions", ())
+        if isinstance(node, dict) and type(node.get("address")) is int
+    }
+    for edge in report.get("edges", ()):
+        if not isinstance(edge, dict):
+            continue
+        source = node_by_address.get(edge.get("source"))
+        target = node_by_address.get(edge.get("target"))
+        if (source is None or target is None
+                or not source.get("owners") or target.get("owners")):
+            continue
+        findings.append({
+            "code": "ownership-gap",
+            "message": (
+                f"owned {edge.get('kind')} successor from "
+                f"0x{edge['source']:08x} reaches unowned executable word "
+                f"at 0x{edge['target']:08x}"
+            ),
+        })
+    for conflict in report.get("ownership_conflicts", ()):
+        address = conflict.get("address") if isinstance(conflict, dict) else conflict
+        findings.append({
+            "code": "ownership-conflict",
+            "message": f"ambiguous ownership at 0x{address:08x}",
+        })
+    for address in report.get("unmapped_entries", ()):
+        findings.append({
+            "code": "entry-unmapped",
+            "message": f"entry outside executable coverage at 0x{address:08x}",
+        })
+    return sorted(findings, key=lambda item: (item["code"], item["message"]))
 
 
 def code_pointer_evidence(elf, ranges):
@@ -2065,7 +2182,7 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None):
+def analyze(elf, extra_spans=None, cfg_gate=False):
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
 
@@ -2237,7 +2354,12 @@ def analyze(elf, extra_spans=None):
                     jtails.add(target)
             if (word >> 16) == 0x27BD and (word & 0x8000):  # addiu $sp,$sp,-N prologue
                 noisy.add(addr)
-            is_uncond = (op == 2 or (op == 0 and (word & 0x3F) == 0x08)
+            # The opt-in ownership gate does not treat a direct `j` as having
+            # a sequential successor after its delay slot. Keep the legacy
+            # discovery heuristic when the gate is off so default output stays
+            # byte-identical.
+            is_uncond = ((not cfg_gate and op == 2)
+                         or (op == 0 and (word & 0x3F) == 0x08)
                          or (op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0))
             if is_uncond and in_ranges(addr + 8, ranges):
                 tb = elf.read_at_vaddr(addr + 8, 4)
@@ -2545,21 +2667,63 @@ def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     opts = [a for a in argv[1:] if a.startswith("--")]
     if not args:
-        sys.stderr.write("usage: analyze.py <elf> [--base=HEX] [--extra-span=LO,HI] [--toml=out.toml] [--check=workdir] [--quiet]\n")
+        sys.stderr.write(
+            "usage: analyze.py <elf> [--base=HEX] [--extra-span=LO,HI] "
+            "[--toml=out.toml] [--check=workdir] "
+            "[--cfg-report=out.json] [--cfg-gate] [--quiet]\n"
+        )
         return 2
     base = None
     extra_span_arg = None
+    cfg_report_path = None
+    cfg_gate = False
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
+        elif o.startswith("--cfg-report="):
+            cfg_report_path = o.split("=", 1)[1]
+            if not cfg_report_path:
+                sys.stderr.write("--cfg-report requires a path\n")
+                return 2
+        elif o == "--cfg-gate":
+            cfg_gate = True
     elf = Elf(args[0], base=base)
-    starts, ranges = analyze(elf, extra_spans=resolve_extra_spans(extra_span_arg))
+    extra_spans = resolve_extra_spans(extra_span_arg)
+    starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts
     rc = 0
+    if cfg_report_path is not None or cfg_gate:
+        report_entries, report_ranges = starts, ranges
+        if not cfg_gate:
+            # A report-only run describes gate-mode analysis but must not change
+            # the entry set used for the model and recall output below.
+            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+        cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
+        if cfg_report_path is not None:
+            parent = os.path.dirname(cfg_report_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
+                output.write(canonical_cfg_json(cfg_report))
+            print("wrote CFG report:", cfg_report_path)
+        if cfg_gate:
+            cfg_findings = canonical_cfg_gate(cfg_report)
+            if cfg_findings:
+                for finding in cfg_findings:
+                    sys.stderr.write(
+                        f"CFG_GATE {finding['code']}: {finding['message']}\n"
+                    )
+                rc = 1
+            else:
+                print(
+                    "CFG_GATE PASS: "
+                    f"{len(cfg_report['instructions'])} executable words, "
+                    f"{len(cfg_report['entries'])} entries"
+                )
     truth = elf.func_symbols()
     if truth is not None:
         truth_in = set(a for a in truth if in_ranges(a, ranges))

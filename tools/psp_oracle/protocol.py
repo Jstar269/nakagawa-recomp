@@ -160,8 +160,10 @@ def _validate_metadata(metadata: dict[str, str], *, line_number: int) -> None:
         raise ProtocolError(f"line {line_number}: unsupported source {metadata['source']!r}")
     if not _SHA256_RE.fullmatch(metadata["binary_sha256"]):
         raise ProtocolError(f"line {line_number}: binary_sha256 must be lowercase SHA-256")
-    if not re.fullmatch(r"[0-9a-f]{40,64}", metadata["source_commit"]):
-        raise ProtocolError(f"line {line_number}: source_commit must be a git object id")
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", metadata["source_commit"]):
+        raise ProtocolError(
+            f"line {line_number}: source_commit must be a full 40- or 64-digit git object id"
+        )
 
 
 def provenance_issues(metadata: dict[str, str]) -> tuple[str, ...]:
