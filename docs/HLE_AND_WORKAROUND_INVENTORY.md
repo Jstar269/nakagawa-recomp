@@ -37,10 +37,10 @@ Semantic handler census: **370** handlers across **21** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 6 | 13 |
-| `partial` | 24 | 24 |
+| `partial` | 25 | 25 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 337 | 367 |
+| `unreviewed` | 336 | 366 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -52,7 +52,7 @@ Semantic handler census: **370** handlers across **21** API families, covering *
 | `sceDisplay` | 1 | 2 | 0 | 0 | 10 | 13 | 13 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
+| `sceGe` | 0 | 1 | 0 | 0 | 8 | 9 | 9 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 1 | 0 | 0 | 18 | 21 | 22 |
 | `sceKernel` | 2 | 9 | 0 | 0 | 124 | 135 | 158 |
@@ -65,7 +65,7 @@ Semantic handler census: **370** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **6** | **24** | **1** | **2** | **337** | **370** | **411** |
+| **Total** | **6** | **25** | **1** | **2** | **336** | **370** | **411** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -108,6 +108,11 @@ Semantic handler census: **370** handlers across **21** API families, covering *
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+- **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
+  - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
+  - Evidence: Makefile:display-smoke-run
+  - Evidence: fixtures/display_smoke/generate.py:flight_smoke
+  - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
   - Limitation: Memory Stick devctl callback events unmodeled (#281, #341)
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
@@ -129,15 +134,15 @@ Semantic handler census: **370** handlers across **21** API families, covering *
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
-  - Limitation: Copy handles matching initialized allocations and rejects overlap; the firmware layout and overlap result still need a physical PSP oracle (#302)
+  - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)
-  - Limitation: CSC preflights dynamic source/range/stride geometry and pixel formats; clipping, range conversion, and destination coherency remain hardware-oracle work (#302)
+  - Limitation: Csc writes the retained decoded picture; guest plane bytes are modeled, not the PSP layout, and range/coherency behavior remains open (#302)
 - **`h_MpegAvcDecodeStopYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeStopYCbCr` (0xf2930c9c)
   - Limitation: Stop clears tracked state, but the firmware buffered-picture status is explicitly unmeasured rather than reported as a guessed frame count (#302)
 - **`h_MpegAvcDecodeYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeYCbCr` (0xf0eb1125)
-  - Limitation: Decode produces only a backend-delivered picture and reports delayed/no-data states; the hardware EOS and cache-coherency observations are still required (#302)
+  - Limitation: Decode marks decoded pictures ready; guest plane bytes remain modeled zeroes, not the PSP layout, while Csc writes the retained decoded picture (#302)
 - **`h_MpegAvcInitYCbCr`** (`sceMpeg`): `sceMpegAvcInitYCbCr` (0x67179b1b)
-  - Limitation: Init accepts only the documented 4:2:0 allocation shape and makes guest bytes deterministic; the firmware-owned header and cache contract are not measured (#302)
+  - Limitation: Init zeroes a modeled guest allocation; its plane bytes are not asserted to match the PSP header/plane layout (#302)
 - **`h_MpegAvcQueryYCbCrSize`** (`sceMpeg`): `sceMpegAvcQueryYCbCrSize` (0x211a057c)
   - Limitation: the YCbCr size formula, pointer preflight, and guest geometry are source-tested; firmware mode coverage and the hardware-oracle contract remain open (#302)
 - **`h_MpegChangeGetAuMode`** (`sceMpeg`): `sceMpegChangeGetAuMode` (0x9dcfb7ea)
