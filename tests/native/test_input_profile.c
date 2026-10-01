@@ -1578,12 +1578,7 @@ static void test_hostile_documents_fail_closed(void) {
     }
 
     /* --- Invalid UTF-8 ------------------------------------------------------ */
-    /* A lead byte above 0xF4 is also invalid UTF-8, and the shared validator
-     * (src/core/nk_json.c nk_json_validate_utf8) accepts it today: the 4-byte
-     * branch only range-checks the 0xF0 and 0xF4 lead bytes, so 0xF5..0xFF slip
-     * through. It costs no memory safety here -- the bytes stay inside a
-     * NUL-terminated field -- so the case is left to the JSON owner rather than
-     * asserted here as accepted. See the report. */
+    /* RFC 3629 forbids four-byte UTF-8 lead bytes above 0xF4. */
     {
         static const char *const kBadUtf8[] = {
             "\x80",                    /* lone continuation byte */
@@ -1592,6 +1587,8 @@ static void test_hostile_documents_fail_closed(void) {
             "\xE2\x82",                /* truncated 3-byte sequence */
             "\xED\xA0\x80",            /* UTF-16 surrogate half */
             "\xF0\x9F",                /* 4-byte sequence cut short */
+            "\xF5\x80\x80\x80",      /* sequence above Unicode maximum */
+            "\xF7\xBF\xBF\xBF",      /* highest forbidden four-byte lead */
             "\xFE\xFF"                 /* not a UTF-8 byte at all */
         };
         size_t bad_count = sizeof(kBadUtf8) / sizeof(kBadUtf8[0]);

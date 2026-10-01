@@ -399,6 +399,21 @@ run. Add any newly used ThreadManForUser NID there.
 
 ## Build and hardware handoff
 
+### Device build identity
+
+The main `probe.c` reports its full `PROBE_BUILD_COMMIT_FULL` Git object id in
+`source_commit`. The Makefile requires that id to resolve to the checked-out
+`HEAD` and refuses to build from a dirty source tree. The host binds only a full
+40- or 64-digit hexadecimal object id, using case-insensitive equality; a short
+hash prefix is `IDENTITY_NOT_BOUND`, never a match. A different full id is
+`IDENTITY_MISMATCH`, and either status blocks acceptance while preserving the
+device's reported value in the envelope.
+
+The probe cannot hash its own loaded PRX, so `binary_sha256` remains zero on the
+device. The host records the staged PRX digest as a host measurement and labels
+the binary binding `PLACEHOLDER`; this does not replace the separate device
+`source_commit` comparison.
+
 Build when PSPDEV is installed:
 
 ```powershell

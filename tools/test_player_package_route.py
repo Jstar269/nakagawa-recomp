@@ -571,7 +571,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
                          same_disc_stale.stdout + same_disc_stale.stderr)
         self.assertIn("PACKAGE_STATUS=STALE", same_disc_stale.stdout)
         self.assertIn("main executable changed", same_disc_stale.stdout)
-        self.assertIn("in the works (#315)", same_disc_stale.stdout)
+        self.assertIn("rebuild the package from the current inputs", same_disc_stale.stdout)
+        self.assertNotIn("#315", same_disc_stale.stdout)
         second_boot_log = self.sandbox / "second-input-boot-events.log"
         second_launch = self.run_launch(
             second_boot_log, self.sandbox / "second-input-perf.csv"
