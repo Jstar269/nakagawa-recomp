@@ -164,8 +164,8 @@ and every field is a guest address:
 | `fallback_entry` | `driver.c` when the image entry is not compiled |
 | `worker_thread_entry` | `sched.c` worker role capture and create-reuse |
 | `launcher_thread_entry` | `sched.c` launcher role capture and priority demotion |
-| `vblank_frame_counter_addr` | `sched.c` on each delivered VBLANK |
-| `vblank_vsync_counter_addr` | `sched.c` on each delivered VBLANK |
+| `vblank_frame_counter_addr` | retired: validated and recorded, but no runtime code writes it (a delivered VBLANK writes no guest memory; the guest's own VBLANK handler is the only writer) |
+| `vblank_vsync_counter_addr` | retired: validated and recorded, but no runtime code writes it (same reason) |
 
 Validation fails closed on an unknown field, a non-integer or out-of-range address, a
 misaligned address, an explicit zero (the runtime's "not configured" value, so a
@@ -174,7 +174,7 @@ counter addresses, and equal worker and launcher entries. Omitting the block ent
 is valid and configures nothing.
 
 The block may name addresses and roles. It cannot redefine a PSP semantic: what a
-worker entry, a launcher demotion, or a counter increment *means* stays in the
+worker entry or a launcher demotion *means* stays in the
 runtime, and a binding only decides whether — and where — that meaning applies.
 
 ### Typed collections

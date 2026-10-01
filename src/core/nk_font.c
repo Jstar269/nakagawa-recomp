@@ -133,7 +133,9 @@ bool nk_font_validate_pgf(const char *file_path, uint64_t *out_size,
         if (out_error && error_len > 0) snprintf(out_error, error_len, "Missing font file path.");
         return false;
     }
-    FILE *f = fopen(file_path, "rb");
+    /* The cache lives under the per-user data root, whose name may hold
+     * non-ASCII characters. */
+    FILE *f = nk_fopen_utf8(file_path, "rb");
     if (!f) {
         if (out_error && error_len > 0) snprintf(out_error, error_len, "Cannot open font file '%s'.", file_path);
         return false;
@@ -287,7 +289,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     }
 
     /* Manifest exists: read and validate it */
-    FILE *mf = fopen(manifest_path, "rb");
+    FILE *mf = nk_fopen_utf8(manifest_path, "rb");
     if (!mf) {
         if (out_message && message_max_len > 0) {
             snprintf(out_message, message_max_len, "PSP font cache manifest unreadable; run fonts import <folder> (#300).");

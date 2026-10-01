@@ -106,19 +106,22 @@ def _is_generated_public_metadata(path: str) -> bool:
 
 
 def _is_security_publication(path: str) -> bool:
-    name = PurePosixPath(path).name
+    logical_path = _logical_tool_path(path) or path
+    name = PurePosixPath(logical_path).name
     return (
-        path.startswith(".github/ISSUE_TEMPLATE/")
+        logical_path.startswith(".github/ISSUE_TEMPLATE/")
         or name in {"SECURITY.md", "SECURITY.txt", "NOTICE", "NOTICE.md", "LICENSE", "LICENSE.md"}
-        or path.startswith("docs/PUBLICATION")
-        or path.startswith("docs/LEGAL")
-        or path == "docs/provenance/MODIFIED_FILE_NOTICES.json"
-        or _is_generated_public_metadata(path)
-        or path in {
+        or logical_path.startswith("docs/PUBLICATION")
+        or logical_path.startswith("docs/LEGAL")
+        or logical_path.startswith("docs/provenance/")
+        or logical_path == "docs/INDEPENDENCE_CAMPAIGN.md"
+        or _is_generated_public_metadata(logical_path)
+        or logical_path in {
             "tools/publish_audit.py",
             "tools/generate_sbom.py",
             "tools/verify_key_scrub.py",
             "tools/modified_file_notice_audit.py",
+            "tools/provenance_record_gap.py",
         }
     )
 
