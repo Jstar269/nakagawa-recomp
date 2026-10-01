@@ -778,6 +778,10 @@ def _cfg_branch_likely(word):
     return op in (0x11, 0x12) and ((word >> 21) & 0x1F) == 8 and ((word >> 16) & 0x1F) in (2, 3)
 
 
+def _cfg_is_eret(word):
+    return word == 0x42000018
+
+
 def _cfg_control_transfer(word):
     op = word >> 26
     funct = word & 0x3F
@@ -883,7 +887,9 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
 
         op = word >> 26
         funct = word & 0x3F
-        if op == 2:
+        if _cfg_is_eret(word):
+            row["terminator"] = "eret"
+        elif op == 2:
             target = ((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
             add_edge(address, target, "direct-jump", "j")
         elif op == 3:
@@ -1312,6 +1318,8 @@ class CanonicalCfgState:
                 node["terminator"] = "return"
             elif self.terminators[index] == 2:
                 node["terminator"] = "indirect-jump"
+            elif self.terminators[index] == 3:
+                node["terminator"] = "eret"
             instructions.append(node)
 
         direct_edges = [edge for edge in edge_rows if edge["target"] is not None]
@@ -1469,7 +1477,9 @@ def canonical_cfg_state(image, ranges=None, entries=None):
 
         op = word >> 26
         funct = word & 0x3F
-        if op == 2:
+        if _cfg_is_eret(word):
+            state.terminators[source_index] = 3
+        elif op == 2:
             target = ((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
             add_edge(source_index, target, "direct-jump", "j")
         elif op == 3:
