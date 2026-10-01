@@ -62,9 +62,13 @@ repos:
         # GIT_CONFIG_GLOBAL=NUL; Git for Windows only special-cases lowercase
         # "nul", so every git call failed and the hook scanned nothing on
         # Windows. Hosted CI still scans reachable history in git mode.
+        # Commit stage only: pre-commit passes no file names at the pre-push stage,
+        # so directory mode there would either walk the whole working tree (including
+        # the private input directories) or fail on a missing path. Every commit is
+        # scanned here and the pushed history is scanned in hosted CI.
         entry: betterleaks dir --redact --verbose
         pass_filenames: true
-        stages: [pre-commit, pre-push]
+        stages: [pre-commit]
 
   - repo: local
     hooks:

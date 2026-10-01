@@ -92,14 +92,6 @@ jobs:
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
 
-      - name: Scan the current tracked tree with Betterleaks
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The pinned Betterleaks hook runs in directory mode over the files it
-          # is given, so --all-files scans every tracked file in this revision.
-          pre-commit run betterleaks --all-files --show-diff-on-failure
-
       - name: Locate the pinned Betterleaks binary
         shell: bash
         run: |
