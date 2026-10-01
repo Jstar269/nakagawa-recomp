@@ -880,7 +880,7 @@ bool player_app_child_window_ready(PlayerApp *app) {
         return app && app->child_window_ready;
     }
 
-    FILE *file = settings_fopen(app->boot_event_file_path, "rb");
+    FILE *file = nk_fopen_utf8(app->boot_event_file_path, "rb");
     if (!file) return false;
 
     char events[8192];
