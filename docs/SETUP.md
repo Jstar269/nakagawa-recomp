@@ -480,11 +480,14 @@ dumps its summary at exit; use it as a second run because the instrumentation it
 The manager also takes `-GuestProfilePeriod N` (default 3,600 vblanks) to control bounded periodic
 captures for duration-limited runs; `0` disables periodic dumps.
 
-Host presentation is capped to the PSP's 60000/1001 Hz display scanout by default,
-preventing repeated guest framebuffer submissions within one scanout from doing
-unnecessary GPU/WSI work. The scheduler and PSP vblank continue at that rate, and
-scenes below the cap are not delayed. Set `SR_FPS_CAP=0` for uncapped diagnostics or
-A/B measurement; a positive value selects that explicit host presentation cap.
+When `SR_FPS_CAP` is unset, the runtime caps host presentation to the PSP's
+60000/1001 Hz display scanout, so repeated guest framebuffer submissions within one
+scanout do no extra GPU/WSI work. The scheduler and PSP vblank continue at that rate,
+and scenes below the cap are not delayed. That default applies only to a direct runtime
+launch: every launcher exports an explicit cap (the native player and `nk_launch` use
+60, the `nk` CLI and `tools/nk_core/launcher.py` use 30). Set `SR_FPS_CAP=0` for
+uncapped diagnostics or A/B measurement; a positive value selects that explicit host
+presentation cap.
 
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
 

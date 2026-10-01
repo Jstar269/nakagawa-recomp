@@ -546,6 +546,8 @@ pace:
 #endif /* !SR_GUI_PRESENT_SELFTEST */
 
 #ifdef SR_GUI_PRESENT_SELFTEST
+/* A gate, not a debug aid: keep the assertions under release CFLAGS. */
+#undef NDEBUG
 #include <assert.h>
 
 /* The unset SR_FPS_CAP default is the PSP scanout period, not a slower title-specific
@@ -556,6 +558,10 @@ int main(void) {
     assert(PSP_SCANOUT_PERIOD_NS == 16683333ull);
     assert(present_period_ns() == PSP_SCANOUT_PERIOD_NS);
     assert(present_period_ns() != 1000000000ull / 30u);
+    /* Through the slot logic: the first submission takes the slot, a second one in the
+     * same scanout is dropped. */
+    assert(present_slot_due());
+    assert(!present_slot_due());
 
     s_present_cap = present_cap_from_value("0");
     assert(present_slot_due());
