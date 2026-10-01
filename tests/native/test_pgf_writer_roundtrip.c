@@ -81,6 +81,7 @@ static void helper_probe(const PGF *pgf, int code) {
     uint8_t *buffer;
     uint32_t width;
     uint32_t height;
+    size_t pixels;
     int resolved;
     int drawn;
 
@@ -96,20 +97,24 @@ static void helper_probe(const PGF *pgf, int code) {
     width = helper_u32(info + 0x00u);
     height = helper_u32(info + 0x04u);
     printf("draw %d %u %u ", code, width, height);
-    if (width == 0u || height == 0u || width > 127u || height > 127u ||
-        width * height > HELPER_BUFFER_CAP) {
+    /* Both dimensions are bounded to 127 first, then the product is formed in
+     * size_t so it cannot wrap before it is compared with the buffer cap. */
+    pixels = 0u;
+    if (width != 0u && height != 0u && width <= 127u && height <= 127u)
+        pixels = (size_t)width * (size_t)height;
+    if (pixels == 0u || pixels > HELPER_BUFFER_CAP) {
         printf("skipped\n");
         return;
     }
     buffer = helper_guest(HELPER_BUFFER_ADDR);
-    memset(buffer, 0xff, width * height);
+    memset(buffer, 0xff, pixels);
     helper_set_image(2u, width, height, width, HELPER_BUFFER_ADDR);
     drawn = pgf_draw_glyph(pgf, code, 0, HELPER_IMAGE_ADDR);
     if (!drawn) {
         printf("refused\n");
         return;
     }
-    helper_print_hex(buffer, width * height);
+    helper_print_hex(buffer, pixels);
     printf("\n");
 }
 
