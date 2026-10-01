@@ -1170,6 +1170,48 @@ def _classify_iso_executable(stream, file_size: int, path: str) -> dict[str, obj
     return result
 
 
+def select_boot_executable_source(iso_path: Path | str) -> str | None:
+    """Select an on-disc boot filename without resolving keys or decrypting files."""
+    path = Path(iso_path)
+    try:
+        size_bytes = path.stat().st_size
+        with path.open("rb") as stream:
+            executables = {
+                "EBOOT.BIN": _classify_iso_executable(stream, size_bytes, "EBOOT.BIN"),
+                "BOOT.BIN": _classify_iso_executable(stream, size_bytes, "BOOT.BIN"),
+            }
+            eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.BIN")
+            )
+            old_eboot_entry = _lookup_iso_file(
+                stream, size_bytes, ("PSP_GAME", "SYSDIR", "EBOOT.OLD")
+            )
+            cfw_loader_detected = False
+            if (
+                eboot_entry is not None
+                and old_eboot_entry is not None
+                and eboot_entry[1] <= MAX_CFW_EBOOT_SCAN_BYTES
+                and executables["EBOOT.BIN"]["classification"] == "PLAIN_MIPS_ELF32"
+            ):
+                loader = _read_iso_extent(
+                    stream, size_bytes, *eboot_entry, 0, eboot_entry[1]
+                )
+                cfw_loader_detected = (
+                    len(loader) == eboot_entry[1]
+                    and _has_cfw_or_kernel_only_imports(loader)
+                )
+    except (OSError, IsoInspectionError, struct.error):
+        return None
+
+    if cfw_loader_detected:
+        return "EBOOT.OLD"
+    eboot_kind = executables["EBOOT.BIN"]["classification"]
+    boot_kind = executables["BOOT.BIN"]["classification"]
+    if eboot_kind == "PSP_ENCRYPTED_CONTAINER" and boot_kind == "PLAIN_MIPS_ELF32":
+        return "BOOT.BIN"
+    return "EBOOT.BIN" if eboot_entry is not None else None
+
+
 def inspect_compatibility_preflight(
     iso_path: Path | str,
     *,

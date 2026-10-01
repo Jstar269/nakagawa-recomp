@@ -561,6 +561,12 @@ have_image:;
         sched_init(&s);
         sched_run(entry, s.r[4], s.r[5]);
     } else {
+        const char *boot_path = getenv("SR_BOOT_PATH");
+        if (boot_path && boot_path[0]) {
+            /* The block begins at r[5]; start the direct entry below it so its
+               stack prologue cannot overwrite the guest-visible argument. */
+            s.r[29] = s.r[5];
+        }
         if (sr_perf_enabled) sr_perf_guest_begin();
         if (sr_perf_enabled) sr_perf_aot_begin(entry);
         fn(&s);

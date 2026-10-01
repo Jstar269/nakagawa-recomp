@@ -743,6 +743,23 @@ NkResult nk_launch_prepare_session(
     if (!session || !game) return NK_ERROR_GENERIC;
     memset(session, 0, sizeof(*session));
 
+    bool use_boot_executable = game->boot_executable[0] != '\0';
+    const char *boot_executable = use_boot_executable
+        ? game->boot_executable : game->selected_executable;
+    size_t boot_source_capacity = use_boot_executable
+        ? sizeof(game->boot_executable) : sizeof(game->selected_executable);
+    if (!memchr(boot_executable, '\0', boot_source_capacity)) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "boot_executable exceeds the supported 255-byte limit or is not NUL-terminated.");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+    if (!memchr(game->selected_executable, '\0',
+                sizeof(game->selected_executable))) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "selected_executable is not NUL-terminated within its native field.");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
+
     char user_data_root[NK_MAX_PATH];
     const char *root = (repo_or_install_root && *repo_or_install_root) ? repo_or_install_root : NULL;
     if (!root) {
@@ -759,8 +776,14 @@ NkResult nk_launch_prepare_session(
     snprintf(session->user_data_root, sizeof(session->user_data_root), "%s", root);
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
-    snprintf(session->boot_executable, sizeof(session->boot_executable), "%s",
-             game->boot_executable[0] ? game->boot_executable : game->selected_executable);
+    int boot_written = snprintf(session->boot_executable,
+                                sizeof(session->boot_executable), "%s",
+                                boot_executable);
+    if (boot_written < 0 || (size_t)boot_written >= sizeof(session->boot_executable)) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "boot_executable exceeds the supported 255-byte limit.");
+        return NK_ERROR_INVALID_EXECUTABLE;
+    }
     snprintf(session->selected_executable, sizeof(session->selected_executable), "%s",
              game->selected_executable);
     snprintf(session->prepared_root, sizeof(session->prepared_root), "%s", game->prepared_root);

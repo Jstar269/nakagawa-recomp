@@ -2175,7 +2175,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         return 1
     boot_path = _psp_boot_path(preflight.get("selected_executable_source"))
     if boot_path is None:
-        _fail_bringup(report, "EXECUTABLE_UNSUPPORTED", [285],
+        _fail_bringup(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))

@@ -839,6 +839,18 @@ def _load_python_module_from_source(name: str, source: str, package: str = "nk_c
     return module
 
 
+class BootExecutablePathLimitTests(unittest.TestCase):
+    def test_psp_boot_path_limit_is_255_utf8_bytes(self) -> None:
+        from nk_core.launcher import psp_boot_path
+
+        valid = "é" * 127 + "A"
+        self.assertEqual(len(valid.encode("utf-8")), 255)
+        self.assertEqual(
+            psp_boot_path(valid), f"disc0:/PSP_GAME/SYSDIR/{valid}"
+        )
+        self.assertIsNone(psp_boot_path("é" * 128))
+
+
 class GenericLauncherHostileTests(unittest.TestCase):
     """Hostile contract cases for the Python generic launcher (#366)."""
 

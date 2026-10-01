@@ -51,6 +51,7 @@ IMAGE_SUFFIX: str = "_image.bin"
 
 #: Portable build-name shape for every identity-derived path component.
 _BUILD_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+MAX_BOOT_EXECUTABLE_BYTES = 255
 
 
 def psp_boot_path(boot_executable: object) -> Optional[str]:
@@ -63,7 +64,7 @@ def psp_boot_path(boot_executable: object) -> Optional[str]:
         return None
     if (
         not boot_executable
-        or encoded_length > 255
+        or encoded_length > MAX_BOOT_EXECUTABLE_BYTES
         or boot_executable in {".", ".."}
         or any(ord(char) < 0x20 or char in "/\\:" for char in boot_executable)
     ):

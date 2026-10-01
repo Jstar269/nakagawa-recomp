@@ -47,6 +47,7 @@ static unsigned g_mock_alloc_calls = 0;
 static uint32_t g_module_start_arglen = 0;
 static uint32_t g_module_start_argp = 0;
 static char g_module_start_arg[128];
+static int g_direct_stack_below_args = 0;
 
 uint32_t g_sr_debug = 0;
 int sr_hit_hle = 0;
@@ -61,7 +62,15 @@ uint32_t sched_current_uid(void) {{ return 0; }}
 void sr_debug_init_watches(void) {{}}
 void sr_profile_init(void) {{}}
 void sr_register_all(void) {{}}
-static void dummy_recomp_fn(CpuState *s) {{ (void)s; }}
+static void synthetic_module_start(uint32_t args, uint32_t argp);
+static void dummy_recomp_fn(CpuState *s) {{
+    const char *boot_path = getenv("SR_BOOT_PATH");
+    if (!boot_path || !boot_path[0] || s->r[29] < 16u) return;
+    uint32_t prologue_sp = s->r[29] - 16u;
+    g_direct_stack_below_args = prologue_sp + 16u <= s->r[5];
+    for (uint32_t i = 0; i < 16u; i++) *(SR_HOST(prologue_sp + i)) = 0xa5u;
+    synthetic_module_start(s->r[4], s->r[5]);
+}}
 RecompFn sr_lookup(uint32_t addr) {{
     if (addr == 0x08000010u || addr == (0x08000010u & 0x01ffffffu)) return dummy_recomp_fn;
     return NULL;
@@ -336,6 +345,23 @@ int main(int argc, char **argv) {{
         return 0;
     }}
 
+    if (strcmp(mode, "image_boot_args_direct") == 0) {{
+        if (argc < 3) return 112;
+        char *argv_fake[] = {{
+            "driver", "--image", argv[2], "0x08000000", "0x08000010", "none", "none"
+        }};
+        int result = driver_main(7, argv_fake);
+        if (result != 0) return result;
+        uint32_t expected_arglen = strlen("disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN") + 1u;
+        uint32_t expected_argp = 0x09f00000u - ((expected_arglen + 15u) & ~15u);
+        if (!g_direct_stack_below_args) return 113;
+        if (g_module_start_arglen != expected_arglen || g_module_start_argp != expected_argp)
+            return 114;
+        if (strcmp(g_module_start_arg, "disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN") != 0)
+            return 115;
+        return 0;
+    }}
+
     if (strcmp(mode, "image_expect_valid") == 0) {{
         if (argc < 3) return 100;
         char *argv_fake[] = {{
@@ -517,6 +543,15 @@ int main(int argc, char **argv) {{
                 capture_output=True, text=True, env=boot_args_env,
             )
             self.assertEqual(boot_args.returncode, 0, boot_args.stderr + boot_args.stdout)
+
+            direct_boot_args = subprocess.run(
+                [str(exe), "image_boot_args_direct", str(sample_img)],
+                capture_output=True, text=True, env=boot_args_env,
+            )
+            self.assertEqual(
+                direct_boot_args.returncode, 0,
+                direct_boot_args.stderr + direct_boot_args.stdout,
+            )
 
             expected_img = subprocess.run(
                 [str(exe), "image_expect_valid", str(sample_img)], capture_output=True, text=True
