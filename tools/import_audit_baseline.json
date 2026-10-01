@@ -411,7 +411,7 @@
     "classification": "dedicated",
     "handler": "h_DisplaySetFrameBuf",
     "name": "sceDisplaySetFrameBuf",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x28a8e98a": {
     "classification": "controlled_unsupported",
@@ -1549,7 +1549,7 @@
     "classification": "dedicated",
     "handler": "h_DisplayWaitVblankStart",
     "name": "sceDisplayWaitVblankStart",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x99944089": {
     "classification": "dedicated",
