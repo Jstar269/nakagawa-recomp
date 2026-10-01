@@ -98,6 +98,13 @@ class TestGuestSpanRouting(unittest.TestCase):
         self.assertTrue(0 <= writable < flush < copy < dirty)
         self.assertNotIn("if (!sr_inrange(so0)", body)
 
+    def test_vram_dump_preflights_the_span_before_its_host_pointer(self) -> None:
+        body = _body((ROOT / "src" / "rt" / "ge.c").read_text(encoding="utf-8"), "ge_vramdump_write")
+        readable = body.find("sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)")
+        opened = body.find("fopen(")
+        host = body.find("SR_HOST(GE_CAPTURE_VRAM_BASE)")
+        self.assertTrue(0 <= readable < opened < host)
+
     def test_ge_direct_guest_host_pointers_have_named_complete_span_owners(self) -> None:
         cases = {
             ROOT / "src" / "rt" / "ge.c": {

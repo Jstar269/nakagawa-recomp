@@ -4064,12 +4064,6 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
         return 0;
     }
 
-    /* The whole 2 MiB span is read through one host pointer below, so validate it first. */
-    if (!sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
-        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (guest VRAM span is not readable)\n", vblank);
-        return 0;
-    }
-
     image = fopen(image_path, "wb");
     if (!image) {
         fprintf(stderr, "VRAMDUMP vblank=%u FAIL (cannot open raw image)\n", vblank);
