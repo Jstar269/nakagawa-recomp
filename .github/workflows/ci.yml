@@ -324,10 +324,9 @@ jobs:
       - name: Run host present pacing selftest (links SDL3)
         run: make CC=gcc gui-present-selftest
 
+      # tests/native/test_player_ui.py forces SDL's dummy video and software
+      # render drivers for every player it spawns, so no step env is needed.
       - name: Run native player UI regressions headlessly
-        env:
-          SDL_VIDEODRIVER: dummy
-          SDL_RENDER_DRIVER: software
         run: make CC=gcc player-ui-regressions
 
       - name: Configure, build, and test CMake Linux player
@@ -701,8 +700,6 @@ jobs:
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
-          SDL_VIDEODRIVER: dummy
-          SDL_RENDER_DRIVER: software
         run: |
           set -euo pipefail
           command -v pwsh
