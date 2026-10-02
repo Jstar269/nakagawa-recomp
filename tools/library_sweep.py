@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from nk_core import inspect_iso
+from nk_core import inspect_iso, package_cache
 from nk_core.decrypt_boundary import key_file_path
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
 
@@ -502,8 +502,8 @@ def _read_private_nid_rows(sidecar_path: Path, report: dict | None) -> tuple[lis
     build_report_rows = []
     for build_report_path in sorted(sidecar_path.parent.rglob("build-report.json")):
         try:
-            build_report = json.loads(build_report_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            build_report = package_cache.read_build_report_json(build_report_path)
+        except (OSError, ValueError):
             continue
         if not isinstance(build_report, dict):
             continue

@@ -269,7 +269,7 @@ endif
 # command line, and hle.c would then fall back to a literal build/hst/ and silently restore
 # the cross-title overwrite this define exists to prevent. Failing quietly there is worse
 # than ignoring a custom flag, so this one define is not caller-overridable.
-override CFLAGS += -DSR_BUILD_DIR=\"$(BUILD_DIR)\"
+override CFLAGS += -DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"
 FUNCS_PER_CHUNK ?= 2000
 # Optional deterministic size-aware chunking: greedy contiguous fill toward a
 # per-chunk emitted-byte budget (function order preserved, FUNCS_PER_CHUNK still
