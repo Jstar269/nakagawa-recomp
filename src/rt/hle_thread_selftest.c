@@ -283,6 +283,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_BAD_ID 0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
+#define SCE_ERROR_MODULE_ALREADY_STARTED 0x80111104u
 #define SCE_ERROR_AV_MODULE_BAD_ID 0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED 0x80110f03u
@@ -995,6 +996,23 @@ static void synth_libfont_export(CpuState *s) {
     s->r[2] = 0x29u;
 }
 
+/* Declared here because the module gate checks below assert on the runtime's own stderr. */
+static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd);
+static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
+                                          char *output, size_t output_size);
+static int count_occurrences(const char *haystack, const char *needle);
+
+/* sceKernelStartModule for the synthetic libfont handle, with the argument and status
+ * pointers the production ABI documents. */
+static uint32_t libfont_start_call(CpuState *cpu, uint32_t uid) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = uid;
+    cpu->r[5] = 24u;
+    cpu->r[6] = 0x08906080u;
+    cpu->r[7] = 0x089060c0u;
+    return sr_hle_test_start_module(cpu);
+}
+
 /* A source-owned PRX with a real module-info/export layout. Its export pointers
  * use the loaded guest-address form consumed by prx_loader; the HLE export
  * registrar must resolve those same fields back through the ELF segments. */
@@ -1095,7 +1113,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(write_synthetic_libfont_prx(path, base),
            "source-owned libfont PRX fixture is written");
 
-    _putenv("SR_REAL_MODULE_START=0");
+    _putenv("SR_REAL_MODULE_START=");
     sr_hle_test_module_reset();
     s_synth_libfont_start_calls = 0;
     s_synth_libfont_export_calls = 0;
@@ -1116,12 +1134,11 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
            "libfont export is not authorized before module_start");
 
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = uid;
-    cpu.r[5] = 24u;
-    cpu.r[6] = 0x08906080u;
-    cpu.r[7] = 0x089060c0u;
-    expect(sr_hle_test_start_module(&cpu) == 0u,
+    /* Phase 1: the shipped default leaves SR_REAL_MODULE_START unset, and a translated
+     * libfont entry owns its own readiness there. */
+    expect(getenv("SR_REAL_MODULE_START") == NULL,
+           "libfont gate: the default configuration leaves SR_REAL_MODULE_START unset");
+    expect(libfont_start_call(&cpu, uid) == 0u,
            "libfont StartModule enters the translated guest module_start");
     int startup_ready = s_synth_libfont_start_calls == 1u &&
                         MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u;
@@ -1142,6 +1159,89 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
                "a skipped module_start does not authorize libfont exports");
     }
 
+    /* Phase 2: a repeated StartModule must not run the entry a second time. */
+    expect(libfont_start_call(&cpu, uid) == SCE_ERROR_MODULE_ALREADY_STARTED &&
+               s_synth_libfont_start_calls == 1u,
+           "a second libfont StartModule is refused and does not re-enter module_start");
+
+    /* Phase 3: SR_REAL_MODULE_START=1 keeps translated startup for every module. */
+    _putenv("SR_REAL_MODULE_START=1");
+    sr_hle_test_module_reset();
+    uint32_t uid_on = sr_hle_test_register_module("libfont.prx", base + 0x70u, 0u);
+    uint32_t starts_before = s_synth_libfont_start_calls;
+    expect(uid_on != 0u, "libfont gate: a second libfont handle is registered");
+    expect(libfont_start_call(&cpu, uid_on) == 0u &&
+               s_synth_libfont_start_calls == starts_before + 1u,
+           "SR_REAL_MODULE_START=1 runs the translated libfont module_start");
+
+    /* Phase 4: SR_REAL_MODULE_START=0 is the environmental kill switch. It has to cover
+     * libfont too: no entry runs, the call stays nonfatal, and the unconfigured fallback
+     * writes nothing. Phase 5 repeats the unavailable start, so both phases share one
+     * capture window that also proves the boundary line is latched once. */
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_hle_test_module_reset();
+    uint32_t uid_off = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/libfont.prx",
+                                                   base + 0x70u, 0u);
+    starts_before = s_synth_libfont_start_calls;
+    MEM_W32(SYNTH_LIBFONT_READY_WORD, 0u);
+    FILE *capture = NULL;
+    int saved_fd = -1;
+    char captured[4096];
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    expect(capturing, "libfont gate: stderr capture for the unavailable-start boundary");
+    expect(uid_off != 0u, "libfont gate: a third libfont handle is registered");
+    expect(libfont_start_call(&cpu, uid_off) == 0u,
+           "SR_REAL_MODULE_START=0 keeps StartModule nonfatal for libfont");
+    expect(s_synth_libfont_start_calls == starts_before,
+           "SR_REAL_MODULE_START=0 does not execute translated module_start");
+    expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0u,
+           "SR_REAL_MODULE_START=0 writes no host readiness fallback when unconfigured");
+    expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
+           "the kill switch leaves libfont exports unauthorized");
+    expect(libfont_start_call(&cpu, uid_off) == 0u,
+           "a repeated kill-switched libfont StartModule stays nonfatal");
+
+    /* Phase 5: an untranslated libfont entry takes the same named fallback. */
+    _putenv("SR_REAL_MODULE_START=");
+    sr_hle_test_module_reset();
+    uint32_t uid_untranslated = sr_hle_test_register_module("disc0:/PSP_GAME/SYSDIR/libfont.prx",
+                                                            0x089b0000u, 0u);
+    expect(uid_untranslated != 0u,
+           "libfont gate: a handle with an untranslated entry is registered");
+    expect(libfont_start_call(&cpu, uid_untranslated) == 0u &&
+               libfont_start_call(&cpu, uid_untranslated) == 0u,
+           "repeated untranslated libfont starts stay nonfatal");
+
+    /* Phase 6: the gate matches a whole path element, not a substring of a longer name. */
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_hle_test_module_reset();
+    uint32_t uid_lookalike = sr_hle_test_register_module("mylibfont.prx.bak",
+                                                         base + 0x70u, 0u);
+    expect(uid_lookalike != 0u, "libfont gate: a look-alike module name is registered");
+    expect(libfont_start_call(&cpu, uid_lookalike) == 0u &&
+               s_synth_libfont_start_calls == starts_before,
+           "a module whose name only contains libfont.prx does not take the libfont gate");
+    if (capturing) {
+        captured[0] = '\0';
+        hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof(captured));
+        /* Replay the captured window so the boundary text a consumer would read from
+         * stderr stays observable in the run output the regressions assert on. */
+        fprintf(stderr, "%s", captured);
+        expect(count_occurrences(captured, "LIBFONT_STARTUP_UNAVAILABLE") == 2,
+               "repeated unavailable libfont starts log the boundary exactly once per reason");
+        expect(strstr(captured, "SR_REAL_MODULE_START=0 disabled guest startup") != NULL,
+               "the libfont diagnostic names the kill switch as its boundary");
+        expect(strstr(captured, "entry untranslated") != NULL,
+               "the libfont diagnostic names an untranslated entry as its boundary");
+        expect(strstr(captured, "module absent") == NULL,
+               "the libfont diagnostic never claims the module is absent");
+        expect(strstr(captured, "path='mylibfont.prx.bak') -> SR_REAL_MODULE_START=0, "
+                                "module_start not executed") != NULL,
+               "the look-alike module is refused by name, not by a libfont fallback");
+    }
+
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_hle_test_module_reset();
     remove(path);
 }
 

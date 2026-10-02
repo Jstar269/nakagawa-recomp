@@ -349,7 +349,7 @@ Migrated compat (now `PROFILE_OWNED_CONFIGURATION` via `runtime_bindings`):
 
 | Group | Addresses | Title config | Note |
 | --- | --- | --- | --- |
-| `libfont_ready_flag` | 1 | `libfont_ready_flag_addr` | fallback only after absent or untranslated guest startup; generic builds have no write |
+| `libfont_ready_flag` | 1 | `libfont_ready_flag_addr` | fallback only when guest startup is unavailable (untranslated entry or `SR_REAL_MODULE_START=0`); generic builds have no write |
 | `frame_ready_latch_assist` | 1 | `frame_ready_latch_addr` | 30-vblank timer is profile-qualified |
 | `runtime_sync_callback_config` | 8 | `runtime_sync {config_base, sema_name_ptr, wrappers{mode,enter,leave}}` | mode-keyed pairs not flattened |
 | `display_setmode_guest_init` | 6 | `display_bringup {malloc, vblank_init, render_init, magic, ready_flag, ctx_word}` | 3 dispatch + 3 data |

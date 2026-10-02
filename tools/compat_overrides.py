@@ -714,8 +714,9 @@ HLE_TITLE_CONFIGURED_COMPAT = [
          title_scope="hst-ucus98701",
          source="src/rt/hle.c:h_StartModule -> title_config.libfont_ready_flag_addr",
          addresses=[0x002d132c],
-         reason="when libfont.prx is absent or its module_start entry is untranslated, "
-                "sceKernelStartModule emits LIBFONT_STARTUP_UNAVAILABLE and may write 1 to "
+         reason="when libfont.prx startup is unavailable (an untranslated entry, no "
+                "recorded entry, or SR_REAL_MODULE_START=0), sceKernelStartModule emits "
+                "LIBFONT_STARTUP_UNAVAILABLE once per named boundary and may write 1 to "
                 "the title-qualified word; translated guest startup owns readiness",
          generic_fallback="translated libfont startup runs without host readiness writes; "
                           "generic builds have no configured ready-flag fallback",
@@ -724,8 +725,8 @@ HLE_TITLE_CONFIGURED_COMPAT = [
          accidental_inheritance="no -- only the configured title can write its fallback word",
          test="tools/test_hle_title_config_behavior.py:test_libfont_guest_startup_routes_exports_without_ready_binding",
          owner_issue="#299",
-         retirement="after #299 proves supported libfont startup and retires the absent or "
-                    "untranslated-module fallback, remove this binding and manifest field"),
+         retirement="after #299 proves supported libfont startup and retires the "
+                    "unavailable-startup fallback, remove this binding and manifest field"),
     dict(name="frame_ready_latch_assist", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",

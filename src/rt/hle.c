@@ -2270,6 +2270,50 @@ static int real_module_start_enabled(void) {
     return (e != NULL && strcmp(e, "1") == 0);
 }
 
+/* The same variable is a tri-state gate for sceKernelStartModule, because "0" is an
+ * environmental kill switch an operator sets to keep the Sony init path off the host
+ * and therefore has to cover every module, libfont included:
+ *   "1"    - translated/real module_start may run for any module.
+ *   unset  - translated libfont module_start runs, so the guest owns its own
+ *             readiness; every other module keeps the host bypass in h_StartModule.
+ *   "0"    - no module_start runs for any module and libfont takes the named
+ *             readiness fallback, which reports the boundary it hit.
+ * Any other value is refused rather than guessed, and the refusal is named once. */
+typedef enum {
+    MODULE_START_ALLOW_ALL,
+    MODULE_START_LIBFONT_ONLY,
+    MODULE_START_NONE
+} ModuleStartPolicy;
+
+static ModuleStartPolicy module_start_policy(void) {
+    const char *e = getenv("SR_REAL_MODULE_START");
+    if (e == NULL || e[0] == '\0') return MODULE_START_LIBFONT_ONLY;
+    if (strcmp(e, "1") == 0) return MODULE_START_ALLOW_ALL;
+    if (strcmp(e, "0") == 0) return MODULE_START_NONE;
+    static int s_logged_bad_value = 0;
+    if (!s_logged_bad_value) {
+        s_logged_bad_value = 1;
+        fprintf(stderr, "SR_REAL_MODULE_START: unsupported value \"%s\"; using the default "
+                        "(translated libfont startup only)\n", e);
+    }
+    return MODULE_START_LIBFONT_ONLY;
+}
+
+/* A module-name test, not a substring test: the match has to be a whole path
+ * element, so a path such as mylibfont.prx.bak cannot take a module's behavioural
+ * path. */
+static int module_path_is(const char *path, const char *name) {
+    size_t span;
+    const char *hit;
+    if (!path || !name) return 0;
+    span = strlen(name);
+    for (hit = strstr(path, name); hit; hit = strstr(hit + 1, name)) {
+        if ((hit == path || hit[-1] == '/' || hit[-1] == '\\') &&
+            (hit[span] == '\0' || hit[span] == '/' || hit[span] == '\\')) return 1;
+    }
+    return 0;
+}
+
 typedef struct {
     uint32_t uid;
     char path[256];
@@ -2685,6 +2729,7 @@ enum {
 #define SCE_ERROR_MODULE_BAD_ID             0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED     0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED         0x80111103u
+#define SCE_ERROR_MODULE_ALREADY_STARTED    0x80111104u
 #define SCE_ERROR_AV_MODULE_BAD_ID         0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
@@ -8054,31 +8099,46 @@ static uint32_t h_StartModule(CpuState *s) {
     uint32_t status_ptr = A3;
     fprintf(stderr, "sceKernelStartModule(uid=0x%x, arglen=%u, argp=0x%x)\n", uid, arglen, argp);
 
-    if (!real_module_start_enabled()) {
-        const char *path = NULL;
-        for (int i = 0; i < s_nloaded_modules; i++) {
-            if (s_loaded_modules[i].uid == uid) {
-                path = s_loaded_modules[i].path;
-                break;
-            }
+    const char *path = NULL;
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        if (s_loaded_modules[i].uid == uid) {
+            path = s_loaded_modules[i].path;
+            break;
         }
-        /* libfont is allowed through this legacy gate so a translated guest
-         * module_start can establish its own state. The PSMF host-HLE bypasses
-         * remain unchanged. populate_known_module(path) already ran in LoadModule. */
-        if (!path || !strstr(path, "libfont.prx")) {
-            if (path) {
-                if (strstr(path, "psmf.prx")) {
-                    fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-                } else if (strstr(path, "libpsmfplayer.prx")) {
-                    fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-                } else {
-                    fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
-                }
+    }
+    int is_libfont = module_path_is(path, "libfont.prx");
+    ModuleStartPolicy policy = module_start_policy();
+    int allow_entry = policy == MODULE_START_ALLOW_ALL ||
+                      (policy == MODULE_START_LIBFONT_ONLY && is_libfont);
+    /* A libfont module under the kill switch does not return here: startup is
+     * unavailable, so it falls through to the named readiness fallback below. */
+    int fallback_only = policy == MODULE_START_NONE && is_libfont;
+
+    /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
+     * h_UtilityLoadModule): psmf.prx and libpsmfplayer.prx are fully host-side HLE'd, and their
+     * real module_start entries (f_32280000/f_322f8868) are genuine Sony SDK init code that
+     * assumes a real PSP kernel underneath -- running them hangs on an unconditional WaitSema.
+     * This is a second, independent call path into the same PRXs (via sceKernelLoadModule +
+     * sceKernelStartModule instead of sceUtilityLoadModule), so it needs the identical skip.
+     * populate_known_module(path) was already called in h_LoadModule when the module was
+     * recorded, so it is not repeated here. */
+    if (!allow_entry && !fallback_only) {
+        if (policy == MODULE_START_NONE) {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> "
+                            "SR_REAL_MODULE_START=0, module_start not executed\n",
+                    uid, path ? path : "");
+        } else if (path) {
+            if (strstr(path, "psmf.prx")) {
+                fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
+            } else if (strstr(path, "libpsmfplayer.prx")) {
+                fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
             } else {
                 fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
             }
-            return 0;
+        } else {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
         }
+        return 0;
     }
 
     LoadedModule *mod = find_loaded_module(uid);
@@ -8087,7 +8147,16 @@ static uint32_t h_StartModule(CpuState *s) {
         return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
     }
 
-    if (mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
+    /* One module_start per live module record: a repeated StartModule would re-run the
+     * guest entry (and its one-shot init side effects) over an already-initialised module.
+     * A module that was stopped is legitimately startable again, as on hardware. */
+    if (mod->started && !mod->stopped) {
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> already started, "
+                        "refusing re-entry\n", uid, mod->path);
+        return SCE_ERROR_MODULE_ALREADY_STARTED; /* unmeasured */
+    }
+
+    if (allow_entry && mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s', entry=0x%08x): executing module_start\n",
                 uid, mod->path, mod->module_start);
         uint32_t rv = ge_call_guest_rv(s, mod->module_start, arglen, argp, 0);
@@ -8096,40 +8165,49 @@ static uint32_t h_StartModule(CpuState *s) {
             MEM_W32(status_ptr, rv);
         }
         mod->started = 1;
+        mod->stopped = 0;
         return 0;
     }
 
-    /* Entry is unknown or untranslated. A configured ready word is a named
-     * fallback only for libfont; it never substitutes for translated startup. */
-    int is_libfont = strstr(mod->path, "libfont.prx") != NULL;
+    /* Guest startup is unavailable: the entry is not translated, the image recorded none,
+     * or the operator disabled module_start. A configured ready word is a named fallback
+     * only for libfont; it never substitutes for translated startup. */
     if (is_libfont) {
-        uint32_t flag;
-        if (sr_title_config_libfont_ready_flag_addr(&flag)) {
-            if (!sr_guest_span_writable(flag, 4)) {
-                fprintf(stderr,
-                        "LIBFONT_STARTUP_UNAVAILABLE: module absent or entry untranslated; "
-                        "ready-flag fallback target is not writable (#299)\n");
+        uint32_t flag = 0;
+        const char *reason = !allow_entry ? "SR_REAL_MODULE_START=0 disabled guest startup"
+                         : (mod->module_start == 0) ? "no module_start entry recorded"
+                                                    : "entry untranslated";
+        unsigned reason_index = !allow_entry ? 0u : (mod->module_start == 0 ? 1u : 2u);
+        int configured = sr_title_config_libfont_ready_flag_addr(&flag);
+        int writable = configured && sr_guest_span_writable(flag, 4u);
+        if (writable) MEM_W32(flag, 1u);
+        /* The readiness write is not latched; the diagnostic is latched per named
+         * boundary, so a title that retries an unavailable libfont startup does not
+         * repeat the line while a different reason still gets its own name. */
+        static int s_logged_libfont_unavailable[3];
+        if (!s_logged_libfont_unavailable[reason_index]) {
+            s_logged_libfont_unavailable[reason_index] = 1;
+            if (writable) {
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; using title-configured "
+                                "ready-flag fallback (#299)\n", reason);
+            } else if (configured) {
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
+                                "target is not writable (#299)\n", reason);
             } else {
-                MEM_W32(flag, 1u);
-                fprintf(stderr,
-                        "LIBFONT_STARTUP_UNAVAILABLE: module absent or entry untranslated; "
-                        "using title-configured ready-flag fallback (#299)\n");
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
+                                "is unconfigured (#299)\n", reason);
             }
-        } else {
-            fprintf(stderr,
-                    "LIBFONT_STARTUP_UNAVAILABLE: module absent or entry untranslated; "
-                    "ready-flag fallback is unconfigured (#299)\n");
         }
     }
 
     static int s_logged_untranslated = 0;
-    if (!s_logged_untranslated) {
+    if (!is_libfont && !s_logged_untranslated) {
         s_logged_untranslated = 1;
-        if (!is_libfont && strstr(mod->path, "psmf.prx")) {
+        if (strstr(mod->path, "psmf.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-        } else if (!is_libfont && strstr(mod->path, "libpsmfplayer.prx")) {
+        } else if (strstr(mod->path, "libpsmfplayer.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-        } else if (!is_libfont) {
+        } else {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or untranslated entry, skipping\n", uid);
         }
     }
