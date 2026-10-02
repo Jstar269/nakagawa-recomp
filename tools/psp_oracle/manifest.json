@@ -307,7 +307,7 @@
       "apis": ["sceKernelCreateMutex", "sceKernelDeleteMutex", "sceKernelLockMutex", "sceKernelLockMutexCB", "sceKernelTryLockMutex", "sceKernelUnlockMutex", "sceKernelCancelMutex", "sceKernelReferMutexStatus"],
       "case_ids": ["mutex-refer-unlocked", "mutex-timeout-quanta", "mutex-priority-inheritance", "mutex-interrupt-context"],
       "invariant": "mutex status, timeout, priority inheritance, and interrupt-context precedence are measured as scalar results",
-      "issues": [2],
+      "issues": [2, 400],
       "risk": "medium",
       "reset": "return to PSPLINK after each case"
     }
