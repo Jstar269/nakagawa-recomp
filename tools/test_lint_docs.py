@@ -333,6 +333,8 @@ class TestHleCensusDocGuard(unittest.TestCase):
         cases = (
             ("The census was 380 registrations and 51 fake-success stubs.\n", 0),
             ("The census fell to about 51 fake-success stubs.\n", 0),
+            # Comparatives bound a figure; they do not capture one.
+            ("The census was over 380 registrations.\n", 1),
             ("There were 380 registrations added.\n", 1),
             ("Coverage was improved and now has 380 registrations.\n", 1),
             ("The census was 380 registrations and is 51 fake-success stubs.\n", 1),

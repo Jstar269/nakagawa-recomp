@@ -204,7 +204,7 @@ HLE_CENSUS_HISTORICAL_LABEL_PAT = re.compile(
 )
 HLE_CENSUS_PAST_COUNT_PAT = re.compile(
     r"\b(?:was|were|had|remained|reached|fell|rose)"
-    r"(?:\s+(?:to|at|about|around|roughly|approximately|nearly|almost|only|just|over|under))*"
+    r"(?:\s+(?:to|at|about|around|roughly|approximately|nearly|almost|only|just))*"
     r"\s+$",
     re.IGNORECASE,
 )
