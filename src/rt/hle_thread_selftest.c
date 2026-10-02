@@ -7486,6 +7486,17 @@ static void test_b23_second_round(void) {
 #define VPL_EXHAUSTED_ERR     0x800200d9u
 #define VPL_INFO              0x00240a00u
 #define VPL_OUTPTR            0x00240a80u
+#define NID_TLSPL_CREATE      0x8daff657u
+#define NID_TLSPL_DELETE      0x32bf938eu
+#define NID_TLSPL_FREE        0x4a719fb2u
+#define NID_TLSPL_REFER       0x721067f3u
+#define NID_TLSPL_GET_ADDR    0xfa835cdeu
+#define TLSPL_BAD_ID_ERR      0x800200d3u
+#define TLSPL_SIZE_ERR        0x800201bcu
+#define TLSPL_BUSY_ERR        0x800201a8u
+#define TLSPL_NAMEBUF         0x00240b00u
+#define TLSPL_INFO            0x00240b40u
+#define TLSPL_OPTIONS         0x00240bc0u
 #define NID_MBX_CREATE        0x8125221du
 #define NID_MBX_DELETE        0x86255adau
 #define NID_MBX_SEND          0xe9b3061eu
@@ -13257,6 +13268,190 @@ static void test_vpl_nonblocking_roundtrip(void) {
     (void)sr_syscall(&cpu, 0xb6d61d02u);
 }
 
+static uint32_t selftest_tlspl_create(uint32_t name, uint32_t partition,
+                                      uint32_t attr, uint32_t block_size,
+                                      uint32_t num_blocks, uint32_t options);
+static uint32_t selftest_tlspl_simple(uint32_t uid, uint32_t nid);
+static uint32_t selftest_tlspl_refer(uint32_t uid, uint32_t info);
+static uint32_t selftest_tlspl_get_addr(uint32_t uid);
+
+static void test_tlspl_lifecycle_and_thread_isolation(void) {
+    extern void sr_hle_test_partition_reset(void);
+    static const char name[] = "tlspl-selftest";
+    static const uint32_t nids[] = {
+        NID_TLSPL_CREATE, NID_TLSPL_DELETE, NID_TLSPL_FREE,
+        NID_TLSPL_REFER, NID_TLSPL_GET_ADDR
+    };
+    int registered = 1;
+
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof nids / sizeof nids[0]; ++i) {
+        int has_nid = sr_hle_test_is_registered(nids[i]);
+        expect(has_nid, "TLSPL API is registered through production HLE mapping");
+        registered = registered && has_nid;
+    }
+    if (!registered) return;
+
+    for (size_t i = 0; i < sizeof name; ++i)
+        MEM_W8(TLSPL_NAMEBUF + (uint32_t)i, (uint8_t)name[i]);
+
+    TCB *thread_a = fixture_thread(0x3391u, TH_RUNNING, 32);
+    TCB *thread_b = fixture_thread(0x3392u, TH_READY, 32);
+    TCB *thread_c = fixture_thread(0x3393u, TH_READY, 32);
+    TCB *thread_d = fixture_thread(0x3394u, TH_READY, 32);
+    expect(thread_a != NULL && thread_b != NULL && thread_c != NULL && thread_d != NULL,
+           "TLSPL fixture creates four guest threads");
+    if (!thread_a || !thread_b || !thread_c || !thread_d) return;
+    s_cur = (int)(thread_a - s_tcb);
+
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 0u, 2u, 0u) == TLSPL_SIZE_ERR,
+           "TLSPL rejects a zero block size");
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 0u, 0u) == TLSPL_SIZE_ERR,
+           "TLSPL rejects a zero block count");
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 1u, 0u, 32u, 2u, 0u) == TLSPL_BAD_ID_ERR,
+           "TLSPL names unsupported partitions as an in-progress boundary");
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0x2u, 32u, 2u, 0u) == 0x80020191u,
+           "TLSPL names unsupported attributes as an in-progress boundary");
+    uint32_t pool = selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u, 0u);
+    expect(pool != 0u && pool < 0x80000000u, "TLSPL create returns a valid UID");
+    if (!pool || pool >= 0x80000000u) return;
+
+    expect(selftest_tlspl_refer(pool, TLSPL_INFO) == 0u,
+           "TLSPL ReferTlsplStatus succeeds for a writable status record");
+    expect(MEM_R32(TLSPL_INFO + 0u) == 56u,
+           "TLSPL status reports the PSP SceKernelTlsplInfo size");
+    expect(MEM_R8(TLSPL_INFO + 4u) == (uint8_t)'t' &&
+           MEM_R8(TLSPL_INFO + 18u) == 0u,
+           "TLSPL status reports the pool name");
+    expect(MEM_R32(TLSPL_INFO + 36u) == 0u &&
+           MEM_R32(TLSPL_INFO + 40u) == 32u &&
+           MEM_R32(TLSPL_INFO + 44u) == 2u &&
+           MEM_R32(TLSPL_INFO + 48u) == 2u,
+           "TLSPL status reports attributes, block size, block count, and free blocks");
+    expect(selftest_tlspl_refer(pool, 0u) == 0x80000103u,
+           "TLSPL status rejects a null output pointer");
+    expect(selftest_tlspl_refer(pool, 0xffffffffu) == 0x80000103u,
+           "TLSPL status rejects an unwritable output span");
+    expect(selftest_tlspl_refer(0xdeadbeefu, TLSPL_INFO) == TLSPL_BAD_ID_ERR,
+           "TLSPL status rejects an invalid pool UID");
+
+    uint32_t addr_a = selftest_tlspl_get_addr(pool);
+    expect(addr_a != 0u, "TLSPL GetTlsAddr allocates a slot for the current thread");
+    if (!addr_a) {
+        (void)selftest_tlspl_simple(pool, NID_TLSPL_DELETE);
+        return;
+    }
+    expect(sr_guest_span_writable(addr_a, 32u), "TLSPL address spans writable guest memory");
+    MEM_W32(addr_a, 0x3391a11au);
+
+    s_cur = (int)(thread_b - s_tcb);
+    uint32_t addr_b = selftest_tlspl_get_addr(pool);
+    expect(addr_b != 0u && addr_b != addr_a,
+           "TLSPL GetTlsAddr isolates allocations for distinct guest threads");
+    if (addr_b) {
+        expect(addr_b >= addr_a && addr_b < addr_a + 64u,
+               "TLSPL thread slots lie within the pool allocation");
+        expect(sr_guest_span_writable(addr_b, 32u), "TLSPL second slot spans writable guest memory");
+        MEM_W32(addr_b, 0x3392b22bu);
+        expect(MEM_R32(addr_b) == 0x3392b22bu,
+               "TLSPL second thread slot is readable and writable");
+    }
+
+    s_cur = (int)(thread_c - s_tcb);
+    expect(selftest_tlspl_get_addr(pool) == 0u,
+           "TLSPL exhausted pool returns null while blocking allocation is unimplemented");
+
+    s_cur = (int)(thread_a - s_tcb);
+    expect(selftest_tlspl_get_addr(pool) == addr_a && MEM_R32(addr_a) == 0x3391a11au,
+           "TLSPL GetTlsAddr returns the current thread's stable slot");
+    expect(selftest_tlspl_refer(pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == (addr_b ? 0u : 1u),
+           "TLSPL status reflects the remaining free block count");
+
+    s_cur = (int)(thread_b - s_tcb);
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_FREE) == 0u,
+           "TLSPL FreeTlspl releases the current thread's slot");
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_FREE) == TLSPL_BAD_ID_ERR,
+           "TLSPL FreeTlspl rejects a thread without an allocated slot");
+
+    s_cur = (int)(thread_a - s_tcb);
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_FREE) == 0u,
+           "TLSPL FreeTlspl releases the first thread's slot");
+    expect(selftest_tlspl_get_addr(0xdeadbeefu) == 0u,
+           "TLSPL GetTlsAddr returns null for an invalid pool UID");
+    expect(selftest_tlspl_simple(0xdeadbeefu, NID_TLSPL_FREE) == TLSPL_BAD_ID_ERR,
+           "TLSPL FreeTlspl rejects an invalid pool UID");
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_DELETE) == 0u,
+           "TLSPL DeleteTlspl releases the pool");
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_DELETE) == TLSPL_BAD_ID_ERR,
+           "TLSPL DeleteTlspl rejects a deleted pool UID");
+
+    uint32_t teardown_pool = selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u, 0u);
+    expect(teardown_pool != 0u && teardown_pool < 0x80000000u,
+           "TLSPL teardown fixture creates a second pool");
+    if (!teardown_pool || teardown_pool >= 0x80000000u) return;
+    s_cur = (int)(thread_d - s_tcb);
+    uint32_t teardown_addr = selftest_tlspl_get_addr(teardown_pool);
+    expect(teardown_addr != 0u, "TLSPL teardown fixture allocates a thread slot");
+    expect(selftest_tlspl_refer(teardown_pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == 1u,
+           "TLSPL status shows one block held before thread termination");
+    s_cur = (int)(thread_b - s_tcb);
+    expect(sched_terminate_thread(thread_d->uid) == 0u,
+           "TLSPL fixture thread terminates through the scheduler");
+    expect(selftest_tlspl_refer(teardown_pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == 2u,
+           "TLSPL thread teardown releases its slot back to the unallocated count");
+
+    s_cur = (int)(thread_a - s_tcb);
+    uint32_t held_addr = selftest_tlspl_get_addr(teardown_pool);
+    expect(held_addr != 0u, "TLSPL delete fixture holds a block on a live thread");
+    s_cur = (int)(thread_b - s_tcb);
+    expect(selftest_tlspl_simple(teardown_pool, NID_TLSPL_DELETE) == TLSPL_BUSY_ERR,
+           "TLSPL DeleteTlspl refuses to free a pool with a held block");
+    expect(selftest_tlspl_refer(teardown_pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == 1u,
+           "TLSPL pool and held-block accounting survive refused deletion");
+    s_cur = (int)(thread_a - s_tcb);
+    expect(selftest_tlspl_get_addr(teardown_pool) == held_addr,
+           "TLSPL held address remains owned after refused deletion");
+    expect(selftest_tlspl_simple(teardown_pool, NID_TLSPL_FREE) == 0u,
+           "TLSPL live thread releases the held block after refused deletion");
+    s_cur = (int)(thread_b - s_tcb);
+    expect(selftest_tlspl_simple(teardown_pool, NID_TLSPL_DELETE) == 0u,
+           "TLSPL pool deletes after all held blocks are released");
+
+    MEM_W32(TLSPL_OPTIONS, 8u);
+    MEM_W32(TLSPL_OPTIONS + 4u, 64u);
+    s_cur = (int)(thread_a - s_tcb);
+    uint32_t aligned_pool = selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u,
+                                                  TLSPL_OPTIONS);
+    expect(aligned_pool != 0u && aligned_pool < 0x80000000u,
+           "TLSPL accepts a valid options record with 64-byte alignment");
+    if (aligned_pool && aligned_pool < 0x80000000u) {
+        uint32_t aligned_a = selftest_tlspl_get_addr(aligned_pool);
+        s_cur = (int)(thread_b - s_tcb);
+        uint32_t aligned_b = selftest_tlspl_get_addr(aligned_pool);
+        expect(aligned_a != 0u && (aligned_a & 63u) == 0u,
+               "TLSPL option alignment produces a 64-byte-aligned address");
+        expect(aligned_b > aligned_a && aligned_b - aligned_a == 64u,
+               "TLSPL option alignment produces a 64-byte block stride");
+        expect(selftest_tlspl_simple(aligned_pool, NID_TLSPL_FREE) == 0u,
+               "TLSPL frees the second aligned block");
+        s_cur = (int)(thread_a - s_tcb);
+        expect(selftest_tlspl_simple(aligned_pool, NID_TLSPL_FREE) == 0u,
+               "TLSPL frees the first aligned block");
+        expect(selftest_tlspl_simple(aligned_pool, NID_TLSPL_DELETE) == 0u,
+               "TLSPL deletes the aligned pool after release");
+    }
+    MEM_W32(TLSPL_OPTIONS + 4u, 3u);
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u, TLSPL_OPTIONS) ==
+           TLSPL_SIZE_ERR,
+           "TLSPL rejects a non-power-of-two alignment");
+}
+
 /* =========================================================================
  * PR-G Blocking Memory Pool Tests (FPL and VPL)
  * ========================================================================= */
@@ -13478,6 +13673,39 @@ static uint32_t selftest_vpl_free(uint32_t uid, uint32_t addr) {
     cpu.r[4] = uid;
     cpu.r[5] = addr;
     return sr_syscall(&cpu, NID_VPL_FREE);
+}
+
+static uint32_t selftest_tlspl_create(uint32_t name, uint32_t partition,
+                                      uint32_t attr, uint32_t block_size,
+                                      uint32_t num_blocks, uint32_t options) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = name;
+    cpu.r[5] = partition;
+    cpu.r[6] = attr;
+    cpu.r[7] = block_size;
+    cpu.r[8] = num_blocks;
+    cpu.r[9] = options;
+    return sr_syscall(&cpu, NID_TLSPL_CREATE);
+}
+
+static uint32_t selftest_tlspl_simple(uint32_t uid, uint32_t nid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, nid);
+}
+
+static uint32_t selftest_tlspl_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_TLSPL_REFER);
+}
+
+static uint32_t selftest_tlspl_get_addr(uint32_t uid) {
+    return selftest_tlspl_simple(uid, NID_TLSPL_GET_ADDR);
 }
 
 static void test_fpl_blocking_waits(void) {
@@ -18059,6 +18287,7 @@ int main(int argc, char **argv) {
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
+    test_tlspl_lifecycle_and_thread_isolation();
     test_vpl_blocking_waits();
     test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();

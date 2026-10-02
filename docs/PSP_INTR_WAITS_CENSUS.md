@@ -22,15 +22,15 @@ Live join of every exact `sce*` / `__sce*` API named in
 ## Summary
 
 - total exact APIs: **72**
-- missing: **16**
+- missing: **11**
 - registered (fake success): **0**
-- implemented: **56**
+- implemented: **61**
 - controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #339: 16
-- #341: 46
+- #339: 11
+- #341: 51
 
 ## Census
 
@@ -65,16 +65,16 @@ Open-owner counts:
 | `sceKernelCpuResumeIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuResumeIntr` | `0x5f10d406` |
 | `sceKernelCpuSuspendIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuSuspendIntr` | `0x092968f4` |
 | `sceKernelCreateMbx` | implemented | - | dedicated | partial | `h_CreateMbx` | `0x8125221d` |
-| `sceKernelCreateTlspl` | missing | #339 | missing | - | - | - |
+| `sceKernelCreateTlspl` | implemented | #341 | dedicated | unreviewed | `h_CreateTlspl` | `0x8daff657` |
 | `sceKernelDelaySysClockThread` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThread` | `0xbd123d9e` |
 | `sceKernelDelaySysClockThreadCB` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThreadCB` | `0x1181e963` |
 | `sceKernelDelayThread` | implemented | #341 | dedicated | unreviewed | `h_DelayThread` | `0xceadeb47` |
 | `sceKernelDelayThreadCB` | implemented | #341 | dedicated | unreviewed | `h_DelayThreadCB` | `0x68da9e36` |
 | `sceKernelDeleteMbx` | implemented | - | dedicated | partial | `h_DeleteMbx` | `0x86255ada` |
-| `sceKernelDeleteTlspl` | missing | #339 | missing | - | - | - |
+| `sceKernelDeleteTlspl` | implemented | #341 | dedicated | unreviewed | `h_DeleteTlspl` | `0x32bf938e` |
 | `sceKernelEnableSubIntr` | implemented | #341 | dedicated | unreviewed | `h_EnableSubIntr` | `0xfb8e22ec` |
-| `sceKernelFreeTlspl` | missing | #339 | missing | - | - | - |
-| `sceKernelGetTlsAddr` | missing | #339 | missing | - | - | - |
+| `sceKernelFreeTlspl` | implemented | #341 | dedicated | unreviewed | `h_FreeTlspl` | `0x4a719fb2` |
+| `sceKernelGetTlsAddr` | implemented | #341 | dedicated | unreviewed | `h_GetTlsAddr` | `0xfa835cde` |
 | `sceKernelLockLwMutex` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0xbea46419` |
 | `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0x1fc64e09` |
 | `sceKernelLockMutex` | implemented | #341 | dedicated | unreviewed | `h_LockMutex` | `0xb011b11f` |
@@ -85,7 +85,7 @@ Open-owner counts:
 | `sceKernelReceiveMsgPipe` | missing | #339 | missing | - | - | - |
 | `sceKernelReceiveMsgPipeCB` | missing | #339 | missing | - | - | - |
 | `sceKernelReferMbxStatus` | implemented | - | dedicated | partial | `h_ReferMbxStatus` | `0xa8e8c846` |
-| `sceKernelReferTlsplStatus` | missing | #339 | missing | - | - | - |
+| `sceKernelReferTlsplStatus` | implemented | #341 | dedicated | unreviewed | `h_ReferTlsplStatus` | `0x721067f3` |
 | `sceKernelRegisterSubIntrHandler` | implemented | #341 | dedicated | unreviewed | `h_RegisterSubIntr` | `0xca04a2b9` |
 | `sceKernelResumeDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_ResumeDispatchThread` | `0x27e22ec2` |
 | `sceKernelSendMbx` | implemented | - | dedicated | partial | `h_SendMbx` | `0xe9b3061e` |
