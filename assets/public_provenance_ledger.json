@@ -6150,7 +6150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2cd2138abec0fab4298cdf2791d650f8dd4b16c5fb0b82f7575bb82e66dd9cae"
+      "sha256": "a98ee7b0457d18634c99e67e7fb96a2f2384d0d45d2c1d83f081c5c155d743ea"
     },
     {
       "path": "tools/mem_debug.py",
@@ -8017,7 +8017,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "42086b2c6d7c9b2baa1997f21c14c78e7987915945e9022ceae07578776b3b5e"
+      "sha256": "5dcfd594f8130fb907d023eea614af52b236642ecef12a8a29772161ab118c50"
     },
     {
       "path": "tools/test_manager_safety.ps1",
