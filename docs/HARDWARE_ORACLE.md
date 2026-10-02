@@ -578,6 +578,41 @@ Violating these makes the oracle lie:
 
 ## 8. Agent execution contract
 
+### Probe teardown for repeated launches
+
+A probe can leave child threads asleep or runnable after its records finish. Those
+threads share PSPLink's kernel namespace with the next probe: names can collide,
+priorities can change scheduling, and thread stacks consume partition memory. The
+probe's main thread also remains parked until PSPLink stops and unloads its module.
+
+Do not end the probe's main thread with `sceKernelExitDeleteThread(0)`. That bypasses
+the PSPSDK CRT exit path. The observed result was a broken PSPLink
+`modstun` handshake (`Module Stop/Unload 0x00000000/` was not reported), which
+escalated cleanup. The exact kernel transition is not established; the supported
+path leaves main alive for PSPLink to stop and unload.
+
+The probe now runs one ordered teardown after its case records: write back the data
+cache; terminate, delete, and verify its created child threads; delete tracked kernel
+objects and registered sub-interrupts; release audio channels and close descriptors;
+free partition blocks; restore CPU/bus clocks, captured FCR31, and any pending
+interrupt-resume tokens; remove tracked disposable `host0:` files; write and read a
+64-byte `host0:` round-trip file for the host; append the completion marker last; and
+park main in `sceKernelSleepThread()`. The case result log and round-trip file remain
+available until the host has captured and checked them.
+
+`tools/psp_oracle/run_psplink.py` compares three PSPLink snapshots around each launch.
+It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
+single-module query used for the unload handshake. S0 records threads,
+per-partition total/largest free bytes, and modules before load.
+S1 records them after the completion marker and before unload; `modinfo <uid> t`
+must show that the probe's only remaining thread is its main thread. After the
+`modstun` stop/unload handshake, S2 must match S0 for thread UID/name pairs, memory
+bytes, and module UID/name pairs, with the probe UID absent. The runner also requires
+a qualified shell, clean `exprint`, and the host0 round-trip. A failed or malformed
+check triggers the existing single L2 soft-reset fallback. **Repeated-launch PSPLink
+teardown hardware acceptance** remains `NOT_RUN` and is in the works under #352; source
+and unit-test success do not establish that a qualified console passes these checks.
+
 An AI agent may own the host-side work. It must **never**:
 
 - install or flash custom firmware, or update console firmware;
