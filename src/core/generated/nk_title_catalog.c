@@ -83,8 +83,15 @@ void nk_title_catalog_clear_overlay(void) {
     nk_title_catalog_unlock();
 }
 
-const NkTitleEntry *nk_title_catalog_get_overlay(void) {
+const NkTitleEntry *nk_title_catalog_get_overlay_locked(void) {
     return s_private_overlay_count > 0 ? s_private_overlay_entries[s_private_overlay_count - 1] : NULL;
+}
+
+const NkTitleEntry *nk_title_catalog_get_overlay(void) {
+    nk_title_catalog_lock();
+    const NkTitleEntry *entry = nk_title_catalog_get_overlay_locked();
+    nk_title_catalog_unlock();
+    return entry;
 }
 
 static const NkModuleDefinition s_modules_title_4[] = {
@@ -248,7 +255,7 @@ static void normalize_disc_id(const char *src, char *dst, size_t dst_size) {
     dst[d] = '\0';
 }
 
-const NkTitleEntry *nk_title_catalog_find_by_disc_id(const char *disc_id) {
+const NkTitleEntry *nk_title_catalog_find_by_disc_id_locked(const char *disc_id) {
     if (!disc_id || !*disc_id) return NULL;
     char norm[32];
     normalize_disc_id(disc_id, norm, sizeof(norm));
@@ -299,7 +306,14 @@ const NkTitleEntry *nk_title_catalog_find_by_disc_id(const char *disc_id) {
     return NULL;
 }
 
-const NkTitleEntry *nk_title_catalog_find_by_id(const char *title_id) {
+const NkTitleEntry *nk_title_catalog_find_by_disc_id(const char *disc_id) {
+    nk_title_catalog_lock();
+    const NkTitleEntry *entry = nk_title_catalog_find_by_disc_id_locked(disc_id);
+    nk_title_catalog_unlock();
+    return entry;
+}
+
+const NkTitleEntry *nk_title_catalog_find_by_id_locked(const char *title_id) {
     if (!title_id || !*title_id) return NULL;
     for (int i = s_private_overlay_count - 1; i >= 0; i--) {
         const NkTitleEntry *ov = s_private_overlay_entries[i];
@@ -313,6 +327,13 @@ const NkTitleEntry *nk_title_catalog_find_by_id(const char *title_id) {
         }
     }
     return NULL;
+}
+
+const NkTitleEntry *nk_title_catalog_find_by_id(const char *title_id) {
+    nk_title_catalog_lock();
+    const NkTitleEntry *entry = nk_title_catalog_find_by_id_locked(title_id);
+    nk_title_catalog_unlock();
+    return entry;
 }
 
 /* Generic launch-resolution candidate contract (#366): see the header

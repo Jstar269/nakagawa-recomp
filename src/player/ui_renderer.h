@@ -37,8 +37,18 @@ void ui_font_shutdown(void);
 bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
                                     const SDL_Event *event);
 bool ui_renderer_art_pending(void);
+
+/* Reclaim ISO-art jobs whose completion event could not be queued, so their
+ * card retries instead of staying pending for the rest of the session. Call
+ * once per UI iteration. */
+void ui_renderer_recover_lost_art_handoffs(void);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 unsigned ui_renderer_test_art_attempt_count(void);
+/* Make every ISO-art completion event behave as if SDL refused it, so the
+ * reclaim path is exercised by the scripted harness. */
+void ui_renderer_test_drop_art_events(bool drop);
+bool ui_renderer_test_saturate_art_cache(SDL_Renderer *renderer,
+                                         const char *iso_path);
 #endif
 
 /* Pixel-density multiplier applied to raster point sizes (crisper type on

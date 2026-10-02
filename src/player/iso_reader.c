@@ -145,8 +145,8 @@ NkIconStatus nk_iso_read_image_entry(const char *iso_path, const char *rel_path,
     return status;
 }
 
-void nk_iso_read_game_art(const char *iso_path, NkIsoImageData *icon,
-                          NkIsoImageData *background) {
+void nk_iso_read_game_art(const char *iso_path, unsigned wanted,
+                          NkIsoImageData *icon, NkIsoImageData *background) {
     if (icon) {
         memset(icon, 0, sizeof(*icon));
         icon->status = NK_ICON_ERR_INVALID_PARAM;
@@ -156,18 +156,25 @@ void nk_iso_read_game_art(const char *iso_path, NkIsoImageData *icon,
         background->status = NK_ICON_ERR_INVALID_PARAM;
     }
     if (!iso_path || !iso_path[0] || !icon || !background) return;
+    bool want_icon = (wanted & NK_ISO_ART_ICON) != 0;
+    bool want_background = (wanted & NK_ISO_ART_PICTURE) != 0;
+    if (!want_icon && !want_background) return;
 
     NkIsoReader *reader = nk_iso_reader_open(iso_path);
     if (!reader) {
-        icon->status = NK_ICON_ERR_MISSING;
-        background->status = NK_ICON_ERR_MISSING;
+        if (want_icon) icon->status = NK_ICON_ERR_MISSING;
+        if (want_background) background->status = NK_ICON_ERR_MISSING;
         return;
     }
-    icon->status = nk_iso_read_image_with_reader(
-        reader, "PSP_GAME/ICON0.PNG", &icon->data, &icon->size,
-        &icon->width, &icon->height);
-    background->status = nk_iso_read_image_with_reader(
-        reader, "PSP_GAME/PIC1.PNG", &background->data,
-        &background->size, &background->width, &background->height);
+    if (want_icon) {
+        icon->status = nk_iso_read_image_with_reader(
+            reader, "PSP_GAME/ICON0.PNG", &icon->data, &icon->size,
+            &icon->width, &icon->height);
+    }
+    if (want_background) {
+        background->status = nk_iso_read_image_with_reader(
+            reader, "PSP_GAME/PIC1.PNG", &background->data,
+            &background->size, &background->width, &background->height);
+    }
     nk_iso_reader_close(reader);
 }

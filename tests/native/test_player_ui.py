@@ -77,7 +77,7 @@ def png_pixel(red: int, green: int, blue: int) -> bytes:
     )
 
 
-def synthetic_art_iso(path: Path) -> None:
+def synthetic_art_iso(path: Path, *, include_picture: bool = True) -> None:
     sector_size = 2048
     image = bytearray(22 * sector_size)
 
@@ -116,16 +116,18 @@ def synthetic_art_iso(path: Path) -> None:
         record(b"\x00", 18, sector_size, True)
         + record(b"\x01", 17, sector_size, True)
         + record(b"ICON0.PNG;1", 19, len(png_pixel(50, 190, 120)), False)
-        + record(b"PIC1.PNG;1", 20, len(png_pixel(50, 100, 190)), False)
     )
+    picture_size = 0
+    if include_picture:
+        game_records += record(b"PIC1.PNG;1", 20, len(png_pixel(50, 100, 190)), False)
+        picture_size = len(png_pixel(50, 100, 190))
     image[17 * sector_size : 17 * sector_size + len(root_records)] = root_records
     image[18 * sector_size : 18 * sector_size + len(game_records)] = game_records
     image[19 * sector_size : 19 * sector_size + len(png_pixel(50, 190, 120))] = png_pixel(
         50, 190, 120
     )
-    image[20 * sector_size : 20 * sector_size + len(png_pixel(50, 100, 190))] = png_pixel(
-        50, 100, 190
-    )
+    if picture_size:
+        image[20 * sector_size : 20 * sector_size + picture_size] = png_pixel(50, 100, 190)
     path.write_bytes(image)
 
 
@@ -427,15 +429,20 @@ class NativePlayerUiTests(unittest.TestCase):
             ui_iso_path: Path | None = None
             art_mount_source: Path | None = None
             if art_iso is not None:
-                ui_iso_path = scratch / "source-owned-synthetic.iso"
-                synthetic_art_iso(ui_iso_path)
-                if art_iso == "unavailable":
-                    ui_iso_path.rename(scratch / "source-owned-synthetic.iso.offline")
-                elif art_iso == "late":
-                    art_mount_source = ui_iso_path
-                    ui_iso_path = scratch / "late-mounted-synthetic.iso"
-                elif art_iso != "available":
-                    raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
+                if art_iso == "saturated":
+                    for i in range(64):
+                        synthetic_art_iso(scratch / f"art_{i}.iso", include_picture=True)
+                    ui_iso_path = scratch / "art_%d.iso"
+                else:
+                    ui_iso_path = scratch / "source-owned-synthetic.iso"
+                    synthetic_art_iso(ui_iso_path, include_picture=art_iso != "icon-only")
+                    if art_iso == "unavailable":
+                        ui_iso_path.rename(scratch / "source-owned-synthetic.iso.offline")
+                    elif art_iso == "late":
+                        art_mount_source = ui_iso_path
+                        ui_iso_path = scratch / "late-mounted-synthetic.iso"
+                    elif art_iso not in ("available", "icon-only"):
+                        raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
             if stale_package:
                 synthetic_stale_package(runtime_root)
 
@@ -650,7 +657,11 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_one_title_offline_art_and_stale_package_stay_off_frame_path(self) -> None:
         # The counters are the load-bearing gate: package validation and ISO
-        # reads must never run on the UI thread, on any frame. The wall-clock
+        # reads must never run on the UI thread, on any frame.
+        # `package_validations` counts the UI-thread wrapper, so it is a proxy
+        # for the whole validation path: a regression that inlined the core
+        # call on the frame path would still leave it at zero, and only a
+        # sanitizer or an interactive profile would see that. The wall-clock
         # bounds below are deliberately generous because the headless
         # software renderer, not the product's GPU path, sets the absolute
         # per-frame floor here; they only reject the maintainer-reported shape
@@ -698,7 +709,14 @@ class NativePlayerUiTests(unittest.TestCase):
         # Synthetic icon art arrives without blocking the UI frame.
         self.assertTrue(has_icon_art(available["bmp"]))
 
-    def test_package_status_worker_and_catalog_reload_share_safe_state(self) -> None:
+    def test_package_status_worker_and_catalog_reload_do_not_deadlock_or_corrupt_status(
+        self,
+    ) -> None:
+        """Two threads share the title catalog: the worker validates a package
+        while the UI thread reloads the overlay 128 times. The load-bearing
+        claims are that both sides finish and that the status the worker read
+        is the one it stored; a data race between them is only visible to a
+        sanitizer, which hosted CI does not run."""
         run = self.run_player(
             "ready",
             wait_background=True,
@@ -707,7 +725,95 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertRegex(
             run["stdout"],
             r"\[PLAYER_UI_TEST\] catalog_reload result=PASS "
-            r"reloads=128 status_checks=128 status=\d+",
+            r"reloads=128 status_checks=128 status=1",
+        )
+
+    def test_exit_path_joins_iso_art_workers_and_tears_down_textures(self) -> None:
+        """ui_font_shutdown() is the only place the ISO-art workers are joined
+        and the only font/texture teardown. Every exit has to reach it, so the
+        launcher never destroys the SDL queue or renderer while a worker is
+        still inside it."""
+        run = self.run_player("ready", art_iso="available")
+        shutdown = re.findall(
+            r"\[PLAYER_UI_TEST\] font_shutdown art_jobs_drained=(\d+)", run["stdout"]
+        )
+        self.assertEqual(len(shutdown), 1, run["stdout"])
+
+    def test_iso_art_retry_rereads_only_the_image_that_is_still_missing(self) -> None:
+        """A disc with ICON0.PNG and no PIC1.PNG must not re-read its icon
+        (up to 1 MiB) on every retry: the attempt after the first asks only for
+        the picture it is still missing."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_ART_ATTEMPT=1", "WAIT_MS=1500"),
+            art_iso="icon-only",
+            wait_background=True,
+        )
+        self.assertTrue(has_icon_art(run["bmp"]), run["stdout"])
+        attempts = re.findall(
+            r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
+            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d) wanted=(\d)",
+            run["stdout"],
+        )
+        self.assertGreaterEqual(len(attempts), 2, run["stdout"])
+        self.assertEqual(attempts[0][2:], ("1", "0", "3"))
+        for attempt in attempts[1:]:
+            # 2 == NK_ISO_ART_PICTURE: the loaded icon is not read again.
+            self.assertEqual(attempt[2:], ("1", "0", "2"), run["stdout"])
+
+    def test_every_queued_title_claims_a_check_before_its_first_result(self) -> None:
+        """A title whose package status is not known yet must be claimed as
+        checking. Leaving it unclaimed shows "BUILD PACKAGE" for a title that
+        may already be prepared."""
+        run = self.run_player("library")
+        frame = run["frames"][0]  # type: ignore[index]
+        titles = int(frame["games"])
+        self.assertGreater(titles, 1, run["stdout"])
+        self.assertEqual(frame["titles_unclaimed"], "0", run["stdout"])
+        self.assertEqual(frame["titles_pending"], str(titles), run["stdout"])
+
+    def test_lost_worker_events_are_reclaimed_instead_of_stalling_the_card(self) -> None:
+        """A worker whose completion event never reaches the queue must not
+        leave its card pending for the session. With every push refused the
+        launcher still finishes both jobs, so the harness reaches its quit
+        instead of waiting on background work that can never finish."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=1200",),
+            art_iso="available",
+            stale_package=True,
+            wait_background=True,
+            env_extra={"NK_UI_TEST_DROP_WORKER_EVENT": "1"},
+        )
+        self.assertIn("ISO art for", run["stderr"])
+        self.assertIn("Package status for", run["stderr"])
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["running"], "0")
+        # The package job was applied from the worker result, so no title is
+        # left claiming a check that will never finish.
+        self.assertEqual(frames[-1]["titles_pending"], "0", run["stdout"])
+        self.assertEqual(frames[-1]["titles_unclaimed"], "0", run["stdout"])
+        self.assertEqual(frames[-1]["selected_package_status"], "3", run["stdout"])
+        # The art job was reclaimed, so the icon is retried rather than lost.
+        self.assertFalse(has_icon_art(run["bmp"]), run["stdout"])
+
+    def test_texture_cache_saturation_with_in_flight_jobs_does_not_double_free(
+        self,
+    ) -> None:
+        """When all 64 texture cache slots have in-flight art jobs, a new
+        request must return no slot rather than evicting and freeing a job whose
+        completion event is already in the SDL event queue. Evicting the in-flight
+        job would cause a use-after-free and double-free when its completion
+        event is subsequently delivered."""
+        run = self.run_player(
+            "ready",
+            ("SATURATE_ART_CACHE",),
+            art_iso="saturated",
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] saturate_art_cache result=PASS slots=64 delivered=64 overflow_refused=1",
+            run["stdout"],
         )
 
     def test_async_build_validation_enters_ready_library(self) -> None:

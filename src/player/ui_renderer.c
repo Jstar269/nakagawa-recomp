@@ -341,6 +341,13 @@ enum { PLAYER_UI_ART_EVENT_CODE = 0x55494152 };
 struct UiArtJob {
     SDL_Thread *thread;
     char iso_path[MAX_PATH_LEN];
+    /* Which library images this attempt still needs. A retry only re-reads the
+       images that are still missing, so a disc without PIC1.PNG never re-reads
+       its ICON0.PNG. */
+    unsigned wanted;
+    /* Set only when the completion event could not be queued; the UI thread
+       reclaims such a job instead of leaving the entry pending forever. */
+    SDL_AtomicInt handoff_failed;
     NkIconStatus icon_status;
     uint8_t *icon_bytes;
     size_t icon_size;
@@ -356,14 +363,29 @@ struct UiArtJob {
 static UiArtJob *s_art_jobs[GAME_TEXTURE_CACHE_SIZE];
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 static unsigned s_ui_test_art_attempt_count;
+static bool s_ui_test_drop_art_event;
+
+void ui_renderer_test_drop_art_events(bool drop) {
+    s_ui_test_drop_art_event = drop;
+}
 #endif
+
+static bool ui_art_push_completion(SDL_Event *event) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Models SDL refusing the push so the harness can prove the reclaim path.
+       The event must not be queued at all: a queued event the reclaim then
+       races would free a job the queue still owns. */
+    if (s_ui_test_drop_art_event) return false;
+#endif
+    return SDL_PushEvent(event) != 0;
+}
 
 static int SDLCALL ui_art_thread_main(void *userdata) {
     UiArtJob *job = (UiArtJob *)userdata;
     if (!job) return 1;
     NkIsoImageData icon;
     NkIsoImageData background;
-    nk_iso_read_game_art(job->iso_path, &icon, &background);
+    nk_iso_read_game_art(job->iso_path, job->wanted, &icon, &background);
     job->icon_status = icon.status;
     job->icon_bytes = icon.data;
     job->icon_size = icon.size;
@@ -379,7 +401,12 @@ static int SDLCALL ui_art_thread_main(void *userdata) {
     event.type = SDL_EVENT_USER;
     event.user.code = PLAYER_UI_ART_EVENT_CODE;
     event.user.data1 = job;
-    (void)SDL_PushEvent(&event);
+    if (!ui_art_push_completion(&event)) {
+        /* The decoded bytes stay valid; only the notification was lost. */
+        SDL_SetAtomicInt(&job->handoff_failed, 1);
+        fprintf(stderr, "[PLAYER] ISO art for %s could not be queued; "
+                "the launcher will retry it.\n", job->iso_path);
+    }
     return 0;
 }
 
@@ -391,8 +418,11 @@ static void ui_art_set_retry_deadline(GameTextureCacheEntry *entry) {
 static bool ui_start_art_job(GameTextureCacheEntry *entry,
                              const char *iso_path) {
     if (!entry || !iso_path || !iso_path[0] || entry->job ||
-        (entry->icon_attempted && entry->pic1_attempted) ||
         SDL_GetTicksNS() < entry->retry_after_ns) return false;
+    unsigned wanted = 0;
+    if (!entry->icon_attempted) wanted |= NK_ISO_ART_ICON;
+    if (!entry->pic1_attempted) wanted |= NK_ISO_ART_PICTURE;
+    if (!wanted) return false;
     int slot = -1;
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
         if (!s_art_jobs[i]) {
@@ -406,6 +436,7 @@ static bool ui_start_art_job(GameTextureCacheEntry *entry,
         ui_art_set_retry_deadline(entry);
         return false;
     }
+    job->wanted = wanted;
     int path_length = snprintf(job->iso_path, sizeof(job->iso_path), "%s",
                                iso_path);
     if (path_length <= 0 || (size_t)path_length >= sizeof(job->iso_path)) {
@@ -435,6 +466,25 @@ static void ui_art_job_release(UiArtJob *job) {
     free(job);
 }
 
+/* Stop owning a job the completion event will never deliver. */
+static void ui_art_job_discard(UiArtJob *job) {
+    if (!job) return;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i] == job) {
+            s_art_jobs[i] = NULL;
+            break;
+        }
+    }
+    ui_art_job_release(job);
+}
+
+static GameTextureCacheEntry *ui_game_texture_entry_for_job(UiArtJob *job) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_game_textures[i].job == job) return &s_game_textures[i];
+    }
+    return NULL;
+}
+
 static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
     if (!iso_path || !*iso_path) return NULL;
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
@@ -449,18 +499,32 @@ static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
             return &s_game_textures[i];
         }
     }
-    if (s_game_textures[0].icon_tex) {
-        SDL_DestroyTexture(s_game_textures[0].icon_tex);
-        s_game_textures[0].icon_tex = NULL;
+    /* Every slot is claimed. Reuse the first one with no art job in flight:
+       evicting a slot whose job is still running would drop the decoded art
+       with no badge, log or user-visible boundary. If all slots have jobs in
+       flight, return no slot; the card will retry on a later frame. */
+    int reused = -1;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (!s_game_textures[i].job) {
+            reused = i;
+            break;
+        }
     }
-    if (s_game_textures[0].pic1_tex) {
-        SDL_DestroyTexture(s_game_textures[0].pic1_tex);
-        s_game_textures[0].pic1_tex = NULL;
+    if (reused < 0) {
+        return NULL;
     }
-    memset(&s_game_textures[0], 0, sizeof(s_game_textures[0]));
-    strncpy(s_game_textures[0].iso_path, iso_path, sizeof(s_game_textures[0].iso_path) - 1);
-    s_game_textures[0].iso_path[sizeof(s_game_textures[0].iso_path) - 1] = '\0';
-    return &s_game_textures[0];
+    if (s_game_textures[reused].icon_tex) {
+        SDL_DestroyTexture(s_game_textures[reused].icon_tex);
+        s_game_textures[reused].icon_tex = NULL;
+    }
+    if (s_game_textures[reused].pic1_tex) {
+        SDL_DestroyTexture(s_game_textures[reused].pic1_tex);
+        s_game_textures[reused].pic1_tex = NULL;
+    }
+    memset(&s_game_textures[reused], 0, sizeof(s_game_textures[reused]));
+    strncpy(s_game_textures[reused].iso_path, iso_path, sizeof(s_game_textures[reused].iso_path) - 1);
+    s_game_textures[reused].iso_path[sizeof(s_game_textures[reused].iso_path) - 1] = '\0';
+    return &s_game_textures[reused];
 }
 
 static void ui_game_textures_shutdown(void) {
@@ -482,13 +546,24 @@ static void ui_game_textures_shutdown(void) {
 }
 
 void ui_font_shutdown(void) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    unsigned drained_jobs = 0;
+#endif
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
         if (s_art_jobs[i]) {
             ui_art_job_release(s_art_jobs[i]);
             s_art_jobs[i] = NULL;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+            drained_jobs++;
+#endif
         }
     }
     ui_game_textures_shutdown();
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Every exit path has to reach this: it is the only place the ISO art
+       workers are joined and the only font/texture teardown. */
+    printf("[PLAYER_UI_TEST] font_shutdown art_jobs_drained=%u\n", drained_jobs);
+#endif
     if (!g_font.attempted) return;
     for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
         if (g_font.entries[i].tex) {
@@ -515,19 +590,16 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
         event->user.code != PLAYER_UI_ART_EVENT_CODE) return false;
     UiArtJob *job = (UiArtJob *)event->user.data1;
     if (!job) return true;
+    bool found = false;
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
         if (s_art_jobs[i] == job) {
             s_art_jobs[i] = NULL;
+            found = true;
             break;
         }
     }
-    GameTextureCacheEntry *entry = NULL;
-    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
-        if (s_game_textures[i].job == job) {
-            entry = &s_game_textures[i];
-            break;
-        }
-    }
+    if (!found) return true;
+    GameTextureCacheEntry *entry = ui_game_texture_entry_for_job(job);
     if (job->thread) {
         SDL_WaitThread(job->thread, NULL);
         job->thread = NULL;
@@ -575,11 +647,12 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     s_ui_test_art_attempt_count++;
     printf("[PLAYER_UI_TEST] art_attempt index=%u completed_ns=%llu "
-           "icon_loaded=%d pic1_loaded=%d\n",
+           "icon_loaded=%d pic1_loaded=%d wanted=%u\n",
            s_ui_test_art_attempt_count,
            (unsigned long long)SDL_GetTicksNS(),
            entry && entry->icon_attempted ? 1 : 0,
-           entry && entry->pic1_attempted ? 1 : 0);
+           entry && entry->pic1_attempted ? 1 : 0,
+           job->wanted);
 #endif
     free(job->icon_bytes);
     free(job->pic1_bytes);
@@ -594,9 +667,95 @@ bool ui_renderer_art_pending(void) {
     return false;
 }
 
+void ui_renderer_recover_lost_art_handoffs(void) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        UiArtJob *job = s_art_jobs[i];
+        if (!job || !SDL_GetAtomicInt(&job->handoff_failed)) continue;
+        GameTextureCacheEntry *entry = ui_game_texture_entry_for_job(job);
+        if (entry) {
+            /* Leave the attempt flags clear so the cooldown retries the read
+               rather than presenting a missing image as a decided answer. */
+            entry->job = NULL;
+            ui_art_set_retry_deadline(entry);
+        }
+        ui_art_job_discard(job);
+    }
+}
+
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 unsigned ui_renderer_test_art_attempt_count(void) {
     return s_ui_test_art_attempt_count;
+}
+
+bool ui_renderer_test_saturate_art_cache(SDL_Renderer *renderer,
+                                         const char *iso_path) {
+    if (!renderer) return false;
+    const char *base_path = (iso_path && iso_path[0]) ? iso_path : "synthetic.iso";
+
+    /* Drain any pre-existing background art jobs and queued events */
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i]) {
+            ui_art_job_release(s_art_jobs[i]);
+            s_art_jobs[i] = NULL;
+        }
+    }
+    ui_game_textures_shutdown();
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        /* Discard startup events */
+    }
+
+    /* Saturate all 64 texture slots with in-flight art jobs */
+    unsigned saturated = 0;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        char path[512];
+        if (strchr(base_path, '%')) {
+            snprintf(path, sizeof(path), base_path, i);
+        } else {
+            snprintf(path, sizeof(path), "%s#slot_%d", base_path, i);
+        }
+        GameTextureCacheEntry *entry = ui_get_game_texture_entry(path);
+        if (entry && ui_start_art_job(entry, path)) {
+            saturated++;
+        }
+    }
+    if (saturated != GAME_TEXTURE_CACHE_SIZE) {
+        printf("[PLAYER_UI_TEST] saturate_art_cache result=FAIL started=%u expected=%u\n",
+               saturated, (unsigned)GAME_TEXTURE_CACHE_SIZE);
+        return false;
+    }
+
+    /* Request an additional slot when all 64 slots are busy with in-flight jobs.
+       Fixed code returns NULL ("no slot") and preserves all live jobs.
+       Unfixed code returned slot 0 and called ui_art_job_discard(),
+       freeing the job while its completion event was pending in the SDL queue. */
+    char overflow_path[512];
+    snprintf(overflow_path, sizeof(overflow_path), "%s#overflow", base_path);
+    GameTextureCacheEntry *overflow = ui_get_game_texture_entry(overflow_path);
+    bool overflow_refused = (overflow == NULL);
+
+    /* Wait for all workers to finish reading and queue their completion events */
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i] && s_art_jobs[i]->thread) {
+            SDL_WaitThread(s_art_jobs[i]->thread, NULL);
+            s_art_jobs[i]->thread = NULL;
+        }
+    }
+
+    /* Deliver the completion events.
+       In unfixed code, the discarded job's event causes a Use-After-Free and Double-Free crash.
+       In fixed code, all events are safely delivered and jobs freed cleanly once. */
+    unsigned delivered = 0;
+    while (SDL_PollEvent(&ev)) {
+        if (ui_renderer_handle_async_event(renderer, &ev)) {
+            delivered++;
+        }
+    }
+
+    bool pass = overflow_refused && (delivered >= GAME_TEXTURE_CACHE_SIZE);
+    printf("[PLAYER_UI_TEST] saturate_art_cache result=%s slots=%u delivered=%u overflow_refused=%d\n",
+           pass ? "PASS" : "FAIL", saturated, delivered, overflow_refused ? 1 : 0);
+    return pass;
 }
 #endif
 

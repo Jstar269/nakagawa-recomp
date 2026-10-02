@@ -2977,6 +2977,17 @@ static bool package_validation_cache_get(
     char identity_digest[65];
     if (!package_completion_identity(package_root, identity_digest) ||
         strcmp(identity_digest, cached.identity_digest) != 0) {
+        /* The completion this entry was validated against has changed, so the
+           entry is no longer a cache hit. Drop it, but only when it is still the
+           entry this read observed: a concurrent validation may have replaced
+           it with a result for the current completion. */
+        package_validation_cache_lock();
+        if (s_package_validation_cache.valid &&
+            strcmp(s_package_validation_cache.identity_digest,
+                   identity_digest) == 0) {
+            s_package_validation_cache.valid = false;
+        }
+        package_validation_cache_unlock();
         return false;
     }
     *out_info = cached.info;
@@ -4096,8 +4107,8 @@ static bool package_catalog_identity_matches(const char *disc_id,
                                             const char *title_id,
                                             uint64_t *catalog_epoch) {
     nk_title_catalog_lock();
-    const NkTitleEntry *by_disc = nk_title_catalog_find_by_disc_id(disc_id);
-    const NkTitleEntry *by_id = nk_title_catalog_find_by_id(title_id);
+    const NkTitleEntry *by_disc = nk_title_catalog_find_by_disc_id_locked(disc_id);
+    const NkTitleEntry *by_id = nk_title_catalog_find_by_id_locked(title_id);
     bool matches = by_disc && by_id && by_disc == by_id;
     if (catalog_epoch) {
         *catalog_epoch = nk_title_catalog_epoch_locked();

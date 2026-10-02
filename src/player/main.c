@@ -569,7 +569,8 @@ enum {
     PLAYER_UI_TEST_ACTION_ASSERT_VIEW = -20260929,
     PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING = -20260930,
     PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT = -20261001,
-    PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO = -20261002
+    PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO = -20261002,
+    PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE = -20261003
 };
 
 static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
@@ -675,6 +676,11 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
     if (strcmp(token, "MOUNT_ART_ISO") == 0) {
         event->type = SDL_EVENT_USER;
         event->user.code = PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO;
+        return 1;
+    }
+    if (strcmp(token, "SATURATE_ART_CACHE") == 0) {
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE;
         return 1;
     }
     if (strncmp(token, "ASSERT_VIEW=", 12) == 0) {
@@ -853,6 +859,26 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     }
     SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
     bool badge_valid = ui_last_status_badge_rect(&badge);
+    /* Library-wide package-claim census. A title whose package status is not
+       known yet has to be claimed as checking; leaving it unclaimed is what
+       makes a card offer a build for a package that may already exist. */
+    int titles_pending = 0;
+    int titles_unclaimed = 0;
+    for (int i = 0; i < app->game_count && i < MAX_LIBRARY_GAMES; i++) {
+        const PlayerRuntimePackageCacheEntry *cached =
+            &app->runtime_package_cache[i];
+        const GameRecord *cached_game = &app->games[i];
+        bool same_game = strcmp(cached->disc_id, cached_game->disc_id) == 0 &&
+                         strcmp(cached->title_id, cached_game->title_id) == 0 &&
+                         strcmp(cached->selected_executable,
+                                cached_game->selected_executable) == 0;
+        if (same_game && cached->status_valid) continue;
+        if (same_game && cached->validation_pending) {
+            titles_pending++;
+        } else {
+            titles_unclaimed++;
+        }
+    }
     int settings_two_col = app->active_view == VIEW_SETTINGS
         ? (player_settings_uses_two_columns(app->window_width,
                                              app->window_height) ? 1 : 0) : -1;
@@ -866,6 +892,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "input_scope=%s input_titles=%d input_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
            "selected_runtime=%d selected_package_status=%d games=%d "
+           "titles_pending=%d titles_unclaimed=%d "
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
            "font=%s font_reason=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
@@ -900,7 +927,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            selected && selected->is_prepared ? 1 : 0,
            selected && selected->assets_staged ? 1 : 0,
            selected && player_app_cached_game_has_runtime(app, selected) ? 1 : 0,
-           (int)package_status, app->game_count,
+           (int)package_status, app->game_count, titles_pending, titles_unclaimed,
            app->prerequisites.items.count,
            (unsigned long long)app->prerequisites.total_bytes,
            app->is_game_running ? 1 : 0,
@@ -947,6 +974,10 @@ typedef struct {
     bool identity_valid;
     bool runtime_available;
     bool identity_changed_during_validation;
+    /* Set only when the completion event could not be queued. The UI thread
+       polls this so a lost hand-off finishes the job instead of leaving the
+       card pending for the rest of the session. */
+    SDL_AtomicInt handoff_failed;
     char runtime_root[MAX_PATH_LEN];
     char showcase_root[MAX_PATH_LEN];
     char prior_identity[65];
@@ -969,15 +1000,25 @@ static unsigned s_ui_test_catalog_reload_count;
 static unsigned s_ui_test_catalog_reload_completed;
 static bool s_ui_test_catalog_reload_started;
 static bool s_ui_test_catalog_reload_failed;
+static bool ui_test_drop_worker_event;
 #endif
+
+static bool player_package_status_push_completion(SDL_Event *event) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Models SDL refusing the push so the harness can prove the reclaim path.
+       The event must not be queued at all: a queued event the reclaim then
+       races would free a job the queue still owns. */
+    if (ui_test_drop_worker_event) return false;
+#endif
+    return SDL_PushEvent(event) != 0;
+}
 
 static int SDLCALL player_package_status_thread_main(void *userdata) {
     PlayerPackageStatusJob *job = (PlayerPackageStatusJob *)userdata;
     if (!job) return 1;
     char default_root[NK_MAX_PATH];
     const char *root = NULL;
-    if (strncmp(job->game.title_id, "showcase-", 9) == 0 &&
-        job->showcase_root[0]) {
+    if (player_game_is_showcase(&job->game) && job->showcase_root[0]) {
         root = job->showcase_root;
     } else if (job->runtime_root[0]) {
         root = job->runtime_root;
@@ -994,54 +1035,65 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
         job->identity_valid = true;
         snprintf(job->package_identity, sizeof(job->package_identity), "%s",
                  before_identity);
-        goto push_result;
-    }
-
-    if (root) {
+    } else if (root) {
         job->status = nk_launch_validate_runtime_package(
             root, &job->game, NULL, job->reason, sizeof(job->reason));
         job->runtime_available = job->status == NK_RUNTIME_PACKAGE_OK ||
             (job->status == NK_RUNTIME_PACKAGE_MISSING &&
              !job->game.is_experimental &&
              nk_launch_runtime_available(root, job->game.title_id));
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (job->catalog_test_start && job->catalog_test_done) {
-            for (unsigned i = 0; i < job->catalog_test_repetitions; i++) {
-                (void)SDL_WaitSemaphore(job->catalog_test_start);
-                NkRuntimePackageStatus repeated_status =
-                    nk_launch_validate_runtime_package(
-                        root, &job->game, NULL, NULL, 0);
-                if (repeated_status != job->status) {
-                    job->catalog_test_status_mismatch = true;
-                }
-                job->catalog_test_status_checks++;
-                (void)SDL_SignalSemaphore(job->catalog_test_done);
-            }
-        }
-#endif
     } else {
         job->status = NK_RUNTIME_PACKAGE_MISSING;
         snprintf(job->reason, sizeof(job->reason),
                  "Per-user data directory is unavailable; package discovery cannot run.");
     }
 
-    char after_identity[65] = "";
-    bool after_valid = root && nk_launch_runtime_package_cache_identity(
-        root, &job->game, after_identity);
-    job->identity_valid = after_valid;
-    if (after_valid) {
-        snprintf(job->package_identity, sizeof(job->package_identity), "%s",
-                 after_identity);
-        job->identity_changed_during_validation = before_valid &&
-            strcmp(before_identity, after_identity) != 0;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Every exit below reaches this loop, including the warm-cache shortcut
+       above, so the UI thread's reload hand-off can never wait for a
+       repetition this worker would skip. */
+    if (job->catalog_test_start && job->catalog_test_done) {
+        for (unsigned i = 0; i < job->catalog_test_repetitions; i++) {
+            (void)SDL_WaitSemaphore(job->catalog_test_start);
+            NkRuntimePackageStatus repeated_status = job->status;
+            if (root) {
+                repeated_status = nk_launch_validate_runtime_package(
+                    root, &job->game, NULL, NULL, 0);
+            }
+            if (repeated_status != job->status) {
+                job->catalog_test_status_mismatch = true;
+            }
+            job->catalog_test_status_checks++;
+            (void)SDL_SignalSemaphore(job->catalog_test_done);
+        }
     }
-push_result:
+#endif
+
+    if (!job->status_unchanged) {
+        char after_identity[65] = "";
+        bool after_valid = root && nk_launch_runtime_package_cache_identity(
+            root, &job->game, after_identity);
+        job->identity_valid = after_valid;
+        if (after_valid) {
+            snprintf(job->package_identity, sizeof(job->package_identity), "%s",
+                     after_identity);
+            job->identity_changed_during_validation = before_valid &&
+                strcmp(before_identity, after_identity) != 0;
+        }
+    }
     SDL_Event event;
     memset(&event, 0, sizeof(event));
     event.type = SDL_EVENT_USER;
     event.user.code = PLAYER_PACKAGE_STATUS_EVENT_CODE;
     event.user.data1 = job;
-    (void)SDL_PushEvent(&event);
+    if (!player_package_status_push_completion(&event)) {
+        /* The result is computed and stays valid; only the notification was
+           lost. Publish that fact and let the UI thread finish the job. */
+        SDL_SetAtomicInt(&job->handoff_failed, 1);
+        fprintf(stderr, "[PLAYER] Package status for %s could not be queued; "
+                "the launcher will apply it from the worker result.\n",
+                job->game.disc_id);
+    }
     return 0;
 }
 
@@ -1052,6 +1104,20 @@ static void player_package_status_queue_game(PlayerApp *app, int game_index,
     if (!app || game_index < 0 || game_index >= app->game_count) return;
     requested[game_index] = true;
     if (force) force_requested[game_index] = true;
+    /* A queued-but-not-yet-started title has no status of its own. Claiming it
+       as checking keeps the card from offering a build for a package that may
+       already be prepared; a title that already has a status keeps it, so the
+       BUILD/REBUILD actions do not blink away on every rescan. */
+    const PlayerRuntimePackageCacheEntry *cached =
+        &app->runtime_package_cache[game_index];
+    const GameRecord *game = &app->games[game_index];
+    bool same_game = strcmp(cached->disc_id, game->disc_id) == 0 &&
+                     strcmp(cached->title_id, game->title_id) == 0 &&
+                     strcmp(cached->selected_executable,
+                            game->selected_executable) == 0;
+    if (!same_game || !cached->status_valid) {
+        player_app_runtime_package_cache_mark_pending(app, game_index);
+    }
 }
 
 static void player_package_status_queue_all(PlayerApp *app,
@@ -1270,6 +1336,22 @@ static void player_package_status_finish(PlayerApp *app,
     *job_slot = NULL;
 }
 
+/* A worker that could not queue its completion event has no other way to
+   announce it, so the UI thread finishes the job from the result the worker
+   already computed. Ignoring this would leave the card claiming
+   "CHECKING PACKAGE..." for the rest of the session with no job slot free. */
+static void player_package_status_recover_lost_handoff(
+    PlayerApp *app,
+    PlayerPackageStatusJob **job_slot,
+    bool requested[MAX_LIBRARY_GAMES], bool force_requested[MAX_LIBRARY_GAMES],
+    char build_check_disc_id[MAX_DISC_ID_LEN],
+    bool *build_check_pending) {
+    if (!app || !job_slot || !*job_slot) return;
+    if (!SDL_GetAtomicInt(&(*job_slot)->handoff_failed)) return;
+    player_package_status_finish(app, job_slot, requested, force_requested,
+                                 build_check_disc_id, build_check_pending);
+}
+
 typedef struct {
     SDL_Thread *thread;
     SDL_Mutex *mutex;
@@ -1323,9 +1405,9 @@ static bool player_copy_staging_roots(
         }
     } else {
         const NkTitleEntry *by_disc = game->disc_id[0]
-            ? nk_title_catalog_find_by_disc_id(game->disc_id) : NULL;
+            ? nk_title_catalog_find_by_disc_id_locked(game->disc_id) : NULL;
         const NkTitleEntry *by_id = game->title_id[0]
-            ? nk_title_catalog_find_by_id(game->title_id) : NULL;
+            ? nk_title_catalog_find_by_id_locked(game->title_id) : NULL;
         if (!by_disc && !by_id) {
             nk_title_catalog_unlock();
             return true;
@@ -2132,6 +2214,13 @@ int main(int argc, char *argv[]) {
         const char *fake_running = getenv("NK_UI_TEST_GAME_RUNNING");
         ui_test_fake_game_running = ui_test_mode && fake_running && fake_running[0];
     }
+    if (ui_test_mode && getenv("NK_UI_TEST_DROP_WORKER_EVENT")) {
+        /* Model SDL refusing a worker completion push, so the launcher's
+           reclaim path is exercised by the same harness that drives the real
+           event loop. */
+        ui_test_drop_worker_event = true;
+        ui_renderer_test_drop_art_events(true);
+    }
     if ((s_ui_test_catalog_reload_count > 0) !=
         (s_ui_test_catalog_reload_path &&
          s_ui_test_catalog_reload_path[0])) {
@@ -2744,9 +2833,9 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
                     SDL_GetError());
             if (ui_test_target) SDL_DestroyTexture(ui_test_target);
+            ui_font_shutdown();
             SDL_DestroyRenderer(renderer);
             SDL_DestroyWindow(window);
-            ui_font_shutdown();
             SDL_Quit();
             return 1;
         }
@@ -2858,6 +2947,14 @@ int main(int argc, char *argv[]) {
     }
 #endif
     while (running && !app.should_quit) {
+        /* A worker that could not queue its own completion has no other way
+           to report it; apply its result before anything reads the pending
+           state this frame. */
+        player_package_status_recover_lost_handoff(
+            &app, &package_status_job, package_status_requested,
+            package_status_force_requested, build_check_disc_id,
+            &build_check_pending);
+        ui_renderer_recover_lost_art_handoffs();
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
         if (ui_test_mode) {
             uint64_t ui_test_now = SDL_GetTicks();
@@ -2918,6 +3015,11 @@ int main(int argc, char *argv[]) {
                         ui_test_failed = true;
                         ui_test_quit_queued = true;
                         running = false;
+                    }
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE) {
+                    if (!ui_renderer_test_saturate_art_cache(renderer, ui_test_iso_path)) {
+                        ui_test_failed = true;
                     }
                 } else if (scripted_event.type == SDL_EVENT_USER &&
                     scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_MS) {
@@ -3393,6 +3495,7 @@ int main(int argc, char *argv[]) {
         SDL_DestroyTexture(ui_test_target);
     }
 #endif
+    ui_font_shutdown();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

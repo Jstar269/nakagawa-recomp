@@ -74,6 +74,15 @@ uint64_t nk_title_catalog_epoch(void);
 uint64_t nk_title_catalog_epoch_locked(void);
 void nk_title_catalog_advance_epoch_locked(void);
 
+/* Lookup variants for callers that already hold the lock. The overlay
+ * registry can be rewritten by the manifest parser on another thread,
+ * so a reader must hold nk_title_catalog_lock() for the whole walk. The
+ * public find_by_* entry points take the lock themselves; a caller that
+ * holds it must use these instead (the lock is not recursive). */
+const NkTitleEntry *nk_title_catalog_find_by_disc_id_locked(const char *disc_id);
+const NkTitleEntry *nk_title_catalog_find_by_id_locked(const char *title_id);
+const NkTitleEntry *nk_title_catalog_get_overlay_locked(void);
+
 /* Runtime private overlay registration (for local private acceptance testing) */
 /* The registry holds POINTERS to overlay entries whose storage belongs
  * to the manifest parser. Clearing the registry has to release that
