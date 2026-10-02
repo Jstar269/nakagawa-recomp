@@ -2077,3 +2077,22 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Host0RemotePathTests(unittest.TestCase):
+    """A campaign PRX staged in a subdirectory is loaded by its host0-relative path."""
+
+    def test_subdirectory_prx_keeps_its_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prx = root / "ge-nan" / "nakagawa_psp_oracle.prx"
+            prx.parent.mkdir()
+            prx.write_bytes(b"\x00")
+            self.assertEqual(run_psplink_module._host0_remote_path(prx, root),
+                             "ge-nan/nakagawa_psp_oracle.prx")
+            flat = root / "fpu-vector.prx"
+            flat.write_bytes(b"\x00")
+            self.assertEqual(run_psplink_module._host0_remote_path(flat, root), "fpu-vector.prx")
+
+    def test_without_a_host0_root_the_bare_name_is_used(self) -> None:
+        self.assertEqual(run_psplink_module._host0_remote_path(Path("x/y.prx"), None), "y.prx")

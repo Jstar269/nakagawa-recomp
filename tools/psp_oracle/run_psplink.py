@@ -303,6 +303,17 @@ def _check_source_tree(source_commit: str) -> str | None:
     return None
 
 
+def _host0_remote_path(binary: Path, host0_root: object) -> str:
+    """The host0: path of a staged PRX, keeping its subdirectory under the root."""
+
+    if isinstance(host0_root, Path):
+        try:
+            return binary.resolve().relative_to(host0_root.resolve()).as_posix()
+        except ValueError:
+            pass
+    return binary.name
+
+
 def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
     """Return the source-owned probe log path for one campaign case."""
 
@@ -1217,7 +1228,9 @@ class PsplinkCampaignRunner:
                 run_started_ns = time.time_ns()
                 self.state = "RUN_CASE"
                 result = self._request(
-                    f"ldstart host0:/{case.binary.name}", case.timeout
+                    "ldstart host0:/"
+                    + _host0_remote_path(case.binary, getattr(self.transport, "host0_root", None)),
+                    case.timeout,
                 )
                 uid_match = self._MODULE_UID_RE.search(result[1])
                 module_uid = uid_match.group(1) if uid_match else None
