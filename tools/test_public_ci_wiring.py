@@ -203,6 +203,40 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("tools/provenance_record_gap.py --check", makefile)
         self.assertIn("python tools/provenance_record_gap.py --check", precommit)
 
+    def test_player_ui_regressions_ci_wiring(self) -> None:
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        native_start = ci.index("  native_tools:\n")
+        windows_start = ci.index("\n  windows_runtime:\n", native_start)
+        required_start = ci.index("\n  ci_required:\n", windows_start)
+        native_tools = ci[native_start:windows_start]
+        windows_runtime = ci[windows_start:required_start]
+
+        # Linux job native_tools wires player-ui-regressions headlessly with dummy/software SDL drivers
+        self.assertIn("Run native player UI regressions headlessly", native_tools)
+        self.assertIn("SDL_VIDEODRIVER: dummy", native_tools)
+        self.assertIn("SDL_RENDER_DRIVER: software", native_tools)
+        self.assertIn("make CC=gcc player-ui-regressions", native_tools)
+        sdl_step = native_tools.index("Build pinned SDL3 for headless Linux runtime")
+        regressions_step = native_tools.index("Run native player UI regressions headlessly")
+        self.assertLess(sdl_step, regressions_step)
+
+        # Windows job windows_runtime wires player-ui-regressions headlessly with dummy/software SDL drivers
+        self.assertIn("Run native player UI regressions headlessly on Windows", windows_runtime)
+        self.assertIn(
+            "mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions",
+            windows_runtime,
+        )
+        self.assertIn("SDL_VIDEODRIVER: dummy", windows_runtime)
+        self.assertIn("SDL_RENDER_DRIVER: software", windows_runtime)
+
+        # Makefile exposes player-ui-regressions target
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("player-ui-regressions: $(PLAYER_UI_TEST_EXE)", makefile)
+
+        # Docs document the headless UI regression gate
+        docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        self.assertIn("player-ui-regressions", docs)
+
 
 if __name__ == "__main__":
     unittest.main()

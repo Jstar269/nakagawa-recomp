@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f17e53db8ffa9db4376712e003d0fa98f4e070e92ebbc8c10edb7060cf04411"
+      "sha256": "9e693c15bc971f92ca11ac804ecbe9879d4976b6d01b69b574184e13b454a9bb"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -1057,7 +1057,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ea272b6ec2f7da93fb31dd80f7b6354d78fa60aa73644b7e496890d559bc0855"
+      "sha256": "33f906dfb0c4e2e865dfbbb3fdf9470c559eb2b89b0746f046c3efab187a9fa0"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5394,7 +5394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be1b51dacbd22077e9ccd4d2dfa42b92ba215d1f13ffda8a79d7d4ac280b2c21"
+      "sha256": "6fb9396544611d0904fec0981de3dc50e83fa3018cbb6949fab7b5420c2bad45"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -7163,7 +7163,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8b305804a1cc8dd6245bffe2a041ce75645e8c7cafc662a0d10d2b07e410fe5"
+      "sha256": "be4c05d3b2926a72a9f2c28acc65ede23fc7ccdac1f643212f80f80a761c60bc"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -8665,7 +8665,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36c6eac56424cef16e4c393d36ac3b53be51b0c6b76d6a3205e9cb8e249fe4e4"
+      "sha256": "29db8541d0801c2cfdc3b57caa76c095bee9e3fc1c9103ebac13df6fc70ae38e"
     },
     {
       "path": "tools/test_public_export.py",
