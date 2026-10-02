@@ -53,10 +53,14 @@ Categories (pick exactly one per entry):
 
 Every entry's `test` field names the regression test that pins it, or "none" if
 it does not have one yet (a real gap -- see ISSUES.md, not silently swept in).
-For a `temporary_compatibility_patch` that gap is now a CI failure: the debt
-gate in tools/test_compat_manifest.py also requires a live `owner_issue` and an
-explicit `retirement` condition, and only its reviewed allowlist can waive the
-test.  `python tools/compat_overrides.py --debt-census` prints the census.
+For a `temporary_compatibility_patch` that gap is a CI failure: the debt gate in
+tools/test_compat_manifest.py also requires a live `owner_issue` and an explicit
+`retirement` condition, and only its reviewed allowlist can waive the test.
+"none" is matched as a claim, not as a spelling -- "n/a", "TBD" and "-" are the
+same gap and are rejected the same way.  `python tools/compat_overrides.py
+--debt-census` prints the census, and also names the untested
+faithful_abi_bridge/hle_boundary entries, which the temporary-patch gate does
+not cover and which #363 still owns.
 """
 
 import re
@@ -813,6 +817,40 @@ AGGREGATE_COLLECTIONS = frozenset({"OVERRIDES"})
 #: not satisfy it.
 OWNER_ISSUE_RE = re.compile(r"#\d+\b")
 
+#: Spellings that mean "no regression" exactly as surely as test="none".  A
+#: gate that accepts only one of them can be passed by relabelling the same gap,
+#: so the census compares the normalized field against this whole set instead of
+#: against one magic word.
+NO_TEST_PLACEHOLDERS = frozenset({
+    "", "-", "--", "n/a", "n.a.", "na", "none", "none.", "none yet", "no test",
+    "nothing", "not tested", "tbd", "todo", "unknown",
+})
+
+
+def normalize_test_field(value) -> str:
+    """Case-, space- and punctuation-folded form of an entry's ``test`` field."""
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return text.strip("\"'`,.;:()[]")
+
+
+def has_no_test(patch: dict) -> bool:
+    """True when ``patch`` names no executable regression at all.
+
+    Empty, missing and every accepted placeholder spelling are the same fact:
+    there is nothing pinning this entry, so removing it later would prove
+    nothing.  A waiver in tools/test_compat_manifest.py may override the
+    verdict; this module does not read that allowlist.
+    """
+    return normalize_test_field(patch.get("test")) in NO_TEST_PLACEHOLDERS
+
+
+#: Categories that change guest-visible behavior without being a temporary
+#: patch, so #363's temporary-patch debt gate does not require an owner, a
+#: retirement condition or a test of them.  They are enumerated only so the
+#: census can NAME the untested ones instead of leaving them invisible; see the
+#: trailing census section.
+NON_TEMPORARY_BEHAVIOR_CHANGING_CATEGORIES = ("faithful_abi_bridge", "hle_boundary")
+
 
 def manifest_collections() -> "dict[str, list[dict]]":
     """Every collection of manifest entries declared in this module.
@@ -842,6 +880,11 @@ def _census_anchor(entry: dict) -> str:
     return f"0x{address:08x}" if isinstance(address, int) else "-"
 
 
+def _census_id(collection: str, entry: dict) -> str:
+    """The census identity the CI gate and its no-test allowlist key on."""
+    return f"{collection}:{_census_anchor(entry)}:{entry.get('name', '(unnamed)')}"
+
+
 def temporary_compatibility_patches() -> "list[dict]":
     """Every live ``temporary_compatibility_patch``, with a stable census id.
 
@@ -861,7 +904,7 @@ def temporary_compatibility_patches() -> "list[dict]":
                 continue
             patch = dict(entry)
             patch["collection"] = collection
-            patch["id"] = f"{collection}:{_census_anchor(entry)}:{entry.get('name', '(unnamed)')}"
+            patch["id"] = _census_id(collection, entry)
             patches.append(patch)
     return patches
 
@@ -881,10 +924,33 @@ def temporary_patch_defects(patch: dict) -> "list[str]":
         problems.append("owner_issue must lead with a live GitHub issue number (e.g. #363)")
     if not str(patch.get("retirement") or "").strip():
         problems.append("no retirement condition")
-    test = str(patch.get("test") or "").strip()
-    if not test or test.lower() == "none":
+    if has_no_test(patch):
         problems.append("test is none/empty")
     return problems
+
+
+def untested_non_temporary_entries() -> "list[dict]":
+    """Behavior-changing entries with no test that the debt gate does not cover.
+
+    #363's acceptance item is broader than the temporary-patch category: no
+    behavior-changing entry may sit at test="none" without a reviewed waiver.
+    The hard gate only owns ``temporary_compatibility_patch``, so the remaining
+    categories are reported here rather than gated -- named debt, in
+    deterministic id order, with no failure attached.  Turning them into gate
+    failures is #363 Phase 0 follow-up work, one category at a time.
+    """
+    entries: "list[dict]" = []
+    for collection, collection_entries in manifest_collections().items():
+        for entry in collection_entries:
+            if entry.get("category") not in NON_TEMPORARY_BEHAVIOR_CHANGING_CATEGORIES:
+                continue
+            if not has_no_test(entry):
+                continue
+            record = dict(entry)
+            record["collection"] = collection
+            record["id"] = _census_id(collection, entry)
+            entries.append(record)
+    return sorted(entries, key=lambda record: record["id"])
 
 
 def format_debt_census() -> str:
@@ -892,13 +958,15 @@ def format_debt_census() -> str:
 
     One block per patch -- id, owner issue, retirement condition and test, the
     four facts #363's acceptance requires -- followed by a DEFECTS section
-    naming every patch that is missing one of them.  Reporting only: the CI
-    gate, which also knows the reviewed no-test allowlist, is
-    tools/test_compat_manifest.TemporaryCompatibilityDebtGateTests.
+    naming every patch that is missing one of them and a closing section naming
+    the untested behavior-changing entries the temporary-patch gate does not
+    cover.  Reporting only: the CI gate, which also knows the reviewed no-test
+    allowlist, is tools/test_compat_manifest.TemporaryCompatibilityDebtGateTests.
     """
     patches = temporary_compatibility_patches()
     found = [(patch, temporary_patch_defects(patch)) for patch in patches]
     defects = [(patch, problems) for patch, problems in found if problems]
+    untested_others = untested_non_temporary_entries()
     scanned = manifest_collections()
     lines = [
         "temporary compatibility patch census (#363)",
@@ -919,6 +987,15 @@ def format_debt_census() -> str:
             lines.append(f"    {patch['id']}: {'; '.join(problems)}")
     else:
         lines.append("DEFECTS: none")
+    lines.append("")
+    if untested_others:
+        lines.append("UNTESTED OUTSIDE THE DEBT GATE (behavior-changing, not temporary;")
+        lines.append("reported by #363, not gated):")
+        for record in untested_others:
+            owner = record.get("owner_issue") or "no owner recorded"
+            lines.append(f"    {record['id']}: {record.get('category')}, {owner}")
+    else:
+        lines.append("UNTESTED OUTSIDE THE DEBT GATE: none")
     return "\n".join(lines)
 
 
