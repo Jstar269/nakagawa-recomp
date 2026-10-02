@@ -22,15 +22,15 @@ Live join of every exact `sce*` / `__sce*` API named in
 ## Summary
 
 - total exact APIs: **72**
-- missing: **16**
+- missing: **12**
 - registered (fake success): **0**
-- implemented: **56**
+- implemented: **60**
 - controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #339: 16
-- #341: 46
+- #339: 12
+- #341: 50
 
 ## Census
 
@@ -82,15 +82,15 @@ Open-owner counts:
 | `sceKernelPollMbx` | implemented | - | dedicated | partial | `h_PollMbx` | `0x0d81716a` |
 | `sceKernelReceiveMbx` | implemented | - | dedicated | partial | `h_ReceiveMbx` | `0x18260574` |
 | `sceKernelReceiveMbxCB` | implemented | - | dedicated | partial | `h_ReceiveMbxCB` | `0xf3986382` |
-| `sceKernelReceiveMsgPipe` | missing | #339 | missing | - | - | - |
-| `sceKernelReceiveMsgPipeCB` | missing | #339 | missing | - | - | - |
+| `sceKernelReceiveMsgPipe` | implemented | #341 | dedicated | unreviewed | `h_ReceiveMsgPipe` | `0x74829b76` |
+| `sceKernelReceiveMsgPipeCB` | implemented | #341 | dedicated | unreviewed | `h_ReceiveMsgPipeCB` | `0xfbfa697d` |
 | `sceKernelReferMbxStatus` | implemented | - | dedicated | partial | `h_ReferMbxStatus` | `0xa8e8c846` |
 | `sceKernelReferTlsplStatus` | missing | #339 | missing | - | - | - |
 | `sceKernelRegisterSubIntrHandler` | implemented | #341 | dedicated | unreviewed | `h_RegisterSubIntr` | `0xca04a2b9` |
 | `sceKernelResumeDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_ResumeDispatchThread` | `0x27e22ec2` |
 | `sceKernelSendMbx` | implemented | - | dedicated | partial | `h_SendMbx` | `0xe9b3061e` |
-| `sceKernelSendMsgPipe` | missing | #339 | missing | - | - | - |
-| `sceKernelSendMsgPipeCB` | missing | #339 | missing | - | - | - |
+| `sceKernelSendMsgPipe` | implemented | #341 | dedicated | unreviewed | `h_SendMsgPipe` | `0x876dbfad` |
+| `sceKernelSendMsgPipeCB` | implemented | #341 | dedicated | unreviewed | `h_SendMsgPipeCB` | `0x7c41f2c2` |
 | `sceKernelSleepThread` | implemented | #341 | dedicated | unreviewed | `h_SleepThread` | `0x9ace131e` |
 | `sceKernelSleepThreadCB` | implemented | #341 | dedicated | unreviewed | `h_SleepThreadCB` | `0x82826f70` |
 | `sceKernelStartModule` | implemented | #341 | dedicated | unreviewed | `h_StartModule` | `0x50f0c1ec` |

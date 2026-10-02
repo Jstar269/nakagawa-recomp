@@ -200,6 +200,10 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_KERNEL_DELETE_MSG_PIPE 0xf0b7da1cu
 #define NID_SCE_KERNEL_TRY_SEND_MSG_PIPE 0x884c9f90u
 #define NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE 0xdf52098fu
+#define NID_SCE_KERNEL_SEND_MSG_PIPE 0x876dbfadu
+#define NID_SCE_KERNEL_SEND_MSG_PIPE_CB 0x7c41f2c2u
+#define NID_SCE_KERNEL_RECEIVE_MSG_PIPE 0x74829b76u
+#define NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB 0xfbfa697du
 #define SCE_KERNEL_ERROR_ILLEGAL_ADDR 0x80000103u
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW 0x369ed59du
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE 0x82bc5777u
@@ -11075,6 +11079,12 @@ static void msgpipe_setup(CpuState *cpu, uint32_t uid, uint32_t buf, uint32_t si
     cpu->r[8] = resultp; /* t0: resultSize */
 }
 
+static void msgpipe_wait_setup(CpuState *cpu, uint32_t uid, uint32_t buf, uint32_t size,
+                               uint32_t wait_mode, uint32_t resultp, uint32_t toptr) {
+    msgpipe_setup(cpu, uid, buf, size, wait_mode, resultp);
+    cpu->r[9] = toptr; /* t1: timeout */
+}
+
 /* ---- issue #32: streamed ATRAC3+ ring wrap keeps logical frame order ----
  *
  * The title BGM is a streamed ATRAC3+ track: the guest hands sceAtracSetData a
@@ -12216,6 +12226,12 @@ static void test_msgpipe_safety(void) {
     expect(MEM_R32(GUEST_OUT) == 0u,
            "rejected send leaves resultSize zero");
 
+    msgpipe_setup(&cpu, uid, GUEST_BUF, 0xffffffffu, 1u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "TrySend rejects a negative size with ILLEGAL_ADDR");
+    expect(MEM_R32(GUEST_OUT) == 0u,
+           "negative TrySend size leaves resultSize zero");
+
     /* Source entirely outside the arena. */
     msgpipe_setup(&cpu, uid, 0xDEAD0000u, 4u, 1u, GUEST_OUT);
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
@@ -12248,6 +12264,12 @@ static void test_msgpipe_safety(void) {
            "TryReceive rejects an out-of-range resultSize span");
     expect(sr_hle_test_msgpipe_state(uid, &st) == 1 && st.count == 8u,
            "resultSize rejection leaves the pipe undrained");
+
+    msgpipe_setup(&cpu, uid, GUEST_OUT, 0xffffffffu, 0u, GUEST_OUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "TryReceive rejects a negative size with ILLEGAL_ADDR");
+    expect(MEM_R32(GUEST_OUT) == 0u,
+           "negative TryReceive size leaves resultSize zero");
 
     /* Valid receive: bytes come back in FIFO order.  resultSize uses a
      * distinct slot so the amount write cannot clobber the received payload. */
@@ -12316,6 +12338,472 @@ static void test_msgpipe_safety(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = big_uid;
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u, "ceiling pipe deletes cleanly");
+}
+
+typedef struct {
+    TCB *tcb;
+    uint32_t pipe_uid, buffer, size, wait_mode, resultp, toptr;
+    int is_send, is_cb;
+    uint32_t ret;
+    int returned;
+} SelftestMsgPipeWaiterCtx;
+
+int s_msgpipe_parks = 0;
+
+static void selftest_msgpipe_waiter_fiber_body(void *arg) {
+    SelftestMsgPipeWaiterCtx *ctx = (SelftestMsgPipeWaiterCtx *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    msgpipe_wait_setup(&cpu, ctx->pipe_uid, ctx->buffer, ctx->size,
+                       ctx->wait_mode, ctx->resultp, ctx->toptr);
+    uint32_t nid;
+    if (ctx->is_send)
+        nid = ctx->is_cb ? NID_SCE_KERNEL_SEND_MSG_PIPE_CB : NID_SCE_KERNEL_SEND_MSG_PIPE;
+    else
+        nid = ctx->is_cb ? NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB : NID_SCE_KERNEL_RECEIVE_MSG_PIPE;
+    ctx->ret = sr_syscall(&cpu, nid);
+    ctx->returned = 1;
+    s_msgpipe_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void test_msgpipe_blocking(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    const uint32_t GUEST_TIMEOUT = 0x08050000u;
+    const uint32_t ARENA_END = 0x0c000000u;
+    MEM_W8(GUEST_NAME, 'b');
+    MEM_W8(GUEST_NAME + 1u, 'p');
+    MEM_W8(GUEST_NAME + 2u, 0);
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(GUEST_BUF + i, (uint8_t)(0xa0u + i));
+
+    TCB *cur = fixture_thread(0x201u, TH_RUNNING, 32);
+    int cur_index = (int)(cur - s_tcb);
+    cur->started = 1;
+    s_cur = cur_index;
+
+    CpuState cpu = {0};
+    cpu.r[4] = GUEST_NAME;
+    cpu.r[7] = 4u;
+    uint32_t pipe = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+    expect(pipe != 0u && pipe < 0x80000000u, "blocking Message Pipe test creates a four-byte pipe");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    /* Each new NID must reach the production registry and preserve its object lookup error. */
+    const uint32_t blocking_nids[] = {
+        NID_SCE_KERNEL_SEND_MSG_PIPE, NID_SCE_KERNEL_SEND_MSG_PIPE_CB,
+        NID_SCE_KERNEL_RECEIVE_MSG_PIPE, NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB
+    };
+    for (size_t i = 0; i < sizeof(blocking_nids) / sizeof(blocking_nids[0]); i++) {
+        msgpipe_wait_setup(&cpu, 0x7ffffffeu, GUEST_BUF, 1u, 0u, 0u, 0u);
+        expect(sr_syscall(&cpu, blocking_nids[i]) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+               "blocking Message Pipe NID is registered in production dispatch");
+    }
+
+    /* Argument preflight preserves PSP-B3-01 error order. */
+    SrMsgPipeState state;
+    msgpipe_wait_setup(&cpu, 0x7ffffffeu, GUEST_BUF, 1u, 0u, ARENA_END - 1u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == 0x80000103u,
+           "blocking send validates resultSize before pipe lookup");
+    MEM_W32(GUEST_RES, 0xaabbccddu);
+    msgpipe_wait_setup(&cpu, 0x7ffffffeu, GUEST_BUF, 1u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+           "blocking send preserves unknown-pipe lookup error");
+    expect(MEM_R32(GUEST_RES) == 0u,
+           "blocking send zeros resultSize before pipe lookup");
+    msgpipe_wait_setup(&cpu, 0x7ffffffeu, GUEST_BUF, 1u, 0u, GUEST_RES, ARENA_END - 1u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+           "blocking receive looks up the pipe before validating timeout");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 1u, 0u, GUEST_RES, ARENA_END - 1u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE_CB) == 0x80000103u,
+           "blocking send CB rejects an invalid timeout pointer");
+    MEM_W32(GUEST_RES, 0xaabbccddu);
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 1u, 2u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == 0x80020195u,
+           "blocking receive rejects an illegal wait mode");
+    expect(MEM_R32(GUEST_RES) == 0u,
+           "blocking receive zeros resultSize before parameter rejection");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 0u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
+           "blocking send rejects size zero");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 0xffffffffu, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "blocking receive rejects a negative size with ILLEGAL_ADDR");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 5u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
+           "blocking receive CB rejects a size above pipe capacity");
+
+    uint32_t dispatch_state = sched_suspend_dispatch();
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 1u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == 0x800201a7u,
+           "blocking send checks wait context before its immediate transfer path");
+    expect(sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 0u,
+           "context-rejected blocking send leaves the Message Pipe unchanged");
+    expect(sched_resume_dispatch(dispatch_state) == 0u,
+           "blocking Message Pipe context test restores dispatch");
+    MEM_W32(GUEST_TIMEOUT, 0u);
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 1u, 0u, GUEST_RES, GUEST_TIMEOUT);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB) == 0x800201a8u,
+           "blocking receive CB with a zero timeout returns WAIT_TIMEOUT");
+
+    /* Immediate transfer coverage for all four production handlers. */
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 4u, 0u, GUEST_RES, GUEST_TIMEOUT);
+    MEM_W32(GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == 0u && MEM_R32(GUEST_RES) == 4u,
+           "blocking send transfers immediately and reports its byte count");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 4u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB) == 0u && MEM_R32(GUEST_RES) == 4u,
+           "blocking receive CB transfers immediately and reports its byte count");
+    int immediate_bytes_match = 1;
+    for (uint32_t i = 0; i < 4u; i++)
+        if (MEM_R8(GUEST_OUT + i) != (uint8_t)(0xa0u + i)) immediate_bytes_match = 0;
+    expect(immediate_bytes_match, "blocking receive CB preserves Message Pipe byte order");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF + 4u, 2u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE_CB) == 0u,
+           "blocking send CB transfers immediately");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 2u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == 0u,
+           "blocking receive transfers immediately");
+
+    /* Invalid data spans must not partially mutate the FIFO. */
+    msgpipe_wait_setup(&cpu, pipe, 0xdead0000u, 1u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == 0x80000103u,
+           "blocking send rejects an unmapped source buffer");
+    expect(sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 0u,
+           "invalid blocking send leaves the Message Pipe empty");
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 1u, 0u, GUEST_RES);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "Message Pipe seed byte is queued for invalid receive test");
+    msgpipe_wait_setup(&cpu, pipe, 0xdead0000u, 1u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB) == 0x80000103u,
+           "blocking receive CB rejects an unmapped destination buffer");
+    expect(sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 1u,
+           "invalid blocking receive leaves queued data untouched");
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 1u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == 0u,
+           "Message Pipe invalid-receive seed is drained");
+
+    /* A blocked receiver resumes after a sender makes bytes available. */
+    SelftestMsgPipeWaiterCtx recv_waiter = {0};
+    recv_waiter.tcb = fixture_thread(0x202u, TH_READY, 32);
+    recv_waiter.tcb->started = 1;
+    recv_waiter.pipe_uid = pipe;
+    recv_waiter.buffer = GUEST_OUT;
+    recv_waiter.size = 4u;
+    recv_waiter.resultp = GUEST_RES;
+    recv_waiter.toptr = GUEST_TIMEOUT;
+    MEM_W32(GUEST_TIMEOUT, 1000u);
+    recv_waiter.tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body, &recv_waiter, (size_t)4 << 20);
+    s_cur = (int)(recv_waiter.tcb - s_tcb);
+    sr_coro_switch(recv_waiter.tcb->coro);
+    expect(!recv_waiter.returned && recv_waiter.tcb->state == TH_WAIT_OBJ,
+           "blocking receive waits on an empty Message Pipe");
+    s_cur = cur_index;
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 4u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == 0u,
+           "sender thread supplies bytes to the blocked receiver");
+    expect(recv_waiter.tcb->state == TH_READY, "sender wakes the blocked receiver");
+    s_cur = (int)(recv_waiter.tcb - s_tcb);
+    sr_coro_switch(recv_waiter.tcb->coro);
+    expect(recv_waiter.returned && recv_waiter.ret == 0u && MEM_R32(GUEST_RES) == 4u,
+           "blocked receive resumes successfully with its result size");
+    expect(MEM_R32(GUEST_TIMEOUT) > 0u && MEM_R32(GUEST_TIMEOUT) <= 1000u,
+           "blocked receive writes remaining timeout on successful wake");
+    immediate_bytes_match = 1;
+    for (uint32_t i = 0; i < 4u; i++)
+        if (MEM_R8(GUEST_OUT + i) != (uint8_t)(0xa0u + i)) immediate_bytes_match = 0;
+    expect(immediate_bytes_match, "blocked receive copies the sender's bytes in order");
+    sr_coro_destroy(recv_waiter.tcb->coro);
+    recv_waiter.tcb->coro = NULL;
+
+    /* A callback-aware blocked sender resumes when a receiver frees space. */
+    s_cur = cur_index;
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 4u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "sender seed fills the Message Pipe for the blocking-send test");
+    SelftestMsgPipeWaiterCtx send_waiter = {0};
+    send_waiter.tcb = fixture_thread(0x203u, TH_READY, 32);
+    send_waiter.tcb->started = 1;
+    send_waiter.pipe_uid = pipe;
+    send_waiter.buffer = GUEST_BUF + 4u;
+    send_waiter.size = 2u;
+    send_waiter.resultp = GUEST_RES;
+    send_waiter.is_send = 1;
+    send_waiter.is_cb = 1;
+    send_waiter.tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body, &send_waiter, (size_t)4 << 20);
+    s_cur = (int)(send_waiter.tcb - s_tcb);
+    sr_coro_switch(send_waiter.tcb->coro);
+    expect(!send_waiter.returned && send_waiter.tcb->state == TH_WAIT_OBJ,
+           "blocking send waits while the Message Pipe is full");
+    expect(send_waiter.tcb->is_cb_wait == 1,
+           "blocking send CB marks the scheduler wait as callback-aware");
+    s_cur = cur_index;
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 4u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == 0u,
+           "receiver thread frees space for the blocked sender");
+    expect(send_waiter.tcb->state == TH_READY, "receiver wakes the blocked sender");
+    s_cur = (int)(send_waiter.tcb - s_tcb);
+    sr_coro_switch(send_waiter.tcb->coro);
+    expect(send_waiter.returned && send_waiter.ret == 0u && MEM_R32(GUEST_RES) == 2u,
+           "blocked send resumes successfully with its result size");
+    expect(send_waiter.tcb->is_cb_wait == 0,
+           "blocking send CB clears the callback-aware wait flag after wake");
+    expect(sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 2u,
+           "blocked send queues exactly the requested bytes");
+    sr_coro_destroy(send_waiter.tcb->coro);
+    send_waiter.tcb->coro = NULL;
+
+    /* Receive and send timeout branches expire with the guest timeout set to zero. */
+    s_cur = cur_index;
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 2u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == 0u,
+           "timeout setup drains the blocked sender's bytes");
+    SelftestMsgPipeWaiterCtx recv_timeout = {0};
+    recv_timeout.tcb = fixture_thread(0x204u, TH_READY, 32);
+    recv_timeout.tcb->started = 1;
+    recv_timeout.pipe_uid = pipe;
+    recv_timeout.buffer = GUEST_OUT;
+    recv_timeout.size = 1u;
+    recv_timeout.resultp = GUEST_RES;
+    recv_timeout.toptr = GUEST_TIMEOUT;
+    MEM_W32(GUEST_TIMEOUT, 50u);
+    recv_timeout.tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body, &recv_timeout, (size_t)4 << 20);
+    s_cur = (int)(recv_timeout.tcb - s_tcb);
+    sr_coro_switch(recv_timeout.tcb->coro);
+    expect(!recv_timeout.returned && recv_timeout.tcb->state == TH_WAIT_OBJ,
+           "blocking receive enters its timeout wait");
+    s_vtime_us += 51u;
+    recv_timeout.tcb->state = TH_READY;
+    s_cur = (int)(recv_timeout.tcb - s_tcb);
+    sr_coro_switch(recv_timeout.tcb->coro);
+    expect(recv_timeout.returned && recv_timeout.ret == 0x800201a8u,
+           "blocking receive timeout returns WAIT_TIMEOUT");
+    expect(MEM_R32(GUEST_TIMEOUT) == 0u,
+           "blocking receive timeout writes zero remaining time");
+    sr_coro_destroy(recv_timeout.tcb->coro);
+    recv_timeout.tcb->coro = NULL;
+
+    s_cur = cur_index;
+    msgpipe_wait_setup(&cpu, pipe, GUEST_BUF, 4u, 0u, GUEST_RES, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "send-timeout setup fills the Message Pipe");
+    SelftestMsgPipeWaiterCtx send_timeout = {0};
+    send_timeout.tcb = fixture_thread(0x205u, TH_READY, 32);
+    send_timeout.tcb->started = 1;
+    send_timeout.pipe_uid = pipe;
+    send_timeout.buffer = GUEST_BUF + 4u;
+    send_timeout.size = 1u;
+    send_timeout.resultp = GUEST_RES;
+    send_timeout.toptr = GUEST_TIMEOUT;
+    send_timeout.is_send = 1;
+    MEM_W32(GUEST_TIMEOUT, 50u);
+    send_timeout.tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body, &send_timeout, (size_t)4 << 20);
+    s_cur = (int)(send_timeout.tcb - s_tcb);
+    sr_coro_switch(send_timeout.tcb->coro);
+    expect(!send_timeout.returned && send_timeout.tcb->state == TH_WAIT_OBJ,
+           "blocking send enters its timeout wait");
+    s_vtime_us += 51u;
+    send_timeout.tcb->state = TH_READY;
+    s_cur = (int)(send_timeout.tcb - s_tcb);
+    sr_coro_switch(send_timeout.tcb->coro);
+    expect(send_timeout.returned && send_timeout.ret == 0x800201a8u,
+           "blocking send timeout returns WAIT_TIMEOUT");
+    expect(MEM_R32(GUEST_TIMEOUT) == 0u,
+           "blocking send timeout writes zero remaining time");
+    sr_coro_destroy(send_timeout.tcb->coro);
+    send_timeout.tcb->coro = NULL;
+
+    s_cur = cur_index;
+    cpu = (CpuState){0};
+    cpu.r[4] = pipe;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "blocking Message Pipe fixture deletes cleanly");
+}
+
+static uint32_t selftest_msgpipe_create(uint32_t name, uint32_t attr, uint32_t size) {
+    CpuState cpu = {0};
+    cpu.r[4] = name;
+    cpu.r[6] = attr;
+    cpu.r[7] = size;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+}
+
+static void selftest_msgpipe_waiter_start(SelftestMsgPipeWaiterCtx *waiter,
+                                          uint32_t thread_uid, int priority,
+                                          uint32_t pipe_uid, uint32_t buffer,
+                                          uint32_t resultp, int is_cb) {
+    waiter->tcb = fixture_thread(thread_uid, TH_READY, priority);
+    waiter->tcb->started = 1;
+    waiter->pipe_uid = pipe_uid;
+    waiter->buffer = buffer;
+    waiter->size = 2u;
+    waiter->resultp = resultp;
+    waiter->is_cb = is_cb;
+    waiter->tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body, waiter,
+                                       (size_t)4 << 20);
+    s_cur = (int)(waiter->tcb - s_tcb);
+    if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
+}
+
+static void selftest_msgpipe_waiter_resume(SelftestMsgPipeWaiterCtx *waiter) {
+    s_cur = (int)(waiter->tcb - s_tcb);
+    if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
+}
+
+static void selftest_msgpipe_waiter_finish(SelftestMsgPipeWaiterCtx *waiter,
+                                           uint32_t pipe_uid) {
+    if (!waiter->returned) selftest_msgpipe_waiter_resume(waiter);
+    if (!waiter->returned && sched_count_waiters(pipe_uid) == 0)
+        selftest_msgpipe_waiter_resume(waiter);
+}
+
+static void test_msgpipe_waiter_order(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    MEM_W8(GUEST_NAME, 'w'); MEM_W8(GUEST_NAME + 1u, 'q'); MEM_W8(GUEST_NAME + 2u, 0u);
+    MEM_W8(GUEST_BUF, 0xa0u); MEM_W8(GUEST_BUF + 1u, 0xa1u);
+    MEM_W8(GUEST_BUF + 2u, 0xa2u); MEM_W8(GUEST_BUF + 3u, 0xa3u);
+
+    TCB *owner = fixture_thread(0x33910u, TH_RUNNING, 60);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+
+    for (int priority_attr = 0; priority_attr <= 1; priority_attr++) {
+        s_cur = owner_index;
+        uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, priority_attr ? 0x1000u : 0u, 4u);
+        expect(pipe != 0u && pipe < 0x80000000u,
+               priority_attr ? "priority Message Pipe fixture is created" :
+                               "FIFO Message Pipe fixture is created");
+        if (!pipe || pipe >= 0x80000000u) continue;
+
+        SelftestMsgPipeWaiterCtx older = {0};
+        SelftestMsgPipeWaiterCtx newer = {0};
+        selftest_msgpipe_waiter_start(&older, 0x33911u + (uint32_t)priority_attr * 2u,
+                                      45, pipe, GUEST_OUT, GUEST_RES, 0);
+        expect(!older.returned && older.tcb->state == TH_WAIT_OBJ,
+               "older low-priority receiver parks first");
+        selftest_msgpipe_waiter_start(&newer, 0x33912u + (uint32_t)priority_attr * 2u,
+                                      8, pipe, GUEST_OUT + 4u, GUEST_RES + 4u, 0);
+        expect(!newer.returned && newer.tcb->state == TH_WAIT_OBJ,
+               "newer high-priority receiver parks second");
+        expect(sched_count_waiters(pipe) == 2,
+               "both Message Pipe receiver waiters are registered");
+
+        CpuState cpu = {0};
+        msgpipe_setup(&cpu, pipe, GUEST_BUF, 4u, 0u, GUEST_RES + 8u);
+        s_cur = owner_index;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+               "sender deposits bytes for the queued Message Pipe receivers");
+
+        /* The old wake-all path readies both; the scheduler's strict-priority
+         * choice then runs the later high-priority waiter first. */
+        if (!older.returned && !newer.returned &&
+            older.tcb->state == TH_READY && newer.tcb->state == TH_READY)
+            selftest_msgpipe_waiter_resume(&newer);
+
+        if (priority_attr) {
+            selftest_msgpipe_waiter_finish(&newer, pipe);
+            selftest_msgpipe_waiter_finish(&older, pipe);
+        } else {
+            selftest_msgpipe_waiter_finish(&older, pipe);
+            selftest_msgpipe_waiter_finish(&newer, pipe);
+        }
+        expect(older.returned && newer.returned,
+               "both Message Pipe waiters eventually consume queued data");
+        expect(MEM_R32(GUEST_RES) == 2u && MEM_R32(GUEST_RES + 4u) == 2u,
+               "multiple Message Pipe waiters conserve the transferred byte count");
+        int order_correct = MEM_R8(GUEST_OUT) == 0xa0u && MEM_R8(GUEST_OUT + 1u) == 0xa1u &&
+                            MEM_R8(GUEST_OUT + 4u) == 0xa2u && MEM_R8(GUEST_OUT + 5u) == 0xa3u;
+        if (!priority_attr) {
+            expect(order_correct,
+                   "FIFO Message Pipe serves the older waiter before the higher-priority arrival");
+        } else {
+            order_correct = MEM_R8(GUEST_OUT + 4u) == 0xa0u &&
+                            MEM_R8(GUEST_OUT + 5u) == 0xa1u &&
+                            MEM_R8(GUEST_OUT) == 0xa2u && MEM_R8(GUEST_OUT + 1u) == 0xa3u;
+            expect(order_correct,
+                   "priority Message Pipe serves the higher-priority waiter first");
+        }
+
+        if (older.tcb->coro) { sr_coro_destroy(older.tcb->coro); older.tcb->coro = NULL; }
+        if (newer.tcb->coro) { sr_coro_destroy(newer.tcb->coro); newer.tcb->coro = NULL; }
+        s_cur = owner_index;
+        cpu = (CpuState){0}; cpu.r[4] = pipe;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+               "Message Pipe waiter-order fixture deletes");
+    }
+}
+
+static uint32_t issue339_create_pending_callback(void);
+
+static void test_msgpipe_callback_and_delete(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    MEM_W8(GUEST_NAME, 'c'); MEM_W8(GUEST_NAME + 1u, 'b'); MEM_W8(GUEST_NAME + 2u, 0u);
+
+    TCB *owner = fixture_thread(0x33920u, TH_RUNNING, 32);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0u, 4u);
+    expect(pipe != 0u && pipe < 0x80000000u, "callback Message Pipe fixture is created");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    SelftestMsgPipeWaiterCtx waiter = {0};
+    selftest_msgpipe_waiter_start(&waiter, 0x33921u, 40, pipe, GUEST_OUT, GUEST_RES, 1);
+    expect(!waiter.returned && waiter.tcb->state == TH_WAIT_OBJ && waiter.tcb->wait_obj == pipe,
+           "ReceiveMsgPipeCB parks its receiver on the empty pipe");
+    expect(waiter.tcb->is_cb_wait == 1,
+           "parked ReceiveMsgPipeCB is marked as a callback wait");
+
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+    s_cur = (int)(waiter.tcb - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    expect(callback_uid != 0u,
+           "message-pipe receiver owns and receives a notified callback");
+    expect(s_oracle_callback_calls == 0,
+           "notifying the blocked receiver does not dispatch before its coroutine resumes");
+    expect(waiter.tcb->state == TH_READY,
+           "notified callback readies the blocked ReceiveMsgPipeCB thread");
+    selftest_msgpipe_waiter_resume(&waiter);
+    expect(s_oracle_callback_calls == 1,
+           "ReceiveMsgPipeCB dispatches its pending callback before reblocking");
+    expect(!waiter.returned && waiter.tcb->state == TH_WAIT_OBJ &&
+           waiter.tcb->wait_obj == pipe,
+           "ReceiveMsgPipeCB remains parked after callback dispatch on an empty pipe");
+
+    s_cur = owner_index;
+    CpuState cpu = {0}; cpu.r[4] = pipe;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "main thread deletes a pipe with a parked receiver");
+    expect(waiter.tcb->state == TH_READY,
+           "deleting the Message Pipe wakes its parked receiver");
+    selftest_msgpipe_waiter_resume(&waiter);
+    expect(waiter.returned && waiter.ret == 0x800201b5u,
+           "deleted Message Pipe receiver returns WAIT_DELETE");
+    if (waiter.tcb->coro) { sr_coro_destroy(waiter.tcb->coro); waiter.tcb->coro = NULL; }
+
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0u,
+           "message-pipe callback fixture unregisters its callback");
+    s_oracle_mode = saved_oracle_mode;
 }
 
 static uint32_t s_live_sema_obj;
@@ -14677,16 +15165,19 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mtx_parks;
         extern int s_pool_parks;
         extern int s_mbx_parks;
-        int expected_parks = 8 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks;
-        char msg[256];
+        extern int s_msgpipe_parks;
+        int expected_parks = 8 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        char msg[640];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (2 joiners + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
-                 "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs = %d, observed %lu)",
-                 ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks, expected_parks, s_parks);
+                 "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
+                 "+ %d Message Pipe legs = %d, observed %lu)",
+                 ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
+                 s_msgpipe_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -18053,6 +18544,9 @@ int main(int argc, char **argv) {
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_state_contracts();
     test_msgpipe_safety();
+    test_msgpipe_blocking();
+    test_msgpipe_waiter_order();
+    test_msgpipe_callback_and_delete();
     test_td23_guest_pointer_validation();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();

@@ -1238,6 +1238,12 @@
     "name": "__sceSasGetEnvelopeHeight",
     "status": "unreviewed"
   },
+  "0x74829b76": {
+    "classification": "dedicated",
+    "handler": "h_ReceiveMsgPipe",
+    "name": "sceKernelReceiveMsgPipe",
+    "status": "unreviewed"
+  },
   "0x7591c7db": {
     "classification": "dedicated",
     "handler": "h_SetCompiledSdkVersion",
@@ -1308,6 +1314,12 @@
     "classification": "dedicated",
     "handler": "h_CreateMsgPipe",
     "name": "sceKernelCreateMsgPipe",
+    "status": "unreviewed"
+  },
+  "0x7c41f2c2": {
+    "classification": "dedicated",
+    "handler": "h_SendMsgPipeCB",
+    "name": "sceKernelSendMsgPipeCB",
     "status": "unreviewed"
   },
   "0x7cff8cf3": {
@@ -1410,6 +1422,12 @@
     "classification": "dedicated",
     "handler": "h_MpegFinish",
     "name": "sceMpegFinish",
+    "status": "unreviewed"
+  },
+  "0x876dbfad": {
+    "classification": "dedicated",
+    "handler": "h_SendMsgPipe",
+    "name": "sceKernelSendMsgPipe",
     "status": "unreviewed"
   },
   "0x87d4dd36": {
@@ -2542,6 +2560,12 @@
     "classification": "dedicated",
     "handler": "h_EnableSubIntr",
     "name": "sceKernelEnableSubIntr",
+    "status": "unreviewed"
+  },
+  "0xfbfa697d": {
+    "classification": "dedicated",
+    "handler": "h_ReceiveMsgPipeCB",
+    "name": "sceKernelReceiveMsgPipeCB",
     "status": "unreviewed"
   },
   "0xfccfad26": {
