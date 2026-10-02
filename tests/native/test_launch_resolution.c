@@ -115,6 +115,7 @@ static int write_launch_environment_probe(void) {
     const char *fullscreen = getenv("SR_FULLSCREEN");
     const char *volume = getenv("SR_MASTER_VOLUME");
     const char *input_profile = getenv("NK_INPUT_PROFILE");
+    const char *novbpace = getenv("SR_NOVBPACE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -123,7 +124,8 @@ static int write_launch_environment_probe(void) {
                      "SR_RESOLUTION_SCALE=%s\n"
                      "SR_FULLSCREEN=%s\n"
                      "SR_MASTER_VOLUME=%s\n"
-                     "NK_INPUT_PROFILE=%s\n",
+                     "NK_INPUT_PROFILE=%s\n"
+                     "SR_NOVBPACE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -131,7 +133,8 @@ static int write_launch_environment_probe(void) {
                      scale ? scale : "<unset>",
                      fullscreen ? fullscreen : "<unset>",
                      volume ? volume : "<unset>",
-                     input_profile ? input_profile : "<unset>") >= 0;
+                     input_profile ? input_profile : "<unset>",
+                     novbpace ? novbpace : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     return ok ? 0 : 4;
 }
@@ -199,7 +202,10 @@ static void test_no_iso_child_environment(const char *test_executable,
                                                  &had_report);
     char *old_unrelated = capture_environment_value("NK_LAUNCH_TEST_UNRELATED",
                                                    &had_unrelated);
+    bool had_novbpace;
+    char *old_novbpace = capture_environment_value("SR_NOVBPACE", &had_novbpace);
     set_environment_value("PSP_ISO", "poisoned-parent.iso");
+    set_environment_value("SR_NOVBPACE", "1");
     set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
     set_environment_value("NK_LAUNCH_TEST_UNRELATED", "preserve-me");
 
@@ -281,13 +287,31 @@ static void test_no_iso_child_environment(const char *test_executable,
         snprintf(expected, sizeof(expected), "NK_INPUT_PROFILE=%s\n", title_profile);
         assert(strstr(observed, expected) != NULL);
     }
+    /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
+    assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
+
+    /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
+    session.config.benchmark_mode = true;
+    assert(nk_launch_start(&session) == NK_OK);
+    child_exit = nk_launch_wait(&session, -1);
+    nk_launch_stop(&session);
+    assert(child_exit == 0);
+    report = fopen(report_path, "rb");
+    assert(report != NULL);
+    observed_size = fread(observed, 1, sizeof(observed) - 1, report);
+    observed[observed_size] = '\0';
+    assert(!ferror(report));
+    assert(fclose(report) == 0);
+    assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
 
     restore_environment_value("PSP_ISO", old_iso, had_iso);
+    restore_environment_value("SR_NOVBPACE", old_novbpace, had_novbpace);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
                               had_report);
     restore_environment_value("NK_LAUNCH_TEST_UNRELATED", old_unrelated,
                               had_unrelated);
     free(old_iso);
+    free(old_novbpace);
     free(old_report);
     free(old_unrelated);
 

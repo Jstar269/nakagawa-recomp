@@ -40,7 +40,22 @@
 
 #define PSP_W 480
 #define PSP_H 272
+#define PSP_SCANOUT_RATE_NUMERATOR 60000ull
+#define PSP_SCANOUT_RATE_DENOMINATOR 1001ull
+#define PSP_SCANOUT_PERIOD_NS \
+    ((PSP_SCANOUT_RATE_DENOMINATOR * 1000000000ull + PSP_SCANOUT_RATE_NUMERATOR / 2u) / \
+     PSP_SCANOUT_RATE_NUMERATOR)
 
+enum {
+    PRESENT_CAP_ENV_UNRESOLVED = -1,
+    PRESENT_CAP_SCANOUT = -2
+};
+
+/* gui-present-selftest compiles this file alone and exercises only the host present
+ * pacing below. The presenters need guest memory, the scheduler, perf telemetry and
+ * the SDL3/Vulkan backend, so they stay out of that binary instead of being stubbed:
+ * a pacing regression must not depend on a stubbed runtime. */
+#ifndef SR_GUI_PRESENT_SELFTEST
 static int      s_on = 0;
 #ifdef SR_SDL3VK
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
@@ -54,14 +69,16 @@ static uint64_t s_offscreen_frames;
 static HWND     s_hwnd;
 static BITMAPINFO s_bmi;
 #endif
-static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for the presenters */
+static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for every presenter, including offscreen */
 static uint32_t s_buttons = 0;
 static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
 static int      s_pad_present = 0;         /* a controller is currently connected */
 static uint64_t s_last_ns;             /* fallback frame-pacing deadline */
-static uint64_t s_present_next_ns;      /* 30 Hz output cap; never delays guest execution */
-static int      s_present_cap = -1;
+#endif /* !SR_GUI_PRESENT_SELFTEST */
+static uint64_t s_present_next_ns;      /* host output cap; never delays guest execution */
+static int      s_present_cap = PRESENT_CAP_ENV_UNRESOLVED;
 
+#ifndef SR_GUI_PRESENT_SELFTEST
 /* Keep boot milestones observable to the parent player without depending on
  * whether the platform process backend inherits stderr. The file is opt-in and
  * is otherwise not opened by the runtime. */
@@ -93,24 +110,35 @@ static void sr_gui_boot_event(const char *format, ...) {
     }
     fclose(file);
 }
+#endif /* !SR_GUI_PRESENT_SELFTEST */
 
-/* Hot Shots Tennis is a 30 FPS title on a ~59.94 Hz PSP display. The guest can call
- * sceDisplaySetFrameBuf repeatedly within one scanout interval; presenting every call
- * wastes GPU/WSI work and produced 90+ host presents/s in the title path. Drop only
- * calls that arrive before the next output slot. Input still gets pumped by the caller,
- * and a scene already below the cap is never delayed. SR_FPS_CAP=0 disables this for
- * diagnostics; other positive values are accepted for controlled experiments. */
+/* A guest may call sceDisplaySetFrameBuf several times during one scanout interval;
+ * presenting more often than the display refresh wastes GPU/WSI work. The default
+ * period uses the same 60000/1001 Hz scanout rate as the scheduler. */
+static int present_cap_from_value(const char *value) {
+    if (!value) return PRESENT_CAP_SCANOUT;
+    int cap = atoi(value);
+    if (cap < 0) return 0;
+    if (cap > 240) return 240;
+    return cap;
+}
+
+static uint64_t present_period_for_cap(int cap) {
+    if (cap == PRESENT_CAP_SCANOUT) return PSP_SCANOUT_PERIOD_NS;
+    return cap ? 1000000000ull / (uint64_t)cap : 0;
+}
+
+static uint64_t present_period_ns(void) {
+    if (s_present_cap == PRESENT_CAP_ENV_UNRESOLVED)
+        s_present_cap = present_cap_from_value(getenv("SR_FPS_CAP"));
+    return present_period_for_cap(s_present_cap);
+}
+
 static int present_slot_due(void) {
-    if (s_present_cap < 0) {
-        const char *value = getenv("SR_FPS_CAP");
-        s_present_cap = value ? atoi(value) : 30;
-        if (s_present_cap < 0) s_present_cap = 0;
-        if (s_present_cap > 240) s_present_cap = 240;
-    }
-    if (s_present_cap == 0) return 1;
+    uint64_t period = present_period_ns();
+    if (!period) return 1;
 
     uint64_t now = SDL_GetTicksNS();
-    uint64_t period = 1000000000ull / (uint64_t)s_present_cap;
     if (s_present_next_ns && now < s_present_next_ns) return 0;
     if (!s_present_next_ns || now > s_present_next_ns + period * 4u) {
         s_present_next_ns = now + period;
@@ -120,6 +148,7 @@ static int present_slot_due(void) {
     return 1;
 }
 
+#ifndef SR_GUI_PRESENT_SELFTEST
 #ifdef SR_SDL3VK
 static void sync_sdl_input(void) {
     s_buttons = sdl3vk_buttons();
@@ -319,7 +348,8 @@ void gui_consume_button_pulses(void) {
 
 /* Present a framebuffer at guest address fbaddr. fmt: 0=5650, 1=5551, 2=4444, 3=8888.
  * stride is in pixels (PSP buffer width, typically 512). */
-/* Convert the guest framebuffer to the BGRA words both presenters consume. */
+/* Convert the guest framebuffer to the BGRA words both presenters consume. The
+ * offscreen sink converts too, so this is not behind a presenter #if. */
 static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     for (int y = 0; y < PSP_H; y++) {
         for (int x = 0; x < PSP_W; x++) {
@@ -513,3 +543,31 @@ pace:
     s_last_ns = SDL_GetTicksNS();
     return accepted;
 }
+#endif /* !SR_GUI_PRESENT_SELFTEST */
+
+#ifdef SR_GUI_PRESENT_SELFTEST
+/* A gate, not a debug aid: keep the assertions under release CFLAGS. */
+#undef NDEBUG
+#include <assert.h>
+
+/* The unset SR_FPS_CAP default is the PSP scanout period, not a slower title-specific
+ * rate: a guest may submit a framebuffer several times per scanout and every submission
+ * past the next output slot is dropped rather than delaying the guest. */
+int main(void) {
+    s_present_cap = present_cap_from_value(NULL);
+    assert(PSP_SCANOUT_PERIOD_NS == 16683333ull);
+    assert(present_period_ns() == PSP_SCANOUT_PERIOD_NS);
+    assert(present_period_ns() != 1000000000ull / 30u);
+    /* Through the slot logic: the first submission takes the slot, a second one in the
+     * same scanout is dropped. */
+    assert(present_slot_due());
+    assert(!present_slot_due());
+
+    s_present_cap = present_cap_from_value("0");
+    assert(present_slot_due());
+
+    s_present_cap = present_cap_from_value("30");
+    assert(present_period_ns() == 1000000000ull / 30u);
+    return 0;
+}
+#endif

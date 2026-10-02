@@ -105,3 +105,32 @@ length-bounded before conversion, so an oversized, signed, negative, or
 otherwise unusable value is refused by name instead of raising an interpreter
 conversion error, and a stream that is not valid UTF-8 text is refused by name
 too.
+
+## Strict local trace comparison
+
+The gates that run without any PSP metadata cannot borrow the v2 envelope, so
+they opt into a separate local contract instead:
+
+```text
+tracediff.py --strict-local <trace-a> <trace-b> [--expect-steps N]
+```
+
+`--strict-local` requires, on both inputs, a `# psp-recomp trace` identity header
+as the first comment line (an arbitrary comment header, a missing header or a
+second identity header is rejected), at least one step record (an empty or
+header-only stream is never evidence of equivalence), and step records numbered
+contiguously from zero, so duplicates, gaps and reordering are rejected by name.
+When both headers declare `start_pc`, they must agree. The two streams must always
+carry the same number of records; a pair of different lengths is rejected as
+`step count differs` even without `--expect-steps`. `--expect-steps N` adds the
+caller's own required length: a stream with fewer than `N` records is rejected as
+incomplete coverage and one with more is rejected as over-coverage, so equal
+lengths cannot substitute for declared coverage. `N` must be a positive decimal
+count.
+
+`codegen_gate.py` and `microtest_gate.py` are the callers: each proves the oracle
+supplied every record below the exit syscall before truncating, refuses a fixture
+whose exit syscall is at step 0 (a non-semantic probe, never a match), and passes
+the required record count to the comparator. The default two-argument
+invocation keeps its permissive v1 equality behavior for maintained informational
+callers; it is not proof that execution matched.

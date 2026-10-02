@@ -836,6 +836,7 @@ PUBLIC_TARGETS := \
 	sched-selftest-one \
 	heap-selftest \
 	profiler-selftest \
+	gui-present-selftest \
 	coro-selftest \
 	hle-thread-selftest \
 	hle-thread-selftest-build \
@@ -877,7 +878,8 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke \
 	psp-oracle-nakagawa-smoke-build \
 	psp-oracle-nakagawa-smoke-generate \
-	gpu-capture-selftest
+	gpu-capture-selftest \
+	gpu-selftest-status
 
 INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
@@ -945,6 +947,7 @@ HELP_DESCRIPTION_sched-selftest := run the scheduler selftest suite
 HELP_DESCRIPTION_sched-selftest-one := run one scheduler selftest build
 HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
+HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
 HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
@@ -987,6 +990,7 @@ HELP_DESCRIPTION_psp-oracle-nakagawa-smoke := run the generated-code PSP oracle 
 HELP_DESCRIPTION_psp-oracle-nakagawa-smoke-build := build the generated-code PSP oracle smoke
 HELP_DESCRIPTION_psp-oracle-nakagawa-smoke-generate := generate the PSP oracle smoke artifacts
 HELP_DESCRIPTION_gpu-capture-selftest := run the GPU capture selftest
+HELP_DESCRIPTION_gpu-selftest-status := build and run the GPU selftests, reporting PASS, SKIP or FAIL per binary
 
 .SECONDARY:
 
@@ -1817,6 +1821,12 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/profiler_selftest.exe
 
+gui-present-selftest:
+	$(CC) $(CFLAGS) -DSR_GUI_PRESENT_SELFTEST -ffunction-sections -fdata-sections \
+		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gui_present_selftest.exe \
+		src/rt/gui.c $(LIBS)
+	$(BUILD_DIR)/gui_present_selftest.exe
+
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
 # SHA-256 known-answer vectors, value-domain validators against synthetic corrupt
 # buffers, file-level loader tests against temporary table roots (truncated, extra
@@ -2190,12 +2200,16 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-gpu-coherence-selftest: shader-verify $(RT_GE_O)
+GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
+
+$(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
-		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_coherence_selftest.exe \
+		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_COHERENCE_BIN) \
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
-	$(BUILD_DIR)/gpu_coherence_selftest.exe
+
+gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
+	$(GPU_COHERENCE_BIN)
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
@@ -2212,12 +2226,46 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 # production present path is armed and driven with synthetic pixels; the published P6 PPMs
 # are byte-checked (header, channel order, row pitch, no trailing bytes). Exit 77 = SKIP
 # when Vulkan or the validation layer is unavailable.
-gpu-capture-selftest: shader-verify
+GPU_CAPTURE_BIN := $(BUILD_DIR)/gpu_capture_selftest.exe
+
+$(GPU_CAPTURE_BIN): shader-verify
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections \
-		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gpu_capture_selftest.exe \
+		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_CAPTURE_BIN) \
 		src/rt/gpu_capture_selftest.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(LIBS)
-	$(BUILD_DIR)/gpu_capture_selftest.exe
+
+gpu-capture-selftest: $(GPU_CAPTURE_BIN)
+	$(GPU_CAPTURE_BIN)
+
+# gpu-selftest-status — outcome-preserving status seam for the GPU selftest binaries.
+# A failing recipe always leaves Make with its own generic status, so a child SKIP
+# (exit 77, "Vulkan or the validation layer unavailable") cannot travel out through a
+# Make exit code and would be misread as a failure. This target therefore prints one
+# machine-readable line per binary:
+#
+#     GPU_SELFTEST_RESULT <name> PASS|SKIP|FAIL <exit-code>
+#
+# and exits nonzero only when a binary ran and failed for a real reason, so a build
+# failure and an executed semantic failure stay failures while a runtime SKIP stays a
+# SKIP. GPU_SELFTEST_BINS/GPU_SELFTEST_PREREQS are overridable so the status logic can
+# be exercised with synthetic children on hosts without Vulkan.
+GPU_SELFTEST_BINS ?= $(GPU_COHERENCE_BIN) $(GPU_CAPTURE_BIN)
+GPU_SELFTEST_PREREQS ?= $(GPU_COHERENCE_BIN) $(GPU_CAPTURE_BIN)
+
+gpu-selftest-status: $(GPU_SELFTEST_PREREQS)
+	@status=0; \
+	for sr_bin in $(GPU_SELFTEST_BINS); do \
+	  sr_name=`basename $$sr_bin`; \
+	  sr_rc=0; \
+	  "$$sr_bin" || sr_rc=$$?; \
+	  case $$sr_rc in \
+	    0) sr_verdict=PASS ;; \
+	    77) sr_verdict=SKIP ;; \
+	    *) sr_verdict=FAIL; status=1 ;; \
+	  esac; \
+	  echo "GPU_SELFTEST_RESULT $$sr_name $$sr_verdict $$sr_rc"; \
+	done; \
+	exit $$status
 
 # Standalone seconds-scale GE fixture replay. Fixtures are private game-derived inputs and
 # stay ignored; this target builds only the generic reader/rasterizer/backend executable.

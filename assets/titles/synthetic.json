@@ -32,8 +32,6 @@
     "fallback_entry": 142606572,
     "worker_thread_entry": 142614528,
     "launcher_thread_entry": 142618624,
-    "vblank_frame_counter_addr": 142671872,
-    "vblank_vsync_counter_addr": 142671936,
     "dispatch_aliases": [
       {"from": 142631168, "to": 142631424},
       {"from": 142631172, "to": 142631428}

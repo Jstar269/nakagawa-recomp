@@ -1214,9 +1214,21 @@ bool nk_title_manifest_parse_buffer(
             json_free(root);
             return false;
         }
+        JsonNode *retired_vf = obj_get(rb_node, "vblank_frame_counter_addr");
+        if (retired_vf) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_frame_counter_addr: retired (#643); runtime does not write guest VBLANK counters");
+            json_free(root);
+            return false;
+        }
+        JsonNode *retired_vs = obj_get(rb_node, "vblank_vsync_counter_addr");
+        if (retired_vs) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_vsync_counter_addr: retired (#643); runtime does not write guest VBLANK counters");
+            json_free(root);
+            return false;
+        }
         static const char * const allowed_rb_keys[] = {
             "schema_version", "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "vblank_frame_counter_addr", "vblank_vsync_counter_addr", "libfont_ready_flag_addr",
+            "libfont_ready_flag_addr",
             "frame_ready_latch_addr", "expected_data_file_count", "dispatch_aliases",
             "callback_terminators", "display_bringup", "runtime_sync", NULL
         };
@@ -1240,7 +1252,6 @@ bool nk_title_manifest_parse_buffer(
         /* Validate scalar addresses in runtime_bindings */
         static const char * const scalar_binding_fields[] = {
             "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "vblank_frame_counter_addr", "vblank_vsync_counter_addr",
             "libfont_ready_flag_addr", "frame_ready_latch_addr", NULL
         };
         for (int s = 0; scalar_binding_fields[s]; s++) {
@@ -1253,25 +1264,6 @@ bool nk_title_manifest_parse_buffer(
                     return false;
                 }
                 if (strcmp(scalar_binding_fields[s], "fallback_entry") == 0) fallback_entry = bind_addr;
-            }
-        }
-
-        /* Check paired vblank counters */
-        JsonNode *vf = obj_get(rb_node, "vblank_frame_counter_addr");
-        JsonNode *vs = obj_get(rb_node, "vblank_vsync_counter_addr");
-        if ((vf && !vs) || (!vf && vs)) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: vblank counters must be configured together");
-            json_free(root);
-            return false;
-        }
-        if (vf && vs) {
-            uint32_t vf_a = 0, vs_a = 0;
-            parse_uint32(vf, &vf_a);
-            parse_uint32(vs, &vs_a);
-            if (vf_a == vs_a) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: vblank counters must be distinct");
-                json_free(root);
-                return false;
             }
         }
 

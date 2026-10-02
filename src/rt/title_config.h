@@ -26,7 +26,7 @@
 #define SR_TITLE_CFG_FALLBACK_ENTRY   0x1u
 #define SR_TITLE_CFG_WORKER_ENTRY     0x2u
 #define SR_TITLE_CFG_LAUNCHER_ENTRY   0x4u
-#define SR_TITLE_CFG_VBLANK_COUNTERS  0x8u
+/* 0x8u retired (#643): VBLANK counter binding removed */
 /* Collection bits. Set only when the configuration supplied a NON-EMPTY collection;
  * the manifest validator rejects an empty one, so a set bit always means >= 1 entry. */
 #define SR_TITLE_CFG_DISPATCH_ALIASES      0x10u
@@ -91,8 +91,6 @@ typedef struct SrTitleRuntimeConfig {
     uint32_t    fallback_entry;               /* module-start fallback when the image entry is uncompiled */
     uint32_t    worker_thread_entry;          /* thread entry that carries the title's worker role */
     uint32_t    launcher_thread_entry;        /* thread entry that carries the title's launcher role */
-    uint32_t    vblank_frame_counter_addr;    /* retired: recorded only; the runtime never writes it */
-    uint32_t    vblank_vsync_counter_addr;    /* retired: recorded only; the runtime never writes it */
     uint32_t    libfont_ready_flag_addr;      /* fallback word when libfont startup is unavailable */
     uint32_t    frame_ready_latch_addr;       /* guest counter that gates frame presentation */
     SrTitleDisplayBringup display_bringup;    /* valid only when DISPLAY_BRINGUP bit set */
@@ -129,10 +127,6 @@ uint32_t sr_title_config_fallback_entry(void);
  * role by accident. */
 int sr_title_config_is_worker_entry(uint32_t entry);
 int sr_title_config_is_launcher_entry(uint32_t entry);
-
-/* Returns 1 and fills both addresses when the paired VBLANK counters are configured,
- * 0 otherwise (leaving the outputs untouched). */
-int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr);
 
 /* Dispatch alias lookup. Returns 1 and writes the aliased body's address to *to_addr
  * when `from` is a configured alias source, 0 otherwise (leaving *to_addr untouched).

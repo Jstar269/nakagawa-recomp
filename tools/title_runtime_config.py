@@ -37,7 +37,7 @@ import title_manifest
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
-GENERATED_SCHEMA_VERSION = 6
+GENERATED_SCHEMA_VERSION = 7
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -45,8 +45,6 @@ FIELD_BITS: dict[str, str] = {
     "fallback_entry": "SR_TITLE_CFG_FALLBACK_ENTRY",
     "worker_thread_entry": "SR_TITLE_CFG_WORKER_ENTRY",
     "launcher_thread_entry": "SR_TITLE_CFG_LAUNCHER_ENTRY",
-    "vblank_frame_counter_addr": "SR_TITLE_CFG_VBLANK_COUNTERS",
-    "vblank_vsync_counter_addr": "SR_TITLE_CFG_VBLANK_COUNTERS",
     "libfont_ready_flag_addr": "SR_TITLE_CFG_LIBFONT_READY",
     "frame_ready_latch_addr": "SR_TITLE_CFG_FRAME_LATCH",
 }

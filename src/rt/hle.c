@@ -93,6 +93,15 @@
  * host is refused at the one place that would use it (see ms0_fopen_utf8 and the
  * host data walk), so the guest observes the ordinary PSP error instead of a
  * crash or a made-up success. */
+/* Pure conversion of Unix timestamp (seconds and nanoseconds since 1970-01-01 00:00:00 UTC)
+ * to Windows FILETIME 100ns ticks since 1601-01-01 00:00:00 UTC.
+ * 11,644,473,600 seconds elapsed between 1601-01-01 and 1970-01-01. */
+uint64_t sr_unix_time_to_filetime_ticks(int64_t sec, long nsec) {
+    if (sec < -11644473600LL) return 0u;
+    uint64_t s = (uint64_t)(sec + 11644473600LL);
+    return s * 10000000ull + (uint64_t)(nsec > 0 ? nsec : 0) / 100ull;
+}
+
 #ifdef _WIN32
 static void sr_host_sleep_ms(uint32_t ms) { Sleep(ms); }
 static uint64_t sr_host_monotonic_ms(void) { return GetTickCount64(); }
@@ -124,7 +133,7 @@ static uint64_t sr_host_monotonic_ms(void) {
 static uint64_t sr_host_filetime_ticks(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0u;
-    return (uint64_t)ts.tv_sec * 10000000ull + (uint64_t)ts.tv_nsec / 100ull;
+    return sr_unix_time_to_filetime_ticks((int64_t)ts.tv_sec, ts.tv_nsec);
 }
 #endif
 

@@ -162,23 +162,21 @@ class RuntimeBindingValidation(unittest.TestCase):
             with self.subTest(value=value):
                 self.assert_rejected(base_manifest(worker_thread_entry=value), fragment)
 
-    def test_partially_specified_vblank_pair_is_rejected(self) -> None:
+    def test_retired_vblank_counter_fields_are_rejected(self) -> None:
         self.assert_rejected(
             base_manifest(vblank_frame_counter_addr=0x08820000),
-            "is paired with vblank_vsync_counter_addr",
+            "vblank_frame_counter_addr is retired (#643)",
         )
         self.assert_rejected(
             base_manifest(vblank_vsync_counter_addr=0x08820004),
-            "is paired with vblank_frame_counter_addr",
+            "vblank_vsync_counter_addr is retired (#643)",
         )
-
-    def test_identical_vblank_pair_is_rejected(self) -> None:
         self.assert_rejected(
             base_manifest(
                 vblank_frame_counter_addr=0x08820000,
-                vblank_vsync_counter_addr=0x08820000,
+                vblank_vsync_counter_addr=0x08820004,
             ),
-            "must be distinct addresses",
+            "retired (#643)",
         )
 
     def test_identical_worker_and_launcher_roles_are_rejected(self) -> None:
@@ -506,10 +504,10 @@ class GeneratedConfiguration(unittest.TestCase):
             "SR_TITLE_CONFIG_FALLBACK_ENTRY",
             "SR_TITLE_CONFIG_WORKER_THREAD_ENTRY",
             "SR_TITLE_CONFIG_LAUNCHER_THREAD_ENTRY",
-            "SR_TITLE_CONFIG_VBLANK_FRAME_COUNTER_ADDR",
-            "SR_TITLE_CONFIG_VBLANK_VSYNC_COUNTER_ADDR",
         ):
             self.assertIn(f"#define {macro} 0x00000000u", header)
+        self.assertNotIn("SR_TITLE_CONFIG_VBLANK_FRAME_COUNTER_ADDR", header)
+        self.assertNotIn("SR_TITLE_CONFIG_VBLANK_VSYNC_COUNTER_ADDR", header)
 
     def test_every_emitted_field_has_a_validity_bit(self) -> None:
         self.assertEqual(
@@ -1054,7 +1052,6 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
             "sr_title_config_fallback_entry",
             "sr_title_config_is_worker_entry",
             "sr_title_config_is_launcher_entry",
-            "sr_title_config_vblank_counters",
         )
         header = (ROOT / "src" / "rt" / "title_config.h").read_text(encoding="utf-8")
         for name in accessors:
@@ -1064,8 +1061,8 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
         self.assertIn("sr_title_config_fallback_entry()", driver)
         for name in ("sr_title_config_is_worker_entry", "sr_title_config_is_launcher_entry"):
             self.assertIn(name, sched)
-        # The VBLANK counter binding is retired: the scheduler must not consume it, so a
-        # delivered VBLANK cannot write title-named guest words again.
+        # The VBLANK counter binding is retired (#643): neither header nor sched carries it.
+        self.assertNotIn("sr_title_config_vblank_counters", header)
         self.assertNotIn("sr_title_config_vblank_counters", sched)
         # Only title_config.c may see the generated artifact.
         for relative in ("src/rt/driver.c", "src/rt/sched.c"):
