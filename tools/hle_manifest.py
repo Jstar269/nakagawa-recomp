@@ -1547,7 +1547,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--census-heading-level",
         type=int,
-        choices=range(1, 5),
+        choices=range(1, 6),
         default=1,
         help="top heading level for --census-markdown (the inventory doc embeds level 3)",
     )

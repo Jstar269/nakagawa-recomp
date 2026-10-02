@@ -190,16 +190,31 @@ HLE_CENSUS_COUNT_PAT = re.compile(
 # An explicit historical label on the same line. This is deliberately a list of
 # the words a reviewer actually writes when preserving a past figure, not a
 # licence: the count still has to read as past evidence on its own line. A bare
-# past-tense verb is only accepted *before* the count ("the census was 380
-# registrations"), because "were added" is not a capture-time label.
+# past-tense verb is only accepted *directly before* the count, with at most a
+# quantity qualifier between ("the census was 380 registrations", "it fell to
+# about 51"), and never when the clause goes on to describe a change ("there were
+# 380 registrations added"), because "were added" is not a capture-time label.
+# Once one count on a line is past evidence, later counts on that line share its
+# context ("was 380 registrations and 51 stubs") unless the line also speaks of
+# the present.
 HLE_CENSUS_HISTORICAL_LABEL_PAT = re.compile(
     r"histor|capture[- ]time|\bthen\b|previous|former|\bas of\b|snapshot"
     r"|supersed|no longer|\b[0-9a-f]{7,40}\b",
     re.IGNORECASE,
 )
 HLE_CENSUS_PAST_COUNT_PAT = re.compile(
-    r"\b(?:was|were|had|remained|reached|fell|rose)\b[^.;:]{0,60}$", re.IGNORECASE
+    r"\b(?:was|were|had|remained|reached|fell|rose)"
+    r"(?:\s+(?:to|at|about|around|roughly|approximately|nearly|almost|only|just|over|under))*"
+    r"\s+$",
+    re.IGNORECASE,
 )
+# A change verb right after the count turns "there were N ... added" into a
+# statement about what happened, not a captured figure.
+HLE_CENSUS_CHANGE_AFTER_COUNT_PAT = re.compile(
+    r"^[^.;:]{0,40}?\b(?:added|removed|registered|implemented|retired|dropped)\b",
+    re.IGNORECASE,
+)
+HLE_CENSUS_PRESENT_PAT = re.compile(r"\b(?:now|currently|today|is|are)\b", re.IGNORECASE)
 
 NON_CURRENT_DOC_STATUSES = frozenset(
     {"ARCHIVED", "HISTORICAL", "REFERENCE", "SUPERSEDED", "DRAFT"}
@@ -434,8 +449,13 @@ def lint_hle_census_counts(
     for idx, line in _census_prose_lines(doc_path.read_text(encoding="utf-8")):
         if HLE_CENSUS_HISTORICAL_LABEL_PAT.search(line):
             continue
+        past_context = False
         for match in HLE_CENSUS_COUNT_PAT.finditer(line):
-            if HLE_CENSUS_PAST_COUNT_PAT.search(line[: match.start()]):
+            if (HLE_CENSUS_PAST_COUNT_PAT.search(line[: match.start()])
+                    and not HLE_CENSUS_CHANGE_AFTER_COUNT_PAT.search(line[match.end():])):
+                past_context = not HLE_CENSUS_PRESENT_PAT.search(line)
+                continue
+            if past_context:
                 continue
             errors.append(
                 f"{rel_path}:{idx}: hand-codes an HLE census count "

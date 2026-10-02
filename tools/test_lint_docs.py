@@ -329,6 +329,23 @@ class TestHleCensusDocGuard(unittest.TestCase):
             doc = self._write_doc(root, "README.md", "The layer has 380 registrations.\n")
             self.assertTrue(lint_hle_census_counts(doc, root, {}))
 
+    def test_a_past_verb_counts_only_directly_before_an_uncharged_count(self) -> None:
+        cases = (
+            ("The census was 380 registrations and 51 fake-success stubs.\n", 0),
+            ("The census fell to about 51 fake-success stubs.\n", 0),
+            ("There were 380 registrations added.\n", 1),
+            ("Coverage was improved and now has 380 registrations.\n", 1),
+            ("The census was 380 registrations and is 51 fake-success stubs.\n", 1),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            statuses = self._taxonomy(root)
+            for claim, expected in cases:
+                with self.subTest(claim=claim.strip()):
+                    doc = self._write_doc(root, "docs/AUDIT.md", claim)
+                    errors = lint_hle_census_counts(doc, root, statuses)
+                    self.assertEqual(len(errors), expected, errors)
+
     def test_an_explicitly_labelled_historical_count_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

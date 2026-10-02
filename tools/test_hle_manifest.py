@@ -1334,14 +1334,14 @@ class CensusTests(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as td:
-            canonical = Path(td) / "census.json"
-            aliased = Path(td) / "alias.json"
-            args = ["--out", str(Path(td) / "manifest.json"), "--census-markdown"]
-            self.assertEqual(hle_manifest.main([*args, str(Path(td) / "a.md"), "--census", str(canonical)]), 0)
-            self.assertEqual(hle_manifest.main([*args, str(Path(td) / "b.md"), "--census-json", str(aliased)]), 0)
+            canonical_json = Path(td) / "census.json"
+            alias_json = Path(td) / "alias.json"
+            args = ["--out", str(Path(td) / "manifest.json")]
+            self.assertEqual(hle_manifest.main([*args, "--census", str(canonical_json)]), 0)
+            self.assertEqual(hle_manifest.main([*args, "--census-json", str(alias_json)]), 0)
             self.assertEqual(
-                aliased.read_text(encoding="ascii"),
-                canonical.read_text(encoding="ascii"),
+                alias_json.read_text(encoding="ascii"),
+                canonical_json.read_text(encoding="ascii"),
                 "--census-json must be the same artifact as --census, not a second format",
             )
 
