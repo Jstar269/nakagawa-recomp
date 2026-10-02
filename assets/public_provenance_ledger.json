@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f17e53db8ffa9db4376712e003d0fa98f4e070e92ebbc8c10edb7060cf04411"
+      "sha256": "fb255187f51e38fc3dae126e4d0a13f04ea764f904c50fc753870db039cc8021"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -1057,7 +1057,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ea272b6ec2f7da93fb31dd80f7b6354d78fa60aa73644b7e496890d559bc0855"
+      "sha256": "6019f4b6fb2dd65128f31147c2efa66c375540bf25f5e3bcbef69d89c2a17145"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1831,7 +1831,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16ccedafb2ed68d083b6805c13b5be9c1de46b3437c829553e0db7598acbe4ca"
+      "sha256": "8da9eb36b275a3f990df0ac9b10556ea0e302dad4f55f3cef5b23e35d28a023c"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -5394,7 +5394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be1b51dacbd22077e9ccd4d2dfa42b92ba215d1f13ffda8a79d7d4ac280b2c21"
+      "sha256": "6fb9396544611d0904fec0981de3dc50e83fa3018cbb6949fab7b5420c2bad45"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -6779,7 +6779,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c5872db38503240ab01e85594a4d55502157720327fb01765fee1ac431b2f337"
+      "sha256": "81f9d7c594528caa7d0e178b7ae02d483bddd1b8b9062f626b22f594d3d73d7d"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -7163,7 +7163,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8b305804a1cc8dd6245bffe2a041ce75645e8c7cafc662a0d10d2b07e410fe5"
+      "sha256": "be4c05d3b2926a72a9f2c28acc65ede23fc7ccdac1f643212f80f80a761c60bc"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7800,7 +7800,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c87ad683230a26168b966fb12a7b662753f44a9d117b7a96f4ec2ef295c5d31a"
+      "sha256": "b96462df3392d54f33982f249ecab928cc26a65429e505d4380dfcbc1c962eb4"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -8665,7 +8665,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36c6eac56424cef16e4c393d36ac3b53be51b0c6b76d6a3205e9cb8e249fe4e4"
+      "sha256": "f4676ce595f8f0ca764e90b64892de98fa336898d038cb5b8bfef50e26dc4862"
     },
     {
       "path": "tools/test_public_export.py",

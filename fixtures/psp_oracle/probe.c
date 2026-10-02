@@ -105,6 +105,10 @@ int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+/* vadd.s/vmul.s run on the main thread; without the VFPU attribute the first
+ * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META). */
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 #endif
@@ -2982,10 +2986,18 @@ static void run_audio_query(int emulated) {
     out[0] = (uint32_t)sceAudioOutput2GetRestSample();
     audio_defer(emulated, "audio-out2-query-after", out2 < 0 ? "SKIP" : "PASS",
                 0, out, 1);
+    /* Measured on PSP-3001 6.6.1: releasing while samples are still queued returns
+     * 0x80268002 (busy) and leaves Output2 reserved. Drain first, bounded at 100 ms. */
+    uint32_t drain_waits = 0;
+    while (out2 >= 0 && sceAudioOutput2GetRestSample() > 0 && drain_waits < 100u) {
+        sceKernelDelayThread(1000);
+        ++drain_waits;
+    }
     const uint32_t out2_release = out2 < 0 ? AUDIO_NOT_CAPTURED
         : (uint32_t)sceAudioOutput2Release();
     out[0] = out2_release;
-    audio_defer(emulated, "audio-out2-release", out2 < 0 ? "SKIP" : "PASS",
+    audio_defer(emulated, "audio-out2-release",
+                out2 < 0 ? "SKIP" : (int32_t)out2_release >= 0 ? "PASS" : "FAIL",
                 out2_release, out, 1);
 
     const int src = sceAudioSRCChReserve(AUDIO_QUERY_SAMPLES, 44100, 2);
@@ -3164,7 +3176,11 @@ static void run_ge_nan(int emulated) {
     const int init_rc = sceGuInit();
     s_ge_nan_frame = guGetStaticVramBuffer(
         GE_NAN_STRIDE, GE_NAN_HEIGHT, GU_PSM_8888);
-    const int ready = init_rc >= 0 && s_ge_nan_frame != NULL;
+    /* guGetStaticVramBuffer returns a VRAM offset; the first buffer is offset 0, so a
+     * NULL test would refuse it (measured: every render cell SKIPped on hardware). */
+    /* The framebuffer must lie inside the 2 MiB of eDRAM the pixel scan reads. */
+    const int ready = init_rc >= 0 &&
+        (uintptr_t)s_ge_nan_frame + GE_NAN_PIXELS * 4u <= 0x00200000u;
     for (size_t i = 0; i < sizeof(s_ge_nan_inputs) / sizeof(s_ge_nan_inputs[0]); ++i) {
         const struct ge_nan_input *input = &s_ge_nan_inputs[i];
         char case_id[48];
