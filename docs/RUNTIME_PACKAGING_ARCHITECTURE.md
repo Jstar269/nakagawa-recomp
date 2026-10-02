@@ -168,6 +168,17 @@ mean the analyzer/code generator did not report that boundary for these inputs;
 they do not establish title acceptance. These records do not patch behavior:
 generated unsupported functions retain the runtime's fail-closed path.
 
+`build-report.json` is the one package artifact whose size grows with the title,
+because it carries one record per AOT gap, unsupported instruction and analysis
+diagnostic; a measured flagship report is about 1.3 MB. The package reader
+therefore bounds it at 4194304 bytes and 262144 structural nodes instead of the
+1 MiB ceiling that applies to `package.json`, the completion manifest and the
+title input identity record, and the planner refuses to write a report larger
+than that ceiling rather than leaving it to fail validation. The native runtime
+validator still caps the same artifact at 262144 bytes, so a report between the
+two sizes builds but is rejected there with `build-report.json is larger than
+the supported JSON limit`; raising that native cap is a separate open gap.
+
 This package command still requires the developer toolchain. It takes a plain
 executable and does not unwrap a disc itself; `tools/nk_cli.py build-package
 <disc_id>` performs the library-disc extraction and the player consumes the

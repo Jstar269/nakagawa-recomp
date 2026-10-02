@@ -1025,6 +1025,42 @@ def has_private_backends(root: Path = ROOT) -> bool:
     return (root / "src" / "rt" / "pgf.c").is_file() and (root / "src" / "rt" / "pgd.c").is_file()
 
 
+def _build_report_text(report: dict[str, Any]) -> str:
+    """Serialize a build report, refusing one the package reader would reject.
+
+    The package validator reads build-report.json back through a bounded reader
+    whose ceiling is MAX_BUILD_REPORT_JSON_BYTES, so a report larger than that
+    has to fail here, while the build inputs are still known, instead of
+    surfacing as an opaque PACKAGE_BUILD_INCOMPLETE after the build has run.
+    """
+    from nk_core import package_cache  # lazy, as on the rest of the package route
+
+    text = canonical_json(report)
+    size = len(text.encode("utf-8"))
+    if size > package_cache.MAX_BUILD_REPORT_JSON_BYTES:
+        raise PackageRouteError(
+            "PACKAGE_REPORT_TOO_LARGE",
+            f"build-report.json would be {size} bytes, over the "
+            f"{package_cache.MAX_BUILD_REPORT_JSON_BYTES}-byte build report limit",
+        )
+    # The reader also enforces node/member/item ceilings, so the write side must
+    # apply the same scan or an over-node report still fails after the build.
+    try:
+        package_cache.bounded_json_loads(
+            text,
+            max_depth=package_cache.MAX_CACHE_JSON_DEPTH,
+            max_members=package_cache.MAX_BUILD_REPORT_JSON_MEMBERS,
+            max_items=package_cache.MAX_BUILD_REPORT_JSON_ITEMS,
+            max_nodes=package_cache.MAX_BUILD_REPORT_JSON_NODES,
+        )
+    except package_cache.BoundedJsonError as exc:
+        raise PackageRouteError(
+            "PACKAGE_REPORT_TOO_LARGE",
+            f"build-report.json would be rejected by the package reader: {exc}",
+        ) from exc
+    return text
+
+
 def build_package(
     manifest: dict[str, Any],
     *,
@@ -1461,7 +1497,7 @@ def build_package(
         generate_package_notices(build_workspace, repo_root=ROOT)
         report_path = build_workspace / "build-report.json"
         package_path = build_workspace / "package.json"
-        report_path.write_text(canonical_json(report), encoding="utf-8", newline="\n")
+        report_path.write_text(_build_report_text(report), encoding="utf-8", newline="\n")
         package_path.write_text(canonical_json(package), encoding="utf-8", newline="\n")
         package_cache.write_completion_manifest(
             build_workspace,
