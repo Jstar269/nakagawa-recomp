@@ -324,6 +324,11 @@ jobs:
       - name: Run host present pacing selftest (links SDL3)
         run: make CC=gcc gui-present-selftest
 
+      # tests/native/test_player_ui.py forces SDL's dummy video and software
+      # render drivers for every player it spawns, so no step env is needed.
+      - name: Run native player UI regressions headlessly
+        run: make CC=gcc player-ui-regressions
+
       - name: Configure, build, and test CMake Linux player
         run: |
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
@@ -689,6 +694,16 @@ jobs:
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-tests
+
+      - name: Run native player UI regressions headlessly on Windows
+        if: matrix.part == 'main'
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions
 
       # Run the same smoke with the executable staged outside its build tree
       # (#294): a launcher/staging path bug must fail in CI, not only in the
