@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -153,6 +154,151 @@ def synthetic_stale_package(runtime_root: Path) -> None:
     (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
 
 
+def synthetic_ready_package(runtime_root: Path) -> None:
+    """Write a source-owned package accepted by the real native validator."""
+    disc_id = "TEST00006"
+    title_id = "display-smoke-v1"
+    package = runtime_root / "packages" / disc_id
+    package.mkdir(parents=True)
+    executable_name = f"{title_id}.exe"
+    image_name = f"{title_id}_image.bin"
+    executable_bytes = b"synthetic ready package executable\n"
+    input_executable_hash = hashlib.sha256(b"synthetic input executable\n").hexdigest()
+    executable_hash = hashlib.sha256(executable_bytes).hexdigest()
+    zero_hash = "0" * 64
+
+    def write_json(path: Path, value: object) -> None:
+        path.write_text(json.dumps(value, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    def canonical_hash(value: object) -> str:
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    identity = {
+        "container": None,
+        "disc": {"disc_version": None, "id": disc_id, "region": "TEST"},
+        "format": "nakagawa-title-input-identity",
+        "main_executable": {"name": "EBOOT.BIN", "sha256": input_executable_hash},
+        "manifest": {"id": title_id, "schema_version": 1},
+        "modules": [],
+        "param_sfo": None,
+        "psp_header": None,
+        "schema_version": 1,
+    }
+    identity_text = json.dumps(identity, separators=(",", ":")) + "\n"
+    identity_digest = canonical_hash(identity)
+    identity_path = runtime_root / "title-input-identities" / disc_id / "title-input-identity.json"
+    identity_path.parent.mkdir(parents=True)
+    identity_path.write_text(identity_text, encoding="utf-8")
+
+    aot_components = {
+        "analyzer_codegen_epoch": "analyzer-codegen-v1",
+        "analyzer_sha256": zero_hash,
+        "codegen_options_sha256": canonical_hash({}),
+        "codegen_sha256": zero_hash,
+        "executable_sha256": input_executable_hash,
+        "generated_code_abi_epoch": 1,
+        "manifest_sha256": zero_hash,
+        "modules_sha256": canonical_hash([]),
+        "psp_header_sha256": None,
+        "runtime_abi_epoch": 1,
+        "title_input_identity_sha256": identity_digest,
+    }
+    native_components = {
+        "compile_flags": "",
+        "compiler_identity": "gcc-fixture",
+        "compiler_target": "fixture-target",
+        "generated_code_digest": zero_hash,
+        "link_flags": "",
+        "runtime_abi_epoch": 1,
+        "runtime_source_digest": zero_hash,
+    }
+    cache_key = {
+        "schema_version": 2,
+        "aot": {"digest": canonical_hash(aot_components), "components": aot_components},
+        "native": {"digest": canonical_hash(native_components), "components": native_components},
+    }
+    cache = {
+        "format": "nakagawa-aot-cache",
+        "schema_version": 2,
+        "key": cache_key,
+        "codegen_options": {},
+        "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True},
+    }
+    inputs = {
+        "manifest": {"sha256": zero_hash},
+        "executable": {"sha256": input_executable_hash},
+        "modules": [],
+        "psp_header": None,
+    }
+    report = {
+        "format": "nakagawa-build-report",
+        "schema_version": 1,
+        "title_id": title_id,
+        "runtime_abi": {"name": "CpuState", "version": 2},
+        "cache": cache,
+        "input_hashes": inputs,
+        "tools": {},
+        "coverage": {},
+        "unsupported": {"imports": [], "instructions": [], "regions": []},
+        "analysis_diagnostics": [],
+        "artifacts": {},
+    }
+    package_json = {
+        "format": "nakagawa-aot-package",
+        "schema_version": 2,
+        "cache": cache,
+        "title": {
+            "id": title_id,
+            "display_name": "Synthetic fixture",
+            "kind": "retail",
+            "manifest_sha256": zero_hash,
+            "protected_digest": zero_hash,
+        },
+        "inputs": inputs,
+        "title_input_identity": identity,
+        "runtime": {
+            "abi": "CpuState",
+            "abi_version": 2,
+            "abi_header_sha256": zero_hash,
+            "run_entry": "0x00000000",
+            "runtime_contract": None,
+            "runtime_bindings": {},
+            "required_runtime_bindings": [],
+        },
+        "executable": {
+            "path": executable_name,
+            "sha256": executable_hash,
+            "guest_entry": "0x00000000",
+        },
+        "generated_objects": [],
+        "required_local_assets": [],
+        "build_report": "build-report.json",
+    }
+
+    executable = package / executable_name
+    image = package / image_name
+    executable.write_bytes(executable_bytes)
+    image.write_bytes(b"synthetic runtime image\n")
+    write_json(package / "build-report.json", report)
+    write_json(package / "package.json", package_json)
+
+    completion = {
+        "format": "nakagawa-aot-cache-completion",
+        "schema_version": 2,
+        "status": "complete",
+        "cache_key": cache_key,
+        "title_input_identity": identity,
+        "artifacts": [
+            {"path": "package.json", "sha256": hashlib.sha256((package / "package.json").read_bytes()).hexdigest()},
+            {"path": "build-report.json", "sha256": hashlib.sha256((package / "build-report.json").read_bytes()).hexdigest()},
+            {"path": executable_name, "sha256": hashlib.sha256(executable.read_bytes()).hexdigest()},
+            {"path": image_name, "sha256": hashlib.sha256(image.read_bytes()).hexdigest()},
+        ],
+    }
+    write_json(package / "completion-manifest.json", completion)
+
+
 def badge_rect(frame: dict[str, str]) -> tuple[int, int, int, int]:
     """The status badge rectangle the renderer reported for this frame."""
     x, y, w, h = (int(value) for value in frame["badge"].split(","))
@@ -218,6 +364,8 @@ class NativePlayerUiTests(unittest.TestCase):
         art_iso: str | None = None,
         stale_package: bool = False,
         wait_background: bool = False,
+        catalog_reload_count: int = 0,
+        build_ready_test: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
         width: int = 1280,
@@ -238,12 +386,53 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            if build_ready_test:
+                synthetic_ready_package(runtime_root)
+            catalog_overlay: Path | None = None
+            if catalog_reload_count:
+                catalog_overlay = scratch / "catalog-overlay.json"
+                catalog_overlay.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "id": "synthetic-ui-catalog-reload-v1",
+                            "display_name": "Synthetic UI catalog reload fixture",
+                            "kind": "retail",
+                            "disc": {
+                                "id": "TEST00999",
+                                "region": "NA",
+                                "revision_policy": "exact-disc-id",
+                            },
+                            "executable": {
+                                "base": "0x08800000",
+                                "entry": "0x08800000",
+                                "bss_metadata_source": "elf",
+                                "extra_executable_spans": [],
+                            },
+                            "modules": [],
+                            "filesystem": {
+                                "data_root": "data",
+                                "memory_stick_root": "ms",
+                                "device_prefixes": ["host0:"],
+                            },
+                            "hle_profile": "standard",
+                            "feature_requirements": ["allegrex"],
+                            "verification_profile": "smoke",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    encoding="utf-8",
+                )
             ui_iso_path: Path | None = None
+            art_mount_source: Path | None = None
             if art_iso is not None:
                 ui_iso_path = scratch / "source-owned-synthetic.iso"
                 synthetic_art_iso(ui_iso_path)
                 if art_iso == "unavailable":
                     ui_iso_path.rename(scratch / "source-owned-synthetic.iso.offline")
+                elif art_iso == "late":
+                    art_mount_source = ui_iso_path
+                    ui_iso_path = scratch / "late-mounted-synthetic.iso"
                 elif art_iso != "available":
                     raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
             if stale_package:
@@ -267,7 +456,7 @@ class NativePlayerUiTests(unittest.TestCase):
             if env_extra:
                 env.update(env_extra)
 
-            args = [str(PLAYER_EXE), f"--view={view}"]
+            args = [str(PLAYER_EXE), f"--view={'build-ready' if build_ready_test else view}"]
             event_script = list(events)
             if drop_invalid_iso:
                 invalid_iso = scratch / "source-owned-invalid.iso"
@@ -280,6 +469,15 @@ class NativePlayerUiTests(unittest.TestCase):
                 args.append(f"--ui-test-iso-path={ui_iso_path}")
             if wait_background:
                 args.append("--ui-test-wait-background")
+            if catalog_overlay is not None:
+                args.extend(
+                    (
+                        f"--ui-test-catalog-reload-path={catalog_overlay}",
+                        f"--ui-test-catalog-reload-count={catalog_reload_count}",
+                    )
+                )
+            if art_mount_source is not None:
+                args.append(f"--ui-test-art-mount-source={art_mount_source}")
             args.append(f"--width={width}")
             args.append(f"--height={height}")
             if error_code:
@@ -497,6 +695,59 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(art_frames[-1]["selected_package_status"], "3")
         # Synthetic icon art arrives without blocking the UI frame.
         self.assertTrue(has_icon_art(available["bmp"]))
+
+    def test_package_status_worker_and_catalog_reload_share_safe_state(self) -> None:
+        run = self.run_player(
+            "ready",
+            wait_background=True,
+            catalog_reload_count=128,
+        )
+        self.assertRegex(
+            run["stdout"],
+            r"\[PLAYER_UI_TEST\] catalog_reload result=PASS "
+            r"reloads=128 status_checks=128 status=\d+",
+        )
+
+    def test_async_build_validation_enters_ready_library(self) -> None:
+        run = self.run_player(
+            "ready",
+            ("WAIT_VIEW=ready_library,10000", "ASSERT_VIEW=ready_library"),
+            build_ready_test=True,
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        ready_frames = [frame for frame in frames if frame["view"] == "ready_library"]
+        self.assertTrue(ready_frames)
+        self.assertRegex(
+            run["stdout"],
+            r"\[PLAYER_UI_TEST\] post_build_validation status=0 reason=Runtime package v2 is valid",
+        )
+        self.assertRegex(
+            run["stdout"],
+            r"\[PLAYER_UI_TEST\] post_build_transition view=ready_library "
+            r"disc=TEST00006 found=1 prepared=1 status=\d+",
+        )
+
+    def test_late_mounted_iso_art_retries_after_cooldown(self) -> None:
+        run = self.run_player(
+            "ready",
+            ("WAIT_ART_ATTEMPT=1", "MOUNT_ART_ISO", "WAIT_ART_ATTEMPT=2"),
+            art_iso="late",
+            wait_background=True,
+        )
+        self.assertTrue(has_icon_art(run["bmp"]))
+        attempts = re.findall(
+            r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
+            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d)",
+            run["stdout"],
+        )
+        self.assertEqual(len(attempts), 2, run["stdout"])
+        self.assertEqual(attempts[0][2:], ("0", "0"))
+        self.assertEqual(attempts[1][2:], ("1", "1"))
+        retry_delay_ns = int(attempts[1][1]) - int(attempts[0][1])
+        self.assertGreaterEqual(retry_delay_ns, 1_000_000_000)
+        self.assertLessEqual(retry_delay_ns, 2_500_000_000)
 
     def test_inspection_and_support_screens_render_and_return(self) -> None:
         for view in ("inspecting", "supported", "experimental", "unsupported", "preparing"):

@@ -567,7 +567,9 @@ enum {
     PLAYER_UI_TEST_ACTION_WAIT_VIEW = -20260927,
     PLAYER_UI_TEST_ACTION_ASSERT_CONSENT = -20260928,
     PLAYER_UI_TEST_ACTION_ASSERT_VIEW = -20260929,
-    PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING = -20260930
+    PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING = -20260930,
+    PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT = -20261001,
+    PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO = -20261002
 };
 
 static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
@@ -661,6 +663,20 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->user.timestamp = timeout;
         return 1;
     }
+    if (strncmp(token, "WAIT_ART_ATTEMPT=", 17) == 0) {
+        uint64_t attempt = 0;
+        if (!player_ui_test_parse_positive_u64(token + 17, &attempt) ||
+            attempt > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT;
+        event->user.windowID = (Uint32)attempt;
+        return 1;
+    }
+    if (strcmp(token, "MOUNT_ART_ISO") == 0) {
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO;
+        return 1;
+    }
     if (strncmp(token, "ASSERT_VIEW=", 12) == 0) {
         uint32_t target_mask = 0;
         if (!player_ui_test_parse_views(token + 12, &target_mask) ||
@@ -750,6 +766,29 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         return -1;
     }
     return -1;
+}
+
+static bool player_ui_test_copy_file(const char *source, const char *destination) {
+    if (!source || !source[0] || !destination || !destination[0]) return false;
+    FILE *input = fopen(source, "rb");
+    if (!input) return false;
+    FILE *output = fopen(destination, "wb");
+    if (!output) {
+        fclose(input);
+        return false;
+    }
+    char buffer[8192];
+    bool ok = true;
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), input)) > 0) {
+        if (fwrite(buffer, 1, count, output) != count) {
+            ok = false;
+            break;
+        }
+    }
+    if (ferror(input) || fclose(input) != 0) ok = false;
+    if (fclose(output) != 0) ok = false;
+    return ok;
 }
 
 static const char *player_ui_test_view_name(PlayerView view) {
@@ -915,7 +954,22 @@ typedef struct {
     char reason[2048];
     GameRecord game;
     NkRuntimePackageStatus status;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    SDL_Semaphore *catalog_test_start;
+    SDL_Semaphore *catalog_test_done;
+    unsigned catalog_test_repetitions;
+    unsigned catalog_test_status_checks;
+    bool catalog_test_status_mismatch;
+#endif
 } PlayerPackageStatusJob;
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static const char *s_ui_test_catalog_reload_path;
+static unsigned s_ui_test_catalog_reload_count;
+static unsigned s_ui_test_catalog_reload_completed;
+static bool s_ui_test_catalog_reload_started;
+static bool s_ui_test_catalog_reload_failed;
+#endif
 
 static int SDLCALL player_package_status_thread_main(void *userdata) {
     PlayerPackageStatusJob *job = (PlayerPackageStatusJob *)userdata;
@@ -950,6 +1004,21 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
             (job->status == NK_RUNTIME_PACKAGE_MISSING &&
              !job->game.is_experimental &&
              nk_launch_runtime_available(root, job->game.title_id));
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (job->catalog_test_start && job->catalog_test_done) {
+            for (unsigned i = 0; i < job->catalog_test_repetitions; i++) {
+                (void)SDL_WaitSemaphore(job->catalog_test_start);
+                NkRuntimePackageStatus repeated_status =
+                    nk_launch_validate_runtime_package(
+                        root, &job->game, NULL, NULL, 0);
+                if (repeated_status != job->status) {
+                    job->catalog_test_status_mismatch = true;
+                }
+                job->catalog_test_status_checks++;
+                (void)SDL_SignalSemaphore(job->catalog_test_done);
+            }
+        }
+#endif
     } else {
         job->status = NK_RUNTIME_PACKAGE_MISSING;
         snprintf(job->reason, sizeof(job->reason),
@@ -1020,6 +1089,26 @@ static bool player_package_status_start_next(
     job->cache_generation = app->runtime_package_cache_generation;
     job->force = force_requested[index];
     job->game = app->games[index];
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (s_ui_test_catalog_reload_count > 0 &&
+        s_ui_test_catalog_reload_path &&
+        s_ui_test_catalog_reload_path[0] &&
+        !s_ui_test_catalog_reload_started) {
+        job->catalog_test_start = SDL_CreateSemaphore(0);
+        job->catalog_test_done = SDL_CreateSemaphore(0);
+        job->catalog_test_repetitions = s_ui_test_catalog_reload_count;
+        if (!job->catalog_test_start || !job->catalog_test_done) {
+            if (job->catalog_test_start) {
+                SDL_DestroySemaphore(job->catalog_test_start);
+                job->catalog_test_start = NULL;
+            }
+            if (job->catalog_test_done) {
+                SDL_DestroySemaphore(job->catalog_test_done);
+                job->catalog_test_done = NULL;
+            }
+        }
+    }
+#endif
     snprintf(job->runtime_root, sizeof(job->runtime_root), "%s",
              app->runtime_root);
     snprintf(job->showcase_root, sizeof(job->showcase_root), "%s",
@@ -1044,6 +1133,14 @@ static bool player_package_status_start_next(
     job->thread = SDL_CreateThread(player_package_status_thread_main,
                                    "nakagawa-package-status", job);
     if (!job->thread) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (job->catalog_test_start) {
+            SDL_DestroySemaphore(job->catalog_test_start);
+        }
+        if (job->catalog_test_done) {
+            SDL_DestroySemaphore(job->catalog_test_done);
+        }
+#endif
         app->runtime_package_cache[index].validation_pending = false;
         free(job);
         return false;
@@ -1064,6 +1161,29 @@ static void player_package_status_finish(PlayerApp *app,
         SDL_WaitThread(job->thread, NULL);
         job->thread = NULL;
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (job->catalog_test_repetitions > 0) {
+        bool stress_passed = !s_ui_test_catalog_reload_failed &&
+            s_ui_test_catalog_reload_completed ==
+                job->catalog_test_repetitions &&
+            job->catalog_test_status_checks ==
+                job->catalog_test_repetitions &&
+            !job->catalog_test_status_mismatch;
+        printf("[PLAYER_UI_TEST] catalog_reload result=%s reloads=%u "
+               "status_checks=%u status=%d\n",
+               stress_passed ? "PASS" : "FAIL",
+               s_ui_test_catalog_reload_completed,
+               job->catalog_test_status_checks, (int)job->status);
+        if (job->catalog_test_start) {
+            SDL_DestroySemaphore(job->catalog_test_start);
+            job->catalog_test_start = NULL;
+        }
+        if (job->catalog_test_done) {
+            SDL_DestroySemaphore(job->catalog_test_done);
+            job->catalog_test_done = NULL;
+        }
+    }
+#endif
     int current_index = -1;
     for (int i = 0; i < app->game_count; i++) {
         if (strcmp(app->games[i].disc_id, job->game.disc_id) == 0 &&
@@ -1105,6 +1225,13 @@ static void player_package_status_finish(PlayerApp *app,
                          current_index >= 0 && build_check_disc_id &&
                          strcmp(build_check_disc_id, job->game.disc_id) == 0 &&
                          cache_generation_matches;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (handles_build) {
+        printf("[PLAYER_UI_TEST] post_build_validation status=%d reason=%s\n",
+               (int)job->status,
+               job->reason[0] ? job->reason : "none");
+    }
+#endif
     if (handles_build) {
         *build_check_pending = false;
         if (job->status == NK_RUNTIME_PACKAGE_OK) {
@@ -1122,6 +1249,15 @@ static void player_package_status_finish(PlayerApp *app,
                     job->runtime_available, SDL_GetTicks());
             }
             player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+            printf("[PLAYER_UI_TEST] post_build_transition view=ready_library "
+                   "disc=%s found=%d prepared=%d status=%d\n",
+                   job->game.disc_id, current_index >= 0,
+                   current_index >= 0
+                       ? app->games[current_index].is_prepared : 0,
+                   current_index >= 0
+                       ? (int)app->games[current_index].status : -1);
+#endif
         } else {
             player_app_set_build_error(
                 app, "package",
@@ -1175,27 +1311,53 @@ static bool player_copy_staging_roots(
                 game->selected_executable, &experimental_entry,
                 profile_hash, error, sizeof(error))) return false;
         entry = &experimental_entry;
+    }
+
+    nk_title_catalog_lock();
+    if (game->is_experimental) {
+        if (!entry->id || strcmp(entry->id, game->title_id) != 0 ||
+            !entry->primary_disc_id ||
+            strcmp(entry->primary_disc_id, game->disc_id) != 0) {
+            nk_title_catalog_unlock();
+            return false;
+        }
     } else {
         const NkTitleEntry *by_disc = game->disc_id[0]
             ? nk_title_catalog_find_by_disc_id(game->disc_id) : NULL;
         const NkTitleEntry *by_id = game->title_id[0]
             ? nk_title_catalog_find_by_id(game->title_id) : NULL;
-        if (!by_disc && !by_id) return true;
+        if (!by_disc && !by_id) {
+            nk_title_catalog_unlock();
+            return true;
+        }
         if (by_disc && game->title_id[0] &&
-            (!by_id || strcmp(by_disc->id, by_id->id) != 0)) return false;
-        if (!by_disc) return true;
+            (!by_id || strcmp(by_disc->id, by_id->id) != 0)) {
+            nk_title_catalog_unlock();
+            return false;
+        }
+        if (!by_disc) {
+            nk_title_catalog_unlock();
+            return true;
+        }
         entry = by_disc;
     }
     if (!entry || entry->loose_content_root_count < 0 ||
         entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
-        (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) return false;
+        (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) {
+        nk_title_catalog_unlock();
+        return false;
+    }
     for (int i = 0; i < entry->loose_content_root_count; i++) {
         const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
-        if (!binding->root || strlen(binding->root) >= sizeof(storage[i])) return false;
+        if (!binding->root || strlen(binding->root) >= sizeof(storage[i])) {
+            nk_title_catalog_unlock();
+            return false;
+        }
         snprintf(storage[i], sizeof(storage[i]), "%s", binding->root);
         roots[i] = storage[i];
         (*root_count)++;
     }
+    nk_title_catalog_unlock();
     return true;
 }
 
@@ -1856,6 +2018,7 @@ int main(int argc, char *argv[]) {
     const char *ui_test_screenshot_path = NULL;
     const char *ui_test_error_code = NULL;
     const char *ui_test_iso_path = NULL;
+    const char *ui_test_art_mount_source = NULL;
     bool ui_test_wait_background = false;
     bool ui_test_mode = false;
     bool ui_test_failed = false;
@@ -1864,6 +2027,8 @@ int main(int argc, char *argv[]) {
     int ui_test_frame = 0;
     bool ui_test_waiting_for_time = false;
     bool ui_test_waiting_for_view = false;
+    bool ui_test_waiting_for_art_attempt = false;
+    unsigned ui_test_wait_art_attempt_target = 0;
     uint64_t ui_test_wait_deadline = 0;
     uint32_t ui_test_wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
     bool ui_test_fake_game_running = false;
@@ -1904,8 +2069,24 @@ int main(int argc, char *argv[]) {
         } else if (strncmp(argv[i], "--ui-test-iso-path=", 19) == 0) {
             ui_test_iso_path = argv[i] + 19;
             ui_test_mode = true;
+        } else if (strncmp(argv[i], "--ui-test-art-mount-source=", 27) == 0) {
+            ui_test_art_mount_source = argv[i] + 27;
+            ui_test_mode = true;
         } else if (strcmp(argv[i], "--ui-test-wait-background") == 0) {
             ui_test_wait_background = true;
+            ui_test_mode = true;
+        } else if (strncmp(argv[i], "--ui-test-catalog-reload-path=", 30) == 0) {
+            s_ui_test_catalog_reload_path = argv[i] + 30;
+            ui_test_mode = true;
+        } else if (strncmp(argv[i], "--ui-test-catalog-reload-count=", 31) == 0) {
+            uint64_t count = 0;
+            if (!player_ui_test_parse_positive_u64(argv[i] + 31, &count) ||
+                count > 1024) {
+                fprintf(stderr, "[PLAYER_UI_TEST] invalid catalog reload count.\n");
+                ui_test_failed = true;
+            } else {
+                s_ui_test_catalog_reload_count = (unsigned)count;
+            }
             ui_test_mode = true;
 #endif
         } else if (strncmp(argv[i], "--view=", 7) == 0) {
@@ -1950,6 +2131,12 @@ int main(int argc, char *argv[]) {
     {
         const char *fake_running = getenv("NK_UI_TEST_GAME_RUNNING");
         ui_test_fake_game_running = ui_test_mode && fake_running && fake_running[0];
+    }
+    if ((s_ui_test_catalog_reload_count > 0) !=
+        (s_ui_test_catalog_reload_path &&
+         s_ui_test_catalog_reload_path[0])) {
+        fprintf(stderr, "[PLAYER_UI_TEST] catalog reload path/count must be paired.\n");
+        ui_test_failed = true;
     }
     if (ui_test_mode) setvbuf(stdout, NULL, _IONBF, 0);
 #endif
@@ -2168,7 +2355,8 @@ int main(int argc, char *argv[]) {
             app.selected_game_index = 0;
             player_app_set_view(&app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "ready-library") == 0 ||
-                   strcmp(test_view, "ready") == 0) {
+                   strcmp(test_view, "ready") == 0 ||
+                   strcmp(test_view, "build-ready") == 0) {
             /* Synthetic capture fixture for the post-staging card. It is kept
                in memory only so the screenshot path never writes a fabricated
                title into the user's library. */
@@ -2197,7 +2385,15 @@ int main(int argc, char *argv[]) {
                 app.game_count = 1;
                 app.selected_game_index = 0;
             }
-            player_app_set_view(&app, PLAYER_VIEW_READY_LIBRARY);
+            if (strcmp(test_view, "build-ready") == 0) {
+                player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
+                package_builder_init_session(&app.build_session,
+                                             app.games[0].disc_id,
+                                             app.games[0].title_name);
+                app.build_session.is_complete = true;
+            } else {
+                player_app_set_view(&app, PLAYER_VIEW_READY_LIBRARY);
+            }
         } else if (strcmp(test_view, "inspecting") == 0) {
             player_app_set_view(&app, VIEW_INSPECTING);
         } else if (strcmp(test_view, "supported") == 0) {
@@ -2683,6 +2879,16 @@ int main(int argc, char *argv[]) {
                     ui_test_block_script = true;
                 }
             }
+            if (ui_test_waiting_for_art_attempt) {
+                unsigned completed = ui_renderer_test_art_attempt_count();
+                if (completed >= ui_test_wait_art_attempt_target) {
+                    printf("[PLAYER_UI_TEST] wait_art_attempt target=%u result=PASS\n",
+                           ui_test_wait_art_attempt_target);
+                    ui_test_waiting_for_art_attempt = false;
+                } else {
+                    ui_test_block_script = true;
+                }
+            }
             if (ui_test_waiting_for_time) {
                 if (ui_test_now >= ui_test_wait_deadline) {
                     printf("[PLAYER_UI_TEST] wait_ms result=PASS\n");
@@ -2697,6 +2903,23 @@ int main(int argc, char *argv[]) {
                 ui_test_events, &ui_test_event_cursor, &scripted_event);
             if (next_event > 0) {
                 if (scripted_event.type == SDL_EVENT_USER &&
+                    scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT) {
+                    ui_test_wait_art_attempt_target = scripted_event.user.windowID;
+                    ui_test_waiting_for_art_attempt = true;
+                    printf("[PLAYER_UI_TEST] wait_art_attempt target=%u started\n",
+                           ui_test_wait_art_attempt_target);
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO) {
+                    bool mounted = player_ui_test_copy_file(
+                        ui_test_art_mount_source, ui_test_iso_path);
+                    printf("[PLAYER_UI_TEST] mount_art_iso result=%s\n",
+                           mounted ? "PASS" : "FAIL");
+                    if (!mounted) {
+                        ui_test_failed = true;
+                        ui_test_quit_queued = true;
+                        running = false;
+                    }
+                } else if (scripted_event.type == SDL_EVENT_USER &&
                     scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_MS) {
                     ui_test_wait_deadline = ui_test_now + scripted_event.user.windowID;
                     ui_test_waiting_for_time = true;
@@ -2984,6 +3207,26 @@ int main(int argc, char *argv[]) {
         (void)player_package_status_start_next(
             &app, &package_status_job, package_status_requested,
             package_status_force_requested);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (package_status_job && package_status_job->catalog_test_start &&
+            package_status_job->catalog_test_done &&
+            !s_ui_test_catalog_reload_started) {
+            s_ui_test_catalog_reload_started = true;
+            for (unsigned i = 0; i < s_ui_test_catalog_reload_count; i++) {
+                (void)SDL_SignalSemaphore(
+                    package_status_job->catalog_test_start);
+                char reload_error[256] = "";
+                if (!nk_title_manifest_load_overlay_ext(
+                        s_ui_test_catalog_reload_path, true, reload_error,
+                        sizeof(reload_error))) {
+                    s_ui_test_catalog_reload_failed = true;
+                } else {
+                    s_ui_test_catalog_reload_completed++;
+                }
+                (void)SDL_WaitSemaphore(package_status_job->catalog_test_done);
+            }
+        }
+#endif
 
         /* Monitor running game process */
         bool child_exited = false;
@@ -3126,6 +3369,16 @@ int main(int argc, char *argv[]) {
             SDL_WaitThread(package_status_job->thread, NULL);
             package_status_job->thread = NULL;
         }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        if (package_status_job->catalog_test_start) {
+            SDL_DestroySemaphore(package_status_job->catalog_test_start);
+            package_status_job->catalog_test_start = NULL;
+        }
+        if (package_status_job->catalog_test_done) {
+            SDL_DestroySemaphore(package_status_job->catalog_test_done);
+            package_status_job->catalog_test_done = NULL;
+        }
+#endif
         free(package_status_job);
         package_status_job = NULL;
     }

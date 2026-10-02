@@ -37,6 +37,9 @@ void ui_font_shutdown(void);
 bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
                                     const SDL_Event *event);
 bool ui_renderer_art_pending(void);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+unsigned ui_renderer_test_art_attempt_count(void);
+#endif
 
 /* Pixel-density multiplier applied to raster point sizes (crisper type on
  * high-density displays). Values outside [1, 3] are ignored. */

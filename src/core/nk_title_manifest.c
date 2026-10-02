@@ -99,7 +99,6 @@ typedef struct {
 
 static OverlayStorageSlot s_overlay_slots[NK_MANIFEST_MAX_OVERLAYS];
 static int s_overlay_slot_count = 0;
-static uint64_t s_catalog_epoch = 1;
 
 /* Installed into the catalog the first time an overlay is stored, so that
    nk_title_catalog_clear_overlay releases this storage as well as its own
@@ -109,7 +108,6 @@ static uint64_t s_catalog_epoch = 1;
 static void nk_manifest_reset_overlay_storage(void) {
     memset(s_overlay_slots, 0, sizeof(s_overlay_slots));
     s_overlay_slot_count = 0;
-    s_catalog_epoch++;
 }
 
 static FILE *manifest_fopen(const char *path) {
@@ -446,7 +444,7 @@ static bool check_object_keys(
 /* -----------------------------------------------------------------------------
  * Manifest Buffer Parser
  * -------------------------------------------------------------------------- */
-bool nk_title_manifest_parse_buffer(
+static bool nk_title_manifest_parse_buffer_locked(
     const char *json_str,
     size_t json_len,
     bool allow_override,
@@ -1540,6 +1538,9 @@ bool nk_title_manifest_parse_buffer(
         }
     }
 
+    /* The caller holds the catalog lock: registered entries point into these
+       slots, so collision checks and slot replacement must be indivisible
+       with package-status snapshots. */
     /* Check against already-loaded external overlay identities */
     if (!collision) {
         for (int i = 0; i < s_overlay_slot_count; i++) {
@@ -1625,7 +1626,7 @@ bool nk_title_manifest_parse_buffer(
         }
     }
 
-    nk_title_catalog_set_overlay_storage_reset(nk_manifest_reset_overlay_storage);
+    nk_title_catalog_set_overlay_storage_reset_locked(nk_manifest_reset_overlay_storage);
     s_overlay_slots[target_slot] = temp;
     /* Re-anchor self pointers for the chosen slot */
     OverlayStorageSlot *dest = &s_overlay_slots[target_slot];
@@ -1674,6 +1675,23 @@ bool nk_title_manifest_parse_buffer(
 
     json_free(root);
     return true;
+}
+
+bool nk_title_manifest_parse_buffer(
+    const char *json_data,
+    size_t json_len,
+    bool allow_override,
+    NkTitleEntry *out_entry,
+    char *error_buf,
+    size_t error_buf_len
+) {
+    nk_title_catalog_lock();
+    bool ok = nk_title_manifest_parse_buffer_locked(
+        json_data, json_len, allow_override, out_entry, error_buf,
+        error_buf_len);
+    if (ok) nk_title_catalog_advance_epoch_locked();
+    nk_title_catalog_unlock();
+    return ok;
 }
 
 bool nk_title_manifest_load_overlay_ext(
@@ -1740,19 +1758,21 @@ bool nk_title_manifest_load_overlay_ext(
     buf[bytes_read] = '\0';
 
     NkTitleEntry entry;
-    bool ok = nk_title_manifest_parse_buffer(buf, bytes_read, allow_override, &entry, error_buf, error_buf_len);
+    nk_title_catalog_lock();
+    bool ok = nk_title_manifest_parse_buffer_locked(
+        buf, bytes_read, allow_override, &entry, error_buf, error_buf_len);
     free(buf);
 
     if (ok) {
         /* Find matching slot and register with catalog */
         for (int i = 0; i < s_overlay_slot_count; i++) {
             if (strcmp(s_overlay_slots[i].entry.id, entry.id) == 0) {
-                nk_title_catalog_register_overlay(&s_overlay_slots[i].entry);
-                s_catalog_epoch++;
+                nk_title_catalog_register_overlay_locked(&s_overlay_slots[i].entry);
                 break;
             }
         }
     }
+    nk_title_catalog_unlock();
     return ok;
 }
 
@@ -2741,7 +2761,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     package_cache_identity_update_text(&identity_ctx, current_disc_version);
     package_identity_update_u64(&identity_ctx, is_experimental ? 1u : 0u);
     package_identity_update_u64(&identity_ctx, player_abi_version);
-    package_identity_update_u64(&identity_ctx, s_catalog_epoch);
+    package_identity_update_u64(&identity_ctx, nk_title_catalog_epoch());
     package_cache_identity_update_file(&identity_ctx, "package.json", package_path);
     package_cache_identity_update_file(&identity_ctx, "build-report.json", report_path);
     package_cache_identity_update_file(&identity_ctx,
@@ -4048,10 +4068,18 @@ bool nk_title_manifest_read_experimental_profile(
     if (valid) valid = json_writer_node(&writer, manifest, 0) && !writer.failed &&
                        writer.length <= NK_MANIFEST_MAX_BYTES;
     if (valid) {
-        valid = nk_title_manifest_parse_buffer(writer.data, writer.length, false,
-                                                out_title, error_buf, error_buf_len) &&
-                out_title->id && strcmp(out_title->id, expected_id) == 0 &&
-                out_title->primary_disc_id && strcmp(out_title->primary_disc_id, normalized) == 0;
+        NkTitleEntry parsed_title;
+        nk_title_catalog_lock();
+        bool parsed = nk_title_manifest_parse_buffer_locked(
+            writer.data, writer.length, false, &parsed_title, error_buf,
+            error_buf_len);
+        bool matches = parsed && parsed_title.id &&
+            strcmp(parsed_title.id, expected_id) == 0 &&
+            parsed_title.primary_disc_id &&
+            strcmp(parsed_title.primary_disc_id, normalized) == 0;
+        if (matches) *out_title = parsed_title;
+        nk_title_catalog_unlock();
+        valid = matches;
     }
     if (!valid && error_buf && error_buf_len && !error_buf[0]) {
         snprintf(error_buf, error_buf_len,
@@ -4062,6 +4090,20 @@ bool nk_title_manifest_read_experimental_profile(
     json_free(profile);
     free(writer.data);
     return valid;
+}
+
+static bool package_catalog_identity_matches(const char *disc_id,
+                                            const char *title_id,
+                                            uint64_t *catalog_epoch) {
+    nk_title_catalog_lock();
+    const NkTitleEntry *by_disc = nk_title_catalog_find_by_disc_id(disc_id);
+    const NkTitleEntry *by_id = nk_title_catalog_find_by_id(title_id);
+    bool matches = by_disc && by_id && by_disc == by_id;
+    if (catalog_epoch) {
+        *catalog_epoch = nk_title_catalog_epoch_locked();
+    }
+    nk_title_catalog_unlock();
+    return matches;
 }
 
 NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
@@ -4080,6 +4122,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     NkRuntimePackageInfo resolved_info;
     memset(&resolved_info, 0, sizeof(resolved_info));
     if (out_info) memset(out_info, 0, sizeof(*out_info));
+    uint64_t catalog_epoch = 0;
     char normalized[10];
     if (!user_data_root || !*user_data_root || !title_id || !*title_id ||
         !nk_manifest_normalize_disc_id(disc_id, normalized)) {
@@ -4097,9 +4140,8 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
             return NK_RUNTIME_PACKAGE_STALE;
         }
     } else {
-        const NkTitleEntry *by_disc = nk_title_catalog_find_by_disc_id(normalized);
-        const NkTitleEntry *by_id = nk_title_catalog_find_by_id(title_id);
-        if (!by_disc || !by_id || by_disc != by_id) {
+        if (!package_catalog_identity_matches(normalized, title_id,
+                                              &catalog_epoch)) {
             package_rebuild_reason(reason, reason_size,
                 "Package title identity does not match the catalogued disc.", user_data_root, normalized);
             return NK_RUNTIME_PACKAGE_STALE;
@@ -4142,7 +4184,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         package_validation_cache_get(package_root, normalized, title_id,
                                      current_identity_file_digest,
                                      current_disc_version,
-                                     player_abi_version, s_catalog_epoch,
+                                     player_abi_version, catalog_epoch,
                                      status_identity_digest,
                                      &resolved_info)) {
         if (out_info) *out_info = resolved_info;
@@ -4307,7 +4349,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                 package_validation_cache_put(
                     package_root, normalized, title_id,
                     validated_identity_file_digest, current_disc_version,
-                    player_abi_version, s_catalog_epoch,
+                    player_abi_version, nk_title_catalog_epoch(),
                     package_identity_digest, status_identity_digest,
                     &resolved_info);
             }

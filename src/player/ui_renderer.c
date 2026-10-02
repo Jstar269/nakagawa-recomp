@@ -7,6 +7,7 @@
 #include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
 #include <SDL3/SDL_version.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -327,10 +328,12 @@ typedef struct {
     float pic1_w;
     float pic1_h;
     bool pic1_attempted;
+    uint64_t retry_after_ns;
     UiArtJob *job;
 } GameTextureCacheEntry;
 
 #define GAME_TEXTURE_CACHE_SIZE 64
+#define GAME_ART_RETRY_COOLDOWN_NS UINT64_C(1000000000)
 static GameTextureCacheEntry s_game_textures[GAME_TEXTURE_CACHE_SIZE];
 
 enum { PLAYER_UI_ART_EVENT_CODE = 0x55494152 };
@@ -351,6 +354,9 @@ struct UiArtJob {
 };
 
 static UiArtJob *s_art_jobs[GAME_TEXTURE_CACHE_SIZE];
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static unsigned s_ui_test_art_attempt_count;
+#endif
 
 static int SDLCALL ui_art_thread_main(void *userdata) {
     UiArtJob *job = (UiArtJob *)userdata;
@@ -377,10 +383,16 @@ static int SDLCALL ui_art_thread_main(void *userdata) {
     return 0;
 }
 
+static void ui_art_set_retry_deadline(GameTextureCacheEntry *entry) {
+    if (!entry) return;
+    entry->retry_after_ns = SDL_GetTicksNS() + GAME_ART_RETRY_COOLDOWN_NS;
+}
+
 static bool ui_start_art_job(GameTextureCacheEntry *entry,
                              const char *iso_path) {
     if (!entry || !iso_path || !iso_path[0] || entry->job ||
-        entry->icon_attempted || entry->pic1_attempted) return false;
+        (entry->icon_attempted && entry->pic1_attempted) ||
+        SDL_GetTicksNS() < entry->retry_after_ns) return false;
     int slot = -1;
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
         if (!s_art_jobs[i]) {
@@ -391,23 +403,20 @@ static bool ui_start_art_job(GameTextureCacheEntry *entry,
     UiArtJob *job = (UiArtJob *)calloc(1, sizeof(*job));
     if (!job || slot < 0) {
         free(job);
-        entry->icon_attempted = true;
-        entry->pic1_attempted = true;
+        ui_art_set_retry_deadline(entry);
         return false;
     }
     int path_length = snprintf(job->iso_path, sizeof(job->iso_path), "%s",
                                iso_path);
     if (path_length <= 0 || (size_t)path_length >= sizeof(job->iso_path)) {
         free(job);
-        entry->icon_attempted = true;
-        entry->pic1_attempted = true;
+        ui_art_set_retry_deadline(entry);
         return false;
     }
     job->thread = SDL_CreateThread(ui_art_thread_main, "nakagawa-ui-art", job);
     if (!job->thread) {
         free(job);
-        entry->icon_attempted = true;
-        entry->pic1_attempted = true;
+        ui_art_set_retry_deadline(entry);
         return false;
     }
     entry->job = job;
@@ -467,6 +476,7 @@ static void ui_game_textures_shutdown(void) {
         s_game_textures[i].iso_path[0] = '\0';
         s_game_textures[i].icon_attempted = false;
         s_game_textures[i].pic1_attempted = false;
+        s_game_textures[i].retry_after_ns = 0;
         s_game_textures[i].job = NULL;
     }
 }
@@ -524,9 +534,8 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
     }
     if (entry) {
         entry->job = NULL;
-        entry->icon_attempted = true;
-        entry->pic1_attempted = true;
-        if (job->icon_status == NK_ICON_OK && job->icon_bytes && job->icon_size) {
+        if (!entry->icon_tex && job->icon_status == NK_ICON_OK &&
+            job->icon_bytes && job->icon_size) {
 #if SDL_VERSION_ATLEAST(3, 4, 0)
             SDL_IOStream *io = SDL_IOFromConstMem(job->icon_bytes, job->icon_size);
             SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
@@ -540,7 +549,8 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
             }
 #endif
         }
-        if (job->pic1_status == NK_ICON_OK && job->pic1_bytes && job->pic1_size) {
+        if (!entry->pic1_tex && job->pic1_status == NK_ICON_OK &&
+            job->pic1_bytes && job->pic1_size) {
 #if SDL_VERSION_ATLEAST(3, 4, 0)
             SDL_IOStream *io = SDL_IOFromConstMem(job->pic1_bytes, job->pic1_size);
             SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
@@ -554,7 +564,23 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
             }
 #endif
         }
+        entry->icon_attempted = entry->icon_tex != NULL;
+        entry->pic1_attempted = entry->pic1_tex != NULL;
+        if (entry->icon_attempted && entry->pic1_attempted) {
+            entry->retry_after_ns = 0;
+        } else {
+            ui_art_set_retry_deadline(entry);
+        }
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_art_attempt_count++;
+    printf("[PLAYER_UI_TEST] art_attempt index=%u completed_ns=%llu "
+           "icon_loaded=%d pic1_loaded=%d\n",
+           s_ui_test_art_attempt_count,
+           (unsigned long long)SDL_GetTicksNS(),
+           entry && entry->icon_attempted ? 1 : 0,
+           entry && entry->pic1_attempted ? 1 : 0);
+#endif
     free(job->icon_bytes);
     free(job->pic1_bytes);
     free(job);
@@ -567,6 +593,12 @@ bool ui_renderer_art_pending(void) {
     }
     return false;
 }
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+unsigned ui_renderer_test_art_attempt_count(void) {
+    return s_ui_test_art_attempt_count;
+}
+#endif
 
 void ui_font_set_density(float density) {
     if (density >= 1.0f && density <= 3.0f) {
