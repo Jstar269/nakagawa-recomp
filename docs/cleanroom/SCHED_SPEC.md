@@ -90,7 +90,9 @@ thread object), `SEAM: sched_set_priority` (change priority),
 is current — PSP ABI fact [C6]), `SEAM: sched_current_priority`.
 
 Blocking and time: `SEAM: sched_delay_current` (block the running thread
-for a microsecond count — a delay always parks, even for zero),
+for a microsecond count — a delay always parks, even for zero; the
+`sceKernelDelayThread`/`sceKernelDelayThreadCB` handlers return before
+calling it for zero, per PSP-3001 6.6.1 measurements),
 `SEAM: sched_block_on` (block until the matching wake),
 `SEAM: sched_block_on_timeout` (block until wake or microsecond timeout;
 returns true on timeout), `SEAM: sched_wake` (ready every thread blocked

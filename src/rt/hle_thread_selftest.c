@@ -48,6 +48,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "flight_recorder.h"
 #include "iso.h"
 #include "title_config.h"
+#include "nid_names.h"
 #include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
 
 #include <stdint.h>
@@ -60,6 +61,11 @@ instrumentation is this test's protection against the historical RAM runaway."
 
 extern void sr_vblank_tick(void);
 void sr_ctrl_sample(void);
+extern int sr_thread_has_pending_callbacks(uint32_t thread_uid);
+
+/* This selftest does not link recomp.c; profiling is disabled for its SR_YIELD specimen. */
+int g_prof_enabled;
+void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 /* Live-input latch hooks (defined in hle.c under SR_HLE_THREAD_SELFTEST). */
 extern void sr_ctrl_test_reset_live_input(void);
 extern int sr_ctrl_test_live_input_seen(void);
@@ -8569,6 +8575,260 @@ static void test_refer_thread_status(void) {
     s_cpu->r[5] = 0x0bfffff0u;
     expect(sr_syscall(s_cpu, NID_REFER_THREAD_STATUS) == TEST_ILLEGAL_ADDR,
            "ReferThreadStatus validates the complete output structure span");
+}
+
+static volatile uint32_t s_delay_zero_worker_runs;
+static void delay_zero_worker_guest_fn(CpuState *cpu) {
+    (void)cpu;
+    s_delay_zero_worker_runs++;
+    cpu->r[2] = 0;
+}
+
+static uint32_t hle_selftest_nid(const char *name) {
+    for (size_t i = 0; i < sizeof(sr_nid_table) / sizeof(sr_nid_table[0]); i++)
+        if (strcmp(sr_nid_table[i].name, name) == 0) return sr_nid_table[i].nid;
+    return 0u;
+}
+
+static void test_delay_zero_probe_semantics(void) {
+    /* PSP-3001 6.6.1 hardware measurement (#340):
+     * - sceKernelDelayThread(0): returns 0; equal-priority ready thread did NOT run;
+     *   pending callback did NOT run; caller remains RUNNING.
+     * - sceKernelDelayThreadCB(0): returns 0; equal-priority ready thread did NOT run;
+     *   pending callback DID run (exactly once); caller remains RUNNING. */
+    reset_fixture();
+    sr_hle_init();
+    const uint32_t delay_thread_cb_nid = hle_selftest_nid("sceKernelDelayThreadCB");
+    expect(delay_thread_cb_nid != 0u, "delay-zero: DelayThreadCB NID comes from nid_names.h");
+
+    TCB *main_t = fixture_thread(0x3400u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+
+    static const char cbname[] = "probe-delay-zero";
+    for (size_t k = 0; k < sizeof(cbname); k++)
+        MEM_W8(0x08001000u + (uint32_t)k, (uint8_t)cbname[k]);
+
+    enum { DELAY_ZERO_WORKER_ENTRY = 0x08990000u };
+    sr_test_register_guest_fn(DELAY_ZERO_WORKER_ENTRY, delay_zero_worker_guest_fn);
+
+    /* --- Trial 1: sceKernelDelayThread(0) --- */
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+    s_delay_zero_worker_runs = 0;
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x08001000u;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x5au;
+    uint32_t cb1 = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+    expect(cb1 > 0 && sr_callback_is_valid(cb1), "delay-zero: callback 1 created");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb1;
+    cpu.r[5] = 0x5au;
+    expect(sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK) == 0u, "delay-zero: callback 1 notified and pending");
+
+    uint32_t worker1 = sched_create_thread(DELAY_ZERO_WORKER_ENTRY, 32, 0x2000u);
+    expect(worker1 > 0, "delay-zero: worker 1 created at equal priority 32");
+    expect(sched_start_thread(worker1, 0, 0) == 0u, "delay-zero: worker 1 started");
+    TCB *w1 = tcb_by_uid(worker1);
+    expect(w1 != NULL && w1->state == TH_READY, "delay-zero: worker 1 is in TH_READY");
+    expect(s_delay_zero_worker_runs == 0u, "delay-zero: worker 1 has not run before call");
+    expect(s_oracle_callback_calls == 0u, "delay-zero: callback 1 has not run before call");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    uint32_t ret_delay = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD);
+    expect(ret_delay == 0u, "sceKernelDelayThread(0) returns 0");
+    expect(main_t->state == TH_RUNNING, "sceKernelDelayThread(0) does not park caller in TH_WAIT_DELAY");
+    expect(s_delay_zero_worker_runs == 0u, "sceKernelDelayThread(0): equal-priority ready worker did NOT run");
+    expect(s_oracle_callback_calls == 0u, "sceKernelDelayThread(0): pending callback did NOT run");
+    expect(w1 != NULL && w1->state == TH_READY, "sceKernelDelayThread(0): worker 1 remains in TH_READY");
+
+    /* Cleanup trial 1 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = worker1;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_DELETE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb1;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+
+    /* --- Trial 2: sceKernelDelayThreadCB(0) --- */
+    s_oracle_callback_calls = 0;
+    s_delay_zero_worker_runs = 0;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x08001000u;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x5bu;
+    uint32_t cb2 = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+    expect(cb2 > 0 && sr_callback_is_valid(cb2), "delay-zero: callback 2 created");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb2;
+    cpu.r[5] = 0x5bu;
+    expect(sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK) == 0u, "delay-zero: callback 2 notified and pending");
+
+    uint32_t worker2 = sched_create_thread(DELAY_ZERO_WORKER_ENTRY, 32, 0x2000u);
+    expect(worker2 > 0, "delay-zero: worker 2 created at equal priority 32");
+    expect(sched_start_thread(worker2, 0, 0) == 0u, "delay-zero: worker 2 started");
+    TCB *w2 = tcb_by_uid(worker2);
+    expect(w2 != NULL && w2->state == TH_READY, "delay-zero: worker 2 is in TH_READY");
+    expect(s_delay_zero_worker_runs == 0u, "delay-zero: worker 2 has not run before call");
+    expect(s_oracle_callback_calls == 0u, "delay-zero: callback 2 has not run before call");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    uint32_t ret_delaycb = sr_syscall(&cpu, delay_thread_cb_nid);
+    expect(ret_delaycb == 0u, "sceKernelDelayThreadCB(0) returns 0");
+    expect(main_t->state == TH_RUNNING, "sceKernelDelayThreadCB(0) does not park caller in TH_WAIT_DELAY");
+    expect(s_delay_zero_worker_runs == 0u, "sceKernelDelayThreadCB(0): equal-priority ready worker did NOT run");
+    expect(s_oracle_callback_calls == 1u, "sceKernelDelayThreadCB(0): pending callback DID run exactly once");
+    expect(w2 != NULL && w2->state == TH_READY, "sceKernelDelayThreadCB(0): worker 2 remains in TH_READY");
+
+    /* Cleanup trial 2 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = worker2;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_DELETE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb2;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+    s_oracle_mode = 0;
+}
+
+static volatile uint32_t s_delay_zero_renotify_uid;
+static volatile uint32_t s_delay_zero_renotify_calls;
+static volatile uint32_t s_delay_zero_renotify_result;
+
+static void delay_zero_self_renotify_guest_fn(CpuState *cpu) {
+    s_delay_zero_renotify_calls++;
+    cpu->r[4] = s_delay_zero_renotify_uid;
+    cpu->r[5] = s_delay_zero_renotify_calls;
+    s_delay_zero_renotify_result = sr_syscall(cpu, NID_WSV_NOTIFY_CALLBACK);
+    cpu->r[2] = 0u;
+}
+
+static void test_delay_threadcb_zero_bounds_a_self_renotifying_callback(void) {
+    enum {
+        CALLBACK_NAME = 0x08001000u,
+        CALLBACK_ENTRY = 0x08990100u,
+        MAIN_THREAD_UID = 0x3401u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(CALLBACK_ENTRY, delay_zero_self_renotify_guest_fn);
+
+    TCB *main_t = fixture_thread(MAIN_THREAD_UID, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+    s_delay_zero_renotify_uid = 0u;
+    s_delay_zero_renotify_calls = 0u;
+    s_delay_zero_renotify_result = UINT32_MAX;
+
+    title_hle_write_cstr(CALLBACK_NAME, "delay-zero-renotify");
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = CALLBACK_NAME;
+    cpu.r[5] = CALLBACK_ENTRY;
+    cpu.r[6] = 0x5au;
+    uint32_t callback_uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+    expect(callback_uid > 0u && sr_callback_is_valid(callback_uid),
+           "delay-zero-renotify: self-notifying callback is registered");
+    s_delay_zero_renotify_uid = callback_uid;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    cpu.r[5] = 0x5au;
+    expect(sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK) == 0u,
+           "delay-zero-renotify: callback is pending before the call");
+
+    const uint32_t delay_thread_cb_nid = hle_selftest_nid("sceKernelDelayThreadCB");
+    expect(delay_thread_cb_nid != 0u, "delay-zero-renotify: DelayThreadCB NID is registered");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, delay_thread_cb_nid) == 0u,
+           "sceKernelDelayThreadCB(0) returns after dispatching a self-notifying callback");
+    expect(s_delay_zero_renotify_calls == 1u,
+           "sceKernelDelayThreadCB(0) dispatches only one callback in its zero-duration pass");
+    expect(s_delay_zero_renotify_result == 0u,
+           "the callback's self-notification succeeds");
+    expect(sr_thread_has_pending_callbacks(main_t->uid),
+           "the self-notification remains pending for a later callback pump");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+    s_delay_zero_renotify_uid = 0u;
+    sr_test_guest_fn_reset();
+}
+
+static volatile uint32_t s_delay_zero_loop_iterations;
+static volatile uint32_t s_delay_zero_loop_peer_runs;
+static volatile uint32_t s_delay_zero_loop_last_ret;
+static volatile uint32_t s_delay_zero_loop_peer_equal_ready;
+
+enum {
+    DELAY_ZERO_LOOP_ENTRY = 0x08990200u,
+    DELAY_ZERO_LOOP_PEER_ENTRY = 0x08990240u,
+};
+
+static void delay_zero_loop_peer_guest_fn(CpuState *cpu) {
+    s_delay_zero_loop_peer_runs++;
+    cpu->r[2] = 0u;
+}
+
+static void delay_zero_loop_guest_fn(CpuState *cpu) {
+    int priority = sched_current_priority();
+    uint32_t peer_uid = sched_create_thread(DELAY_ZERO_LOOP_PEER_ENTRY, priority, 0x2000u);
+    expect(peer_uid != 0u, "delay-zero-timeslice: equal-priority peer is created");
+    if (peer_uid == 0u) return;
+
+    TCB *peer = tcb_by_uid(peer_uid);
+    expect(sched_start_thread(peer_uid, 0u, 0u) == 0u,
+           "delay-zero-timeslice: equal-priority peer is started");
+    s_delay_zero_loop_peer_equal_ready =
+        peer && peer->state == TH_READY && peer->priority == priority;
+
+    for (uint32_t i = 0; i < (uint32_t)TIMESLICE * 2u &&
+                         s_delay_zero_loop_peer_runs == 0u; i++) {
+        cpu->r[4] = 0u;
+        s_delay_zero_loop_last_ret = sr_syscall(cpu, NID_SCE_KERNEL_DELAY_THREAD);
+        s_delay_zero_loop_iterations++;
+        SR_YIELD(cpu, DELAY_ZERO_LOOP_ENTRY);
+    }
+    cpu->r[2] = 0u;
+}
+
+static void test_delay_thread_zero_loop_still_preempts_at_timeslice(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_delay_zero_loop_iterations = 0u;
+    s_delay_zero_loop_peer_runs = 0u;
+    s_delay_zero_loop_last_ret = UINT32_MAX;
+    s_delay_zero_loop_peer_equal_ready = 0u;
+    sr_test_register_guest_fn(DELAY_ZERO_LOOP_ENTRY, delay_zero_loop_guest_fn);
+    sr_test_register_guest_fn(DELAY_ZERO_LOOP_PEER_ENTRY, delay_zero_loop_peer_guest_fn);
+    /* sched_run's synthetic root must not inherit the fixture's configured worker restart role. */
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(DELAY_ZERO_LOOP_ENTRY, 0u, 0u);
+
+    expect(s_delay_zero_loop_peer_equal_ready,
+           "delay-zero-timeslice: peer was ready at the caller's priority");
+    expect(s_delay_zero_loop_last_ret == 0u,
+           "delay-zero-timeslice: each sceKernelDelayThread(0) result is success");
+    expect(s_delay_zero_loop_peer_runs == 1u,
+           "delay-zero-timeslice: equal-priority peer ran during the loop");
+    expect(s_delay_zero_loop_iterations >= (uint32_t)TIMESLICE,
+           "delay-zero-timeslice: peer did not run before SR_YIELD timeslice expiration");
+    expect(s_delay_zero_loop_iterations <= (uint32_t)TIMESLICE * 2u,
+           "delay-zero-timeslice: peer ran within the bounded loop window");
+    sr_test_guest_fn_reset();
 }
 
 /* ---------------------------------------------------------------------------
@@ -18180,6 +18440,16 @@ int main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--delay-zero-selftest") == 0) {
+        test_delay_zero_probe_semantics();
+        test_delay_thread_zero_loop_still_preempts_at_timeslice();
+        test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
+        fprintf(stderr, "delay-zero-selftest: %d checks, %d failures\n",
+                s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_ms0_unified_namespace();
@@ -18229,6 +18499,9 @@ int main(int argc, char **argv) {
     test_time_domains_are_coherent();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
+    test_delay_zero_probe_semantics();
+    test_delay_thread_zero_loop_still_preempts_at_timeslice();
+    test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_unix_time_to_filetime_ticks();
