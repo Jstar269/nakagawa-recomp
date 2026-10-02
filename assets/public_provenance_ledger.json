@@ -1831,7 +1831,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "820a14d9bb1a9588e8bc41d7998d2116e1fb290b9e3052a991abddbfe3a1982c"
+      "sha256": "8da9eb36b275a3f990df0ac9b10556ea0e302dad4f55f3cef5b23e35d28a023c"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -6779,7 +6779,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e739a354c04e60794b77d29f9474cc1a1c87aedc029ac2278185c6df7266b45c"
+      "sha256": "401ebdb89da449e676824f53c80bff3f50642edf3122231edadb9a98f8e76f49"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -7800,7 +7800,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e633061908318afc47c2690ec5c131a374399334cbc73cd01e5a5ac41767158f"
+      "sha256": "173936efdd2e7c89eb276694017ee8ef30b524d3534a14d0262cd861373aa4ce"
     },
     {
       "path": "tools/test_history_audit.py",
