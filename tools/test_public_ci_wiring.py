@@ -20,6 +20,40 @@ sys.path.insert(0, str(ROOT / "fixtures" / "showcase"))
 import showcase as showcase_cli  # noqa: E402
 
 
+def _ci_job_blocks() -> dict[str, list[str]]:
+    """Map each top-level ci.yml job name to its lines, header included."""
+    lines = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if re.match(r"^ {2}[A-Za-z0-9_]+:\s*$", line)]
+    blocks = {}
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        blocks[lines[start].strip().rstrip(":")] = lines[start:end]
+    return blocks
+
+
+def _ci_step_index(block: list[str], name: str) -> int:
+    for index, line in enumerate(block):
+        if line.strip() == f"- name: {name}":
+            return index
+    raise AssertionError(f"step {name!r} not found")
+
+
+def _ci_step(block: list[str], name: str) -> list[str] | None:
+    """The lines of one step, from its `- name:` line to the next step."""
+    try:
+        start = _ci_step_index(block, name)
+    except AssertionError:
+        return None
+    indent = len(block[start]) - len(block[start].lstrip())
+    end = start + 1
+    while end < len(block):
+        line = block[end]
+        if line.strip().startswith("- ") and len(line) - len(line.lstrip()) == indent:
+            break
+        end += 1
+    return block[start:end]
+
+
 class PublicCiWiringTests(unittest.TestCase):
     def test_showcase_guest_build_uses_pspdev_compiler(self) -> None:
         demo = {"id": "synthetic-test", "folder": "ge_scene", "target": "fixture_app"}
@@ -172,19 +206,11 @@ class PublicCiWiringTests(unittest.TestCase):
         ``github.sha``, so a Windows-built binary is identified without needing
         git at all.
         """
-        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        lines = ci.splitlines()
-        job_starts = [
-            index
-            for index, line in enumerate(lines)
-            if re.match(r"^ {2}[A-Za-z0-9_]+:\s*$", line)
+        windows_jobs = [
+            (f"{name}:", block)
+            for name, block in _ci_job_blocks().items()
+            if any("runs-on: windows" in line for line in block)
         ]
-        windows_jobs = []
-        for position, start in enumerate(job_starts):
-            end = job_starts[position + 1] if position + 1 < len(job_starts) else len(lines)
-            block = lines[start:end]
-            if any("runs-on: windows" in line for line in block):
-                windows_jobs.append((lines[start].strip(), block))
         self.assertTrue(windows_jobs, "no Windows job found in ci.yml")
         for name, block in windows_jobs:
             with self.subTest(job=name):
@@ -202,6 +228,44 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("python tools/provenance_record_gap.py --check", ci)
         self.assertIn("tools/provenance_record_gap.py --check", makefile)
         self.assertIn("python tools/provenance_record_gap.py --check", precommit)
+
+    def test_player_ui_regressions_ci_wiring(self) -> None:
+        jobs = _ci_job_blocks()
+        for name in ("native_tools", "windows_runtime"):
+            self.assertIn(name, jobs, f"ci.yml no longer has a {name} job")
+
+        native_tools = jobs["native_tools"]
+        native_step = _ci_step(native_tools, "Run native player UI regressions headlessly")
+        self.assertIsNotNone(native_step, "native_tools no longer runs player-ui-regressions")
+        self.assertIn("run: make CC=gcc player-ui-regressions", "\n".join(native_step))
+        self.assertLess(
+            _ci_step_index(native_tools, "Build pinned SDL3 for headless Linux runtime"),
+            _ci_step_index(native_tools, "Run native player UI regressions headlessly"),
+            "player-ui-regressions must run after the pinned SDL3 build",
+        )
+
+        windows_step = _ci_step(
+            jobs["windows_runtime"], "Run native player UI regressions headlessly on Windows"
+        )
+        self.assertIsNotNone(windows_step, "windows_runtime no longer runs player-ui-regressions")
+        windows_text = "\n".join(windows_step)
+        self.assertIn(
+            "mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions",
+            windows_text,
+        )
+        # The fuzz part of the matrix must not run the UI regressions a second time.
+        self.assertIn("if: matrix.part == 'main'", windows_text)
+
+        # The harness, not the workflow, makes the gate headless: it forces the
+        # drivers for every player it spawns.
+        harness = (ROOT / "tests" / "native" / "test_player_ui.py").read_text(encoding="utf-8")
+        self.assertIn('"SDL_VIDEODRIVER": "dummy"', harness)
+        self.assertIn('"SDL_RENDER_DRIVER": "software"', harness)
+
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("player-ui-regressions: $(PLAYER_UI_TEST_EXE)", makefile)
+        docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        self.assertIn("player-ui-regressions", docs)
 
 
 if __name__ == "__main__":

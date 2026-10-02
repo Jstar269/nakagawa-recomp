@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -531,6 +532,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 "legacy_root_exists": legacy_root.is_dir(),
             }
 
+    @unittest.skipUnless(sys.platform == "win32", "legacy %USERPROFILE%\\Nakagawa\\data migration warning is Windows-only")
     def test_legacy_data_root_is_reported_once_without_moving_it(self) -> None:
         run = self.run_player("empty", legacy_data=True)
         stderr = run["stderr"]

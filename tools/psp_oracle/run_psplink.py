@@ -60,15 +60,27 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
 
 try:
     from .parse_golden import (
+        DMAC_INVALID_CASES,
         parse_cache_alias_output,
+        parse_audio_query_output,
+        parse_delay_zero_output,
+        parse_dmac_cells_output,
+        parse_dmac_invalid_tail_output,
         parse_fpu_vector_output,
+        parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
     from psp_oracle.parse_golden import (
+        DMAC_INVALID_CASES,
         parse_cache_alias_output,
+        parse_audio_query_output,
+        parse_delay_zero_output,
+        parse_dmac_cells_output,
+        parse_dmac_invalid_tail_output,
         parse_fpu_vector_output,
+        parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
     )
@@ -291,6 +303,23 @@ def _check_source_tree(source_commit: str) -> str | None:
     return None
 
 
+def _host0_remote_path(binary: Path, host0_root: object) -> str:
+    """The host0: path of a staged PRX, keeping its subdirectory under the root.
+
+    A transport without a host0 root (the simulated test transports) has no
+    staging layout to honour, so the bare name is used there. A PRX outside a
+    real root is a staging error: refuse it here rather than issue an ldstart
+    the device cannot resolve.
+    """
+
+    if not isinstance(host0_root, Path):
+        return binary.name
+    try:
+        return binary.resolve().relative_to(host0_root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"campaign PRX {binary} is not inside host0 root {host0_root}") from exc
+
+
 def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
     """Return the source-owned probe log path for one campaign case."""
 
@@ -307,6 +336,8 @@ def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
 def _parse_campaign_records(text: str, case_id: str):
     """Validate a campaign's known completion contract, then parse its rows."""
 
+    if case_id in DMAC_INVALID_CASES:
+        return parse_dmac_invalid_tail_output(text, case_id)
     if case_id in {"dma-size-matrix", "dmac-size-matrix"}:
         return validate_dmac_size_matrix(text)
     match = re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id)
@@ -315,10 +346,14 @@ def _parse_campaign_records(text: str, case_id: str):
 
     parsed = parse_output(text)
     complete_parser = {
+        "audio-query": parse_audio_query_output,
         "fpu-vector": parse_fpu_vector_output,
         "cache-alias": parse_cache_alias_output,
         "io-matrix": parse_io_matrix_output,
         "mbx-delete-wait": parse_mbx_delete_wait_output,
+        "ge-nan": parse_ge_nan_output,
+        "dma-cells": parse_dmac_cells_output,
+        "delay-zero": parse_delay_zero_output,
     }.get(case_id)
     if complete_parser is not None:
         complete_parser(text, require_complete=True)
@@ -407,8 +442,11 @@ def _campaign_completeness_contract(case_id: str) -> str:
         r"dmac-size-matrix-size-0x[0-9a-f]{8}", case_id
     ):
         return "strict-dmac-sequence"
-    if case_id in {"fpu-vector", "cache-alias", "io-matrix", "mbx-delete-wait"}:
+    if case_id in {"audio-query", "fpu-vector", "cache-alias", "io-matrix",
+                   "mbx-delete-wait", "ge-nan", "dma-cells", "delay-zero"}:
         return "strict-golden-sequence"
+    if case_id in DMAC_INVALID_CASES:
+        return "strict-safe-dmac-skip"
     if case_id in {"transport-write", "model-profile"}:
         return "exactly-one-known-record"
     return "unregistered-no-completion-contract"
@@ -1193,11 +1231,36 @@ class PsplinkCampaignRunner:
                     )
                     break
 
+                try:
+                    remote_path = _host0_remote_path(
+                        case.binary, getattr(self.transport, "host0_root", None)
+                    )
+                except ValueError:
+                    # Same structured refusal as the sibling pre-launch failures: a PRX
+                    # the device cannot resolve under host0 is never launched.
+                    self.state = "STOPPED"
+                    self.terminal_reason = "HOST0_PRX_OUTSIDE_ROOT"
+                    self.envelopes.append(
+                        self._envelope(
+                            case,
+                            (None, "", "", self.terminal_reason),
+                            None,
+                            False,
+                            host0_log_path=case_host0_log,
+                            run_started_ns=None,
+                            run_finished_ns=time.time_ns(),
+                            host0_log_cleared=host0_log_cleared,
+                            captured_host0_text=None,
+                            captured_host0_mtime_ns=None,
+                            # No local paths in evidence: name the case, not the files.
+                            host0_capture_problem=(f"campaign PRX for case {case.case_id} "
+                                                   "is not inside host0 root"),
+                        )
+                    )
+                    break
                 run_started_ns = time.time_ns()
                 self.state = "RUN_CASE"
-                result = self._request(
-                    f"ldstart host0:/{case.binary.name}", case.timeout
-                )
+                result = self._request(f"ldstart host0:/{remote_path}", case.timeout)
                 uid_match = self._MODULE_UID_RE.search(result[1])
                 module_uid = uid_match.group(1) if uid_match else None
 

@@ -14,6 +14,8 @@
 #include <pspctrl.h>
 #include <psprtc.h>
 #include <pspaudio.h>
+#include <pspgu.h>
+#include <pspgum.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,6 +63,9 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_MODEL_PROFILE 54
 #define PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL 55
 #define PSP_ORACLE_CASE_MBX_DELETE_WAIT 56
+#define PSP_ORACLE_CASE_GE_NAN 57
+#define PSP_ORACLE_CASE_DMAC_CELLS 58
+#define PSP_ORACLE_CASE_DELAY_ZERO 59
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -100,6 +105,10 @@ int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+/* vadd.s/vmul.s run on the main thread; without the VFPU attribute the first
+ * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META). */
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 #endif
@@ -193,6 +202,12 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/transport_write_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MBX_DELETE_WAIT
 #define PROBE_HOST0_LOG "host0:/mbx_delete_wait_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+#define PROBE_HOST0_LOG "host0:/ge_nan_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
+#define PROBE_HOST0_LOG "host0:/dmac_cells_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
+#define PROBE_HOST0_LOG "host0:/delay_zero_log.txt"
 #endif
 
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
@@ -249,7 +264,11 @@ static void emit_record_extended(int emulated, const char *test_id,
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
 /* Deferred record buffer.
    The IO matrix measures IoFileMgr itself and the cache matrix measures
    dcache line residency across cells.  Emitting a record inside the measured
@@ -264,11 +283,25 @@ static void emit_record_extended(int emulated, const char *test_id,
    run.  Capacity is a compile-time constant checked against the largest cell
    count either probe can emit, so overflow is impossible by construction
    rather than handled at runtime. */
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
+#define DEFERRED_MAX_RECORDS 128
+#define DEFERRED_MAX_OUT 10
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+#define DEFERRED_MAX_RECORDS 24
+#define DEFERRED_MAX_OUT 6
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+#define DEFERRED_MAX_RECORDS 16
+#define DEFERRED_MAX_OUT 8
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
+#define DEFERRED_MAX_RECORDS 4
+#define DEFERRED_MAX_OUT 10
+#else
 #define DEFERRED_MAX_RECORDS 8
 #define DEFERRED_MAX_OUT 6
+#endif
 
 struct deferred_record {
-    const char *case_id; /* string literal; never freed */
+    char case_id[64]; /* copied so trial-indexed record names remain stable */
     const char *status;  /* "PASS" / "FAIL" literal */
     uint32_t result;
     uint32_t out[DEFERRED_MAX_OUT];
@@ -282,7 +315,7 @@ static void defer_record(const char *case_id, const char *status,
                          uint32_t result, const uint32_t *out,
                          size_t out_count) {
     struct deferred_record *rec = &s_deferred[s_deferred_count++];
-    rec->case_id = case_id;
+    snprintf(rec->case_id, sizeof(rec->case_id), "%s", case_id);
     rec->status = status;
     rec->result = result;
     for (size_t i = 0; i < out_count; i++) {
@@ -312,7 +345,8 @@ static void emit_test_extended(int emulated, const char *case_id, int pass,
 }
 #endif
 
-#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED && \
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
 static void emit_mutex_test(int emulated, const char *case_id, int pass,
                             uint32_t result, const uint32_t *out,
                             size_t out_count) {
@@ -770,9 +804,10 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 #endif
 
 #if (PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
-     PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
 #define DMAC_API_MEMCPY 0u
 #define DMAC_API_TRY_MEMCPY 1u
 #define DMAC_MEASURED_PREFIX 0x0000c000u
@@ -780,13 +815,15 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
 static int dmac_call(uint32_t api, void *dst, const void *src, uint32_t size) {
     return api == DMAC_API_TRY_MEMCPY
         ? sceDmacTryMemcpy(dst, src, size)
         : sceDmacMemcpy(dst, src, size);
 }
 
+#if PSP_ORACLE_CASE != PSP_ORACLE_CASE_DMAC_CELLS
 static uint8_t dmac_pattern(uint32_t offset) {
     return (uint8_t)(0x10u + (offset & 0x3fu));
 }
@@ -795,6 +832,7 @@ static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
     const uint64_t elapsed = end >= start ? end - start : 0;
     return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
 }
+#endif
 #endif
 #endif
 
@@ -1434,6 +1472,180 @@ static void run_dmac_invalid_tail(int emulated) {
     sceKernelFreePartitionMemory(block);
     emit_dmac_invalid_setup(emulated, "SKIP", tail_error, setup_mask,
                             tail_error);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
+#define DMAC_CELL_BYTES 64u
+#define DMAC_CELL_SENTINEL 0xa5u
+#define DMAC_CELL_BASE 32u
+
+static const uint8_t s_dmac_cell_offsets[] = {
+    1u, 2u, 3u, 5u, 6u, 7u, 9u, 10u, 11u, 13u, 14u, 15u,
+};
+static const uint8_t s_dmac_overlap_offsets[] = {1u, 2u, 3u, 7u, 15u};
+static uint8_t s_dmac_cell_src[128] __attribute__((aligned(64)));
+static uint8_t s_dmac_cell_dst[128] __attribute__((aligned(64)));
+static uint8_t s_dmac_cell_overlap[256] __attribute__((aligned(64)));
+
+static uint32_t dmac_cell_prefix_matches(const uint8_t *dst,
+                                         const uint8_t *src,
+                                         uint32_t size) {
+    uint32_t prefix = 0;
+    while (prefix < size && dst[prefix] == src[prefix]) ++prefix;
+    return prefix;
+}
+
+static uint32_t dmac_cell_matches(const uint8_t *dst, const uint8_t *src,
+                                  uint32_t size) {
+    uint32_t matches = 0;
+    for (uint32_t i = 0; i < size; ++i) matches += dst[i] == src[i];
+    return matches;
+}
+
+static uint32_t dmac_cell_guard_mutations(const uint8_t *before,
+                                          const uint8_t *after,
+                                          uint32_t total,
+                                          uint32_t start,
+                                          uint32_t size) {
+    uint32_t mutations = 0;
+    for (uint32_t i = 0; i < total; ++i) {
+        if ((i < start || i >= start + size) && before[i] != after[i]) {
+            ++mutations;
+        }
+    }
+    return mutations;
+}
+
+static uint32_t dmac_cell_hash(const uint8_t *bytes, uint32_t size) {
+    uint32_t hash = 2166136261u;
+    for (uint32_t i = 0; i < size; ++i) {
+        hash = (hash ^ bytes[i]) * 16777619u;
+    }
+    return hash;
+}
+
+static void dmac_cell_cache_before(void *ptr, uint32_t size) {
+    sceKernelDcacheWritebackInvalidateRange(ptr, size);
+}
+
+static void dmac_cell_cache_after(void *ptr, uint32_t size) {
+    sceKernelDcacheInvalidateRange(ptr, size);
+}
+
+static void run_dmac_alignment_cell(uint32_t api,
+                                    const char *api_name, const char *side,
+                                    uint32_t src_offset, uint32_t dst_offset) {
+    uint8_t src_before[sizeof(s_dmac_cell_src)];
+    uint8_t dst_before[sizeof(s_dmac_cell_dst)];
+    const uint32_t src_start = DMAC_CELL_BASE + src_offset;
+    const uint32_t dst_start = DMAC_CELL_BASE + dst_offset;
+    for (uint32_t i = 0; i < sizeof(s_dmac_cell_src); ++i) {
+        s_dmac_cell_src[i] = (uint8_t)(0x31u + (i * 17u));
+        s_dmac_cell_dst[i] = DMAC_CELL_SENTINEL;
+    }
+    memcpy(src_before, s_dmac_cell_src, sizeof(src_before));
+    memcpy(dst_before, s_dmac_cell_dst, sizeof(dst_before));
+    dmac_cell_cache_before(s_dmac_cell_src, sizeof(s_dmac_cell_src));
+    dmac_cell_cache_before(s_dmac_cell_dst, sizeof(s_dmac_cell_dst));
+
+    const int rc = dmac_call(api, &s_dmac_cell_dst[dst_start],
+                             &s_dmac_cell_src[src_start], DMAC_CELL_BYTES);
+    dmac_cell_cache_after(s_dmac_cell_src, sizeof(s_dmac_cell_src));
+    dmac_cell_cache_after(s_dmac_cell_dst, sizeof(s_dmac_cell_dst));
+
+    const uint32_t prefix = dmac_cell_prefix_matches(
+        &s_dmac_cell_dst[dst_start], &src_before[src_start], DMAC_CELL_BYTES);
+    const uint32_t matches = dmac_cell_matches(
+        &s_dmac_cell_dst[dst_start], &src_before[src_start], DMAC_CELL_BYTES);
+    const uint32_t guards = dmac_cell_guard_mutations(
+        dst_before, s_dmac_cell_dst, sizeof(s_dmac_cell_dst),
+        dst_start, DMAC_CELL_BYTES);
+    const uint32_t source_intact =
+        memcmp(src_before, s_dmac_cell_src, sizeof(src_before)) == 0;
+    uint32_t out[10] = {
+        api, src_offset, dst_offset, DMAC_CELL_BYTES, prefix, matches,
+        guards, source_intact,
+        (uint32_t)(uintptr_t)&s_dmac_cell_src[src_start],
+        (uint32_t)(uintptr_t)&s_dmac_cell_dst[dst_start],
+    };
+    char case_id[48];
+    snprintf(case_id, sizeof(case_id), "align-%s-%s-%02x",
+             api_name, side,
+             (unsigned int)(src_offset ? src_offset : dst_offset));
+    defer_record(case_id, guards == 0u && source_intact ? "PASS" : "FAIL",
+                 (uint32_t)rc, out, 10);
+}
+
+static void run_dmac_overlap_cell(uint32_t api,
+                                  const char *api_name, uint32_t direction,
+                                  const char *direction_name, uint32_t delta) {
+    uint8_t before[sizeof(s_dmac_cell_overlap)];
+    uint8_t source_before[DMAC_CELL_BYTES];
+    const uint32_t src_start = DMAC_CELL_BASE + (direction ? delta : 0u);
+    const uint32_t dst_start = DMAC_CELL_BASE + (direction ? 0u : delta);
+    for (uint32_t i = 0; i < sizeof(s_dmac_cell_overlap); ++i) {
+        s_dmac_cell_overlap[i] = (uint8_t)(0x47u + (i * 29u));
+    }
+    memcpy(before, s_dmac_cell_overlap, sizeof(before));
+    memcpy(source_before, &before[src_start], sizeof(source_before));
+    dmac_cell_cache_before(s_dmac_cell_overlap, sizeof(s_dmac_cell_overlap));
+
+    const int rc = dmac_call(api, &s_dmac_cell_overlap[dst_start],
+                             &s_dmac_cell_overlap[src_start], DMAC_CELL_BYTES);
+    dmac_cell_cache_after(s_dmac_cell_overlap, sizeof(s_dmac_cell_overlap));
+
+    const uint32_t prefix = dmac_cell_prefix_matches(
+        &s_dmac_cell_overlap[dst_start], source_before, DMAC_CELL_BYTES);
+    const uint32_t matches = dmac_cell_matches(
+        &s_dmac_cell_overlap[dst_start], source_before, DMAC_CELL_BYTES);
+    const uint32_t guards = dmac_cell_guard_mutations(
+        before, s_dmac_cell_overlap, sizeof(s_dmac_cell_overlap),
+        dst_start, DMAC_CELL_BYTES);
+    uint32_t out[10] = {
+        api, direction, delta, DMAC_CELL_BYTES, prefix, matches, guards,
+        dmac_cell_hash(s_dmac_cell_overlap, sizeof(s_dmac_cell_overlap)),
+        (uint32_t)(uintptr_t)&s_dmac_cell_overlap[src_start],
+        (uint32_t)(uintptr_t)&s_dmac_cell_overlap[dst_start],
+    };
+    char case_id[48];
+    snprintf(case_id, sizeof(case_id), "overlap-%s-%s-%02x",
+             api_name, direction_name, (unsigned int)delta);
+    defer_record(case_id, guards == 0u ? "PASS" : "FAIL",
+                 (uint32_t)rc, out, 10);
+}
+
+static void run_dmac_cells(int emulated) {
+    const uint32_t apis[] = {DMAC_API_MEMCPY, DMAC_API_TRY_MEMCPY};
+    const char *const api_names[] = {"memcpy", "try"};
+    const char *const sides[] = {"src", "dst", "both"};
+    for (size_t api_i = 0; api_i < sizeof(apis) / sizeof(apis[0]); ++api_i) {
+        for (size_t offset_i = 0;
+             offset_i < sizeof(s_dmac_cell_offsets) / sizeof(s_dmac_cell_offsets[0]);
+             ++offset_i) {
+            const uint32_t offset = s_dmac_cell_offsets[offset_i];
+            run_dmac_alignment_cell(apis[api_i], api_names[api_i],
+                                    sides[0], offset, 0u);
+            run_dmac_alignment_cell(apis[api_i], api_names[api_i],
+                                    sides[1], 0u, offset);
+            run_dmac_alignment_cell(apis[api_i], api_names[api_i],
+                                    sides[2], offset, offset);
+        }
+    }
+    for (size_t api_i = 0; api_i < sizeof(apis) / sizeof(apis[0]); ++api_i) {
+        for (size_t offset_i = 0;
+             offset_i < sizeof(s_dmac_overlap_offsets) / sizeof(s_dmac_overlap_offsets[0]);
+             ++offset_i) {
+            const uint32_t delta = s_dmac_overlap_offsets[offset_i];
+            run_dmac_overlap_cell(apis[api_i], api_names[api_i],
+                                  0u, "forward", delta);
+            run_dmac_overlap_cell(apis[api_i], api_names[api_i],
+                                  1u, "backward", delta);
+        }
+    }
+    const uint32_t done_out[1] = {92u};
+    defer_record("dmac-cells-done", "PASS", 0u, done_out, 1);
+    flush_deferred(emulated, "PSP-DMAC-001");
 }
 #endif
 
@@ -2658,52 +2870,449 @@ static void run_io_matrix(int emulated) {
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY
+#define AUDIO_QUERY_SAMPLES 512
+#define AUDIO_QUERY_BLOCKS 2
+#define AUDIO_NOT_CAPTURED 0xffffffffu
+
+static int16_t s_audio_silence[AUDIO_QUERY_SAMPLES * 2]
+    __attribute__((aligned(64)));
+
+static void audio_defer(int emulated, const char *case_id, const char *status,
+                        uint32_t result, const uint32_t *out, size_t out_count) {
+    (void)emulated;
+    defer_record(case_id, status, result, out, out_count);
+}
+
 static void run_audio_query(int emulated) {
-    uint32_t out[6];
+    uint32_t out[8];
+    memset(s_audio_silence, 0, sizeof(s_audio_silence));
 
-    /* Cell 1: audio-ch-reserve */
-    memset(out, 0xFF, sizeof(out));
-    int res0 = sceAudioChReserve(0, 512, PSP_AUDIO_FORMAT_STEREO);
-    int rest0 = sceAudioGetChannelRestLen(0);
-    out[0] = (uint32_t)res0;
-    out[1] = (uint32_t)rest0;
-    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-ch-reserve",
-                         res0 == 0 ? "PASS" : "FAIL", (uint32_t)res0, out, 2);
+    const int channel = sceAudioChReserve(
+        0, AUDIO_QUERY_SAMPLES, PSP_AUDIO_FORMAT_STEREO);
+    out[0] = (uint32_t)channel;
+    out[1] = AUDIO_QUERY_SAMPLES;
+    out[2] = PSP_AUDIO_FORMAT_STEREO;
+    audio_defer(emulated, "audio-ch-reserve", channel < 0 ? "FAIL" : "PASS",
+                channel, out, 3);
 
-    /* Cell 2: audio-ch-release */
-    memset(out, 0xFF, sizeof(out));
-    int rel0 = sceAudioChRelease(0);
-    int rel_again = sceAudioChRelease(0);
-    out[0] = (uint32_t)rel0;
-    out[1] = (uint32_t)rel_again;
-    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-ch-release",
-                         (rel0 == 0 && rel_again < 0) ? "PASS" : "FAIL", (uint32_t)rel0, out, 2);
+    const int rest0_before = channel < 0 ? (int)AUDIO_NOT_CAPTURED
+        : sceAudioGetChannelRestLen(channel);
+    const int rest1_before = channel < 0 ? (int)AUDIO_NOT_CAPTURED
+        : sceAudioGetChannelRestLength(channel);
+    out[0] = (uint32_t)rest0_before;
+    out[1] = (uint32_t)rest1_before;
+    audio_defer(emulated, "audio-ch-query-before", channel < 0 ? "SKIP" : "PASS",
+                0, out, 2);
 
-    /* Cell 3: audio-out2-query */
-    memset(out, 0xFF, sizeof(out));
-    int out2_res = sceAudioOutput2Reserve(512);
-    int out2_rest = sceAudioOutput2GetRestSample();
-    int out2_rel = sceAudioOutput2Release();
-    out[0] = (uint32_t)out2_res;
-    out[1] = (uint32_t)out2_rest;
-    out[2] = (uint32_t)out2_rel;
-    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-out2-query",
-                         (out2_res == 0 && out2_rel == 0) ? "PASS" : "FAIL",
-                         (uint32_t)out2_res, out, 3);
+    for (uint32_t block = 0; block < AUDIO_QUERY_BLOCKS; ++block) {
+        char case_id[48];
+        snprintf(case_id, sizeof(case_id), "audio-ch-output-blocking-%u",
+                 (unsigned int)block);
+        if (channel < 0) {
+            for (size_t i = 0; i < 7; ++i) out[i] = AUDIO_NOT_CAPTURED;
+            audio_defer(emulated, case_id, "SKIP", AUDIO_NOT_CAPTURED, out, 7);
+            continue;
+        }
+        const int rest0_pre = sceAudioGetChannelRestLen(channel);
+        const int rest1_pre = sceAudioGetChannelRestLength(channel);
+        const uint32_t start = sceKernelGetSystemTimeLow();
+        const int rc = sceAudioOutputBlocking(
+            channel, PSP_AUDIO_VOLUME_MAX, s_audio_silence);
+        const uint32_t elapsed = (uint32_t)(sceKernelGetSystemTimeLow() - start);
+        const int rest0_post = sceAudioGetChannelRestLen(channel);
+        const int rest1_post = sceAudioGetChannelRestLength(channel);
+        out[0] = elapsed;
+        out[1] = (uint32_t)rest0_pre;
+        out[2] = (uint32_t)rest1_pre;
+        out[3] = (uint32_t)rest0_post;
+        out[4] = (uint32_t)rest1_post;
+        out[5] = AUDIO_QUERY_SAMPLES;
+        out[6] = (uint32_t)channel;
+        audio_defer(emulated, case_id, "PASS", rc, out, 7);
+    }
 
-    /* Cell 4: audio-src-reserve */
-    memset(out, 0xFF, sizeof(out));
-    int src_res = sceAudioSRCChReserve(512, 44100, 2);
-    int src_rel = sceAudioSRCChRelease();
-    out[0] = (uint32_t)src_res;
-    out[1] = (uint32_t)src_rel;
-    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-src-reserve",
-                         (src_res == 0 && src_rel == 0) ? "PASS" : "FAIL",
-                         (uint32_t)src_res, out, 2);
+    const uint32_t rest0_after = channel < 0 ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioGetChannelRestLen(channel);
+    const uint32_t rest1_after = channel < 0 ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioGetChannelRestLength(channel);
+    out[0] = rest0_after;
+    out[1] = rest1_after;
+    audio_defer(emulated, "audio-ch-query-after", channel < 0 ? "SKIP" : "PASS",
+                0, out, 2);
 
-    /* Cell 5: Completion sentinel */
-    uint32_t done_out[1] = {4u};
-    emit_record_extended(emulated, "PSP-AUDIO-001", "audio-done", "PASS", 0, done_out, 1);
+    const uint32_t channel_release = channel < 0 ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioChRelease(channel);
+    const int released = channel >= 0 && (int32_t)channel_release >= 0;
+    out[0] = channel_release;
+    audio_defer(emulated, "audio-ch-release",
+                channel < 0 ? "SKIP" : released ? "PASS" : "FAIL",
+                channel_release, out, 1);
+
+    /* The just-released channel: what a query on it returns after release. A
+     * refused release leaves the channel live, so nothing is measured then. */
+    out[0] = !released ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioGetChannelRestLen(channel);
+    out[1] = !released ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioGetChannelRestLength(channel);
+    audio_defer(emulated, "audio-ch-query-released", released ? "PASS" : "SKIP",
+                0, out, 2);
+
+    const int out2 = sceAudioOutput2Reserve(AUDIO_QUERY_SAMPLES);
+    out[0] = (uint32_t)out2;
+    out[1] = AUDIO_QUERY_SAMPLES;
+    audio_defer(emulated, "audio-out2-reserve", out2 < 0 ? "FAIL" : "PASS",
+                out2, out, 2);
+
+    const int out2_rest_before = sceAudioOutput2GetRestSample();
+    out[0] = (uint32_t)out2_rest_before;
+    audio_defer(emulated, "audio-out2-query-before", "PASS", 0, out, 1);
+
+    if (out2 < 0) {
+        for (size_t i = 0; i < 4; ++i) out[i] = AUDIO_NOT_CAPTURED;
+        audio_defer(emulated, "audio-out2-output-blocking", "SKIP",
+                    AUDIO_NOT_CAPTURED, out, 4);
+    } else {
+        const uint32_t start = sceKernelGetSystemTimeLow();
+        const int rc = sceAudioOutput2OutputBlocking(
+            PSP_AUDIO_VOLUME_MAX, s_audio_silence);
+        const uint32_t elapsed = (uint32_t)(sceKernelGetSystemTimeLow() - start);
+        out[0] = elapsed;
+        out[1] = (uint32_t)out2_rest_before;
+        out[2] = (uint32_t)sceAudioOutput2GetRestSample();
+        out[3] = AUDIO_QUERY_SAMPLES;
+        audio_defer(emulated, "audio-out2-output-blocking", "PASS", rc, out, 4);
+    }
+
+    out[0] = (uint32_t)sceAudioOutput2GetRestSample();
+    audio_defer(emulated, "audio-out2-query-after", out2 < 0 ? "SKIP" : "PASS",
+                0, out, 1);
+    /* Measured on PSP-3001 6.6.1: releasing while samples are still queued returns
+     * 0x80268002 (busy) and leaves Output2 reserved. Drain first, bounded at 100 ms. */
+    uint32_t drain_waits = 0;
+    while (out2 >= 0 && sceAudioOutput2GetRestSample() > 0 && drain_waits < 100u) {
+        sceKernelDelayThread(1000);
+        ++drain_waits;
+    }
+    const uint32_t out2_release = out2 < 0 ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioOutput2Release();
+    out[0] = out2_release;
+    audio_defer(emulated, "audio-out2-release",
+                out2 < 0 ? "SKIP" : (int32_t)out2_release >= 0 ? "PASS" : "FAIL",
+                out2_release, out, 1);
+
+    const int src = sceAudioSRCChReserve(AUDIO_QUERY_SAMPLES, 44100, 2);
+    const uint32_t src_release = src < 0 ? AUDIO_NOT_CAPTURED
+        : (uint32_t)sceAudioSRCChRelease();
+    out[0] = (uint32_t)src;
+    out[1] = src_release;
+    audio_defer(emulated, "audio-src-reserve", src < 0 ? "FAIL" : "PASS",
+                src, out, 2);
+
+    uint32_t done_out[1] = {13u};
+    defer_record("audio-done", "PASS", 0, done_out, 1);
+    flush_deferred(emulated, "PSP-AUDIO-001");
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+#define GE_NAN_WIDTH 480u
+#define GE_NAN_STRIDE 512u
+#define GE_NAN_HEIGHT 272u
+#define GE_NAN_BG 0xff203040u
+#define GE_NAN_PIXELS (GE_NAN_STRIDE * GE_NAN_HEIGHT)
+
+struct ge_nan_input {
+    const char *name;
+    uint32_t bits;
+};
+
+static const struct ge_nan_input s_ge_nan_inputs[] = {
+    {"qnan", 0x7fc00000u},
+    {"pinf", 0x7f800000u},
+    {"ninf", 0xff800000u},
+    {"nzero", 0x80000000u},
+    {"denorm", 0x00000001u},
+};
+static uint32_t s_ge_nan_list[4096] __attribute__((aligned(64)));
+static uint32_t s_ge_nan_vertices[18] __attribute__((aligned(64)));
+static void *s_ge_nan_frame;
+
+static uint32_t ge_nan_vadd_zero(uint32_t input) {
+    uint32_t result;
+    const uint32_t zero = 0u;
+    __asm__ volatile(
+        "mtv %1, S000\n"
+        "mtv %2, S001\n"
+        "vadd.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(input), "r"(zero) : "memory");
+    return result;
+}
+
+static uint32_t ge_nan_vmul_one(uint32_t input) {
+    uint32_t result;
+    const uint32_t one = 0x3f800000u;
+    __asm__ volatile(
+        "mtv %1, S000\n"
+        "mtv %2, S001\n"
+        "vmul.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(input), "r"(one) : "memory");
+    return result;
+}
+
+static uint32_t ge_nan_hash_pixels(uint32_t *changed_pixels) {
+    const uintptr_t physical = (uintptr_t)sceGeEdramGetAddr()
+        + (uintptr_t)s_ge_nan_frame;
+    const volatile uint32_t *pixels =
+        (const volatile uint32_t *)(physical | 0x40000000u);
+    uint32_t hash = 2166136261u;
+    uint32_t changed = 0;
+    for (uint32_t y = 0; y < GE_NAN_HEIGHT; ++y) {
+        for (uint32_t x = 0; x < GE_NAN_WIDTH; ++x) {
+            const uint32_t pixel = pixels[y * GE_NAN_STRIDE + x];
+            hash = (hash ^ pixel) * 16777619u;
+            changed += pixel != GE_NAN_BG;
+        }
+    }
+    *changed_pixels = changed;
+    return hash;
+}
+
+static int ge_nan_render(uint32_t mode, uint32_t bits, uint32_t *hash,
+                         uint32_t *changed) {
+    static const uint32_t sane_pos[9] = {
+        0xbf000000u, 0xbf000000u, 0x00000000u,
+        0x3f000000u, 0xbf000000u, 0x00000000u,
+        0x00000000u, 0x3f000000u, 0x00000000u,
+    };
+    static const uint32_t sane_norm[9] = {
+        0x00000000u, 0x00000000u, 0x3f800000u,
+        0x00000000u, 0x00000000u, 0x3f800000u,
+        0x00000000u, 0x00000000u, 0x3f800000u,
+    };
+    int finish_rc;
+    int sync_rc;
+
+    if (sceGuStart(GU_DIRECT, s_ge_nan_list) < 0) return -1;
+    sceGuDrawBuffer(GU_PSM_8888, s_ge_nan_frame, GE_NAN_STRIDE);
+    sceGuOffset(2048u - (GE_NAN_WIDTH / 2u), 2048u - (GE_NAN_HEIGHT / 2u));
+    sceGuViewport(2048, 2048, GE_NAN_WIDTH, GE_NAN_HEIGHT);
+    sceGuScissor(0, 0, GE_NAN_WIDTH, GE_NAN_HEIGHT);
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_CULL_FACE);
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuDisable(GU_LIGHTING);
+    sceGuClearColor(GE_NAN_BG);
+    sceGuClear(GU_COLOR_BUFFER_BIT);
+    sceGumMatrixMode(GU_PROJECTION);
+    sceGumLoadIdentity();
+    sceGumMatrixMode(GU_VIEW);
+    sceGumLoadIdentity();
+    sceGumMatrixMode(GU_MODEL);
+    sceGumLoadIdentity();
+    sceGuColor(0xffffffffu);
+
+    if (mode == 0u) {
+        static const uint32_t screen[9] = {
+            0x43000000u, 0x43000000u, 0x00000000u,
+            0x43700000u, 0x43000000u, 0x00000000u,
+            0x43500000u, 0x43880000u, 0x00000000u,
+        };
+        memcpy(s_ge_nan_vertices, screen, sizeof(screen));
+        /* Vertex 0's screen x: GU_TRANSFORM_2D consumes x and y, not z. */
+        memcpy(&s_ge_nan_vertices[0], &bits, sizeof(bits));
+        sceKernelDcacheWritebackRange(s_ge_nan_vertices,
+                                      sizeof(s_ge_nan_vertices));
+        sceGuDrawArray(GU_TRIANGLES,
+                       GU_VERTEX_32BITF | GU_TRANSFORM_2D,
+                       3, NULL, s_ge_nan_vertices);
+    } else {
+        for (uint32_t vertex = 0; vertex < 3u; ++vertex) {
+            const uint32_t base = vertex * 6u;
+            s_ge_nan_vertices[base + 0u] = sane_norm[vertex * 3u + 0u];
+            s_ge_nan_vertices[base + 1u] = sane_norm[vertex * 3u + 1u];
+            s_ge_nan_vertices[base + 2u] = sane_norm[vertex * 3u + 2u];
+            s_ge_nan_vertices[base + 3u] = sane_pos[vertex * 3u + 0u];
+            s_ge_nan_vertices[base + 4u] = sane_pos[vertex * 3u + 1u];
+            s_ge_nan_vertices[base + 5u] = sane_pos[vertex * 3u + 2u];
+        }
+        if (mode == 1u) {
+            /* Vertex 1's position x (normal is [6..8], position [9..11]). */
+            s_ge_nan_vertices[6u + 3u] = bits;
+            sceKernelDcacheWritebackRange(s_ge_nan_vertices,
+                                          sizeof(s_ge_nan_vertices));
+            sceGuDrawArray(GU_TRIANGLES,
+                           GU_NORMAL_32BITF | GU_VERTEX_32BITF |
+                               GU_TRANSFORM_3D,
+                           3, NULL, s_ge_nan_vertices);
+        } else {
+            ScePspFVector3 direction = {-0.25f, -0.5f, -1.0f};
+            s_ge_nan_vertices[6u] = bits;
+            sceGuEnable(GU_LIGHTING);
+            sceGuEnable(GU_LIGHT0);
+            sceGuLight(0, GU_DIRECTIONAL, GU_DIFFUSE, &direction);
+            sceGuLightColor(0, GU_DIFFUSE, 0xffffffffu);
+            sceGuAmbientColor(0xff202020u);
+            sceGuColorMaterial(GU_DIFFUSE);
+            sceGuMaterial(GU_DIFFUSE, 0xffffffffu);
+            sceKernelDcacheWritebackRange(s_ge_nan_vertices,
+                                          sizeof(s_ge_nan_vertices));
+            sceGuDrawArray(GU_TRIANGLES,
+                           GU_NORMAL_32BITF | GU_VERTEX_32BITF |
+                               GU_TRANSFORM_3D,
+                           3, NULL, s_ge_nan_vertices);
+        }
+    }
+    finish_rc = sceGuFinish();
+    sync_rc = sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+    *hash = ge_nan_hash_pixels(changed);
+    return finish_rc < 0 ? finish_rc : sync_rc;
+}
+
+static void run_ge_nan(int emulated) {
+    const int init_rc = sceGuInit();
+    s_ge_nan_frame = guGetStaticVramBuffer(
+        GE_NAN_STRIDE, GE_NAN_HEIGHT, GU_PSM_8888);
+    /* guGetStaticVramBuffer returns a VRAM offset; the first buffer is offset 0, so a
+     * NULL test would refuse it (measured: every render cell SKIPped on hardware). */
+    /* The framebuffer must lie inside the 2 MiB of eDRAM the pixel scan reads. */
+    const int ready = init_rc >= 0 &&
+        (uintptr_t)s_ge_nan_frame + GE_NAN_PIXELS * 4u <= 0x00200000u;
+    for (size_t i = 0; i < sizeof(s_ge_nan_inputs) / sizeof(s_ge_nan_inputs[0]); ++i) {
+        const struct ge_nan_input *input = &s_ge_nan_inputs[i];
+        char case_id[48];
+        uint32_t out[4];
+        out[0] = input->bits;
+        out[1] = ge_nan_vadd_zero(input->bits);
+        out[2] = ge_nan_vmul_one(input->bits);
+        snprintf(case_id, sizeof(case_id), "ge-nan-vfpu-%s", input->name);
+        defer_record(case_id, "PASS", 0u, out, 3);
+
+        for (uint32_t mode = 0; mode < 3u; ++mode) {
+            const char *const mode_names[] = {"screen2d", "clip3d", "litnormal"};
+            uint32_t hash = 0u;
+            uint32_t changed = 0u;
+            const int render_rc = ready
+                ? ge_nan_render(mode, input->bits, &hash, &changed)
+                : init_rc;
+            out[0] = input->bits;
+            out[1] = hash;
+            out[2] = changed;
+            out[3] = ready ? (uint32_t)render_rc : (uint32_t)init_rc;
+            snprintf(case_id, sizeof(case_id), "ge-nan-%s-%s",
+                     mode_names[mode], input->name);
+            defer_record(case_id, ready ? (render_rc >= 0 ? "PASS" : "FAIL") : "SKIP",
+                         (uint32_t)render_rc, out, 4);
+        }
+    }
+    const uint32_t done_out[1] = {20u};
+    defer_record("ge-nan-done", "PASS", 0u, done_out, 1);
+    flush_deferred(emulated, "PSP-GE-001");
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
+#define DELAY_ZERO_NOT_CAPTURED 0xffffffffu
+
+static volatile uint32_t s_delay_zero_worker_runs;
+static volatile uint32_t s_delay_zero_callback_calls;
+
+static int delay_zero_worker(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    ++s_delay_zero_worker_runs;
+    return 0;
+}
+
+static int delay_zero_callback(int arg1, int arg2, void *common) {
+    (void)arg1;
+    (void)arg2;
+    (void)common;
+    ++s_delay_zero_callback_calls;
+    return 0;
+}
+
+static void run_delay_zero_trial(int emulated, int callback_aware) {
+    SceKernelThreadInfo main_info;
+    SceKernelThreadInfo worker_info;
+    memset(&main_info, 0, sizeof(main_info));
+    memset(&worker_info, 0, sizeof(worker_info));
+    main_info.size = sizeof(main_info);
+    worker_info.size = sizeof(worker_info);
+
+    s_delay_zero_worker_runs = 0;
+    s_delay_zero_callback_calls = 0;
+    const SceUID main_tid = sceKernelGetThreadId();
+    const int main_status_rc = sceKernelReferThreadStatus(main_tid, &main_info);
+    const int callback = sceKernelCreateCallback(
+        "oracle-delay-zero", delay_zero_callback, NULL);
+    const int notify_rc = callback < 0 ? callback
+        : sceKernelNotifyCallback(callback, 0x5a);
+    const SceUID worker = main_status_rc < 0 ? main_status_rc
+        : sceKernelCreateThread("oracle-delay-peer", delay_zero_worker,
+                                main_info.currentPriority, 0x1000, 0, NULL);
+    const int start_rc = worker < 0 ? (int)worker
+        : sceKernelStartThread(worker, 0, NULL);
+    const uint32_t runs_before = s_delay_zero_worker_runs;
+    const int worker_status_rc = worker < 0 ? (int)worker
+        : sceKernelReferThreadStatus(worker, &worker_info);
+    const int worker_priority_before = worker_status_rc == 0
+        ? worker_info.currentPriority : (int)DELAY_ZERO_NOT_CAPTURED;
+    const int worker_status_before = worker_status_rc == 0
+        ? worker_info.status : (int)DELAY_ZERO_NOT_CAPTURED;
+    const int ready = main_status_rc == 0 && callback >= 0 && notify_rc == 0 &&
+        worker >= 0 && start_rc == 0 && worker_status_rc == 0 &&
+        worker_status_before == PSP_THREAD_READY && runs_before == 0u &&
+        s_delay_zero_callback_calls == 0u &&
+        worker_priority_before == main_info.currentPriority;
+
+    const uint32_t callbacks_before = s_delay_zero_callback_calls;
+    uint32_t delay_rc = DELAY_ZERO_NOT_CAPTURED;
+    uint32_t elapsed = DELAY_ZERO_NOT_CAPTURED;
+    if (ready) {
+        const uint32_t start = sceKernelGetSystemTimeLow();
+        const int rc = callback_aware
+            ? sceKernelDelayThreadCB(0u) : sceKernelDelayThread(0u);
+        elapsed = (uint32_t)(sceKernelGetSystemTimeLow() - start);
+        delay_rc = (uint32_t)rc;
+    }
+    const uint32_t runs_after = s_delay_zero_worker_runs;
+    const uint32_t callbacks_after = s_delay_zero_callback_calls;
+
+    /* Drain a callback that DelayThread(0) may have left pending, then remove
+       only the thread and callback owned by this probe. */
+    if (callback >= 0) sceKernelCheckCallback();
+    const int cleanup_rc = worker < 0 ? worker
+        : sceKernelTerminateDeleteThread(worker);
+    if (callback >= 0) sceKernelDeleteCallback(callback);
+
+    uint32_t out[10] = {
+        runs_before,
+        runs_after,
+        (uint32_t)notify_rc,
+        callbacks_before,
+        callbacks_after,
+        elapsed,
+        (uint32_t)main_info.currentPriority,
+        (uint32_t)worker_priority_before,
+        (uint32_t)worker_status_before,
+        (uint32_t)cleanup_rc,
+    };
+    const char *case_id = callback_aware
+        ? "delay-threadcb-zero" : "delay-thread-zero";
+    defer_record(case_id, ready ? "PASS" : "SKIP", delay_rc, out, 10);
+    (void)emulated;
+}
+
+static void run_delay_zero(int emulated) {
+    run_delay_zero_trial(emulated, 1);
+    run_delay_zero_trial(emulated, 0);
+    const uint32_t done_out[1] = {2u};
+    defer_record("delay-zero-done", "PASS", 0u, done_out, 1);
+    flush_deferred(emulated, "PSP-KERNEL-002");
 }
 #endif
 
@@ -4034,6 +4643,12 @@ int main(int argc, char *argv[]) {
     run_mutex_interrupt_context_case(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MBX_DELETE_WAIT
     run_mbx_delete_wait(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+    run_ge_nan(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
+    run_dmac_cells(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
+    run_delay_zero(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

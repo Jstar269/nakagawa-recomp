@@ -30,6 +30,11 @@ decoder maps the ordinal to a generation and retail family; it never applies
 the PSPSDK enum table to the kernel-only `sceKernelGetModel()` original/slim
 convention.
 
+Bounded follow-up cases for issues #69, #311, #303, and #340 (related to #290) are
+`CASE=ge-nan`, `CASE=audio-query`, `CASE=dma-cells`, and
+`CASE=delay-zero`. Their records and completion contracts are described below;
+all remain `NOT_RUN` until the physical campaign captures them.
+
 ## Transport write-readback (`CASE=transport-write`)
 
 The PSP writes a fixed 64-byte pattern (byte `i` =
@@ -396,6 +401,51 @@ The kernel-object probes link `threadman_user_imports.S`, one complete
 ThreadManForUser import block: PSPSDK ships heavyweight-mutex stubs only for
 the kernel library, and a second partial block would split the library's stub
 run. Add any newly used ThreadManForUser NID there.
+
+## Bounded follow-up probes (hardware NOT_RUN)
+
+These probes write only scalar records to `host0:`. No `ms0:` output or private
+input is used. Their ordered result streams have strict completion parsers in
+`tools/psp_oracle/parse_golden.py`, registered by campaign case in
+`tools/psp_oracle/run_psplink.py`.
+
+- `CASE=ge-nan` (`ge-nan`, `PSP-GE-001`) records raw input and VFPU result
+  words for qNaN, `+Inf`, `-Inf`, `-0`, and the minimum positive denormal. For
+  each input it also records a framebuffer hash and changed-pixel count after
+  2D screen-coordinate, 3D clip-position, and lit-normal GE draws. It emits 20
+  measurement records and `ge-nan-done`; it does not repeat the already
+  measured `vasin` domain-edge words. The renderer records integer bit
+  patterns and hashes, never formatted floats.
+- `CASE=audio-query` (`audio-query`, `PSP-AUDIO-001`) records both
+  `sceAudioGetChannelRestLen` and `sceAudioGetChannelRestLength`, two
+  `sceAudioOutputBlocking` calls at 512 samples maximum, one
+  `sceAudioOutput2OutputBlocking` call, rest-sample queries, return values,
+  and elapsed microseconds. The output buffer contains silence. Each reserved
+  channel is released, including when a later query or output call fails. It
+  emits 13 measurement records and `audio-done`.
+- `CASE=dma-cells` (`dma-cells`, `PSP-DMAC-001`) exercises both copy APIs with
+  source-only, destination-only, and paired offsets 1, 2, 3, 5, 6, 7, 9, 10,
+  11, 13, 14, and 15 bytes. These cover the requested 1/2/3 residues modulo 4
+  and the unaligned residues modulo 16. It also measures overlap in both
+  directions at 1, 2, 3, 7, and 15 bytes. Every span and guard is inside a
+  probe-owned buffer, and cache writeback/invalidation brackets each call. It
+  emits 92 measurement records and `dmac-cells-done`; the existing size matrix
+  is not repeated.
+- `CASE=delay-zero` (`delay-zero`, `PSP-KERNEL-002`) calls
+  `sceKernelDelayThreadCB(0)` and `sceKernelDelayThread(0)` once each with an
+  equal-priority ready worker and a pending callback. Each record carries
+  before/after worker and callback counts, the raw notify and delay returns,
+  thread priorities/status, cleanup return, and the system-time delta. It emits
+  two measurement records and `delay-zero-done`. A `SKIP` means setup did not
+  leave the worker ready and callback pending at the call boundary.
+
+The four `CASE=dma-invalid-tail-*` launches remain one case per launch. The
+current firmware-independent setup can prove only an allocator ownership edge;
+it cannot prove that the next address is unmapped user RAM. These cases still
+emit a single safe-boundary `SKIP` record and never call DMAC with an
+unowned source or destination. Their #303 invalid-span semantics remain
+`NOT_RUN` until a safe, probe-owned boundary can measure them without a
+successful transfer writing outside an owned buffer.
 
 ## Build and hardware handoff
 

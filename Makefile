@@ -836,6 +836,7 @@ PUBLIC_TARGETS := \
 	sched-selftest-one \
 	heap-selftest \
 	profiler-selftest \
+	gui-present-selftest \
 	coro-selftest \
 	hle-thread-selftest \
 	hle-thread-selftest-build \
@@ -946,6 +947,7 @@ HELP_DESCRIPTION_sched-selftest := run the scheduler selftest suite
 HELP_DESCRIPTION_sched-selftest-one := run one scheduler selftest build
 HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
+HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
 HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
@@ -1818,6 +1820,12 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
 		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/profiler_selftest.exe
+
+gui-present-selftest:
+	$(CC) $(CFLAGS) -DSR_GUI_PRESENT_SELFTEST -ffunction-sections -fdata-sections \
+		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gui_present_selftest.exe \
+		src/rt/gui.c $(LIBS)
+	$(BUILD_DIR)/gui_present_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
 # SHA-256 known-answer vectors, value-domain validators against synthetic corrupt

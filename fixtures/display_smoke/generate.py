@@ -696,6 +696,10 @@ def run(
         env.update({
             "SR_FLIGHT": "ge,present;4096",
             "SR_FLIGHT_OUTPUT": str(flight_output.resolve()),
+            # The present-event count below is frames // 2, i.e. a 30 Hz host cap over a
+            # 60 Hz guest. Pin it: the unset default is the PSP scanout rate, which would
+            # present nearly every frame and make the count depend on host timing.
+            "SR_FPS_CAP": "30",
         })
     completed = subprocess.run(
         command, cwd=ROOT, env=env, capture_output=True, text=True

@@ -211,6 +211,7 @@ class CiPathAdversarialTests(unittest.TestCase):
         "tools/nk_doctor_core.py",
         "tools/nk_safety.ps1",
         "tools/pspdev_lock.py",
+        "tests/native/test_player_ui.py",
     )
 
     def test_every_native_relevant_path_runs_native_and_windows(self) -> None:
