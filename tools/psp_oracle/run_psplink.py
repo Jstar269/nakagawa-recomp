@@ -303,6 +303,23 @@ def _check_source_tree(source_commit: str) -> str | None:
     return None
 
 
+def _host0_remote_path(binary: Path, host0_root: object) -> str:
+    """The host0: path of a staged PRX, keeping its subdirectory under the root.
+
+    A transport without a host0 root (the simulated test transports) has no
+    staging layout to honour, so the bare name is used there. A PRX outside a
+    real root is a staging error: refuse it here rather than issue an ldstart
+    the device cannot resolve.
+    """
+
+    if not isinstance(host0_root, Path):
+        return binary.name
+    try:
+        return binary.resolve().relative_to(host0_root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"campaign PRX {binary} is not inside host0 root {host0_root}") from exc
+
+
 def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
     """Return the source-owned probe log path for one campaign case."""
 
@@ -1214,11 +1231,36 @@ class PsplinkCampaignRunner:
                     )
                     break
 
+                try:
+                    remote_path = _host0_remote_path(
+                        case.binary, getattr(self.transport, "host0_root", None)
+                    )
+                except ValueError:
+                    # Same structured refusal as the sibling pre-launch failures: a PRX
+                    # the device cannot resolve under host0 is never launched.
+                    self.state = "STOPPED"
+                    self.terminal_reason = "HOST0_PRX_OUTSIDE_ROOT"
+                    self.envelopes.append(
+                        self._envelope(
+                            case,
+                            (None, "", "", self.terminal_reason),
+                            None,
+                            False,
+                            host0_log_path=case_host0_log,
+                            run_started_ns=None,
+                            run_finished_ns=time.time_ns(),
+                            host0_log_cleared=host0_log_cleared,
+                            captured_host0_text=None,
+                            captured_host0_mtime_ns=None,
+                            # No local paths in evidence: name the case, not the files.
+                            host0_capture_problem=(f"campaign PRX for case {case.case_id} "
+                                                   "is not inside host0 root"),
+                        )
+                    )
+                    break
                 run_started_ns = time.time_ns()
                 self.state = "RUN_CASE"
-                result = self._request(
-                    f"ldstart host0:/{case.binary.name}", case.timeout
-                )
+                result = self._request(f"ldstart host0:/{remote_path}", case.timeout)
                 uid_match = self._MODULE_UID_RE.search(result[1])
                 module_uid = uid_match.group(1) if uid_match else None
 
