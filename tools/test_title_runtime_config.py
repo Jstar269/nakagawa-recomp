@@ -544,13 +544,27 @@ class GeneratedConfiguration(unittest.TestCase):
         source = (ROOT / "src" / "rt" / "title_config.c").read_text(encoding="utf-8")
         for accessor in ("sr_title_config_reent_bindings",
                          "sr_title_config_preserve_callee_saved_at_calls"):
-            body = source.split(f"int {accessor}(", 1)[1].split("\nint ", 1)[0]
+            # Each body ends at its column-0 closing brace, so a neighbouring
+            # accessor can never satisfy an assertion about this one.
+            body = source.split(f"int {accessor}(", 1)[1].split("\n}", 1)[0]
             self.assertIn("#if SR_TITLE_CONFIG_COMPAT_PROFILE", body,
                           f"{accessor} changes live behavior and is not a diagnostic")
             self.assertNotIn("SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE", body)
         predicate = source.split("int sr_title_config_diagnostics_enabled(void) {", 1)[1]
-        predicate = predicate.split("\nint ", 1)[0]
+        predicate = predicate.split("\n}", 1)[0]
         self.assertIn("SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE != 0", predicate)
+
+    def test_the_hst_profile_header_compiles_its_compatibility_arms(self) -> None:
+        """The split is only real if the hst artifact, with both profile bits set,
+        still builds title_config.c: the live reent and callee-saved arms compile."""
+        manifest = base_manifest()
+        manifest["codegen_profile"] = "hst"
+        header = title_runtime_config.render_header(
+            title_runtime_config.bindings_from_manifest(manifest))
+        self.assertIn("#define SR_TITLE_CONFIG_COMPAT_PROFILE 1", header)
+        built = self._compile_title_config(header)
+        self.assertEqual(built.returncode, 0,
+                         "the hst generated artifact must compile: " + built.stderr)
 
     def test_every_emitted_field_has_a_validity_bit(self) -> None:
         self.assertEqual(
