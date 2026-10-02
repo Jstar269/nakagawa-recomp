@@ -136,6 +136,12 @@ else ifeq ($(CASE),dma-size-matrix-cell)
 CASE_ID = 55
 else ifeq ($(CASE),mbx-delete-wait)
 CASE_ID = 56
+else ifeq ($(CASE),ge-nan)
+CASE_ID = 57
+else ifeq ($(CASE),dma-cells)
+CASE_ID = 58
+else ifeq ($(CASE),delay-zero)
+CASE_ID = 59
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -281,6 +287,9 @@ endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
+ifeq ($(CASE),ge-nan)
+LIBS := -lpspgum -lpspgu $(LIBS)
+endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
 endif
