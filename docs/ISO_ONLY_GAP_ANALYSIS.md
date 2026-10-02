@@ -58,14 +58,10 @@ are not evidence that the paths have landed in the current player.
 ### 3.2 Executing Original PRX Middleware (`libfont`, `scePsmf`)
 
 * **Why Wholesale HLE Was Rejected:**
-  * In `af5c4f4`, `src/rt/hle.c` intercepted `libfont.prx` and `psmf.prx`, skipped their `module_start` entry points, and wrote `1u` into a hardcoded guest memory address (`sr_title_config_libfont_ready_flag_addr`).
+  * In `af5c4f4`, `src/rt/hle.c` intercepted `libfont.prx` and `psmf.prx`, skipped their `module_start` entry points, and wrote `1u` into a title-configured guest word through `sr_title_config_libfont_ready_flag_addr`.
   * This was done because executing `module_start` hung on an unconditional `WaitSema`.
   * Replacing the modules with host HLE bypassed genuine guest state machines, introduced timing discrepancies, and required ongoing title-specific maintenance.
-* **The LLE Solution:**
-  1. **Identify the Kernel Root Cause:** The hang in `f_32200000` (`libfont` `module_start`) occurred because the semaphore was initialized with a count of 0, and the expected signaling thread was either delayed or unmapped.
-  2. **Harden the Scheduler & Semaphores:** Audit `src/rt/sched.c` to ensure exact PSP kernel semantics for `sceKernelCreateSema`, `sceKernelWaitSema`, and thread context switching.
-  3. **Execute Guest Code:** Allow `libfont.prx`, `scePsmf_library.prx`, and `scePsmfP_library.prx` to execute their genuine `module_start` routines.
-  4. **Purge Title Pokes:** Remove `sr_title_config_libfont_ready_flag_addr` and all title-specific flag writes from `src/rt/hle.c`.
+* **Current boundary:** The `libfont.prx` skip is removed for translated entries: `sceKernelStartModule` runs guest startup and its exports become available after startup. When startup is unavailable (an untranslated entry, no recorded entry, or the `SR_REAL_MODULE_START=0` kill switch), the runtime reports `LIBFONT_STARTUP_UNAVAILABLE` and may apply the title-configured ready-word fallback. Completing and retiring that fallback remains in the works under [#299](https://github.com/Jstar269/nakagawa-recomp/issues/299). PSMF startup remains a separate bypass.
 
 ---
 
