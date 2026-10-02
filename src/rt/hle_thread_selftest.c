@@ -8560,6 +8560,123 @@ static void test_refer_thread_status(void) {
            "ReferThreadStatus validates the complete output structure span");
 }
 
+static volatile uint32_t s_delay_zero_worker_runs;
+static void delay_zero_worker_guest_fn(CpuState *cpu) {
+    (void)cpu;
+    s_delay_zero_worker_runs++;
+    cpu->r[2] = 0;
+}
+
+#ifndef NID_SCE_KERNEL_DELAY_THREAD_CB
+#define NID_SCE_KERNEL_DELAY_THREAD_CB 0x68da9e36u
+#endif
+
+static void test_delay_zero_probe_semantics(void) {
+    /* PSP-3001 6.6.1 hardware measurement (#340):
+     * - sceKernelDelayThread(0): returns 0; equal-priority ready thread did NOT run;
+     *   pending callback did NOT run; caller remains RUNNING.
+     * - sceKernelDelayThreadCB(0): returns 0; equal-priority ready thread did NOT run;
+     *   pending callback DID run (exactly once); caller remains RUNNING. */
+    reset_fixture();
+    sr_hle_init();
+
+    TCB *main_t = fixture_thread(0x3400u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+
+    static const char cbname[] = "probe-delay-zero";
+    for (size_t k = 0; k < sizeof(cbname); k++)
+        MEM_W8(0x08001000u + (uint32_t)k, (uint8_t)cbname[k]);
+
+    enum { DELAY_ZERO_WORKER_ENTRY = 0x08990000u };
+    sr_test_register_guest_fn(DELAY_ZERO_WORKER_ENTRY, delay_zero_worker_guest_fn);
+
+    /* --- Trial 1: sceKernelDelayThread(0) --- */
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+    s_delay_zero_worker_runs = 0;
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x08001000u;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x5au;
+    uint32_t cb1 = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+    expect(cb1 > 0 && sr_callback_is_valid(cb1), "delay-zero: callback 1 created");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb1;
+    cpu.r[5] = 0x5au;
+    expect(sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK) == 0u, "delay-zero: callback 1 notified and pending");
+
+    uint32_t worker1 = sched_create_thread(DELAY_ZERO_WORKER_ENTRY, 32, 0x2000u);
+    expect(worker1 > 0, "delay-zero: worker 1 created at equal priority 32");
+    expect(sched_start_thread(worker1, 0, 0) == 0u, "delay-zero: worker 1 started");
+    TCB *w1 = tcb_by_uid(worker1);
+    expect(w1 != NULL && w1->state == TH_READY, "delay-zero: worker 1 is in TH_READY");
+    expect(s_delay_zero_worker_runs == 0u, "delay-zero: worker 1 has not run before call");
+    expect(s_oracle_callback_calls == 0u, "delay-zero: callback 1 has not run before call");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    uint32_t ret_delay = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD);
+    expect(ret_delay == 0u, "sceKernelDelayThread(0) returns 0");
+    expect(main_t->state == TH_RUNNING, "sceKernelDelayThread(0) does not park caller in TH_WAIT_DELAY");
+    expect(s_delay_zero_worker_runs == 0u, "sceKernelDelayThread(0): equal-priority ready worker did NOT run");
+    expect(s_oracle_callback_calls == 0u, "sceKernelDelayThread(0): pending callback did NOT run");
+    expect(w1 != NULL && w1->state == TH_READY, "sceKernelDelayThread(0): worker 1 remains in TH_READY");
+
+    /* Cleanup trial 1 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = worker1;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_DELETE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb1;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+
+    /* --- Trial 2: sceKernelDelayThreadCB(0) --- */
+    s_oracle_callback_calls = 0;
+    s_delay_zero_worker_runs = 0;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x08001000u;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x5bu;
+    uint32_t cb2 = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+    expect(cb2 > 0 && sr_callback_is_valid(cb2), "delay-zero: callback 2 created");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb2;
+    cpu.r[5] = 0x5bu;
+    expect(sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK) == 0u, "delay-zero: callback 2 notified and pending");
+
+    uint32_t worker2 = sched_create_thread(DELAY_ZERO_WORKER_ENTRY, 32, 0x2000u);
+    expect(worker2 > 0, "delay-zero: worker 2 created at equal priority 32");
+    expect(sched_start_thread(worker2, 0, 0) == 0u, "delay-zero: worker 2 started");
+    TCB *w2 = tcb_by_uid(worker2);
+    expect(w2 != NULL && w2->state == TH_READY, "delay-zero: worker 2 is in TH_READY");
+    expect(s_delay_zero_worker_runs == 0u, "delay-zero: worker 2 has not run before call");
+    expect(s_oracle_callback_calls == 0u, "delay-zero: callback 2 has not run before call");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    uint32_t ret_delaycb = sr_syscall(&cpu, NID_SCE_KERNEL_DELAY_THREAD_CB);
+    expect(ret_delaycb == 0u, "sceKernelDelayThreadCB(0) returns 0");
+    expect(main_t->state == TH_RUNNING, "sceKernelDelayThreadCB(0) does not park caller in TH_WAIT_DELAY");
+    expect(s_delay_zero_worker_runs == 0u, "sceKernelDelayThreadCB(0): equal-priority ready worker did NOT run");
+    expect(s_oracle_callback_calls == 1u, "sceKernelDelayThreadCB(0): pending callback DID run exactly once");
+    expect(w2 != NULL && w2->state == TH_READY, "sceKernelDelayThreadCB(0): worker 2 remains in TH_READY");
+
+    /* Cleanup trial 2 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = worker2;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_DELETE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cb2;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+    s_oracle_mode = 0;
+}
+
 /* ---------------------------------------------------------------------------
  * Generic PSP input contract: sceCtrlReadBufferPositive.
  *
@@ -18001,6 +18118,7 @@ int main(int argc, char **argv) {
     test_time_domains_are_coherent();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
+    test_delay_zero_probe_semantics();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_unix_time_to_filetime_ticks();

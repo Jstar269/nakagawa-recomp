@@ -1841,18 +1841,29 @@ static uint32_t h_ExitDeleteThread(CpuState *s) {
     s_exit_delete_request = 1;
     return h_ExitThread(s);
 }
-/* A delay is unconditionally a wait: sched_delay_current() parks the thread even for
- * usec 0 (it floors the duration at 1). There is no parameter or object to validate
- * ahead of the context check, so it is the first thing the handler does -- nothing has
- * been mutated at that point: no wake deadline, no thread state, no yield. (L2/L3) */
+/* sceKernelDelayThread: delays the calling thread by usec microseconds.
+ * PSP-3001 6.6.1 hardware measurement (#340): sceKernelDelayThread(0) returns 0
+ * without yielding to an equal-priority ready thread and without dispatching
+ * pending callbacks. Context check (CAN_NOT_WAIT) still precedes. (L2/L3) */
 static uint32_t h_DelayThread(CpuState *s) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    if (A0 == 0) return 0;
     sched_delay_current(A0);
     return 0;
 }
+/* sceKernelDelayThreadCB: delays the calling thread while servicing callbacks.
+ * PSP-3001 6.6.1 hardware measurement (#340): sceKernelDelayThreadCB(0) returns 0
+ * without yielding to an equal-priority ready thread, and dispatches pending
+ * callbacks (exactly once). Context check (CAN_NOT_WAIT) still precedes. (L6/L7) */
 static uint32_t h_DelayThreadCBForUsec(uint64_t usec) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;  /* L6/L7 */
     uint32_t thread_uid = sched_current_uid();
+    if (usec == 0) {
+        if (sr_thread_has_pending_callbacks(thread_uid)) {
+            sr_thread_dispatch_callbacks();
+        }
+        return 0;
+    }
     sched_vtime_refresh();
     uint64_t end_time = sched_vtime_deadline_after(usec);
 
