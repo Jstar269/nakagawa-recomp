@@ -3176,7 +3176,9 @@ static void run_ge_nan(int emulated) {
     const int init_rc = sceGuInit();
     s_ge_nan_frame = guGetStaticVramBuffer(
         GE_NAN_STRIDE, GE_NAN_HEIGHT, GU_PSM_8888);
-    const int ready = init_rc >= 0 && s_ge_nan_frame != NULL;
+    /* guGetStaticVramBuffer returns a VRAM offset; the first buffer is offset 0, so a
+     * NULL test would refuse it (measured: every render cell SKIPped on hardware). */
+    const int ready = init_rc >= 0;
     for (size_t i = 0; i < sizeof(s_ge_nan_inputs) / sizeof(s_ge_nan_inputs[0]); ++i) {
         const struct ge_nan_input *input = &s_ge_nan_inputs[i];
         char case_id[48];
