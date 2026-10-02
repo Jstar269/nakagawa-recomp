@@ -1114,7 +1114,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "99e94eb311116684aa69b04ea24787d09384b358662fbaddac00917ae9b4f923"
+      "sha256": "23205d484f488e01bbd9f1ef9c60518fdc1cc1dbddb743664da4d8875b6c983f"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1831,7 +1831,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8da9eb36b275a3f990df0ac9b10556ea0e302dad4f55f3cef5b23e35d28a023c"
+      "sha256": "d36fe05efa4f68244532d0668d4bfcee517c7425df21738357f1e34c6782a782"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -6779,7 +6779,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "81f9d7c594528caa7d0e178b7ae02d483bddd1b8b9062f626b22f594d3d73d7d"
+      "sha256": "1b36436d2316f638ccf6f5874bc597c548a22d6936a4f8b7566a1a7feaadc5eb"
     },
     {
       "path": "tools/psp_oracle/verify_vfpu_addr.py",
@@ -8569,7 +8569,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e35c36bfa45f3c4a4eb5a9f46e3deb706284c57e1fbf0f34224b21b2bd7d9480"
+      "sha256": "e2e284b761fcb9fd438636e6d9de74f0180e80224c93a8c428c7ae8b602ba155"
     },
     {
       "path": "tools/test_psp_parsers.py",
