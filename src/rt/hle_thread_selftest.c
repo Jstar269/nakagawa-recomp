@@ -289,6 +289,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_BAD_ID 0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
+#define SCE_KERNEL_ERROR_ALREADY_STARTED 0x80020133u
 #define SCE_ERROR_AV_MODULE_BAD_ID 0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED 0x80110f03u
@@ -743,6 +744,7 @@ static void test_title_config_hle_bindings(void) {
     int has_sync = sr_title_config_runtime_sync(&sync_base, &sync_name,
                                                 &wrappers, &wrapper_count);
     uint32_t libfont_flag = 0, frame_latch = 0;
+    uint32_t libfont_uid = 0;
     int has_libfont = sr_title_config_libfont_ready_flag_addr(&libfont_flag);
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
     SrTitleReentBindings reent;
@@ -836,10 +838,18 @@ static void test_title_config_hle_bindings(void) {
         title_hle_write_cstr(0x08906000u, "libfont.prx");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0x08906000u;
-        expect(sr_hle_test_load_module(&cpu) != 0u,
+        MEM_W32(libfont_flag, 0u);
+        libfont_uid = sr_hle_test_load_module(&cpu);
+        expect(libfont_uid != 0u,
                "configured LoadModule returns a module uid");
+        expect(MEM_R32(libfont_flag) == 0u,
+               "configured LoadModule defers the libfont-ready fallback until startup is unavailable");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = libfont_uid;
+        expect(sr_hle_test_start_module(&cpu) == 0u,
+               "configured StartModule keeps the missing libfont entry boundary nonfatal");
         expect(MEM_R32(libfont_flag) == 1u,
-               "configured LoadModule drives the libfont-ready flag");
+               "configured ready-flag fallback applies only after unavailable libfont startup");
 
         MEM_W32(frame_latch, 5u);
         ge_finish_latch_assist();
@@ -973,6 +983,274 @@ static int write_synthetic_guest_prx(const char *path) {
     return written == sizeof(image) && close_result == 0;
 }
 
+#define SYNTH_LIBFONT_BASE       0x09f00000u
+#define SYNTH_LIBFONT_READY_WORD 0x08905000u
+#define SYNTH_LIBFONT_EXPORT_NID 0x2990cafeu
+#define SYNTH_LIBFONT_EXPORT_OFF 0x90u
+
+static uint32_t s_synth_libfont_start_calls;
+static uint32_t s_synth_libfont_export_calls;
+
+static void synth_libfont_module_start(CpuState *s) {
+    s_synth_libfont_start_calls++;
+    MEM_W32(SYNTH_LIBFONT_READY_WORD, 1u);
+    s->r[2] = 0x55u;
+}
+
+static void synth_libfont_export(CpuState *s) {
+    s_synth_libfont_export_calls++;
+    s->r[2] = 0x29u;
+}
+
+/* Declared here because the module gate checks below assert on the runtime's own stderr. */
+static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd);
+static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
+                                          char *output, size_t output_size);
+static int count_occurrences(const char *haystack, const char *needle);
+
+/* sceKernelStartModule for the synthetic libfont handle, with the argument and status
+ * pointers the production ABI documents. */
+static uint32_t libfont_start_call(CpuState *cpu, uint32_t uid) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = uid;
+    cpu->r[5] = 24u;
+    cpu->r[6] = 0x08906080u;
+    cpu->r[7] = 0x089060c0u;
+    return sr_hle_test_start_module(cpu);
+}
+
+/* A source-owned PRX with a real module-info/export layout. Its export pointers
+ * use the loaded guest-address form consumed by prx_loader; the HLE export
+ * registrar must resolve those same fields back through the ELF segments. */
+static int write_synthetic_libfont_prx(const char *path, uint32_t base) {
+    enum { SIZE = 0x380, PHOFF = 0x34, MODOFF = 0x100, SHSTR_OFF = 0x2c0,
+           SEG_SIZE = 0x200, EXPORT_VA = 0x100, TABLE_VA = 0x140,
+           START_OFF = 0x70 };
+    static const char section_names[] = "\0.rodata.sceModuleInfo\0.shstrtab\0";
+    uint32_t shoff = (SHSTR_OFF + (uint32_t)sizeof(section_names) + 3u) & ~3u;
+    uint8_t image[SIZE];
+    memset(image, 0, sizeof(image));
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 16, 0xFFA0);
+    fixture_wr16(image + 18, 8);
+    fixture_wr32(image + 20, 1);
+    fixture_wr32(image + 24, START_OFF);
+    fixture_wr32(image + 28, PHOFF);
+    fixture_wr32(image + 32, shoff);
+    fixture_wr16(image + 40, 52);
+    fixture_wr16(image + 42, 32);
+    fixture_wr16(image + 44, 1);
+    fixture_wr16(image + 46, 40);
+    fixture_wr16(image + 48, 3);
+    fixture_wr16(image + 50, 2);
+
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);
+    fixture_wr32(ph + 4, 0x80);
+    fixture_wr32(ph + 8, 0);
+    fixture_wr32(ph + 12, MODOFF);
+    fixture_wr32(ph + 16, SEG_SIZE);
+    fixture_wr32(ph + 20, SEG_SIZE);
+    fixture_wr32(ph + 24, 5);
+    fixture_wr32(ph + 28, 4);
+
+    memcpy(image + MODOFF + 4, "libfont", 8);
+    fixture_wr32(image + MODOFF + 36, base + EXPORT_VA);
+    fixture_wr32(image + MODOFF + 40, base + EXPORT_VA + 16u);
+    uint8_t *entry = image + 0x80 + EXPORT_VA;
+    entry[8] = 4;
+    fixture_wr16(entry + 10, 2);
+    fixture_wr32(entry + 12, base + TABLE_VA);
+    fixture_wr32(image + 0x80 + TABLE_VA, 0xd632acdbu);
+    fixture_wr32(image + 0x84 + TABLE_VA, SYNTH_LIBFONT_EXPORT_NID);
+    fixture_wr32(image + 0x88 + TABLE_VA, START_OFF);
+    fixture_wr32(image + 0x8c + TABLE_VA, SYNTH_LIBFONT_EXPORT_OFF);
+    fixture_wr32(image + 0x80 + START_OFF, 0x03e00008u); /* jr ra */
+    fixture_wr32(image + 0x80 + SYNTH_LIBFONT_EXPORT_OFF, 0x03e00008u);
+    memcpy(image + SHSTR_OFF, section_names, sizeof(section_names));
+
+    uint8_t *modinfo_sh = image + shoff + 40;
+    fixture_wr32(modinfo_sh + 0, 1);
+    fixture_wr32(modinfo_sh + 4, 1);
+    fixture_wr32(modinfo_sh + 8, 2);
+    fixture_wr32(modinfo_sh + 12, 0x80);
+    fixture_wr32(modinfo_sh + 16, MODOFF);
+    fixture_wr32(modinfo_sh + 20, 52);
+    fixture_wr32(modinfo_sh + 32, 4);
+    uint8_t *strtab_sh = modinfo_sh + 40;
+    fixture_wr32(strtab_sh + 0, 1u + (uint32_t)sizeof(".rodata.sceModuleInfo"));
+    fixture_wr32(strtab_sh + 4, 3);
+    fixture_wr32(strtab_sh + 16, SHSTR_OFF);
+    fixture_wr32(strtab_sh + 20, (uint32_t)sizeof(section_names));
+    fixture_wr32(strtab_sh + 32, 1);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
+static void test_synthetic_libfont_startup(const char *name, const char *guest_path,
+                                           uint32_t base, int required) {
+    const char *root = getenv("SR_MODULE_DIR");
+    char path[1024];
+    int written;
+    uint32_t configured_flag = 0;
+    CpuState cpu;
+
+    expect(strcmp(name, "libfont.prx") == 0,
+           "libfont startup fixture uses the declared libfont-named PRX");
+    expect(strcmp(guest_path, "disc0:/PSP_GAME/SYSDIR/libfont.prx") == 0,
+           "libfont startup uses the manifest guest path");
+    expect(base == SYNTH_LIBFONT_BASE && required == 1,
+           "libfont startup uses its required synthetic manifest base");
+    expect(!sr_title_config_libfont_ready_flag_addr(&configured_flag),
+           "libfont startup fixture disables manifest ready-flag injection");
+    if (base != SYNTH_LIBFONT_BASE || !guest_path || !name) return;
+
+    written = snprintf(path, sizeof(path), "%s/%s", root ? root : "", name);
+    expect(written > 0 && (size_t)written < sizeof(path),
+           "libfont startup fixture path fits the bounded test buffer");
+    if (written <= 0 || (size_t)written >= sizeof(path)) return;
+    expect(write_synthetic_libfont_prx(path, base),
+           "source-owned libfont PRX fixture is written");
+
+    _putenv("SR_REAL_MODULE_START=");
+    sr_hle_test_module_reset();
+    s_synth_libfont_start_calls = 0;
+    s_synth_libfont_export_calls = 0;
+    MEM_W32(SYNTH_LIBFONT_READY_WORD, 0u);
+    sr_test_register_guest_fn(base + 0x70u, synth_libfont_module_start);
+    sr_test_register_guest_fn(base + SYNTH_LIBFONT_EXPORT_OFF, synth_libfont_export);
+
+    title_hle_write_cstr(0x08906000u, guest_path);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x08906000u;
+    uint32_t uid = sr_hle_test_load_module(&cpu);
+    expect(uid != 0u, "libfont startup fixture loads through production LoadModule");
+    expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0u,
+           "libfont LoadModule leaves the guest readiness word to module_start");
+    expect(sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) ==
+               base + SYNTH_LIBFONT_EXPORT_OFF,
+           "libfont export NID resolves from its PRX export table");
+    expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
+           "libfont export is not authorized before module_start");
+
+    /* Phase 1: the shipped default leaves SR_REAL_MODULE_START unset, and a translated
+     * libfont entry owns its own readiness there. */
+    expect(getenv("SR_REAL_MODULE_START") == NULL,
+           "libfont gate: the default configuration leaves SR_REAL_MODULE_START unset");
+    expect(libfont_start_call(&cpu, uid) == 0u,
+           "libfont StartModule enters the translated guest module_start");
+    int startup_ready = s_synth_libfont_start_calls == 1u &&
+                        MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u;
+    expect(startup_ready,
+           "guest module_start writes the readiness word exactly once");
+    if (startup_ready) {
+        expect(MEM_R32(0x089060c0u) == 0x55u,
+               "libfont StartModule returns the guest module_start status");
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) ==
+                   base + SYNTH_LIBFONT_EXPORT_OFF,
+               "libfont export becomes authorized after module_start");
+        memset(&cpu, 0, sizeof(cpu));
+        expect(sr_syscall(&cpu, SYNTH_LIBFONT_EXPORT_NID) == 0x29u &&
+                   s_synth_libfont_export_calls == 1u,
+               "imports route to the started libfont guest export");
+    } else {
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
+               "a skipped module_start does not authorize libfont exports");
+    }
+
+    /* Phase 2: a repeated StartModule must not run the entry a second time. */
+    expect(libfont_start_call(&cpu, uid) == SCE_KERNEL_ERROR_ALREADY_STARTED &&
+               s_synth_libfont_start_calls == 1u,
+           "a second libfont StartModule is refused and does not re-enter module_start");
+
+    /* Phase 3: SR_REAL_MODULE_START=1 keeps translated startup for every module. */
+    _putenv("SR_REAL_MODULE_START=1");
+    sr_hle_test_module_reset();
+    uint32_t uid_on = sr_hle_test_register_module("libfont.prx", base + 0x70u, 0u);
+    uint32_t starts_before = s_synth_libfont_start_calls;
+    expect(uid_on != 0u, "libfont gate: a second libfont handle is registered");
+    expect(libfont_start_call(&cpu, uid_on) == 0u &&
+               s_synth_libfont_start_calls == starts_before + 1u,
+           "SR_REAL_MODULE_START=1 runs the translated libfont module_start");
+
+    /* Phase 4: SR_REAL_MODULE_START=0 is the environmental kill switch. It has to cover
+     * libfont too: no entry runs, the call stays nonfatal, and the unconfigured fallback
+     * writes nothing. Phase 5 repeats the unavailable start, so both phases share one
+     * capture window that also proves the boundary line is latched once. */
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_hle_test_module_reset();
+    uint32_t uid_off = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/libfont.prx",
+                                                   base + 0x70u, 0u);
+    starts_before = s_synth_libfont_start_calls;
+    MEM_W32(SYNTH_LIBFONT_READY_WORD, 0u);
+    FILE *capture = NULL;
+    int saved_fd = -1;
+    char captured[4096];
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    expect(capturing, "libfont gate: stderr capture for the unavailable-start boundary");
+    expect(uid_off != 0u, "libfont gate: a third libfont handle is registered");
+    expect(libfont_start_call(&cpu, uid_off) == 0u,
+           "SR_REAL_MODULE_START=0 keeps StartModule nonfatal for libfont");
+    expect(s_synth_libfont_start_calls == starts_before,
+           "SR_REAL_MODULE_START=0 does not execute translated module_start");
+    expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0u,
+           "SR_REAL_MODULE_START=0 writes no host readiness fallback when unconfigured");
+    expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
+           "the kill switch leaves libfont exports unauthorized");
+    expect(libfont_start_call(&cpu, uid_off) == 0u,
+           "a repeated kill-switched libfont StartModule stays nonfatal");
+
+    /* Phase 5: an untranslated libfont entry takes the same named fallback. */
+    _putenv("SR_REAL_MODULE_START=");
+    sr_hle_test_module_reset();
+    uint32_t uid_untranslated = sr_hle_test_register_module("disc0:/PSP_GAME/SYSDIR/libfont.prx",
+                                                            0x089b0000u, 0u);
+    expect(uid_untranslated != 0u,
+           "libfont gate: a handle with an untranslated entry is registered");
+    expect(libfont_start_call(&cpu, uid_untranslated) == 0u &&
+               libfont_start_call(&cpu, uid_untranslated) == 0u,
+           "repeated untranslated libfont starts stay nonfatal");
+
+    /* Phase 6: the gate matches a whole path element, not a substring of a longer name. */
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_hle_test_module_reset();
+    uint32_t uid_lookalike = sr_hle_test_register_module("mylibfont.prx.bak",
+                                                         base + 0x70u, 0u);
+    expect(uid_lookalike != 0u, "libfont gate: a look-alike module name is registered");
+    expect(libfont_start_call(&cpu, uid_lookalike) == 0u &&
+               s_synth_libfont_start_calls == starts_before,
+           "a module whose name only contains libfont.prx does not take the libfont gate");
+    if (capturing) {
+        captured[0] = '\0';
+        hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof(captured));
+        /* Replay the captured window so the boundary text a consumer would read from
+         * stderr stays observable in the run output the regressions assert on. */
+        fprintf(stderr, "%s", captured);
+        expect(count_occurrences(captured, "LIBFONT_STARTUP_UNAVAILABLE") == 2,
+               "repeated unavailable libfont starts log the boundary exactly once per reason");
+        expect(strstr(captured, "SR_REAL_MODULE_START=0 disabled guest startup") != NULL,
+               "the libfont diagnostic names the kill switch as its boundary");
+        expect(strstr(captured, "entry untranslated") != NULL,
+               "the libfont diagnostic names an untranslated entry as its boundary");
+        expect(strstr(captured, "module absent") == NULL,
+               "the libfont diagnostic never claims the module is absent");
+        expect(strstr(captured, "path='mylibfont.prx.bak') -> SR_REAL_MODULE_START=0, "
+                                "module_start not executed") != NULL,
+               "the look-alike module is refused by name, not by a libfont fallback");
+    }
+
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_hle_test_module_reset();
+    remove(path);
+}
+
 static void test_guest_module_load_binding(void) {
     const char *mode = getenv("SR_TEST_GUEST_MODULE_LOAD");
     if (!mode || !mode[0]) return;
@@ -982,6 +1260,13 @@ static void test_guest_module_load_binding(void) {
     int required = 0;
     expect(sr_title_config_guest_module_at(0, &name, &guest_path, &base, &required),
            "synthetic manifest exposes a guest-module load binding");
+    if (strcmp(mode, "libfont-startup") == 0) {
+        if (name && guest_path)
+            test_synthetic_libfont_startup(name, guest_path, base, required);
+        else
+            expect(0, "libfont startup manifest binding is present");
+        return;
+    }
     if (!name || !guest_path || strcmp(name, "c285-runtime.prx") != 0) {
         expect(0, "runtime regression selects the declared synthetic PRX");
         return;
