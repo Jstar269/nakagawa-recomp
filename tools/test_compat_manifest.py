@@ -849,77 +849,22 @@ CENSUS_NON_ENTRY_COLLECTIONS = ("HLE_GENERIC_SITE_RULES", "DIAGNOSTIC_GROUPS")
 #: list, so the naming convention stands in for a per-name entry.
 CENSUS_RETIRED_PREFIX = "RETIRED_"
 
-#: A test path named by a manifest entry.  Used to reject an invented
-#: regression: a temporary patch that points at a file that does not exist has
-#: no test at all, whatever the field says.
-MANIFEST_TEST_PATH_RE = re.compile(
-    r"(?<![\w./-])tools/(?:[\w.-]+/)*[\w.-]+\.py(?![\w.-])"
-)
-MANIFEST_MAKE_TARGET_RE = re.compile(r"\bmake\s+([A-Za-z0-9_.-]+)\b")
-
-
-def _makefile_targets() -> set[str]:
-    """Return literal targets declared in the repository Makefile."""
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    targets: set[str] = set()
-    for line in makefile.splitlines():
-        rule = line.split("#", 1)[0]
-        if ":" not in rule:
-            continue
-        left_side = rule.split(":", 1)[0].strip()
-        for target in left_side.split():
-            if not target.startswith("$(") and "=" not in target:
-                targets.add(target)
-    return targets
-
-
-def resolvable_test_references(test_field: object) -> list[str]:
-    """Find existing test files and declared Make targets named by a field."""
-    field = str(test_field or "")
-    references: list[str] = []
-    tools_root = (ROOT / "tools").resolve()
-    for path in MANIFEST_TEST_PATH_RE.findall(field):
-        candidate = (ROOT / Path(path)).resolve()
-        if candidate.is_file() and tools_root in candidate.parents:
-            references.append(path)
-
-    targets = _makefile_targets()
-    for match in MANIFEST_MAKE_TARGET_RE.finditer(field):
-        target = match.group(1)
-        if target in targets:
-            references.append(f"make {target}")
-    return references
-
-
-def temporary_patch_test_reference_problem(patch: dict) -> str | None:
-    """Explain why a temporary patch does not name any executable test."""
-    if resolvable_test_references(patch.get("test")):
-        return None
-    if compat_overrides.has_no_test(patch):
-        return "test is none/empty"
-    return "test must name an existing tools/**/*.py file or Makefile target"
-
-
 def temporary_debt_failures() -> list[str]:
     """Every #363 debt-gate violation, as "census id: problem" strings.
 
+    The defects come from compat_overrides.temporary_patch_defects, the same
+    rule --debt-census reports, so the census and the gate cannot disagree.
     The gate test asserts this is empty; the mutation tests below prove it is
     not vacuous by injecting an untested temporary patch and watching it fill.
     """
     failures: list[str] = []
     for patch in compat_overrides.temporary_compatibility_patches():
         problems = compat_overrides.temporary_patch_defects(patch)
-        # The placeholder list supplies the specific diagnostic only.  The
-        # positive reference check below rejects every field without a live
-        # tools Python test or declared Make target, including unknown prose.
-        problems = [problem for problem in problems if problem != "test is none/empty"]
         if patch["id"] in TEMPORARY_PATCH_TEST_WAIVERS:
-            # A reviewed waiver covers exactly the missing executable test.
-            reference_problem = None
-        else:
-            reference_problem = temporary_patch_test_reference_problem(patch)
-        if reference_problem:
-            problems.append(reference_problem)
+            # A reviewed waiver covers exactly the missing executable test; a
+            # reference that does not resolve is an invented test and still fails.
+            problems = [problem for problem in problems
+                        if problem not in compat_overrides.WAIVABLE_TEST_DEFECTS]
         failures.extend(f"{patch['id']}: {problem}" for problem in problems)
     return failures
 
@@ -1021,19 +966,54 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
         )
 
     def test_a_named_regression_test_must_exist(self):
-        """Every unwaived temporary patch must resolve a positive reference."""
+        """Every reference a temporary patch names must resolve, waived or not."""
         missing = []
         for patch in compat_overrides.temporary_compatibility_patches():
-            if patch["id"] in TEMPORARY_PATCH_TEST_WAIVERS:
-                continue
-            problem = temporary_patch_test_reference_problem(patch)
-            if problem:
-                missing.append(f"{patch['id']}: {problem}")
+            _resolved, unresolved = compat_overrides.test_references(patch.get("test"))
+            missing.extend(f"{patch['id']}: {reference}" for reference in unresolved)
         self.assertEqual(
             missing, [],
-            "temporary patch names no existing tools Python test or Make target: "
+            "temporary patch names a test file or Make target that does not exist: "
             + "; ".join(missing),
         )
+
+    def test_makefile_targets_are_rule_targets_only(self):
+        """Variables, recipe prose and no-op recipes are not invocable targets."""
+        targets = compat_overrides.makefile_targets()
+        for target in ("sched-selftest", "dispatch-isolation-selftest", "readiness"):
+            self.assertIn(target, targets)
+        # EMPTY/SPACE/VULKAN_SDK are := assignments; the rest are words from tab
+        # recipes ($(error ...) text and the "@:" no-op).
+        for not_a_target in ("EMPTY", "SPACE", "VULKAN_SDK", "needs", "validated", "@"):
+            self.assertNotIn(not_a_target, targets)
+
+    def test_a_waiver_does_not_legalize_an_invented_reference(self):
+        """MUTATION: a waiver covers an untested entry, not a fabricated test path."""
+        for index, test_field in enumerate(("tools/does_not_exist.py", "make EMPTY")):
+            with self.subTest(test=test_field):
+                address = 0x08ff0040 + 4 * index
+                name = f"synthetic waived invented reference {index}"
+                census_id = f"HST_SIMPLE_STUBS:0x{address:08x}:{name}"
+                compat_overrides.HST_SIMPLE_STUBS.append(dict(
+                    address=address, category="temporary_compatibility_patch",
+                    name=name, owner_issue="#363",
+                    retirement="remove the synthetic patch", test=test_field,
+                ))
+                TEMPORARY_PATCH_TEST_WAIVERS[census_id] = dict(
+                    owner="#363", reason="synthetic waiver")
+                try:
+                    failures = temporary_debt_failures()
+                    census = compat_overrides.format_debt_census()
+                finally:
+                    compat_overrides.HST_SIMPLE_STUBS.pop()
+                    del TEMPORARY_PATCH_TEST_WAIVERS[census_id]
+                self.assertTrue(
+                    any(failure.startswith(census_id + ":") for failure in failures),
+                    f"waived test={test_field!r} passed the gate",
+                )
+                defects = census.split("DEFECTS", 1)[-1]
+                self.assertIn(census_id, defects,
+                              "--debt-census DEFECTS omits an unresolvable reference")
 
     def test_a_temporary_patch_needs_a_resolvable_test_reference(self):
         """MUTATION: plausible prose and a nonexistent make target are not

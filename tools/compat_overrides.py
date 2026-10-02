@@ -57,7 +57,11 @@ For a `temporary_compatibility_patch` that gap is a CI failure: the debt gate in
 tools/test_compat_manifest.py also requires a live `owner_issue` and an explicit
 `retirement` condition, and only its reviewed allowlist can waive the test.
 "none" is matched as a claim, not as a spelling -- "n/a", "TBD" and "-" are the
-same gap and are rejected the same way.  `python tools/compat_overrides.py
+same gap and are rejected the same way.  A field that is not a placeholder
+must still name an executable regression: an existing tools/**/*.py file or a
+Makefile rule target, and every reference it names must resolve.  A waiver
+covers only a missing test, never a reference that does not exist.
+`python tools/compat_overrides.py
 --debt-census` prints the census, and also names the untested
 faithful_abi_bridge/hle_boundary entries, which the temporary-patch gate does
 not cover and which #363 still owns.
@@ -65,6 +69,9 @@ not cover and which #363 still owns.
 
 import re
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 CATEGORIES = {
     "faithful_abi_bridge",
@@ -846,6 +853,54 @@ def has_no_test(patch: dict) -> bool:
     return normalize_test_field(patch.get("test")) in NO_TEST_PLACEHOLDERS
 
 
+#: References a ``test`` field can name that a gate can check: a tools Python
+#: test file, or a target of the repository Makefile.
+TEST_PATH_RE = re.compile(r"(?<![\w./-])tools/(?:[\w.-]+/)*[\w.-]+\.py(?![\w.-])")
+MAKE_REFERENCE_RE = re.compile(r"\bmake\s+([A-Za-z0-9_.-]+)\b")
+# A rule line starts in column 0 and names its targets before a ":" or "::"
+# that is not an assignment (":=", "::=").  Recipe lines start with a tab, so
+# their prose (echo text, $(error ...) messages, "@:") is never read as a rule.
+_MAKE_RULE_RE = re.compile(r"^([A-Za-z0-9_./-][^:=#]*?)\s*::?(?!=)")
+
+#: Defects a reviewed waiver may cover: the entry names no executable test.  A
+#: reference that does not resolve is never waivable -- it is an invented test.
+NO_TEST_DEFECT = "test is none/empty"
+NO_REFERENCE_DEFECT = "test must name an existing tools/**/*.py file or Makefile target"
+WAIVABLE_TEST_DEFECTS = frozenset({NO_TEST_DEFECT, NO_REFERENCE_DEFECT})
+
+
+def makefile_targets(makefile: "Path | None" = None) -> "frozenset[str]":
+    """The literal rule targets the Makefile declares (not variables, not recipe text)."""
+    text = (makefile or ROOT / "Makefile").read_text(encoding="utf-8")
+    targets: "set[str]" = set()
+    for line in text.splitlines():
+        match = _MAKE_RULE_RE.match(line)
+        if not match:
+            continue
+        for target in match.group(1).split():
+            if target.startswith(".") or "%" in target or "$" in target:
+                continue  # special targets and pattern rules are not invocable names
+            targets.add(target)
+    return frozenset(targets)
+
+
+def test_references(test_field) -> "tuple[list[str], list[str]]":
+    """Split the references a ``test`` field names into (resolved, unresolved)."""
+    field = str(test_field or "")
+    resolved: "list[str]" = []
+    unresolved: "list[str]" = []
+    tools_root = (ROOT / "tools").resolve()
+    for path in TEST_PATH_RE.findall(field):
+        candidate = (ROOT / path).resolve()
+        (resolved if candidate.is_file() and tools_root in candidate.parents
+         else unresolved).append(path)
+    targets = makefile_targets()
+    for match in MAKE_REFERENCE_RE.finditer(field):
+        reference = f"make {match.group(1)}"
+        (resolved if match.group(1) in targets else unresolved).append(reference)
+    return resolved, unresolved
+
+
 #: Categories that change guest-visible behavior without being a temporary
 #: patch, so #363's temporary-patch debt gate does not require an owner, a
 #: retirement condition or a test of them.  They are enumerated only so the
@@ -927,7 +982,13 @@ def temporary_patch_defects(patch: dict) -> "list[str]":
     if not str(patch.get("retirement") or "").strip():
         problems.append("no retirement condition")
     if has_no_test(patch):
-        problems.append("test is none/empty")
+        problems.append(NO_TEST_DEFECT)
+    else:
+        resolved, unresolved = test_references(patch.get("test"))
+        if unresolved:
+            problems.append("test names a reference that does not exist: " + ", ".join(unresolved))
+        elif not resolved:
+            problems.append(NO_REFERENCE_DEFECT)
     return problems
 
 
