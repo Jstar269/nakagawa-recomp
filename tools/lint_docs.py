@@ -208,10 +208,10 @@ HLE_CENSUS_PAST_COUNT_PAT = re.compile(
     r"\s+$",
     re.IGNORECASE,
 )
-# A change verb right after the count turns "there were N ... added" into a
+# A change verb anywhere later in the count's clause turns "there were N ... added" into a
 # statement about what happened, not a captured figure.
 HLE_CENSUS_CHANGE_AFTER_COUNT_PAT = re.compile(
-    r"^[^.;:]{0,40}?\b(?:added|removed|registered|implemented|retired|dropped)\b",
+    r"^[^.;:]*?\b(?:added|removed|registered|implemented|retired|dropped)\b",
     re.IGNORECASE,
 )
 HLE_CENSUS_PRESENT_PAT = re.compile(r"\b(?:now|currently|today|is|are)\b", re.IGNORECASE)
