@@ -7151,7 +7151,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fe6789294bf138da9bf92c4b36deb4be39aae5fb03239e64ebc7b9d6708b634f"
+      "sha256": "a0198bbc90c70959d4ae44efd69b94aa989fd0ae90be4765384985e2c3a76bb6"
     },
     {
       "path": "tools/test_ci_paths.py",
@@ -7825,7 +7825,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "71eb6aecf8d7320e09d1ab5ffb9fcc09b43bb3d385e464d4d629111992d58bf5"
+      "sha256": "8e3b20ef5ff5a04140e5183a43c76116de32e34936a84f73e696bef039fb82e2"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
