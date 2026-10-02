@@ -4663,14 +4663,6 @@ int main(int argc, char *argv[]) {
        PSPLINK's reset is controlled by `resetonexit` in psplink.ini. With
        resetonexit=1 it calls psplinkStop() then sceKernelLoadExec to reload
        itself, which re-enumerates the USB endpoint on every probe. Set
-       resetonexit=0 on the Memory Stick for multi-probe sessions.
-
-       With resetonexit=0, PSPLINK does not end the thread on that exit: the main
-       thread stays asleep after the module is stopped and unloaded, keeping its
-       256 KiB stack. Measured on PSP-3001 6.6.1 (2026-10-01): after about five
-       probes the leftover user_main threads left later probes loading but never
-       writing to host0. On hardware the thread therefore deletes itself; the
-       records are already on host0 and the runner unloads the module. */
-    if (!emulated) sceKernelExitDeleteThread(0);
+       resetonexit=0 on the Memory Stick for multi-probe sessions. */
     return 0;
 }
