@@ -24,6 +24,32 @@ from nk_doctor_checks import check_runtime_package_cache
 from nk_doctor_core import Report
 
 
+def _aot_gap_report(cache: dict, region_count: int) -> str:
+    """A synthetic build-report body in the planner's own AOT-gap record shape.
+
+    Records, not filler text: the planner writes one record per AOT gap, so a
+    report that grows with the title also grows proportionally in structural
+    nodes and comma separators. 6000 records is about 1.3 MB, the measured
+    size of a flagship build report, so the fixture reproduces that route.
+    """
+    return package_cache.canonical_json({
+        "cache": cache,
+        "unsupported": {
+            "regions": [
+                {
+                    "boundary": f"AOT function at 0x{index:08x}",
+                    "entry_address": f"0x{index:08x}",
+                    "module": "executable region",
+                    "reason": "no analyzed AOT span; interpreted by the AOT-gap floor (#118)",
+                    "status": "in the works",
+                    "tracking_issue": 118,
+                }
+                for index in range(region_count)
+            ]
+        },
+    })
+
+
 class PackageCacheTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="package_cache_")
@@ -67,6 +93,49 @@ class PackageCacheTests(unittest.TestCase):
         }
         values.update(overrides)
         return package_cache.build_cache_key(**values)
+
+    def _new_package_dir(self, name: str) -> tuple[Path, dict, dict]:
+        """Create a package holding everything except its report and manifest.
+
+        Returns the package directory, the cache key the caller must pass to
+        validate_package_cache(), and the cache metadata both package.json and
+        build-report.json must carry.
+        """
+        package_dir = self.root / name
+        package_dir.mkdir()
+        executable = package_dir / "synthetic.exe"
+        image = package_dir / "synthetic_image.bin"
+        generated = package_dir / "synthetic_recomp.o"
+        executable.write_bytes(b"native")
+        image.write_bytes(b"image")
+        generated.write_bytes(b"object")
+        key = self.key()
+        cache = package_cache.cache_metadata(
+            key, {"profile": "none", "funcs_per_chunk": 2000}
+        )
+        package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
+            "cache": cache,
+            "inputs": self.inputs,
+            "executable": {
+                "path": executable.name,
+                "sha256": package_cache.sha256_file(executable),
+            },
+            "generated_objects": [{
+                "path": generated.name,
+                "sha256": package_cache.sha256_file(generated),
+            }],
+        }
+        (package_dir / "package.json").write_text(
+            package_cache.canonical_json(package), encoding="utf-8"
+        )
+        return package_dir, key, cache
 
     def test_retail_input_identity_cannot_be_written_inside_checkout(self) -> None:
         with self.assertRaisesRegex(
@@ -318,6 +387,83 @@ class PackageCacheTests(unittest.TestCase):
         valid, reason = package_cache.validate_package_cache(interrupted, expected_key=key)
         self.assertFalse(valid)
         self.assertIn("unreadable", reason)
+
+    def test_flagship_sized_build_report_is_accepted(self) -> None:
+        # A flagship build report is about 1.3 MB, past the shared 1 MiB byte
+        # ceiling, so the package route rejected it with PACKAGE_BUILD_INCOMPLETE
+        # even though the report was produced by this project's own planner.
+        package_dir, key, cache = self._new_package_dir("flagship_report")
+        report = _aot_gap_report(cache, 6000)
+        size = len(report.encode("utf-8"))
+        self.assertGreater(size, package_cache.MAX_CACHE_JSON_BYTES)
+        self.assertLess(size, package_cache.MAX_BUILD_REPORT_JSON_BYTES)
+        (package_dir / "build-report.json").write_text(report, encoding="utf-8")
+        package_cache.write_completion_manifest(package_dir, key)
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertTrue(valid, reason)
+
+    def test_build_report_byte_ceiling_accepts_the_limit_and_rejects_one_over(self) -> None:
+        limit = package_cache.MAX_BUILD_REPORT_JSON_BYTES
+        package_dir, key, cache = self._new_package_dir("report_byte_ceiling")
+        report_path = package_dir / "build-report.json"
+        prefix = '{"cache":' + package_cache.canonical_json(cache).strip() + ',"pad":"'
+        at_limit = prefix + "A" * (limit - len(prefix) - 2) + '"}'
+        self.assertEqual(len(at_limit.encode("utf-8")), limit)
+        report_path.write_text(at_limit, encoding="utf-8")
+        package_cache.write_completion_manifest(package_dir, key)
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertTrue(valid, reason)  # valid data at the exact limit is accepted
+        over_limit = prefix + "A" * (limit + 1 - len(prefix) - 2) + '"}'
+        self.assertEqual(len(over_limit.encode("utf-8")), limit + 1)
+        report_path.write_text(over_limit, encoding="utf-8")
+        with self.assertRaisesRegex(
+            package_cache.BoundedJsonError, "4194304-byte JSON artifact limit"
+        ):
+            package_cache.read_build_report_json(report_path)
+        valid, reason = package_cache.validate_package_cache(package_dir)
+        self.assertFalse(valid)
+        self.assertIn("over the 4194304-byte JSON artifact limit", reason)
+
+    def test_package_json_keeps_the_shared_one_mib_ceiling(self) -> None:
+        # Only build-report.json may be large: package.json, the completion
+        # manifest and the identity record keep the shared 1 MiB bound.
+        package_dir, key, cache = self._new_package_dir("oversize_package_json")
+        (package_dir / "build-report.json").write_text(
+            _aot_gap_report(cache, 8), encoding="utf-8"
+        )
+        package_path = package_dir / "package.json"
+        document = json.loads(package_path.read_text(encoding="utf-8"))
+        document["pad"] = "A" * package_cache.MAX_CACHE_JSON_BYTES
+        package_path.write_text(
+            package_cache.canonical_json(document), encoding="utf-8"
+        )
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertIn("over the 1048576-byte JSON artifact limit", reason)
+
+    def test_planner_refuses_a_build_report_the_package_reader_would_reject(self) -> None:
+        small = {"format": "nakagawa-build-report", "schema_version": 1}
+        self.assertEqual(
+            title_codegen_plan._build_report_text(small),
+            package_cache.canonical_json(small),
+        )
+        oversized = {"pad": "A" * package_cache.MAX_BUILD_REPORT_JSON_BYTES}
+        with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
+            title_codegen_plan._build_report_text(oversized)
+        self.assertEqual(caught.exception.code, "PACKAGE_REPORT_TOO_LARGE")
+        self.assertIn("4194304-byte build report limit", str(caught.exception))
+
+    def test_planner_refuses_a_build_report_over_the_node_ceiling(self) -> None:
+        rows = [{"nid": i, "kind": "aot_gap", "site": 1} for i in range(70000)]
+        report = {
+            "schema": title_codegen_plan.BUILD_REPORT_FORMAT,
+            "unsupported": {"imports": rows},
+        }
+        self.assertLess(len(title_codegen_plan.canonical_json(report).encode()), 4 * 1024 * 1024)
+        with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
+            title_codegen_plan._build_report_text(report)
+        self.assertEqual(caught.exception.code, "PACKAGE_REPORT_TOO_LARGE")
+        self.assertIn("rejected by the package reader", str(caught.exception))
 
     def test_completion_manifest_accepts_gcc_runtime_dll_artifact_names(self) -> None:
         # Host runtime closure DLLs ship inside packages and GCC/MSYS2 library
@@ -677,6 +823,24 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             path.write_text("[" + items + "]", encoding="utf-8")
             with self.assertRaisesRegex(package_cache.BoundedJsonError, "structural nodes"):
                 package_cache.read_bounded_json(path)
+
+    def test_build_report_reader_has_its_own_named_node_ceiling(self) -> None:
+        # The report reads under its own ceilings, so the node limit that binds
+        # it is 262144 rather than the shared 65536, and it stays named.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "build-report.json"
+            shared = ",".join("1" for _ in range(package_cache.MAX_CACHE_JSON_NODES + 1))
+            path.write_text("[" + shared + "]", encoding="utf-8")
+            # Under the shared node ceiling, so the report route accepts it.
+            package_cache.read_build_report_json(path)
+            with self.assertRaisesRegex(package_cache.BoundedJsonError, "structural nodes"):
+                package_cache.read_bounded_json(path)
+            report = ",".join("1" for _ in range(package_cache.MAX_BUILD_REPORT_JSON_NODES + 1))
+            path.write_text("[" + report + "]", encoding="utf-8")
+            with self.assertRaisesRegex(
+                package_cache.BoundedJsonError, "262144 structural nodes"
+            ):
+                package_cache.read_build_report_json(path)
 
     def test_duplicate_keys_are_rejected_with_named_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

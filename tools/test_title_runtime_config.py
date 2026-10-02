@@ -509,6 +509,63 @@ class GeneratedConfiguration(unittest.TestCase):
         self.assertNotIn("SR_TITLE_CONFIG_VBLANK_FRAME_COUNTER_ADDR", header)
         self.assertNotIn("SR_TITLE_CONFIG_VBLANK_VSYNC_COUNTER_ADDR", header)
 
+    def test_the_diagnostic_and_compatibility_profile_gates_are_separate_macros(self) -> None:
+        """Two gates, one validated profile (#363).
+
+        The diagnostic gate names the operator opt-in for title-scoped reads. The
+        compatibility gate names the ones that change LIVE runtime behavior, which a
+        "DIAGNOSTICS" label misrepresents. Both must be emitted, so neither can be
+        silently reused for the other job."""
+        def profile_bits(codegen_profile: str | None) -> tuple[str, str]:
+            manifest = base_manifest()
+            if codegen_profile is not None:
+                manifest["codegen_profile"] = codegen_profile
+            header = title_runtime_config.render_header(
+                title_runtime_config.bindings_from_manifest(manifest))
+            bits = []
+            for macro in ("SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE",
+                          "SR_TITLE_CONFIG_COMPAT_PROFILE"):
+                emitted = re.search(rf"#define {macro} ([01])$", header, re.MULTILINE)
+                self.assertIsNotNone(emitted, f"{macro} is not emitted at all")
+                bits.append(emitted.group(1))
+            return tuple(bits)
+
+        self.assertEqual(profile_bits(None), ("0", "0"))
+        self.assertEqual(profile_bits("none"), ("0", "0"))
+        self.assertEqual(profile_bits("hst"), ("1", "1"))
+
+    def test_only_the_diagnostic_predicate_is_gated_as_a_diagnostic(self) -> None:
+        """The C source-shape half of the same split.
+
+        sr_title_config_diagnostics_enabled() is a genuine diagnostic: the profile bit
+        plus SR_HLE_DIAGNOSTICS. The two gates that change live runtime behavior --
+        the guest Newlib reent addresses and the callee-saved restore -- must carry the
+        compatibility name, or a reader cannot tell live behavior from diagnostics."""
+        source = (ROOT / "src" / "rt" / "title_config.c").read_text(encoding="utf-8")
+        for accessor in ("sr_title_config_reent_bindings",
+                         "sr_title_config_preserve_callee_saved_at_calls"):
+            # Each body ends at its column-0 closing brace, so a neighbouring
+            # accessor can never satisfy an assertion about this one.
+            body = source.split(f"int {accessor}(", 1)[1].split("\n}", 1)[0]
+            self.assertIn("#if SR_TITLE_CONFIG_COMPAT_PROFILE", body,
+                          f"{accessor} changes live behavior and is not a diagnostic")
+            self.assertNotIn("SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE", body)
+        predicate = source.split("int sr_title_config_diagnostics_enabled(void) {", 1)[1]
+        predicate = predicate.split("\n}", 1)[0]
+        self.assertIn("SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE != 0", predicate)
+
+    def test_the_hst_profile_header_compiles_its_compatibility_arms(self) -> None:
+        """The split is only real if the hst artifact, with both profile bits set,
+        still builds title_config.c: the live reent and callee-saved arms compile."""
+        manifest = base_manifest()
+        manifest["codegen_profile"] = "hst"
+        header = title_runtime_config.render_header(
+            title_runtime_config.bindings_from_manifest(manifest))
+        self.assertIn("#define SR_TITLE_CONFIG_COMPAT_PROFILE 1", header)
+        built = self._compile_title_config(header)
+        self.assertEqual(built.returncode, 0,
+                         "the hst generated artifact must compile: " + built.stderr)
+
     def test_every_emitted_field_has_a_validity_bit(self) -> None:
         self.assertEqual(
             set(title_runtime_config.FIELD_BITS),

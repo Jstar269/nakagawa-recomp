@@ -27,6 +27,7 @@ title imports, plus one honest refusal state:
 | `tools/import_audit_gate.py` | The public CI gate. Runs on `src/rt/hle.c` plus synthetic in-memory fixtures only. |
 | `tools/import_audit_baseline.json` | Committed classification baseline the gate diffs against to catch regressions from dedicated/controlled handling to fake-success/missing. |
 | `tools/hle_manifest.py --evidence-chain` | Joins each registration to the evidence behind it (see [Evidence chain](#evidence-chain)). Adds no tracker; reuses `nid_name_proof.py`, `intr_conformance.h`, the HLE selftest, and the PSP-oracle manifest. |
+| `tools/hle_manifest.py --census-json` / `--census-markdown` | Emits the semantic-status census as a build/tool artifact (see [Semantic status census](#semantic-status-census)). The single current machine source for registration classes and per-status counts. |
 | `tools/import_fixtures.py` | Synthetic ELF builders (well-formed multi-library, cross-library duplicate NIDs, and ten malformed variants). No binary fixture is committed. |
 
 ## Public CI gate
@@ -49,6 +50,33 @@ baseline and review the diff for downgrades before committing it:
 ```bash
 python tools/hle_manifest.py --write-baseline
 ```
+
+## Semantic status census
+
+Classification answers what kind of handler is registered; the census answers how
+mature those handlers are, per API family, from the same extraction:
+
+```bash
+python tools/hle_manifest.py --census-json build/hle_census.json
+python tools/hle_manifest.py --census-markdown build/hle_census.md --census-heading-level 3
+```
+
+`--census-json` (an alias of `--census`) and `--census-markdown` are two renderings
+of one artifact: registration classes (`dedicated`, `fake_success`,
+`controlled_unsupported`) and per-status handler and NID counts (`complete`,
+`partial`, `compatibility`, `controlled_unsupported`, `unreviewed`) by API family.
+The Markdown rendering is embedded between the generated markers in
+[`docs/HLE_AND_WORKAROUND_INVENTORY.md`](../HLE_AND_WORKAROUND_INVENTORY.md) and
+pinned against the generator by
+`tools.test_hle_manifest.CensusTests.test_documented_hle_census_matches_generated_source`.
+
+Counts quoted in prose are therefore capture-time evidence and must say so. The
+live figures come from this artifact, never from a paragraph:
+`tools/lint_docs.py` rejects a hand-written registration, NID or fake-success
+count on a CURRENT page (documented in [`docs/README.md`](../README.md) under
+*Mutable facts policy*). The method in this document is current; every figure it
+quotes is capture-time, and each one is labelled as such or regenerated from the
+live tree rather than restated.
 
 ## Evidence chain
 
