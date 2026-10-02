@@ -2116,7 +2116,10 @@ class Host0RemotePathTests(unittest.TestCase):
         self.assertEqual(report["state"], "STOPPED")
         self.assertEqual(report["terminal_reason"], "HOST0_PRX_OUTSIDE_ROOT")
         self.assertFalse([c for c in commands if c.startswith("ldstart") and "fpu-vector" in c])
-        self.assertIn("not inside host0 root", " ".join(report["envelopes"][-1]["QUALIFICATION_BLOCKERS"]))
+        blockers = " ".join(report["envelopes"][-1]["QUALIFICATION_BLOCKERS"])
+        self.assertIn("campaign PRX for case fpu-vector is not inside host0 root", blockers)
+        self.assertNotIn(other_name, blockers)
+        self.assertNotIn(scratch_name, blockers)
 
     def test_a_prx_outside_the_root_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as other:

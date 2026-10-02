@@ -1235,7 +1235,7 @@ class PsplinkCampaignRunner:
                     remote_path = _host0_remote_path(
                         case.binary, getattr(self.transport, "host0_root", None)
                     )
-                except ValueError as exc:
+                except ValueError:
                     # Same structured refusal as the sibling pre-launch failures: a PRX
                     # the device cannot resolve under host0 is never launched.
                     self.state = "STOPPED"
@@ -1252,7 +1252,9 @@ class PsplinkCampaignRunner:
                             host0_log_cleared=host0_log_cleared,
                             captured_host0_text=None,
                             captured_host0_mtime_ns=None,
-                            host0_capture_problem=str(exc),
+                            # No local paths in evidence: name the case, not the files.
+                            host0_capture_problem=(f"campaign PRX for case {case.case_id} "
+                                                   "is not inside host0 root"),
                         )
                     )
                     break
