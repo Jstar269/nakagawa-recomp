@@ -1114,7 +1114,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ebe68d447dc1f361c310957d102d15732cdd4a4610eb4089d3c610d15fadc8bb"
+      "sha256": "32db8f66b4efcb0785789c806014ac88f86e10ce535063eade9a2863766d22e5"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1471,7 +1471,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8e1d6cb4f6573eccd1903cbdfdaf638dcda1ebc52ff15ccf21c62b09a7fd6ccd"
+      "sha256": "21f548314f6381363d7b95f0ec3cfe2f0b67bcd3b8b4e26efd6773cf1bff623a"
     },
     {
       "path": "docs/images/showcase-breakout-v180.png",
@@ -4531,7 +4531,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "44f3d85edeaddab2d1129620b8e10932159c96af4e8da74c12ef39a3eca5d58d"
+      "sha256": "9e975ff258679a5cbb811828fcfce12102a5652454ff64161c0e1d0fd5638a4a"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4569,7 +4569,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4cf65ee0fb433fd4a541ba543bd856c2005fcff31b50dc5482424b4d19f55bc"
+      "sha256": "098edaa99ec67732b11fadcf408aabd5a4e752fb1a6410b14444397514acbae0"
     },
     {
       "path": "src/rt/intr_conformance.h",
