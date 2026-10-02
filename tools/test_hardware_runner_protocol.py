@@ -2094,6 +2094,30 @@ class Host0RemotePathTests(unittest.TestCase):
     def test_without_a_host0_root_the_bare_name_is_used(self) -> None:
         self.assertEqual(run_psplink_module._host0_remote_path(Path("x/y.prx"), None), "y.prx")
 
+    def test_a_campaign_prx_outside_the_root_stops_with_a_report(self) -> None:
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-outside-root-", dir=fixture_dir) as scratch_name, \
+                tempfile.TemporaryDirectory() as other_name:
+            scratch = Path(scratch_name)
+            inside = scratch / "transport-write.prx"
+            inside.write_bytes(b"synthetic PRX")
+            outside = Path(other_name) / "fpu-vector.prx"
+            outside.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", inside, 1.0),
+                   CampaignCase("fpu-vector", outside, 1.0)])
+        commands = [command for command, _timeout in transport.commands]
+        self.assertEqual(report["state"], "STOPPED")
+        self.assertEqual(report["terminal_reason"], "HOST0_PRX_OUTSIDE_ROOT")
+        self.assertFalse([c for c in commands if c.startswith("ldstart") and "fpu-vector" in c])
+        self.assertIn("not inside host0 root", " ".join(report["envelopes"][-1]["QUALIFICATION_BLOCKERS"]))
+
     def test_a_prx_outside_the_root_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as other:
             outside = Path(other) / "probe.prx"

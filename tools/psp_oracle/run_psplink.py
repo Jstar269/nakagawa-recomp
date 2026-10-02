@@ -1231,13 +1231,34 @@ class PsplinkCampaignRunner:
                     )
                     break
 
+                try:
+                    remote_path = _host0_remote_path(
+                        case.binary, getattr(self.transport, "host0_root", None)
+                    )
+                except ValueError as exc:
+                    # Same structured refusal as the sibling pre-launch failures: a PRX
+                    # the device cannot resolve under host0 is never launched.
+                    self.state = "STOPPED"
+                    self.terminal_reason = "HOST0_PRX_OUTSIDE_ROOT"
+                    self.envelopes.append(
+                        self._envelope(
+                            case,
+                            (None, "", "", self.terminal_reason),
+                            None,
+                            False,
+                            host0_log_path=case_host0_log,
+                            run_started_ns=None,
+                            run_finished_ns=time.time_ns(),
+                            host0_log_cleared=host0_log_cleared,
+                            captured_host0_text=None,
+                            captured_host0_mtime_ns=None,
+                            host0_capture_problem=str(exc),
+                        )
+                    )
+                    break
                 run_started_ns = time.time_ns()
                 self.state = "RUN_CASE"
-                result = self._request(
-                    "ldstart host0:/"
-                    + _host0_remote_path(case.binary, getattr(self.transport, "host0_root", None)),
-                    case.timeout,
-                )
+                result = self._request(f"ldstart host0:/{remote_path}", case.timeout)
                 uid_match = self._MODULE_UID_RE.search(result[1])
                 module_uid = uid_match.group(1) if uid_match else None
 
