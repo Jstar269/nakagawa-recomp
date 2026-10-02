@@ -63,8 +63,17 @@ AUDIO_EXPECTED_TEST_ID = "PSP-AUDIO-001"
 
 AUDIO_SEMANTIC_CASES = (
     "audio-ch-reserve",
+    "audio-ch-query-before",
+    "audio-ch-output-blocking-0",
+    "audio-ch-output-blocking-1",
+    "audio-ch-query-after",
     "audio-ch-release",
-    "audio-out2-query",
+    "audio-ch-query-released",
+    "audio-out2-reserve",
+    "audio-out2-query-before",
+    "audio-out2-output-blocking",
+    "audio-out2-query-after",
+    "audio-out2-release",
     "audio-src-reserve",
 )
 AUDIO_TERMINAL_CASE = "audio-done"
@@ -77,6 +86,41 @@ AUDIO_SPEC = StreamSpec(
 )
 AUDIO_EXPECTED_CASES = AUDIO_SPEC.ordered_cases
 AUDIO_EXPECTED_TERMINAL_COUNT = AUDIO_SPEC.terminal_count
+AUDIO_OUT_COUNTS = {
+    "audio-ch-reserve": 3,
+    "audio-ch-query-before": 2,
+    "audio-ch-output-blocking-0": 7,
+    "audio-ch-output-blocking-1": 7,
+    "audio-ch-query-after": 2,
+    "audio-ch-release": 1,
+    "audio-ch-query-released": 2,
+    "audio-out2-reserve": 2,
+    "audio-out2-query-before": 1,
+    "audio-out2-output-blocking": 4,
+    "audio-out2-query-after": 1,
+    "audio-out2-release": 1,
+    "audio-src-reserve": 2,
+    "audio-done": 1,
+}
+
+
+def _validate_scalar_shape(sequence: SequenceReport,
+                           out_counts: dict[str, int]) -> None:
+    for case_id, record in sequence.results.items():
+        values = dict(record.values)
+        expected = {"result", *(f"out{i}" for i in range(out_counts[case_id]))}
+        if set(values) != expected:
+            raise ProtocolError(
+                f"{sequence.spec.test_id}: {case_id} fields must be "
+                f"{sorted(expected)}, got {sorted(values)}"
+            )
+        for field, value in values.items():
+            try:
+                int(value, 0)
+            except ValueError as exc:
+                raise ProtocolError(
+                    f"{sequence.spec.test_id}: {case_id} {field} is not an integer"
+                ) from exc
 
 
 @dataclass(frozen=True)
@@ -116,11 +160,210 @@ def parse_audio_query_output(
     """
 
     sequence = parse_sequence(text, AUDIO_SPEC, require_complete=require_complete)
+    _validate_scalar_shape(sequence, AUDIO_OUT_COUNTS)
     return AudioQueryReport(
         sequence=sequence,
         channel_reserve_rc=_observable(sequence, "audio-ch-reserve", "out0"),
-        channel_rest_len=_observable(sequence, "audio-ch-reserve", "out1"),
+        channel_rest_len=_observable(sequence, "audio-ch-query-before", "out0"),
     )
+
+
+# ---------------------------------------------------------------------------
+# PSP-GE-001 raw non-finite input probe
+# ---------------------------------------------------------------------------
+
+GE_NAN_WORDS = {
+    "qnan": 0x7FC00000,
+    "pinf": 0x7F800000,
+    "ninf": 0xFF800000,
+    "nzero": 0x80000000,
+    "denorm": 0x00000001,
+}
+GE_NAN_MODES = ("screen2d", "clip3d", "litnormal")
+GE_NAN_SEMANTIC_CASES = tuple(
+    case_id
+    for name in GE_NAN_WORDS
+    for case_id in (
+        f"ge-nan-vfpu-{name}",
+        *(f"ge-nan-{mode}-{name}" for mode in GE_NAN_MODES),
+    )
+)
+GE_NAN_SPEC = StreamSpec(
+    test_id="PSP-GE-001",
+    semantic_cases=GE_NAN_SEMANTIC_CASES,
+    terminal_case="ge-nan-done",
+)
+GE_NAN_OUT_COUNTS = {
+    **{f"ge-nan-vfpu-{name}": 3 for name in GE_NAN_WORDS},
+    **{
+        f"ge-nan-{mode}-{name}": 4
+        for name in GE_NAN_WORDS
+        for mode in GE_NAN_MODES
+    },
+    "ge-nan-done": 1,
+}
+
+
+def parse_ge_nan_output(text: str, *, require_complete: bool = True) -> SequenceReport:
+    sequence = parse_sequence(text, GE_NAN_SPEC, require_complete=require_complete)
+    _validate_scalar_shape(sequence, GE_NAN_OUT_COUNTS)
+    for case_id, record in sequence.results.items():
+        if case_id == GE_NAN_SPEC.terminal_case:
+            continue
+        sample = case_id.rsplit("-", 1)[1]
+        actual = int(dict(record.values)["out0"], 0)
+        if actual != GE_NAN_WORDS[sample]:
+            raise ProtocolError(
+                f"PSP-GE-001: {case_id} input bits {actual:#010x} do not match "
+                f"the named raw input {GE_NAN_WORDS[sample]:#010x}"
+            )
+    return sequence
+
+
+# ---------------------------------------------------------------------------
+# PSP-DMAC-001 safe alignment/overlap cells and isolated invalid-tail launches
+# ---------------------------------------------------------------------------
+
+DMAC_CELL_OFFSETS = (1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15)
+DMAC_OVERLAP_OFFSETS = (1, 2, 3, 7, 15)
+DMAC_CELL_SEMANTIC_CASES = tuple(
+    [
+        f"align-{api}-{side}-{offset:02x}"
+        for api in ("memcpy", "try")
+        for offset in DMAC_CELL_OFFSETS
+        for side in ("src", "dst", "both")
+    ]
+    + [
+        f"overlap-{api}-{direction}-{delta:02x}"
+        for api in ("memcpy", "try")
+        for delta in DMAC_OVERLAP_OFFSETS
+        for direction in ("forward", "backward")
+    ]
+)
+DMAC_CELL_SPEC = StreamSpec(
+    test_id="PSP-DMAC-001",
+    semantic_cases=DMAC_CELL_SEMANTIC_CASES,
+    terminal_case="dmac-cells-done",
+)
+DMAC_CELL_OUT_COUNTS = {
+    **{case_id: 10 for case_id in DMAC_CELL_SEMANTIC_CASES},
+    "dmac-cells-done": 1,
+}
+DMAC_INVALID_CASES = {
+    "dma-invalid-tail-memcpy-dst": ("invalid-tail-memcpy-dst", 0, 0),
+    "dma-invalid-tail-memcpy-src": ("invalid-tail-memcpy-src", 1, 0),
+    "dma-invalid-tail-try-dst": ("invalid-tail-try-dst", 0, 1),
+    "dma-invalid-tail-try-src": ("invalid-tail-try-src", 1, 1),
+}
+
+
+def parse_dmac_cells_output(text: str, *, require_complete: bool = True) -> SequenceReport:
+    sequence = parse_sequence(text, DMAC_CELL_SPEC, require_complete=require_complete)
+    _validate_scalar_shape(sequence, DMAC_CELL_OUT_COUNTS)
+    for case_id, record in sequence.results.items():
+        if case_id == DMAC_CELL_SPEC.terminal_case:
+            continue
+        values = {key: int(value, 0) for key, value in record.values}
+        if case_id.startswith("align-"):
+            _, api_name, side, offset_text = case_id.split("-")
+            offset = int(offset_text, 16)
+            expected_api = 0 if api_name == "memcpy" else 1
+            src_offset = offset if side in {"src", "both"} else 0
+            dst_offset = offset if side in {"dst", "both"} else 0
+            wanted = {
+                "out0": expected_api,
+                "out1": src_offset,
+                "out2": dst_offset,
+                "out3": 64,
+            }
+            source_address, destination_address = values["out8"], values["out9"]
+            if source_address % 16 != src_offset or destination_address % 16 != dst_offset:
+                raise ProtocolError(f"PSP-DMAC-001: {case_id} address alignment is false")
+            safe = values["out6"] == 0 and values["out7"] == 1
+        else:
+            _, api_name, direction, delta_text = case_id.split("-")
+            delta = int(delta_text, 16)
+            expected_api = 0 if api_name == "memcpy" else 1
+            expected_direction = 0 if direction == "forward" else 1
+            wanted = {
+                "out0": expected_api,
+                "out1": expected_direction,
+                "out2": delta,
+                "out3": 64,
+            }
+            source_address, destination_address = values["out8"], values["out9"]
+            address_delta = (destination_address - source_address) & 0xFFFFFFFF
+            wanted_delta = delta if expected_direction == 0 else (0x100000000 - delta)
+            if address_delta != wanted_delta:
+                raise ProtocolError(f"PSP-DMAC-001: {case_id} overlap direction is false")
+            safe = values["out6"] == 0
+        for field, expected in wanted.items():
+            if values[field] != expected:
+                raise ProtocolError(
+                    f"PSP-DMAC-001: {case_id} {field}={values[field]:#x}, "
+                    f"expected {expected:#x}"
+                )
+        if record.status == "PASS" and not safe:
+            raise ProtocolError(f"PSP-DMAC-001: {case_id} PASS has a changed guard/source")
+    return sequence
+
+
+def parse_dmac_invalid_tail_output(text: str, campaign_case: str):
+    expected = DMAC_INVALID_CASES.get(campaign_case)
+    if expected is None:
+        raise ProtocolError(f"unknown isolated DMAC invalid-tail case {campaign_case!r}")
+    parsed = parse_output(text)
+    if len(parsed.results) != 1:
+        raise ProtocolError(f"{campaign_case}: stream must contain exactly one result record")
+    record = parsed.results[0]
+    expected_id, direction, api = expected
+    if (record.test_id, record.case_id, record.status) != (
+        "PSP-DMAC-001", expected_id, "SKIP"
+    ):
+        raise ProtocolError(
+            f"{campaign_case}: expected one safe-boundary SKIP for {expected_id}"
+        )
+    values = {key: int(value, 0) for key, value in record.values}
+    expected_fields = {"result", *(f"out{i}" for i in range(7))}
+    if set(values) != expected_fields:
+        raise ProtocolError(f"{campaign_case}: result field set is incomplete or unexpected")
+    wanted = {"out1": 0xC001, "out2": 0xC000, "out3": direction, "out4": api,
+              "out6": 0x10000}
+    for field, value in wanted.items():
+        if values[field] != value:
+            raise ProtocolError(f"{campaign_case}: {field} is not the documented safe shape")
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# PSP-KERNEL-002 zero-duration delay/yield/callback probe
+# ---------------------------------------------------------------------------
+
+DELAY_ZERO_SEMANTIC_CASES = ("delay-threadcb-zero", "delay-thread-zero")
+DELAY_ZERO_SPEC = StreamSpec(
+    test_id="PSP-KERNEL-002",
+    semantic_cases=DELAY_ZERO_SEMANTIC_CASES,
+    terminal_case="delay-zero-done",
+)
+DELAY_ZERO_OUT_COUNTS = {case_id: 10 for case_id in DELAY_ZERO_SEMANTIC_CASES}
+DELAY_ZERO_OUT_COUNTS["delay-zero-done"] = 1
+
+
+def parse_delay_zero_output(text: str, *, require_complete: bool = True) -> SequenceReport:
+    sequence = parse_sequence(text, DELAY_ZERO_SPEC, require_complete=require_complete)
+    _validate_scalar_shape(sequence, DELAY_ZERO_OUT_COUNTS)
+    for case_id, record in sequence.results.items():
+        if case_id == DELAY_ZERO_SPEC.terminal_case or record.status != "PASS":
+            continue
+        values = {key: int(value, 0) for key, value in record.values}
+        if values["out0"] != 0 or values["out2"] != 0 or \
+                values["out3"] != 0 or values["out6"] != values["out7"] or \
+                values["out8"] != 2:
+            raise ProtocolError(
+                f"PSP-KERNEL-002: {case_id} PASS did not start with an equal-priority "
+                "ready thread and pending callback"
+            )
+    return sequence
 
 
 # ---------------------------------------------------------------------------

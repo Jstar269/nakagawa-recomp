@@ -60,15 +60,27 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
 
 try:
     from .parse_golden import (
+        DMAC_INVALID_CASES,
         parse_cache_alias_output,
+        parse_audio_query_output,
+        parse_delay_zero_output,
+        parse_dmac_cells_output,
+        parse_dmac_invalid_tail_output,
         parse_fpu_vector_output,
+        parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
     from psp_oracle.parse_golden import (
+        DMAC_INVALID_CASES,
         parse_cache_alias_output,
+        parse_audio_query_output,
+        parse_delay_zero_output,
+        parse_dmac_cells_output,
+        parse_dmac_invalid_tail_output,
         parse_fpu_vector_output,
+        parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
     )
@@ -307,6 +319,8 @@ def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
 def _parse_campaign_records(text: str, case_id: str):
     """Validate a campaign's known completion contract, then parse its rows."""
 
+    if case_id in DMAC_INVALID_CASES:
+        return parse_dmac_invalid_tail_output(text, case_id)
     if case_id in {"dma-size-matrix", "dmac-size-matrix"}:
         return validate_dmac_size_matrix(text)
     match = re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id)
@@ -315,10 +329,14 @@ def _parse_campaign_records(text: str, case_id: str):
 
     parsed = parse_output(text)
     complete_parser = {
+        "audio-query": parse_audio_query_output,
         "fpu-vector": parse_fpu_vector_output,
         "cache-alias": parse_cache_alias_output,
         "io-matrix": parse_io_matrix_output,
         "mbx-delete-wait": parse_mbx_delete_wait_output,
+        "ge-nan": parse_ge_nan_output,
+        "dma-cells": parse_dmac_cells_output,
+        "delay-zero": parse_delay_zero_output,
     }.get(case_id)
     if complete_parser is not None:
         complete_parser(text, require_complete=True)
@@ -407,8 +425,11 @@ def _campaign_completeness_contract(case_id: str) -> str:
         r"dmac-size-matrix-size-0x[0-9a-f]{8}", case_id
     ):
         return "strict-dmac-sequence"
-    if case_id in {"fpu-vector", "cache-alias", "io-matrix", "mbx-delete-wait"}:
+    if case_id in {"audio-query", "fpu-vector", "cache-alias", "io-matrix",
+                   "mbx-delete-wait", "ge-nan", "dma-cells", "delay-zero"}:
         return "strict-golden-sequence"
+    if case_id in DMAC_INVALID_CASES:
+        return "strict-safe-dmac-skip"
     if case_id in {"transport-write", "model-profile"}:
         return "exactly-one-known-record"
     return "unregistered-no-completion-contract"

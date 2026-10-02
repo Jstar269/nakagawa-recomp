@@ -23,6 +23,7 @@ from psp_oracle.parse_golden import (
     IO_SPEC,
     MBX_DELETE_WAIT_EXPECTED_FIELDS,
     MBX_DELETE_WAIT_SPEC,
+    AUDIO_OUT_COUNTS,
     parse_audio_query_output,
     parse_cache_alias_output,
     parse_io_matrix_output,
@@ -53,6 +54,14 @@ def line(spec: StreamSpec, case_id: str, status: str = "PASS", *, out0: int | No
         return (
             f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={case_id} "
             f"status={status} result=0x00000000 out0=0x{value:08x}\n"
+        )
+    if spec == AUDIO_SPEC:
+        outputs = " ".join(
+            f"out{i}=0x{i + 1:08x}" for i in range(AUDIO_OUT_COUNTS[case_id])
+        )
+        return (
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={case_id} "
+            f"status={status} result=0x00000000 {outputs}\n"
         )
     if spec == MBX_DELETE_WAIT_SPEC:
         count = 26 if case_id == "mbx-delete-wait" else 8
@@ -100,14 +109,23 @@ class TestSpecsMatchProbeSource(unittest.TestCase):
     def test_audio_contract(self) -> None:
         self.assertEqual(AUDIO_SPEC.test_id, "PSP-AUDIO-001")
         self.assertEqual(AUDIO_SPEC.terminal_case, "audio-done")
-        self.assertEqual(AUDIO_SPEC.terminal_count, 4)
-        self.assertEqual(AUDIO_SPEC.record_count, 5)
+        self.assertEqual(AUDIO_SPEC.terminal_count, 13)
+        self.assertEqual(AUDIO_SPEC.record_count, 14)
         self.assertEqual(
             AUDIO_SPEC.semantic_cases,
             (
                 "audio-ch-reserve",
+                "audio-ch-query-before",
+                "audio-ch-output-blocking-0",
+                "audio-ch-output-blocking-1",
+                "audio-ch-query-after",
                 "audio-ch-release",
-                "audio-out2-query",
+                "audio-ch-query-released",
+                "audio-out2-reserve",
+                "audio-out2-query-before",
+                "audio-out2-output-blocking",
+                "audio-out2-query-after",
+                "audio-out2-release",
                 "audio-src-reserve",
             ),
         )
@@ -169,7 +187,7 @@ class TestGoldenStreams(unittest.TestCase):
         self.assertEqual(io_report.open_fd, 1)
         audio_report = parse_audio_query_output(golden(AUDIO_SPEC))
         self.assertEqual(audio_report.channel_reserve_rc, 1)
-        self.assertEqual(audio_report.channel_rest_len, 2)
+        self.assertEqual(audio_report.channel_rest_len, 1)  # out0 of audio-ch-query-before
         cache_report = parse_cache_alias_output(golden(CACHE_SPEC))
         self.assertEqual(cache_report.stale_cached_read, 1)
         self.assertEqual(cache_report.fresh_cached_read, 2)
