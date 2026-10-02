@@ -304,14 +304,20 @@ def _check_source_tree(source_commit: str) -> str | None:
 
 
 def _host0_remote_path(binary: Path, host0_root: object) -> str:
-    """The host0: path of a staged PRX, keeping its subdirectory under the root."""
+    """The host0: path of a staged PRX, keeping its subdirectory under the root.
 
-    if isinstance(host0_root, Path):
-        try:
-            return binary.resolve().relative_to(host0_root.resolve()).as_posix()
-        except ValueError:
-            pass
-    return binary.name
+    A transport without a host0 root (the simulated test transports) has no
+    staging layout to honour, so the bare name is used there. A PRX outside a
+    real root is a staging error: refuse it here rather than issue an ldstart
+    the device cannot resolve.
+    """
+
+    if not isinstance(host0_root, Path):
+        return binary.name
+    try:
+        return binary.resolve().relative_to(host0_root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"campaign PRX {binary} is not inside host0 root {host0_root}") from exc
 
 
 def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:

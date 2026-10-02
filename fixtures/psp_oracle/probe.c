@@ -3178,7 +3178,9 @@ static void run_ge_nan(int emulated) {
         GE_NAN_STRIDE, GE_NAN_HEIGHT, GU_PSM_8888);
     /* guGetStaticVramBuffer returns a VRAM offset; the first buffer is offset 0, so a
      * NULL test would refuse it (measured: every render cell SKIPped on hardware). */
-    const int ready = init_rc >= 0;
+    /* The framebuffer must lie inside the 2 MiB of eDRAM the pixel scan reads. */
+    const int ready = init_rc >= 0 &&
+        (uintptr_t)s_ge_nan_frame + GE_NAN_PIXELS * 4u <= 0x00200000u;
     for (size_t i = 0; i < sizeof(s_ge_nan_inputs) / sizeof(s_ge_nan_inputs[0]); ++i) {
         const struct ge_nan_input *input = &s_ge_nan_inputs[i];
         char case_id[48];

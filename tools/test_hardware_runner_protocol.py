@@ -2075,9 +2075,6 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(calls, [["usbipd", "list"]])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class Host0RemotePathTests(unittest.TestCase):
     """A campaign PRX staged in a subdirectory is loaded by its host0-relative path."""
@@ -2096,3 +2093,14 @@ class Host0RemotePathTests(unittest.TestCase):
 
     def test_without_a_host0_root_the_bare_name_is_used(self) -> None:
         self.assertEqual(run_psplink_module._host0_remote_path(Path("x/y.prx"), None), "y.prx")
+
+    def test_a_prx_outside_the_root_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as other:
+            outside = Path(other) / "probe.prx"
+            outside.write_bytes(b"\x00")
+            with self.assertRaises(ValueError):
+                run_psplink_module._host0_remote_path(outside, Path(root))
+
+
+if __name__ == "__main__":
+    unittest.main()
