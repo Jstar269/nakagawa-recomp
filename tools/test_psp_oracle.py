@@ -1539,7 +1539,7 @@ class PspDmacProbeTests(unittest.TestCase):
         evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "MEASURED"},
-            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001"},
+            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002"},
         )
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
@@ -1648,7 +1648,7 @@ class PspDmacProbeTests(unittest.TestCase):
         ):
             self.assertIn(api, kernel["apis"])
 
-    def test_new_probe_families_are_registered_as_not_run(self) -> None:
+    def test_new_probe_families_are_registered_with_expected_evidence(self) -> None:
         manifest = self._oracle_manifest()
         by_id = {entry["id"]: entry for entry in manifest["tests"]}
         expected = {
@@ -1669,11 +1669,22 @@ class PspDmacProbeTests(unittest.TestCase):
         for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
             self.assertIn(f"else ifeq ($(CASE),{case_id})", self.makefile)
         delay_zero = by_id["PSP-KERNEL-002"]
-        self.assertEqual(delay_zero["status"], "planned")
-        self.assertEqual(delay_zero["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(delay_zero["status"], "implemented")
+        self.assertEqual(delay_zero["hardware_evidence"], "MEASURED")
         self.assertEqual(delay_zero["case_ids"], [
             "delay-threadcb-zero", "delay-thread-zero", "delay-zero-done"
         ])
+        self.assertEqual(
+            delay_zero["evidence_ref"],
+            "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        )
+        self.assertEqual(delay_zero["evidence_cases"], [
+            "delay-threadcb-zero", "delay-thread-zero", "delay-zero-done"
+        ])
+        oracle_doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        for case_id in delay_zero["evidence_cases"]:
+            with self.subTest(case_id=case_id):
+                self.assertIn(f"`{case_id}`", oracle_doc)
         self.assertIn(340, delay_zero["issues"])
 
 

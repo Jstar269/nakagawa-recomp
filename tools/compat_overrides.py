@@ -53,14 +53,25 @@ Categories (pick exactly one per entry):
 
 Every entry's `test` field names the regression test that pins it, or "none" if
 it does not have one yet (a real gap -- see ISSUES.md, not silently swept in).
-For a `temporary_compatibility_patch` that gap is now a CI failure: the debt
-gate in tools/test_compat_manifest.py also requires a live `owner_issue` and an
-explicit `retirement` condition, and only its reviewed allowlist can waive the
-test.  `python tools/compat_overrides.py --debt-census` prints the census.
+For a `temporary_compatibility_patch` that gap is a CI failure: the debt gate in
+tools/test_compat_manifest.py also requires a live `owner_issue` and an explicit
+`retirement` condition, and only its reviewed allowlist can waive the test.
+"none" is matched as a claim, not as a spelling -- "n/a", "TBD" and "-" are the
+same gap and are rejected the same way.  A field that is not a placeholder
+must still name an executable regression: an existing tools/**/*.py file or a
+Makefile rule target, and every reference it names must resolve.  A waiver
+covers only a missing test, never a reference that does not exist.
+`python tools/compat_overrides.py
+--debt-census` prints the census, and also names the untested
+faithful_abi_bridge/hle_boundary entries, which the temporary-patch gate does
+not cover and which #363 still owns.
 """
 
 import re
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 CATEGORIES = {
     "faithful_abi_bridge",
@@ -712,19 +723,21 @@ HLE_TITLE_CONFIGURED_COMPAT = [
     dict(name="libfont_ready_flag", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:h_LoadModule -> title_config.libfont_ready_flag_addr",
+         source="src/rt/hle.c:h_StartModule -> title_config.libfont_ready_flag_addr",
          addresses=[0x002d132c],
-         reason="loading a path containing 'libfont.prx' writes 1 to a guest word at a "
-                "title-qualified address via title_config. Generic LoadModule has no write.",
-         generic_fallback="h_LoadModule already returns a real UID without the write; title "
-                          "config enables it only for the title that needs it",
+         reason="when libfont.prx startup is unavailable (an untranslated entry, no "
+                "recorded entry, or SR_REAL_MODULE_START=0), sceKernelStartModule emits "
+                "LIBFONT_STARTUP_UNAVAILABLE once per named boundary and may write 1 to "
+                "the title-qualified word; translated guest startup owns readiness",
+         generic_fallback="translated libfont startup runs without host readiness writes; "
+                          "generic builds have no configured ready-flag fallback",
          evidence_tier="SOURCE_SHAPE",
-         evidence="title_config gated: generic build has no MEM_W32(0x002d132c)",
-         accidental_inheritance="no -- generic build writes nothing; configured title writes "
-                                "only its own flag address",
-         test="tools/test_hle_title_isolation.py",
+         evidence="title_config gated fallback; generic build has no MEM_W32(0x002d132c)",
+         accidental_inheritance="no -- only the configured title can write its fallback word",
+         test="tools/test_hle_title_config_behavior.py:test_libfont_guest_startup_routes_exports_without_ready_binding",
          owner_issue="#299",
-         retirement="retire the flag by proving the guest's font bring-up does not need host assistance"),
+         retirement="after #299 proves supported libfont startup and retires the "
+                    "unavailable-startup fallback, remove this binding and manifest field"),
     dict(name="frame_ready_latch_assist", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
@@ -813,6 +826,88 @@ AGGREGATE_COLLECTIONS = frozenset({"OVERRIDES"})
 #: not satisfy it.
 OWNER_ISSUE_RE = re.compile(r"#\d+\b")
 
+#: Spellings that mean "no regression" exactly as surely as test="none".  A
+#: gate that accepts only one of them can be passed by relabelling the same gap,
+#: so the census compares the normalized field against this whole set instead of
+#: against one magic word.
+NO_TEST_PLACEHOLDERS = frozenset({
+    "", "-", "--", "n/a", "n.a.", "na", "none", "none.", "none yet", "no test",
+    "nothing", "not tested", "tbd", "todo", "unknown",
+})
+
+
+def normalize_test_field(value) -> str:
+    """Case-, space- and punctuation-folded form of an entry's ``test`` field."""
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return text.strip("\"'`,.;:()[]")
+
+
+def has_no_test(patch: dict) -> bool:
+    """True when ``patch`` names no executable regression at all.
+
+    Empty, missing and every accepted placeholder spelling are the same fact:
+    there is nothing pinning this entry, so removing it later would prove
+    nothing.  A waiver in tools/test_compat_manifest.py may override the
+    verdict; this module does not read that allowlist.
+    """
+    return normalize_test_field(patch.get("test")) in NO_TEST_PLACEHOLDERS
+
+
+#: References a ``test`` field can name that a gate can check: a tools Python
+#: test file, or a target of the repository Makefile.
+TEST_PATH_RE = re.compile(r"(?<![\w./-])tools/(?:[\w.-]+/)*[\w.-]+\.py(?![\w.-])")
+MAKE_REFERENCE_RE = re.compile(r"\bmake\s+([A-Za-z0-9_.-]+)\b")
+# A rule line starts in column 0 and names its targets before a ":" or "::"
+# that is not an assignment (":=", "::=").  Recipe lines start with a tab, so
+# their prose (echo text, $(error ...) messages, "@:") is never read as a rule.
+_MAKE_RULE_RE = re.compile(r"^([A-Za-z0-9_./-][^:=#]*?)\s*::?(?!=)")
+
+#: Defects a reviewed waiver may cover: the entry names no executable test.  A
+#: reference that does not resolve is never waivable -- it is an invented test.
+NO_TEST_DEFECT = "test is none/empty"
+NO_REFERENCE_DEFECT = "test must name an existing tools/**/*.py file or Makefile target"
+WAIVABLE_TEST_DEFECTS = frozenset({NO_TEST_DEFECT, NO_REFERENCE_DEFECT})
+
+
+def makefile_targets(makefile: "Path | None" = None) -> "frozenset[str]":
+    """The literal rule targets the Makefile declares (not variables, not recipe text)."""
+    text = (makefile or ROOT / "Makefile").read_text(encoding="utf-8")
+    targets: "set[str]" = set()
+    for line in text.splitlines():
+        match = _MAKE_RULE_RE.match(line)
+        if not match:
+            continue
+        for target in match.group(1).split():
+            if target.startswith(".") or "%" in target or "$" in target:
+                continue  # special targets and pattern rules are not invocable names
+            targets.add(target)
+    return frozenset(targets)
+
+
+def test_references(test_field) -> "tuple[list[str], list[str]]":
+    """Split the references a ``test`` field names into (resolved, unresolved)."""
+    field = str(test_field or "")
+    resolved: "list[str]" = []
+    unresolved: "list[str]" = []
+    tools_root = (ROOT / "tools").resolve()
+    for path in TEST_PATH_RE.findall(field):
+        candidate = (ROOT / path).resolve()
+        (resolved if candidate.is_file() and tools_root in candidate.parents
+         else unresolved).append(path)
+    targets = makefile_targets()
+    for match in MAKE_REFERENCE_RE.finditer(field):
+        reference = f"make {match.group(1)}"
+        (resolved if match.group(1) in targets else unresolved).append(reference)
+    return resolved, unresolved
+
+
+#: Categories that change guest-visible behavior without being a temporary
+#: patch, so #363's temporary-patch debt gate does not require an owner, a
+#: retirement condition or a test of them.  They are enumerated only so the
+#: census can NAME the untested ones instead of leaving them invisible; see the
+#: trailing census section.
+NON_TEMPORARY_BEHAVIOR_CHANGING_CATEGORIES = ("faithful_abi_bridge", "hle_boundary")
+
 
 def manifest_collections() -> "dict[str, list[dict]]":
     """Every collection of manifest entries declared in this module.
@@ -842,6 +937,11 @@ def _census_anchor(entry: dict) -> str:
     return f"0x{address:08x}" if isinstance(address, int) else "-"
 
 
+def _census_id(collection: str, entry: dict) -> str:
+    """The census identity the CI gate and its no-test allowlist key on."""
+    return f"{collection}:{_census_anchor(entry)}:{entry.get('name', '(unnamed)')}"
+
+
 def temporary_compatibility_patches() -> "list[dict]":
     """Every live ``temporary_compatibility_patch``, with a stable census id.
 
@@ -861,7 +961,7 @@ def temporary_compatibility_patches() -> "list[dict]":
                 continue
             patch = dict(entry)
             patch["collection"] = collection
-            patch["id"] = f"{collection}:{_census_anchor(entry)}:{entry.get('name', '(unnamed)')}"
+            patch["id"] = _census_id(collection, entry)
             patches.append(patch)
     return patches
 
@@ -881,10 +981,39 @@ def temporary_patch_defects(patch: dict) -> "list[str]":
         problems.append("owner_issue must lead with a live GitHub issue number (e.g. #363)")
     if not str(patch.get("retirement") or "").strip():
         problems.append("no retirement condition")
-    test = str(patch.get("test") or "").strip()
-    if not test or test.lower() == "none":
-        problems.append("test is none/empty")
+    if has_no_test(patch):
+        problems.append(NO_TEST_DEFECT)
+    else:
+        resolved, unresolved = test_references(patch.get("test"))
+        if unresolved:
+            problems.append("test names a reference that does not exist: " + ", ".join(unresolved))
+        elif not resolved:
+            problems.append(NO_REFERENCE_DEFECT)
     return problems
+
+
+def untested_non_temporary_entries() -> "list[dict]":
+    """Behavior-changing entries with no test that the debt gate does not cover.
+
+    #363's acceptance item is broader than the temporary-patch category: no
+    behavior-changing entry may sit at test="none" without a reviewed waiver.
+    The hard gate only owns ``temporary_compatibility_patch``, so the remaining
+    categories are reported here rather than gated -- named debt, in
+    deterministic id order, with no failure attached.  Turning them into gate
+    failures is #363 Phase 0 follow-up work, one category at a time.
+    """
+    entries: "list[dict]" = []
+    for collection, collection_entries in manifest_collections().items():
+        for entry in collection_entries:
+            if entry.get("category") not in NON_TEMPORARY_BEHAVIOR_CHANGING_CATEGORIES:
+                continue
+            if not has_no_test(entry):
+                continue
+            record = dict(entry)
+            record["collection"] = collection
+            record["id"] = _census_id(collection, entry)
+            entries.append(record)
+    return sorted(entries, key=lambda record: record["id"])
 
 
 def format_debt_census() -> str:
@@ -892,13 +1021,15 @@ def format_debt_census() -> str:
 
     One block per patch -- id, owner issue, retirement condition and test, the
     four facts #363's acceptance requires -- followed by a DEFECTS section
-    naming every patch that is missing one of them.  Reporting only: the CI
-    gate, which also knows the reviewed no-test allowlist, is
-    tools/test_compat_manifest.TemporaryCompatibilityDebtGateTests.
+    naming every patch that is missing one of them and a closing section naming
+    the untested behavior-changing entries the temporary-patch gate does not
+    cover.  Reporting only: the CI gate, which also knows the reviewed no-test
+    allowlist, is tools/test_compat_manifest.TemporaryCompatibilityDebtGateTests.
     """
     patches = temporary_compatibility_patches()
     found = [(patch, temporary_patch_defects(patch)) for patch in patches]
     defects = [(patch, problems) for patch, problems in found if problems]
+    untested_others = untested_non_temporary_entries()
     scanned = manifest_collections()
     lines = [
         "temporary compatibility patch census (#363)",
@@ -919,6 +1050,15 @@ def format_debt_census() -> str:
             lines.append(f"    {patch['id']}: {'; '.join(problems)}")
     else:
         lines.append("DEFECTS: none")
+    lines.append("")
+    if untested_others:
+        lines.append("UNTESTED OUTSIDE THE DEBT GATE (behavior-changing, not temporary;")
+        lines.append("reported by #363, not gated):")
+        for record in untested_others:
+            owner = record.get("owner_issue") or "no owner recorded"
+            lines.append(f"    {record['id']}: {record.get('category')}, {owner}")
+    else:
+        lines.append("UNTESTED OUTSIDE THE DEBT GATE: none")
     return "\n".join(lines)
 
 

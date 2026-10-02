@@ -20,7 +20,7 @@
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 7
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 8
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
@@ -237,8 +237,9 @@ int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
 }
 
 int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
-#if SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE
-    /* The validated manifest selects the flagship profile and its exact source id.
+#if SR_TITLE_CONFIG_COMPAT_PROFILE
+    /* #363 compatibility debt, HST only: live runtime behavior, not a diagnostic.
+     * The validated manifest selects the flagship profile and its exact source id.
      * Keep this legacy guest-layout knowledge inside the title-config boundary. */
     if (s_config.valid != 0u && strcmp(s_config.source_id, "hst-ucus98701") == 0) {
         if (out) {
@@ -254,7 +255,7 @@ int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
 }
 
 int sr_title_config_preserve_callee_saved_at_calls(void) {
-#if SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE
+#if SR_TITLE_CONFIG_COMPAT_PROFILE
     /* #363 compatibility debt, HST only: a returning dispatch CALL restores the
      * callee-saved $s0-$s7/$fp. Real hardware does not; a generic title sees every
      * register write its callee makes. Retire this once the flagship's clobber is

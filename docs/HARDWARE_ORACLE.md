@@ -235,13 +235,19 @@ variant (`PSP_LARGE_MEMORY=0` remains in force). An actually invalid-span probe
 and its K3/K4 result remain in the works under #303.
 
 - **Zero-duration thread yield and callback behavior** (scheduler work tracked
-  by #340, related to #290; `CASE=delay-zero`): `NOT_RUN`. Live source shows
-  `h_DelayThread` parks via `sched_delay_current(A0)`, while
-  `h_DelayThreadCB` returns from its zero-duration helper without entering the
-  park loop. The probe measures the physical PSP's equal-priority worker,
-  pending callback, raw return codes, and system-time deltas before deciding
-  whether runtime behavior needs a follow-up; hardware qualification is in the
-  works under #340.
+  by #340, related to #290; `CASE=delay-zero`; exact cells
+  `delay-threadcb-zero`, `delay-thread-zero`, and `delay-zero-done`):
+  **HARDWARE_MEASURED** on PSP-3000-series / 6.61, from the accepted 2026-10-01
+  PSPLink campaign, build `8e95dc24`. With an equal-priority ready worker
+  thread and a pending callback configured before each call:
+  - `sceKernelDelayThread(0)` returns 0 without yielding to the equal-priority
+    ready thread and without dispatching the pending callback.
+  - `sceKernelDelayThreadCB(0)` returns 0 without yielding to the equal-priority
+    ready thread, and dispatches the pending callback (exactly once).
+  For these exact cells, zero-duration delays do not park or switch to the
+  equal-priority ready thread; only `sceKernelDelayThreadCB` dispatches the
+  pending callback before returning. Broader scheduler and callback-pump
+  behavior remains in the works under #340.
 - **Misaligned data access** (runs PSP-A3-02 and PSP-A3-03; same route,
   campaign and console; fixtures `exception-a3-mload` and `exception-a3-mstore`,
   which are `probe_exception_a3.c` built with `-DA3_CASE=2` and `=3`):

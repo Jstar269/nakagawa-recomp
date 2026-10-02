@@ -43,9 +43,10 @@
     },
     {
       "id": "PSP-KERNEL-002",
-      "status": "planned",
-      "hardware_evidence": "NOT_RUN",
-      "evidence_note": "No physical PSP capture of the delay-zero cells exists yet; the built case is pending the hardware campaign.",
+      "status": "implemented",
+      "hardware_evidence": "MEASURED",
+      "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+      "evidence_cases": ["delay-threadcb-zero", "delay-thread-zero", "delay-zero-done"],
       "group": "kernel",
       "source": "fixtures/psp_oracle/probe.c",
       "prx": "nakagawa_psp_oracle.prx",
@@ -53,7 +54,7 @@
       "case_ids": ["delay-threadcb-zero", "delay-thread-zero", "delay-zero-done"],
       "diagnostic_case_ids": ["delay-zero"],
       "invariant": "zero-duration delay results record equal-priority ready-thread counts, pending-callback counts, return values, and elapsed system-time ticks",
-      "measurement_note": "The zero-duration scheduling cells are built but NOT_RUN. Their scheduler-yield behavior is in the works (issue #340).",
+      "measurement_note": "Accepted 2026-10-01 PSPLink campaign, build 8e95dc24 measured these exact cases on PSP-3000-series / 6.61. The claim covers their recorded return values, equal-priority ready-thread state, callback count, and elapsed ticks; it does not generalize to other delays, priorities, or callback-pump behavior.",
       "issues": [340],
       "risk": "low; creates and deletes one probe-owned callback and equal-priority thread per cell",
       "reset": "return to PSPLINK after the process exits"

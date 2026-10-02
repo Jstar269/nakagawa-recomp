@@ -141,6 +141,7 @@ uint32_t sr_last_nid = 0;
 
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */
+static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid);
 void sr_callback_unregister_owner(uint32_t thread_uid);
 
 /* Issue #143 diagnostic hooks.  Definitions live beside the display vblank
@@ -1746,6 +1747,203 @@ static uint32_t h_ReferVplStatus(CpuState *s) {
     return 0;
 }
 
+/* User TLS pool: one fixed-size block is assigned to each guest thread that
+ * requests its address. The public EABI creation call supplies block size and
+ * block count in addition to the four argument registers. */
+#define TLSPL_MAX 16
+#define TLSPL_BAD_ID 0x800200d3u
+#define TLSPL_NO_MEMORY 0x80020190u
+#define TLSPL_BUSY 0x800201a8u
+#define TLSPL_ILLEGAL_SIZE 0x800201bcu
+#define TLSPL_ILLEGAL_ATTR 0x80020191u
+#define TLSPL_USER_PARTITION 2u
+#define TLSPL_ATTR_WAIT_PRIORITY 0x0100u
+#define TLSPL_ATTR_MEM_BOTTOM 0x4000u
+#define TLSPL_MAX_ALIGNMENT 256u
+
+typedef struct {
+    int used;
+    uint32_t uid;
+    char name[32];
+    uint32_t attr;
+    uint32_t block_uid;
+    uint32_t base;
+    uint32_t block_size;
+    uint32_t stride;
+    uint32_t num_blocks;
+    uint32_t total_size;
+    uint32_t free_blocks;
+    uint32_t *thread_uids;
+} TlsplPool;
+
+static TlsplPool s_tlspls[TLSPL_MAX];
+
+static TlsplPool *tlspl_find(uint32_t uid) {
+    for (int i = 0; i < TLSPL_MAX; ++i)
+        if (s_tlspls[i].used && s_tlspls[i].uid == uid) return &s_tlspls[i];
+    return NULL;
+}
+
+static void tlspl_release_thread(TlsplPool *p, uint32_t thread_uid) {
+    if (!p || !p->used || !thread_uid) return;
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i] == thread_uid) {
+            p->thread_uids[i] = 0u;
+            if (p->free_blocks < p->num_blocks) ++p->free_blocks;
+            return;
+        }
+    }
+}
+
+static uint32_t h_CreateTlspl(CpuState *s) {
+    /* a0=name, a1=partition, a2=attr, a3=blockSize, t0=numBlocks, t1=options. */
+    char name[32] = {0};
+    uint32_t block_size = A3;
+    uint32_t num_blocks = stack_arg(s, 0);
+    uint32_t options = stack_arg(s, 1);
+    uint32_t alignment = 4u;
+    if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (A1 != TLSPL_USER_PARTITION) {
+        fprintf(stderr, "TLSPL_PARTITION_UNMODELED: sceKernelCreateTlspl partition=%u; in the works (#339)\n", A1);
+        return TLSPL_BAD_ID;
+    }
+    if (A2 & ~(TLSPL_ATTR_WAIT_PRIORITY | TLSPL_ATTR_MEM_BOTTOM)) {
+        fprintf(stderr, "TLSPL_ATTRIBUTES_UNMODELED: sceKernelCreateTlspl attr=0x%08x; in the works (#339)\n", A2);
+        return TLSPL_ILLEGAL_ATTR;
+    }
+    if (A2 & TLSPL_ATTR_MEM_BOTTOM) {
+        fprintf(stderr, "TLSPL_MEMORY_BOTTOM_UNMODELED: sceKernelCreateTlspl (0x8daff657); in the works (#339)\n");
+        return TLSPL_ILLEGAL_ATTR;
+    }
+    if (!block_size || !num_blocks) return TLSPL_ILLEGAL_SIZE;
+
+    if (options) {
+        if (!sr_guest_span_readable(options, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        if (MEM_R32(options) < 8u) return TLSPL_ILLEGAL_SIZE;
+        alignment = MEM_R32(options + 4u);
+        if (!alignment) alignment = 4u;
+    }
+    if (alignment < 4u || alignment > TLSPL_MAX_ALIGNMENT ||
+        (alignment & (alignment - 1u)) != 0u) {
+        fprintf(stderr, "TLSPL_ALIGNMENT_UNMODELED: sceKernelCreateTlspl alignment=%u; in the works (#339)\n", alignment);
+        return TLSPL_ILLEGAL_SIZE;
+    }
+
+    uint64_t stride64 = ((uint64_t)block_size + alignment - 1u) & ~((uint64_t)alignment - 1u);
+    uint64_t total64 = stride64 * (uint64_t)num_blocks;
+    /* alloc_block rounds to a 256-byte slot using uint32 arithmetic. */
+    if (!stride64 || total64 > UINT32_MAX - 0xffu) return TLSPL_ILLEGAL_SIZE;
+
+    TlsplPool *p = NULL;
+    for (int i = 0; i < TLSPL_MAX; ++i) {
+        if (!s_tlspls[i].used) { p = &s_tlspls[i]; break; }
+    }
+    if (!p) return TLSPL_NO_MEMORY;
+
+    uint32_t total_size = (uint32_t)total64;
+    uint32_t block_uid = alloc_block(total_size);
+    if (block_uid == 0xFFFFFFFFu) return TLSPL_NO_MEMORY;
+    uint32_t *thread_uids = (uint32_t *)calloc((size_t)num_blocks, sizeof(*thread_uids));
+    if (!thread_uids) {
+        (void)free_block(block_uid);
+        return TLSPL_NO_MEMORY;
+    }
+
+    memset(p, 0, sizeof(*p));
+    p->used = 1;
+    p->uid = sr_alloc_uid();
+    memcpy(p->name, name, sizeof(p->name));
+    p->attr = A2;
+    p->block_uid = block_uid;
+    p->base = block_addr(block_uid);
+    p->block_size = block_size;
+    p->stride = (uint32_t)stride64;
+    p->num_blocks = num_blocks;
+    p->total_size = total_size;
+    p->free_blocks = num_blocks;
+    p->thread_uids = thread_uids;
+    (void)A1; /* The runtime currently exposes one user partition. */
+    return p->uid;
+}
+
+static uint32_t h_DeleteTlspl(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    if (!p) return TLSPL_BAD_ID;
+    if (p->free_blocks != p->num_blocks) {
+        uint32_t held_blocks = p->num_blocks - p->free_blocks;
+        fprintf(stderr,
+                "TLSPL_DELETE_WITH_HELD_BLOCKS: pool 0x%x has %u/%u blocks held; in the works (#339)\n",
+                p->uid, held_blocks, p->num_blocks);
+        return TLSPL_BUSY;
+    }
+    uint32_t block_uid = p->block_uid;
+    free(p->thread_uids);
+    memset(p, 0, sizeof(*p));
+    return free_block(block_uid);
+}
+
+static uint32_t h_FreeTlspl(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    if (!p) return TLSPL_BAD_ID;
+    uint32_t thread_uid = sched_current_uid();
+    if (!thread_uid) return TLSPL_BAD_ID;
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i] == thread_uid) {
+            tlspl_release_thread(p, thread_uid);
+            return 0;
+        }
+    }
+    return TLSPL_BAD_ID;
+}
+
+static uint32_t h_GetTlsAddr(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    if (!p) return 0u;
+    uint32_t thread_uid = sched_current_uid();
+    if (!thread_uid) {
+        fprintf(stderr, "TLSPL_CURRENT_THREAD_UNAVAILABLE: sceKernelGetTlsAddr (0xfa835cde); in the works (#339)\n");
+        return 0u;
+    }
+
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i] == thread_uid) {
+            uint64_t addr = (uint64_t)p->base + (uint64_t)i * p->stride;
+            return addr <= UINT32_MAX ? (uint32_t)addr : 0u;
+        }
+    }
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i]) continue;
+        uint64_t addr64 = (uint64_t)p->base + (uint64_t)i * p->stride;
+        if (addr64 > UINT32_MAX || !sr_guest_span_writable((uint32_t)addr64, p->block_size)) {
+            fprintf(stderr, "TLSPL_MEMORY_UNAVAILABLE: sceKernelGetTlsAddr (0xfa835cde); in the works (#339)\n");
+            return 0u;
+        }
+        uint32_t addr = (uint32_t)addr64;
+        for (uint32_t j = 0; j < p->block_size; ++j) MEM_W8(addr + j, 0u);
+        p->thread_uids[i] = thread_uid;
+        if (p->free_blocks) --p->free_blocks;
+        return addr;
+    }
+    fprintf(stderr, "TLSPL_POOL_EXHAUSTED: sceKernelGetTlsAddr (0xfa835cde) returned NULL; blocking allocation is in the works (#339)\n");
+    return 0u;
+}
+
+static uint32_t h_ReferTlsplStatus(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    uint32_t info = A1;
+    if (!p) return TLSPL_BAD_ID;
+    if (!info || !sr_guest_span_writable(info, 56u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    /* SceKernelTlsplInfo: size, name[32], attr, blockSize, numBlocks, freeBlocks, numWaitThreads. */
+    MEM_W32(info + 0u, 56u);
+    for (uint32_t i = 0; i < sizeof(p->name); ++i) MEM_W8(info + 4u + i, (uint8_t)p->name[i]);
+    MEM_W32(info + 36u, p->attr);
+    MEM_W32(info + 40u, p->block_size);
+    MEM_W32(info + 44u, p->num_blocks);
+    MEM_W32(info + 48u, p->free_blocks);
+    MEM_W32(info + 52u, 0u);
+    return 0;
+}
+
 /* AllocateVpl / AllocateVplCB blocking forms integrated with fiber wait queues (PR-G). */
 
 /* ThreadManForUser, backed by the fiber scheduler (src/rt/sched.c). */
@@ -1841,18 +2039,32 @@ static uint32_t h_ExitDeleteThread(CpuState *s) {
     s_exit_delete_request = 1;
     return h_ExitThread(s);
 }
-/* A delay is unconditionally a wait: sched_delay_current() parks the thread even for
- * usec 0 (it floors the duration at 1). There is no parameter or object to validate
- * ahead of the context check, so it is the first thing the handler does -- nothing has
- * been mutated at that point: no wake deadline, no thread state, no yield. (L2/L3) */
+/* sceKernelDelayThread: delays the calling thread by usec microseconds.
+ * PSP-3001 6.6.1 hardware measurement (#340): sceKernelDelayThread(0) returns 0
+ * without yielding to an equal-priority ready thread and without dispatching
+ * pending callbacks. Context check (CAN_NOT_WAIT) still precedes. (L2/L3) */
 static uint32_t h_DelayThread(CpuState *s) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    if (A0 == 0) return 0;
     sched_delay_current(A0);
     return 0;
 }
+/* sceKernelDelayThreadCB: delays the calling thread while servicing callbacks.
+ * PSP-3001 6.6.1 hardware measurement (#340): sceKernelDelayThreadCB(0) returns 0
+ * without yielding to an equal-priority ready thread, and dispatches pending
+ * callbacks (exactly once). Context check (CAN_NOT_WAIT) still precedes. (L6/L7) */
 static uint32_t h_DelayThreadCBForUsec(uint64_t usec) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;  /* L6/L7 */
     uint32_t thread_uid = sched_current_uid();
+    if (usec == 0) {
+        /* Zero delay stays non-blocking: visit each callback slot present at entry at most
+         * once, so a callback that re-notifies itself remains pending for a later pump.
+         * CheckCallback is the explicit pump and keeps dispatching until the queue is empty. */
+        if (sr_thread_has_pending_callbacks(thread_uid)) {
+            (void)sr_thread_dispatch_callbacks_once(thread_uid);
+        }
+        return 0;
+    }
     sched_vtime_refresh();
     uint64_t end_time = sched_vtime_deadline_after(usec);
 
@@ -2183,6 +2395,17 @@ static uint32_t elf_vaddr_to_file(const SrElfPhdr *ph, unsigned n, uint32_t va, 
     return UINT32_MAX;
 }
 
+/* Module-info pointers in a relocatable PRX can already be rebased by the loader
+ * contract, while the export walker also accepts the base-relative form used by
+ * older public fixtures. Keep both representations anchored to the ELF segments. */
+static uint32_t prx_vaddr_to_file(const SrElfPhdr *ph, unsigned n, uint32_t va,
+                                 uint32_t base, size_t file_len) {
+    uint32_t off = elf_vaddr_to_file(ph, n, va, file_len);
+    if (off == UINT32_MAX && base != 0u && va >= base)
+        off = elf_vaddr_to_file(ph, n, va - base, file_len);
+    return off;
+}
+
 /* A 32-bit byte offset must be representable as this host's long for fseek.
  * The limit travels as a parameter rather than being written inline so that a
  * host whose long is wider than 32 bits (LP64) still takes the comparison
@@ -2192,7 +2415,8 @@ static int sr_off_fits_long(uint32_t off, long limit) {
     return (uint64_t)off <= (uint64_t)limit;
 }
 
-static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned phnum, size_t file_len) {
+static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned phnum,
+                             uint32_t base, size_t file_len) {
     uint32_t gp, ent_top, ent_end, stub_top, stub_end;
     uint16_t attributes; uint8_t major, minor;
     memcpy(&attributes, mi, 2); major = mi[2]; minor = mi[3];
@@ -2220,14 +2444,15 @@ static int valid_module_info(const uint8_t *mi, const SrElfPhdr *ph, unsigned ph
     if (ent_top == 0 || ent_end <= ent_top || ent_end - ent_top > 0x10000u) return 0;
     if (stub_end < stub_top || stub_end - stub_top > 0x10000u) return 0;
 
-    return elf_vaddr_to_file(ph, phnum, ent_top, file_len) != UINT32_MAX;
+    return prx_vaddr_to_file(ph, phnum, ent_top, base, file_len) != UINT32_MAX;
 }
 
 /* Most stripped PRXs put the PspModuleInfo file offset in the executable PT_LOAD p_paddr.
  * A few Sony modules instead use that field for another resident-data address. Fall back to
  * the same conservative aligned scan used by the codegen analyzer, rather than interpreting
  * an export/NID table as module-info and silently publishing nothing. */
-static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum, size_t file_len, uint8_t mi[52]) {
+static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum,
+                                 uint32_t base, size_t file_len, uint8_t mi[52]) {
     for (unsigned pass = 0; pass < 2; pass++) {
         for (unsigned i = 0; i < phnum; i++) {
             if (ph[i].type != 1 || !(ph[i].flags & 1) || !ph[i].filesz) continue;
@@ -2239,7 +2464,7 @@ static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum, s
             if (pass == 0 && !begin) continue;
             for (uint32_t off = begin; off <= end && end - off >= 52u; ) {
                 if (!sr_off_fits_long(off, LONG_MAX) || fseek(f, (long)off, SEEK_SET) || fread(mi, 1, 52, f) != 52) break;
-                if (valid_module_info(mi, ph, phnum, file_len)) return off;
+                if (valid_module_info(mi, ph, phnum, base, file_len)) return off;
                 if (UINT32_MAX - off < 4u) break;
                 off += 4u;
             }
@@ -2257,6 +2482,50 @@ static int real_module_start_enabled(void) {
     return (e != NULL && strcmp(e, "1") == 0);
 }
 
+/* The same variable is a tri-state gate for sceKernelStartModule, because "0" is an
+ * environmental kill switch an operator sets to keep the Sony init path off the host
+ * and therefore has to cover every module, libfont included:
+ *   "1"    - translated/real module_start may run for any module.
+ *   unset  - translated libfont module_start runs, so the guest owns its own
+ *             readiness; every other module keeps the host bypass in h_StartModule.
+ *   "0"    - no module_start runs for any module and libfont takes the named
+ *             readiness fallback, which reports the boundary it hit.
+ * Any other value is refused rather than guessed, and the refusal is named once. */
+typedef enum {
+    MODULE_START_ALLOW_ALL,
+    MODULE_START_LIBFONT_ONLY,
+    MODULE_START_NONE
+} ModuleStartPolicy;
+
+static ModuleStartPolicy module_start_policy(void) {
+    const char *e = getenv("SR_REAL_MODULE_START");
+    if (e == NULL || e[0] == '\0') return MODULE_START_LIBFONT_ONLY;
+    if (strcmp(e, "1") == 0) return MODULE_START_ALLOW_ALL;
+    if (strcmp(e, "0") == 0) return MODULE_START_NONE;
+    static int s_logged_bad_value = 0;
+    if (!s_logged_bad_value) {
+        s_logged_bad_value = 1;
+        fprintf(stderr, "SR_REAL_MODULE_START: unsupported value \"%s\"; using the default "
+                        "(translated libfont startup only)\n", e);
+    }
+    return MODULE_START_LIBFONT_ONLY;
+}
+
+/* A module-name test, not a substring test: the match has to be a whole path
+ * element, so a path such as mylibfont.prx.bak cannot take a module's behavioural
+ * path. */
+static int module_path_is(const char *path, const char *name) {
+    size_t span;
+    const char *hit;
+    if (!path || !name) return 0;
+    span = strlen(name);
+    for (hit = strstr(path, name); hit; hit = strstr(hit + 1, name)) {
+        if ((hit == path || hit[-1] == '/' || hit[-1] == '\\') &&
+            (hit[span] == '\0' || hit[span] == '/' || hit[span] == '\\')) return 1;
+    }
+    return 0;
+}
+
 typedef struct {
     uint32_t uid;
     char path[256];
@@ -2267,7 +2536,6 @@ typedef struct {
     int stopped;
     int unloaded;
     int in_use;
-    int libfont_compat_poke_pending;
 } LoadedModule;
 
 static LoadedModule s_loaded_modules[16];
@@ -2386,7 +2654,7 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
         goto out;
     }
 
-    uint32_t mioff = find_module_info(f, ph, phnum, file_len, mi);
+    uint32_t mioff = find_module_info(f, ph, phnum, base, file_len, mi);
     if (mioff == UINT32_MAX) {
         fprintf(stderr, "register_prx_exports: FAILED to find module info in %s\n", host_path);
         goto out;
@@ -2401,14 +2669,14 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
 
     for (uint32_t ent = ent_top; ent <= ent_end && ent_end - ent >= 16u;) {
         uint8_t e[16];
-        uint32_t off = elf_vaddr_to_file(ph, phnum, ent, file_len);
+        uint32_t off = prx_vaddr_to_file(ph, phnum, ent, base, file_len);
         if (off == UINT32_MAX || (uint64_t)off + sizeof(e) > file_len || off > (uint32_t)LONG_MAX ||
             fseek(f, (long)off, SEEK_SET) || fread(e, 1, sizeof(e), f) != sizeof(e)) break;
         unsigned words = e[8], nvars = e[9]; uint16_t nfuncs; uint32_t table;
         memcpy(&nfuncs, e + 10, 2); memcpy(&table, e + 12, 4);
         unsigned count = (unsigned)nfuncs + nvars;
         if (words < 4 || words > 0x40 || count > 1024) break;
-        uint32_t toff = elf_vaddr_to_file(ph, phnum, table, file_len);
+        uint32_t toff = prx_vaddr_to_file(ph, phnum, table, base, file_len);
         if (toff != UINT32_MAX && count) {
             uint64_t pair_bytes = (uint64_t)count * 2u * sizeof(uint32_t);
             if (pair_bytes > SIZE_MAX || pair_bytes > file_len || (uint64_t)toff + pair_bytes > file_len || toff > (uint32_t)LONG_MAX)
@@ -2673,6 +2941,10 @@ enum {
 #define SCE_ERROR_MODULE_BAD_ID             0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED     0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED         0x80111103u
+/* SCE_KERNEL_ERROR_ALREADY_STARTED (0x80020133) follows the public PSP kernel
+ * error table at https://github.com/pspdev/prxtool/blob/master/pspkerror.C.
+ * This runtime path is source-backed but has not been measured on hardware. */
+#define SCE_KERNEL_ERROR_ALREADY_STARTED    0x80020133u
 #define SCE_ERROR_AV_MODULE_BAD_ID         0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
@@ -7417,6 +7689,9 @@ void sr_hle_release_thread_resources(uint32_t thread_uid) {
         for (int i = 0; i < VPL_MAX; i++) {
             if (s_vpls[i].used) vpl_remove_waiter(&s_vpls[i], thread_uid);
         }
+        for (int i = 0; i < TLSPL_MAX; i++) {
+            if (s_tlspls[i].used) tlspl_release_thread(&s_tlspls[i], thread_uid);
+        }
     }
 }
 
@@ -7446,6 +7721,58 @@ int sr_thread_has_pending_callbacks(uint32_t thread_uid) {
     return 0;
 }
 
+static int sr_thread_dispatch_callback_uid(uint32_t thread_uid, CpuState *cpu,
+                                           uint32_t selected_uid) {
+    int idx = sr_callback_find_in_table(selected_uid);
+    if (idx < 0) return 0;
+    CallbackEntry *cb = &s_callbacks[idx];
+    if (!cb->used || cb->owner_thread_uid != thread_uid || !cb->pending) return 0;
+
+    uint32_t uid = cb->uid;
+    uint32_t entry = cb->entry;
+    uint32_t common_arg = cb->arg;
+    uint32_t notify_arg = cb->notify_arg;
+    uint32_t notify_count = cb->notify_count;
+
+    /* The notification is consumed as the body starts, so a re-notification made by the
+     * body forms a new pending event picked up by a later scan. */
+    cb->pending = 0;
+    cb->notify_count = 0;
+    cb->notify_arg = 0;
+
+    uint32_t ret = sr_callback_dispatch_one(
+        cpu, entry, (int)notify_count, notify_arg, common_arg, dispatch);
+    ge_enqueue_trace_note_callback(cpu, uid, entry);
+    /* Apply the auto-delete rule to the dispatched UID, not a slot: the body may have
+     * deleted this callback and registered a replacement into the same slot. */
+    if (ret != 0)
+        sr_callback_table_unregister(uid);
+    return 1;
+}
+
+static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid) {
+    extern CpuState *sr_cpu_for_callbacks(void);
+    CpuState *cpu = sr_cpu_for_callbacks();
+    if (!cpu) return 0;
+
+    /* This non-blocking caller gets one slot-order pass over the table length captured before
+     * guest code runs. Re-read each slot after the preceding callback because dispatch may
+     * realloc the table. Re-notifications of visited slots and newly appended slots wait for
+     * the next pump. */
+    const size_t slot_limit = s_callbacks_len;
+    int total_dispatched = 0;
+    for (size_t i = 0; i < slot_limit; i++) {
+        uint32_t selected_uid = 0u;
+        if (i < s_callbacks_len && s_callbacks[i].used &&
+            s_callbacks[i].owner_thread_uid == thread_uid && s_callbacks[i].pending) {
+            selected_uid = s_callbacks[i].uid;
+        }
+        if (selected_uid != 0u)
+            total_dispatched += sr_thread_dispatch_callback_uid(thread_uid, cpu, selected_uid);
+    }
+    return total_dispatched;
+}
+
 int sr_thread_dispatch_callbacks(void) {
     uint32_t thread_uid = sched_current_uid();
     extern CpuState *sr_cpu_for_callbacks(void);
@@ -7473,31 +7800,8 @@ int sr_thread_dispatch_callbacks(void) {
             }
         }
         if (selected_uid == 0) break;
-
-        int idx = sr_callback_find_in_table(selected_uid);
-        if (idx < 0) continue;
-        CallbackEntry *cb = &s_callbacks[idx];
-
-        total_dispatched++;
-        uint32_t uid = cb->uid;
-        uint32_t entry = cb->entry;
-        uint32_t common_arg = cb->arg;
-        uint32_t notify_arg = cb->notify_arg;
-        uint32_t notify_count = cb->notify_count;
-
-        /* The notification is consumed as the body starts, so a re-notification made by the
-         * body forms a new pending event picked up on the next scan. */
-        cb->pending = 0;
-        cb->notify_count = 0;
-        cb->notify_arg = 0;
-
-        uint32_t ret = sr_callback_dispatch_one(
-            cpu, entry, (int)notify_count, notify_arg, common_arg, dispatch);
-        ge_enqueue_trace_note_callback(cpu, uid, entry);
-        /* Apply the auto-delete rule to the dispatched UID, not a slot: the body may have
-         * deleted this callback and registered a replacement into the same slot. */
-        if (ret != 0)
-            sr_callback_table_unregister(uid);
+        if (sr_thread_dispatch_callback_uid(thread_uid, cpu, selected_uid))
+            total_dispatched++;
     }
     return total_dispatched;
 }
@@ -8004,35 +8308,6 @@ static uint32_t h_LoadModule(CpuState *s) {
     }
     uint32_t uid = sr_alloc_uid();
     fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
-    /* The title checks this flag after the concrete libfont PRX load. Keep it
-     * on the explicit PRX path instead of conflating libfont with AV module
-     * id 0x302 (PSP_AV_MODULE_ATRAC3PLUS). Title-qualified: only when the
-     * manifest configures the compat flag; generic sceKernelLoadModule
-     * otherwise performs no guest write. */
-    int poke_pending = 0;
-    if (strstr(path, "libfont.prx")) {
-        if (!real_module_start_enabled()) {
-            uint32_t flag;
-            if (sr_title_config_libfont_ready_flag_addr(&flag)) {
-                if (!sr_guest_span_writable(flag, 4)) {
-                    fprintf(stderr,
-                            "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
-                            flag, sr_title_config()->source_id);
-                } else {
-                    MEM_W32(flag, 1u);
-                    fprintf(stderr,
-                            "libfont compat: flag 0x%08x <- 1 (title %s)\n",
-                            flag, sr_title_config()->source_id);
-                }
-            } else {
-                fprintf(stderr,
-                        "libfont.prx loaded (generic: no compat flag write, title %s)\n",
-                        sr_title_config()->source_id);
-            }
-        } else {
-            poke_pending = 1;
-        }
-    }
     LoadedModule *mod = alloc_loaded_module_slot();
     if (mod) {
         mod->uid = uid;
@@ -8043,7 +8318,6 @@ static uint32_t h_LoadModule(CpuState *s) {
         mod->started = 0;
         mod->stopped = 0;
         mod->unloaded = 0;
-        mod->libfont_compat_poke_pending = poke_pending;
     }
     return uid;
 }
@@ -8072,35 +8346,45 @@ static uint32_t h_StartModule(CpuState *s) {
     uint32_t status_ptr = A3;
     fprintf(stderr, "sceKernelStartModule(uid=0x%x, arglen=%u, argp=0x%x)\n", uid, arglen, argp);
 
-    if (!real_module_start_enabled()) {
-        const char *path = NULL;
-        for (int i = 0; i < s_nloaded_modules; i++) {
-            if (s_loaded_modules[i].uid == uid) {
-                path = s_loaded_modules[i].path;
-                break;
-            }
+    const char *path = NULL;
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        if (s_loaded_modules[i].uid == uid) {
+            path = s_loaded_modules[i].path;
+            break;
         }
-        /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
-         * h_UtilityLoadModule): libfont/psmf/libpsmfplayer are fully host-side HLE'd, and their
-         * real module_start entries (f_32200000/f_32280000/f_322f8868) are genuine Sony SDK init
-         * code that assumes a real PSP kernel underneath -- running them hangs on an unconditional
-         * WaitSema. This is a second, independent call path into the exact same three PRXs (via
-         * sceKernelLoadModule + sceKernelStartModule instead of sceUtilityLoadModule), so it needs
-         * the identical skip. populate_known_module(path) was already called in h_LoadModule when
-         * the module was recorded, so it is not repeated here. */
-        if (path) {
-            if (strstr(path, "libfont.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized libfont.prx (module_start not executed; sceFont* is fully host-HLE'd)\n");
-                return 0;
-            } else if (strstr(path, "psmf.prx")) {
+    }
+    int is_libfont = module_path_is(path, "libfont.prx");
+    ModuleStartPolicy policy = module_start_policy();
+    int allow_entry = policy == MODULE_START_ALLOW_ALL ||
+                      (policy == MODULE_START_LIBFONT_ONLY && is_libfont);
+    /* A libfont module under the kill switch does not return here: startup is
+     * unavailable, so it falls through to the named readiness fallback below. */
+    int fallback_only = policy == MODULE_START_NONE && is_libfont;
+
+    /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
+     * h_UtilityLoadModule): psmf.prx and libpsmfplayer.prx are fully host-side HLE'd, and their
+     * real module_start entries (f_32280000/f_322f8868) are genuine Sony SDK init code that
+     * assumes a real PSP kernel underneath -- running them hangs on an unconditional WaitSema.
+     * This is a second, independent call path into the same PRXs (via sceKernelLoadModule +
+     * sceKernelStartModule instead of sceUtilityLoadModule), so it needs the identical skip.
+     * populate_known_module(path) was already called in h_LoadModule when the module was
+     * recorded, so it is not repeated here. */
+    if (!allow_entry && !fallback_only) {
+        if (policy == MODULE_START_NONE) {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> "
+                            "SR_REAL_MODULE_START=0, module_start not executed\n",
+                    uid, path ? path : "");
+        } else if (path) {
+            if (strstr(path, "psmf.prx")) {
                 fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-                return 0;
             } else if (strstr(path, "libpsmfplayer.prx")) {
                 fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-                return 0;
+            } else {
+                fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
             }
+        } else {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
         }
-        fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
         return 0;
     }
 
@@ -8110,7 +8394,16 @@ static uint32_t h_StartModule(CpuState *s) {
         return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
     }
 
-    if (mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
+    /* One module_start per live module record: a repeated StartModule would re-run the
+     * guest entry (and its one-shot init side effects) over an already-initialised module.
+     * Inference, not hardware-measured: a stopped module is restartable. */
+    if (mod->started && !mod->stopped) {
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> already started, "
+                        "refusing re-entry\n", uid, mod->path);
+        return SCE_KERNEL_ERROR_ALREADY_STARTED;
+    }
+
+    if (allow_entry && mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s', entry=0x%08x): executing module_start\n",
                 uid, mod->path, mod->module_start);
         uint32_t rv = ge_call_guest_rv(s, mod->module_start, arglen, argp, 0);
@@ -8119,34 +8412,45 @@ static uint32_t h_StartModule(CpuState *s) {
             MEM_W32(status_ptr, rv);
         }
         mod->started = 1;
-        mod->libfont_compat_poke_pending = 0;
+        mod->stopped = 0;
         return 0;
     }
 
-    /* Entry is unknown or untranslated: keep today's behaviour and log once. */
-    if (mod->libfont_compat_poke_pending) {
-        uint32_t flag;
-        if (sr_title_config_libfont_ready_flag_addr(&flag)) {
-            if (!sr_guest_span_writable(flag, 4)) {
-                fprintf(stderr,
-                        "libfont compat: flag 0x%08x not writable (from %s), skipping\n",
-                        flag, sr_title_config()->source_id);
+    /* Guest startup is unavailable: the entry is not translated, the image recorded none,
+     * or the operator disabled module_start. A configured ready word is a named fallback
+     * only for libfont; it never substitutes for translated startup. */
+    if (is_libfont) {
+        uint32_t flag = 0;
+        const char *reason = !allow_entry ? "SR_REAL_MODULE_START=0 disabled guest startup"
+                         : (mod->module_start == 0) ? "no module_start entry recorded"
+                                                    : "entry untranslated";
+        unsigned reason_index = !allow_entry ? 0u : (mod->module_start == 0 ? 1u : 2u);
+        int configured = sr_title_config_libfont_ready_flag_addr(&flag);
+        int writable = configured && sr_guest_span_writable(flag, 4u);
+        if (writable) MEM_W32(flag, 1u);
+        /* The readiness write is not latched; the diagnostic is latched per named
+         * boundary, so a title that retries an unavailable libfont startup does not
+         * repeat the line while a different reason still gets its own name. */
+        static int s_logged_libfont_unavailable[3];
+        if (!s_logged_libfont_unavailable[reason_index]) {
+            s_logged_libfont_unavailable[reason_index] = 1;
+            if (writable) {
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; using title-configured "
+                                "ready-flag fallback (#299)\n", reason);
+            } else if (configured) {
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
+                                "target is not writable (#299)\n", reason);
             } else {
-                MEM_W32(flag, 1u);
-                fprintf(stderr,
-                        "libfont compat: flag 0x%08x <- 1 (title %s)\n",
-                        flag, sr_title_config()->source_id);
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
+                                "is unconfigured (#299)\n", reason);
             }
         }
-        mod->libfont_compat_poke_pending = 0;
     }
 
     static int s_logged_untranslated = 0;
-    if (!s_logged_untranslated) {
+    if (!is_libfont && !s_logged_untranslated) {
         s_logged_untranslated = 1;
-        if (strstr(mod->path, "libfont.prx")) {
-            fprintf(stderr, "sceKernelStartModule: recognized libfont.prx (module_start not executed; sceFont* is fully host-HLE'd)\n");
-        } else if (strstr(mod->path, "psmf.prx")) {
+        if (strstr(mod->path, "psmf.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
         } else if (strstr(mod->path, "libpsmfplayer.prx")) {
             fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
@@ -8176,7 +8480,6 @@ uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, ui
     mod->started = 0;
     mod->stopped = 0;
     mod->unloaded = 0;
-    mod->libfont_compat_poke_pending = 0;
     return uid;
 }
 
@@ -17780,6 +18083,11 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x1fb15a32, "sceKernelSetEventFlag", h_SetEventFlag);
     sr_hle_register(0x402fcf22, "sceKernelWaitEventFlag", h_WaitEventFlag);
     sr_hle_register(0x328c546a, "sceKernelWaitEventFlagCB", h_WaitEventFlagCB);
+    sr_hle_register(0x8daff657, "sceKernelCreateTlspl", h_CreateTlspl);
+    sr_hle_register(0x32bf938e, "sceKernelDeleteTlspl", h_DeleteTlspl);
+    sr_hle_register(0x4a719fb2, "sceKernelFreeTlspl", h_FreeTlspl);
+    sr_hle_register(0x721067f3, "sceKernelReferTlsplStatus", h_ReferTlsplStatus);
+    sr_hle_register(0xfa835cde, "sceKernelGetTlsAddr", h_GetTlsAddr);
     sr_hle_register(0xc07bb470, "sceKernelCreateFpl", h_CreateFpl);
     sr_hle_register(0xd979e9bf, "sceKernelAllocateFpl", h_AllocateFpl);
     sr_hle_register(0xe7282cb6, "sceKernelAllocateFplCB", h_AllocateFplCB);
