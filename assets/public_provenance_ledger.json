@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "375d59bfaae570495a1a38664b00b72fa767ababfcd43531f47b4daa99516a9c"
+      "sha256": "a32f18f669dc5d8872ab9fd514b20c065d6a47374b592aba646455086025ca88"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "393783949b7658f01620c7524010983f942a1ef776e686b21d98dbd497addf51"
+      "sha256": "692787e83bae038697d659d5c5a06a4e0dada7729d808f46f8bce71943d00b17"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
