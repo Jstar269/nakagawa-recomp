@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1b23ecd98e458f150954a342a427a5bb2ecdc9479f7a67989ed8dc80bf382d3f"
+      "sha256": "ef1267624d8e8fa31be8ae7098def0e6372278c5dd6e9015f8809b4d5275cdb3"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1309,7 +1309,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "65950ca8b05890b86779dcfdafdd5cb47426ed7ca97329abfd9977e7910a8646"
+      "sha256": "6a82e927bc282231b99d6242ee54b8714e2df9ab61f72a73b04f77db5cad348b"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1408,7 +1408,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "905cda14dc63f71459543c59597ad522cd206f6be730e06bb0398e49a2b4ffda"
+      "sha256": "983a29e5c70cfd6e691a019ac2fe5e201bec22c26381d863660b8ee970ca33c8"
     },
     {
       "path": "docs/archive/ISSUE196_DIRECT_XB.md",
@@ -5519,7 +5519,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d8235251500bbd862d3913093236c2c4f0134a5380abacecc309c16abc9ac5d"
+      "sha256": "b4850571ac6391bd4d7128bbb5e9f18c129a41c44d762ff7ed6d1d9d2f37bb7f"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6029,7 +6029,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6cb3d9ace68e6e5fcccbe73d0ae905911d025637dff851147c17b4e7f96ddf84"
+      "sha256": "b4d75e141c36da0bcb95e1d89755875a9aece8b9b24282f76554cd4918fab6c3"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -6150,7 +6150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e1ac38fc5be4d020f5c91dd080e2cf28ed2d6cb24c070206a07a3dec6e8165ab"
+      "sha256": "8687f734ef2a9f9bc8d3dff87f9028f154df5ca3ad2a15e4495c26f299554fb8"
     },
     {
       "path": "tools/mem_debug.py",
@@ -7825,7 +7825,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8e3b20ef5ff5a04140e5183a43c76116de32e34936a84f73e696bef039fb82e2"
+      "sha256": "3a7ca465f55dcadf0bb6f930765f03d0391c73688bc7919120510eef33e7e836"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -8017,7 +8017,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "95ad5d12610cc29cad6576e5dd63c010026470d480fe9974deb2af9ae004aa5e"
+      "sha256": "35a0cbc5d332190d65d5b8e5bf2b3967aaa83bfa18c7598129ba7345ca840fc5"
     },
     {
       "path": "tools/test_manager_safety.ps1",
