@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94f7421dc2f5971485aed9313f24e1538bc9765070d30b8f5f421549ecbeba90"
+      "sha256": "4f17e53db8ffa9db4376712e003d0fa98f4e070e92ebbc8c10edb7060cf04411"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ba9ddd9d44ce6a5b73684cc22bb116138ae324ee3451e226abbc501e20d0049b"
+      "sha256": "375d59bfaae570495a1a38664b00b72fa767ababfcd43531f47b4daa99516a9c"
     },
     {
       "path": "NOTICE.md",
@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a4f932db844e1ee3a1a30c375adf35538a17149b7cf9e6b492fceaa80d17b39c"
+      "sha256": "1db8a34b4bf3356344ec4cda339dde16522899957295761fcd594c9e913d07ca"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1642,7 +1642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1818c74da1ac8de05967329fedcc26400555b265778a6e295f9a7e6402ee7fad"
+      "sha256": "32cb4fe9f8154d051d24453b64816f0f2805ca84820a554a4029977e011379f8"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
@@ -4481,7 +4481,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1f4b639045a65b35ee3312b4cf416a855994955d60bb1813bc926623e49eecb9"
+      "sha256": "5ed4c5d12b895a5ca63a499406500f0e3a8c3e2f9a4d87723cdc286c814d01c5"
     },
     {
       "path": "src/rt/h264_mf.c",

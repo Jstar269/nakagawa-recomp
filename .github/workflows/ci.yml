@@ -321,6 +321,9 @@ jobs:
       - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
         run: make CC=gcc native-core-tests
 
+      - name: Run host present pacing selftest (links SDL3)
+        run: make CC=gcc gui-present-selftest
+
       - name: Configure, build, and test CMake Linux player
         run: |
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
