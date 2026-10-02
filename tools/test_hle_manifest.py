@@ -913,7 +913,7 @@ class EvidenceTierTests(unittest.TestCase):
         promoted = hle_manifest.oracle_exercised_apis(document)
         self.assertEqual(
             sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
-            ["PSP-DISPLAY-001", "PSP-DMAC-001", "PSP-EXCEPTION-001"],
+            ["PSP-DISPLAY-001", "PSP-DMAC-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002"],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)
         rows = {t["id"]: t for t in document["tests"]}
