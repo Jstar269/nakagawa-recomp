@@ -289,7 +289,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_BAD_ID 0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
-#define SCE_ERROR_MODULE_ALREADY_STARTED 0x80111104u
+#define SCE_KERNEL_ERROR_ALREADY_STARTED 0x80020133u
 #define SCE_ERROR_AV_MODULE_BAD_ID 0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED 0x80110f03u
@@ -1166,7 +1166,7 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     }
 
     /* Phase 2: a repeated StartModule must not run the entry a second time. */
-    expect(libfont_start_call(&cpu, uid) == SCE_ERROR_MODULE_ALREADY_STARTED &&
+    expect(libfont_start_call(&cpu, uid) == SCE_KERNEL_ERROR_ALREADY_STARTED &&
                s_synth_libfont_start_calls == 1u,
            "a second libfont StartModule is refused and does not re-enter module_start");
 

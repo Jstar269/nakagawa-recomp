@@ -2744,7 +2744,10 @@ enum {
 #define SCE_ERROR_MODULE_BAD_ID             0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED     0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED         0x80111103u
-#define SCE_ERROR_MODULE_ALREADY_STARTED    0x80111104u
+/* SCE_KERNEL_ERROR_ALREADY_STARTED (0x80020133) follows the public PSP kernel
+ * error table at https://github.com/pspdev/prxtool/blob/master/pspkerror.C.
+ * This runtime path is source-backed but has not been measured on hardware. */
+#define SCE_KERNEL_ERROR_ALREADY_STARTED    0x80020133u
 #define SCE_ERROR_AV_MODULE_BAD_ID         0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
@@ -8193,11 +8196,11 @@ static uint32_t h_StartModule(CpuState *s) {
 
     /* One module_start per live module record: a repeated StartModule would re-run the
      * guest entry (and its one-shot init side effects) over an already-initialised module.
-     * A module that was stopped is legitimately startable again, as on hardware. */
+     * Inference, not hardware-measured: a stopped module is restartable. */
     if (mod->started && !mod->stopped) {
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> already started, "
                         "refusing re-entry\n", uid, mod->path);
-        return SCE_ERROR_MODULE_ALREADY_STARTED; /* unmeasured */
+        return SCE_KERNEL_ERROR_ALREADY_STARTED;
     }
 
     if (allow_entry && mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {

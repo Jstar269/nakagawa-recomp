@@ -132,6 +132,27 @@ def run_libfont_selftest(make: str, tmp_path: Path, manifest_path: Path,
 
 
 class HleTitleConfigBehaviorTests(unittest.TestCase):
+    def test_libfont_registry_import_is_a_named_issue_299_boundary(self):
+        compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(encoding="utf-8")
+        heading = "### Issue #299: libfont registry import boundary"
+        self.assertTrue(heading in compatibility, "missing the #299 registry-boundary section")
+        issue_299 = compatibility.split(heading, 1)[1]
+        self.assertIn("sceRegOpenRegistry", issue_299)
+        self.assertIn("NID `0x92e41280`, library `sceReg`", issue_299)
+        self.assertIn(
+            "no registry handle or key object model to back a successful open",
+            issue_299,
+        )
+
+    def test_stopped_module_restart_comment_is_labeled_as_inference(self):
+        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        restart_comment = "\n".join(
+            line for line in source.splitlines()
+            if "stopped module" in line.lower() or "Inference, not" in line
+        )
+        self.assertIn("Inference, not hardware-measured:", restart_comment)
+        self.assertIn("stopped module is restartable", restart_comment)
+
     def test_generic_header_has_no_migrated_bindings(self):
         config = title_runtime_config.bindings_from_manifest(None)
         self.assertEqual(config["source_id"], "none")
