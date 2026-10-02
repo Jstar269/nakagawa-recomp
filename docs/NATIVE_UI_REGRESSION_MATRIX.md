@@ -102,9 +102,11 @@ An unticked box records work not yet done; it never records a failure.
    resolve from the manifest and catalog (`src/core/nk_title_manifest.c`,
    `src/core/generated/nk_title_catalog.c`). Covered by
    `tests/native/test_launch_resolution.c`.
-4. [ ] **LLE compliance:** no synthetic TTF substitution in the guest runtime, no fake
-   `libfont` readiness flags, and no fake `psmf` return values. Missing firmware fonts
-   fail closed with guidance.
+4. [ ] **LLE compliance:** no synthetic TTF substitution in the guest runtime, no
+   unconditional `libfont` readiness write, and no fake `psmf` return values. An
+   unavailable `libfont` startup (an untranslated entry, no recorded entry, or the
+   `SR_REAL_MODULE_START=0` kill switch) names `LIBFONT_STARTUP_UNAVAILABLE` before
+   any configured fallback. Missing firmware fonts fail closed with guidance.
 5. [ ] **File dialog:** the native picker (`SDL_ShowOpenFileDialog` in
    `src/player/main.c`) opens without a terminal or console prompt.
 6. [ ] **Error handling:** missing, corrupt or unsupported discs produce an actionable

@@ -716,19 +716,21 @@ HLE_TITLE_CONFIGURED_COMPAT = [
     dict(name="libfont_ready_flag", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:h_LoadModule -> title_config.libfont_ready_flag_addr",
+         source="src/rt/hle.c:h_StartModule -> title_config.libfont_ready_flag_addr",
          addresses=[0x002d132c],
-         reason="loading a path containing 'libfont.prx' writes 1 to a guest word at a "
-                "title-qualified address via title_config. Generic LoadModule has no write.",
-         generic_fallback="h_LoadModule already returns a real UID without the write; title "
-                          "config enables it only for the title that needs it",
+         reason="when libfont.prx startup is unavailable (an untranslated entry, no "
+                "recorded entry, or SR_REAL_MODULE_START=0), sceKernelStartModule emits "
+                "LIBFONT_STARTUP_UNAVAILABLE once per named boundary and may write 1 to "
+                "the title-qualified word; translated guest startup owns readiness",
+         generic_fallback="translated libfont startup runs without host readiness writes; "
+                          "generic builds have no configured ready-flag fallback",
          evidence_tier="SOURCE_SHAPE",
-         evidence="title_config gated: generic build has no MEM_W32(0x002d132c)",
-         accidental_inheritance="no -- generic build writes nothing; configured title writes "
-                                "only its own flag address",
-         test="tools/test_hle_title_isolation.py",
+         evidence="title_config gated fallback; generic build has no MEM_W32(0x002d132c)",
+         accidental_inheritance="no -- only the configured title can write its fallback word",
+         test="tools/test_hle_title_config_behavior.py:test_libfont_guest_startup_routes_exports_without_ready_binding",
          owner_issue="#299",
-         retirement="retire the flag by proving the guest's font bring-up does not need host assistance"),
+         retirement="after #299 proves supported libfont startup and retires the "
+                    "unavailable-startup fallback, remove this binding and manifest field"),
     dict(name="frame_ready_latch_assist", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
