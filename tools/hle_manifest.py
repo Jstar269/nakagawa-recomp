@@ -1381,6 +1381,27 @@ def build_census(manifest: dict | None = None) -> dict:
     }
 
 
+def format_census_summary(census: dict) -> str:
+    """One line carrying every count a reader would otherwise retype into prose.
+
+    The census is the only current machine source for registration classes
+    (including the fake-success and controlled-unsupported rows) and for the
+    per-status handler counts, so the CLI prints all of them together instead of
+    leaving a consumer to recompute the split from the JSON.
+    """
+    s = census["summary"]
+    classes = s["registration_classification"]
+    return (
+        f"{s['total_registrations']} registrations "
+        f"(dedicated {classes.get('dedicated', 0)}, "
+        f"fake_success {classes.get('fake_success', 0)}, "
+        f"controlled_unsupported {classes.get('controlled_unsupported', 0)}); "
+        f"{s['total_dedicated_handlers']} handlers across {len(s['by_family'])} families ("
+        + ", ".join(f"{status} {s['by_status'][status]}" for status in CENSUS_STATUSES)
+        + ")"
+    )
+
+
 def render_census_markdown(census: dict, *, heading_level: int = 1) -> str:
     """Render a GitHub-flavored Markdown summary table and review details."""
     if not 1 <= heading_level <= 5:
@@ -1502,11 +1523,17 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument(
         "--census",
+        "--census-json",
+        dest="census",
         nargs="?",
         const=ROOT / "build" / "hle_census.json",
         type=Path,
         default=None,
-        help="emit the deterministic census of dedicated handlers by semantic status and API family",
+        help="emit the machine-readable semantic census artifact: the single current "
+             "source for registration classes (dedicated / fake_success / "
+             "controlled_unsupported) and for the per-status handler counts "
+             "(complete / partial / compatibility / controlled_unsupported / "
+             "unreviewed) by API family; --census-json is an alias",
     )
     ap.add_argument(
         "--census-markdown",
@@ -1514,7 +1541,8 @@ def main(argv: list[str]) -> int:
         const=ROOT / "build" / "hle_census.md",
         type=Path,
         default=None,
-        help="emit the Markdown summary table of the HLE status census",
+        help="emit the Markdown rendering of the same census for the generated block in "
+             "docs/HLE_AND_WORKAROUND_INVENTORY.md",
     )
     ap.add_argument(
         "--census-heading-level",
@@ -1555,18 +1583,15 @@ def main(argv: list[str]) -> int:
         print(f"hle_manifest: evidence chain -> {args.evidence_chain} ({tiers})")
     if args.census is not None or args.census_markdown is not None:
         census = build_census(manifest)
+        summary = format_census_summary(census)
         if args.census is not None:
             dump_json(census, args.census)
-            s = census["summary"]
-            print(
-                f"hle_manifest: census ({s['total_dedicated_handlers']} handlers across "
-                f"{len(s['by_family'])} families) -> {args.census}"
-            )
+            print(f"hle_manifest: census -> {args.census} ({summary})")
         if args.census_markdown is not None:
             md_text = render_census_markdown(census, heading_level=args.census_heading_level)
             args.census_markdown.parent.mkdir(parents=True, exist_ok=True)
             args.census_markdown.write_text(md_text, encoding="utf-8")
-            print(f"hle_manifest: census markdown -> {args.census_markdown}")
+            print(f"hle_manifest: census markdown -> {args.census_markdown} ({summary})")
     if args.write_baseline is not None:
         dump_json(manifest_to_baseline(manifest), args.write_baseline)
         print(f"hle_manifest: baseline -> {args.write_baseline}")

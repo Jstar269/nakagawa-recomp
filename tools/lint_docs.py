@@ -14,6 +14,8 @@ Detects deterministic classes of staleness that should not require network acces
   title manifest while it is untracked;
 - links to repository commits unavailable in public history;
 - frozen hand-written HLE census numbers that must come from the generator;
+- a hand-written HLE registration / NID / fake-success count presented as live
+  state on a CURRENT page (the census is a generated artifact);
 - title-manifest README drift from the actual public manifest inventory;
 - a missing non-CURRENT status marker on the dated toolchain baseline;
 - a capability-disposition row with no valid status, a PASS/PARTIAL row that
@@ -30,6 +32,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from urllib.parse import unquote
 
 try:
@@ -146,6 +149,62 @@ HST_GITIGNORED_MANIFEST_PAT = re.compile(
 FROZEN_HLE_CENSUS_PATS = [
     re.compile(r"46 title guest addresses across 59 sites"),
 ]
+
+# --- HLE census doc guard (#341 / #363 Phase 0 Step 0.3) ---------------------------
+#
+# The semantic census is a tool artifact, not prose. `tools/hle_manifest.py`
+# emits it twice from one source: `--census-json` (machine-readable) and
+# `--census-markdown` (the block embedded in docs/HLE_AND_WORKAROUND_INVENTORY.md
+# and pinned against the generator by tools/test_hle_manifest.py). Nothing
+# regenerates or checks a number typed into a paragraph, so a hand-written
+# census count is stale by construction -- and a stale count is exactly what a
+# consumer reads as live HLE status. This guard therefore rejects ANY hard-coded
+# census count in a CURRENT document, not a denylist of the numbers that have
+# already drifted, so the next drift is caught before it is published.
+#
+# Three escapes, each checked rather than assumed:
+#   1. docs/README.md classifies the page as ARCHIVED / HISTORICAL / REFERENCE /
+#      SUPERSEDED / DRAFT, or it lives under docs/archive/;
+#   2. the line is inside the generated census block, whose numbers come from
+#      the generator and are drift-checked there;
+#   3. the line itself labels the number historical / capture-time, which is how
+#      an unavoidable example from a past audit stays honestly labelled.
+#
+# An unindexed document counts as CURRENT. The taxonomy in docs/README.md is
+# maintained, so a missing row must fail closed instead of buying a free pass.
+HLE_CENSUS_BLOCK_BEGIN = "<!-- BEGIN GENERATED HLE STATUS CENSUS -->"
+HLE_CENSUS_BLOCK_END = "<!-- END GENERATED HLE STATUS CENSUS -->"
+
+# The nouns the generated census uses for its counts. Generic stubs, dedicated
+# handlers, refusals and NIDs are one census, so a hand-written count of any of
+# them is the same kind of rot.
+HLE_CENSUS_COUNT_PAT = re.compile(
+    r"\b\d{1,4}\s+(?:(?:are|were|is|remain|remains|left)\s+)?(?:import\s+)?"
+    r"(?:registrations?|NIDs?|NID\s+registrations?"
+    r"|fake[-\s]success(?:\s+(?:stubs?|registrations?|NIDs?|handlers?|entries))?"
+    r"|dedicated\s+handlers?|handlers?"
+    r"|controlled[-\s]unsupported(?:\s+registrations?)?)\b",
+    re.IGNORECASE,
+)
+
+# An explicit historical label on the same line. This is deliberately a list of
+# the words a reviewer actually writes when preserving a past figure, not a
+# licence: the count still has to read as past evidence on its own line. A bare
+# past-tense verb is only accepted *before* the count ("the census was 380
+# registrations"), because "were added" is not a capture-time label.
+HLE_CENSUS_HISTORICAL_LABEL_PAT = re.compile(
+    r"histor|capture[- ]time|\bthen\b|previous|former|\bas of\b|snapshot"
+    r"|supersed|no longer|\b[0-9a-f]{7,40}\b",
+    re.IGNORECASE,
+)
+HLE_CENSUS_PAST_COUNT_PAT = re.compile(
+    r"\b(?:was|were|had|remained|reached|fell|rose)\b[^.;:]{0,60}$", re.IGNORECASE
+)
+
+NON_CURRENT_DOC_STATUSES = frozenset(
+    {"ARCHIVED", "HISTORICAL", "REFERENCE", "SUPERSEDED", "DRAFT"}
+)
+ARCHIVE_DOC_PREFIX = "docs/archive/"
 
 REPO_COMMIT_URL_PAT = re.compile(
     r"github\.com/Jstar269/nakagawa-recomp/(?:tree|blob|commit)/([0-9a-f]{7,40})\b"
@@ -306,6 +365,85 @@ def lint_doc_links_and_topology(
 
 def _is_snapshot_doc(rel_path: str) -> bool:
     return rel_path.startswith(PROJECT_TRUTH_SNAPSHOT_PREFIX)
+
+
+def docs_index_statuses(repo_root: pathlib.Path = ROOT) -> dict[str, str]:
+    """Return docs-relative document name -> taxonomy status from docs/README.md."""
+    readme = repo_root / DOCS_README
+    if not readme.is_file():
+        return {}
+    statuses: dict[str, str] = {}
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) < 3:
+            continue
+        statuses[cells[1].strip("`")] = cells[2].upper()
+    return statuses
+
+
+def _is_current_doc(rel_path: str, index_statuses: dict[str, str]) -> bool:
+    """Whether a document is a maintained (CURRENT) page rather than dated evidence."""
+    if rel_path.startswith(ARCHIVE_DOC_PREFIX):
+        return False
+    name = rel_path[len("docs/"):] if rel_path.startswith("docs/") else rel_path
+    # An unindexed document is CURRENT: the taxonomy is maintained, so a missing
+    # row must not silently turn a live page into exempt evidence.
+    return index_statuses.get(name, "CURRENT") not in NON_CURRENT_DOC_STATUSES
+
+
+def _census_prose_lines(text: str) -> Iterator[tuple[int, str]]:
+    """Yield (line number, line) for every line outside the generated census block."""
+    in_block = False
+    for idx, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped == HLE_CENSUS_BLOCK_BEGIN:
+            in_block = True
+            continue
+        if stripped == HLE_CENSUS_BLOCK_END:
+            in_block = False
+            continue
+        if in_block:
+            continue
+        yield idx, line
+
+
+def lint_hle_census_counts(
+    doc_path: pathlib.Path,
+    repo_root: pathlib.Path = ROOT,
+    index_statuses: dict[str, str] | None = None,
+) -> list[str]:
+    """No CURRENT page may present a hand-written HLE census count as live state."""
+    errors: list[str] = []
+    if not doc_path.is_file():
+        return errors
+
+    try:
+        rel_path = doc_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        rel_path = doc_path.name
+
+    if _is_snapshot_doc(rel_path):
+        return errors
+    if index_statuses is None:
+        index_statuses = docs_index_statuses(repo_root)
+    if not _is_current_doc(rel_path, index_statuses):
+        return errors
+
+    for idx, line in _census_prose_lines(doc_path.read_text(encoding="utf-8")):
+        if HLE_CENSUS_HISTORICAL_LABEL_PAT.search(line):
+            continue
+        for match in HLE_CENSUS_COUNT_PAT.finditer(line):
+            if HLE_CENSUS_PAST_COUNT_PAT.search(line[: match.start()]):
+                continue
+            errors.append(
+                f"{rel_path}:{idx}: hand-codes an HLE census count "
+                f"('{match.group(0).strip()}') as live state; label it historical/"
+                "capture-time or generate it with tools/hle_manifest.py --census-markdown "
+                "(docs/README.md, Mutable facts policy)"
+            )
+    return errors
 
 
 def _is_hst_manifest_tracked(repo_root: pathlib.Path = ROOT) -> bool:
@@ -628,9 +766,11 @@ def run_all_doc_lints(repo_root: pathlib.Path = ROOT) -> list[str]:
     errors = lint_readme(repo_root / "README.md")
     md_files = get_tracked_markdown_files(repo_root)
     hst_tracked = _is_hst_manifest_tracked(repo_root)
+    index_statuses = docs_index_statuses(repo_root)
     for md_file in md_files:
         errors.extend(lint_doc_links_and_topology(md_file, repo_root))
         errors.extend(lint_doc_truth(md_file, repo_root, hst_tracked))
+        errors.extend(lint_hle_census_counts(md_file, repo_root, index_statuses))
     errors.extend(lint_titles_readme(repo_root))
     errors.extend(lint_toolchain_baseline_marker(repo_root))
     errors.extend(lint_capability_disposition_table(repo_root))

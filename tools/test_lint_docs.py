@@ -24,6 +24,7 @@ from tools.lint_docs import (
     lint_doc_links_and_topology,
     lint_doc_truth,
     lint_docs_index_completeness,
+    lint_hle_census_counts,
     lint_readme,
     lint_titles_readme,
     lint_toolchain_baseline_marker,
@@ -258,6 +259,146 @@ class TestDocTruthInvariants(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(lint_toolchain_baseline_marker(root), [])
+
+
+class TestHleCensusDocGuard(unittest.TestCase):
+    """A CURRENT page may not hand-write HLE census counts as live state.
+
+    The census is generated (`tools/hle_manifest.py --census-json` /
+    `--census-markdown`) and the block embedded in the inventory is pinned
+    against the generator, so a number typed into a paragraph rots silently.
+    These tests pin the three escapes -- generated block, historical label,
+    non-CURRENT page -- and the boundary between them.
+    """
+
+    STALE = (
+        "At revision 8e58c6b the HLE table carried 380 registrations and "
+        "59 fake-success stubs.\n"
+    )
+
+    def _write_doc(self, root: pathlib.Path, rel: str, text: str) -> pathlib.Path:
+        doc = root / rel
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(text, encoding="utf-8")
+        return doc
+
+    def _taxonomy(self, root: pathlib.Path, rows: str = "") -> dict[str, str]:
+        self._write_doc(
+            root,
+            "docs/README.md",
+            "# Docs\n\n| Document | Status | Meaning |\n| :--- | :--- | :--- |\n" + rows,
+        )
+        return lint_docs.docs_index_statuses(root)
+
+    def test_unlabelled_census_counts_on_a_current_page_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            doc = self._write_doc(
+                root,
+                "docs/HLE_AND_WORKAROUND_INVENTORY.md",
+                "The HLE table registers 380 NIDs today, of which 51 are fake-success.\n",
+            )
+            errors = lint_hle_census_counts(doc, root, self._taxonomy(root))
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("hand-codes an HLE census count" in e for e in errors))
+        self.assertTrue(all("--census-markdown" in e for e in errors))
+
+    def test_the_guard_catches_every_census_noun_not_just_the_old_numbers(self) -> None:
+        # A denylist of numbers that already drifted would miss the next drift.
+        claims = [
+            "The table has 512 registrations.\n",
+            "There are 512 NIDs in the table.\n",
+            "512 handlers are registered.\n",
+            "512 import registrations were added.\n",
+            "3 fake-success stubs remain.\n",
+            "1 controlled unsupported registration is documented.\n",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            statuses = self._taxonomy(root)
+            for claim in claims:
+                with self.subTest(claim=claim.strip()):
+                    doc = self._write_doc(root, "docs/PORTING.md", claim)
+                    self.assertTrue(lint_hle_census_counts(doc, root, statuses))
+
+    def test_an_unindexed_document_is_treated_as_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            doc = self._write_doc(root, "docs/NEW_PAGE.md", "There are 380 registrations.\n")
+            self.assertTrue(lint_hle_census_counts(doc, root, {}))
+            doc = self._write_doc(root, "README.md", "The layer has 380 registrations.\n")
+            self.assertTrue(lint_hle_census_counts(doc, root, {}))
+
+    def test_an_explicitly_labelled_historical_count_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            statuses = self._taxonomy(root)
+            for claim in (
+                self.STALE,
+                "The census was 380 registrations at 8e58c6b; generate the live "
+                "figure with `tools/hle_manifest.py --census`.\n",
+                "Capture-time example: 404 NIDs, 406 NIDs, 322 NIDs, 319 NIDs.\n",
+            ):
+                with self.subTest(claim=claim.strip()):
+                    doc = self._write_doc(root, "docs/AUDIT.md", claim)
+                    self.assertEqual(lint_hle_census_counts(doc, root, statuses), [])
+
+    def test_archive_and_non_current_pages_are_exempt(self) -> None:
+        rows = (
+            "| `archive/OLD_AUDIT.md` | ARCHIVED | Pre-republication audit |\n"
+            "| `OLD_STATUS.md` | HISTORICAL | Pre-republication evidence |\n"
+            "| `DATED_REFERENCE.md` | REFERENCE | Dated evidence |\n"
+            "| `SUPERSEDED_PLAN.md` | SUPERSEDED | Superseded by inline markers |\n"
+            "| `DRAFT_SPEC.md` | DRAFT | Intent, not built state |\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            statuses = self._taxonomy(root, rows)
+            exempt = [
+                "docs/archive/UNINDEXED_OLD.md",
+                "docs/archive/OLD_AUDIT.md",
+                "docs/OLD_STATUS.md",
+                "docs/DATED_REFERENCE.md",
+                "docs/SUPERSEDED_PLAN.md",
+                "docs/DRAFT_SPEC.md",
+            ]
+            for rel in exempt:
+                with self.subTest(rel=rel):
+                    doc = self._write_doc(root, rel, self.STALE)
+                    self.assertEqual(lint_hle_census_counts(doc, root, statuses), [])
+
+    def test_the_generated_census_block_is_exempt_and_its_boundary_is_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            statuses = self._taxonomy(root)
+            doc = self._write_doc(
+                root,
+                "docs/HLE_AND_WORKAROUND_INVENTORY.md",
+                "Preamble.\n\n"
+                f"{lint_docs.HLE_CENSUS_BLOCK_BEGIN}\n"
+                "370 handlers across 21 API families, 380 registrations.\n"
+                f"{lint_docs.HLE_CENSUS_BLOCK_END}\n"
+                "370 handlers across 21 API families.\n",
+            )
+            errors = lint_hle_census_counts(doc, root, statuses)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(":6:", errors[0])
+
+    def test_the_repository_inventory_passes_the_census_guard(self) -> None:
+        doc = ROOT / "docs" / "HLE_AND_WORKAROUND_INVENTORY.md"
+        self.assertEqual(lint_hle_census_counts(doc, ROOT), [])
+
+    def test_the_guard_is_load_bearing_in_the_full_lint_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            (root / "docs").mkdir()
+            self._write_doc(root, "docs/README.md", "# Docs\n")
+            self._write_doc(root, "docs/PORTING.md", "There are 380 registrations.\n")
+            with patch.object(lint_docs, "get_tracked_markdown_files", return_value=[
+                root / "docs" / "PORTING.md"
+            ]), patch.object(lint_docs, "_is_hst_manifest_tracked", return_value=True):
+                errors = run_all_doc_lints(root)
+        self.assertTrue(any("hand-codes an HLE census count" in e for e in errors), errors)
 
 
 class TestCapabilityDispositionTable(unittest.TestCase):

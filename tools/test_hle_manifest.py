@@ -1330,6 +1330,69 @@ class CensusTests(unittest.TestCase):
             self.assertIn("# HLE Semantic Status Census", md_text)
             self.assertIn("| `sceKernel` |", md_text)
 
+    def test_census_json_alias_writes_the_same_machine_artifact(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            canonical = Path(td) / "census.json"
+            aliased = Path(td) / "alias.json"
+            args = ["--out", str(Path(td) / "manifest.json"), "--census-markdown"]
+            self.assertEqual(hle_manifest.main([*args, str(Path(td) / "a.md"), "--census", str(canonical)]), 0)
+            self.assertEqual(hle_manifest.main([*args, str(Path(td) / "b.md"), "--census-json", str(aliased)]), 0)
+            self.assertEqual(
+                aliased.read_text(encoding="ascii"),
+                canonical.read_text(encoding="ascii"),
+                "--census-json must be the same artifact as --census, not a second format",
+            )
+
+    def test_one_artifact_surfaces_every_status_and_registration_class(self) -> None:
+        # The census is the one current machine source for HLE status, so a status or
+        # a registration class missing from it is a count a reader has to recompute.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            json_out = Path(td) / "census.json"
+            md_out = Path(td) / "census.md"
+            self.assertEqual(
+                hle_manifest.main([
+                    "--out", str(Path(td) / "manifest.json"),
+                    "--census-json", str(json_out),
+                    "--census-markdown", str(md_out),
+                    "--census-heading-level", "3",
+                ]),
+                0,
+            )
+            census = json.loads(json_out.read_text(encoding="ascii"))
+            md_text = md_out.read_text(encoding="utf-8")
+
+        summary = census["summary"]
+        self.assertEqual(set(summary["by_status"]), set(hle_manifest.CENSUS_STATUSES))
+        self.assertEqual(
+            set(summary["registration_classification"]),
+            {"dedicated", "fake_success", "controlled_unsupported"},
+        )
+        self.assertEqual(
+            sum(summary["registration_classification"].values()),
+            summary["total_registrations"],
+        )
+        # Dedicated-but-unreviewed, fake-success, controlled-unsupported, partial and
+        # compatibility all have to be readable from the artifact, not just summed.
+        for status in hle_manifest.CENSUS_STATUSES:
+            with self.subTest(status=status):
+                self.assertIn(
+                    f"| `{status}` | {summary['by_status'][status]} | "
+                    f"{summary['by_status_registrations'][status]} |",
+                    md_text,
+                )
+        for classification, count in summary["registration_classification"].items():
+            with self.subTest(classification=classification):
+                self.assertIn(f"{classification} **{count}**", md_text)
+        printed = hle_manifest.format_census_summary(census)
+        self.assertIn(f"{summary['total_registrations']} registrations", printed)
+        self.assertIn(f"fake_success {summary['registration_classification']['fake_success']}", printed)
+        for status in hle_manifest.CENSUS_STATUSES:
+            self.assertIn(f"{status} {summary['by_status'][status]}", printed)
+
     def test_live_metadata_promotion_and_limitation_invariants(self) -> None:
         for handler, status in meta.HANDLER_STATUS.items():
             if status == "complete":
