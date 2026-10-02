@@ -2075,5 +2075,59 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(calls, [["usbipd", "list"]])
 
 
+
+class Host0RemotePathTests(unittest.TestCase):
+    """A campaign PRX staged in a subdirectory is loaded by its host0-relative path."""
+
+    def test_subdirectory_prx_keeps_its_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prx = root / "ge-nan" / "nakagawa_psp_oracle.prx"
+            prx.parent.mkdir()
+            prx.write_bytes(b"\x00")
+            self.assertEqual(run_psplink_module._host0_remote_path(prx, root),
+                             "ge-nan/nakagawa_psp_oracle.prx")
+            flat = root / "fpu-vector.prx"
+            flat.write_bytes(b"\x00")
+            self.assertEqual(run_psplink_module._host0_remote_path(flat, root), "fpu-vector.prx")
+
+    def test_without_a_host0_root_the_bare_name_is_used(self) -> None:
+        self.assertEqual(run_psplink_module._host0_remote_path(Path("x/y.prx"), None), "y.prx")
+
+    def test_a_campaign_prx_outside_the_root_stops_with_a_report(self) -> None:
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-outside-root-", dir=fixture_dir) as scratch_name, \
+                tempfile.TemporaryDirectory() as other_name:
+            scratch = Path(scratch_name)
+            inside = scratch / "transport-write.prx"
+            inside.write_bytes(b"synthetic PRX")
+            outside = Path(other_name) / "fpu-vector.prx"
+            outside.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport()
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", inside, 1.0),
+                   CampaignCase("fpu-vector", outside, 1.0)])
+        commands = [command for command, _timeout in transport.commands]
+        self.assertEqual(report["state"], "STOPPED")
+        self.assertEqual(report["terminal_reason"], "HOST0_PRX_OUTSIDE_ROOT")
+        self.assertFalse([c for c in commands if c.startswith("ldstart") and "fpu-vector" in c])
+        blockers = " ".join(report["envelopes"][-1]["QUALIFICATION_BLOCKERS"])
+        self.assertIn("campaign PRX for case fpu-vector is not inside host0 root", blockers)
+        self.assertNotIn(other_name, blockers)
+        self.assertNotIn(scratch_name, blockers)
+
+    def test_a_prx_outside_the_root_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as other:
+            outside = Path(other) / "probe.prx"
+            outside.write_bytes(b"\x00")
+            with self.assertRaises(ValueError):
+                run_psplink_module._host0_remote_path(outside, Path(root))
+
+
 if __name__ == "__main__":
     unittest.main()
