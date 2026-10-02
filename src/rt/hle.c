@@ -141,6 +141,7 @@ uint32_t sr_last_nid = 0;
 
 int sr_thread_has_pending_callbacks(uint32_t thread_uid);
 int sr_thread_dispatch_callbacks(void);    /* internal pump count; public CheckCallback is Boolean */
+static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid);
 void sr_callback_unregister_owner(uint32_t thread_uid);
 
 /* Issue #143 diagnostic hooks.  Definitions live beside the display vblank
@@ -1841,18 +1842,32 @@ static uint32_t h_ExitDeleteThread(CpuState *s) {
     s_exit_delete_request = 1;
     return h_ExitThread(s);
 }
-/* A delay is unconditionally a wait: sched_delay_current() parks the thread even for
- * usec 0 (it floors the duration at 1). There is no parameter or object to validate
- * ahead of the context check, so it is the first thing the handler does -- nothing has
- * been mutated at that point: no wake deadline, no thread state, no yield. (L2/L3) */
+/* sceKernelDelayThread: delays the calling thread by usec microseconds.
+ * PSP-3001 6.6.1 hardware measurement (#340): sceKernelDelayThread(0) returns 0
+ * without yielding to an equal-priority ready thread and without dispatching
+ * pending callbacks. Context check (CAN_NOT_WAIT) still precedes. (L2/L3) */
 static uint32_t h_DelayThread(CpuState *s) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    if (A0 == 0) return 0;
     sched_delay_current(A0);
     return 0;
 }
+/* sceKernelDelayThreadCB: delays the calling thread while servicing callbacks.
+ * PSP-3001 6.6.1 hardware measurement (#340): sceKernelDelayThreadCB(0) returns 0
+ * without yielding to an equal-priority ready thread, and dispatches pending
+ * callbacks (exactly once). Context check (CAN_NOT_WAIT) still precedes. (L6/L7) */
 static uint32_t h_DelayThreadCBForUsec(uint64_t usec) {
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;  /* L6/L7 */
     uint32_t thread_uid = sched_current_uid();
+    if (usec == 0) {
+        /* Zero delay stays non-blocking: visit each callback slot present at entry at most
+         * once, so a callback that re-notifies itself remains pending for a later pump.
+         * CheckCallback is the explicit pump and keeps dispatching until the queue is empty. */
+        if (sr_thread_has_pending_callbacks(thread_uid)) {
+            (void)sr_thread_dispatch_callbacks_once(thread_uid);
+        }
+        return 0;
+    }
     sched_vtime_refresh();
     uint64_t end_time = sched_vtime_deadline_after(usec);
 
@@ -7503,6 +7518,58 @@ int sr_thread_has_pending_callbacks(uint32_t thread_uid) {
     return 0;
 }
 
+static int sr_thread_dispatch_callback_uid(uint32_t thread_uid, CpuState *cpu,
+                                           uint32_t selected_uid) {
+    int idx = sr_callback_find_in_table(selected_uid);
+    if (idx < 0) return 0;
+    CallbackEntry *cb = &s_callbacks[idx];
+    if (!cb->used || cb->owner_thread_uid != thread_uid || !cb->pending) return 0;
+
+    uint32_t uid = cb->uid;
+    uint32_t entry = cb->entry;
+    uint32_t common_arg = cb->arg;
+    uint32_t notify_arg = cb->notify_arg;
+    uint32_t notify_count = cb->notify_count;
+
+    /* The notification is consumed as the body starts, so a re-notification made by the
+     * body forms a new pending event picked up by a later scan. */
+    cb->pending = 0;
+    cb->notify_count = 0;
+    cb->notify_arg = 0;
+
+    uint32_t ret = sr_callback_dispatch_one(
+        cpu, entry, (int)notify_count, notify_arg, common_arg, dispatch);
+    ge_enqueue_trace_note_callback(cpu, uid, entry);
+    /* Apply the auto-delete rule to the dispatched UID, not a slot: the body may have
+     * deleted this callback and registered a replacement into the same slot. */
+    if (ret != 0)
+        sr_callback_table_unregister(uid);
+    return 1;
+}
+
+static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid) {
+    extern CpuState *sr_cpu_for_callbacks(void);
+    CpuState *cpu = sr_cpu_for_callbacks();
+    if (!cpu) return 0;
+
+    /* This non-blocking caller gets one slot-order pass over the table length captured before
+     * guest code runs. Re-read each slot after the preceding callback because dispatch may
+     * realloc the table. Re-notifications of visited slots and newly appended slots wait for
+     * the next pump. */
+    const size_t slot_limit = s_callbacks_len;
+    int total_dispatched = 0;
+    for (size_t i = 0; i < slot_limit; i++) {
+        uint32_t selected_uid = 0u;
+        if (i < s_callbacks_len && s_callbacks[i].used &&
+            s_callbacks[i].owner_thread_uid == thread_uid && s_callbacks[i].pending) {
+            selected_uid = s_callbacks[i].uid;
+        }
+        if (selected_uid != 0u)
+            total_dispatched += sr_thread_dispatch_callback_uid(thread_uid, cpu, selected_uid);
+    }
+    return total_dispatched;
+}
+
 int sr_thread_dispatch_callbacks(void) {
     uint32_t thread_uid = sched_current_uid();
     extern CpuState *sr_cpu_for_callbacks(void);
@@ -7530,31 +7597,8 @@ int sr_thread_dispatch_callbacks(void) {
             }
         }
         if (selected_uid == 0) break;
-
-        int idx = sr_callback_find_in_table(selected_uid);
-        if (idx < 0) continue;
-        CallbackEntry *cb = &s_callbacks[idx];
-
-        total_dispatched++;
-        uint32_t uid = cb->uid;
-        uint32_t entry = cb->entry;
-        uint32_t common_arg = cb->arg;
-        uint32_t notify_arg = cb->notify_arg;
-        uint32_t notify_count = cb->notify_count;
-
-        /* The notification is consumed as the body starts, so a re-notification made by the
-         * body forms a new pending event picked up on the next scan. */
-        cb->pending = 0;
-        cb->notify_count = 0;
-        cb->notify_arg = 0;
-
-        uint32_t ret = sr_callback_dispatch_one(
-            cpu, entry, (int)notify_count, notify_arg, common_arg, dispatch);
-        ge_enqueue_trace_note_callback(cpu, uid, entry);
-        /* Apply the auto-delete rule to the dispatched UID, not a slot: the body may have
-         * deleted this callback and registered a replacement into the same slot. */
-        if (ret != 0)
-            sr_callback_table_unregister(uid);
+        if (sr_thread_dispatch_callback_uid(thread_uid, cpu, selected_uid))
+            total_dispatched++;
     }
     return total_dispatched;
 }

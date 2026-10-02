@@ -98,9 +98,13 @@ class CallbackCorrectnessTests(unittest.TestCase):
     def test_dispatcher_has_no_gp_override_or_arbitrary_pass_cap(self):
         body = strip_comments(function_body(HLE_SOURCE, "sr_thread_dispatch_callbacks"))
         self.assertIn("for (;;)", body)
-        self.assertNotIn("sr_gp_for_callbacks", body)
-        self.assertNotIn("S_CALLBACKS_CAP", body)
-        self.assertIn("sr_callback_table_unregister(uid)", body)
+        self.assertIn("sr_thread_dispatch_callback_uid(thread_uid, cpu, selected_uid)", body)
+        # Both pumps dispatch through the one per-UID helper, which owns the auto-delete.
+        helper = strip_comments(function_body(HLE_SOURCE, "sr_thread_dispatch_callback_uid"))
+        for text in (body, helper):
+            self.assertNotIn("sr_gp_for_callbacks", text)
+            self.assertNotIn("S_CALLBACKS_CAP", text)
+        self.assertIn("sr_callback_table_unregister(uid)", helper)
 
     def test_dispatcher_selects_and_resolves_by_uid(self):
         # The dispatcher must pick one pending callback and re-resolve it by UID each
@@ -110,7 +114,9 @@ class CallbackCorrectnessTests(unittest.TestCase):
         # dispatch. This locks in the UID-based rescan against a slot-based regression.
         body = strip_comments(function_body(HLE_SOURCE, "sr_thread_dispatch_callbacks"))
         self.assertIn("selected_uid", body)
-        self.assertIn("sr_callback_find_in_table(selected_uid)", body)
+        self.assertIn("sr_thread_dispatch_callback_uid(thread_uid, cpu, selected_uid)", body)
+        helper = strip_comments(function_body(HLE_SOURCE, "sr_thread_dispatch_callback_uid"))
+        self.assertIn("sr_callback_find_in_table(selected_uid)", helper)
 
     def test_check_callback_is_boolean(self):
         body = strip_comments(function_body(HLE_SOURCE, "h_CheckCallback"))

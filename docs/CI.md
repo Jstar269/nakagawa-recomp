@@ -87,7 +87,10 @@ SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot 
 source-owned showcase packages with dummy SDL video and audio drivers, then passes the generated
 TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requires
 `STAGING_RESULT status=PASS`. This is build, test, and headless staging evidence for the named
-synthetic fixtures. The CMake player is configured with CMake's default, unoptimized build type, so
+synthetic fixtures. Separately, the job runs `make CC=gcc player-ui-regressions`: scripted native
+player UI event and recovery flows, which are UI evidence rather than staging evidence. The test
+harness (`tests/native/test_player_ui.py`) forces SDL's dummy video and software render drivers for
+every player it spawns, so the gate is headless without any step environment. The CMake player is configured with CMake's default, unoptimized build type, so
 the gate covers only that configuration: an optimized Release configuration fails under the global
 `-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
 job does not claim that configuration builds. Consumer ISO compatibility remains in the works
@@ -412,9 +415,13 @@ other bundle; re-capture with a larger limit when a comparison is the goal.
 The hosted matrix now exercises the same public, source-owned release path a
 developer runs locally, without private inputs:
 
-- `windows_runtime` links the native player (`mingw32-make player`), runs the
-  complete platform ladder (`mingw32-make --no-print-directory platform-ladder`),
-  and runs `profile-zero-e2e` for the two profile-zero manifests. That gate
+- `windows_runtime` links the native player (`mingw32-make player`), runs
+  `player-ui-tests`, executes headless native player UI regressions
+  (`mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions`,
+  main part only; the harness forces SDL's dummy video and software render drivers),
+  runs the complete platform ladder
+  (`mingw32-make --no-print-directory platform-ladder`), and runs
+  `profile-zero-e2e` for the two profile-zero manifests. That gate
   validates the guest ProgramImage, generates a public AOT package, launches it
   through the headless production runtime, and checks all seven named
   guest-service cases for each manifest. It runs in the existing 25-minute
