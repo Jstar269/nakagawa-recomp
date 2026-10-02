@@ -1098,14 +1098,27 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertNotIn("psp_b3_imports.S", self.makefile)
 
     def test_mutex_import_block_is_limited_to_mutex_cases(self) -> None:
-        self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
         self.assertIn("MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta", self.makefile)
         self.assertIn("mutex-priority-inheritance mutex-interrupt-context", self.makefile)
         self.assertIn("ifneq ($(filter $(MUTEX_CASES),$(CASE)),)\n", self.makefile)
         self.assertIn("OBJS += $(BUILD_DIR)/mutex_imports.o\n", self.makefile)
+        self.assertIn("OBJS += $(BUILD_DIR)/probe.o\n", self.makefile)
         self.assertNotIn(
             "OBJS = $(BUILD_DIR)/probe.o $(BUILD_DIR)/mutex_imports.o",
             self.makefile,
+        )
+
+    def test_mutex_import_object_precedes_probe_object(self) -> None:
+        # Issue #400: mutex_imports.o must precede probe.o in link order so that
+        # custom ThreadManForUser stubs are resolved first without interleaving.
+        idx_mutex = self.makefile.find("OBJS += $(BUILD_DIR)/mutex_imports.o")
+        idx_probe = self.makefile.find("OBJS += $(BUILD_DIR)/probe.o")
+        self.assertGreaterEqual(idx_mutex, 0, "mutex_imports.o must be present in Makefile")
+        self.assertGreaterEqual(idx_probe, 0, "probe.o must be present in Makefile")
+        self.assertLess(
+            idx_mutex,
+            idx_probe,
+            "mutex_imports.o must precede probe.o in link order to avoid out-of-order stubs (#400)",
         )
 
     def test_kernel_object_routes_use_shared_threadman_import_block(self) -> None:
@@ -1859,7 +1872,7 @@ class PspMutexProbeTests(unittest.TestCase):
         )
         mutex = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-MUTEX-001")
         self.assertEqual(mutex["group"], "mutex")
-        self.assertEqual(mutex["issues"], [2])
+        self.assertEqual(mutex["issues"], [2, 400])
         self.assertEqual(
             mutex["case_ids"],
             [

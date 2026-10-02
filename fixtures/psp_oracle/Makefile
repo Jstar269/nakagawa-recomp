@@ -3,7 +3,7 @@
 
 BUILD_DIR ?= build
 TARGET = $(BUILD_DIR)/nakagawa_psp_oracle
-OBJS = $(BUILD_DIR)/probe.o
+OBJS =
 PSP_EBOOT = $(BUILD_DIR)/EBOOT.PBP
 PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 
@@ -16,11 +16,14 @@ PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 CASE ?= smoke
 # The hand-authored mutex imports are needed only by the mutex probes. Linking
 # them into unrelated PRXs leaves PSP SDK import stubs out of order.
+# The custom import object must precede probe.o so ThreadManForUser stubs are
+# resolved first without interleaving (issue #400).
 MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta \
               mutex-priority-inheritance mutex-interrupt-context
 ifneq ($(filter $(MUTEX_CASES),$(CASE)),)
 OBJS += $(BUILD_DIR)/mutex_imports.o
 endif
+OBJS += $(BUILD_DIR)/probe.o
 
 ifeq ($(CASE),smoke)
 CASE_ID = 0
