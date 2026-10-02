@@ -245,6 +245,11 @@ preferring removal when the duplicate adds no value:
   enforces the At-a-glance rule where that section exists);
 - HLE address/site/bucket and compatibility-override counts: cite
   `tools/test_compat_manifest.py` over `tools/compat_overrides.py`;
+- HLE registration-class and semantic-status counts (dedicated, fake-success,
+  controlled-unsupported, partial, compatibility, unreviewed): regenerate
+  `tools/hle_manifest.py --census-json` and embed the Markdown rendering;
+  `lint_docs.py` rejects a hand-written one on a CURRENT page outside the
+  generated census block;
 - NID/hook and evidence-chain facts: regenerate via
   `tools/hle_manifest.py --evidence-chain`;
 - intr-conformance totals: read `src/rt/intr_conformance.h` via
