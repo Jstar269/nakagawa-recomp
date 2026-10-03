@@ -27,6 +27,14 @@
 #include <unistd.h>
 #endif
 
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static uint64_t s_player_ui_validation_calls;
+
+uint64_t player_app_ui_test_validation_calls(void) {
+    return s_player_ui_validation_calls;
+}
+#endif
+
 static const char *player_runtime_root(const PlayerApp *app) {
     return (app && app->runtime_root[0]) ? app->runtime_root : NULL;
 }
@@ -96,9 +104,80 @@ void player_app_set_runtime_root(PlayerApp *app, const char *root) {
     if (!app) return;
     if (!root) {
         app->runtime_root[0] = '\0';
+        player_app_runtime_package_cache_invalidate(app);
         return;
     }
     snprintf(app->runtime_root, sizeof(app->runtime_root), "%s", root);
+    player_app_runtime_package_cache_invalidate(app);
+}
+
+void player_app_runtime_package_cache_invalidate(PlayerApp *app) {
+    if (!app) return;
+    memset(app->runtime_package_cache, 0,
+           sizeof(app->runtime_package_cache));
+    app->runtime_package_cache_generation++;
+}
+
+static void player_runtime_cache_set_game_key(
+    PlayerRuntimePackageCacheEntry *entry, const GameRecord *game) {
+    if (!entry || !game) return;
+    snprintf(entry->disc_id, sizeof(entry->disc_id), "%s", game->disc_id);
+    snprintf(entry->title_id, sizeof(entry->title_id), "%s", game->title_id);
+    snprintf(entry->selected_executable, sizeof(entry->selected_executable),
+             "%s", game->selected_executable);
+}
+
+void player_app_runtime_package_cache_mark_pending(PlayerApp *app,
+                                                    int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    PlayerRuntimePackageCacheEntry *entry =
+        &app->runtime_package_cache[game_index];
+    const GameRecord *game = &app->games[game_index];
+    bool same_game = strcmp(entry->disc_id, game->disc_id) == 0 &&
+                     strcmp(entry->title_id, game->title_id) == 0 &&
+                     strcmp(entry->selected_executable,
+                            game->selected_executable) == 0;
+    if (!same_game) {
+        memset(entry, 0, sizeof(*entry));
+        player_runtime_cache_set_game_key(entry, game);
+    }
+    entry->validation_pending = true;
+    entry->validation_failed = false;
+}
+
+void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
+                                                   int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    PlayerRuntimePackageCacheEntry *entry =
+        &app->runtime_package_cache[game_index];
+    entry->status_valid = false;
+    entry->identity_valid = false;
+    entry->validation_pending = false;
+    entry->validation_failed = true;
+    entry->runtime_available = false;
+    entry->package_identity[0] = '\0';
+    entry->last_checked_ms = 0;
+}
+
+void player_app_runtime_package_cache_store(
+    PlayerApp *app, int game_index, const GameRecord *game,
+    bool identity_valid, const char *package_identity,
+    NkRuntimePackageStatus status, bool runtime_available,
+    uint64_t checked_ms) {
+    if (!app || !game || game_index < 0 || game_index >= app->game_count) return;
+    PlayerRuntimePackageCacheEntry *entry =
+        &app->runtime_package_cache[game_index];
+    memset(entry, 0, sizeof(*entry));
+    player_runtime_cache_set_game_key(entry, game);
+    entry->status_valid = true;
+    entry->identity_valid = identity_valid;
+    entry->runtime_available = runtime_available;
+    entry->status = status;
+    entry->last_checked_ms = checked_ms;
+    if (package_identity) {
+        snprintf(entry->package_identity, sizeof(entry->package_identity), "%s",
+                 package_identity);
+    }
 }
 
 NkRuntimePackageStatus player_app_validate_runtime_package(
@@ -108,6 +187,9 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     char *reason,
     size_t reason_size
 ) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_player_ui_validation_calls++;
+#endif
     char default_root[NK_MAX_PATH];
     const char *root = player_package_root(app, game);
     if (!root) {
@@ -122,22 +204,66 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
                                               reason_size);
 }
 
+static const PlayerRuntimePackageCacheEntry *player_runtime_cache_for_game(
+    const PlayerApp *app, const GameRecord *game) {
+    if (!app || !game) return NULL;
+    for (int i = 0; i < app->game_count; i++) {
+        const PlayerRuntimePackageCacheEntry *entry =
+            &app->runtime_package_cache[i];
+        if (strcmp(app->games[i].disc_id, game->disc_id) == 0 &&
+            strcmp(app->games[i].title_id, game->title_id) == 0 &&
+            strcmp(entry->disc_id, game->disc_id) == 0 &&
+            strcmp(entry->title_id, game->title_id) == 0 &&
+            strcmp(entry->selected_executable, game->selected_executable) == 0) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+NkRuntimePackageStatus player_app_cached_runtime_package_status(
+    const PlayerApp *app, const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    if (entry && entry->status_valid) return entry->status;
+    return game && game->title_id[0] == '\0'
+        ? NK_RUNTIME_PACKAGE_INCOMPATIBLE : NK_RUNTIME_PACKAGE_MISSING;
+}
+
+bool player_app_runtime_package_check_pending(const PlayerApp *app,
+                                               const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->validation_pending;
+}
+
+bool player_app_runtime_package_check_failed(const PlayerApp *app,
+                                              const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->validation_failed;
+}
+
+bool player_app_cached_game_has_runtime(const PlayerApp *app,
+                                        const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->status_valid && entry->runtime_available;
+}
+
 bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game) {
     if (!game) return false;
     NkRuntimePackageStatus status = player_app_validate_runtime_package(
         app, game, NULL, NULL, 0);
-    if (status == NK_RUNTIME_PACKAGE_OK) {
-        return true;
-    }
-    if (status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
-        nk_launch_runtime_available(player_package_root(app, game), game->title_id)) {
-        return true;
-    }
-    return false;
+    if (status == NK_RUNTIME_PACKAGE_OK) return true;
+    return status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+           nk_launch_runtime_available(player_package_root(app, game),
+                                       game->title_id);
 }
 
 void player_app_sync_library(PlayerApp *app) {
     if (!app) return;
+    player_app_runtime_package_cache_invalidate(app);
     app->game_count = 0;
     for (int i = 0; i < app->library.count && i < MAX_LIBRARY_GAMES; i++) {
         app->games[i] = app->library.entries[i];
@@ -334,13 +460,20 @@ int player_app_focus_count(const PlayerApp *app) {
                     ? &app->games[app->selected_game_index]
                     : NULL;
                 NkRuntimePackageStatus pkg_status = game ?
-                    player_app_validate_runtime_package(app, game, NULL, NULL, 0) :
+                    player_app_cached_runtime_package_status(app, game) :
                     NK_RUNTIME_PACKAGE_MISSING;
-                bool game_ready = game && player_app_game_has_runtime(app, game);
-                bool can_build = game && !game_ready &&
+                bool game_ready =
+                    game && player_app_cached_game_has_runtime(app, game);
+                bool checking = game &&
+                    player_app_runtime_package_check_pending(app, game);
+                bool check_failed = game &&
+                    player_app_runtime_package_check_failed(app, game);
+                bool can_build = game && !game_ready && !checking &&
+                                 !check_failed &&
                                  (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
                                   pkg_status == NK_RUNTIME_PACKAGE_STALE);
-                if (game && (game_ready || app->is_game_running || can_build)) count++;
+                if (game && (game_ready || app->is_game_running || can_build ||
+                             check_failed)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
                 count += game ? 1 : 0; /* global / this-game controller mapping */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
@@ -1188,9 +1321,13 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     app->launch_session.config.gui_mode = !app->launch_headless;
 
     char package_error[2048] = "";
-    player_app_validate_runtime_package(
+    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
         app, game, NULL, package_error, sizeof(package_error));
-    if (!player_app_game_has_runtime(app, game)) {
+    bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
+        (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+         nk_launch_runtime_available(player_package_root(app, game),
+                                     game->title_id));
+    if (!runtime_available) {
         player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
                              package_error[0] ? package_error :
                                  "Runtime package is missing or incompatible; build it from the library (#297).",

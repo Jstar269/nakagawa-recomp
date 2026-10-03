@@ -7,6 +7,7 @@
 #include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
 #include <SDL3/SDL_version.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -315,6 +316,8 @@ static void ui_font_ensure(void) {
 }
 
 /* --- Per-game ISO texture cache (ICON0.PNG and PIC1.PNG) --- */
+typedef struct UiArtJob UiArtJob;
+
 typedef struct {
     char iso_path[MAX_PATH_LEN];
     SDL_Texture *icon_tex;
@@ -325,10 +328,162 @@ typedef struct {
     float pic1_w;
     float pic1_h;
     bool pic1_attempted;
+    uint64_t retry_after_ns;
+    UiArtJob *job;
 } GameTextureCacheEntry;
 
 #define GAME_TEXTURE_CACHE_SIZE 64
+#define GAME_ART_RETRY_COOLDOWN_NS UINT64_C(1000000000)
 static GameTextureCacheEntry s_game_textures[GAME_TEXTURE_CACHE_SIZE];
+
+enum { PLAYER_UI_ART_EVENT_CODE = 0x55494152 };
+
+struct UiArtJob {
+    SDL_Thread *thread;
+    char iso_path[MAX_PATH_LEN];
+    /* Which library images this attempt still needs. A retry only re-reads the
+       images that are still missing, so a disc without PIC1.PNG never re-reads
+       its ICON0.PNG. */
+    unsigned wanted;
+    /* Set only when the completion event could not be queued; the UI thread
+       reclaims such a job instead of leaving the entry pending forever. */
+    SDL_AtomicInt handoff_failed;
+    NkIconStatus icon_status;
+    uint8_t *icon_bytes;
+    size_t icon_size;
+    uint32_t icon_w;
+    uint32_t icon_h;
+    NkIconStatus pic1_status;
+    uint8_t *pic1_bytes;
+    size_t pic1_size;
+    uint32_t pic1_w;
+    uint32_t pic1_h;
+};
+
+static UiArtJob *s_art_jobs[GAME_TEXTURE_CACHE_SIZE];
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static unsigned s_ui_test_art_attempt_count;
+static bool s_ui_test_drop_art_event;
+
+void ui_renderer_test_drop_art_events(bool drop) {
+    s_ui_test_drop_art_event = drop;
+}
+#endif
+
+static bool ui_art_push_completion(SDL_Event *event) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Models SDL refusing the push so the harness can prove the reclaim path.
+       The event must not be queued at all: a queued event the reclaim then
+       races would free a job the queue still owns. */
+    if (s_ui_test_drop_art_event) return false;
+#endif
+    return SDL_PushEvent(event) != 0;
+}
+
+static int SDLCALL ui_art_thread_main(void *userdata) {
+    UiArtJob *job = (UiArtJob *)userdata;
+    if (!job) return 1;
+    NkIsoImageData icon;
+    NkIsoImageData background;
+    nk_iso_read_game_art(job->iso_path, job->wanted, &icon, &background);
+    job->icon_status = icon.status;
+    job->icon_bytes = icon.data;
+    job->icon_size = icon.size;
+    job->icon_w = icon.width;
+    job->icon_h = icon.height;
+    job->pic1_status = background.status;
+    job->pic1_bytes = background.data;
+    job->pic1_size = background.size;
+    job->pic1_w = background.width;
+    job->pic1_h = background.height;
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_EVENT_USER;
+    event.user.code = PLAYER_UI_ART_EVENT_CODE;
+    event.user.data1 = job;
+    if (!ui_art_push_completion(&event)) {
+        /* The decoded bytes stay valid; only the notification was lost. */
+        SDL_SetAtomicInt(&job->handoff_failed, 1);
+        fprintf(stderr, "[PLAYER] ISO art for %s could not be queued; "
+                "the launcher will retry it.\n", job->iso_path);
+    }
+    return 0;
+}
+
+static void ui_art_set_retry_deadline(GameTextureCacheEntry *entry) {
+    if (!entry) return;
+    entry->retry_after_ns = SDL_GetTicksNS() + GAME_ART_RETRY_COOLDOWN_NS;
+}
+
+static bool ui_start_art_job(GameTextureCacheEntry *entry,
+                             const char *iso_path) {
+    if (!entry || !iso_path || !iso_path[0] || entry->job ||
+        SDL_GetTicksNS() < entry->retry_after_ns) return false;
+    unsigned wanted = 0;
+    if (!entry->icon_attempted) wanted |= NK_ISO_ART_ICON;
+    if (!entry->pic1_attempted) wanted |= NK_ISO_ART_PICTURE;
+    if (!wanted) return false;
+    int slot = -1;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (!s_art_jobs[i]) {
+            slot = i;
+            break;
+        }
+    }
+    UiArtJob *job = (UiArtJob *)calloc(1, sizeof(*job));
+    if (!job || slot < 0) {
+        free(job);
+        ui_art_set_retry_deadline(entry);
+        return false;
+    }
+    job->wanted = wanted;
+    int path_length = snprintf(job->iso_path, sizeof(job->iso_path), "%s",
+                               iso_path);
+    if (path_length <= 0 || (size_t)path_length >= sizeof(job->iso_path)) {
+        free(job);
+        ui_art_set_retry_deadline(entry);
+        return false;
+    }
+    job->thread = SDL_CreateThread(ui_art_thread_main, "nakagawa-ui-art", job);
+    if (!job->thread) {
+        free(job);
+        ui_art_set_retry_deadline(entry);
+        return false;
+    }
+    entry->job = job;
+    s_art_jobs[slot] = job;
+    return true;
+}
+
+static void ui_art_job_release(UiArtJob *job) {
+    if (!job) return;
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    free(job->icon_bytes);
+    free(job->pic1_bytes);
+    free(job);
+}
+
+/* Stop owning a job the completion event will never deliver. */
+static void ui_art_job_discard(UiArtJob *job) {
+    if (!job) return;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i] == job) {
+            s_art_jobs[i] = NULL;
+            break;
+        }
+    }
+    ui_art_job_release(job);
+}
+
+static GameTextureCacheEntry *ui_game_texture_entry_for_job(UiArtJob *job) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_game_textures[i].job == job) return &s_game_textures[i];
+    }
+    return NULL;
+}
 
 static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
     if (!iso_path || !*iso_path) return NULL;
@@ -344,18 +499,32 @@ static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
             return &s_game_textures[i];
         }
     }
-    if (s_game_textures[0].icon_tex) {
-        SDL_DestroyTexture(s_game_textures[0].icon_tex);
-        s_game_textures[0].icon_tex = NULL;
+    /* Every slot is claimed. Reuse the first one with no art job in flight:
+       evicting a slot whose job is still running would drop the decoded art
+       with no badge, log or user-visible boundary. If all slots have jobs in
+       flight, return no slot; the card will retry on a later frame. */
+    int reused = -1;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (!s_game_textures[i].job) {
+            reused = i;
+            break;
+        }
     }
-    if (s_game_textures[0].pic1_tex) {
-        SDL_DestroyTexture(s_game_textures[0].pic1_tex);
-        s_game_textures[0].pic1_tex = NULL;
+    if (reused < 0) {
+        return NULL;
     }
-    memset(&s_game_textures[0], 0, sizeof(s_game_textures[0]));
-    strncpy(s_game_textures[0].iso_path, iso_path, sizeof(s_game_textures[0].iso_path) - 1);
-    s_game_textures[0].iso_path[sizeof(s_game_textures[0].iso_path) - 1] = '\0';
-    return &s_game_textures[0];
+    if (s_game_textures[reused].icon_tex) {
+        SDL_DestroyTexture(s_game_textures[reused].icon_tex);
+        s_game_textures[reused].icon_tex = NULL;
+    }
+    if (s_game_textures[reused].pic1_tex) {
+        SDL_DestroyTexture(s_game_textures[reused].pic1_tex);
+        s_game_textures[reused].pic1_tex = NULL;
+    }
+    memset(&s_game_textures[reused], 0, sizeof(s_game_textures[reused]));
+    strncpy(s_game_textures[reused].iso_path, iso_path, sizeof(s_game_textures[reused].iso_path) - 1);
+    s_game_textures[reused].iso_path[sizeof(s_game_textures[reused].iso_path) - 1] = '\0';
+    return &s_game_textures[reused];
 }
 
 static void ui_game_textures_shutdown(void) {
@@ -371,11 +540,30 @@ static void ui_game_textures_shutdown(void) {
         s_game_textures[i].iso_path[0] = '\0';
         s_game_textures[i].icon_attempted = false;
         s_game_textures[i].pic1_attempted = false;
+        s_game_textures[i].retry_after_ns = 0;
+        s_game_textures[i].job = NULL;
     }
 }
 
 void ui_font_shutdown(void) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    unsigned drained_jobs = 0;
+#endif
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i]) {
+            ui_art_job_release(s_art_jobs[i]);
+            s_art_jobs[i] = NULL;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+            drained_jobs++;
+#endif
+        }
+    }
     ui_game_textures_shutdown();
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Every exit path has to reach this: it is the only place the ISO art
+       workers are joined and the only font/texture teardown. */
+    printf("[PLAYER_UI_TEST] font_shutdown art_jobs_drained=%u\n", drained_jobs);
+#endif
     if (!g_font.attempted) return;
     for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
         if (g_font.entries[i].tex) {
@@ -395,6 +583,181 @@ void ui_font_shutdown(void) {
     }
     g_font.ready = false;
 }
+
+bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
+                                    const SDL_Event *event) {
+    if (!renderer || !event || event->type != SDL_EVENT_USER ||
+        event->user.code != PLAYER_UI_ART_EVENT_CODE) return false;
+    UiArtJob *job = (UiArtJob *)event->user.data1;
+    if (!job) return true;
+    bool found = false;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i] == job) {
+            s_art_jobs[i] = NULL;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return true;
+    GameTextureCacheEntry *entry = ui_game_texture_entry_for_job(job);
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (entry) {
+        entry->job = NULL;
+        if (!entry->icon_tex && job->icon_status == NK_ICON_OK &&
+            job->icon_bytes && job->icon_size) {
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+            SDL_IOStream *io = SDL_IOFromConstMem(job->icon_bytes, job->icon_size);
+            SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
+            if (surface) {
+                entry->icon_tex = SDL_CreateTextureFromSurface(renderer, surface);
+                if (entry->icon_tex) {
+                    SDL_GetTextureSize(entry->icon_tex, &entry->icon_w,
+                                       &entry->icon_h);
+                }
+                SDL_DestroySurface(surface);
+            }
+#endif
+        }
+        if (!entry->pic1_tex && job->pic1_status == NK_ICON_OK &&
+            job->pic1_bytes && job->pic1_size) {
+#if SDL_VERSION_ATLEAST(3, 4, 0)
+            SDL_IOStream *io = SDL_IOFromConstMem(job->pic1_bytes, job->pic1_size);
+            SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
+            if (surface) {
+                entry->pic1_tex = SDL_CreateTextureFromSurface(renderer, surface);
+                if (entry->pic1_tex) {
+                    SDL_GetTextureSize(entry->pic1_tex, &entry->pic1_w,
+                                       &entry->pic1_h);
+                }
+                SDL_DestroySurface(surface);
+            }
+#endif
+        }
+        entry->icon_attempted = entry->icon_tex != NULL;
+        entry->pic1_attempted = entry->pic1_tex != NULL;
+        if (entry->icon_attempted && entry->pic1_attempted) {
+            entry->retry_after_ns = 0;
+        } else {
+            ui_art_set_retry_deadline(entry);
+        }
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_art_attempt_count++;
+    printf("[PLAYER_UI_TEST] art_attempt index=%u completed_ns=%llu "
+           "icon_loaded=%d pic1_loaded=%d wanted=%u\n",
+           s_ui_test_art_attempt_count,
+           (unsigned long long)SDL_GetTicksNS(),
+           entry && entry->icon_attempted ? 1 : 0,
+           entry && entry->pic1_attempted ? 1 : 0,
+           job->wanted);
+#endif
+    free(job->icon_bytes);
+    free(job->pic1_bytes);
+    free(job);
+    return true;
+}
+
+bool ui_renderer_art_pending(void) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i]) return true;
+    }
+    return false;
+}
+
+void ui_renderer_recover_lost_art_handoffs(void) {
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        UiArtJob *job = s_art_jobs[i];
+        if (!job || !SDL_GetAtomicInt(&job->handoff_failed)) continue;
+        GameTextureCacheEntry *entry = ui_game_texture_entry_for_job(job);
+        if (entry) {
+            /* Leave the attempt flags clear so the cooldown retries the read
+               rather than presenting a missing image as a decided answer. */
+            entry->job = NULL;
+            ui_art_set_retry_deadline(entry);
+        }
+        ui_art_job_discard(job);
+    }
+}
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+unsigned ui_renderer_test_art_attempt_count(void) {
+    return s_ui_test_art_attempt_count;
+}
+
+bool ui_renderer_test_saturate_art_cache(SDL_Renderer *renderer,
+                                         const char *iso_path) {
+    if (!renderer) return false;
+    const char *base_path = (iso_path && iso_path[0]) ? iso_path : "synthetic.iso";
+
+    /* Drain any pre-existing background art jobs and queued events */
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i]) {
+            ui_art_job_release(s_art_jobs[i]);
+            s_art_jobs[i] = NULL;
+        }
+    }
+    ui_game_textures_shutdown();
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        /* Discard startup events */
+    }
+
+    /* Saturate all 64 texture slots with in-flight art jobs */
+    unsigned saturated = 0;
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        char path[512];
+        if (strchr(base_path, '%')) {
+            snprintf(path, sizeof(path), base_path, i);
+        } else {
+            snprintf(path, sizeof(path), "%s#slot_%d", base_path, i);
+        }
+        GameTextureCacheEntry *entry = ui_get_game_texture_entry(path);
+        if (entry && ui_start_art_job(entry, path)) {
+            saturated++;
+        }
+    }
+    if (saturated != GAME_TEXTURE_CACHE_SIZE) {
+        printf("[PLAYER_UI_TEST] saturate_art_cache result=FAIL started=%u expected=%u\n",
+               saturated, (unsigned)GAME_TEXTURE_CACHE_SIZE);
+        return false;
+    }
+
+    /* Request an additional slot when all 64 slots are busy with in-flight jobs.
+       Fixed code returns NULL ("no slot") and preserves all live jobs.
+       Unfixed code returned slot 0 and called ui_art_job_discard(),
+       freeing the job while its completion event was pending in the SDL queue. */
+    char overflow_path[512];
+    snprintf(overflow_path, sizeof(overflow_path), "%s#overflow", base_path);
+    GameTextureCacheEntry *overflow = ui_get_game_texture_entry(overflow_path);
+    bool overflow_refused = (overflow == NULL);
+
+    /* Wait for all workers to finish reading and queue their completion events */
+    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
+        if (s_art_jobs[i] && s_art_jobs[i]->thread) {
+            SDL_WaitThread(s_art_jobs[i]->thread, NULL);
+            s_art_jobs[i]->thread = NULL;
+        }
+    }
+
+    /* Deliver the completion events.
+       In unfixed code, the discarded job's event causes a Use-After-Free and Double-Free crash.
+       In fixed code, all events are safely delivered and jobs freed cleanly once. */
+    unsigned delivered = 0;
+    while (SDL_PollEvent(&ev)) {
+        if (ui_renderer_handle_async_event(renderer, &ev)) {
+            delivered++;
+        }
+    }
+
+    bool pass = overflow_refused && (delivered >= GAME_TEXTURE_CACHE_SIZE);
+    printf("[PLAYER_UI_TEST] saturate_art_cache result=%s slots=%u delivered=%u overflow_refused=%d\n",
+           pass ? "PASS" : "FAIL", saturated, delivered, overflow_refused ? 1 : 0);
+    return pass;
+}
+#endif
 
 void ui_font_set_density(float density) {
     if (density >= 1.0f && density <= 3.0f) {
@@ -831,31 +1194,8 @@ static void draw_monogram(SDL_Renderer *ren, float x, float y, float size,
 }
 
 static void ui_load_pic1_if_needed(SDL_Renderer *ren, GameTextureCacheEntry *entry, const char *iso_path) {
-    if (!entry || entry->pic1_attempted || !iso_path || !*iso_path) return;
-    entry->pic1_attempted = true;
-    uint8_t *bytes = NULL;
-    size_t size = 0;
-    uint32_t w = 0, h = 0;
-    NkIconStatus st = nk_iso_read_image_entry(iso_path, "PSP_GAME/PIC1.PNG",
-                                              &bytes, &size, &w, &h);
-    if (st == NK_ICON_OK && bytes && size > 0) {
-#if SDL_VERSION_ATLEAST(3, 4, 0)
-        SDL_IOStream *io = SDL_IOFromConstMem(bytes, size);
-        if (io) {
-            SDL_Surface *surf = SDL_LoadPNG_IO(io, true);
-            if (surf) {
-                entry->pic1_tex = SDL_CreateTextureFromSurface(ren, surf);
-                if (entry->pic1_tex) {
-                    SDL_GetTextureSize(entry->pic1_tex, &entry->pic1_w, &entry->pic1_h);
-                }
-                SDL_DestroySurface(surf);
-            }
-        }
-#else
-        (void)ren;
-#endif
-        free(bytes);
-    }
+    (void)ren;
+    (void)ui_start_art_job(entry, iso_path);
 }
 
 static void draw_game_icon(SDL_Renderer *ren, float x, float y, float max_w, float max_h,
@@ -863,30 +1203,7 @@ static void draw_game_icon(SDL_Renderer *ren, float x, float y, float max_w, flo
     GameTextureCacheEntry *entry = NULL;
     if (game && game->iso_path[0]) {
         entry = ui_get_game_texture_entry(game->iso_path);
-        if (entry && !entry->icon_attempted) {
-            entry->icon_attempted = true;
-            uint8_t *bytes = NULL;
-            size_t size = 0;
-            uint32_t w = 0, h = 0;
-            NkIconStatus st = nk_iso_read_image_entry(game->iso_path, "PSP_GAME/ICON0.PNG",
-                                                      &bytes, &size, &w, &h);
-            if (st == NK_ICON_OK && bytes && size > 0) {
-#if SDL_VERSION_ATLEAST(3, 4, 0)
-                SDL_IOStream *io = SDL_IOFromConstMem(bytes, size);
-                if (io) {
-                    SDL_Surface *surf = SDL_LoadPNG_IO(io, true);
-                    if (surf) {
-                        entry->icon_tex = SDL_CreateTextureFromSurface(ren, surf);
-                        if (entry->icon_tex) {
-                            SDL_GetTextureSize(entry->icon_tex, &entry->icon_w, &entry->icon_h);
-                        }
-                        SDL_DestroySurface(surf);
-                    }
-                }
-#endif
-                free(bytes);
-            }
-        }
+        if (entry) (void)ui_start_art_job(entry, game->iso_path);
     }
 
     if (entry && entry->icon_tex && entry->icon_w > 0.0f && entry->icon_h > 0.0f) {
@@ -1076,6 +1393,13 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
 
 static SDL_FRect s_last_status_badge;
 static bool s_last_status_badge_valid;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static const char *s_last_status_badge_label;
+
+const char *ui_test_last_status_badge_label(void) {
+    return s_last_status_badge_label ? s_last_status_badge_label : "";
+}
+#endif
 
 bool ui_last_status_badge_rect(SDL_FRect *out_rect) {
     if (!s_last_status_badge_valid || !out_rect) return false;
@@ -1344,21 +1668,39 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
 
     /* Staged assets still need a runtime unless the same readiness predicate
-       used by PLAY NOW can resolve one. Keep that boundary visible while the
-       primary action below remains BUILD PACKAGE when the package is missing. */
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-        app, game, NULL, NULL, 0);
-    bool package_ready = player_app_game_has_runtime(app, game);
+       used by PLAY NOW can resolve one. A failed status worker has its own
+       unresolved card state and retry action. */
+    NkRuntimePackageStatus package_status =
+        player_app_cached_runtime_package_status(app, game);
+    bool package_ready = player_app_cached_game_has_runtime(app, game);
+    bool package_checking =
+        player_app_runtime_package_check_pending(app, game);
+    bool package_check_failed =
+        player_app_runtime_package_check_failed(app, game);
     bool runtime_required = game->assets_staged && !package_ready &&
+                            !package_check_failed &&
                             package_status == NK_RUNTIME_PACKAGE_MISSING;
-    const char *card_status = game->is_experimental ? "EXPERIMENTAL"
-        : (runtime_required ? "RUNTIME REQUIRED"
-            : ((game->assets_staged && !game->is_prepared)
-                ? "ASSETS STAGED" : status_label(game->status)));
-    s_last_status_badge = (SDL_FRect){ hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f };
+    const char *card_status = package_check_failed ? "PACKAGE CHECK FAILED"
+        : (game->is_experimental ? "EXPERIMENTAL"
+            : (package_checking ? "CHECKING PACKAGE"
+                : (package_status == NK_RUNTIME_PACKAGE_STALE ? "PACKAGE STALE"
+                    : (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE
+                        ? "PACKAGE INCOMPATIBLE"
+                        : (runtime_required ? "RUNTIME REQUIRED"
+                            : ((game->assets_staged && !game->is_prepared)
+                                ? "ASSETS STAGED" : status_label(game->status)))))));
+    s_last_status_badge = (SDL_FRect){
+        hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f
+    };
     s_last_status_badge_valid = true;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_last_status_badge_label = card_status;
+#endif
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
-               (game->is_experimental || runtime_required) ? COLOR_AMBER : COLOR_EMERALD);
+               (game->is_experimental || package_checking || package_check_failed || runtime_required ||
+                package_status == NK_RUNTIME_PACKAGE_STALE ||
+                package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE)
+                   ? COLOR_AMBER : COLOR_EMERALD);
     if (hero_w >= 560.0f) {
         draw_badge(ren, hero_x + 230.0f, hero_y + 28.0f, game->disc_id, COLOR_BLUE);
     }
@@ -1527,6 +1869,15 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "PLAY NOW", true, in, primary_focused)) {
             player_app_launch_game(app, app->selected_game_index);
+        }
+        focus++;
+    } else if (package_checking) {
+        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                         "CHECKING PACKAGE...");
+    } else if (package_check_failed) {
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "RETRY PACKAGE CHECK", true, in, primary_focused)) {
+            app->request_package_status_retry = true;
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
@@ -3763,6 +4114,9 @@ int ui_focus_count(const PlayerApp *app) {
 void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *input) {
     if (!renderer || !app) return;
     s_last_status_badge_valid = false;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_last_status_badge_label = NULL;
+#endif
 
     /* Clamp focus before drawing so a resize or library change can never
      * leave the ring on a control that no longer exists. */

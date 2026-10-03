@@ -795,6 +795,21 @@ NkRuntimePackageStatus nk_launch_validate_runtime_package(
         reason, reason_size);
 }
 
+bool nk_launch_runtime_package_cache_identity(
+    const char *user_data_root,
+    const NkGameEntry *game,
+    char out_identity[65]
+) {
+    if (!game) {
+        if (out_identity) out_identity[0] = '\0';
+        return false;
+    }
+    return nk_title_manifest_aot_package_cache_identity(
+        user_data_root, game->disc_id, game->title_id, game->is_experimental,
+        game->selected_executable, game->disc_version,
+        SR_CPUSTATE_ABI_VERSION, out_identity);
+}
+
 NkResult nk_launch_prepare_session(
     NkLaunchSession *session,
     const NkGameEntry *game,

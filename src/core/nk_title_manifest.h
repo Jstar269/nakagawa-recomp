@@ -138,6 +138,20 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     size_t reason_size
 );
 
+/* Build a metadata identity for package status caches. It covers package.json,
+ * build-report.json, the declared executable, and the experimental profile
+ * identity when applicable. Missing files are part of the identity too. */
+bool nk_title_manifest_aot_package_cache_identity(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    bool is_experimental,
+    const char *selected_executable,
+    const char *current_disc_version,
+    uint32_t player_abi_version,
+    char out_identity[65]
+);
+
 #ifdef __cplusplus
 }
 #endif

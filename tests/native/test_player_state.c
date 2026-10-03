@@ -2341,7 +2341,11 @@ int main(int argc, char **argv) {
 
         NkRuntimePackageInfo first_info;
         NkRuntimePackageInfo cached_info;
+        char identity_before[65];
+        char identity_after[65];
         char reason[1024];
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, identity_before));
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &first_info, reason, sizeof(reason)) ==
                NK_RUNTIME_PACKAGE_OK);
@@ -2354,7 +2358,51 @@ int main(int argc, char **argv) {
         assert(strcmp(first_info.executable_path, cached_info.executable_path) == 0);
         assert(strcmp(first_info.image_path, cached_info.image_path) == 0);
 
+        write_text_file(report_json, "{}");
+        NkRuntimePackageInfo changed_report_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &changed_report_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_STALE);
+        assert(!changed_report_info.validation_cache_hit);
+
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        NkRuntimePackageInfo refreshed_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &refreshed_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(!refreshed_info.validation_cache_hit);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &cached_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(cached_info.validation_cache_hit);
+
+        write_text_file(package_json, "{}");
+        NkRuntimePackageInfo changed_package_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &changed_package_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(!changed_package_info.validation_cache_hit);
+
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &refreshed_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(!refreshed_info.validation_cache_hit);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &cached_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(cached_info.validation_cache_hit);
+
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, identity_before));
         write_text_file(executable, "modified package executable");
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, identity_after));
+        assert(strcmp(identity_before, identity_after) != 0);
         NkRuntimePackageInfo changed_info;
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &changed_info, reason, sizeof(reason)) ==
