@@ -265,6 +265,15 @@ class DmacInvalidLaunch:
 
 
 _DMAC_INVALID_S0_SHAPES = (("a", "dst"), ("b", "src"), ("c", "both"), ("d", "dst"))
+# None means the endpoint must be non-null; it does not establish ownership.
+# The ownership proof remains the producer's setup_mask and its source-owned
+# allocation/module buffer contract.
+_DMAC_INVALID_S0_POINTER_SHAPES = {
+    "a": (None, 0),
+    "b": (0, None),
+    "c": (None, None),
+    "d": (None, 0xFFFFFFFF),
+}
 _DMAC_INVALID_B_LAUNCHES = (
     ("dma-invalid-tail-memcpy-dst", "b1", "memcpy", "dst"),
     ("dma-invalid-tail-memcpy-src", "b2", "memcpy", "src"),
@@ -324,8 +333,12 @@ def _parse_dmac_invalid_values(record: TestResult, campaign_case: str) -> dict[s
         raise ProtocolError(f"{campaign_case}: {record.case_id} boolean field is outside 0/1")
     if values["executed"] not in {0, 1}:
         raise ProtocolError(f"{campaign_case}: {record.case_id} executed is outside 0/1")
-    if values["source_addr"] > 0xFFFFFFFF or values["destination_addr"] > 0xFFFFFFFF:
-        raise ProtocolError(f"{campaign_case}: {record.case_id} diagnostic address is not a PSP address")
+    if any(not 0 <= values[field] <= 0xFFFFFFFF for field in (
+        "source_addr", "destination_addr",
+    )):
+        raise ProtocolError(
+            f"{campaign_case}: {record.case_id} diagnostic address is not a PSP address"
+        )
     return values
 
 
@@ -439,12 +452,18 @@ def parse_dmac_invalid_tail_output(text: str, campaign_case: str):
                 "post_guard", "overflow_band", "payload_mutations",
             )):
                 raise ProtocolError(f"{campaign_case}: {record.case_id} size-zero cell mutated scratch")
-            if shape == "a" and values["destination_addr"] != 0:
-                raise ProtocolError(f"{campaign_case}: {record.case_id} null destination changed")
-            if shape == "b" and values["source_addr"] != 0:
-                raise ProtocolError(f"{campaign_case}: {record.case_id} null source changed")
-            if shape == "d" and values["destination_addr"] != 0xFFFFFFFF:
-                raise ProtocolError(f"{campaign_case}: {record.case_id} unmapped pointer changed")
+            expected_source, expected_destination = _DMAC_INVALID_S0_POINTER_SHAPES[shape]
+            for field, expected in (
+                ("source_addr", expected_source),
+                ("destination_addr", expected_destination),
+            ):
+                matches_shape = (
+                    values[field] != 0 if expected is None else values[field] == expected
+                )
+                if not matches_shape:
+                    raise ProtocolError(
+                        f"{campaign_case}: {record.case_id} {field} does not match its S0 pointer shape"
+                    )
             continue
 
         delta_text = record.case_id.rsplit("-", 1)[1]
