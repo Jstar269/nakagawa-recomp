@@ -33,11 +33,21 @@ from psp_oracle.protocol import (
     DMAC_SIZE_MATRIX_TRIALS,
 )
 from psp_oracle.run_psplink import (
+    PsplinkCampaignRunner,
+    PsplinkSnapshot,
+    _parse_campaign_records,
+    _campaign_stream_complete,
     _record_summary,
     _split_command,
     _validate_host0_capture,
     annotate_terminal_outcome,
+    evaluate_teardown_snapshots,
     main as run_psplink_main,
+    parse_psplink_meminfo,
+    parse_psplink_module_list,
+    parse_psplink_module_threads,
+    parse_psplink_thread_snapshot,
+    parse_probe_completion_sentinel,
 )
 from psp_oracle.parse_golden import (
     AUDIO_OUT_COUNTS,
@@ -244,6 +254,219 @@ class NewProbeResultParserTests(unittest.TestCase):
             binary=MEASURED_SHA, commit=MEASURED_COMMIT,
         ) + "".join(rows)
 
+    def _invalid_tail_named_row(self, case_id: str, *, api: str,
+                                endpoint: str, tier: str,
+                                delta: int = 0, status: str = "PASS",
+                                executed: int = 1, prefix: int = 0,
+                                matches: int = 0, guards_outside: int = 0,
+                                post_guard: int = 0, overflow_band: int = 0,
+                                payload_mutations: int = 0,
+                                setup_mask: int = 0xF,
+                                source_addr: int = 0x08811000,
+                                destination_addr: int = 0x08822000) -> str:
+        rc = 0
+        fields = {
+            "result": rc,
+            "rc": rc,
+            "P": prefix,
+            "matches": matches,
+            "guards_outside": guards_outside,
+            "post_guard": post_guard,
+            "overflow_band": overflow_band,
+            "source_intact": 1,
+            "setup_mask": setup_mask,
+            "K": 0xC000,
+            "delta": delta,
+            "api": api,
+            "endpoint": endpoint,
+            "cache_discipline": 1 if executed else 0,
+            "tier": tier,
+            "executed": executed,
+            "payload_mutations": payload_mutations,
+            "source_addr": source_addr,
+            "destination_addr": destination_addr,
+        }
+        encoded = " ".join(
+            f"{name}=0x{value:08x}" if isinstance(value, int) else f"{name}={value}"
+            for name, value in fields.items()
+        )
+        return (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+            f"case_id={case_id} status={status} {encoded}\n"
+        )
+
+    def test_invalid_tail_tier_s0_record_stream_is_strict(self) -> None:
+        rows = []
+        shapes = (("a", "dst"), ("b", "src"), ("c", "both"), ("d", "dst"))
+        for api in ("memcpy", "try"):
+            for cell, endpoint in shapes:
+                rows.append(self._invalid_tail_named_row(
+                    f"invalid-tail-s0-{cell}-{api}", api=api,
+                    endpoint=endpoint, tier="S",
+                    source_addr=0 if cell == "b" else 0x08811000,
+                    destination_addr=(
+                        0 if cell == "a" else 0xFFFFFFFF if cell == "d" else 0x08822000
+                    ),
+                ))
+        complete = self._stream(rows)
+        self.assertEqual(
+            len(parse_dmac_invalid_tail_output(complete, "dma-invalid-tail-s0").results),
+            8,
+        )
+        malformed = complete.replace(" P=0x00000000", " P=0x00000001", 1)
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(malformed, "dma-invalid-tail-s0")
+
+        def stream_with_pointer_shape(api: str, cell: str,
+                                      overrides: dict[str, int]) -> str:
+            changed_rows = list(rows)
+            row_index = next(
+                index for index, row in enumerate(changed_rows)
+                if f"case_id=invalid-tail-s0-{cell}-{api}" in row
+            )
+            for field, value in overrides.items():
+                row = changed_rows[row_index]
+                old_token = next(
+                    token for token in row.split() if token.startswith(f"{field}=")
+                )
+                changed_rows[row_index] = row.replace(
+                    old_token, f"{field}=0x{value:08x}", 1
+                )
+            return self._stream(changed_rows)
+
+        malformed_shapes = (
+            ("a", {"source_addr": 0}),
+            ("a", {"destination_addr": 0x08822000}),
+            ("b", {"destination_addr": 0}),
+            ("b", {"source_addr": 0x08811000}),
+            ("c", {"source_addr": 0, "destination_addr": 0}),
+            ("c", {"source_addr": 0}),
+            ("c", {"destination_addr": 0}),
+            ("d", {"source_addr": 0}),
+            ("d", {"destination_addr": 0x08822000}),
+        )
+        for api in ("memcpy", "try"):
+            for cell, pointer_overrides in malformed_shapes:
+                with self.subTest(api=api, cell=cell,
+                                  pointer_overrides=pointer_overrides):
+                    malformed_shape = stream_with_pointer_shape(
+                        api, cell, pointer_overrides
+                    )
+                    with self.assertRaises(ProtocolError):
+                        parse_dmac_invalid_tail_output(
+                            malformed_shape, "dma-invalid-tail-s0"
+                        )
+                    with self.assertRaises(ProtocolError):
+                        _parse_campaign_records(
+                            malformed_shape, "dma-invalid-tail-s0"
+                        )
+
+        oversized_address = stream_with_pointer_shape(
+            "memcpy", "c", {"destination_addr": 0x100000000}
+        )
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(
+                oversized_address, "dma-invalid-tail-s0"
+            )
+
+        negative_address = complete.replace(
+            "source_addr=0x08811000", "source_addr=0x-000001", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(
+                negative_address, "dma-invalid-tail-s0"
+            )
+
+    def test_invalid_tail_tier_b_spans_fit_source_owned_scratch(self) -> None:
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" /
+                 "probe.c").read_text(encoding="utf-8")
+        flattened = re.sub(r"\\\r?\n\s*", " ", probe)
+        constant_names = (
+            "DMAC_INVALID_PRE_GUARD_BYTES",
+            "DMAC_INVALID_PAYLOAD_BYTES",
+            "DMAC_INVALID_POST_GUARD_BYTES",
+            "DMAC_INVALID_OVERFLOW_BAND_BYTES",
+            "DMAC_INVALID_TAIL_GUARD_BYTES",
+            "DMAC_INVALID_MAX_DELTA",
+        )
+        constants = {
+            name: int(re.search(
+                rf"(?m)^#define\s+{name}\s+(0x[0-9a-fA-F]+|[0-9]+)[uU]?\s*$",
+                probe,
+            ).group(1), 0)
+            for name in constant_names
+        }
+
+        def macro_terms(name: str) -> tuple[str, ...]:
+            match = re.search(rf"(?m)^#define\s+{name}\s+\(([^)]*)\)", flattened)
+            return tuple(re.findall(r"DMAC_INVALID_[A-Z_]+", match.group(1)))
+
+        self.assertCountEqual(
+            macro_terms("DMAC_INVALID_MAX_REQUEST"),
+            ("DMAC_INVALID_PAYLOAD_BYTES", "DMAC_INVALID_MAX_DELTA"),
+        )
+        scratch_terms = macro_terms("DMAC_INVALID_SCRATCH_BYTES")
+        self.assertCountEqual(scratch_terms, constant_names[:-1])
+        max_request = sum(constants[name] for name in macro_terms(
+            "DMAC_INVALID_MAX_REQUEST"
+        ))
+        scratch_bytes = sum(constants[name] for name in scratch_terms)
+
+        self.assertIn(
+            "#define DMAC_INVALID_PAYLOAD_OFFSET DMAC_INVALID_PRE_GUARD_BYTES",
+            probe,
+        )
+        self.assertIn(
+            "static uint8_t s_dmac_invalid_io[DMAC_INVALID_MAX_REQUEST]", probe
+        )
+        self.assertRegex(
+            probe,
+            r"\*block_uid\s*=\s*sceKernelAllocPartitionMemory\(\s*"
+            r"DMAC_INVALID_PARTITION,\s*\"oracle-dmac-scratch\",\s*"
+            r"PSP_SMEM_High,\s*DMAC_INVALID_SCRATCH_BYTES,\s*NULL\);",
+        )
+        self.assertIn(
+            "*block_head = (uint8_t *)sceKernelGetBlockHeadAddr(*block_uid);",
+            probe,
+        )
+        tier_b = probe.split("static void run_dmac_invalid_tier_b", 1)[1].split(
+            "static void run_dmac_invalid_tail", 1
+        )[0]
+        self.assertIn(
+            "uint8_t *const payload = block_head + DMAC_INVALID_PAYLOAD_OFFSET;",
+            tier_b,
+        )
+        self.assertIn(
+            "const uint32_t requested = DMAC_INVALID_PAYLOAD_BYTES + delta;",
+            tier_b,
+        )
+        for endpoint in (
+            "dst = payload;", "src = payload;",
+            "src = s_dmac_invalid_io;", "dst = s_dmac_invalid_io;",
+        ):
+            self.assertIn(endpoint, tier_b)
+        delta_match = re.search(
+            r"static const uint32_t deltas\[\]\s*=\s*\{([^}]*)\};", tier_b
+        )
+        self.assertIsNotNone(delta_match, "missing Tier-B request deltas")
+        deltas = tuple(
+            int(value.strip().rstrip("uU"), 0)
+            for value in delta_match.group(1).split(",") if value.strip()
+        )
+        self.assertCountEqual(deltas, (1, 4, 0x1000, 0x2000))
+        payload_offset = constants["DMAC_INVALID_PRE_GUARD_BYTES"]
+        for delta in deltas:
+            requested = constants["DMAC_INVALID_PAYLOAD_BYTES"] + delta
+            span_end = payload_offset + requested
+            self.assertLessEqual(
+                span_end,
+                scratch_bytes,
+                f"Tier-B delta {delta:#x} span ends at {span_end:#x}, "
+                f"beyond the {scratch_bytes:#x}-byte owned scratch block",
+            )
+            self.assertLessEqual(delta, constants["DMAC_INVALID_MAX_DELTA"])
+            self.assertLessEqual(requested, max_request)
+
     def test_audio_query_complete_and_malformed_scalar_fixtures(self) -> None:
         rows = []
         for case_id in AUDIO_SPEC.ordered_cases:
@@ -336,21 +559,66 @@ class NewProbeResultParserTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             parse_delay_zero_output(malformed)
 
-    def test_each_invalid_tail_launch_accepts_only_its_safe_skip_record(self) -> None:
-        for campaign_case, (record_case, direction, api) in DMAC_INVALID_CASES.items():
+    def test_invalid_tail_tier_b_records_classify_bounded_overruns(self) -> None:
+        deltas = (1, 4, 0x1000, 0x2000)
+        for campaign_case, launch in DMAC_INVALID_CASES.items():
+            if launch.tier != "B":
+                continue
+            rows = []
+            for delta in deltas:
+                requested = 0xC000 + delta
+                if launch.endpoint == "dst":
+                    post_guard = min(delta, 0x1000)
+                    overflow_band = max(delta - 0x1000, 0)
+                else:
+                    post_guard = 0
+                    overflow_band = 0
+                rows.append(self._invalid_tail_named_row(
+                    f"invalid-tail-{launch.cell}-delta-{delta:04x}",
+                    api=launch.api or "", endpoint=launch.endpoint or "",
+                    tier="B", delta=delta, prefix=requested, matches=requested,
+                    post_guard=post_guard, overflow_band=overflow_band,
+                ))
+            complete = self._stream(rows)
             with self.subTest(campaign_case=campaign_case):
-                row = self._row(
-                    "PSP-DMAC-001", record_case, 7, status="SKIP",
-                    values={0: 7, 1: 0xC001, 2: 0xC000, 3: direction,
-                            4: api, 5: 0xFFFFFFFE, 6: 0x10000},
+                self.assertEqual(
+                    len(parse_dmac_invalid_tail_output(complete, campaign_case).results),
+                    4,
                 )
-                complete = self._stream([row])
-                self.assertEqual(len(parse_dmac_invalid_tail_output(
-                    complete, campaign_case
-                ).results), 1)
-                malformed = complete.replace("out1=0x0000c001", "out1=0x0000c000", 1)
+                outside_write = complete.replace(
+                    "guards_outside=0x00000000",
+                    "guards_outside=0x00000001",
+                    1,
+                )
                 with self.assertRaises(ProtocolError):
-                    parse_dmac_invalid_tail_output(malformed, campaign_case)
+                    parse_dmac_invalid_tail_output(outside_write, campaign_case)
+                bad_classification = complete.replace(
+                    "overflow_band=0x00000000",
+                    "overflow_band=0x00000001",
+                    1,
+                )
+                with self.assertRaises(ProtocolError):
+                    parse_dmac_invalid_tail_output(bad_classification, campaign_case)
+
+    def test_invalid_tail_setup_skip_contains_no_transfer(self) -> None:
+        campaign_case = "dma-invalid-tail-s0"
+        rows = [
+            self._invalid_tail_named_row(
+                f"invalid-tail-s0-{cell}-{api}", api=api, endpoint=endpoint,
+                tier="S", status="SKIP", executed=0, setup_mask=0x7,
+                source_addr=0, destination_addr=0,
+            )
+            for api in ("memcpy", "try")
+            for cell, endpoint in (("a", "dst"), ("b", "src"),
+                                   ("c", "both"), ("d", "dst"))
+        ]
+        complete = self._stream(rows)
+        self.assertEqual(
+            len(parse_dmac_invalid_tail_output(complete, campaign_case).results), 8
+        )
+        transferred = complete.replace(" executed=0x00000000", " executed=0x00000001", 1)
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(transferred, campaign_case)
 
 
 class GeCorpusGateTests(unittest.TestCase):
@@ -1071,6 +1339,230 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertIn("stdout=subprocess.PIPE", launcher.read_text(encoding="utf-8"))
 
 
+class PspLinkTeardownSnapshotTests(unittest.TestCase):
+    THREADS = (
+        "<Thread List (2 entries)>\n"
+        "UID: 0x00000001 - Name: PspLink\n"
+        "UID: 0x00000002 - Name: USBThread\n"
+    )
+    MEMORY = (
+        "Memory Partitions:\n"
+        "N  |    BASE    |   SIZE   | TOTALFREE |  MAXFREE  | ATTR |\n"
+        "---|------------|----------|-----------|-----------|------|\n"
+        "1  | 0x08800000 | 33554432 |  20971520 |  16777216 | 000F |\n"
+        "2  | 0x88000000 | 53687091 |  33554432 |  25165824 | 000F |\n"
+    )
+    MODULES = (
+        "<Module List (1 modules)>\n"
+        "UID: 0x00000003 Attr: 0000 - Name: PspLink\n"
+    )
+
+    def snapshot(self, *, threads=None, memory=None, modules=None) -> PsplinkSnapshot:
+        return PsplinkSnapshot(
+            threads=frozenset(threads if threads is not None else {
+                ("0x00000001", "PspLink"), ("0x00000002", "USBThread")
+            }),
+            memory_free_bytes=tuple(sorted((memory if memory is not None else {
+                1: (20971520, 16777216), 2: (33554432, 25165824)
+            }).items())),
+            modules=frozenset(modules if modules is not None else {
+                ("0x00000003", "PspLink")
+            }),
+        )
+
+    def clean_triplet(self):
+        before = self.snapshot()
+        module_main = ("0x00000009", "user_main")
+        after_probe = self.snapshot(
+            threads=set(before.threads) | {module_main},
+            modules=set(before.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
+        )
+        return before, after_probe, before, module_main
+
+    def test_campaign_stream_gate_excludes_only_one_final_teardown_marker(self) -> None:
+        stream = (
+            "NAKAGAWA_PSP_META schema=1 source=psp model=fixture firmware=test "
+            + "binary_sha256=" + "0" * 64 + " source_commit=" + "1" * 40 + "\n"
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SYSTEM-001 case_id=model-profile "
+            "status=PASS result=0x3 out0=0x3 out1=0x06060110 out2=0xde\n"
+        )
+        passing = stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
+        failing = stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=FAIL\n"
+
+        self.assertTrue(_campaign_stream_complete(passing, "model-profile"))
+        self.assertTrue(_campaign_stream_complete(failing, "model-profile"))
+        self.assertTrue(parse_probe_completion_sentinel(passing))
+        self.assertFalse(parse_probe_completion_sentinel(failing))
+        self.assertFalse(
+            _campaign_stream_complete(
+                passing + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n",
+                "model-profile",
+            )
+        )
+        self.assertFalse(
+            _campaign_stream_complete(
+                passing + "unexpected trailing output\n", "model-profile"
+            )
+        )
+
+    def test_thlist_parser_requires_complete_uid_and_name_set(self) -> None:
+        self.assertEqual(parse_psplink_thread_snapshot(self.THREADS), {
+            ("0x00000001", "PspLink"), ("0x00000002", "USBThread")
+        })
+        with self.assertRaises(ValueError):
+            parse_psplink_thread_snapshot(
+                "<Thread List (2 entries)>\nUID: 0x1 - Name: PspLink\n"
+            )
+
+    def test_meminfo_parser_compares_total_and_largest_free_bytes_per_partition(self) -> None:
+        self.assertEqual(parse_psplink_meminfo(self.MEMORY), {
+            1: (20971520, 16777216), 2: (33554432, 25165824)
+        })
+        with self.assertRaises(ValueError):
+            parse_psplink_meminfo(
+                "Memory Partitions:\nN | BASE | SIZE | TOTALFREE | MAXFREE | ATTR\n"
+            )
+
+    def test_modlist_and_module_thread_parsers_return_uid_name_sets(self) -> None:
+        self.assertEqual(parse_psplink_module_list(self.MODULES), {
+            ("0x00000003", "PspLink")
+        })
+        output = (
+            "UID: 0x00000008 Attr: 0000 - Name: NAKAGAWA_PSP_ORACLE\n"
+            "Module Thread (1)\nUID: 0x00000009 - Name: user_main\n"
+        )
+        self.assertEqual(parse_psplink_module_threads(output, "0x00000008"), {
+            ("0x00000009", "user_main")
+        })
+
+    def test_snapshot_uses_psplink_module_inventory_command(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        outputs = [
+            (0, self.THREADS, "", "PROCESS_EXITED"),
+            (0, self.MEMORY, "", "PROCESS_EXITED"),
+            (0, self.MODULES, "", "PROCESS_EXITED"),
+        ]
+        with patch.object(runner, "_request", side_effect=outputs) as request:
+            snapshot, problem = runner._take_snapshot()
+        self.assertIsNone(problem)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(
+            [entry.args[0] for entry in request.call_args_list],
+            ["thlist", "meminfo", "modlist"],
+        )
+
+    def test_three_snapshot_check_passes_clean_unload(self) -> None:
+        before, after_probe, after_unload, module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True,
+            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["issues"], [])
+
+    def test_three_snapshot_check_reports_allocator_drift_without_failing_teardown(self) -> None:
+        before, after_probe, _after_unload, module_main = self.clean_triplet()
+        after_probe = self.snapshot(
+            threads=after_probe.threads,
+            memory={1: (20967424, 16773120), 2: (33550336, 25161216)},
+            modules=after_probe.modules,
+        )
+        after_unload = self.snapshot(
+            memory={1: (20970496, 16770000), 2: (33550336, 25161728)},
+        )
+
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True,
+            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
+            host0_roundtrip=True,
+        )
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["issues"], [])
+        self.assertTrue(report["memory_free_deltas_diagnostic_only"])
+        self.assertEqual(report["memory_free_deltas_bytes"], {
+            1: {
+                "s1": {"total_free": -4096, "largest_block": -4096},
+                "s2": {"total_free": -1024, "largest_block": -7216},
+            },
+            2: {
+                "s1": {"total_free": -4096, "largest_block": -4608},
+                "s2": {"total_free": -4096, "largest_block": -4096},
+            },
+        })
+
+    def test_three_snapshot_check_fails_on_thread_and_module_residue(self) -> None:
+        before, after_probe, _after_unload, module_main = self.clean_triplet()
+        after_probe = self.snapshot(
+            threads=set(after_probe.threads) | {("0x0000000a", "oracle-thread")},
+            modules=set(after_probe.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
+        )
+        after_unload = self.snapshot(
+            memory={1: (20971520, 16777216), 2: (33550336, 25161728)},
+            modules=set(before.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
+        )
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True,
+            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "FAIL")
+        self.assertTrue(any("child thread" in issue for issue in report["issues"]))
+        self.assertTrue(any("module set" in issue for issue in report["issues"]))
+        self.assertNotIn(
+            "post-unload per-partition free memory differs from S0", report["issues"]
+        )
+
+    def test_three_snapshot_check_fails_when_modstun_handshake_is_unconfirmed(self) -> None:
+        before, after_probe, after_unload, module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=False,
+            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "FAIL")
+        self.assertTrue(any("modstun" in issue for issue in report["issues"]))
+
+    def test_teardown_failure_enters_the_bounded_recovery_ladder(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        report = {"status": "FAIL", "issues": ["thread set changed"]}
+        with patch.object(runner, "_recover", return_value=True) as recover:
+            self.assertTrue(runner._enforce_teardown_check(
+                report, module_uid="0x00000008"
+            ))
+        recover.assert_called_once_with(
+            "0x00000008", "probe teardown check failed: thread set changed"
+        )
+
+    def test_probe_teardown_is_ordered_and_main_never_self_deletes(self) -> None:
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        teardown = probe.split("static void probe_teardown(", 1)[1].split("\n}\n", 1)[0]
+        ordered_calls = (
+            "sceKernelDcacheWritebackAll()", "probe_teardown_children()",
+            "probe_teardown_objects()", "probe_teardown_io_audio()",
+            "probe_teardown_memory()", "probe_teardown_state()",
+            "probe_teardown_host0(emulated)", "NAKAGAWA_PSP_COMPLETE",
+            "sceKernelSleepThread()",
+        )
+        positions = [teardown.index(call) for call in ordered_calls]
+        self.assertEqual(positions, sorted(positions))
+        main = probe.split("int main(int argc, char *argv[])", 1)[1]
+        self.assertNotIn("sceKernelExitDeleteThread", main)
+        teardown_test = probe.split("static void run_teardown_test(", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("sceKernelExitDeleteThread", teardown_test)
+
+
 class PspOracleBuildRouteTests(unittest.TestCase):
     """Keep the merged CASE/Makefile/import contract structurally explicit."""
 
@@ -1087,12 +1579,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 59)
+        self.assertEqual(len(routes), 60)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 60)))
+        self.assertEqual(set(ids), set(range(1, 61)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -1157,6 +1649,7 @@ class PspDmacProbeTests(unittest.TestCase):
             "dma-invalid-tail-memcpy-src",
             "dma-invalid-tail-try-dst",
             "dma-invalid-tail-try-src",
+            "dma-invalid-tail-s0",
             "dma-size-matrix",
             "dma-size-matrix-cell",
         ):
@@ -1208,20 +1701,42 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("PSP_LARGE_MEMORY = 0", self.makefile)
         self.assertIn("sceKernelAllocPartitionMemory", self.probe)
         self.assertIn("PSP_SMEM_High", self.probe)
-        self.assertIn("DMAC_BOUNDARY_BLOCK_BYTES", self.probe)
-        self.assertIn("candidate_tail", self.probe)
+        self.assertIn("PSP_SMEM_Addr", self.probe)
+        self.assertIn('"oracle-dmac-scratch"', self.probe)
+        self.assertIn("DMAC_INVALID_SETUP_END_NEIGHBOR", self.probe)
+        self.assertIn("DMAC_INVALID_SETUP_BEGIN_NEIGHBOR", self.probe)
+        self.assertIn("0xffffffff", self.probe.lower())
+        self.assertIn("dst = (void *)(uintptr_t)UINT32_MAX", self.probe)
+        self.assertIn("DMAC_INVALID_PAYLOAD_BYTES + DMAC_INVALID_MAX_DELTA <=", self.probe)
+        self.assertIn("_Static_assert", self.probe)
         self.assertNotIn("DMAC_BASELINE_USER_END", self.probe)
         self.assertNotIn("DMAC_BOUNDARY_BLOCK_BASE", self.probe)
-        self.assertIn('emit_dmac_invalid_setup(emulated, "SKIP"', self.probe)
-        self.assertIn("DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)", self.probe)
-        self.assertNotIn("boundary_prefix[DMAC_MEASURED_PREFIX]", self.probe)
+        self.assertIn('"SKIP"', self.probe)
 
     def test_invalid_tail_probe_never_dma_accesses_unowned_memory(self) -> None:
-        marker = "static void run_dmac_invalid_tail(int emulated) {"
-        self.assertIn(marker, self.probe)
-        body = self.probe.split(marker, 1)[1].split("\n}\n#endif", 1)[0]
-        self.assertNotIn("dmac_call(", body)
-        self.assertIn('emit_dmac_invalid_setup(emulated, "SKIP"', body)
+        self.assertIn("dmac_call(api, dst, src, 0u)", self.probe)
+        self.assertIn("dmac_call(DMAC_INVALID_API, dst, src, requested)", self.probe)
+        self.assertIn("DMAC_INVALID_SCRATCH_BYTES", self.probe)
+        self.assertIn("DMAC_INVALID_TAIL_OFFSET", self.probe)
+
+    def test_invalid_tail_geometry_and_cache_discipline_are_explicit(self) -> None:
+        for needle in (
+            "DMAC_INVALID_PRE_GUARD_BYTES 0x1000u",
+            "DMAC_INVALID_PAYLOAD_BYTES 0x0000c000u",
+            "DMAC_INVALID_POST_GUARD_BYTES 0x1000u",
+            "DMAC_INVALID_OVERFLOW_BAND_BYTES 0x2000u",
+            "DMAC_INVALID_TAIL_GUARD_BYTES 0x1000u",
+            "DMAC_INVALID_MAX_DELTA 0x2000u",
+            "dmac_cell_cache_before(block_head, DMAC_INVALID_SCRATCH_BYTES)",
+            "dmac_cell_cache_after(block_head, DMAC_INVALID_SCRATCH_BYTES)",
+            "guards_outside",
+            "post_guard",
+            "overflow_band",
+            "tier=%s",
+            "#if defined(__mips__)",
+        ):
+            self.assertIn(needle, self.probe)
+        self.assertIn("else ifeq ($(CASE),dma-invalid-tail-s0)\nCASE_ID = 60", self.makefile)
 
     def test_size_matrix_covers_boundaries_repeats_and_cache_guards(self) -> None:
         self.assert_probe_contains("DMAC_SIZE_TRIALS 3u")
@@ -1482,8 +1997,11 @@ class PspDmacProbeTests(unittest.TestCase):
         dmac = next(entry for entry in manifest["tests"] if entry["id"] == "PSP-DMAC-001")
         self.assertEqual(dmac["issues"], [23, 303])
         self.assertEqual(dmac["hardware_evidence"], "MEASURED")
-        self.assertEqual(len(dmac["case_ids"]), 23)
-        self.assertEqual(dmac["diagnostic_case_ids"], ["dma-cells"])
+        self.assertEqual(len(dmac["case_ids"]), 43)
+        self.assertIn("dma-invalid-tail-s0", dmac["diagnostic_case_ids"])
+        self.assertIn("invalid-tail-s0-a-memcpy", dmac["case_ids"])
+        self.assertIn("invalid-tail-b1-delta-0001", dmac["case_ids"])
+        self.assertIn("invalid-tail-b4-delta-2000", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000bfff", dmac["case_ids"])
         self.assertIn("size-matrix-memcpy-0x0000c001", dmac["case_ids"])
         self.assertIn("missing record is never PASS", dmac["reset"])

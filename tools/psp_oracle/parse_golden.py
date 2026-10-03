@@ -249,12 +249,97 @@ DMAC_CELL_OUT_COUNTS = {
     **{case_id: 10 for case_id in DMAC_CELL_SEMANTIC_CASES},
     "dmac-cells-done": 1,
 }
-DMAC_INVALID_CASES = {
-    "dma-invalid-tail-memcpy-dst": ("invalid-tail-memcpy-dst", 0, 0),
-    "dma-invalid-tail-memcpy-src": ("invalid-tail-memcpy-src", 1, 0),
-    "dma-invalid-tail-try-dst": ("invalid-tail-try-dst", 0, 1),
-    "dma-invalid-tail-try-src": ("invalid-tail-try-src", 1, 1),
+DMAC_INVALID_K = 0xC000
+DMAC_INVALID_DELTAS = (1, 4, 0x1000, 0x2000)
+DMAC_INVALID_POST_GUARD_BYTES = 0x1000
+DMAC_INVALID_OVERFLOW_BAND_BYTES = 0x2000
+
+
+@dataclass(frozen=True)
+class DmacInvalidLaunch:
+    tier: str
+    case_ids: tuple[str, ...]
+    api: str | None = None
+    endpoint: str | None = None
+    cell: str | None = None
+
+
+_DMAC_INVALID_S0_SHAPES = (("a", "dst"), ("b", "src"), ("c", "both"), ("d", "dst"))
+# None means the endpoint must be non-null; it does not establish ownership.
+# The ownership proof remains the producer's setup_mask and its source-owned
+# allocation/module buffer contract.
+_DMAC_INVALID_S0_POINTER_SHAPES = {
+    "a": (None, 0),
+    "b": (0, None),
+    "c": (None, None),
+    "d": (None, 0xFFFFFFFF),
 }
+_DMAC_INVALID_B_LAUNCHES = (
+    ("dma-invalid-tail-memcpy-dst", "b1", "memcpy", "dst"),
+    ("dma-invalid-tail-memcpy-src", "b2", "memcpy", "src"),
+    ("dma-invalid-tail-try-dst", "b3", "try", "dst"),
+    ("dma-invalid-tail-try-src", "b4", "try", "src"),
+)
+DMAC_INVALID_CASES = {
+    "dma-invalid-tail-s0": DmacInvalidLaunch(
+        tier="S",
+        case_ids=tuple(
+            f"invalid-tail-s0-{shape}-{api}"
+            for api in ("memcpy", "try")
+            for shape, _endpoint in _DMAC_INVALID_S0_SHAPES
+        ),
+    ),
+    **{
+        campaign_case: DmacInvalidLaunch(
+            tier="B",
+            case_ids=tuple(
+                f"invalid-tail-{cell}-delta-{delta:04x}"
+                for delta in DMAC_INVALID_DELTAS
+            ),
+            api=api,
+            endpoint=endpoint,
+            cell=cell,
+        )
+        for campaign_case, cell, api, endpoint in _DMAC_INVALID_B_LAUNCHES
+    },
+}
+
+DMAC_INVALID_FIELDS = frozenset({
+    "result", "rc", "P", "matches", "guards_outside", "post_guard",
+    "overflow_band", "source_intact", "setup_mask", "K", "delta", "api",
+    "endpoint", "cache_discipline", "tier", "executed", "payload_mutations",
+    "source_addr", "destination_addr",
+})
+
+
+def _parse_dmac_invalid_values(record: TestResult, campaign_case: str) -> dict[str, int | str]:
+    values: dict[str, int | str] = dict(record.values)
+    if set(values) != DMAC_INVALID_FIELDS:
+        raise ProtocolError(f"{campaign_case}: Tier {record.case_id} fields are incomplete or unexpected")
+    numeric_fields = DMAC_INVALID_FIELDS - {"api", "endpoint", "tier"}
+    for field in numeric_fields:
+        value = values[field]
+        if not isinstance(value, str) or not value.startswith("0x"):
+            raise ProtocolError(f"{campaign_case}: {record.case_id} {field} is not hexadecimal")
+        try:
+            values[field] = int(value, 16)
+        except ValueError as exc:
+            raise ProtocolError(f"{campaign_case}: {record.case_id} {field} is not hexadecimal") from exc
+    if values["result"] != values["rc"]:
+        raise ProtocolError(f"{campaign_case}: {record.case_id} result does not match rc")
+    if values["K"] != DMAC_INVALID_K:
+        raise ProtocolError(f"{campaign_case}: {record.case_id} changed the disputed K boundary")
+    if values["source_intact"] not in {0, 1} or values["cache_discipline"] not in {0, 1}:
+        raise ProtocolError(f"{campaign_case}: {record.case_id} boolean field is outside 0/1")
+    if values["executed"] not in {0, 1}:
+        raise ProtocolError(f"{campaign_case}: {record.case_id} executed is outside 0/1")
+    if any(not 0 <= values[field] <= 0xFFFFFFFF for field in (
+        "source_addr", "destination_addr",
+    )):
+        raise ProtocolError(
+            f"{campaign_case}: {record.case_id} diagnostic address is not a PSP address"
+        )
+    return values
 
 
 def parse_dmac_cells_output(text: str, *, require_complete: bool = True) -> SequenceReport:
@@ -309,29 +394,96 @@ def parse_dmac_cells_output(text: str, *, require_complete: bool = True) -> Sequ
 
 
 def parse_dmac_invalid_tail_output(text: str, campaign_case: str):
-    expected = DMAC_INVALID_CASES.get(campaign_case)
-    if expected is None:
+    launch = DMAC_INVALID_CASES.get(campaign_case)
+    if launch is None:
         raise ProtocolError(f"unknown isolated DMAC invalid-tail case {campaign_case!r}")
     parsed = parse_output(text)
-    if len(parsed.results) != 1:
-        raise ProtocolError(f"{campaign_case}: stream must contain exactly one result record")
-    record = parsed.results[0]
-    expected_id, direction, api = expected
-    if (record.test_id, record.case_id, record.status) != (
-        "PSP-DMAC-001", expected_id, "SKIP"
-    ):
-        raise ProtocolError(
-            f"{campaign_case}: expected one safe-boundary SKIP for {expected_id}"
-        )
-    values = {key: int(value, 0) for key, value in record.values}
-    expected_fields = {"result", *(f"out{i}" for i in range(7))}
-    if set(values) != expected_fields:
-        raise ProtocolError(f"{campaign_case}: result field set is incomplete or unexpected")
-    wanted = {"out1": 0xC001, "out2": 0xC000, "out3": direction, "out4": api,
-              "out6": 0x10000}
-    for field, value in wanted.items():
-        if values[field] != value:
-            raise ProtocolError(f"{campaign_case}: {field} is not the documented safe shape")
+    if len(parsed.results) != len(launch.case_ids):
+        raise ProtocolError(f"{campaign_case}: stream does not contain its complete cell set")
+    observed_ids = tuple(record.case_id for record in parsed.results)
+    if observed_ids != launch.case_ids:
+        raise ProtocolError(f"{campaign_case}: cell ids or order differ from the launch contract")
+    if any(record.test_id != "PSP-DMAC-001" for record in parsed.results):
+        raise ProtocolError(f"{campaign_case}: stream contains a foreign test id")
+    statuses = {record.status for record in parsed.results}
+    if len(statuses) != 1 or not statuses <= {"PASS", "SKIP"}:
+        raise ProtocolError(f"{campaign_case}: stream has a mixed or failing cell status")
+
+    for record in parsed.results:
+        values = _parse_dmac_invalid_values(record, campaign_case)
+        if values["tier"] != launch.tier:
+            raise ProtocolError(f"{campaign_case}: {record.case_id} has the wrong tier")
+        if launch.tier == "S":
+            shape, api = record.case_id.removeprefix("invalid-tail-s0-").rsplit("-", 1)
+            endpoint = dict(_DMAC_INVALID_S0_SHAPES).get(shape)
+            if endpoint is None or values["api"] != api or values["endpoint"] != endpoint:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} pointer cell is mislabeled")
+            if values["delta"] != 0:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} size-zero cell has a delta")
+        else:
+            if values["api"] != launch.api or values["endpoint"] != launch.endpoint:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} API or endpoint is mislabeled")
+            delta = int(record.case_id.rsplit("-", 1)[1], 16)
+            if values["delta"] != delta or delta not in DMAC_INVALID_DELTAS:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} delta is outside the cell matrix")
+        if record.status == "SKIP":
+            if values["executed"] != 0 or values["setup_mask"] == 0xF:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP did not fail a setup gate")
+            if values["cache_discipline"] != 0:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP claims a transfer cache bracket")
+            if any(values[field] != 0 for field in (
+                "P", "matches", "guards_outside", "post_guard", "overflow_band",
+                "payload_mutations",
+            )):
+                raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP contains transfer mutations")
+            continue
+
+        if values["executed"] != 1 or values["setup_mask"] != 0xF:
+            raise ProtocolError(f"{campaign_case}: {record.case_id} PASS lacks ownership proof")
+        if values["cache_discipline"] != 1 or values["source_intact"] != 1:
+            raise ProtocolError(f"{campaign_case}: {record.case_id} PASS lacks cache/source integrity")
+        if values["guards_outside"] != 0:
+            raise ProtocolError(f"{campaign_case}: {record.case_id} changed an outside guard")
+
+        if launch.tier == "S":
+            if values["P"] != 0 or values["matches"] != 0:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} size-zero cell moved bytes")
+            if any(values[field] != 0 for field in (
+                "post_guard", "overflow_band", "payload_mutations",
+            )):
+                raise ProtocolError(f"{campaign_case}: {record.case_id} size-zero cell mutated scratch")
+            expected_source, expected_destination = _DMAC_INVALID_S0_POINTER_SHAPES[shape]
+            for field, expected in (
+                ("source_addr", expected_source),
+                ("destination_addr", expected_destination),
+            ):
+                matches_shape = (
+                    values[field] != 0 if expected is None else values[field] == expected
+                )
+                if not matches_shape:
+                    raise ProtocolError(
+                        f"{campaign_case}: {record.case_id} {field} does not match its S0 pointer shape"
+                    )
+            continue
+
+        delta_text = record.case_id.rsplit("-", 1)[1]
+        delta = int(delta_text, 16)
+        requested = DMAC_INVALID_K + delta
+        if values["P"] > requested or values["matches"] > requested or values["P"] > values["matches"]:
+            raise ProtocolError(f"{campaign_case}: {record.case_id} copy counts exceed the request")
+        if launch.endpoint == "dst":
+            if values["post_guard"] > DMAC_INVALID_POST_GUARD_BYTES or \
+                    values["overflow_band"] > DMAC_INVALID_OVERFLOW_BAND_BYTES:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} mutation count exceeds its region")
+            expected_overrun = max(values["P"] - DMAC_INVALID_K, 0)
+            expected_post = min(expected_overrun, DMAC_INVALID_POST_GUARD_BYTES)
+            expected_band = max(expected_overrun - DMAC_INVALID_POST_GUARD_BYTES, 0)
+            if values["post_guard"] != expected_post or values["overflow_band"] != expected_band:
+                raise ProtocolError(f"{campaign_case}: {record.case_id} overrun classification is incomplete")
+        elif any(values[field] != 0 for field in (
+            "post_guard", "overflow_band", "payload_mutations",
+        )):
+            raise ProtocolError(f"{campaign_case}: {record.case_id} source cell mutated its scratch block")
     return parsed
 
 
