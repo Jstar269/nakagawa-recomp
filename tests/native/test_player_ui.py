@@ -798,6 +798,85 @@ class NativePlayerUiTests(unittest.TestCase):
         # The art job was reclaimed, so the icon is retried rather than lost.
         self.assertFalse(has_icon_art(run["bmp"]), run["stdout"])
 
+    def test_package_status_thread_creation_failure_is_unresolved_and_retryable(
+        self,
+    ) -> None:
+        """A failed worker start stays unresolved until the user retries.
+
+        The 2-second library rescan must not turn one create failure into a
+        repeating thread-creation loop. The retry button then enters the same
+        production queue and lets the real validator establish MISSING.
+        """
+        run = self.run_player(
+            "ready",
+            events=("WAIT_MS=2200", "KEY_RETURN", "WAIT_MS=100"),
+            wait_background=True,
+            env_extra={
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "1"
+            },
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        failed_frames = [frame for frame in frames
+                         if frame["selected_package_check_failed"] == "1"]
+        self.assertTrue(failed_frames, run["stdout"])
+        self.assertTrue(all(frame["package_check_failed_badge"] == "1"
+                            for frame in failed_frames), run["stdout"])
+        self.assertTrue(all(frame["titles_failed"] == "1" and
+                            frame["titles_pending"] == "0" and
+                            frame["titles_unclaimed"] == "0"
+                            for frame in failed_frames), run["stdout"])
+        self.assertTrue(any(int(frame["ticks_ms"]) >= 2000 and
+                            frame["package_status_thread_attempts"] == "1"
+                            for frame in failed_frames), run["stdout"])
+        self.assertTrue(any(frame["package_status_thread_attempts"] == "2"
+                            for frame in frames), run["stdout"])
+        self.assertEqual(frames[-1]["package_status_thread_attempts"], "2")
+        self.assertEqual(frames[-1]["selected_package_check_failed"], "0")
+        self.assertEqual(frames[-1]["titles_failed"], "0")
+        self.assertEqual(frames[-1]["titles_pending"], "0")
+        self.assertEqual(frames[-1]["titles_unclaimed"], "0")
+        self.assertEqual(frames[-1]["selected_package_status"], "1")
+        self.assertEqual(frames[-1]["package_building"], "0")
+
+    def test_failed_post_build_worker_start_can_retry_to_ready_library(self) -> None:
+        run = self.run_player(
+            "ready",
+            events=(
+                "WAIT_VIEW=library,5000",
+                "KEY_RETURN",
+                "WAIT_MS=100",
+                "WAIT_VIEW=ready_library,10000",
+                "ASSERT_VIEW=ready_library",
+            ),
+            wait_background=True,
+            build_ready_test=True,
+            env_extra={
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "2"
+            },
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertIn(
+            "[PLAYER_UI_TEST] post_build_validation status=0", run["stdout"]
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] assert_view result=PASS actual=ready_library",
+            run["stdout"],
+        )
+        failed_frames = [frame for frame in frames
+                         if frame["selected_package_check_failed"] == "1"]
+        self.assertTrue(failed_frames, run["stdout"])
+        self.assertTrue(all(frame["package_check_failed_badge"] == "1"
+                            for frame in failed_frames), run["stdout"])
+        self.assertTrue(any(frame["package_status_thread_attempts"] == "2"
+                            and frame["view"] == "library"
+                            for frame in failed_frames), run["stdout"])
+        self.assertEqual(frames[-1]["view"], "ready_library")
+        self.assertGreaterEqual(
+            int(frames[-1]["package_status_thread_attempts"]), 3
+        )
+
     def test_texture_cache_saturation_with_in_flight_jobs_does_not_double_free(
         self,
     ) -> None:

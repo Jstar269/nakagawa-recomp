@@ -10,6 +10,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -573,6 +574,9 @@ enum {
     PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE = -20261003
 };
 
+static unsigned s_ui_test_package_status_thread_create_attempts;
+static unsigned s_ui_test_fail_package_status_thread_create_on_attempt;
+
 static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
     static const struct { const char *name; PlayerView view; } views[] = {
         { "library", VIEW_LIBRARY }, { "ready_library", PLAYER_VIEW_READY_LIBRARY },
@@ -859,10 +863,11 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     }
     SDL_FRect badge = { 0.0f, 0.0f, 0.0f, 0.0f };
     bool badge_valid = ui_last_status_badge_rect(&badge);
-    /* Library-wide package-claim census. A title whose package status is not
-       known yet has to be claimed as checking; leaving it unclaimed is what
-       makes a card offer a build for a package that may already exist. */
+    /* Every unchecked title is pending or explicitly unresolved. An
+       unclaimed title would otherwise make its card offer a build for a
+       package that may already exist. */
     int titles_pending = 0;
+    int titles_failed = 0;
     int titles_unclaimed = 0;
     for (int i = 0; i < app->game_count && i < MAX_LIBRARY_GAMES; i++) {
         const PlayerRuntimePackageCacheEntry *cached =
@@ -875,6 +880,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
         if (same_game && cached->status_valid) continue;
         if (same_game && cached->validation_pending) {
             titles_pending++;
+        } else if (same_game && cached->validation_failed) {
+            titles_failed++;
         } else {
             titles_unclaimed++;
         }
@@ -891,8 +898,10 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "input_scope=%s input_titles=%d input_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
-           "selected_runtime=%d selected_package_status=%d games=%d "
-           "titles_pending=%d titles_unclaimed=%d "
+           "selected_runtime=%d selected_package_status=%d "
+           "selected_package_check_failed=%d package_check_failed_badge=%d games=%d "
+           "package_status_thread_attempts=%u "
+           "titles_pending=%d titles_failed=%d titles_unclaimed=%d "
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
            "font=%s font_reason=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
@@ -927,7 +936,13 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            selected && selected->is_prepared ? 1 : 0,
            selected && selected->assets_staged ? 1 : 0,
            selected && player_app_cached_game_has_runtime(app, selected) ? 1 : 0,
-           (int)package_status, app->game_count, titles_pending, titles_unclaimed,
+           (int)package_status,
+           selected && player_app_runtime_package_check_failed(app, selected) ? 1 : 0,
+           selected && strcmp(ui_test_last_status_badge_label(),
+                               "PACKAGE CHECK FAILED") == 0 ? 1 : 0,
+           app->game_count,
+           s_ui_test_package_status_thread_create_attempts,
+           titles_pending, titles_failed, titles_unclaimed,
            app->prerequisites.items.count,
            (unsigned long long)app->prerequisites.total_bytes,
            app->is_game_running ? 1 : 0,
@@ -1102,12 +1117,6 @@ static void player_package_status_queue_game(PlayerApp *app, int game_index,
                                              bool requested[MAX_LIBRARY_GAMES],
                                              bool force_requested[MAX_LIBRARY_GAMES]) {
     if (!app || game_index < 0 || game_index >= app->game_count) return;
-    requested[game_index] = true;
-    if (force) force_requested[game_index] = true;
-    /* A queued-but-not-yet-started title has no status of its own. Claiming it
-       as checking keeps the card from offering a build for a package that may
-       already be prepared; a title that already has a status keeps it, so the
-       BUILD/REBUILD actions do not blink away on every rescan. */
     const PlayerRuntimePackageCacheEntry *cached =
         &app->runtime_package_cache[game_index];
     const GameRecord *game = &app->games[game_index];
@@ -1115,6 +1124,15 @@ static void player_package_status_queue_game(PlayerApp *app, int game_index,
                      strcmp(cached->title_id, game->title_id) == 0 &&
                      strcmp(cached->selected_executable,
                             game->selected_executable) == 0;
+    /* A failed worker start is not a package result. Keep it unresolved until
+       an explicit retry or another operation with a fresh validation reason. */
+    if (!force && same_game && cached->validation_failed) return;
+    requested[game_index] = true;
+    if (force) force_requested[game_index] = true;
+    /* A queued-but-not-yet-started title has no status of its own. Claiming it
+       as checking keeps the card from offering a build for a package that may
+       already be prepared; a title that already has a status keeps it, so the
+       BUILD/REBUILD actions do not blink away on every rescan. */
     if (!same_game || !cached->status_valid) {
         player_app_runtime_package_cache_mark_pending(app, game_index);
     }
@@ -1132,7 +1150,9 @@ static void player_package_status_queue_all(PlayerApp *app,
 
 static bool player_package_status_start_next(
     PlayerApp *app, PlayerPackageStatusJob **job_slot,
-    bool requested[MAX_LIBRARY_GAMES], bool force_requested[MAX_LIBRARY_GAMES]) {
+    bool requested[MAX_LIBRARY_GAMES], bool force_requested[MAX_LIBRARY_GAMES],
+    const char build_check_disc_id[MAX_DISC_ID_LEN],
+    bool *build_check_pending) {
     if (!app || !job_slot || *job_slot) return false;
     int selected = app->selected_game_index;
     int index = -1;
@@ -1196,8 +1216,18 @@ static bool player_package_status_start_next(
     requested[index] = false;
     force_requested[index] = false;
     player_app_runtime_package_cache_mark_pending(app, index);
-    job->thread = SDL_CreateThread(player_package_status_thread_main,
-                                   "nakagawa-package-status", job);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_package_status_thread_create_attempts++;
+    if (s_ui_test_fail_package_status_thread_create_on_attempt > 0 &&
+        s_ui_test_package_status_thread_create_attempts ==
+            s_ui_test_fail_package_status_thread_create_on_attempt) {
+        job->thread = NULL;
+    } else
+#endif
+    {
+        job->thread = SDL_CreateThread(player_package_status_thread_main,
+                                       "nakagawa-package-status", job);
+    }
     if (!job->thread) {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
         if (job->catalog_test_start) {
@@ -1207,7 +1237,19 @@ static bool player_package_status_start_next(
             SDL_DestroySemaphore(job->catalog_test_done);
         }
 #endif
-        app->runtime_package_cache[index].validation_pending = false;
+        player_app_runtime_package_cache_mark_failed(app, index);
+        fprintf(stderr,
+                "[PLAYER] Package status for %s is unresolved because its "
+                "worker could not start; use Retry Package Check.\n",
+                job->game.disc_id);
+        if (build_check_pending && *build_check_pending &&
+            build_check_disc_id &&
+            strcmp(build_check_disc_id, job->game.disc_id) == 0) {
+            /* Let the user see the unresolved card and retry. Keep the build
+               check identity latched so a successful retry still completes
+               the normal post-build library transition. */
+            player_app_set_view(app, VIEW_LIBRARY);
+        }
         free(job);
         return false;
     }
@@ -2214,6 +2256,21 @@ int main(int argc, char *argv[]) {
         const char *fake_running = getenv("NK_UI_TEST_GAME_RUNNING");
         ui_test_fake_game_running = ui_test_mode && fake_running && fake_running[0];
     }
+    const char *fail_package_thread_at =
+        getenv("NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT");
+    if (ui_test_mode && fail_package_thread_at) {
+        uint64_t fail_attempt = 0;
+        if (!player_ui_test_parse_positive_u64(fail_package_thread_at,
+                                               &fail_attempt) ||
+            fail_attempt > UINT_MAX) {
+            fprintf(stderr,
+                    "[PLAYER_UI_TEST] invalid package status thread fail attempt.\n");
+            ui_test_failed = true;
+        } else {
+            s_ui_test_fail_package_status_thread_create_on_attempt =
+                (unsigned)fail_attempt;
+        }
+    }
     if (ui_test_mode && getenv("NK_UI_TEST_DROP_WORKER_EVENT")) {
         /* Model SDL refusing a worker completion push, so the launcher's
            reclaim path is exercised by the same harness that drives the real
@@ -2916,7 +2973,8 @@ int main(int argc, char *argv[]) {
     bool build_check_pending = false;
     (void)player_package_status_start_next(
         &app, &package_status_job, package_status_requested,
-        package_status_force_requested);
+        package_status_force_requested, build_check_disc_id,
+        &build_check_pending);
 
     app.enable_focus_handoff = interactive_window;
     bool running = true;
@@ -3308,7 +3366,8 @@ int main(int argc, char *argv[]) {
 
         (void)player_package_status_start_next(
             &app, &package_status_job, package_status_requested,
-            package_status_force_requested);
+            package_status_force_requested, build_check_disc_id,
+            &build_check_pending);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
         if (package_status_job && package_status_job->catalog_test_start &&
             package_status_job->catalog_test_done &&
@@ -3415,6 +3474,15 @@ int main(int argc, char *argv[]) {
             ? player_app_ui_test_validation_calls() : 0;
 #endif
         ui_render_frame(renderer, &app, &input);
+        /* Consume renderer requests in the same frame that created them. A
+           later event batch may change the selected title before the next
+           loop iteration, which must not redirect this retry. */
+        if (app.request_package_status_retry) {
+            app.request_package_status_retry = false;
+            player_package_status_queue_game(
+                &app, app.selected_game_index, true,
+                package_status_requested, package_status_force_requested);
+        }
         if (interactive_window) {
             player_apply_launcher_fullscreen(&app, window,
                                              &applied_launcher_fullscreen);

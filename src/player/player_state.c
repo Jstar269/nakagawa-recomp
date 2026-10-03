@@ -142,6 +142,21 @@ void player_app_runtime_package_cache_mark_pending(PlayerApp *app,
         player_runtime_cache_set_game_key(entry, game);
     }
     entry->validation_pending = true;
+    entry->validation_failed = false;
+}
+
+void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
+                                                   int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    PlayerRuntimePackageCacheEntry *entry =
+        &app->runtime_package_cache[game_index];
+    entry->status_valid = false;
+    entry->identity_valid = false;
+    entry->validation_pending = false;
+    entry->validation_failed = true;
+    entry->runtime_available = false;
+    entry->package_identity[0] = '\0';
+    entry->last_checked_ms = 0;
 }
 
 void player_app_runtime_package_cache_store(
@@ -220,6 +235,13 @@ bool player_app_runtime_package_check_pending(const PlayerApp *app,
     const PlayerRuntimePackageCacheEntry *entry =
         player_runtime_cache_for_game(app, game);
     return entry && entry->validation_pending;
+}
+
+bool player_app_runtime_package_check_failed(const PlayerApp *app,
+                                              const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->validation_failed;
 }
 
 bool player_app_cached_game_has_runtime(const PlayerApp *app,
@@ -444,10 +466,14 @@ int player_app_focus_count(const PlayerApp *app) {
                     game && player_app_cached_game_has_runtime(app, game);
                 bool checking = game &&
                     player_app_runtime_package_check_pending(app, game);
+                bool check_failed = game &&
+                    player_app_runtime_package_check_failed(app, game);
                 bool can_build = game && !game_ready && !checking &&
+                                 !check_failed &&
                                  (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
                                   pkg_status == NK_RUNTIME_PACKAGE_STALE);
-                if (game && (game_ready || app->is_game_running || can_build)) count++;
+                if (game && (game_ready || app->is_game_running || can_build ||
+                             check_failed)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
                 count += game ? 1 : 0; /* global / this-game controller mapping */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;

@@ -92,6 +92,7 @@ typedef struct {
     bool status_valid;
     bool identity_valid;
     bool validation_pending;
+    bool validation_failed;
     bool runtime_available;
     char disc_id[MAX_DISC_ID_LEN];
     char title_id[64];
@@ -277,6 +278,9 @@ typedef struct {
        renderer has no SDL_Window and must stay free of platform dialog calls,
        so it raises this and the event loop in main.c consumes it. */
     bool request_file_picker;
+    /* The library card requests a package-status worker retry through this
+       flag; worker creation and queue ownership stay on the main event loop. */
+    bool request_package_status_retry;
 
     /* Index of the leftmost visible card in the library strip. The strip
        lays cards out horizontally and a 1280-wide window fits about four, so
@@ -356,6 +360,10 @@ bool player_app_cached_game_has_runtime(const PlayerApp *app,
                                         const GameRecord *game);
 bool player_app_runtime_package_check_pending(const PlayerApp *app,
                                                const GameRecord *game);
+bool player_app_runtime_package_check_failed(const PlayerApp *app,
+                                              const GameRecord *game);
+void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
+                                                  int game_index);
 void player_app_runtime_package_cache_invalidate(PlayerApp *app);
 void player_app_runtime_package_cache_mark_pending(PlayerApp *app, int game_index);
 void player_app_runtime_package_cache_store(

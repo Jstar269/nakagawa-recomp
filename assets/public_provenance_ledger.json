@@ -2840,7 +2840,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30ed0265e3974dc48d28582b24d452c3048778d05c3e87a4d5813fb9af130ac5"
+      "sha256": "9a1cfb77a4b2f788d391cdae0640b1a86592af7bfab6740f70eacff6b713c16d"
     },
     {
       "path": "src/player/package_builder.c",
@@ -2876,7 +2876,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2ee3a0894d3f4d8ee33eb400beeb2396f6cde1508eb92cbdcbbd89a8907ec990"
+      "sha256": "8599e015ab0ba2d140976ef882420afa1e39e74d2782014c0ab1c9bd2ed32830"
     },
     {
       "path": "src/player/player_state.h",
@@ -2888,7 +2888,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3a4a5a8044b0b64a4da780644355b41d88be137d0fd1c67acf139c882ed9218d"
+      "sha256": "560d2ce416434992e2176b0103c6f19207c6aa542a145329151a8fd2ad66a077"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -2936,7 +2936,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a36665a7c5c76361d8e0d5670273e3ce2a99997e32ccd14905680494368f8bdf"
+      "sha256": "b39455a4b378226651f3c944d6de93d5beb1ac85b11cb059aba98c33f798fad5"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -2948,7 +2948,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0a353c43fe8b3aa5eaa04a1e8b710484ab5a4f8c1a14c684ec352570d074a9f7"
+      "sha256": "4d2f8508d9bcb7e673f95baeb4ab0aac30c666d59a1885b19ce6fb6783aebb08"
     },
     {
       "path": "src/ref/cpu.h",
@@ -5394,7 +5394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c224c24be965233b2fcfe423e9160017046588c45fdc050f1463599743b6dd32"
+      "sha256": "c7b8ba9bdb8edfc74bbeeddedd0fbf1154c82361301c9a56920d0fbc9bf76f54"
     },
     {
       "path": "tests/native/test_posix_process.c",

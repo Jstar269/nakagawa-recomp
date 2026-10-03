@@ -1393,6 +1393,13 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
 
 static SDL_FRect s_last_status_badge;
 static bool s_last_status_badge_valid;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static const char *s_last_status_badge_label;
+
+const char *ui_test_last_status_badge_label(void) {
+    return s_last_status_badge_label ? s_last_status_badge_label : "";
+}
+#endif
 
 bool ui_last_status_badge_rect(SDL_FRect *out_rect) {
     if (!s_last_status_badge_valid || !out_rect) return false;
@@ -1661,29 +1668,36 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     draw_rounded_outline(ren, hero_x, hero_y, hero_w, hero_h, 10.0f, COLOR_CARD_BORDER);
 
     /* Staged assets still need a runtime unless the same readiness predicate
-       used by PLAY NOW can resolve one. Keep that boundary visible while the
-       primary action below remains BUILD PACKAGE when the package is missing. */
+       used by PLAY NOW can resolve one. A failed status worker has its own
+       unresolved card state and retry action. */
     NkRuntimePackageStatus package_status =
         player_app_cached_runtime_package_status(app, game);
     bool package_ready = player_app_cached_game_has_runtime(app, game);
     bool package_checking =
         player_app_runtime_package_check_pending(app, game);
+    bool package_check_failed =
+        player_app_runtime_package_check_failed(app, game);
     bool runtime_required = game->assets_staged && !package_ready &&
+                            !package_check_failed &&
                             package_status == NK_RUNTIME_PACKAGE_MISSING;
-    const char *card_status = game->is_experimental ? "EXPERIMENTAL"
-        : (package_checking ? "CHECKING PACKAGE"
-            : (package_status == NK_RUNTIME_PACKAGE_STALE ? "PACKAGE STALE"
-                : (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE
-                    ? "PACKAGE INCOMPATIBLE"
-                    : (runtime_required ? "RUNTIME REQUIRED"
-                        : ((game->assets_staged && !game->is_prepared)
-                            ? "ASSETS STAGED" : status_label(game->status))))));
+    const char *card_status = package_check_failed ? "PACKAGE CHECK FAILED"
+        : (game->is_experimental ? "EXPERIMENTAL"
+            : (package_checking ? "CHECKING PACKAGE"
+                : (package_status == NK_RUNTIME_PACKAGE_STALE ? "PACKAGE STALE"
+                    : (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE
+                        ? "PACKAGE INCOMPATIBLE"
+                        : (runtime_required ? "RUNTIME REQUIRED"
+                            : ((game->assets_staged && !game->is_prepared)
+                                ? "ASSETS STAGED" : status_label(game->status)))))));
     s_last_status_badge = (SDL_FRect){
         hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f
     };
     s_last_status_badge_valid = true;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_last_status_badge_label = card_status;
+#endif
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
-               (game->is_experimental || package_checking || runtime_required ||
+               (game->is_experimental || package_checking || package_check_failed || runtime_required ||
                 package_status == NK_RUNTIME_PACKAGE_STALE ||
                 package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE)
                    ? COLOR_AMBER : COLOR_EMERALD);
@@ -1860,6 +1874,12 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } else if (package_checking) {
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                          "CHECKING PACKAGE...");
+    } else if (package_check_failed) {
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "RETRY PACKAGE CHECK", true, in, primary_focused)) {
+            app->request_package_status_retry = true;
+        }
+        focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "REBUILD PACKAGE", true, in, primary_focused)) {
@@ -4094,6 +4114,9 @@ int ui_focus_count(const PlayerApp *app) {
 void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *input) {
     if (!renderer || !app) return;
     s_last_status_badge_valid = false;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_last_status_badge_label = NULL;
+#endif
 
     /* Clamp focus before drawing so a resize or library change can never
      * leave the ring on a control that no longer exists. */
