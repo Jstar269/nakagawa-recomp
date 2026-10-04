@@ -1174,9 +1174,9 @@ int main(int argc, char **argv)
     NkPrxTagEntry entry;
     size_t flat_bytes, tag_bytes;
     size_t control_found;
-    size_t control_addr;
-    int same_block;
+    int probes_distinct;
     unsigned char *control;
+    unsigned char *control_probe;
     unsigned char *flat_probe, *tag_probe;
     size_t flat_leaked, tag_leaked;
     int pre_free_matches = 0;
@@ -1213,26 +1213,34 @@ int main(int argc, char **argv)
         pre_free_matches++;
     }
 
-    /* Drop the keystore.  After this returns, none of the key bytes may
-     * remain reachable through the allocator.
-     *
-     * The byte counts come from the module itself, which is defined next to the
-     * calloc() calls for these arrays, so they cannot drift out of step with the
-     * private FlatEntry/TagEntry layout the way a hand-summed mirror in this
-     * harness could. */
     flat_bytes = nk_keystore_flat_bytes();
     tag_bytes = nk_keystore_tag_bytes();
     nk_keystore_free(ks);
 
-    /* Positive control: prove this allocator really does hand a same-size
-     * request back a block it just released.  A control block is filled with a
-     * marker and freed WITHOUT being wiped; the probe below must find that marker.
-     * If it does not, a zero hit count against the keystore arrays would prove
-     * nothing, so fail loudly instead of reporting a pass.
-     *
-     * The control runs after nk_keystore_free() and touches nothing in between,
-     * so its free/alloc cycle is not perturbed by the three frees the keystore
-     * just made; it isolates exactly the question being asked. */
+    /* Draw BOTH probes before running any control allocation.  The keystore has
+     * just freed its two arrays plus its own struct, and those are the blocks a
+     * same-size request will be served from.  Allocating the control first would
+     * consume one of the blocks under test and could hand it straight back to a
+     * probe, leaving the array that was never scanned unobserved while the run
+     * still reported a pass. */
+    flat_probe = (unsigned char *)malloc(flat_bytes);
+    tag_probe = (unsigned char *)malloc(tag_bytes);
+    if (flat_probe == NULL || tag_probe == NULL) {
+        fprintf(stderr, "probe allocation failed\n");
+        return 2;
+    }
+
+    /* The two arrays must be examined independently, so the probes have to be
+     * distinct blocks.  Identical probe addresses would mean both scans covered
+     * the same memory and one array went unobserved. */
+    probes_distinct = (void *)flat_probe != (void *)tag_probe;
+
+    /* Positive control, run LAST and in its own allocation so it cannot consume
+     * the blocks under test: a block is filled with a marker and freed WITHOUT
+     * being wiped.  If a same-size request does not come back with that marker,
+     * this allocator scrubs freed memory, and a zero hit count below would be
+     * indistinguishable from the allocator erasing the keys for us.  Say so
+     * instead of claiming a pass. */
     control = (unsigned char *)malloc(flat_bytes);
     if (control == NULL) {
         fprintf(stderr, "control allocation failed\n");
@@ -1240,47 +1248,30 @@ int main(int argc, char **argv)
     }
     memset(control, 0xA5, flat_bytes);
     free(control);
-
-    /* Positive control: confirm that a same-size request really is served from
-     * the heap region that was just released, so a zero hit count below means
-     * "the bytes are gone" rather than "we looked somewhere else".
-     *
-     * Many allocators scrub a block on free() before handing it back, so the
-     * control marker may legitimately be gone even though the block WAS
-     * reclaimed.  Address identity is therefore the real question: does the
-     * probe land on the freed region?  Only if the marker survives AND the
-     * addresses coincide is this a true negative control; if the addresses
-     * coincide but the marker is gone, the allocator scrubbed for us and the
-     * zero counts below are inconclusive rather than a pass. */
-    control_addr = (size_t)(void *)control;
-    flat_probe = (unsigned char *)malloc(flat_bytes);
-    tag_probe = (unsigned char *)malloc(tag_bytes);
-    if (flat_probe == NULL || tag_probe == NULL) {
-        fprintf(stderr, "probe allocation failed\n");
+    control_probe = (unsigned char *)malloc(flat_bytes);
+    if (control_probe == NULL) {
+        fprintf(stderr, "control probe allocation failed\n");
         return 2;
     }
-    same_block = (size_t)(void *)flat_probe == control_addr;
-    control_found = count_occurrences(flat_probe, flat_bytes, CONTROL_MARKER, 16);
+    control_found = count_occurrences(control_probe, flat_bytes, CONTROL_MARKER, 16);
 
     flat_leaked = count_occurrences(flat_probe, flat_bytes, FLAT_KEY, 16);
     tag_leaked = count_occurrences(tag_probe, tag_bytes, TAG_KEY, 16);
 
     printf("{\"entries_checked\": 2, \"pre_free_matches\": %d, "
-           "\"post_wipe_scan_bytes\": %zu, \"same_block\": %d, "
+           "\"post_wipe_scan_bytes\": %zu, \"probes_distinct\": %d, "
            "\"control_reclaimed\": %zu, \"flat_leaked\": %zu, "
            "\"tag_leaked\": %zu, \"verdict\": \"%s\"}\n",
-           pre_free_matches, flat_bytes + tag_bytes, same_block,
+           pre_free_matches, flat_bytes + tag_bytes, probes_distinct,
            control_found, flat_leaked, tag_leaked,
-           control_found > 0 ? "measured" : "inconclusive-allocator-scrubs");
+           control_found > 0 && probes_distinct
+               ? "measured" : "inconclusive-allocator-scrubs");
 
     free(flat_probe);
     free(tag_probe);
+    free(control_probe);
     /* Any surviving key material is a hard failure regardless of the control. */
     return (flat_leaked || tag_leaked) ? 5 : 0;
-
-    free(flat_probe);
-    free(tag_probe);
-    return 0;
 }
 """
 
@@ -1373,8 +1364,8 @@ class TestKeystoreErasure(unittest.TestCase):
             self.skipTest(
                 "this platform's allocator scrubs freed memory, so a zero leak "
                 "count cannot be distinguished from the allocator erasing the "
-                "block for us (probe did land on the freed block: "
-                f"{report['same_block']}, control marker survived: "
+                "block for us (probes were distinct blocks: "
+                f"{report['probes_distinct']}, control marker survived: "
                 f"{report['control_reclaimed']})")
 
     def test_wiping_does_not_change_lookup_results_before_free(self):
