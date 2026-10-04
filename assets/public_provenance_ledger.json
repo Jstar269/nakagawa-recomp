@@ -5406,7 +5406,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b4850571ac6391bd4d7128bbb5e9f18c129a41c44d762ff7ed6d1d9d2f37bb7f"
+      "sha256": "3bb5b3c5e006800d7663c90ea97c9d4f887fe4946b2bd305e135879542caf8db"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -9530,14 +9530,12 @@
       "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
     }
   ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "0f4deea1147c6abce2ac0cb679f8324e32f5bf2d",
-    "candidate_tree": "6fbe2fc76619b027fc48b101df8f4d8c6eb5760e",
-    "admitted_paths": [
-      "tools/frame_capture_check.py",
-      "tools/test_frame_capture_check.py"
-    ],
-    "authority_sha256": "08c883f5b09b5627b52ceeec2de6e93fedba8d3a5336a3e8bc2c7d8413bd4069"
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "0fc6da949ba4b602a221e7454c28de679c711ec2",
+    "candidate_tree": "683cefdbeff6785b30634361a0ddf162b6a62499",
+    "refreshed_paths": [
+      "tools/README.md"
+    ]
   }
 }
