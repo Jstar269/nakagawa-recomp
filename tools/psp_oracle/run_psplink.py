@@ -107,206 +107,6 @@ class UnsafeHost0OutputError(OSError):
     """A host0 result path is not a regular file owned by the scratch root."""
 
 
-@dataclass(frozen=True)
-class PsplinkSnapshot:
-    threads: frozenset[tuple[str, str]]
-    memory_free_bytes: tuple[tuple[int, tuple[int, int]], ...]
-    modules: frozenset[tuple[str, str]]
-
-
-_THREAD_LIST_HEADER_RE = re.compile(r"^<Thread List \((\d+) entries\)>$")
-_THREAD_ROW_RE = re.compile(
-    r"^UID: (0x[0-9a-fA-F]{8}) - Name: (.+?)\s*$"
-)
-_MODULE_LIST_HEADER_RE = re.compile(r"^<Module List \((\d+) modules\)>$")
-_MODULE_ROW_RE = re.compile(
-    r"^UID: (0x[0-9a-fA-F]{8}) Attr: [0-9a-fA-F]+ - Name: (.+?)\s*$"
-)
-_MEMINFO_ROW_RE = re.compile(
-    r"^\s*(\d+)\s*\|\s*0x[0-9a-fA-F]+\s*\|\s*\d+\s*\|"
-    r"\s*(\d+)\s*\|\s*(\d+)\s*\|\s*[0-9a-fA-F]+\s*\|\s*$"
-)
-_MODULE_THREAD_HEADER_RE = re.compile(r"^Module Thread \((\d+)\)$")
-_PROBE_COMPLETE_RE = re.compile(
-    r"^NAKAGAWA_PSP_COMPLETE schema=1 status=(PASS|FAIL)$", re.MULTILINE
-)
-
-
-def parse_psplink_thread_snapshot(text: str) -> frozenset[tuple[str, str]]:
-    """Parse PSPLink's `thlist`, refusing truncated or unrecognized output."""
-
-    lines = [line.strip() for line in text.splitlines()]
-    headers = [match for line in lines if (match := _THREAD_LIST_HEADER_RE.fullmatch(line))]
-    if len(headers) != 1:
-        raise ValueError("thlist must contain exactly one Thread List header")
-    rows = [match for line in lines if (match := _THREAD_ROW_RE.fullmatch(line))]
-    threads = {(match.group(1).lower(), match.group(2)) for match in rows}
-    if len(threads) != len(rows) or len(rows) != int(headers[0].group(1)):
-        raise ValueError("thlist count does not match its unique UID/name rows")
-    return frozenset(threads)
-
-
-def parse_psplink_meminfo(text: str) -> dict[int, tuple[int, int]]:
-    """Return partition -> (total free bytes, largest free block bytes)."""
-
-    upper = text.upper()
-    if "MEMORY PARTITIONS:" not in upper or "TOTALFREE" not in upper or "MAXFREE" not in upper:
-        raise ValueError("meminfo is missing its partition/free-memory header")
-    rows = [match for line in text.splitlines() if (match := _MEMINFO_ROW_RE.fullmatch(line))]
-    partitions = {
-        int(match.group(1)): (int(match.group(2)), int(match.group(3)))
-        for match in rows
-    }
-    if not rows or len(partitions) != len(rows):
-        raise ValueError("meminfo has no partition rows or contains duplicate partitions")
-    return partitions
-
-
-def parse_psplink_module_list(text: str) -> frozenset[tuple[str, str]]:
-    """Parse PSPLink's all-module `modlist` output as UID/name pairs."""
-
-    lines = [line.strip() for line in text.splitlines()]
-    headers = [match for line in lines if (match := _MODULE_LIST_HEADER_RE.fullmatch(line))]
-    if len(headers) != 1:
-        raise ValueError("modlist must contain exactly one Module List header")
-    rows = [match for line in lines if (match := _MODULE_ROW_RE.fullmatch(line))]
-    modules = {(match.group(1).lower(), match.group(2)) for match in rows}
-    if len(modules) != len(rows) or len(rows) != int(headers[0].group(1)):
-        raise ValueError("modlist count does not match its unique UID/name rows")
-    return frozenset(modules)
-
-
-def parse_psplink_module_threads(text: str, module_uid: str) -> frozenset[tuple[str, str]]:
-    """Return threads PSPLink reports as belonging to one module."""
-
-    uid = module_uid.lower()
-    if not re.fullmatch(r"0x[0-9a-f]{8}", uid):
-        raise ValueError("module UID must be an eight-digit hexadecimal PSPLink UID")
-    lines = [line.strip() for line in text.splitlines()]
-    module_rows = [match for line in lines if (match := _MODULE_ROW_RE.fullmatch(line))]
-    if not any(match.group(1).lower() == uid for match in module_rows):
-        raise ValueError("module-specific modinfo output does not name the requested UID")
-    headers = [
-        (index, match)
-        for index, line in enumerate(lines)
-        if (match := _MODULE_THREAD_HEADER_RE.fullmatch(line))
-    ]
-    if len(headers) != 1:
-        raise ValueError("module modinfo must contain exactly one Module Thread section")
-    start, header = headers[0]
-    rows = [
-        match for line in lines[start + 1:]
-        if (match := _THREAD_ROW_RE.fullmatch(line))
-    ]
-    threads = {(match.group(1).lower(), match.group(2)) for match in rows}
-    if len(rows) != int(header.group(1)) or len(threads) != len(rows):
-        raise ValueError("module thread count does not match its unique UID/name rows")
-    return frozenset(threads)
-
-
-def parse_probe_completion_sentinel(text: str) -> bool:
-    """Require one final PASS/FAIL marker; PASS means in-probe cleanup succeeded."""
-
-    matches = list(_PROBE_COMPLETE_RE.finditer(text))
-    if len(matches) != 1 or not text.endswith("\n"):
-        return False
-    last_line = next((line for line in reversed(text.splitlines()) if line.strip()), "")
-    return matches[0].group(0) == last_line and matches[0].group(1) == "PASS"
-
-
-def _has_probe_completion_sentinel(text: str) -> bool:
-    """Recognize a final marker even when probe-side cleanup reports failure."""
-
-    matches = list(_PROBE_COMPLETE_RE.finditer(text))
-    if len(matches) != 1 or not text.endswith("\n"):
-        return False
-    last_line = next((line for line in reversed(text.splitlines()) if line.strip()), "")
-    return matches[0].group(0) == last_line
-
-
-def evaluate_teardown_snapshots(
-    before: PsplinkSnapshot,
-    after_probe: PsplinkSnapshot,
-    after_unload: PsplinkSnapshot,
-    module_uid: str,
-    module_threads: set[tuple[str, str]] | frozenset[tuple[str, str]],
-    *,
-    unload_confirmed: bool,
-    sentinel_ok: bool,
-    shell_qualified: bool,
-    exprint_clean: bool,
-    host0_roundtrip: bool,
-) -> dict[str, object]:
-    """Compare owned teardown state and retain allocator deltas as diagnostics.
-
-    Global PSP free-memory counters can move independently of this probe. The
-    probe's tracked-resource cleanup and PASS sentinel, plus thread/module
-    inventories and the unload handshake, are the teardown contract; meminfo
-    values are preserved here for observation but do not gate that contract.
-    """
-
-    uid = module_uid.lower()
-    s0_memory = dict(before.memory_free_bytes)
-    s1_memory = dict(after_probe.memory_free_bytes)
-    s2_memory = dict(after_unload.memory_free_bytes)
-    memory_deltas: dict[int, dict[str, dict[str, int] | None]] = {}
-    for partition in sorted(set(s0_memory) | set(s1_memory) | set(s2_memory)):
-        baseline = s0_memory.get(partition)
-        memory_deltas[partition] = {}
-        for stage, readings in (("s1", s1_memory), ("s2", s2_memory)):
-            current = readings.get(partition)
-            memory_deltas[partition][stage] = (
-                None
-                if baseline is None or current is None
-                else {
-                    "total_free": current[0] - baseline[0],
-                    "largest_block": current[1] - baseline[1],
-                }
-            )
-    thread_delta = set(after_probe.threads) - set(before.threads)
-    disappeared_before_unload = set(before.threads) - set(after_probe.threads)
-    module_uid_in_s1 = any(item[0] == uid for item in after_probe.modules)
-    module_uid_in_s2 = any(item[0] == uid for item in after_unload.modules)
-    issues: list[str] = []
-    if not module_uid_in_s1:
-        issues.append("probe module is absent from S1 before unload")
-    if len(module_threads) != 1:
-        issues.append("module must own exactly one remaining main thread at S1")
-    if thread_delta != set(module_threads):
-        issues.append("S1 contains leaked child thread(s) or an unexpected thread delta")
-    if disappeared_before_unload:
-        issues.append("S1 is missing a pre-probe thread")
-    if set(after_unload.threads) != set(before.threads):
-        issues.append("post-unload thread set differs from S0")
-    if set(after_unload.modules) != set(before.modules):
-        issues.append("post-unload module set differs from S0")
-    if module_uid_in_s2:
-        issues.append("probe module UID remains loaded after unload")
-    if not unload_confirmed:
-        issues.append("modstun stop/unload handshake or Unknown module check failed")
-    if not sentinel_ok:
-        issues.append("probe completion sentinel is missing or reports cleanup failure")
-    if not shell_qualified:
-        issues.append("PSPLink shell is not qualified after unload")
-    if not exprint_clean:
-        issues.append("exprint did not report a clean exception state")
-    if not host0_roundtrip:
-        issues.append("host0 round-trip failed after unload")
-
-    return {
-        "status": "PASS" if not issues else "FAIL",
-        "issues": issues,
-        "s0_thread_count": len(before.threads),
-        "s1_thread_count": len(after_probe.threads),
-        "s2_thread_count": len(after_unload.threads),
-        "s0_module_count": len(before.modules),
-        "s2_module_count": len(after_unload.modules),
-        "module_uid": uid,
-        "memory_free_deltas_bytes": memory_deltas,
-        "memory_free_deltas_diagnostic_only": True,
-    }
-
-
 def _tool(name: str) -> str | None:
     resolved = shutil.which(name)
     return Path(resolved).name if resolved else None
@@ -580,14 +380,6 @@ def _campaign_stream_complete(text: str, case_id: str) -> bool:
 
     if _campaign_completeness_contract(case_id) == "unregistered-no-completion-contract":
         return False
-    completion_markers = list(_PROBE_COMPLETE_RE.finditer(text))
-    if completion_markers:
-        # The final probe marker is a teardown control record, not a campaign
-        # result row. Validate its shape here; the caller separately records
-        # whether it says PASS or FAIL in the teardown verdict.
-        if not _has_probe_completion_sentinel(text):
-            return False
-        text = text[:completion_markers[0].start()]
     try:
         parsed = _parse_campaign_records(_normalise_unbound_identity_fields(text), case_id)
     except (ProtocolError, OSError, UnicodeError, ValueError):
@@ -967,12 +759,6 @@ class PsplinkCampaignRunner:
         self.firmware: str | None = None
         self.host0_qualified = False
         self.source_tree_problem: str | None = None
-        self._l0_cleanup_attempted = False
-        self._l1_attempted = False
-        self._l1_active = False
-        self._l1_transport_reattach_attempted = False
-        self._l2_reset_attempted = False
-        self._l2_transport_reattach_attempted = False
 
     @staticmethod
     def _ok(result: tuple[int | None, str, str, str]) -> bool:
@@ -1003,28 +789,8 @@ class PsplinkCampaignRunner:
         return result
 
     def _recover_usb_transport(
-        self, trigger: str, timeout: float, *, recovery_level: str = "L1"
+        self, trigger: str, timeout: float
     ) -> tuple[bool, str, tuple[int | None, str, str, str] | None]:
-        if recovery_level == "L1":
-            if self._l1_transport_reattach_attempted:
-                detail = "L1 PSPLink transport re-attach limit exhausted"
-                self._physical_intervention(f"{trigger}: {detail}")
-                return False, detail, None
-            if not self._l1_active:
-                if self._l1_attempted:
-                    detail = "L1 recovery limit exhausted"
-                    self._physical_intervention(f"{trigger}: {detail}")
-                    return False, detail, None
-                self._l1_attempted = True
-            self._l1_transport_reattach_attempted = True
-        elif recovery_level == "L2":
-            if self._l2_transport_reattach_attempted:
-                detail = "L2 PSPLink transport re-attach limit exhausted"
-                self._physical_intervention(f"{trigger}: {detail}")
-                return False, detail, None
-            self._l2_transport_reattach_attempted = True
-        else:
-            raise ValueError(f"unsupported recovery level {recovery_level!r}")
         recover = getattr(self.transport, "recover_psplink_transport", None)
         if not callable(recover):
             detail = "transport adapter does not implement PSPLink re-attach"
@@ -1048,7 +814,7 @@ class PsplinkCampaignRunner:
         return True, detail, verification
 
     def _shell_qualified(self) -> bool:
-        verified, _version, _attempts, _detail = _verify_psplink_shell(
+        verified, _version, _attempts, detail = _verify_psplink_shell(
             self.transport.run,
             self.shell_verification_timeout,
             take_unknown_command_events=getattr(
@@ -1057,6 +823,7 @@ class PsplinkCampaignRunner:
             record_event=self.recovery_events.append,
         )
         if not verified:
+            self._physical_intervention(detail)
             return False
         usbstat = self._request("usbstat")
         pwd = self._request("pwd")
@@ -1081,50 +848,6 @@ class PsplinkCampaignRunner:
             return False
         self.state = "READY"
         return True
-
-    def _take_snapshot(self) -> tuple[PsplinkSnapshot | None, str | None]:
-        parsed: dict[str, object] = {}
-        parsers = (
-            ("thlist", parse_psplink_thread_snapshot),
-            ("meminfo", parse_psplink_meminfo),
-            ("modlist", parse_psplink_module_list),
-        )
-        for command, parser in parsers:
-            result = self._request(command, self.cleanup_timeout)
-            if not self._ok(result):
-                return None, f"{command} command failed"
-            try:
-                parsed[command] = parser(result[1] + result[2])
-            except ValueError as exc:
-                return None, f"{command} output could not be parsed ({exc})"
-        memory = parsed["meminfo"]
-        if not isinstance(memory, dict):
-            return None, "meminfo parser returned an invalid snapshot"
-        return PsplinkSnapshot(
-            threads=parsed["thlist"],
-            memory_free_bytes=tuple(sorted(memory.items())),
-            modules=parsed["modlist"],
-        ), None
-
-    def _module_threads(
-        self, module_uid: str
-    ) -> tuple[frozenset[tuple[str, str]], str | None]:
-        result = self._request(f"modinfo {module_uid} t", self.cleanup_timeout)
-        if not self._ok(result):
-            return frozenset(), "module thread query failed"
-        try:
-            return parse_psplink_module_threads(result[1] + result[2], module_uid), None
-        except ValueError as exc:
-            return frozenset(), f"module thread output could not be parsed ({exc})"
-
-    def _enforce_teardown_check(
-        self, report: dict[str, object], module_uid: str | None = None
-    ) -> bool:
-        if report.get("status") == "PASS":
-            return True
-        issues = report.get("issues", [])
-        detail = "; ".join(str(issue) for issue in issues)
-        return self._recover(module_uid, f"probe teardown check failed: {detail}")
 
     def _unload(self, module_uid: str) -> bool:
         stopped = self._request(f"modstun {module_uid}", self.cleanup_timeout)
@@ -1162,18 +885,14 @@ class PsplinkCampaignRunner:
         self.terminal_reason = "PHYSICAL_INTERVENTION_REQUIRED"
 
     def _reset_once(self, detail: str) -> bool:
-        if self._l2_reset_attempted:
-            self._physical_intervention("L2 reset limit exhausted")
-            return False
         if not self._shell_qualified():
             if self.terminal_reason is None:
                 self._physical_intervention("PSPLink did not qualify before L2 reset")
             return False
-        self._l2_reset_attempted = True
         self.recovery_events.append(f"L2: {detail}")
         reset = self._request("reset", self.cleanup_timeout)
         reattached, _, _ = self._recover_usb_transport(
-            "PSPLink reset", self.cleanup_timeout, recovery_level="L2"
+            "after PSPLink reset", self.cleanup_timeout
         )
         if not reattached:
             return False
@@ -1200,34 +919,28 @@ class PsplinkCampaignRunner:
 
     def _recover(self, module_uid: str | None, detail: str) -> bool:
         self.state = "RECOVERABLE_FAULT"
-        if not self._l0_cleanup_attempted:
-            self._l0_cleanup_attempted = True
-            self.recovery_events.append(f"L0: one shell qualification/cleanup retry ({detail})")
-            if self._shell_qualified() and module_uid and self._unload(module_uid):
+        self.recovery_events.append(f"L0: one shell qualification retry ({detail})")
+        if self._shell_qualified():
+            if module_uid and self._unload(module_uid):
                 self.state = "READY"
                 return True
         if self.terminal_reason is not None:
             return False
 
-        if not self._l1_attempted:
-            self._l1_attempted = True
-            self._l1_active = True
-            self.recovery_events.append("L1: restart owned usbhostfs_pc process and requalify")
-            try:
-                self.transport.restart()
-                if not self._qualify():
-                    if self.terminal_reason == "IDENTITY_MISMATCH":
-                        return False
-                    self._physical_intervention("PSPLink shell did not qualify after L1 restart")
-                    return False
-                if module_uid and self._unload(module_uid):
-                    self.state = "READY"
-                    return True
-            except (OSError, RuntimeError):
-                self._physical_intervention("host stack restart failed")
+        self.recovery_events.append("L1: restart owned usbhostfs_pc process and requalify")
+        try:
+            self.transport.restart()
+        except (OSError, RuntimeError):
+            self._physical_intervention("host stack restart failed")
+            return False
+        if not self._qualify():
+            if self.terminal_reason == "IDENTITY_MISMATCH":
                 return False
-            finally:
-                self._l1_active = False
+            self._physical_intervention("PSPLink shell did not qualify after L1 restart")
+            return False
+        if module_uid and self._unload(module_uid):
+            self.state = "READY"
+            return True
         return self._reset_once("reset after L1 requalification")
 
     @staticmethod
@@ -1252,7 +965,6 @@ class PsplinkCampaignRunner:
         captured_host0_text: str | None,
         captured_host0_mtime_ns: int | None,
         host0_capture_problem: str | None,
-        teardown_check: dict[str, object] | None = None,
     ) -> dict[str, object]:
         host0_text = captured_host0_text or ""
         host0_mtime_ns = captured_host0_mtime_ns
@@ -1352,11 +1064,11 @@ class PsplinkCampaignRunner:
             blockers.extend(identity["DEVICE_IDENTITY_BLOCKERS"])
             try:
                 host0_parsed = _parse_campaign_records(
-                    _normalise_unbound_identity_fields(host0_record_text), case.case_id
+                    _normalise_unbound_identity_fields(host0_text), case.case_id
                 )
                 device_model_raw_value = _model_profile_raw_value(host0_parsed)
                 _validate_model_code_expectation(device_model_raw_value, self.model_code)
-                canonical = _canonicalize_psp(host0_record_text, metadata_args)
+                canonical = _canonicalize_psp(host0_text, metadata_args)
                 canonical_parsed = _parse_campaign_records(canonical, case.case_id)
                 parsed_ok = bool(canonical_parsed.results) and all(
                     item.status == "PASS" for item in canonical_parsed.results
@@ -1448,7 +1160,6 @@ class PsplinkCampaignRunner:
             "EVIDENCE_CLASS": "PSP_HARDWARE" if acceptance_eligible else "UNQUALIFIED_CAPTURE",
             "ACCEPTANCE_ELIGIBLE": acceptance_eligible,
             "ACCEPTANCE_BLOCKERS": blockers,
-            "TEARDOWN_CHECK": teardown_check,
             "PROCESS_STATUS": result[3],
             "RETURN_CODE": result[0],
         }
@@ -1480,10 +1191,8 @@ class PsplinkCampaignRunner:
         try:
             if not self._qualify():
                 if self.terminal_reason is None:
-                    self._physical_intervention(
-                        "PSPLink session did not qualify before campaign start; "
-                        "manual commands: `usbipd list`, `pspsh -e ver`"
-                    )
+                    self.state = "STOPPED"
+                    self.terminal_reason = "SHELL_QUALIFICATION_FAILED"
                 return self._report()
             for case in cases:
                 case_host0_log = (
@@ -1549,31 +1258,6 @@ class PsplinkCampaignRunner:
                         )
                     )
                     break
-                before, snapshot_problem = self._take_snapshot()
-                if before is None:
-                    self.state = "STOPPED"
-                    self.terminal_reason = "TEARDOWN_S0_SNAPSHOT_FAILED"
-                    self.envelopes.append(
-                        self._envelope(
-                            case,
-                            (None, "", "", self.terminal_reason),
-                            None,
-                            False,
-                            host0_log_path=case_host0_log,
-                            run_started_ns=None,
-                            run_finished_ns=time.time_ns(),
-                            host0_log_cleared=host0_log_cleared,
-                            captured_host0_text=None,
-                            captured_host0_mtime_ns=None,
-                            host0_capture_problem=snapshot_problem,
-                            teardown_check={
-                                "status": "BLOCKED",
-                                "stage": "S0",
-                                "issues": [snapshot_problem or "baseline snapshot failed"],
-                            },
-                        )
-                    )
-                    break
                 run_started_ns = time.time_ns()
                 self.state = "RUN_CASE"
                 result = self._request(f"ldstart host0:/{remote_path}", case.timeout)
@@ -1595,9 +1279,8 @@ class PsplinkCampaignRunner:
                             case_host0_log,
                             case.timeout,
                             not_before_ns=run_started_ns - HOST0_MTIME_TOLERANCE_NS,
-                            ready=lambda text, case_id=case.case_id: (
-                                _campaign_stream_complete(text, case_id)
-                                and _has_probe_completion_sentinel(text)
+                            ready=lambda text, case_id=case.case_id: _campaign_stream_complete(
+                                text, case_id
                             ),
                             include_mtime=True,
                         )
@@ -1632,52 +1315,19 @@ class PsplinkCampaignRunner:
                     if partial_problem:
                         host0_capture_problem += f"; {partial_problem}"
 
-                after_probe, s1_problem = self._take_snapshot()
-                module_threads: frozenset[tuple[str, str]] = frozenset()
-                module_thread_problem: str | None = None
-                if module_uid:
-                    module_threads, module_thread_problem = self._module_threads(module_uid)
-                else:
-                    module_thread_problem = "ldstart did not return a module UID"
+                host0_roundtrip_ok: bool | None = None
+                if case.case_id == "transport-write":
+                    host0_roundtrip_ok = self._verify_host0_roundtrip()
 
-                unload_ok = bool(module_uid and self._unload(module_uid))
-                after_unload, s2_problem = self._take_snapshot()
-                shell_qualified = self._shell_qualified()
-                exprint = self._request("exprint", self.cleanup_timeout)
-                exprint_clean = (
-                    self._ok(exprint)
-                    and re.search(r"\bno exception occurred\b", exprint[1] + exprint[2], re.I)
-                    is not None
-                )
-                host0_roundtrip_ok = self._verify_host0_roundtrip()
-                teardown_report = evaluate_teardown_snapshots(
-                    before,
-                    after_probe or before,
-                    after_unload or before,
-                    module_uid or "0x00000000",
-                    module_threads,
-                    unload_confirmed=unload_ok,
-                    sentinel_ok=parse_probe_completion_sentinel(captured_host0_text or ""),
-                    shell_qualified=shell_qualified,
-                    exprint_clean=exprint_clean,
-                    host0_roundtrip=host0_roundtrip_ok,
-                )
-                for stage, problem in (("S1", s1_problem), ("S2", s2_problem)):
-                    if problem:
-                        teardown_report["issues"].append(f"{stage} snapshot failed: {problem}")
-                if module_thread_problem:
-                    teardown_report["issues"].append(module_thread_problem)
-                if teardown_report["issues"]:
-                    teardown_report["status"] = "FAIL"
-                cleanup_ok = unload_ok and teardown_report["status"] == "PASS"
-                if teardown_report["status"] != "PASS":
-                    self._enforce_teardown_check(teardown_report, module_uid)
+                cleanup_ok = bool(module_uid and self._unload(module_uid))
+                if not cleanup_ok and self.terminal_reason is None:
+                    self._recover(module_uid, f"cleanup after {case.case_id}")
                 run_finished_ns = time.time_ns()
                 if case.case_id == "transport-write":
                     self.host0_qualified = bool(host0_roundtrip_ok)
-                if not host0_roundtrip_ok and self.terminal_reason is None:
-                    self.state = "STOPPED"
-                    self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
+                    if not self.host0_qualified:
+                        self.state = "STOPPED"
+                        self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
                 self.envelopes.append(
                     self._envelope(
                         case,
@@ -1691,7 +1341,6 @@ class PsplinkCampaignRunner:
                         captured_host0_text=captured_host0_text,
                         captured_host0_mtime_ns=captured_host0_mtime_ns,
                         host0_capture_problem=host0_capture_problem,
-                        teardown_check=teardown_report,
                     )
                 )
                 if self.terminal_reason:

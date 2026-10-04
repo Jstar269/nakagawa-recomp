@@ -431,6 +431,10 @@ def parse_dmac_invalid_tail_output(text: str, campaign_case: str):
                 raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP did not fail a setup gate")
             if values["cache_discipline"] != 0:
                 raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP claims a transfer cache bracket")
+            if values["source_intact"] != 0:
+                raise ProtocolError(
+                    f"{campaign_case}: {record.case_id} SKIP cannot claim source integrity"
+                )
             if any(values[field] != 0 for field in (
                 "P", "matches", "guards_outside", "post_guard", "overflow_band",
                 "payload_mutations",
@@ -472,6 +476,10 @@ def parse_dmac_invalid_tail_output(text: str, campaign_case: str):
         if values["P"] > requested or values["matches"] > requested or values["P"] > values["matches"]:
             raise ProtocolError(f"{campaign_case}: {record.case_id} copy counts exceed the request")
         if launch.endpoint == "dst":
+            if values["payload_mutations"] != 0:
+                raise ProtocolError(
+                    f"{campaign_case}: {record.case_id} destination cell claims source payload mutations"
+                )
             if values["post_guard"] > DMAC_INVALID_POST_GUARD_BYTES or \
                     values["overflow_band"] > DMAC_INVALID_OVERFLOW_BAND_BYTES:
                 raise ProtocolError(f"{campaign_case}: {record.case_id} mutation count exceeds its region")

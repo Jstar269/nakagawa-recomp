@@ -33,21 +33,12 @@ from psp_oracle.protocol import (
     DMAC_SIZE_MATRIX_TRIALS,
 )
 from psp_oracle.run_psplink import (
-    PsplinkCampaignRunner,
-    PsplinkSnapshot,
     _parse_campaign_records,
-    _campaign_stream_complete,
     _record_summary,
     _split_command,
     _validate_host0_capture,
     annotate_terminal_outcome,
-    evaluate_teardown_snapshots,
     main as run_psplink_main,
-    parse_psplink_meminfo,
-    parse_psplink_module_list,
-    parse_psplink_module_threads,
-    parse_psplink_thread_snapshot,
-    parse_probe_completion_sentinel,
 )
 from psp_oracle.parse_golden import (
     AUDIO_OUT_COUNTS,
@@ -260,6 +251,7 @@ class NewProbeResultParserTests(unittest.TestCase):
                                 executed: int = 1, prefix: int = 0,
                                 matches: int = 0, guards_outside: int = 0,
                                 post_guard: int = 0, overflow_band: int = 0,
+                                source_intact: int = 1,
                                 payload_mutations: int = 0,
                                 setup_mask: int = 0xF,
                                 source_addr: int = 0x08811000,
@@ -273,7 +265,7 @@ class NewProbeResultParserTests(unittest.TestCase):
             "guards_outside": guards_outside,
             "post_guard": post_guard,
             "overflow_band": overflow_band,
-            "source_intact": 1,
+            "source_intact": source_intact,
             "setup_mask": setup_mask,
             "K": 0xC000,
             "delta": delta,
@@ -599,6 +591,13 @@ class NewProbeResultParserTests(unittest.TestCase):
                 )
                 with self.assertRaises(ProtocolError):
                     parse_dmac_invalid_tail_output(bad_classification, campaign_case)
+                payload_mutation = complete.replace(
+                    "payload_mutations=0x00000000",
+                    "payload_mutations=0x00000001",
+                    1,
+                )
+                with self.assertRaises(ProtocolError):
+                    parse_dmac_invalid_tail_output(payload_mutation, campaign_case)
 
     def test_invalid_tail_setup_skip_contains_no_transfer(self) -> None:
         campaign_case = "dma-invalid-tail-s0"
@@ -606,6 +605,7 @@ class NewProbeResultParserTests(unittest.TestCase):
             self._invalid_tail_named_row(
                 f"invalid-tail-s0-{cell}-{api}", api=api, endpoint=endpoint,
                 tier="S", status="SKIP", executed=0, setup_mask=0x7,
+                source_intact=0,
                 source_addr=0, destination_addr=0,
             )
             for api in ("memcpy", "try")
@@ -619,6 +619,11 @@ class NewProbeResultParserTests(unittest.TestCase):
         transferred = complete.replace(" executed=0x00000000", " executed=0x00000001", 1)
         with self.assertRaises(ProtocolError):
             parse_dmac_invalid_tail_output(transferred, campaign_case)
+        claimed_intact = complete.replace(
+            "source_intact=0x00000000", "source_intact=0x00000001", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(claimed_intact, campaign_case)
 
 
 class GeCorpusGateTests(unittest.TestCase):
@@ -1339,230 +1344,6 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertIn("stdout=subprocess.PIPE", launcher.read_text(encoding="utf-8"))
 
 
-class PspLinkTeardownSnapshotTests(unittest.TestCase):
-    THREADS = (
-        "<Thread List (2 entries)>\n"
-        "UID: 0x00000001 - Name: PspLink\n"
-        "UID: 0x00000002 - Name: USBThread\n"
-    )
-    MEMORY = (
-        "Memory Partitions:\n"
-        "N  |    BASE    |   SIZE   | TOTALFREE |  MAXFREE  | ATTR |\n"
-        "---|------------|----------|-----------|-----------|------|\n"
-        "1  | 0x08800000 | 33554432 |  20971520 |  16777216 | 000F |\n"
-        "2  | 0x88000000 | 53687091 |  33554432 |  25165824 | 000F |\n"
-    )
-    MODULES = (
-        "<Module List (1 modules)>\n"
-        "UID: 0x00000003 Attr: 0000 - Name: PspLink\n"
-    )
-
-    def snapshot(self, *, threads=None, memory=None, modules=None) -> PsplinkSnapshot:
-        return PsplinkSnapshot(
-            threads=frozenset(threads if threads is not None else {
-                ("0x00000001", "PspLink"), ("0x00000002", "USBThread")
-            }),
-            memory_free_bytes=tuple(sorted((memory if memory is not None else {
-                1: (20971520, 16777216), 2: (33554432, 25165824)
-            }).items())),
-            modules=frozenset(modules if modules is not None else {
-                ("0x00000003", "PspLink")
-            }),
-        )
-
-    def clean_triplet(self):
-        before = self.snapshot()
-        module_main = ("0x00000009", "user_main")
-        after_probe = self.snapshot(
-            threads=set(before.threads) | {module_main},
-            modules=set(before.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
-        )
-        return before, after_probe, before, module_main
-
-    def test_campaign_stream_gate_excludes_only_one_final_teardown_marker(self) -> None:
-        stream = (
-            "NAKAGAWA_PSP_META schema=1 source=psp model=fixture firmware=test "
-            + "binary_sha256=" + "0" * 64 + " source_commit=" + "1" * 40 + "\n"
-            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SYSTEM-001 case_id=model-profile "
-            "status=PASS result=0x3 out0=0x3 out1=0x06060110 out2=0xde\n"
-        )
-        passing = stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
-        failing = stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=FAIL\n"
-
-        self.assertTrue(_campaign_stream_complete(passing, "model-profile"))
-        self.assertTrue(_campaign_stream_complete(failing, "model-profile"))
-        self.assertTrue(parse_probe_completion_sentinel(passing))
-        self.assertFalse(parse_probe_completion_sentinel(failing))
-        self.assertFalse(
-            _campaign_stream_complete(
-                passing + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n",
-                "model-profile",
-            )
-        )
-        self.assertFalse(
-            _campaign_stream_complete(
-                passing + "unexpected trailing output\n", "model-profile"
-            )
-        )
-
-    def test_thlist_parser_requires_complete_uid_and_name_set(self) -> None:
-        self.assertEqual(parse_psplink_thread_snapshot(self.THREADS), {
-            ("0x00000001", "PspLink"), ("0x00000002", "USBThread")
-        })
-        with self.assertRaises(ValueError):
-            parse_psplink_thread_snapshot(
-                "<Thread List (2 entries)>\nUID: 0x1 - Name: PspLink\n"
-            )
-
-    def test_meminfo_parser_compares_total_and_largest_free_bytes_per_partition(self) -> None:
-        self.assertEqual(parse_psplink_meminfo(self.MEMORY), {
-            1: (20971520, 16777216), 2: (33554432, 25165824)
-        })
-        with self.assertRaises(ValueError):
-            parse_psplink_meminfo(
-                "Memory Partitions:\nN | BASE | SIZE | TOTALFREE | MAXFREE | ATTR\n"
-            )
-
-    def test_modlist_and_module_thread_parsers_return_uid_name_sets(self) -> None:
-        self.assertEqual(parse_psplink_module_list(self.MODULES), {
-            ("0x00000003", "PspLink")
-        })
-        output = (
-            "UID: 0x00000008 Attr: 0000 - Name: NAKAGAWA_PSP_ORACLE\n"
-            "Module Thread (1)\nUID: 0x00000009 - Name: user_main\n"
-        )
-        self.assertEqual(parse_psplink_module_threads(output, "0x00000008"), {
-            ("0x00000009", "user_main")
-        })
-
-    def test_snapshot_uses_psplink_module_inventory_command(self) -> None:
-        runner = PsplinkCampaignRunner(
-            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
-        )
-        outputs = [
-            (0, self.THREADS, "", "PROCESS_EXITED"),
-            (0, self.MEMORY, "", "PROCESS_EXITED"),
-            (0, self.MODULES, "", "PROCESS_EXITED"),
-        ]
-        with patch.object(runner, "_request", side_effect=outputs) as request:
-            snapshot, problem = runner._take_snapshot()
-        self.assertIsNone(problem)
-        self.assertIsNotNone(snapshot)
-        self.assertEqual(
-            [entry.args[0] for entry in request.call_args_list],
-            ["thlist", "meminfo", "modlist"],
-        )
-
-    def test_three_snapshot_check_passes_clean_unload(self) -> None:
-        before, after_probe, after_unload, module_main = self.clean_triplet()
-        report = evaluate_teardown_snapshots(
-            before, after_probe, after_unload, "0x00000008", {module_main},
-            unload_confirmed=True,
-            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
-            host0_roundtrip=True,
-        )
-        self.assertEqual(report["status"], "PASS")
-        self.assertEqual(report["issues"], [])
-
-    def test_three_snapshot_check_reports_allocator_drift_without_failing_teardown(self) -> None:
-        before, after_probe, _after_unload, module_main = self.clean_triplet()
-        after_probe = self.snapshot(
-            threads=after_probe.threads,
-            memory={1: (20967424, 16773120), 2: (33550336, 25161216)},
-            modules=after_probe.modules,
-        )
-        after_unload = self.snapshot(
-            memory={1: (20970496, 16770000), 2: (33550336, 25161728)},
-        )
-
-        report = evaluate_teardown_snapshots(
-            before, after_probe, after_unload, "0x00000008", {module_main},
-            unload_confirmed=True,
-            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
-            host0_roundtrip=True,
-        )
-
-        self.assertEqual(report["status"], "PASS")
-        self.assertEqual(report["issues"], [])
-        self.assertTrue(report["memory_free_deltas_diagnostic_only"])
-        self.assertEqual(report["memory_free_deltas_bytes"], {
-            1: {
-                "s1": {"total_free": -4096, "largest_block": -4096},
-                "s2": {"total_free": -1024, "largest_block": -7216},
-            },
-            2: {
-                "s1": {"total_free": -4096, "largest_block": -4608},
-                "s2": {"total_free": -4096, "largest_block": -4096},
-            },
-        })
-
-    def test_three_snapshot_check_fails_on_thread_and_module_residue(self) -> None:
-        before, after_probe, _after_unload, module_main = self.clean_triplet()
-        after_probe = self.snapshot(
-            threads=set(after_probe.threads) | {("0x0000000a", "oracle-thread")},
-            modules=set(after_probe.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
-        )
-        after_unload = self.snapshot(
-            memory={1: (20971520, 16777216), 2: (33550336, 25161728)},
-            modules=set(before.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
-        )
-        report = evaluate_teardown_snapshots(
-            before, after_probe, after_unload, "0x00000008", {module_main},
-            unload_confirmed=True,
-            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
-            host0_roundtrip=True,
-        )
-        self.assertEqual(report["status"], "FAIL")
-        self.assertTrue(any("child thread" in issue for issue in report["issues"]))
-        self.assertTrue(any("module set" in issue for issue in report["issues"]))
-        self.assertNotIn(
-            "post-unload per-partition free memory differs from S0", report["issues"]
-        )
-
-    def test_three_snapshot_check_fails_when_modstun_handshake_is_unconfirmed(self) -> None:
-        before, after_probe, after_unload, module_main = self.clean_triplet()
-        report = evaluate_teardown_snapshots(
-            before, after_probe, after_unload, "0x00000008", {module_main},
-            unload_confirmed=False,
-            sentinel_ok=True, shell_qualified=True, exprint_clean=True,
-            host0_roundtrip=True,
-        )
-        self.assertEqual(report["status"], "FAIL")
-        self.assertTrue(any("modstun" in issue for issue in report["issues"]))
-
-    def test_teardown_failure_enters_the_bounded_recovery_ladder(self) -> None:
-        runner = PsplinkCampaignRunner(
-            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
-        )
-        report = {"status": "FAIL", "issues": ["thread set changed"]}
-        with patch.object(runner, "_recover", return_value=True) as recover:
-            self.assertTrue(runner._enforce_teardown_check(
-                report, module_uid="0x00000008"
-            ))
-        recover.assert_called_once_with(
-            "0x00000008", "probe teardown check failed: thread set changed"
-        )
-
-    def test_probe_teardown_is_ordered_and_main_never_self_deletes(self) -> None:
-        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c").read_text(
-            encoding="utf-8"
-        )
-        teardown = probe.split("static void probe_teardown(", 1)[1].split("\n}\n", 1)[0]
-        ordered_calls = (
-            "sceKernelDcacheWritebackAll()", "probe_teardown_children()",
-            "probe_teardown_objects()", "probe_teardown_io_audio()",
-            "probe_teardown_memory()", "probe_teardown_state()",
-            "probe_teardown_host0(emulated)", "NAKAGAWA_PSP_COMPLETE",
-            "sceKernelSleepThread()",
-        )
-        positions = [teardown.index(call) for call in ordered_calls]
-        self.assertEqual(positions, sorted(positions))
-        main = probe.split("int main(int argc, char *argv[])", 1)[1]
-        self.assertNotIn("sceKernelExitDeleteThread", main)
-        teardown_test = probe.split("static void run_teardown_test(", 1)[1].split("\n}", 1)[0]
-        self.assertNotIn("sceKernelExitDeleteThread", teardown_test)
-
-
 class PspOracleBuildRouteTests(unittest.TestCase):
     """Keep the merged CASE/Makefile/import contract structurally explicit."""
 
@@ -1697,7 +1478,8 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn('"concurrent-try-try"', self.probe)
         self.assertIn('"concurrent-try-memcpy"', self.probe)
 
-    def test_invalid_tail_probe_fails_closed_before_the_call(self) -> None:
+    def test_invalid_tail_source_declares_setup_guards_and_skip_support(self) -> None:
+        """Source-shape guard only; this does not prove fail-closed control flow."""
         self.assertIn("PSP_LARGE_MEMORY = 0", self.makefile)
         self.assertIn("sceKernelAllocPartitionMemory", self.probe)
         self.assertIn("PSP_SMEM_High", self.probe)
@@ -1713,7 +1495,8 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertNotIn("DMAC_BOUNDARY_BLOCK_BASE", self.probe)
         self.assertIn('"SKIP"', self.probe)
 
-    def test_invalid_tail_probe_never_dma_accesses_unowned_memory(self) -> None:
+    def test_invalid_tail_source_declares_zero_size_s0_and_scratch_bounds(self) -> None:
+        """Keep the source declarations visible; geometry is tested separately."""
         self.assertIn("dmac_call(api, dst, src, 0u)", self.probe)
         self.assertIn("dmac_call(DMAC_INVALID_API, dst, src, requested)", self.probe)
         self.assertIn("DMAC_INVALID_SCRATCH_BYTES", self.probe)
