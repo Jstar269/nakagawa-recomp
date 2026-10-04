@@ -38,7 +38,9 @@ typedef enum {
     NK_RUNTIME_PACKAGE_OK = 0,
     NK_RUNTIME_PACKAGE_MISSING,
     NK_RUNTIME_PACKAGE_INCOMPATIBLE,
-    NK_RUNTIME_PACKAGE_STALE
+    NK_RUNTIME_PACKAGE_STALE,
+    /* A cached check has not produced a trustworthy package result. */
+    NK_RUNTIME_PACKAGE_UNKNOWN = 4
 } NkRuntimePackageStatus;
 
 typedef struct {

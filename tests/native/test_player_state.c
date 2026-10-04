@@ -650,6 +650,7 @@ static const char *runtime_package_status_name(NkRuntimePackageStatus status) {
         case NK_RUNTIME_PACKAGE_MISSING: return "MISSING";
         case NK_RUNTIME_PACKAGE_INCOMPATIBLE: return "INCOMPATIBLE";
         case NK_RUNTIME_PACKAGE_STALE: return "STALE";
+        case NK_RUNTIME_PACKAGE_UNKNOWN: return "UNKNOWN";
         default: return "UNKNOWN";
     }
 }
@@ -2932,6 +2933,80 @@ int main(int argc, char **argv) {
         else nk_ps_set_env("NK_INSTALL_ROOT", NULL);
 
         free(capp);
+    }
+
+    /* 22. A worker-start failure is title-owned rather than cache-owned: a
+     * cache invalidation preserves it for the same title, while remove and
+     * re-add drops the old record so the new title starts unresolved-free. */
+    printf("[PLAYER_STATE_TEST] Subtest 22: worker-start failure lifetime\n");
+    fflush(stdout);
+    {
+        PlayerApp *failure_state = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(failure_state != NULL);
+        nk_library_init(&failure_state->library);
+        char failure_cache[512];
+        assert(nk_platform_get_path(NK_PATH_CACHE, failure_cache,
+                                    sizeof(failure_cache)));
+        const char failure_file[] = "worker-failure-659.json";
+        size_t failure_cache_len = strlen(failure_cache);
+        assert(failure_cache_len + 1 + sizeof(failure_file) <=
+               sizeof(failure_state->library.library_path));
+        memcpy(failure_state->library.library_path, failure_cache,
+               failure_cache_len);
+        failure_state->library.library_path[failure_cache_len] =
+            nk_platform_path_separator();
+        memcpy(failure_state->library.library_path + failure_cache_len + 1,
+               failure_file, sizeof(failure_file));
+        remove(failure_state->library.library_path);
+
+        NkGameEntry failed_entry;
+        seed_entry(&failed_entry, "FAIL65901", "Worker Failure A");
+        snprintf(failed_entry.title_id, sizeof(failed_entry.title_id),
+                 "worker-failure-a");
+        snprintf(failed_entry.selected_executable,
+                 sizeof(failed_entry.selected_executable), "EBOOT.BIN");
+        NkGameEntry other_entry;
+        seed_entry(&other_entry, "FAIL65902", "Worker Failure B");
+        snprintf(other_entry.title_id, sizeof(other_entry.title_id),
+                 "worker-failure-b");
+        snprintf(other_entry.selected_executable,
+                 sizeof(other_entry.selected_executable), "EBOOT.BIN");
+        assert(nk_library_add_or_update(&failure_state->library,
+                                        &failed_entry) == NK_OK);
+        assert(nk_library_add_or_update(&failure_state->library,
+                                        &other_entry) == NK_OK);
+        player_app_sync_library(failure_state);
+        assert(failure_state->game_count == 2);
+        GameRecord failed_game = failure_state->games[0];
+        player_app_runtime_package_cache_mark_failed(failure_state, 0);
+        assert(player_app_runtime_package_worker_start_failed(
+            failure_state, &failed_game));
+        assert(player_app_cached_runtime_package_status(
+                   failure_state, &failed_game) == NK_RUNTIME_PACKAGE_UNKNOWN);
+        assert(player_app_runtime_package_check_failed(failure_state,
+                                                       &failed_game));
+        player_app_runtime_package_cache_invalidate(failure_state);
+        assert(player_app_cached_runtime_package_status(
+                   failure_state, &failed_game) == NK_RUNTIME_PACKAGE_UNKNOWN);
+        assert(player_app_runtime_package_check_failed(failure_state,
+                                                       &failed_game));
+
+        assert(player_app_remove_game(failure_state, 0));
+        assert(!player_app_runtime_package_worker_start_failed(
+            failure_state, &failed_game));
+        assert(nk_library_add_or_update(&failure_state->library,
+                                        &failed_entry) == NK_OK);
+        player_app_sync_library(failure_state);
+        int readded_index = player_app_find_game_by_disc_id(
+            failure_state, failed_game.disc_id);
+        assert(readded_index >= 0);
+        assert(player_app_cached_runtime_package_status(
+                   failure_state, &failure_state->games[readded_index]) ==
+               NK_RUNTIME_PACKAGE_MISSING);
+        assert(!player_app_runtime_package_check_failed(
+            failure_state, &failure_state->games[readded_index]));
+        remove(failure_state->library.library_path);
+        free(failure_state);
     }
 
     free(app);

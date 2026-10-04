@@ -369,6 +369,7 @@ class NativePlayerUiTests(unittest.TestCase):
         wait_background: bool = False,
         catalog_reload_count: int = 0,
         build_ready_test: bool = False,
+        post_build_ready: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
         width: int = 1280,
@@ -390,6 +391,8 @@ class NativePlayerUiTests(unittest.TestCase):
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
             if build_ready_test:
+                synthetic_ready_package(runtime_root)
+            elif post_build_ready:
                 synthetic_ready_package(runtime_root)
             catalog_overlay: Path | None = None
             if catalog_reload_count:
@@ -820,6 +823,8 @@ class NativePlayerUiTests(unittest.TestCase):
         failed_frames = [frame for frame in frames
                          if frame["selected_package_check_failed"] == "1"]
         self.assertTrue(failed_frames, run["stdout"])
+        self.assertTrue(all(frame["selected_package_status"] == "4"
+                            for frame in failed_frames), run["stdout"])
         self.assertTrue(all(frame["package_check_failed_badge"] == "1"
                             for frame in failed_frames), run["stdout"])
         self.assertTrue(all(frame["titles_failed"] == "1" and
@@ -876,6 +881,203 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertGreaterEqual(
             int(frames[-1]["package_status_thread_attempts"]), 3
         )
+
+    def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
+        run = self.run_player(
+            "library",
+            events=(
+                "START_SYNTHETIC_BUILD=2",
+                "WAIT_MS=2200",
+                "START_SYNTHETIC_BUILD=1",
+                "WAIT_VIEW=error,10000",
+                "ASSERT_VIEW=error",
+            ),
+            wait_background=True,
+            env_extra={
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "2"
+            },
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] synthetic_build result=PASS index=1 disc=TEST00006",
+            run["stdout"],
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] synthetic_build result=PASS index=0 disc=TEST00005",
+            run["stdout"],
+        )
+        self.assertIn(
+            "Package status for TEST00006 is unresolved", run["stderr"]
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(
+            any(int(frame["package_status_thread_attempts"]) >= 3
+                for frame in frames),
+            run["stdout"],
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] post_build_validation status=1", run["stdout"]
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] assert_view result=PASS actual=error",
+            run["stdout"],
+        )
+
+    def test_failed_post_build_check_same_disc_cache_epoch_is_not_stale(self) -> None:
+        run = self.run_player(
+            "library",
+            events=(
+                "START_SYNTHETIC_BUILD=2",
+                "WAIT_MS=2200",
+                "INVALIDATE_AND_START_SYNTHETIC_BUILD=2",
+                "WAIT_VIEW=error,10000",
+                "ASSERT_VIEW=error",
+            ),
+            wait_background=True,
+            env_extra={
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "2"
+            },
+        )
+        action_line = next(
+            line for line in run["stdout"].splitlines()
+            if line.startswith(
+                "[PLAYER_UI_TEST] invalidate_cache_and_synthetic_build"
+            )
+        )
+        action_match = re.search(
+            r"result=PASS index=1 disc=TEST00006 generation=(\d+) "
+            r"build_session_generation=(\d+)$",
+            action_line,
+        )
+        self.assertIsNotNone(action_match, run["stdout"])
+        assert action_match is not None
+        self.assertGreater(int(action_match.group(1)), 0)
+        self.assertGreater(int(action_match.group(2)), 0)
+        post_match = re.search(
+            r"\[PLAYER_UI_TEST\] post_build_validation status=1 .*?"
+            r"build_session_generation=(\d+) "
+            r"current_build_session_generation=(\d+)",
+            run["stdout"],
+        )
+        self.assertIsNotNone(post_match, run["stdout"])
+        assert post_match is not None
+        self.assertEqual(post_match.group(1), post_match.group(2), run["stdout"])
+        self.assertEqual(post_match.group(1), action_match.group(2), run["stdout"])
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(
+            any(int(frame["package_status_thread_attempts"]) >= 3
+                for frame in frames),
+            run["stdout"],
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] assert_view result=PASS actual=error",
+            run["stdout"],
+        )
+
+    def test_worker_start_failure_does_not_block_other_title_builds(self) -> None:
+        """A's worker-start failure cannot strand the post-build latch for B.
+
+        A fails before either B build starts, and B completes both builds. The
+        failure selector is title-keyed so this does not depend on worker
+        scheduling or a global create-attempt ordinal.
+        """
+        run = self.run_player(
+            "library",
+            events=(
+                "START_SYNTHETIC_BUILD=1",
+                "WAIT_PACKAGE_FAILURE=TEST00005,1",
+                "START_SYNTHETIC_BUILD=2",
+                "WAIT_VIEW=ready_library,10000",
+                "START_SYNTHETIC_BUILD=2",
+                "WAIT_VIEW=ready_library,10000",
+                "ASSERT_VIEW=ready_library",
+                "QUIT",
+            ),
+            runtime_ready=True,
+            post_build_ready=True,
+            wait_background=True,
+            env_extra={
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_FOR": "TEST00005"
+            },
+        )
+        post_build_lines = [
+            line for line in run["stdout"].splitlines()
+            if "post_build_transition" in line and "disc=TEST00006" in line
+        ]
+        self.assertEqual(len(post_build_lines), 2, run["stdout"])
+        unresolved = [
+            line for line in run["stderr"].splitlines()
+            if "is unresolved because its worker could not start" in line
+        ]
+        self.assertGreaterEqual(len(unresolved), 1, run["stderr"])
+        self.assertTrue(all("TEST00005" in line for line in unresolved), run["stderr"])
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(
+            any(frame["selected_disc"] == "TEST00005" and
+                frame["selected_package_check_failed"] == "1" and
+                frame["selected_package_status"] == "4"
+                for frame in frames),
+            run["stdout"],
+        )
+        self.assertEqual(frames[-1]["selected_disc"], "TEST00006")
+        self.assertEqual(frames[-1]["selected_package_check_failed"], "0")
+        self.assertEqual(frames[-1]["selected_package_status"], "0")
+
+    def test_repeated_post_build_failures_keep_prior_title_retryable(self) -> None:
+        run = self.run_player(
+            "library",
+            events=(
+                "START_SYNTHETIC_BUILD=2",
+                "WAIT_PACKAGE_FAILURE=TEST00006,1",
+                "START_SYNTHETIC_BUILD=1",
+                "WAIT_PACKAGE_FAILURE=TEST00005,1",
+                "KEY_RIGHT",
+                "KEY_RETURN",
+                "WAIT_PACKAGE_FAILURE=TEST00006,2",
+                "QUIT",
+            ),
+            runtime_ready=True,
+            post_build_ready=True,
+            wait_background=True,
+            env_extra={
+                # B fails on its post-build check, A fails on the next build,
+                # and B fails again on the explicit retry. The following
+                # repeated failures must stay attributed to their titles.
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_FOR":
+                    "TEST00005,TEST00006"
+            },
+        )
+        self.assertIn(
+            "Package status for TEST00006 is unresolved", run["stderr"]
+        )
+        self.assertIn(
+            "Package status for TEST00005 is unresolved", run["stderr"]
+        )
+        unresolved = [
+            line for line in run["stderr"].splitlines()
+            if "is unresolved because its worker could not start" in line
+        ]
+        self.assertGreaterEqual(
+            sum("TEST00005" in line for line in unresolved), 2, run["stderr"]
+        )
+        self.assertGreaterEqual(
+            sum("TEST00006" in line for line in unresolved), 2, run["stderr"]
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(
+            any(frame["selected_disc"] == "TEST00006" and
+                frame["selected_package_check_failed"] == "1" and
+                frame["selected_package_status"] == "4"
+                for frame in frames),
+            run["stdout"],
+        )
+        self.assertEqual(frames[-1]["selected_disc"], "TEST00006")
+        self.assertEqual(frames[-1]["selected_package_check_failed"], "1")
+        self.assertEqual(frames[-1]["selected_package_status"], "4")
+        self.assertEqual(frames[-1]["titles_pending"], "0")
 
     def test_texture_cache_saturation_with_in_flight_jobs_does_not_double_free(
         self,

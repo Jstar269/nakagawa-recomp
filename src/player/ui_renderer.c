@@ -1683,12 +1683,14 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     const char *card_status = package_check_failed ? "PACKAGE CHECK FAILED"
         : (game->is_experimental ? "EXPERIMENTAL"
             : (package_checking ? "CHECKING PACKAGE"
-                : (package_status == NK_RUNTIME_PACKAGE_STALE ? "PACKAGE STALE"
-                    : (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE
-                        ? "PACKAGE INCOMPATIBLE"
-                        : (runtime_required ? "RUNTIME REQUIRED"
-                            : ((game->assets_staged && !game->is_prepared)
-                                ? "ASSETS STAGED" : status_label(game->status)))))));
+                : (package_status == NK_RUNTIME_PACKAGE_UNKNOWN
+                    ? "PACKAGE STATUS UNKNOWN"
+                    : (package_status == NK_RUNTIME_PACKAGE_STALE ? "PACKAGE STALE"
+                        : (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE
+                            ? "PACKAGE INCOMPATIBLE"
+                            : (runtime_required ? "RUNTIME REQUIRED"
+                                : ((game->assets_staged && !game->is_prepared)
+                                    ? "ASSETS STAGED" : status_label(game->status))))))));
     s_last_status_badge = (SDL_FRect){
         hero_x + 32.0f, hero_y + 28.0f, badge_width(card_status), 24.0f
     };
@@ -1698,6 +1700,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
 #endif
     draw_badge(ren, hero_x + 32.0f, hero_y + 28.0f, card_status,
                (game->is_experimental || package_checking || package_check_failed || runtime_required ||
+                package_status == NK_RUNTIME_PACKAGE_UNKNOWN ||
                 package_status == NK_RUNTIME_PACKAGE_STALE ||
                 package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE)
                    ? COLOR_AMBER : COLOR_EMERALD);
@@ -1880,6 +1883,9 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             app->request_package_status_retry = true;
         }
         focus++;
+    } else if (package_status == NK_RUNTIME_PACKAGE_UNKNOWN) {
+        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                         "PACKAGE STATUS UNKNOWN");
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "REBUILD PACKAGE", true, in, primary_focused)) {

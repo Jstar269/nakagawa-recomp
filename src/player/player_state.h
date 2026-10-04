@@ -93,6 +93,7 @@ typedef struct {
     bool identity_valid;
     bool validation_pending;
     bool validation_failed;
+    bool explicit_retry_pending;
     bool runtime_available;
     char disc_id[MAX_DISC_ID_LEN];
     char title_id[64];
@@ -101,6 +102,18 @@ typedef struct {
     NkRuntimePackageStatus status;
     uint64_t last_checked_ms;
 } PlayerRuntimePackageCacheEntry;
+
+/* A worker-create failure has no validator result to keep in the cache. Keep
+ * that unresolved state in a bounded, title-keyed side record so a successful
+ * validation of another title can invalidate the cache without making this
+ * title look like MISSING. The key includes the selected executable because a
+ * title may legitimately switch between EBOOT.BIN and a fallback. */
+typedef struct {
+    bool valid;
+    char disc_id[MAX_DISC_ID_LEN];
+    char title_id[64];
+    char selected_executable[MAX_PATH_LEN];
+} PlayerRuntimePackageWorkerFailure;
 
 typedef struct {
     PlayerPrepStage stage;
@@ -233,6 +246,7 @@ typedef struct {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
     PlayerRuntimePackageCacheEntry runtime_package_cache[MAX_LIBRARY_GAMES];
+    PlayerRuntimePackageWorkerFailure runtime_package_worker_failures[MAX_LIBRARY_GAMES];
     uint64_t runtime_package_cache_generation;
     int game_count;
     int selected_game_index;
@@ -362,6 +376,14 @@ bool player_app_runtime_package_check_pending(const PlayerApp *app,
                                                const GameRecord *game);
 bool player_app_runtime_package_check_failed(const PlayerApp *app,
                                               const GameRecord *game);
+bool player_app_runtime_package_worker_start_failed(const PlayerApp *app,
+                                                     const GameRecord *game);
+void player_app_runtime_package_worker_start_failed_record(
+    PlayerApp *app, const GameRecord *game);
+void player_app_runtime_package_worker_start_failed_clear(
+    PlayerApp *app, const GameRecord *game);
+void player_app_runtime_package_cache_mark_explicit_retry(PlayerApp *app,
+                                                          int game_index);
 void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
                                                   int game_index);
 void player_app_runtime_package_cache_invalidate(PlayerApp *app);

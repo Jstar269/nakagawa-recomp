@@ -118,6 +118,85 @@ void player_app_runtime_package_cache_invalidate(PlayerApp *app) {
     app->runtime_package_cache_generation++;
 }
 
+static bool player_runtime_worker_failure_matches(
+    const PlayerRuntimePackageWorkerFailure *failure,
+    const GameRecord *game) {
+    return failure && failure->valid && game &&
+        strcmp(failure->disc_id, game->disc_id) == 0 &&
+        strcmp(failure->title_id, game->title_id) == 0 &&
+        strcmp(failure->selected_executable, game->selected_executable) == 0;
+}
+
+static int player_runtime_worker_failure_index(
+    const PlayerApp *app, const GameRecord *game) {
+    if (!app || !game) return -1;
+    for (int i = 0; i < MAX_LIBRARY_GAMES; i++) {
+        if (player_runtime_worker_failure_matches(
+                &app->runtime_package_worker_failures[i], game)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void player_app_prune_runtime_worker_failures(PlayerApp *app) {
+    if (!app) return;
+    for (int i = 0; i < MAX_LIBRARY_GAMES; i++) {
+        PlayerRuntimePackageWorkerFailure *failure =
+            &app->runtime_package_worker_failures[i];
+        if (!failure->valid) continue;
+        bool still_present = false;
+        for (int j = 0; j < app->game_count; j++) {
+            if (player_runtime_worker_failure_matches(failure,
+                                                       &app->games[j])) {
+                still_present = true;
+                break;
+            }
+        }
+        if (!still_present) memset(failure, 0, sizeof(*failure));
+    }
+}
+
+bool player_app_runtime_package_worker_start_failed(
+    const PlayerApp *app, const GameRecord *game) {
+    return player_runtime_worker_failure_index(app, game) >= 0;
+}
+
+void player_app_runtime_package_worker_start_failed_record(
+    PlayerApp *app, const GameRecord *game) {
+    if (!app || !game) return;
+    if (player_runtime_worker_failure_index(app, game) >= 0) return;
+    int slot = -1;
+    for (int i = 0; i < MAX_LIBRARY_GAMES; i++) {
+        if (!app->runtime_package_worker_failures[i].valid) {
+            slot = i;
+            break;
+        }
+    }
+    /* The side table is bounded to the maximum library size. A full table can
+       only mean the caller has not synchronized after removing a title; do
+       not evict another unresolved title to make room. */
+    if (slot < 0) return;
+    PlayerRuntimePackageWorkerFailure *failure =
+        &app->runtime_package_worker_failures[slot];
+    memset(failure, 0, sizeof(*failure));
+    failure->valid = true;
+    snprintf(failure->disc_id, sizeof(failure->disc_id), "%s", game->disc_id);
+    snprintf(failure->title_id, sizeof(failure->title_id), "%s", game->title_id);
+    snprintf(failure->selected_executable, sizeof(failure->selected_executable),
+             "%s", game->selected_executable);
+}
+
+void player_app_runtime_package_worker_start_failed_clear(
+    PlayerApp *app, const GameRecord *game) {
+    if (!app || !game) return;
+    int index = player_runtime_worker_failure_index(app, game);
+    if (index >= 0) {
+        memset(&app->runtime_package_worker_failures[index], 0,
+               sizeof(app->runtime_package_worker_failures[index]));
+    }
+}
+
 static void player_runtime_cache_set_game_key(
     PlayerRuntimePackageCacheEntry *entry, const GameRecord *game) {
     if (!entry || !game) return;
@@ -145,6 +224,23 @@ void player_app_runtime_package_cache_mark_pending(PlayerApp *app,
     entry->validation_failed = false;
 }
 
+void player_app_runtime_package_cache_mark_explicit_retry(PlayerApp *app,
+                                                          int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    PlayerRuntimePackageCacheEntry *entry =
+        &app->runtime_package_cache[game_index];
+    const GameRecord *game = &app->games[game_index];
+    bool same_game = strcmp(entry->disc_id, game->disc_id) == 0 &&
+                     strcmp(entry->title_id, game->title_id) == 0 &&
+                     strcmp(entry->selected_executable,
+                            game->selected_executable) == 0;
+    if (!same_game) {
+        memset(entry, 0, sizeof(*entry));
+        player_runtime_cache_set_game_key(entry, game);
+    }
+    entry->explicit_retry_pending = true;
+}
+
 void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
                                                    int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return;
@@ -157,6 +253,8 @@ void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
     entry->runtime_available = false;
     entry->package_identity[0] = '\0';
     entry->last_checked_ms = 0;
+    player_app_runtime_package_worker_start_failed_record(
+        app, &app->games[game_index]);
 }
 
 void player_app_runtime_package_cache_store(
@@ -223,9 +321,17 @@ static const PlayerRuntimePackageCacheEntry *player_runtime_cache_for_game(
 
 NkRuntimePackageStatus player_app_cached_runtime_package_status(
     const PlayerApp *app, const GameRecord *game) {
+    /* This record survives cache invalidation and distinguishes a worker
+       infrastructure failure from a validator result of MISSING. */
+    if (player_app_runtime_package_worker_start_failed(app, game)) {
+        return NK_RUNTIME_PACKAGE_UNKNOWN;
+    }
     const PlayerRuntimePackageCacheEntry *entry =
         player_runtime_cache_for_game(app, game);
     if (entry && entry->status_valid) return entry->status;
+    /* A failed worker start produced no package result; do not turn that
+       infrastructure failure into a validated MISSING status. */
+    if (entry && entry->validation_failed) return NK_RUNTIME_PACKAGE_UNKNOWN;
     return game && game->title_id[0] == '\0'
         ? NK_RUNTIME_PACKAGE_INCOMPATIBLE : NK_RUNTIME_PACKAGE_MISSING;
 }
@@ -239,8 +345,15 @@ bool player_app_runtime_package_check_pending(const PlayerApp *app,
 
 bool player_app_runtime_package_check_failed(const PlayerApp *app,
                                               const GameRecord *game) {
+    /* A retry has claimed this title again. Keep the title-keyed worker
+       failure record until a result arrives, but let the renderer show the
+       in-flight check instead of a stale failure badge. A second worker-start
+       failure clears validation_pending before returning here and restores
+       the actionable failure state. */
     const PlayerRuntimePackageCacheEntry *entry =
         player_runtime_cache_for_game(app, game);
+    if (entry && entry->validation_pending) return false;
+    if (player_app_runtime_package_worker_start_failed(app, game)) return true;
     return entry && entry->validation_failed;
 }
 
@@ -288,6 +401,10 @@ void player_app_sync_library(PlayerApp *app) {
             app->selected_game_index = app->game_count - 1;
         }
     }
+    /* Library synchronization intentionally invalidates the result cache, but
+       a title-keyed worker-start failure remains actionable while that title
+       is still present. Removal drops it; re-adding then starts clean. */
+    player_app_prune_runtime_worker_failures(app);
 }
 
 bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming) {
