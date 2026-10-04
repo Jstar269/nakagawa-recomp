@@ -26,6 +26,24 @@ extern "C" {
 
 typedef struct NkKeystore NkKeystore;
 
+/*
+ * Overwrite `len` bytes at `p` with zeros in a way the compiler may not
+ * discard as a dead store.
+ *
+ * The decryption boundary holds the user's PSP keys in ordinary heap memory.
+ * free() returns that memory to the allocator without clearing it, so without
+ * this the key bytes stay readable in freed heap for the life of the process
+ * and can be picked up by any later allocation of the same size.  memset() is
+ * not sufficient on its own: a compiler is entitled to delete a memset whose
+ * result is never read, which is exactly the case for a buffer being freed.
+ *
+ * Route through the platform's non-eliding primitive where one exists
+ * (explicit_bzero / memset_s / SecureZeroMemory), and otherwise fall back to a
+ * volatile byte loop, which the standard forbids the optimizer from removing.
+ * The `volatile` qualifier is load-bearing and must not be "simplified" away.
+ */
+void nk_secure_zero(void *p, size_t len);
+
 /* Structured view of a "prx.tag.0xXXXXXXXX" recipe entry. */
 typedef struct NkPrxTagEntry {
     int have_code;

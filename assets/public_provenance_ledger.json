@@ -2604,7 +2604,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b214590e5de1d1fe38e1a366003142f8c579c11570c036773b1f825aecff7708"
+      "sha256": "c984874df0fa343f302e10b10ea31944c008b1720b8bec7bc37f844ae583f2fc"
     },
     {
       "path": "src/core/nk_psp_keystore.h",
@@ -2616,7 +2616,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a5673da31d5b4ab11ec6448665ebf3571ae3d1517c0b9c528a3f65ee53db3de1"
+      "sha256": "129e794035b5412c3e81540f1618c0a98569df59a3daa457c3b71e4d0db986c8"
     },
     {
       "path": "src/core/nk_psp_kirk.c",
@@ -8533,7 +8533,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7094d28b0a104f384b929352c875563c9cf7f5b6110869d5db5c0386dff349cc"
+      "sha256": "2f6087d3fe92fe30443e64844e168728b2e8d516d3920f0d48712e04c29ac4bc"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",

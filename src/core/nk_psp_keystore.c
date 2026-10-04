@@ -19,6 +19,35 @@
 #include "nk_psp_crypto.h"
 #include "nk_psp_keystore.h"
 
+void nk_secure_zero(void *p, size_t len)
+{
+    if (p == NULL || len == 0) return;
+
+#if defined(_WIN32) || defined(_WIN64)
+    /* SecureZeroMemory is documented as not removable by the optimizer and
+     * is a macro over RtlSecureZeroMemory in the platform SDK. */
+    SecureZeroMemory(p, len);
+    return;
+#elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 25)
+    /* explicit_bzero is guaranteed not to be optimized out. */
+    explicit_bzero(p, len);
+    return;
+#endif
+#endif
+
+    /* Portable fallback.  Every write goes through a volatile-qualified
+     * lvalue, so the store is an observable side effect the compiler is not
+     * permitted to drop, even though the buffer is dead immediately after. */
+    {
+        volatile unsigned char *v = (volatile unsigned char *)p;
+        size_t i;
+        for (i = 0; i < len; i++) {
+            v[i] = 0;
+        }
+    }
+}
+
 typedef struct {
     char name[72];
     uint8_t bytes[144];
@@ -394,6 +423,9 @@ int nk_keystore_load_file(NkKeystore *ks, const char *path,
             snprintf(err, err_len, "key file %s: %s", path, detail);
         }
     }
+    /* The buffer holds the user's keys in hex text form, so it is wiped before
+     * release for the same reason the entry arrays are. */
+    nk_secure_zero(buffer, NK_KEYSTORE_MAX_BYTES + 1);
     free(buffer);
     return status;
 }
@@ -452,6 +484,14 @@ NkKeystore *nk_keystore_create(void)
 void nk_keystore_free(NkKeystore *ks)
 {
     if (ks == NULL) return;
+    /* Wipe the entry storage before releasing it: these arrays hold the user's
+     * keys verbatim, and free() alone leaves them readable in the heap. */
+    if (ks->flat != NULL) {
+        nk_secure_zero(ks->flat, NK_KEYSTORE_MAX_ENTRIES * sizeof(FlatEntry));
+    }
+    if (ks->tags != NULL) {
+        nk_secure_zero(ks->tags, NK_KEYSTORE_MAX_ENTRIES * sizeof(TagEntry));
+    }
     free(ks->flat);
     free(ks->tags);
     free(ks);
