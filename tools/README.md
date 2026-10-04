@@ -264,6 +264,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ppmdiff.py` | Diff two PPM framebuffer directories, optionally watching for changes. |
 | `ppm2png.py` | Convert framebuffer snapshots written by the runtime into PNG. |
 | `pngcmp.py` | Compare two framebuffer PNGs written by `ppm2png.py`. |
+| `frame_capture_check.py` | Temporal acceptance check for present-truthful frame captures: frame accounting, black/stale-frame and frame-gap detection, and watchdog/present-gap classification. |
 | `padscript_from_log.py` | Convert recorded controller transitions into a replay pad script. |
 | `mem_debug.py` | Interactive memory and CPU-state query and mutation tool for bring-up. |
 
@@ -452,6 +453,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_perf_summary_diff.py` | Performance summary comparison within a tolerance. |
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |
 | `test_ppmdiff_coverage.py` | Fail-closed coverage tests for the framebuffer diff. |
+| `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |
 | `test_progress_tracker.py` | Tests for the progress tracker evidence checks. |
 | `test_psp_issue_matrix.py` | Issue classification matrix: manifest-backed classes and fixture coverage. |
