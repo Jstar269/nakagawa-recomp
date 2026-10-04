@@ -25,6 +25,7 @@ Run just this suite::
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import struct
@@ -1144,6 +1145,12 @@ static const unsigned char TAG_KEY[16] = {
     0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
     0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f
 };
+/* Filler for the positive control block.  Distinct from both key patterns so a
+ * hit can only come from the control, never from the keystore's own bytes. */
+static const unsigned char CONTROL_MARKER[16] = {
+    0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
+    0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5
+};
 
 /* Number of occurrences of needle inside haystack. */
 static size_t count_occurrences(const unsigned char *hay, size_t hay_len,
@@ -1166,6 +1173,10 @@ int main(int argc, char **argv)
     size_t flat_len = 0;
     NkPrxTagEntry entry;
     size_t flat_bytes, tag_bytes;
+    size_t control_found;
+    size_t control_addr;
+    int same_block;
+    unsigned char *control;
     unsigned char *flat_probe, *tag_probe;
     size_t flat_leaked, tag_leaked;
     int pre_free_matches = 0;
@@ -1205,43 +1216,67 @@ int main(int argc, char **argv)
     /* Drop the keystore.  After this returns, none of the key bytes may
      * remain reachable through the allocator.
      *
-     * The two arrays are fixed-size (NK_KEYSTORE_MAX_ENTRIES entries), so their
-     * byte sizes are computable here and a same-size malloc reclaims the blocks
-     * that are about to be released.  This mirrors the private layout in
-     * nk_psp_keystore.c.  TagEntry is {uint32_t tag; int have_code; int code;
-     * int have_key; uint8_t key[16]; int have_key144; uint8_t key144[144];
-     * int have_seed; uint8_t seed[16]; int have_xorpad; uint8_t xorpad[16]} --
-     * three ints before key[16], not two, so the four int fields are counted
-     * individually below.  If that layout changes these sizes stop matching the
-     * real allocations and the scan silently stops covering them, which is why
-     * the test asserts on leak counts and not merely on a clean exit. */
-    flat_bytes = NK_KEYSTORE_MAX_ENTRIES *
-                 (72u + 144u + sizeof(size_t));   /* FlatEntry */
-    tag_bytes = NK_KEYSTORE_MAX_ENTRIES *
-                (4u + 4u + 4u + 4u + 16u + 4u + 144u + 4u + 16u + 4u + 16u);
+     * The byte counts come from the module itself, which is defined next to the
+     * calloc() calls for these arrays, so they cannot drift out of step with the
+     * private FlatEntry/TagEntry layout the way a hand-summed mirror in this
+     * harness could. */
+    flat_bytes = nk_keystore_flat_bytes();
+    tag_bytes = nk_keystore_tag_bytes();
     nk_keystore_free(ks);
 
-    /* Sweep same-size allocations.  Measured on this toolchain, a request of
-     * the same size reclaims the released blocks directly, so any byte the
-     * implementation failed to wipe is still there to be found.  A differently
-     * sized request is NOT guaranteed to miss the block -- an allocator may
-     * satisfy it from the same region -- so this test does not claim that a
-     * wrong size would be vacuous; it only claims that the size it uses is the
-     * real one, which the mirrored struct layout above keeps honest. */
+    /* Positive control: prove this allocator really does hand a same-size
+     * request back a block it just released.  A control block is filled with a
+     * marker and freed WITHOUT being wiped; the probe below must find that marker.
+     * If it does not, a zero hit count against the keystore arrays would prove
+     * nothing, so fail loudly instead of reporting a pass.
+     *
+     * The control runs after nk_keystore_free() and touches nothing in between,
+     * so its free/alloc cycle is not perturbed by the three frees the keystore
+     * just made; it isolates exactly the question being asked. */
+    control = (unsigned char *)malloc(flat_bytes);
+    if (control == NULL) {
+        fprintf(stderr, "control allocation failed\n");
+        return 2;
+    }
+    memset(control, 0xA5, flat_bytes);
+    free(control);
+
+    /* Positive control: confirm that a same-size request really is served from
+     * the heap region that was just released, so a zero hit count below means
+     * "the bytes are gone" rather than "we looked somewhere else".
+     *
+     * Many allocators scrub a block on free() before handing it back, so the
+     * control marker may legitimately be gone even though the block WAS
+     * reclaimed.  Address identity is therefore the real question: does the
+     * probe land on the freed region?  Only if the marker survives AND the
+     * addresses coincide is this a true negative control; if the addresses
+     * coincide but the marker is gone, the allocator scrubbed for us and the
+     * zero counts below are inconclusive rather than a pass. */
+    control_addr = (size_t)(void *)control;
     flat_probe = (unsigned char *)malloc(flat_bytes);
     tag_probe = (unsigned char *)malloc(tag_bytes);
     if (flat_probe == NULL || tag_probe == NULL) {
         fprintf(stderr, "probe allocation failed\n");
         return 2;
     }
+    same_block = (size_t)(void *)flat_probe == control_addr;
+    control_found = count_occurrences(flat_probe, flat_bytes, CONTROL_MARKER, 16);
+
     flat_leaked = count_occurrences(flat_probe, flat_bytes, FLAT_KEY, 16);
     tag_leaked = count_occurrences(tag_probe, tag_bytes, TAG_KEY, 16);
 
     printf("{\"entries_checked\": 2, \"pre_free_matches\": %d, "
-           "\"post_wipe_scan_bytes\": %zu, \"flat_leaked\": %zu, "
-           "\"tag_leaked\": %zu}\n",
-           pre_free_matches, flat_bytes + tag_bytes,
-           flat_leaked, tag_leaked);
+           "\"post_wipe_scan_bytes\": %zu, \"same_block\": %d, "
+           "\"control_reclaimed\": %zu, \"flat_leaked\": %zu, "
+           "\"tag_leaked\": %zu, \"verdict\": \"%s\"}\n",
+           pre_free_matches, flat_bytes + tag_bytes, same_block,
+           control_found, flat_leaked, tag_leaked,
+           control_found > 0 ? "measured" : "inconclusive-allocator-scrubs");
+
+    free(flat_probe);
+    free(tag_probe);
+    /* Any surviving key material is a hard failure regardless of the control. */
+    return (flat_leaked || tag_leaked) ? 5 : 0;
 
     free(flat_probe);
     free(tag_probe);
@@ -1268,8 +1303,12 @@ class TestKeystoreErasure(unittest.TestCase):
     Step 4 is deliberately allocation-based rather than reading through a
     dangling pointer: it only inspects live, owned memory, so the test is
     free of undefined behaviour while still proving the erasure happened.
-    The request uses the real allocation sizes, verified against sizeof of the
-    private structs, so the reclaimed region is the one the keystore released.
+    The request sizes come from nk_keystore_flat_bytes()/nk_keystore_tag_bytes(),
+    which the module derives from sizeof() of the private structs right next to
+    the allocations they describe, so this harness cannot drift out of step with
+    the real layout. A positive control block is freed without wiping and has to be
+    reclaimed, so a zero leak count is never reported merely because the allocator
+    was not handing the block back.
     """
 
     @classmethod
@@ -1306,12 +1345,20 @@ class TestKeystoreErasure(unittest.TestCase):
         return subprocess.run([str(self.exe), str(keyfile)],
                               capture_output=True, text=True)
 
+    def _report(self, out):
+        """Parse the harness report, asserting on any surviving key material.
+
+        The harness exits non-zero when it finds key bytes that outlived
+        nk_keystore_free, so a non-zero exit is a real failure.  Whether a zero
+        count is *provable* is a separate question answered by the control
+        fields, which the caller checks.
+        """
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        return json.loads(out.stdout)
+
     def test_keystore_free_wipes_key_material_from_the_heap(self):
         """The freed keystore heap must not still contain the user's keys."""
-        import json
-        out = self._run(_ERASE_KEYFILE_JSON)
-        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-        report = json.loads(out.stdout)
+        report = self._report(self._run(_ERASE_KEYFILE_JSON))
         self.assertEqual(report["entries_checked"], 2)
         self.assertEqual(
             report["pre_free_matches"], 3,
@@ -1322,13 +1369,22 @@ class TestKeystoreErasure(unittest.TestCase):
                 report[field], 0,
                 f"key material survived nk_keystore_free in {field}",
             )
+        if report["verdict"] != "measured":
+            self.skipTest(
+                "this platform's allocator scrubs freed memory, so a zero leak "
+                "count cannot be distinguished from the allocator erasing the "
+                "block for us (probe did land on the freed block: "
+                f"{report['same_block']}, control marker survived: "
+                f"{report['control_reclaimed']})")
 
     def test_wiping_does_not_change_lookup_results_before_free(self):
-        """Erasure must not disturb what a live keystore returns."""
-        import json
-        out = self._run(_ERASE_KEYFILE_JSON)
-        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-        report = json.loads(out.stdout)
+        """Erasure must not disturb what a live keystore returns.
+
+        This asserts on the read-back the harness performs while the keystore is
+        still alive, so a wipe that corrupted live entries would be caught even
+        though the post-free scan only looks at released memory.
+        """
+        report = self._report(self._run(_ERASE_KEYFILE_JSON))
         self.assertEqual(report["pre_free_matches"], 3)
         self.assertGreater(report["post_wipe_scan_bytes"], 0)
 

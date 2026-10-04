@@ -485,6 +485,16 @@ size_t nk_keystore_count(const NkKeystore *ks)
     return ks ? ks->flat_count + ks->tag_count : 0;
 }
 
+size_t nk_keystore_flat_bytes(void)
+{
+    return NK_KEYSTORE_MAX_ENTRIES * sizeof(FlatEntry);
+}
+
+size_t nk_keystore_tag_bytes(void)
+{
+    return NK_KEYSTORE_MAX_ENTRIES * sizeof(TagEntry);
+}
+
 NkKeystore *nk_keystore_create(void)
 {
     NkKeystore *ks = (NkKeystore *)calloc(1, sizeof(*ks));
@@ -502,12 +512,14 @@ void nk_keystore_free(NkKeystore *ks)
 {
     if (ks == NULL) return;
     /* Wipe the entry storage before releasing it: these arrays hold the user's
-     * keys verbatim, and free() alone leaves them readable in the heap. */
+     * keys verbatim, and free() alone leaves them readable in the heap.  The
+     * byte counts come from the same accessors the erasure harness uses, so the
+     * wiped extent and the observed extent cannot disagree. */
     if (ks->flat != NULL) {
-        nk_secure_zero(ks->flat, NK_KEYSTORE_MAX_ENTRIES * sizeof(FlatEntry));
+        nk_secure_zero(ks->flat, nk_keystore_flat_bytes());
     }
     if (ks->tags != NULL) {
-        nk_secure_zero(ks->tags, NK_KEYSTORE_MAX_ENTRIES * sizeof(TagEntry));
+        nk_secure_zero(ks->tags, nk_keystore_tag_bytes());
     }
     free(ks->flat);
     free(ks->tags);
