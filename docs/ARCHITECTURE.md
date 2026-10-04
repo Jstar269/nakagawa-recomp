@@ -465,6 +465,21 @@ a POSIX/ucontext compile path for host-neutral verification/portability work.
 Scheduler correctness includes priority selection, lifecycle, waits/timeouts, callback-aware waits,
 and wakeup semantics—not only context switching.
 
+Message Pipes pilot scheduler-owned semantic wait invocations (`sched_wait_*`). A nonrecycled
+numeric handle identifies one unfinished call independently of its thread and object. The record
+owns its thread association, callback/active-block state, deadline identity, terminal result and
+object-detach hook; `SrCoro` still owns executable host-stack preservation. Only the innermost
+block attaches to the TCB. Its result is captured before callback dispatch can install a child
+wait; callback-parked parents retain their own outcomes, including object deletion.
+
+Message Pipe queues retain only the handle and transfer-specific direction, size and mode.
+Notifications make a thread runnable but do not reserve bytes or grant a transfer. Every normal
+or abandoned invocation detaches through one object hook, which reconsiders satisfiable successor
+requests. Owner teardown invalidates all its invocations before detaching any; hooks never
+preempt, and composite terminate/delete completes before replacement execution. Other wait
+families remain on their existing APIs pending focused migration and semantic tests. This pilot
+does not establish speculative callback timeout policy or Message Pipe argument-five semantics.
+
 ### Clocks
 
 `sched.c` owns one authoritative monotonic microsecond timeline (`s_vtime_us`). Every guest-visible
