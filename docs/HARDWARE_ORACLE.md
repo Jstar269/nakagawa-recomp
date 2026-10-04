@@ -612,12 +612,20 @@ single-module query used for the unload handshake. S0 records threads,
 per-partition total/largest free bytes, and modules before load.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
 must show that the probe's only remaining thread is its main thread. After the
-`modstun` stop/unload handshake, S2 must match S0 for thread UID/name pairs, memory
-bytes, and module UID/name pairs, with the probe UID absent. The runner also requires
-a qualified shell, clean `exprint`, and the host0 round-trip. A failed or malformed
-check triggers the existing single L2 soft-reset fallback. **Repeated-launch PSPLink
-teardown hardware acceptance** remains `NOT_RUN` and is in the works under #352; source
-and unit-test success do not establish that a qualified console passes these checks.
+`modstun` stop/unload handshake, S2 must match S0 for thread UID/name pairs and
+module UID/name pairs, with the probe UID absent. Per-partition free-memory changes
+are retained as diagnostics; allocator equality is not a teardown gate. The runner
+also requires a qualified shell and the host0 round-trip. `exprint` output remains
+diagnostic because its interpretation is not qualified, so its status is `NOT_RUN`.
+Missing snapshots, incomplete host0 capture, or a failed probe block recovery. Only a
+completed probe with passing case records and a confirmed teardown failure may enter
+the L0/L1/L2 recovery ladder. The ladder allows one PSP reset per runner campaign/session,
+shared across every case in that launch: post-restart qualification, unload,
+host-stack restart, or L1 transport re-attach failure may proceed to the
+bounded L2 reset and transport re-attach. An L2 re-attach failure stops at L4.
+**Repeated-launch PSPLink
+teardown hardware acceptance** remains `NOT_RUN`; source and unit-test success do not
+establish that a qualified console passes these checks.
 
 An AI agent may own the host-side work. It must **never**:
 

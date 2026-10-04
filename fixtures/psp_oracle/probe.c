@@ -213,6 +213,12 @@ static void emit(int emulated, const char *text) {
 #define PROBE_TEARDOWN_CAPACITY 64u
 #define PROBE_TEARDOWN_PATH_CAPACITY 16u
 #define PROBE_TEARDOWN_PATH_LENGTH 96u
+
+enum {
+    PROBE_TEARDOWN_FAILED = -1,
+    PROBE_TEARDOWN_SKIPPED = 0,
+    PROBE_TEARDOWN_PASSED = 1,
+};
 #define PROBE_HOST0_ROUNDTRIP_PATH "host0:/nakagawa_transport_write.bin"
 
 typedef int (*ProbeUidDeleteFn)(SceUID);
@@ -455,13 +461,14 @@ static void probe_track_intr_token(int token) {
     s_teardown_tracking_failed = 1;
 }
 
-static void probe_untrack_intr_token(int token) {
+static int probe_untrack_intr_token(int token) {
     for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
         if (s_pending_intr_active[i] && s_pending_intr_tokens[i] == token) {
             s_pending_intr_active[i] = 0;
-            return;
+            return 1;
         }
     }
+    return 0;
 }
 
 int probe_suspend_intr(void) {
@@ -470,9 +477,22 @@ int probe_suspend_intr(void) {
     return token;
 }
 
-void probe_resume_intr(int token) {
+int probe_resume_intr(int token) {
     sceKernelCpuResumeIntr(token);
-    probe_untrack_intr_token(token);
+    /* IsCpuIntrSuspended interprets the saved token; IsCpuIntrEnable verifies
+       the live post-resume state.  The resume contract checks the
+       complementary CPU-enabled state: token 0 means interrupts remain
+       suspended, while a nonzero token restores delivery. */
+    const int expected_enabled = !sceKernelIsCpuIntrSuspended((unsigned int)token);
+    if (sceKernelIsCpuIntrEnable() != expected_enabled) {
+        s_teardown_tracking_failed = 1;
+        return -1;
+    }
+    if (!probe_untrack_intr_token(token)) {
+        s_teardown_tracking_failed = 1;
+        return -1;
+    }
+    return 0;
 }
 
 #define sceKernelCreateThread(...) \
@@ -4811,15 +4831,18 @@ static int probe_teardown_children(void) {
             s_owned_threads[i].active = 0;
             continue;
         }
-        if (info.status & (PSP_THREAD_RUNNING | PSP_THREAD_READY |
-                           PSP_THREAD_WAITING | PSP_THREAD_SUSPEND)) {
-            (void)sceKernelTerminateThread(s_owned_threads[i].uid);
+        if (probe_terminate_delete_thread(s_owned_threads[i].uid) < 0) {
+            success = 0;
         }
-        (void)probe_delete_thread(s_owned_threads[i].uid);
         memset(&info, 0, sizeof(info));
         info.size = sizeof(info);
         if (sceKernelReferThreadStatus(s_owned_threads[i].uid, &info) >= 0) {
             success = 0;
+            /* The atomic helper untracks after a successful call, but a
+               still-visible UID means the teardown contract was not met.
+               Keep ownership live so the final verdict cannot swallow the
+               residue or lose a later cleanup attempt. */
+            s_owned_threads[i].active = 1;
         } else {
             s_owned_threads[i].active = 0;
         }
@@ -4911,7 +4934,7 @@ static int probe_teardown_state(void) {
 #endif
     for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
         if (s_pending_intr_active[i]) {
-            probe_resume_intr(s_pending_intr_tokens[i]);
+            if (probe_resume_intr(s_pending_intr_tokens[i]) < 0) success = 0;
         }
     }
     return success;
@@ -4940,7 +4963,7 @@ static int probe_host0_roundtrip(void) {
 }
 
 static int probe_teardown_host0(int emulated) {
-    if (emulated) return 1;
+    if (emulated) return PROBE_TEARDOWN_SKIPPED;
     int success = 1;
     for (size_t i = 0; i < PROBE_TEARDOWN_PATH_CAPACITY; i++) {
         if (!s_owned_paths[i].active) continue;
@@ -4950,7 +4973,9 @@ static int probe_teardown_host0(int emulated) {
             s_owned_paths[i].active = 0;
         }
     }
-    return probe_host0_roundtrip() && success;
+    return probe_host0_roundtrip() && success
+               ? PROBE_TEARDOWN_PASSED
+               : PROBE_TEARDOWN_FAILED;
 }
 
 static void probe_teardown(int emulated) {
@@ -4961,7 +4986,8 @@ static void probe_teardown(int emulated) {
     if (!probe_teardown_io_audio()) success = 0;
     if (!probe_teardown_memory()) success = 0;
     if (!probe_teardown_state()) success = 0;
-    if (!probe_teardown_host0(emulated)) success = 0;
+    const int host0_result = probe_teardown_host0(emulated);
+    if (host0_result == PROBE_TEARDOWN_FAILED) success = 0;
 
 #ifdef PROBE_HOST0_LOG
     SceUID log_fd = -1;
@@ -4971,9 +4997,12 @@ static void probe_teardown(int emulated) {
     }
 #endif
     char sentinel[80];
+    const char *status = !success ? "FAIL"
+                         : host0_result == PROBE_TEARDOWN_SKIPPED ? "NOT_RUN"
+                         : "PASS";
     snprintf(sentinel, sizeof(sentinel),
              "NAKAGAWA_PSP_COMPLETE schema=1 status=%s\n",
-             success ? "PASS" : "FAIL");
+             status);
 #ifdef PROBE_HOST0_LOG
     if (log_fd >= 0) {
         const int wrote = sceIoWrite(log_fd, sentinel, (SceSize)strlen(sentinel));
