@@ -5835,7 +5835,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "00393a28ef58792b0e5a589a442f46dc32737d5a4f2d13b7abf0829990c655d7"
+      "sha256": "b6497f634651f1cfed81cfb514647e6ba9600a8c77017de751c8b7c27a4c3e2f"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7680,7 +7680,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2bdbc3da943a1ff7d87a497d96e6c812ab02b207976615f89ec5c09f417fc9be"
+      "sha256": "c06e829ab10217876cbcb7d04aabc04ecdffe74f033180b77bb4282a87702242"
     },
     {
       "path": "tools/test_funcdiff_cmp.py",
