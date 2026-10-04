@@ -64,12 +64,55 @@ class BlackAndStaleTest(unittest.TestCase):
             self.assertFalse(frames[1]["black"])
 
     def test_stale_duplicate_detected(self):
+        """Identical consecutive frames must be reported as duplicate_consecutive.
+
+        This asserts through run_check, which is where the stale-frame signal is
+        produced. Asserting only that two files hash equal would leave
+        duplicate_consecutive uncovered, so deleting that logic would keep the
+        suite green.
+        """
+        import json
+
         with tempfile.TemporaryDirectory() as d:
             write_ppm(Path(d) / "frame_0000.ppm", 8, 8, 77)
             write_ppm(Path(d) / "frame_0002.ppm", 8, 8, 77)     # identical content
-            frames = fcc.analyze_frames(d)
-            hashes = [f["sha256"] for f in frames]
-            self.assertEqual(hashes[0], hashes[1])
+            out = Path(d) / "report.json"
+            fcc.run_check(d, None, str(out))
+            report = json.loads(out.read_text())
+            pairs = [
+                (p["first"], p["second"])
+                for p in report["duplicate_consecutive"]
+            ]
+            self.assertIn(("frame_0000.ppm", "frame_0002.ppm"), pairs)
+
+    def test_distinct_frames_are_not_duplicates(self):
+        """The mirror image: genuinely different frames must NOT be flagged."""
+        import json
+
+        with tempfile.TemporaryDirectory() as d:
+            write_ppm(Path(d) / "frame_0000.ppm", 8, 8, 77)
+            write_ppm(Path(d) / "frame_0002.ppm", 8, 8, 200)   # different content
+            out = Path(d) / "report.json"
+            fcc.run_check(d, None, str(out))
+            report = json.loads(out.read_text())
+            self.assertEqual(report["duplicate_consecutive"], [])
+
+    def test_duplicates_are_not_compared_across_capture_sequences(self):
+        """frame_<n> and frame_v<n> are different sequences; never compare across.
+
+        analyze_frames() sorts by (style, frame), so identical content in a
+        rotating frame and a window frame would otherwise be reported as a
+        duplicate pair even though they were never adjacent in one run.
+        """
+        import json
+
+        with tempfile.TemporaryDirectory() as d:
+            write_ppm(Path(d) / "frame_0000.ppm", 8, 8, 55)     # rotating
+            write_ppm(Path(d) / "frame_v8300.ppm", 8, 8, 55)    # window, same bytes
+            out = Path(d) / "report.json"
+            fcc.run_check(d, None, str(out))
+            report = json.loads(out.read_text())
+            self.assertEqual(report["duplicate_consecutive"], [])
 
 
 class LogClassificationTest(unittest.TestCase):
@@ -92,6 +135,23 @@ FBSNAP f=200 -> snap_1.ppm
             self.assertEqual(r["present_gaps"][0]["gap"], 300)
             self.assertEqual(r["watchdogs"], [{"vblanks": 900}])
             self.assertEqual(len(r["legacy"]), 1)
+
+    def test_missing_log_is_an_error_not_an_empty_report(self):
+        """A --log path that does not exist must fail loudly.
+
+        Silently treating it as an empty log reports "no capture lines seen" for
+        a mistyped path, which is indistinguishable from a clean run.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            missing = Path(d) / "typo.log"
+            with self.assertRaises(FileNotFoundError):
+                fcc.classify_log(str(missing))
+
+    def test_absent_log_argument_is_not_an_error(self):
+        """No --log at all is legitimate: the tool then only sees the frames."""
+        report = fcc.classify_log(None)
+        self.assertEqual(report["capture_results"], [])
+        self.assertEqual(report["watchdogs"], [])
 
     def test_gap_classification(self):
         self.assertEqual(
@@ -151,6 +211,70 @@ class EmittedFormatContractTest(unittest.TestCase):
             fcc.RE_SKIPPED.search(self.LIVE_SKIPPED_LINE),
             "RE_SKIPPED stopped matching the emitted SKIPPED line",
         )
+
+    def test_legacy_skipped_line_is_counted_as_a_skip(self):
+        """src/rt/hle.c:14274 emits "FBSNAP f=%u -> SKIPPED (synchronisation failed)".
+
+        It is a dropped present, not a legacy capture of a file named "SKIPPED".
+        """
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "stderr.log"
+            log.write_text(
+                "FBSNAP f=300 -> SKIPPED (synchronisation failed)\n",
+                encoding="utf-8",
+            )
+            r = fcc.classify_log(str(log))
+            self.assertEqual(r["skipped"], [300])
+            self.assertEqual(r["legacy"], [])
+
+    def test_live_emitter_strings_in_hle_c(self):
+        """The hand-copied samples must still agree with the actual emitter.
+
+        A commit that rewords hle.c and updates these constants together would
+        otherwise leave the patterns stale with every test green -- the exact
+        regression this class exists to prevent. Read the source and rebuild each
+        sample from the format string the runtime actually uses.
+        """
+        src = (Path(__file__).resolve().parents[1] / "src" / "rt" / "hle.c").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        checks = [
+            (
+                "FBSNAP f=%u swapchain capture -> %s (result=%d)",
+                self.LIVE_RESULT_LINES[0],
+                fcc.RE_RESULT,
+            ),
+            (
+                "FBSNAP f=%u swapchain capture -> SKIPPED (no present serviced this frame)",
+                self.LIVE_SKIPPED_LINE,
+                fcc.RE_SKIPPED,
+            ),
+            (
+                "FBSNAP f=%u -> SKIPPED (synchronisation failed)",
+                None,
+                fcc.RE_LEGACY_SKIPPED,
+            ),
+        ]
+        for fmt, sample, pattern in checks:
+            self.assertIn(
+                fmt, src,
+                f"hle.c no longer contains the format string {fmt!r}; update the "
+                f"sample and the pattern together",
+            )
+            if sample is not None:
+                self.assertIsNotNone(
+                    pattern.search(sample),
+                    f"{pattern.pattern!r} does not match a line rendered from "
+                    f"the live format string {fmt!r}",
+                )
+            else:
+                # Render the format string the way the runtime does and require
+                # the pattern to classify it as a dropped present.
+                self.assertIsNotNone(
+                    pattern.search(fmt.replace("%u", "300", 1)),
+                    f"{pattern.pattern!r} does not match the line rendered from "
+                    f"the live format string {fmt!r}",
+                )
 
     def test_watchdog_line_matches_live_wording(self):
         """Regression: the runtime's wording is 'no NEW frame presented'."""

@@ -39,6 +39,12 @@ RE_RESULT = re.compile(
 )
 # "FBSNAP f=<vcount> swapchain capture -> SKIPPED (no present serviced this frame)"
 RE_SKIPPED = re.compile(r"FBSNAP f=(\d+) swapchain capture -> SKIPPED")
+# src/rt/hle.c:14274 also emits "FBSNAP f=<vcount> -> SKIPPED (synchronisation failed)"
+# on the legacy VRAM-side dump path.  It is a dropped present too, but without its
+# own pattern it falls through to RE_LEGACY and is recorded as a capture whose
+# path is the literal "SKIPPED", inflating legacy_snaps and undercounting
+# skipped_presents.  Match it as a skip before the generic legacy form.
+RE_LEGACY_SKIPPED = re.compile(r"FBSNAP f=(\d+) -> SKIPPED")
 # "PRESENT_GAP: vcount=<n> last_host_present=<n> gap=<n>" -- guest running with no
 # host present.  No emitter exists in the current tree; kept so an archived log
 # that already contains these lines is still classified rather than silently
@@ -138,7 +144,14 @@ def analyze_frames(directory):
 
 
 def classify_log(log_path):
-    """Parse the runtime stderr for capture results, skips, and present-gap lines."""
+    """Parse the runtime stderr for capture results, skips, and present-gap lines.
+
+    A missing log and an absent ``--log`` are deliberately NOT the same thing.
+    ``--log`` names a file the operator expects to exist, so silently returning
+    an empty report would report "no capture lines seen" for a mistyped or
+    uncopied path -- a silent under-report of exactly the kind this tool exists
+    to catch. When a path was supplied but is missing, raise instead.
+    """
     report = {
         "capture_results": [],   # {vcount, path, result}
         "skipped": [],
@@ -146,9 +159,14 @@ def classify_log(log_path):
         "watchdogs": [],         # {vblanks}
         "legacy": [],            # {vcount, path}
     }
-    if log_path is None or not Path(log_path).exists():
+    if log_path is None:
         return report
-    for line in Path(log_path).read_text(errors="replace").splitlines():
+    path = Path(log_path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"--log was given but does not exist: {log_path!r}; refusing to "
+            f"report an empty log as a clean capture run")
+    for line in path.read_text(errors="replace").splitlines():
         m = RE_RESULT.search(line)
         if m:
             report["capture_results"].append(
@@ -161,6 +179,12 @@ def classify_log(log_path):
             continue
         m = RE_SKIPPED.search(line)
         if m:
+            report["skipped"].append(int(m.group(1)))
+            continue
+        m = RE_LEGACY_SKIPPED.search(line)
+        if m:
+            # Legacy VRAM-side dump dropped this present too; count it as a skip
+            # rather than as a legacy capture of a file named "SKIPPED".
             report["skipped"].append(int(m.group(1)))
             continue
         m = RE_PRESENT_GAP.search(line)
@@ -209,10 +233,15 @@ def run_check(directory, log_path, out_path):
                 missing_for_success.append(r)
 
     black = [f["file"] for f in frames if f.get("black")]
+    # Only compare within one capture sequence. analyze_frames() sorts by
+    # (style, frame), so a directory holding both naming schemes puts every
+    # frame_<n> before every frame_v<n>; comparing across that boundary would
+    # report a duplicate pair for frames that were never adjacent in one run.
     duplicates = []
     prev = None
     for f in frames:
-        if ("sha256" in f and prev is not None and "sha256" in prev
+        if (prev is not None and "sha256" in f and "sha256" in prev
+                and f["style"] == prev["style"]
                 and f["sha256"] == prev["sha256"]):
             duplicates.append((prev["file"], f["file"]))
         prev = f
@@ -265,6 +294,9 @@ def main(argv=None):
 
     if not Path(args.dir).is_dir():
         print("frame_capture_check: --dir is not a directory", file=sys.stderr)
+        return 2
+    if args.log is not None and not Path(args.log).exists():
+        print(f"frame_capture_check: --log does not exist: {args.log}", file=sys.stderr)
         return 2
     result = run_check(args.dir, args.log, args.out)
 
