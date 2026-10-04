@@ -13266,6 +13266,25 @@ static void selftest_msgpipe_send_waiter_start(SelftestMsgPipeWaiterCtx *waiter,
     if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
 }
 
+static void selftest_msgpipe_waiter_start_sized(SelftestMsgPipeWaiterCtx *waiter,
+                                                uint32_t thread_uid, int priority,
+                                                uint32_t pipe_uid, uint32_t buffer,
+                                                uint32_t size, uint32_t resultp,
+                                                int is_send, int is_cb) {
+    waiter->tcb = fixture_thread(thread_uid, TH_READY, priority);
+    waiter->tcb->started = 1;
+    waiter->pipe_uid = pipe_uid;
+    waiter->buffer = buffer;
+    waiter->size = size;
+    waiter->resultp = resultp;
+    waiter->is_send = is_send;
+    waiter->is_cb = is_cb;
+    waiter->tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body, waiter,
+                                       (size_t)4 << 20);
+    s_cur = (int)(waiter->tcb - s_tcb);
+    if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
+}
+
 static void selftest_msgpipe_waiter_resume(SelftestMsgPipeWaiterCtx *waiter) {
     s_cur = (int)(waiter->tcb - s_tcb);
     if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
@@ -13276,6 +13295,108 @@ static void selftest_msgpipe_waiter_finish(SelftestMsgPipeWaiterCtx *waiter,
     if (!waiter->returned) selftest_msgpipe_waiter_resume(waiter);
     if (!waiter->returned && sched_count_waiters(pipe_uid) == 0)
         selftest_msgpipe_waiter_resume(waiter);
+}
+
+/* Priority-ordered Message Pipe wakes must still satisfy the requested transfer
+ * amount. A stronger waiter for eight bytes is not eligible after a two-byte
+ * edge, so the eligible lower-priority successor must be selected directly;
+ * otherwise the stronger waiter wakes, reblocks, and strands the successor
+ * until a second transfer edge arrives. Exercise both resource directions
+ * through the production nonblocking transfer NIDs. */
+static void test_msgpipe_priority_wake_skips_ineligible_waiter(void) {
+    const uint32_t buf = 0x08010000u, out = 0x08020000u;
+    const uint32_t name = 0x08030000u, res = 0x08040000u;
+    for (int is_send = 0; is_send < 2; ++is_send) {
+        reset_fixture();
+        sr_hle_init();
+        MEM_W8(name, is_send ? 's' : 'r');
+        MEM_W8(name + 1u, 'p');
+        MEM_W8(name + 2u, 0u);
+        for (uint32_t i = 0; i < 16u; ++i) MEM_W8(buf + i, (uint8_t)(0xa0u + i));
+
+        /* Keep the producer above both waiters so this test observes the wake
+         * choice before scheduler preemption runs either continuation. */
+        TCB *owner = fixture_thread(0x33980u + (uint32_t)is_send, TH_RUNNING, 1);
+        owner->started = 1;
+        int owner_index = (int)(owner - s_tcb);
+        s_cur = owner_index;
+        uint32_t attr = is_send ? 0x0100u : 0x1000u;
+        uint32_t pipe = selftest_msgpipe_create(name, attr, 8u);
+        expect(pipe != 0u && pipe < 0x80000000u,
+               is_send ? "priority-send fixture creates an eight-byte pipe" :
+                         "priority-receive fixture creates an eight-byte pipe");
+        if (!pipe || pipe >= 0x80000000u) continue;
+
+        CpuState cpu = {0};
+        if (is_send) {
+            msgpipe_setup(&cpu, pipe, buf, 8u, 0u, res + 12u);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+                   "priority-send fixture fills the pipe before waiters park");
+        }
+
+        SelftestMsgPipeWaiterCtx high = {0}, low = {0};
+        if (is_send) {
+            selftest_msgpipe_waiter_start_sized(&high, 0x33982u, 8, pipe,
+                                                buf + 8u, 8u, res, 1, 0);
+            selftest_msgpipe_waiter_start_sized(&low, 0x33983u, 45, pipe,
+                                                buf + 8u, 2u, res + 4u, 1, 0);
+        } else {
+            selftest_msgpipe_waiter_start_sized(&high, 0x33984u, 8, pipe,
+                                                out, 8u, res, 0, 0);
+            selftest_msgpipe_waiter_start_sized(&low, 0x33985u, 45, pipe,
+                                                out + 8u, 2u, res + 4u, 0, 0);
+        }
+        expect(high.tcb->state == TH_WAIT_OBJ && low.tcb->state == TH_WAIT_OBJ,
+               is_send ? "priority senders park with distinct requested sizes" :
+                         "priority receivers park with distinct requested sizes");
+
+        s_cur = owner_index;
+        if (is_send) {
+            msgpipe_wait_setup(&cpu, pipe, out + 16u, 2u, 0u, res + 12u, 0u);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u,
+                   "two-byte receive creates free space for priority senders");
+        } else {
+            msgpipe_setup(&cpu, pipe, buf + 8u, 2u, 0u, res + 12u);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+                   "two-byte send creates data for priority receivers");
+        }
+
+        /* The pre-fix implementation readies high first because it ranks by
+         * priority before checking eligibility. Let it take that wake and
+         * reblock so the stranded-successor failure is observable. */
+        if (high.tcb->state == TH_READY && !high.returned)
+            selftest_msgpipe_waiter_resume(&high);
+        expect(high.tcb->state == TH_WAIT_OBJ && low.tcb->state == TH_READY,
+               is_send ? "priority send wake skips an ineligible eight-byte head" :
+                         "priority receive wake skips an ineligible eight-byte head");
+        if (low.tcb->state == TH_READY)
+            selftest_msgpipe_waiter_resume(&low);
+        expect(low.returned && low.ret == 0u && MEM_R32(res + 4u) == 2u,
+               is_send ? "eligible lower-priority sender consumes two free bytes" :
+                         "eligible lower-priority receiver consumes two queued bytes");
+
+        s_cur = owner_index;
+        cpu = (CpuState){0};
+        cpu.r[4] = pipe;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+               "priority wake fixture deletes its Message Pipe");
+        if (high.tcb->state == TH_READY && !high.returned)
+            selftest_msgpipe_waiter_resume(&high);
+        if (low.tcb->state == TH_READY && !low.returned)
+            selftest_msgpipe_waiter_resume(&low);
+        expect(high.returned && high.ret == 0x800201b5u,
+               "ineligible high-priority waiter exits through WAIT_DELETE cleanup");
+        expect(low.returned,
+               "priority wake fixture retires the lower-priority waiter during cleanup");
+        if (high.tcb->coro) {
+            sr_coro_destroy(high.tcb->coro);
+            high.tcb->coro = NULL;
+        }
+        if (low.tcb->coro) {
+            sr_coro_destroy(low.tcb->coro);
+            low.tcb->coro = NULL;
+        }
+    }
 }
 
 static uint32_t issue339_create_pending_callback(void);
@@ -13334,15 +13455,20 @@ static void test_msgpipe_departure_reconsiders_successor(void) {
             expect(sr_syscall(&cpu, is_send ? NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE :
                                              NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
                    "departure fixture supplies two bytes or free slots");
-            expect(head.tcb->state == TH_READY && next.tcb->state == TH_WAIT_OBJ,
-                   "notification initially selects only the FIFO head");
-            selftest_msgpipe_waiter_resume(&head);
             if (departure == 0) {
+                expect(head.tcb->state == TH_READY && next.tcb->state == TH_WAIT_OBJ,
+                       "eligible FIFO head is selected before its successor");
+                selftest_msgpipe_waiter_resume(&head);
                 expect(head.returned && head.ret == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
                        "selected head fails transfer without consuming resource");
+                expect(next.tcb->state == TH_READY,
+                       "failed eligible head departure readies its successor");
             } else {
-                expect(!head.returned && head.tcb->state == TH_WAIT_OBJ,
-                       "unsatisfiable notified head reblocks");
+                expect(head.tcb->state == TH_WAIT_OBJ && next.tcb->state == TH_READY,
+                       "priority wake skips an ineligible head and selects its successor");
+                selftest_msgpipe_waiter_resume(&next);
+                expect(next.returned && next.ret == 0u && MEM_R32(res + 4u) == 2u,
+                       "eligible successor consumes the transfer edge directly");
                 s_cur = owner_index;
                 if (departure == 1) {
                     sr_hle_advance_time(1000001u);
@@ -13365,12 +13491,7 @@ static void test_msgpipe_departure_reconsiders_successor(void) {
                     }
                 }
             }
-            char message[128];
-            snprintf(message, sizeof message,
-                     "departure successor READY without new transfer (send=%d departure=%d)",
-                     is_send, departure);
-            expect(next.tcb->state == TH_READY, message);
-            if (next.tcb->state == TH_READY) {
+            if (departure == 0) {
                 selftest_msgpipe_waiter_resume(&next);
                 expect(next.returned && next.ret == 0u && MEM_R32(res + 4u) == 2u,
                        "departure successor consumes existing resource exactly once");
@@ -20494,6 +20615,7 @@ int main(int argc, char **argv) {
     test_msgpipe_departure_reconsiders_successor();
     test_msgpipe_invocation_lifetime();
     test_msgpipe_waiter_order();
+    test_msgpipe_priority_wake_skips_ineligible_waiter();
     test_msgpipe_repeated_transfer_skips_readied_waiter();
     test_msgpipe_callback_wakeup_skips_stale_head_waiter();
     test_msgpipe_callback_wakeup_skips_stale_send_priority_waiter();

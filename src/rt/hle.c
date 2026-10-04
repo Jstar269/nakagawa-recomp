@@ -16064,7 +16064,7 @@ static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_on
 
 static int msg_pipe_wake_one_waiter(MsgPipe *p, int is_send) {
     SrWaitHandle invocation;
-    return msg_pipe_select_waiter(p, is_send, 0, &invocation) &&
+    return msg_pipe_select_waiter(p, is_send, 1, &invocation) &&
            sched_wait_notify(invocation);
 }
 
