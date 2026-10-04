@@ -162,10 +162,11 @@ lost; every escalation appends a `RECOVERY_EVENTS` record to the epoch
 envelope. The ladder fails closed: exhaustion of L3 ends in L4, not in more L0s.
 The scalar adapter implements one L0 qualification/cleanup attempt, one L1 host
 USBHostFS restart or transport re-attach, and one qualified L2 `reset` followed
-by transport re-attach. It stops at L4 if recovery does not qualify. The adapter
-never binds or detaches USB devices: an absent or unbound PSPLink device includes
-the exact manual command in the L4 reason, and a failed attach or `ver` check
-stops after the single attempt.
+by transport re-attach. A failed L1 attach or `ver` check may proceed to L2 only
+while shell qualification still answers; an exhausted attach budget or failed
+qualification withholds reset and stops at L4. An L2 attach or `ver` failure
+also stops at L4. The adapter never binds or detaches USB devices: an absent or
+unbound PSPLink device includes the exact manual command in the L4 reason.
 
 ## 6. Evidence envelope
 
