@@ -5722,7 +5722,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cfd681b3e25e19fdef2d9431ad28380aa6f8d4b50c325cd0d59c8149a92f434b"
+      "sha256": "00393a28ef58792b0e5a589a442f46dc32737d5a4f2d13b7abf0829990c655d7"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7567,7 +7567,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "475f31f073c07e0bf90c170604fa5e03d0c47668d327f58085c47f6382d7971e"
+      "sha256": "2bdbc3da943a1ff7d87a497d96e6c812ab02b207976615f89ec5c09f417fc9be"
     },
     {
       "path": "tools/test_funcdiff_cmp.py",
@@ -9533,11 +9533,11 @@
   "admission": {
     "workflow": "admit-new-reviewed",
     "trusted_tree": "0f4deea1147c6abce2ac0cb679f8324e32f5bf2d",
-    "candidate_tree": "3534744560ae3072224c873ca7f384748f95e6c4",
+    "candidate_tree": "6fbe2fc76619b027fc48b101df8f4d8c6eb5760e",
     "admitted_paths": [
       "tools/frame_capture_check.py",
       "tools/test_frame_capture_check.py"
     ],
-    "authority_sha256": "0b4e9eb00ae8226d162603a54523b84fff69d28c490d3bcb2c023207dbdb2e7a"
+    "authority_sha256": "08c883f5b09b5627b52ceeec2de6e93fedba8d3a5336a3e8bc2c7d8413bd4069"
   }
 }
