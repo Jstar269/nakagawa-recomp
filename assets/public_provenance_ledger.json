@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "692787e83bae038697d659d5c5a06a4e0dada7729d808f46f8bce71943d00b17"
+      "sha256": "05f1ca163a7202a4f61dc43e10b31f8c0ea41ac4ab1700a6c91943e66444d87b"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -5519,7 +5519,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b4850571ac6391bd4d7128bbb5e9f18c129a41c44d762ff7ed6d1d9d2f37bb7f"
+      "sha256": "3bb5b3c5e006800d7663c90ea97c9d4f887fe4946b2bd305e135879542caf8db"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5824,6 +5824,18 @@
         "upstream_attribution": null
       },
       "sha256": "d935a6096b4b7a92759b512c832ab4544c543b3adf8a8162ec277b3ec807adc6"
+    },
+    {
+      "path": "tools/frame_capture_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "debug-and-analysis-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b6497f634651f1cfed81cfb514647e6ba9600a8c77017de751c8b7c27a4c3e2f"
     },
     {
       "path": "tools/funcdiff_cmp.py",
@@ -7657,6 +7669,18 @@
         "upstream_attribution": null
       },
       "sha256": "bcd3523bdc931172a726bcfd2424991eb6c1de1d5425de7fb734ee91f34d6ab7"
+    },
+    {
+      "path": "tools/test_frame_capture_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "debug-and-analysis-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c06e829ab10217876cbcb7d04aabc04ecdffe74f033180b77bb4282a87702242"
     },
     {
       "path": "tools/test_funcdiff_cmp.py",
