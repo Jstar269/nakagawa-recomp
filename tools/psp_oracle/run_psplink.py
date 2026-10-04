@@ -1074,6 +1074,7 @@ class PsplinkCampaignRunner:
         if recovery_level == "L1":
             if self._l1_transport_reattach_attempted:
                 detail = "L1 PSPLink transport re-attach limit exhausted"
+                self.recovery_events.append(f"L1: {detail} after {trigger}")
                 return False, detail, None
             if not self._l1_active:
                 if self._l1_attempted:
@@ -1321,6 +1322,9 @@ class PsplinkCampaignRunner:
             return False
         if not shell_qualified:
             if self.terminal_reason is None:
+                self.recovery_events.append(
+                    "L2: reset not attempted because PSPLink shell qualification failed"
+                )
                 self._physical_intervention("PSPLink did not qualify before L2 reset")
             return False
         self._l2_reset_attempted = True

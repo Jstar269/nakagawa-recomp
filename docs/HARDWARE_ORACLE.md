@@ -622,7 +622,10 @@ completed probe with passing case records and a confirmed teardown failure may e
 the L0/L1/L2 recovery ladder. The ladder allows one PSP reset per runner campaign/session,
 shared across every case in that launch: post-restart qualification, unload,
 host-stack restart, or L1 transport re-attach failure may proceed to the
-bounded L2 reset and transport re-attach. An L2 re-attach failure stops at L4.
+bounded L2 reset and transport re-attach when PSPLink shell qualification still
+answers. If qualification is lost or the L1 re-attach budget is exhausted, the
+runner withholds the reset command and stops at L4. An L2 re-attach failure
+stops at L4.
 **Repeated-launch PSPLink
 teardown hardware acceptance** remains `NOT_RUN`; source and unit-test success do not
 establish that a qualified console passes these checks.

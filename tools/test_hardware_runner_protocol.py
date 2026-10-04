@@ -2442,6 +2442,35 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertTrue(any(event.startswith("L2: reset ") for event in runner.recovery_events))
         self.assertFalse(any(event.startswith("L4:") for event in runner.recovery_events))
 
+    def test_exhausted_l1_reattach_is_reported_when_l2_lacks_qualified_shell(self):
+        transport = SimulatedPsplinkTransport()
+        transport.waiting_for_device = True
+        runner = PsplinkCampaignRunner(
+            transport,
+            console_model="PSP-3000-04g",
+            source_commit=SOURCE_COMMIT,
+            model_code=3,
+        )
+        # Model the L1 re-attach budget already consumed during the preceding
+        # recovery attempt. L2 is not authorized to issue reset without a
+        # currently qualified PSPLink shell.
+        runner._l1_transport_reattach_attempted = True
+
+        self.assertFalse(runner._reset_once("test exhausted L1 re-attach"))
+
+        self.assertEqual(
+            [command for command, _timeout in transport.commands].count("reset"), 0
+        )
+        self.assertEqual(runner.terminal_reason, "PHYSICAL_INTERVENTION_REQUIRED")
+        self.assertTrue(any(
+            "L1 PSPLink transport re-attach limit exhausted" in event
+            for event in runner.recovery_events
+        ))
+        self.assertTrue(any(
+            "reset not attempted because PSPLink shell qualification failed" in event
+            for event in runner.recovery_events
+        ), runner.recovery_events)
+
     def test_25_waiting_for_device_runs_one_transport_reattach_and_returns_verified_ver(self):
         transport = SimulatedPsplinkTransport()
         runner = PsplinkCampaignRunner(
