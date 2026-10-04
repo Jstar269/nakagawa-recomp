@@ -540,6 +540,12 @@
     "name": "sceKernelWaitEventFlagCB",
     "status": "unreviewed"
   },
+  "0x32bf938e": {
+    "classification": "dedicated",
+    "handler": "h_DeleteTlspl",
+    "name": "sceKernelDeleteTlspl",
+    "status": "unreviewed"
+  },
   "0x32e32dcb": {
     "classification": "dedicated",
     "handler": "h_GamedataDialogShutdown",
@@ -802,6 +808,12 @@
     "classification": "dedicated",
     "handler": "h_CpuIsIntrSuspended",
     "name": "sceKernelIsCpuIntrSuspended",
+    "status": "unreviewed"
+  },
+  "0x4a719fb2": {
+    "classification": "dedicated",
+    "handler": "h_FreeTlspl",
+    "name": "sceKernelFreeTlspl",
     "status": "unreviewed"
   },
   "0x4a9e5e29": {
@@ -1208,6 +1220,12 @@
     "name": "sceKernelLibcGettimeofday",
     "status": "unreviewed"
   },
+  "0x721067f3": {
+    "classification": "dedicated",
+    "handler": "h_ReferTlsplStatus",
+    "name": "sceKernelReferTlsplStatus",
+    "status": "unreviewed"
+  },
   "0x730ed8bc": {
     "classification": "dedicated",
     "handler": "h_ReferCallbackStatus",
@@ -1477,6 +1495,12 @@
     "handler": "h_MpegGetPcmAu",
     "name": "sceMpegGetPcmAu",
     "status": "controlled_unsupported"
+  },
+  "0x8daff657": {
+    "classification": "dedicated",
+    "handler": "h_CreateTlspl",
+    "name": "sceKernelCreateTlspl",
+    "status": "unreviewed"
   },
   "0x8eb9ec49": {
     "classification": "dedicated",
@@ -2541,6 +2565,12 @@
     "classification": "dedicated",
     "handler": "h_SasRevVON",
     "name": "__sceSasRevVON",
+    "status": "unreviewed"
+  },
+  "0xfa835cde": {
+    "classification": "dedicated",
+    "handler": "h_GetTlsAddr",
+    "name": "sceKernelGetTlsAddr",
     "status": "unreviewed"
   },
   "0xfa8a5739": {

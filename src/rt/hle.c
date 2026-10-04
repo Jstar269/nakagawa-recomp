@@ -1747,6 +1747,203 @@ static uint32_t h_ReferVplStatus(CpuState *s) {
     return 0;
 }
 
+/* User TLS pool: one fixed-size block is assigned to each guest thread that
+ * requests its address. The public EABI creation call supplies block size and
+ * block count in addition to the four argument registers. */
+#define TLSPL_MAX 16
+#define TLSPL_BAD_ID 0x800200d3u
+#define TLSPL_NO_MEMORY 0x80020190u
+#define TLSPL_BUSY 0x800201a8u
+#define TLSPL_ILLEGAL_SIZE 0x800201bcu
+#define TLSPL_ILLEGAL_ATTR 0x80020191u
+#define TLSPL_USER_PARTITION 2u
+#define TLSPL_ATTR_WAIT_PRIORITY 0x0100u
+#define TLSPL_ATTR_MEM_BOTTOM 0x4000u
+#define TLSPL_MAX_ALIGNMENT 256u
+
+typedef struct {
+    int used;
+    uint32_t uid;
+    char name[32];
+    uint32_t attr;
+    uint32_t block_uid;
+    uint32_t base;
+    uint32_t block_size;
+    uint32_t stride;
+    uint32_t num_blocks;
+    uint32_t total_size;
+    uint32_t free_blocks;
+    uint32_t *thread_uids;
+} TlsplPool;
+
+static TlsplPool s_tlspls[TLSPL_MAX];
+
+static TlsplPool *tlspl_find(uint32_t uid) {
+    for (int i = 0; i < TLSPL_MAX; ++i)
+        if (s_tlspls[i].used && s_tlspls[i].uid == uid) return &s_tlspls[i];
+    return NULL;
+}
+
+static void tlspl_release_thread(TlsplPool *p, uint32_t thread_uid) {
+    if (!p || !p->used || !thread_uid) return;
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i] == thread_uid) {
+            p->thread_uids[i] = 0u;
+            if (p->free_blocks < p->num_blocks) ++p->free_blocks;
+            return;
+        }
+    }
+}
+
+static uint32_t h_CreateTlspl(CpuState *s) {
+    /* a0=name, a1=partition, a2=attr, a3=blockSize, t0=numBlocks, t1=options. */
+    char name[32] = {0};
+    uint32_t block_size = A3;
+    uint32_t num_blocks = stack_arg(s, 0);
+    uint32_t options = stack_arg(s, 1);
+    uint32_t alignment = 4u;
+    if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (A1 != TLSPL_USER_PARTITION) {
+        fprintf(stderr, "TLSPL_PARTITION_UNMODELED: sceKernelCreateTlspl partition=%u; in the works (#339)\n", A1);
+        return TLSPL_BAD_ID;
+    }
+    if (A2 & ~(TLSPL_ATTR_WAIT_PRIORITY | TLSPL_ATTR_MEM_BOTTOM)) {
+        fprintf(stderr, "TLSPL_ATTRIBUTES_UNMODELED: sceKernelCreateTlspl attr=0x%08x; in the works (#339)\n", A2);
+        return TLSPL_ILLEGAL_ATTR;
+    }
+    if (A2 & TLSPL_ATTR_MEM_BOTTOM) {
+        fprintf(stderr, "TLSPL_MEMORY_BOTTOM_UNMODELED: sceKernelCreateTlspl (0x8daff657); in the works (#339)\n");
+        return TLSPL_ILLEGAL_ATTR;
+    }
+    if (!block_size || !num_blocks) return TLSPL_ILLEGAL_SIZE;
+
+    if (options) {
+        if (!sr_guest_span_readable(options, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        if (MEM_R32(options) < 8u) return TLSPL_ILLEGAL_SIZE;
+        alignment = MEM_R32(options + 4u);
+        if (!alignment) alignment = 4u;
+    }
+    if (alignment < 4u || alignment > TLSPL_MAX_ALIGNMENT ||
+        (alignment & (alignment - 1u)) != 0u) {
+        fprintf(stderr, "TLSPL_ALIGNMENT_UNMODELED: sceKernelCreateTlspl alignment=%u; in the works (#339)\n", alignment);
+        return TLSPL_ILLEGAL_SIZE;
+    }
+
+    uint64_t stride64 = ((uint64_t)block_size + alignment - 1u) & ~((uint64_t)alignment - 1u);
+    uint64_t total64 = stride64 * (uint64_t)num_blocks;
+    /* alloc_block rounds to a 256-byte slot using uint32 arithmetic. */
+    if (!stride64 || total64 > UINT32_MAX - 0xffu) return TLSPL_ILLEGAL_SIZE;
+
+    TlsplPool *p = NULL;
+    for (int i = 0; i < TLSPL_MAX; ++i) {
+        if (!s_tlspls[i].used) { p = &s_tlspls[i]; break; }
+    }
+    if (!p) return TLSPL_NO_MEMORY;
+
+    uint32_t total_size = (uint32_t)total64;
+    uint32_t block_uid = alloc_block(total_size);
+    if (block_uid == 0xFFFFFFFFu) return TLSPL_NO_MEMORY;
+    uint32_t *thread_uids = (uint32_t *)calloc((size_t)num_blocks, sizeof(*thread_uids));
+    if (!thread_uids) {
+        (void)free_block(block_uid);
+        return TLSPL_NO_MEMORY;
+    }
+
+    memset(p, 0, sizeof(*p));
+    p->used = 1;
+    p->uid = sr_alloc_uid();
+    memcpy(p->name, name, sizeof(p->name));
+    p->attr = A2;
+    p->block_uid = block_uid;
+    p->base = block_addr(block_uid);
+    p->block_size = block_size;
+    p->stride = (uint32_t)stride64;
+    p->num_blocks = num_blocks;
+    p->total_size = total_size;
+    p->free_blocks = num_blocks;
+    p->thread_uids = thread_uids;
+    (void)A1; /* The runtime currently exposes one user partition. */
+    return p->uid;
+}
+
+static uint32_t h_DeleteTlspl(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    if (!p) return TLSPL_BAD_ID;
+    if (p->free_blocks != p->num_blocks) {
+        uint32_t held_blocks = p->num_blocks - p->free_blocks;
+        fprintf(stderr,
+                "TLSPL_DELETE_WITH_HELD_BLOCKS: pool 0x%x has %u/%u blocks held; in the works (#339)\n",
+                p->uid, held_blocks, p->num_blocks);
+        return TLSPL_BUSY;
+    }
+    uint32_t block_uid = p->block_uid;
+    free(p->thread_uids);
+    memset(p, 0, sizeof(*p));
+    return free_block(block_uid);
+}
+
+static uint32_t h_FreeTlspl(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    if (!p) return TLSPL_BAD_ID;
+    uint32_t thread_uid = sched_current_uid();
+    if (!thread_uid) return TLSPL_BAD_ID;
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i] == thread_uid) {
+            tlspl_release_thread(p, thread_uid);
+            return 0;
+        }
+    }
+    return TLSPL_BAD_ID;
+}
+
+static uint32_t h_GetTlsAddr(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    if (!p) return 0u;
+    uint32_t thread_uid = sched_current_uid();
+    if (!thread_uid) {
+        fprintf(stderr, "TLSPL_CURRENT_THREAD_UNAVAILABLE: sceKernelGetTlsAddr (0xfa835cde); in the works (#339)\n");
+        return 0u;
+    }
+
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i] == thread_uid) {
+            uint64_t addr = (uint64_t)p->base + (uint64_t)i * p->stride;
+            return addr <= UINT32_MAX ? (uint32_t)addr : 0u;
+        }
+    }
+    for (uint32_t i = 0; i < p->num_blocks; ++i) {
+        if (p->thread_uids[i]) continue;
+        uint64_t addr64 = (uint64_t)p->base + (uint64_t)i * p->stride;
+        if (addr64 > UINT32_MAX || !sr_guest_span_writable((uint32_t)addr64, p->block_size)) {
+            fprintf(stderr, "TLSPL_MEMORY_UNAVAILABLE: sceKernelGetTlsAddr (0xfa835cde); in the works (#339)\n");
+            return 0u;
+        }
+        uint32_t addr = (uint32_t)addr64;
+        for (uint32_t j = 0; j < p->block_size; ++j) MEM_W8(addr + j, 0u);
+        p->thread_uids[i] = thread_uid;
+        if (p->free_blocks) --p->free_blocks;
+        return addr;
+    }
+    fprintf(stderr, "TLSPL_POOL_EXHAUSTED: sceKernelGetTlsAddr (0xfa835cde) returned NULL; blocking allocation is in the works (#339)\n");
+    return 0u;
+}
+
+static uint32_t h_ReferTlsplStatus(CpuState *s) {
+    TlsplPool *p = tlspl_find(A0);
+    uint32_t info = A1;
+    if (!p) return TLSPL_BAD_ID;
+    if (!info || !sr_guest_span_writable(info, 56u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    /* SceKernelTlsplInfo: size, name[32], attr, blockSize, numBlocks, freeBlocks, numWaitThreads. */
+    MEM_W32(info + 0u, 56u);
+    for (uint32_t i = 0; i < sizeof(p->name); ++i) MEM_W8(info + 4u + i, (uint8_t)p->name[i]);
+    MEM_W32(info + 36u, p->attr);
+    MEM_W32(info + 40u, p->block_size);
+    MEM_W32(info + 44u, p->num_blocks);
+    MEM_W32(info + 48u, p->free_blocks);
+    MEM_W32(info + 52u, 0u);
+    return 0;
+}
+
 /* AllocateVpl / AllocateVplCB blocking forms integrated with fiber wait queues (PR-G). */
 
 /* ThreadManForUser, backed by the fiber scheduler (src/rt/sched.c). */
@@ -1932,13 +2129,19 @@ static uint32_t h_ChangeThreadPriority(CpuState *s) {
 static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
-    return sched_delete_thread(A0);
+    result = sched_delete_thread(A0);
+    /* Let queued replacement waiters run only after the composite lifecycle
+     * operation has finished deleting its target. */
+    sched_preempt();
+    return result;
 }
 static uint32_t h_TerminateThread(CpuState *s) {
     /* DORMANT and invalid/self targets have distinct public PSPSDK error
      * classes; sched_terminate_thread supplies ILLEGAL_THID/UNKNOWN_THID. */
     if (sched_is_dormant(A0)) return 0x800201a2u; /* SCE_KERNEL_ERROR_DORMANT */
-    return sched_terminate_thread(A0);
+    uint32_t result = sched_terminate_thread(A0);
+    if (result == 0u) sched_preempt();
+    return result;
 }
 static uint32_t h_DeleteThread(CpuState *s) {
     return sched_delete_thread(A0);
@@ -7481,18 +7684,21 @@ void sr_callback_unregister_owner(uint32_t thread_uid) {
 
 extern void sr_mutex_release_thread(uint32_t thread_uid);
 static void mbx_remove_thread_waiters(uint32_t thread_uid);
-static void msg_pipe_remove_thread_waiters(uint32_t thread_uid);
+
 
 void sr_hle_release_thread_resources(uint32_t thread_uid) {
     sr_mutex_release_thread(thread_uid);
     if (thread_uid) {
         mbx_remove_thread_waiters(thread_uid);
-        msg_pipe_remove_thread_waiters(thread_uid);
+
         for (int i = 0; i < FPL_MAX; i++) {
             if (s_fpls[i].used) fpl_remove_waiter(&s_fpls[i], thread_uid);
         }
         for (int i = 0; i < VPL_MAX; i++) {
             if (s_vpls[i].used) vpl_remove_waiter(&s_vpls[i], thread_uid);
+        }
+        for (int i = 0; i < TLSPL_MAX; i++) {
+            if (s_tlspls[i].used) tlspl_release_thread(&s_tlspls[i], thread_uid);
         }
     }
 }
@@ -15770,8 +15976,9 @@ static uint32_t h_SasUnsupportedVoice(CpuState *s) {
 #define PSP_MPP_ATTR_SEND_PRIORITY     0x0100u
 #define PSP_MPP_ATTR_RECEIVE_PRIORITY  0x1000u
 typedef struct {
-    uint32_t thread_uid;
+    SrWaitHandle invocation;
     int is_send;
+    uint32_t size, wait_mode;
 } MsgPipeWaiter;
 typedef struct {
     int used;
@@ -15784,17 +15991,15 @@ typedef struct {
 } MsgPipe;
 static MsgPipe s_msg_pipes[MSG_PIPE_MAX];
 
+
 static MsgPipe *msg_pipe_find(uint32_t uid) {
     for (int i = 0; i < MSG_PIPE_MAX; i++)
         if (s_msg_pipes[i].used && s_msg_pipes[i].uid == uid) return &s_msg_pipes[i];
     return NULL;
 }
 
-static int msg_pipe_add_waiter(MsgPipe *p, uint32_t thread_uid, int is_send) {
-    for (int i = 0; i < p->nwaiters; i++) {
-        if (p->waiters[i].thread_uid == thread_uid && p->waiters[i].is_send == is_send)
-            return 1;
-    }
+static int msg_pipe_add_waiter(MsgPipe *p, SrWaitHandle invocation, int is_send,
+                               uint32_t size, uint32_t wait_mode) {
     if (p->nwaiters == p->wait_cap) {
         int next;
         if (p->wait_cap) {
@@ -15810,55 +16015,61 @@ static int msg_pipe_add_waiter(MsgPipe *p, uint32_t thread_uid, int is_send) {
         p->waiters = grown;
         p->wait_cap = next;
     }
-    p->waiters[p->nwaiters++] = (MsgPipeWaiter){thread_uid, is_send};
+    p->waiters[p->nwaiters++] = (MsgPipeWaiter){invocation, is_send, size, wait_mode};
     return 1;
 }
 
-static void msg_pipe_remove_waiter(MsgPipe *p, uint32_t thread_uid) {
+static void msg_pipe_remove_waiter(MsgPipe *p, SrWaitHandle invocation) {
     for (int i = 0; i < p->nwaiters; i++) {
-        if (p->waiters[i].thread_uid == thread_uid) {
+        if (p->waiters[i].invocation == invocation) {
             for (int j = i; j + 1 < p->nwaiters; j++) p->waiters[j] = p->waiters[j + 1];
             p->nwaiters--;
-            break;
+            return;
         }
     }
 }
 
-static void msg_pipe_remove_thread_waiters(uint32_t thread_uid) {
-    for (int i = 0; i < MSG_PIPE_MAX; i++)
-        if (s_msg_pipes[i].used) msg_pipe_remove_waiter(&s_msg_pipes[i], thread_uid);
-}
-
-static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, uint32_t *thread_uid_out) {
+static int msg_pipe_select_waiter(const MsgPipe *p, int is_send, int eligible_only,
+                                  SrWaitHandle *invocation_out) {
     int priority = (p->attr & (is_send ? PSP_MPP_ATTR_SEND_PRIORITY :
                                          PSP_MPP_ATTR_RECEIVE_PRIORITY)) != 0u;
     int best = -1;
     int best_priority = INT_MAX;
     for (int i = 0; i < p->nwaiters; i++) {
-        if (p->waiters[i].is_send != is_send) continue;
+        const MsgPipeWaiter *waiter = &p->waiters[i];
+        SrWaitState state;
+        uint32_t owner;
+        if (waiter->is_send != is_send ||
+            !sched_wait_state(waiter->invocation, &state, &owner) ||
+            state != SR_WAIT_BLOCKED) continue;
+        uint32_t available = is_send ? p->capacity - p->count : p->count;
+        if (eligible_only && (waiter->wait_mode == 0u ? available < waiter->size :
+                                                       available == 0u)) continue;
+        SrThreadRunStatus status;
+        if (sched_thread_run_status(owner, &status) != 0 ||
+            status.waitType == 0u || status.waitId != p->uid) continue;
         if (!priority) {
             best = i;
             break;
         }
-        SrThreadRunStatus status;
-        if (sched_thread_run_status(p->waiters[i].thread_uid, &status) == 0 &&
-            (best < 0 || (int)status.currentPriority < best_priority)) {
+        if (best < 0 || (int)status.currentPriority < best_priority) {
             best = i;
             best_priority = (int)status.currentPriority;
-        } else if (best < 0) {
-            best = i;
         }
     }
     if (best < 0) return 0;
-    *thread_uid_out = p->waiters[best].thread_uid;
+    *invocation_out = p->waiters[best].invocation;
     return 1;
 }
 
+static int msg_pipe_wake_one_waiter(MsgPipe *p, int is_send) {
+    SrWaitHandle invocation;
+    return msg_pipe_select_waiter(p, is_send, 0, &invocation) &&
+           sched_wait_notify(invocation);
+}
+
 static void msg_pipe_wake_waiter(MsgPipe *p, int is_send) {
-    uint32_t thread_uid;
-    if (msg_pipe_select_waiter(p, is_send, &thread_uid) &&
-        sched_wake_one_object_waiter(p->uid, thread_uid))
-        sched_preempt();
+    if (msg_pipe_wake_one_waiter(p, is_send)) sched_preempt();
 }
 
 static void msg_pipe_wake_after_transfer(MsgPipe *p, int is_send) {
@@ -15868,6 +16079,23 @@ static void msg_pipe_wake_after_transfer(MsgPipe *p, int is_send) {
         if (p->count < p->capacity) msg_pipe_wake_waiter(p, 1);
         if (p->count) msg_pipe_wake_waiter(p, 0);
     }
+}
+
+/* Every finish/abandon uses this hook, including transfer errors and blocked
+ * owner teardown. Reconsider actual requests; being blocked says nothing about
+ * a smaller successor's eligibility. This hook never preempts: teardown may
+ * still be inside a composite TerminateDeleteThread operation. */
+static int msg_pipe_detach_invocation(SrWaitHandle invocation, uint32_t object) {
+    MsgPipe *p = msg_pipe_find(object);
+    if (!p) return 0;
+    msg_pipe_remove_waiter(p, invocation);
+    SrWaitHandle successor;
+    int notified = 0;
+    if (msg_pipe_select_waiter(p, 0, 1, &successor))
+        notified |= sched_wait_notify(successor);
+    if (msg_pipe_select_waiter(p, 1, 1, &successor))
+        notified |= sched_wait_notify(successor);
+    return notified;
 }
 
 static int msg_pipe_trace_call(uint32_t calls) {
@@ -15922,7 +16150,8 @@ static uint32_t h_DeleteMsgPipe(CpuState *s) {
     free(p->data);
     free(p->waiters);
     memset(p, 0, sizeof(*p));
-    sched_wake(A0);
+    sched_wait_cancel_object(A0, SCE_KERNEL_ERROR_WAIT_DELETE);
+    sched_preempt();
     return 0;
 }
 
@@ -16067,10 +16296,9 @@ static uint32_t msg_pipe_transfer(MsgPipe *p, uint32_t buffer, uint32_t amount,
 }
 
 static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
-    /* #339 argument-order boundary: keep the fixture order from
-     * fixtures/psp_oracle/psp_b3.c (t0=resultSize, t1=timeout). The psp.jim.sh
-     * PSPSDK documents (unk2, timeout), while pspdev headers name them
-     * (timeout, resSize); await the campaign hardware cell before changing it. */
+    /* Public PSPSDK identifies arg6 as timeout and leaves arg5 named unk2.
+     * Preserve the current result-size model; arg5 hardware qualification is
+     * separate from semantic wait lifetime. */
     uint32_t resultp = stack_arg(s, 0);
     uint32_t toptr = stack_arg(s, 1);
     if (resultp && !sr_guest_span_writable(resultp, 4u))
@@ -16112,66 +16340,94 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
 
     uint32_t cur_thid = sched_current_uid();
     if (!cur_thid) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    if (!msg_pipe_add_waiter(p, cur_thid, is_send)) return 0x80020190u;
+    SrWaitHandle waiter_scope = sched_wait_begin(uid, end_time, is_cb,
+                                                 msg_pipe_detach_invocation);
+    if (!waiter_scope) return 0x80020190u;
+    if (!msg_pipe_add_waiter(p, waiter_scope, is_send, size, wait_mode)) {
+        if (sched_wait_finish(waiter_scope)) sched_preempt();
+        return 0x80020190u;
+    }
 
+    uint32_t result;
     for (;;) {
+        if (sched_wait_take_result(waiter_scope, &result)) break;
         if (is_cb && sr_thread_has_pending_callbacks(cur_thid)) {
+            /* The preceding block has detached and captured its result before
+             * recursive HLE can install an inner active scheduler wait. */
+            sched_wait_callback(waiter_scope, 1);
             sr_thread_dispatch_callbacks();
+            sched_wait_callback(waiter_scope, 0);
+            /* Consume the parent's retained outcome before reconstructing an
+             * object error; an unrelated child cannot own this result. */
+            if (sched_wait_take_result(waiter_scope, &result)) break;
             p = msg_pipe_find(uid);
-            if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
+            if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
             continue;
         }
 
-        int timed_out = 0;
+        uint32_t remaining = 0u;
         if (has_timeout) {
             sched_vtime_refresh();
             uint64_t now = sched_vtime_us();
             if (now >= end_time) {
-                msg_pipe_remove_waiter(p, cur_thid);
                 MEM_W32(toptr, 0u);
-                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+                result = SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+                break;
             }
-            uint32_t remaining = (uint32_t)(end_time - now);
-            if (is_cb) sched_set_current_cb_wait(1);
-            timed_out = sched_block_on_timeout(uid, remaining);
-        } else {
-            if (is_cb) sched_set_current_cb_wait(1);
-            sched_block_on(uid);
+            remaining = (uint32_t)(end_time - now);
         }
-        if (is_cb) sched_set_current_cb_wait(0);
 
-        uint32_t woken = 0u;
-        if (sched_take_wake_result(&woken)) {
-            p = msg_pipe_find(uid);
-            if (p) msg_pipe_remove_waiter(p, cur_thid);
-            return woken;
-        }
-        p = msg_pipe_find(uid);
-        if (!p) return SCE_KERNEL_ERROR_WAIT_DELETE;
-
+        /* Callback code may have completed a transfer while this invocation
+         * was running, when the scheduler could not wake it. Recheck the pipe
+         * before marking this scope parked so that this call cannot miss that
+         * state change and sleep forever without another transfer edge. */
         if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
             uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
             if (transfer_rc != 0u) {
-                msg_pipe_remove_waiter(p, cur_thid);
-                return transfer_rc;
+                result = transfer_rc;
+                break;
             }
-            msg_pipe_remove_waiter(p, cur_thid);
             if (toptr) {
                 sched_vtime_refresh();
                 uint64_t now = sched_vtime_us();
                 uint32_t remaining = now < end_time ? (uint32_t)(end_time - now) : 0u;
                 MEM_W32(toptr, remaining);
             }
-            msg_pipe_wake_after_transfer(p, is_send);
-            return 0u;
+            result = 0u;
+            break;
+        }
+
+        int timed_out = sched_wait_block(waiter_scope, remaining, has_timeout);
+        if (sched_wait_take_result(waiter_scope, &result)) break;
+        p = msg_pipe_find(uid);
+        if (!p) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+
+        if (msg_pipe_transfer_ready(p, is_send, size, wait_mode, &amount)) {
+            uint32_t transfer_rc = msg_pipe_transfer(p, buffer, amount, resultp, is_send);
+            if (transfer_rc != 0u) {
+                result = transfer_rc;
+                break;
+            }
+            if (toptr) {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                uint32_t remaining = now < end_time ? (uint32_t)(end_time - now) : 0u;
+                MEM_W32(toptr, remaining);
+            }
+            result = 0u;
+            break;
         }
 
         if (timed_out) {
-            msg_pipe_remove_waiter(p, cur_thid);
             if (toptr) MEM_W32(toptr, 0u);
-            return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            result = SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+            break;
         }
     }
+    /* All departures detach/reconsider through the same object hook. Only the
+     * normal syscall boundary may preempt; owner abandonment never does here. */
+    if (sched_wait_finish(waiter_scope)) sched_preempt();
+    return result;
 }
 
 static uint32_t h_SendMsgPipe(CpuState *s) {
@@ -18139,6 +18395,11 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x1fb15a32, "sceKernelSetEventFlag", h_SetEventFlag);
     sr_hle_register(0x402fcf22, "sceKernelWaitEventFlag", h_WaitEventFlag);
     sr_hle_register(0x328c546a, "sceKernelWaitEventFlagCB", h_WaitEventFlagCB);
+    sr_hle_register(0x8daff657, "sceKernelCreateTlspl", h_CreateTlspl);
+    sr_hle_register(0x32bf938e, "sceKernelDeleteTlspl", h_DeleteTlspl);
+    sr_hle_register(0x4a719fb2, "sceKernelFreeTlspl", h_FreeTlspl);
+    sr_hle_register(0x721067f3, "sceKernelReferTlsplStatus", h_ReferTlsplStatus);
+    sr_hle_register(0xfa835cde, "sceKernelGetTlsAddr", h_GetTlsAddr);
     sr_hle_register(0xc07bb470, "sceKernelCreateFpl", h_CreateFpl);
     sr_hle_register(0xd979e9bf, "sceKernelAllocateFpl", h_AllocateFpl);
     sr_hle_register(0xe7282cb6, "sceKernelAllocateFplCB", h_AllocateFplCB);

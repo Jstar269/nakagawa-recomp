@@ -37,7 +37,9 @@ import title_manifest
 #: Bumped only when the emitted macro contract changes. ``src/rt/title_config.c``
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
-GENERATED_SCHEMA_VERSION = 7
+#: 8 splits the single profile macro into a diagnostic one and an honest
+#: compatibility-debt one (#363). Both are emitted from the same validated profile.
+GENERATED_SCHEMA_VERSION = 8
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -187,6 +189,7 @@ def render_header(config: dict[str, Any]) -> str:
         )
     if '"' in source_id or "\\" in source_id:
         raise TitleRuntimeConfigError("title id is not representable as a C string literal")
+    profile = 1 if codegen_profile == "hst" else 0
     lines = [
         "/* SPDX-License-Identifier: GPL-3.0-or-later */",
         "/* Copyright (C) 2026 the Nakagawa Recomp authors */",
@@ -201,7 +204,14 @@ def render_header(config: dict[str, Any]) -> str:
         f'#define SR_TITLE_CONFIG_SOURCE_ID "{source_id}"',
         f'#define SR_TITLE_CONFIG_DIGEST "{config_digest(config)}"',
         f"#define SR_TITLE_CONFIG_VALID ({valid_text})",
-        f"#define SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE {1 if codegen_profile == 'hst' else 0}",
+        # Two profile macros, one validated source (#363). DIAGNOSTICS_PROFILE names
+        # the operator opt-in for title-scoped diagnostic reads, which additionally
+        # require SR_HLE_DIAGNOSTICS at runtime. COMPAT_PROFILE names the gates that
+        # change LIVE runtime behavior as temporary compatibility debt, so that gate is
+        # no longer labelled a diagnostic. Both carry the same value: this splits the
+        # label, it does not move behavior.
+        f"#define SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE {profile}",
+        f"#define SR_TITLE_CONFIG_COMPAT_PROFILE {profile}",
         "",
     ]
     for name in FIELD_BITS:

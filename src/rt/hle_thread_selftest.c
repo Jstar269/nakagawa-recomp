@@ -224,6 +224,7 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD 0xbd123d9eu
 #define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB 0x1181e963u
 #define NID_SCE_KERNEL_TERMINATE_THREAD 0x616403bau
+#define NID_SCE_KERNEL_TERMINATE_DELETE_THREAD 0x383f7bccu
 #define NID_SCE_DISPLAY_WAIT_VBLANK_CB 0x8eb9ec49u
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_CB 0x46f186c3u
 #define TEST_SYSCLOCK_DELAY_ADDR 0x00270000u
@@ -614,6 +615,20 @@ static int s_oracle_mode;
 static int s_oracle_callback_calls;
 static uint32_t s_oracle_callback_arg1;
 static uint32_t s_oracle_callback_arg2;
+static uint32_t s_msgpipe_callback_nested_nid;
+static uint32_t s_msgpipe_callback_nested_pipe;
+static uint32_t s_msgpipe_callback_nested_buffer;
+static uint32_t s_msgpipe_callback_nested_size;
+static uint32_t s_msgpipe_callback_nested_resultp;
+static uint32_t s_msgpipe_callback_nested_ret;
+static int s_msgpipe_callback_nested_returned;
+static void (*s_msgpipe_callback_after_nested)(void);
+
+static void msgpipe_setup(CpuState *cpu, uint32_t uid, uint32_t buf,
+                          uint32_t size, uint32_t wait_mode, uint32_t resultp);
+static void msgpipe_wait_setup(CpuState *cpu, uint32_t uid, uint32_t buf,
+                               uint32_t size, uint32_t wait_mode,
+                               uint32_t resultp, uint32_t toptr);
 
 /* Narrow guest-body hook for the title-configured display replay. The handler
  * remains production hle.c; this only supplies the three analyzer-owned guest
@@ -696,6 +711,18 @@ void dispatch(CpuState *cpu, uint32_t target) {
         s_oracle_callback_calls++;
         s_oracle_callback_arg1 = cpu->r[4];
         s_oracle_callback_arg2 = cpu->r[5];
+        if (s_msgpipe_callback_nested_nid != 0u) {
+            CpuState nested = {0};
+            uint32_t nid = s_msgpipe_callback_nested_nid;
+            s_msgpipe_callback_nested_nid = 0u;
+            msgpipe_wait_setup(&nested, s_msgpipe_callback_nested_pipe,
+                               s_msgpipe_callback_nested_buffer,
+                               s_msgpipe_callback_nested_size, 0u,
+                               s_msgpipe_callback_nested_resultp, 0u);
+            s_msgpipe_callback_nested_ret = sr_syscall(&nested, nid);
+            s_msgpipe_callback_nested_returned = 1;
+            if (s_msgpipe_callback_after_nested) s_msgpipe_callback_after_nested();
+        }
         cpu->r[2] = 0;
         return;
     }
@@ -7781,6 +7808,17 @@ static void test_b23_second_round(void) {
 #define VPL_EXHAUSTED_ERR     0x800200d9u
 #define VPL_INFO              0x00240a00u
 #define VPL_OUTPTR            0x00240a80u
+#define NID_TLSPL_CREATE      0x8daff657u
+#define NID_TLSPL_DELETE      0x32bf938eu
+#define NID_TLSPL_FREE        0x4a719fb2u
+#define NID_TLSPL_REFER       0x721067f3u
+#define NID_TLSPL_GET_ADDR    0xfa835cdeu
+#define TLSPL_BAD_ID_ERR      0x800200d3u
+#define TLSPL_SIZE_ERR        0x800201bcu
+#define TLSPL_BUSY_ERR        0x800201a8u
+#define TLSPL_NAMEBUF         0x00240b00u
+#define TLSPL_INFO            0x00240b40u
+#define TLSPL_OPTIONS         0x00240bc0u
 #define NID_MBX_CREATE        0x8125221du
 #define NID_MBX_DELETE        0x86255adau
 #define NID_MBX_SEND          0xe9b3061eu
@@ -12893,6 +12931,11 @@ typedef struct {
     int returned;
 } SelftestMsgPipeWaiterCtx;
 
+typedef struct {
+    uint32_t target_uid, terminate_nid, terminate_result;
+    int terminate_returned;
+} SelftestMsgPipeTerminateCtx;
+
 int s_msgpipe_parks = 0;
 
 static void selftest_msgpipe_waiter_fiber_body(void *arg) {
@@ -12908,6 +12951,16 @@ static void selftest_msgpipe_waiter_fiber_body(void *arg) {
         nid = ctx->is_cb ? NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB : NID_SCE_KERNEL_RECEIVE_MSG_PIPE;
     ctx->ret = sr_syscall(&cpu, nid);
     ctx->returned = 1;
+    s_msgpipe_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void selftest_msgpipe_terminate_fiber_body(void *arg) {
+    SelftestMsgPipeTerminateCtx *ctx = (SelftestMsgPipeTerminateCtx *)arg;
+    CpuState cpu = {0};
+    cpu.r[4] = ctx->target_uid;
+    ctx->terminate_result = sr_syscall(&cpu, ctx->terminate_nid);
+    ctx->terminate_returned = 1;
     s_msgpipe_parks++;
     selftest_park_on_scheduler();
 }
@@ -13195,6 +13248,24 @@ static void selftest_msgpipe_waiter_start(SelftestMsgPipeWaiterCtx *waiter,
     if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
 }
 
+static void selftest_msgpipe_send_waiter_start(SelftestMsgPipeWaiterCtx *waiter,
+                                               uint32_t thread_uid, int priority,
+                                               uint32_t pipe_uid, uint32_t buffer,
+                                               uint32_t resultp, int is_cb) {
+    waiter->tcb = fixture_thread(thread_uid, TH_READY, priority);
+    waiter->tcb->started = 1;
+    waiter->pipe_uid = pipe_uid;
+    waiter->buffer = buffer;
+    waiter->size = 2u;
+    waiter->resultp = resultp;
+    waiter->is_send = 1;
+    waiter->is_cb = is_cb;
+    waiter->tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body, waiter,
+                                       (size_t)4 << 20);
+    s_cur = (int)(waiter->tcb - s_tcb);
+    if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
+}
+
 static void selftest_msgpipe_waiter_resume(SelftestMsgPipeWaiterCtx *waiter) {
     s_cur = (int)(waiter->tcb - s_tcb);
     if (waiter->tcb->coro) sr_coro_switch(waiter->tcb->coro);
@@ -13205,6 +13276,324 @@ static void selftest_msgpipe_waiter_finish(SelftestMsgPipeWaiterCtx *waiter,
     if (!waiter->returned) selftest_msgpipe_waiter_resume(waiter);
     if (!waiter->returned && sched_count_waiters(pipe_uid) == 0)
         selftest_msgpipe_waiter_resume(waiter);
+}
+
+static uint32_t issue339_create_pending_callback(void);
+
+/* Departure must hand existing bytes/space to a successor, not wait for
+ * another transfer edge. All operations enter registered production NIDs. */
+static void test_msgpipe_departure_reconsiders_successor(void) {
+    const uint32_t buf = 0x08010000u, out = 0x08020000u;
+    const uint32_t name = 0x08030000u, res = 0x08040000u;
+    const uint32_t timeout = 0x08050000u;
+    for (int is_send = 0; is_send < 2; ++is_send) {
+        /* error, timeout, ReleaseWaitThread, TerminateThread */
+        for (int departure = 0; departure < 4; ++departure) {
+            reset_fixture();
+            sr_hle_init();
+            MEM_W8(name, 'd'); MEM_W8(name + 1u, 0u);
+            for (uint32_t i = 0; i < 8u; ++i) MEM_W8(buf + i, (uint8_t)(0x90u + i));
+            TCB *owner = fixture_thread(0x33960u, TH_RUNNING, 10);
+            owner->started = 1;
+            int owner_index = (int)(owner - s_tcb);
+            s_cur = owner_index;
+            uint32_t pipe = selftest_msgpipe_create(name, 0u, 8u);
+            expect(pipe && pipe < 0x80000000u, "departure fixture creates pipe");
+            if (!pipe || pipe >= 0x80000000u) return;
+            CpuState cpu = {0};
+            if (is_send) {
+                msgpipe_setup(&cpu, pipe, buf, 8u, 0u, res + 8u);
+                expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+                       "departure sender fixture starts full");
+            }
+            SelftestMsgPipeWaiterCtx head = {0}, next = {0};
+            head.tcb = fixture_thread(0x33961u, TH_READY, 40);
+            head.tcb->started = 1;
+            head.pipe_uid = pipe;
+            head.buffer = departure == 0 ? 0xdead0000u : (is_send ? buf : out);
+            head.size = departure == 0 ? 2u : 8u;
+            head.resultp = res;
+            head.is_send = is_send;
+            if (departure == 1) {
+                MEM_W32(timeout, 1000000u);
+                head.toptr = timeout;
+            }
+            head.tcb->coro = sr_coro_create(selftest_msgpipe_waiter_fiber_body,
+                                           &head, (size_t)4 << 20);
+            expect(head.tcb->coro != NULL, "departure head coroutine allocated");
+            if (!head.tcb->coro) return;
+            selftest_msgpipe_waiter_resume(&head);
+            if (is_send)
+                selftest_msgpipe_send_waiter_start(&next, 0x33962u, 45, pipe, buf, res + 4u, 0);
+            else
+                selftest_msgpipe_waiter_start(&next, 0x33962u, 45, pipe, out + 8u, res + 4u, 0);
+            expect(head.tcb->state == TH_WAIT_OBJ && next.tcb->state == TH_WAIT_OBJ,
+                   "departure fixture has two blocked invocations");
+            s_cur = owner_index;
+            msgpipe_setup(&cpu, pipe, is_send ? out + 16u : buf, 2u, 0u, res + 8u);
+            expect(sr_syscall(&cpu, is_send ? NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE :
+                                             NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+                   "departure fixture supplies two bytes or free slots");
+            expect(head.tcb->state == TH_READY && next.tcb->state == TH_WAIT_OBJ,
+                   "notification initially selects only the FIFO head");
+            selftest_msgpipe_waiter_resume(&head);
+            if (departure == 0) {
+                expect(head.returned && head.ret == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+                       "selected head fails transfer without consuming resource");
+            } else {
+                expect(!head.returned && head.tcb->state == TH_WAIT_OBJ,
+                       "unsatisfiable notified head reblocks");
+                s_cur = owner_index;
+                if (departure == 1) {
+                    sr_hle_advance_time(1000001u);
+                    sched_promote_expired_waits();
+                    selftest_msgpipe_waiter_resume(&head);
+                    expect(head.returned && head.ret == 0x800201a8u && MEM_R32(timeout) == 0u,
+                           "unsatisfiable head departs on timeout");
+                } else {
+                    cpu = (CpuState){0}; cpu.r[4] = head.tcb->uid;
+                    expect(sr_syscall(&cpu, departure == 2 ? 0x2c34e053u :
+                                                            NID_SCE_KERNEL_TERMINATE_THREAD) == 0u,
+                           "unsatisfiable head is released or terminated");
+                    if (departure == 2) {
+                        selftest_msgpipe_waiter_resume(&head);
+                        expect(head.returned && head.ret == 0x800201aau,
+                               "unsatisfiable head consumes WAIT_RELEASE");
+                    } else {
+                        expect(head.tcb->state == TH_DORMANT && !head.tcb->coro,
+                               "unsatisfiable head teardown destroys its continuation");
+                    }
+                }
+            }
+            char message[128];
+            snprintf(message, sizeof message,
+                     "departure successor READY without new transfer (send=%d departure=%d)",
+                     is_send, departure);
+            expect(next.tcb->state == TH_READY, message);
+            if (next.tcb->state == TH_READY) {
+                selftest_msgpipe_waiter_resume(&next);
+                expect(next.returned && next.ret == 0u && MEM_R32(res + 4u) == 2u,
+                       "departure successor consumes existing resource exactly once");
+                if (!is_send)
+                    expect(MEM_R8(out + 8u) == 0x90u && MEM_R8(out + 9u) == 0x91u,
+                           "departure successor receives exact original bytes");
+            }
+            s_cur = owner_index;
+            cpu = (CpuState){0}; cpu.r[4] = pipe;
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+                   "departure fixture deletes pipe");
+            if (!next.returned) selftest_msgpipe_waiter_resume(&next);
+            if (head.tcb->coro) { sr_coro_destroy(head.tcb->coro); head.tcb->coro = NULL; }
+            if (next.tcb->coro) { sr_coro_destroy(next.tcb->coro); next.tcb->coro = NULL; }
+        }
+    }
+}
+
+static SrWaitHandle s_msgpipe_lifetime_parent, s_msgpipe_lifetime_child;
+static int s_msgpipe_lifetime_departure, s_msgpipe_lifetime_observed;
+static SelftestMsgPipeWaiterCtx *s_msgpipe_lifetime_outer;
+
+/* Inspect the parent after the production inner syscall has consumed its own
+ * outcome and retired, but before callback return can retire the parent. */
+static void selftest_msgpipe_lifetime_after_nested(void) {
+    WaitInvocation *parent = sched_wait_find(s_msgpipe_lifetime_parent);
+    expect(parent && parent->result_valid && parent->result == 0x800201b5u &&
+           parent->state == SR_WAIT_TERMINAL &&
+           !sched_wait_find(s_msgpipe_lifetime_child) &&
+           !s_msgpipe_lifetime_outer->tcb->active_wait &&
+           !s_msgpipe_lifetime_outer->tcb->wake_result_valid,
+           "child outcome consumption leaves parent terminal result intact");
+    s_msgpipe_lifetime_observed++;
+    if (s_msgpipe_lifetime_departure >= 5) {
+        if (s_msgpipe_lifetime_departure == 7) {
+            expect(s_msgpipe_lifetime_outer->tcb->has_unwind_jmp,
+                   "nested abandonment uses production coro_body unwind point");
+            sched_unwind_current();
+        } else {
+            CpuState cpu = {0}; cpu.r[4] = 0x66u;
+            (void)sr_syscall(&cpu, s_msgpipe_lifetime_departure == 5 ?
+                             NID_SCE_KERNEL_EXIT_THREAD :
+                             NID_SCE_KERNEL_EXIT_DELETE_THREAD_ORACLE);
+        }
+        expect(0, "terminal callback exit/unwind must not return to abandoned invocation");
+    }
+}
+
+static void selftest_msgpipe_lifetime_guest_body(CpuState *cpu) {
+    SelftestMsgPipeWaiterCtx *ctx = s_msgpipe_lifetime_outer;
+    msgpipe_wait_setup(cpu, ctx->pipe_uid, ctx->buffer, ctx->size,
+                       0u, ctx->resultp, 0u);
+    ctx->ret = sr_syscall(cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB);
+    ctx->returned = 1;
+}
+
+static void test_msgpipe_invocation_lifetime(void) {
+    const uint32_t buf = 0x08010000u, out = 0x08020000u;
+    const uint32_t name = 0x08030000u, res = 0x08040000u;
+    const uint32_t entry = 0x0800db71u;
+    int saved_oracle_mode = s_oracle_mode;
+    /* Child success/release/delete; terminate/terminate-delete with both results
+     * pending; callback exit/exit-delete/nonlocal unwind with the parent live. */
+    for (int departure = 0; departure < 8; ++departure) {
+        reset_fixture();
+        sr_hle_init();
+        MEM_W8(name, 'l'); MEM_W8(name + 1u, 0u);
+        MEM_W8(buf, 0xabu); MEM_W8(buf + 1u, 0xcdu);
+        TCB *owner = fixture_thread(0x33970u, TH_RUNNING, 10);
+        owner->started = 1;
+        int owner_index = (int)(owner - s_tcb);
+        s_cur = owner_index;
+        uint32_t outer_pipe = selftest_msgpipe_create(name, 0u, 4u);
+        uint32_t inner_pipe = selftest_msgpipe_create(name, 0u, 4u);
+        SelftestMsgPipeWaiterCtx outer = {0};
+        s_msgpipe_lifetime_outer = &outer;
+        s_msgpipe_lifetime_departure = departure;
+        s_msgpipe_lifetime_observed = 0;
+        s_msgpipe_callback_after_nested = selftest_msgpipe_lifetime_after_nested;
+        if (departure < 5) {
+            selftest_msgpipe_waiter_start(&outer, 0x33971u, 40, outer_pipe, out, res, 1);
+        } else {
+            /* Real scheduler continuation, including its setjmp/exit boundary. */
+            outer.tcb = fixture_thread(0x33971u, TH_READY, 40);
+            outer.tcb->started = 1;
+            outer.tcb->entry = entry;
+            outer.pipe_uid = outer_pipe; outer.buffer = out;
+            outer.size = 2u; outer.resultp = res; outer.is_cb = 1;
+            sr_test_register_guest_fn(entry, selftest_msgpipe_lifetime_guest_body);
+            outer.tcb->coro = sr_coro_create(coro_body, outer.tcb, (size_t)4 << 20);
+            expect(outer.tcb->coro != NULL, "lifetime production continuation allocates");
+            if (!outer.tcb->coro) return;
+            selftest_msgpipe_waiter_resume(&outer);
+        }
+        SrWaitHandle outer_handle = outer.tcb->active_wait;
+        expect(outer_handle != 0u && sched_wait_find(outer_handle) != NULL,
+               "production pipe block attaches a scheduler-owned invocation");
+        s_oracle_mode = 1;
+        s_msgpipe_callback_nested_nid = NID_SCE_KERNEL_RECEIVE_MSG_PIPE;
+        s_msgpipe_callback_nested_pipe = inner_pipe;
+        s_msgpipe_callback_nested_buffer = out + 8u;
+        s_msgpipe_callback_nested_size = 2u;
+        s_msgpipe_callback_nested_resultp = res + 4u;
+        s_msgpipe_callback_nested_returned = 0;
+        s_cur = (int)(outer.tcb - s_tcb);
+        uint32_t callback = issue339_create_pending_callback();
+        selftest_msgpipe_waiter_resume(&outer);
+        SrWaitHandle inner_handle = outer.tcb->active_wait;
+        s_msgpipe_lifetime_parent = outer_handle;
+        s_msgpipe_lifetime_child = inner_handle;
+        SrWaitState outer_state, inner_state;
+        expect(inner_handle && inner_handle != outer_handle &&
+               sched_wait_state(outer_handle, &outer_state, NULL) && outer_state == SR_WAIT_CALLBACK &&
+               sched_wait_state(inner_handle, &inner_state, NULL) && inner_state == SR_WAIT_BLOCKED,
+               "different-object callback parent and active child retain distinct lifecycle identities");
+        CpuState cpu = {0}; cpu.r[4] = outer_pipe;
+        s_cur = owner_index;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u &&
+               outer.tcb->state == TH_WAIT_OBJ && outer.tcb->wait_obj == inner_pipe,
+               "deleting callback-parked parent object does not wake unrelated inner block");
+        WaitInvocation *parent = sched_wait_find(outer_handle);
+        expect(parent && parent->result_valid && parent->result == 0x800201b5u,
+               "parent WAIT_DELETE is durable while child owns thread wait slot");
+        uint32_t inner_result = 0u;
+        if (departure == 1 || departure == 3 || departure == 4) {
+            cpu = (CpuState){0}; cpu.r[4] = outer.tcb->uid;
+            expect(sr_syscall(&cpu, 0x2c34e053u) == 0u,
+                   "inner production ReleaseWaitThread supplies a distinct terminal result");
+            inner_result = 0x800201aau;
+        } else if (departure == 2) {
+            cpu = (CpuState){0}; cpu.r[4] = inner_pipe;
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+                   "inner production deletion supplies its own terminal result");
+            inner_result = 0x800201b5u;
+        } else {
+            msgpipe_setup(&cpu, inner_pipe, buf, 2u, 0u, res + 8u);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+                   "inner object supplies its own completion notification");
+        }
+        expect(outer.tcb->state == TH_READY && outer.tcb->active_wait == inner_handle,
+               "notified child retains attachment until its own execution resumes");
+        if (departure == 3 || departure == 4) {
+            WaitInvocation *child = sched_wait_find(inner_handle);
+            expect(parent && parent->result_valid && child && child->result_valid &&
+                   child->result == inner_result,
+                   "two nested records retain distinct pending results before owner termination");
+            SrWaitHandle sequence = s_wait_sequence;
+            s_wait_sequence = UINT64_MAX;
+            cpu = (CpuState){0}; cpu.r[4] = outer.tcb->uid;
+            expect(sr_syscall(&cpu, departure == 3 ? NID_SCE_KERNEL_TERMINATE_THREAD :
+                             NID_SCE_KERNEL_TERMINATE_DELETE_THREAD) == 0u &&
+                   outer.tcb->state == TH_DORMANT && !outer.tcb->coro &&
+                   outer.tcb->resources_released && outer.tcb->deleted == (departure == 4),
+                   "owner termination drains both nesting levels even after handle exhaustion");
+            expect(!outer.returned && !s_msgpipe_callback_nested_returned &&
+                   !s_msgpipe_lifetime_observed && !outer.tcb->wake_result_valid,
+                   "abandoned parent and child results are never delivered");
+            s_wait_sequence = sequence;
+        } else {
+            selftest_msgpipe_waiter_resume(&outer);
+            expect(s_msgpipe_callback_nested_returned &&
+                   s_msgpipe_callback_nested_ret == inner_result &&
+                   s_msgpipe_lifetime_observed == 1,
+                   "inner consumes only its own outcome before callback continues");
+            if (departure < 5) {
+                expect(outer.returned && outer.ret == 0x800201b5u &&
+                       MEM_R32(res + 4u) == (departure == 0 ? 2u : 0u),
+                       "parent retains WAIT_DELETE across child success/release/deletion");
+            } else {
+                expect(!outer.returned && outer.tcb->state == TH_DORMANT &&
+                       outer.tcb->resources_released && outer.tcb->deleted == (departure == 6),
+                       "callback exit or nonlocal unwind abandons the outer semantic record");
+            }
+        }
+        expect(!sched_wait_find(outer_handle) && !sched_wait_find(inner_handle) &&
+               !outer.tcb->active_wait && !s_wait_invocations,
+               "nested completion or abandonment retires both records exactly once");
+        expect(sched_wait_finish(outer_handle) == 0 && sched_wait_finish(inner_handle) == 0,
+               "retired handles cannot detach or consume again");
+        if (outer.tcb->coro) { sr_coro_destroy(outer.tcb->coro); outer.tcb->coro = NULL; }
+        s_cur = owner_index;
+        if (departure < 3) {
+            cpu = (CpuState){0}; cpu.r[4] = callback;
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0u,
+                   "lifetime callback unregisters");
+        } else {
+            expect(!sr_callback_is_valid(callback), "owner abandonment unregisters its callback");
+        }
+        if (departure != 2) {
+            cpu = (CpuState){0}; cpu.r[4] = inner_pipe;
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+                   "lifetime inner object deletes");
+        }
+        s_oracle_mode = saved_oracle_mode;
+        s_msgpipe_callback_nested_pipe = 0u;
+        s_msgpipe_callback_nested_returned = 0;
+        s_msgpipe_callback_after_nested = NULL;
+        s_msgpipe_lifetime_outer = NULL;
+        if (departure >= 5) sr_test_guest_fn_reset();
+    }
+
+    s_cur = 0;
+    uint32_t pipe = selftest_msgpipe_create(name, 0u, 4u);
+    SrWaitHandle sequence = s_wait_sequence;
+    s_wait_sequence = UINT64_MAX - 1u;
+    SelftestMsgPipeWaiterCtx last = {0};
+    selftest_msgpipe_waiter_start(&last, 0x33972u, 40, pipe, out, res, 0);
+    expect(last.tcb->active_wait == UINT64_MAX && s_wait_sequence == UINT64_MAX,
+           "production allocation emits final nonzero handle without wrapping");
+    s_cur = 0;
+    CpuState cpu = {0};
+    msgpipe_wait_setup(&cpu, pipe, out, 2u, 0u, res, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_RECEIVE_MSG_PIPE) == 0x80020190u &&
+           s_wait_sequence == UINT64_MAX && sched_count_waiters(pipe) == 1,
+           "next production allocation fails without a partial scheduler attachment");
+    cpu = (CpuState){0}; cpu.r[4] = last.tcb->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0u &&
+           !s_wait_invocations && !last.tcb->active_wait && !last.tcb->coro,
+           "final handle retirement remains bounded after exhaustion");
+    s_wait_sequence = sequence;
+    cpu = (CpuState){0}; cpu.r[4] = pipe;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "exhaustion fixture deletes");
 }
 
 static void test_msgpipe_waiter_order(void) {
@@ -13289,7 +13678,481 @@ static void test_msgpipe_waiter_order(void) {
     }
 }
 
-static uint32_t issue339_create_pending_callback(void);
+static void test_msgpipe_repeated_transfer_skips_readied_waiter(void) {
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W8(GUEST_NAME, 'r'); MEM_W8(GUEST_NAME + 1u, 't');
+    MEM_W8(GUEST_NAME + 2u, 0u);
+    MEM_W8(GUEST_BUF, 0xa0u); MEM_W8(GUEST_BUF + 1u, 0xa1u);
+    MEM_W8(GUEST_BUF + 2u, 0xa2u); MEM_W8(GUEST_BUF + 3u, 0xa3u);
+    for (uint32_t i = 0; i < 4u; i++) MEM_W8(GUEST_OUT + i, 0xeeu);
+
+    TCB *owner = fixture_thread(0x33946u, TH_RUNNING, 10);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0u, 4u);
+    expect(pipe != 0u && pipe < 0x80000000u,
+           "repeated-transfer fixture creates a four-byte FIFO pipe");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    SelftestMsgPipeWaiterCtx first = {0};
+    SelftestMsgPipeWaiterCtx second = {0};
+    selftest_msgpipe_waiter_start(&first, 0x33947u, 40, pipe,
+                                  GUEST_OUT, GUEST_RES, 0);
+    selftest_msgpipe_waiter_start(&second, 0x33948u, 45, pipe,
+                                  GUEST_OUT + 2u, GUEST_RES + 4u, 0);
+    expect(first.tcb->state == TH_WAIT_OBJ && second.tcb->state == TH_WAIT_OBJ,
+           "two receivers park before the producer sends data");
+
+    CpuState cpu = {0};
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 2u, 0u, GUEST_RES + 8u);
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+           first.tcb->state == TH_READY && second.tcb->state == TH_WAIT_OBJ &&
+           s_cur == owner_index,
+           "first transfer readies only the first lower-priority receiver");
+    cpu = (CpuState){0};
+    msgpipe_setup(&cpu, pipe, GUEST_BUF + 2u, 2u, 0u, GUEST_RES + 12u);
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+           first.tcb->state == TH_READY && second.tcb->state == TH_READY,
+           "second transfer skips the ready queue entry and readies the next receiver");
+
+    if (first.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&first);
+    if (second.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&second);
+    int fifo_bytes_match = first.returned && second.returned &&
+        first.ret == 0u && second.ret == 0u &&
+        MEM_R32(GUEST_RES) == 2u && MEM_R32(GUEST_RES + 4u) == 2u &&
+        MEM_R8(GUEST_OUT) == 0xa0u && MEM_R8(GUEST_OUT + 1u) == 0xa1u &&
+        MEM_R8(GUEST_OUT + 2u) == 0xa2u && MEM_R8(GUEST_OUT + 3u) == 0xa3u;
+    expect(fifo_bytes_match,
+           "both queued receivers consume their exact FIFO byte ranges");
+
+    cpu = (CpuState){0};
+    cpu.r[4] = pipe;
+    s_cur = owner_index;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+    if (!first.returned && first.tcb->state == TH_READY)
+        selftest_msgpipe_waiter_resume(&first);
+    if (!second.returned && second.tcb->state == TH_READY)
+        selftest_msgpipe_waiter_resume(&second);
+    if (first.tcb->coro) {
+        sr_coro_destroy(first.tcb->coro);
+        first.tcb->coro = NULL;
+    }
+    if (second.tcb->coro) {
+        sr_coro_destroy(second.tcb->coro);
+        second.tcb->coro = NULL;
+    }
+}
+
+static void test_msgpipe_callback_wakeup_skips_stale_head_waiter(void) {
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W8(GUEST_NAME, 's'); MEM_W8(GUEST_NAME + 1u, 'h');
+    MEM_W8(GUEST_NAME + 2u, 0u);
+    MEM_W8(GUEST_BUF, 0xd0u); MEM_W8(GUEST_BUF + 1u, 0xd1u);
+    MEM_W8(GUEST_OUT, 0xeeu); MEM_W8(GUEST_OUT + 1u, 0xeeu);
+
+    TCB *owner = fixture_thread(0x33949u, TH_RUNNING, 10);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    /* Receive-priority mode keeps the stale head as the preferred candidate;
+     * selection must still skip it and wake the actively parked successor. */
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0x1000u, 2u);
+    expect(pipe != 0u && pipe < 0x80000000u,
+           "stale-head fixture creates a two-byte receive-priority pipe");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    SelftestMsgPipeWaiterCtx stale_head = {0};
+    SelftestMsgPipeWaiterCtx live_waiter = {0};
+    selftest_msgpipe_waiter_start(&stale_head, 0x3394au, 40, pipe,
+                                  GUEST_OUT, GUEST_RES, 1);
+    selftest_msgpipe_waiter_start(&live_waiter, 0x3394bu, 45, pipe,
+                                  GUEST_OUT, GUEST_RES + 4u, 0);
+    expect(stale_head.tcb->state == TH_WAIT_OBJ &&
+           live_waiter.tcb->state == TH_WAIT_OBJ &&
+           sched_count_waiters(pipe) == 2,
+           "callback-aware head and live successor both park on the empty pipe");
+
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+    s_cur = (int)(stale_head.tcb - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    expect(callback_uid != 0u && stale_head.tcb->state == TH_READY &&
+           live_waiter.tcb->state == TH_WAIT_OBJ &&
+           s_oracle_callback_calls == 0,
+           "callback notification readies but does not resume the stale queue head");
+
+    CpuState cpu = {0};
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 2u, 0u, GUEST_RES + 8u);
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+           stale_head.tcb->state == TH_READY &&
+           live_waiter.tcb->state == TH_READY,
+           "send skips the callback-readied stale head and wakes the live successor");
+
+    if (live_waiter.tcb->state == TH_READY)
+        selftest_msgpipe_waiter_resume(&live_waiter);
+    expect(live_waiter.returned && live_waiter.ret == 0u &&
+           MEM_R32(GUEST_RES + 4u) == 2u &&
+           MEM_R8(GUEST_OUT) == 0xd0u && MEM_R8(GUEST_OUT + 1u) == 0xd1u,
+           "live successor receives the exact bytes despite the stale queue head");
+
+    if (stale_head.tcb->state == TH_READY && !stale_head.returned)
+        selftest_msgpipe_waiter_resume(&stale_head);
+    expect(s_oracle_callback_calls == 1 && !stale_head.returned &&
+           stale_head.tcb->state == TH_WAIT_OBJ,
+           "stale callback head dispatches once and reblocks after successor consumes data");
+
+    cpu = (CpuState){0};
+    cpu.r[4] = pipe;
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u &&
+           stale_head.tcb->state == TH_READY,
+           "deleting the pipe releases the callback head after the stale-head check");
+    if (stale_head.tcb->state == TH_READY)
+        selftest_msgpipe_waiter_resume(&stale_head);
+    if (live_waiter.tcb->state == TH_READY && !live_waiter.returned)
+        selftest_msgpipe_waiter_resume(&live_waiter);
+    expect(stale_head.returned && stale_head.ret == 0x800201b5u,
+           "callback head exits through the normal WAIT_DELETE path");
+
+    if (callback_uid) {
+        cpu = (CpuState){0};
+        cpu.r[4] = callback_uid;
+        s_cur = owner_index;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0u,
+               "stale-head callback fixture unregisters its callback");
+    }
+    s_oracle_mode = saved_oracle_mode;
+    if (stale_head.tcb->coro) {
+        sr_coro_destroy(stale_head.tcb->coro);
+        stale_head.tcb->coro = NULL;
+    }
+    if (live_waiter.tcb->coro) {
+        sr_coro_destroy(live_waiter.tcb->coro);
+        live_waiter.tcb->coro = NULL;
+    }
+}
+
+static void test_msgpipe_callback_wakeup_skips_stale_send_priority_waiter(void) {
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W8(GUEST_NAME, 's'); MEM_W8(GUEST_NAME + 1u, 'p');
+    MEM_W8(GUEST_NAME + 2u, 0u);
+    MEM_W8(GUEST_BUF, 0xa0u); MEM_W8(GUEST_BUF + 1u, 0xa1u);
+    MEM_W8(GUEST_BUF + 2u, 0xc0u); MEM_W8(GUEST_BUF + 3u, 0xc1u);
+    MEM_W8(GUEST_BUF + 4u, 0xd0u); MEM_W8(GUEST_BUF + 5u, 0xd1u);
+    MEM_W8(GUEST_OUT, 0xeeu); MEM_W8(GUEST_OUT + 1u, 0xeeu);
+
+    TCB *owner = fixture_thread(0x3394cu, TH_RUNNING, 10);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    /* Send-priority mode keeps the stale sender as the preferred candidate;
+     * selection must skip it and wake the actively parked successor. */
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0x0100u, 2u);
+    expect(pipe != 0u && pipe < 0x80000000u,
+           "stale-send fixture creates a two-byte send-priority pipe");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    CpuState cpu = {0};
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 2u, 0u, GUEST_RES + 8u);
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "stale-send fixture fills the pipe before senders park");
+
+    SelftestMsgPipeWaiterCtx stale_head = {0};
+    SelftestMsgPipeWaiterCtx live_waiter = {0};
+    selftest_msgpipe_send_waiter_start(&stale_head, 0x3394du, 40, pipe,
+                                       GUEST_BUF + 2u, GUEST_RES, 1);
+    selftest_msgpipe_send_waiter_start(&live_waiter, 0x3394eu, 45, pipe,
+                                       GUEST_BUF + 4u, GUEST_RES + 4u, 0);
+    expect(stale_head.tcb->state == TH_WAIT_OBJ &&
+           live_waiter.tcb->state == TH_WAIT_OBJ &&
+           sched_count_waiters(pipe) == 2,
+           "callback-aware sender and live successor both park on the full pipe");
+
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+    s_cur = (int)(stale_head.tcb - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    expect(callback_uid != 0u && stale_head.tcb->state == TH_READY &&
+           live_waiter.tcb->state == TH_WAIT_OBJ &&
+           s_oracle_callback_calls == 0,
+           "callback notification readies but does not resume the stale sender head");
+
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 2u, 0u, GUEST_RES + 8u, 0u);
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u &&
+           stale_head.tcb->state == TH_READY &&
+           live_waiter.tcb->state == TH_READY &&
+           MEM_R8(GUEST_OUT) == 0xa0u && MEM_R8(GUEST_OUT + 1u) == 0xa1u,
+           "receive skips the callback-readied stale sender and wakes the live successor");
+
+    if (live_waiter.tcb->state == TH_READY)
+        selftest_msgpipe_waiter_resume(&live_waiter);
+    expect(live_waiter.returned && live_waiter.ret == 0u &&
+           MEM_R32(GUEST_RES + 4u) == 2u,
+           "live sender transfers its exact bytes despite the stale queue head");
+
+    if (stale_head.tcb->state == TH_READY && !stale_head.returned)
+        selftest_msgpipe_waiter_resume(&stale_head);
+    expect(s_oracle_callback_calls == 1 && !stale_head.returned &&
+           stale_head.tcb->state == TH_WAIT_OBJ,
+           "stale sender callback dispatches once and reblocks on the full pipe");
+
+    cpu = (CpuState){0};
+    cpu.r[4] = pipe;
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u &&
+           stale_head.tcb->state == TH_READY,
+           "deleting the pipe releases the stale sender after the priority check");
+    if (stale_head.tcb->state == TH_READY)
+        selftest_msgpipe_waiter_resume(&stale_head);
+    if (live_waiter.tcb->state == TH_READY && !live_waiter.returned)
+        selftest_msgpipe_waiter_resume(&live_waiter);
+    expect(stale_head.returned && stale_head.ret == 0x800201b5u,
+           "stale sender exits through the normal WAIT_DELETE path");
+
+    if (callback_uid) {
+        cpu = (CpuState){0};
+        cpu.r[4] = callback_uid;
+        s_cur = owner_index;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0u,
+               "stale-send callback fixture unregisters its callback");
+    }
+    s_oracle_mode = saved_oracle_mode;
+    if (stale_head.tcb->coro) {
+        sr_coro_destroy(stale_head.tcb->coro);
+        stale_head.tcb->coro = NULL;
+    }
+    if (live_waiter.tcb->coro) {
+        sr_coro_destroy(live_waiter.tcb->coro);
+        live_waiter.tcb->coro = NULL;
+    }
+}
+
+static void test_msgpipe_termination_requeues_readied_waiters(void) {
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W8(GUEST_NAME, 't'); MEM_W8(GUEST_NAME + 1u, 'r');
+    MEM_W8(GUEST_NAME + 2u, 0u);
+    MEM_W8(GUEST_BUF, 0xc0u); MEM_W8(GUEST_BUF + 1u, 0xc1u);
+    MEM_W8(GUEST_OUT, 0xeeu); MEM_W8(GUEST_OUT + 1u, 0xeeu);
+
+    /* The producer outranks the first receiver but not the queued successor.
+     * FIFO wakeup leaves the first receiver READY without preempting; after
+     * that receiver is terminated, cleanup must yield to the higher-priority
+     * replacement only after the target is fully dormant. */
+    TCB *owner = fixture_thread(0x33940u, TH_RUNNING, 20);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0u, 2u);
+    expect(pipe != 0u && pipe < 0x80000000u,
+           "termination-reschedule fixture creates a two-byte FIFO pipe");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    SelftestMsgPipeWaiterCtx terminated = {0};
+    SelftestMsgPipeWaiterCtx survivor = {0};
+    selftest_msgpipe_waiter_start(&terminated, 0x33941u, 40, pipe,
+                                  GUEST_OUT, GUEST_RES, 0);
+    selftest_msgpipe_waiter_start(&survivor, 0x33942u, 10, pipe,
+                                  GUEST_OUT, GUEST_RES + 4u, 0);
+    expect(terminated.tcb->state == TH_WAIT_OBJ &&
+           survivor.tcb->state == TH_WAIT_OBJ && sched_count_waiters(pipe) == 2,
+           "two same-direction receivers park on the empty pipe");
+
+    SelftestMsgPipeTerminateCtx terminator = {0};
+    terminator.target_uid = terminated.tcb->uid;
+    terminator.terminate_nid = NID_SCE_KERNEL_TERMINATE_THREAD;
+    CpuState cpu = {0};
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 2u, 0u, GUEST_RES + 8u);
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+           terminated.tcb->state == TH_READY && survivor.tcb->state == TH_WAIT_OBJ,
+           "producer readies only the first lower-priority FIFO receiver");
+    owner->coro = sr_coro_create(selftest_msgpipe_terminate_fiber_body,
+                                 &terminator, (size_t)4 << 20);
+    expect(owner->coro != NULL, "termination owner coroutine is created");
+    s_cur = owner_index;
+    if (owner->coro) sr_coro_switch(owner->coro);
+    expect(terminated.tcb->state == TH_DORMANT && !terminated.tcb->coro,
+           "TerminateThread destroys the readied receiver coroutine");
+    expect(owner->state == TH_READY && !terminator.terminate_returned &&
+           survivor.tcb->state == TH_READY,
+           "termination cleanup yields to the higher-priority replacement receiver");
+
+    if (survivor.tcb->state == TH_READY && !survivor.returned)
+        selftest_msgpipe_waiter_resume(&survivor);
+    expect(survivor.returned && survivor.ret == 0u &&
+           MEM_R32(GUEST_RES + 4u) == 2u &&
+           MEM_R8(GUEST_OUT) == 0xc0u && MEM_R8(GUEST_OUT + 1u) == 0xc1u,
+           "surviving receiver consumes the queued bytes without another transfer");
+
+    if (!terminator.terminate_returned && owner->coro) {
+        owner->state = TH_RUNNING;
+        s_cur = owner_index;
+        sr_coro_switch(owner->coro);
+    }
+    expect(terminator.terminate_returned && terminator.terminate_result == 0u,
+           "preempted TerminateThread resumes and returns success");
+
+    /* If a future regression strands the successor, delete the pipe to release
+     * it before returning from the test. */
+    if (!survivor.returned && survivor.tcb->state == TH_WAIT_OBJ) {
+        CpuState cpu = {0};
+        cpu.r[4] = pipe;
+        s_cur = owner_index;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+        selftest_msgpipe_waiter_resume(&survivor);
+    } else {
+        CpuState cpu = {0};
+        cpu.r[4] = pipe;
+        s_cur = owner_index;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+    }
+    if (terminated.tcb->coro) {
+        sr_coro_destroy(terminated.tcb->coro);
+        terminated.tcb->coro = NULL;
+    }
+    if (survivor.tcb->coro) {
+        sr_coro_destroy(survivor.tcb->coro);
+        survivor.tcb->coro = NULL;
+    }
+    if (owner->coro) {
+        sr_coro_destroy(owner->coro);
+        owner->coro = NULL;
+    }
+
+    /* Mirror the same lost-wakeup window for blocked senders: a receive frees
+     * the full pipe, then the producer terminates the sender it just readied. */
+    reset_fixture();
+    sr_hle_init();
+    MEM_W8(GUEST_NAME, 's'); MEM_W8(GUEST_NAME + 1u, 't');
+    MEM_W8(GUEST_NAME + 2u, 0u);
+    MEM_W8(GUEST_BUF, 0xa0u); MEM_W8(GUEST_BUF + 1u, 0xa1u);
+    MEM_W8(GUEST_BUF + 2u, 0xb0u); MEM_W8(GUEST_BUF + 3u, 0xb1u);
+    MEM_W8(GUEST_BUF + 4u, 0xc0u); MEM_W8(GUEST_BUF + 5u, 0xc1u);
+    owner = fixture_thread(0x33943u, TH_RUNNING, 20);
+    owner->started = 1;
+    owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    pipe = selftest_msgpipe_create(GUEST_NAME, 0u, 2u);
+    expect(pipe != 0u && pipe < 0x80000000u,
+           "termination-reschedule fixture creates a full two-byte pipe");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    cpu = (CpuState){0};
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 2u, 0u, GUEST_RES);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "sender-reschedule fixture fills the pipe before senders park");
+    terminated = (SelftestMsgPipeWaiterCtx){0};
+    survivor = (SelftestMsgPipeWaiterCtx){0};
+    terminated.is_send = 1;
+    survivor.is_send = 1;
+    selftest_msgpipe_waiter_start(&terminated, 0x33944u, 40, pipe,
+                                  GUEST_BUF + 2u, GUEST_RES + 4u, 0);
+    selftest_msgpipe_waiter_start(&survivor, 0x33945u, 10, pipe,
+                                  GUEST_BUF + 4u, GUEST_RES + 8u, 0);
+    expect(terminated.tcb->state == TH_WAIT_OBJ &&
+           survivor.tcb->state == TH_WAIT_OBJ && sched_count_waiters(pipe) == 2,
+           "two same-direction senders park on the full pipe");
+
+    terminator = (SelftestMsgPipeTerminateCtx){0};
+    terminator.target_uid = terminated.tcb->uid;
+    terminator.terminate_nid = NID_SCE_KERNEL_TERMINATE_DELETE_THREAD;
+    msgpipe_wait_setup(&cpu, pipe, GUEST_OUT + 4u, 2u, 0u,
+                       GUEST_RES + 12u, 0u);
+    s_cur = owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u &&
+           terminated.tcb->state == TH_READY && survivor.tcb->state == TH_WAIT_OBJ,
+           "consumer readies only the first lower-priority FIFO sender");
+    owner->coro = sr_coro_create(selftest_msgpipe_terminate_fiber_body,
+                                 &terminator, (size_t)4 << 20);
+    expect(owner->coro != NULL, "sender termination owner coroutine is created");
+    s_cur = owner_index;
+    if (owner->coro) sr_coro_switch(owner->coro);
+    expect(terminated.tcb->state == TH_DORMANT && terminated.tcb->deleted &&
+           !terminated.tcb->coro,
+           "TerminateDeleteThread deletes the readied sender before replacement preemption");
+    expect(owner->state == TH_READY && !terminator.terminate_returned &&
+           survivor.tcb->state == TH_READY,
+           "termination cleanup yields to the higher-priority replacement sender");
+
+    if (survivor.tcb->state == TH_READY && !survivor.returned)
+        selftest_msgpipe_waiter_resume(&survivor);
+    SrMsgPipeState state;
+    expect(survivor.returned && survivor.ret == 0u &&
+           MEM_R32(GUEST_RES + 8u) == 2u &&
+           sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 2u,
+           "surviving sender uses the available pipe space without another transfer");
+
+    if (!terminator.terminate_returned && owner->coro) {
+        owner->state = TH_RUNNING;
+        s_cur = owner_index;
+        sr_coro_switch(owner->coro);
+    }
+    expect(terminator.terminate_returned && terminator.terminate_result == 0u,
+           "preempted sender TerminateThread resumes and returns success");
+
+    if (survivor.returned && survivor.ret == 0u) {
+        CpuState cpu = {0};
+        msgpipe_wait_setup(&cpu, pipe, GUEST_OUT, 2u, 0u,
+                           GUEST_RES + 16u, 0u);
+        s_cur = owner_index;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u &&
+               MEM_R32(GUEST_RES + 16u) == 2u &&
+               MEM_R8(GUEST_OUT) == 0xc0u && MEM_R8(GUEST_OUT + 1u) == 0xc1u,
+               "surviving sender's exact bytes are present in the pipe");
+    }
+    if (!survivor.returned && survivor.tcb->state == TH_WAIT_OBJ) {
+        CpuState cpu = {0};
+        cpu.r[4] = pipe;
+        s_cur = owner_index;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+        selftest_msgpipe_waiter_resume(&survivor);
+    } else {
+        CpuState cpu = {0};
+        cpu.r[4] = pipe;
+        s_cur = owner_index;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+    }
+    if (terminated.tcb->coro) {
+        sr_coro_destroy(terminated.tcb->coro);
+        terminated.tcb->coro = NULL;
+    }
+    if (survivor.tcb->coro) {
+        sr_coro_destroy(survivor.tcb->coro);
+        survivor.tcb->coro = NULL;
+    }
+    if (owner->coro) {
+        sr_coro_destroy(owner->coro);
+        owner->coro = NULL;
+    }
+}
 
 static void test_msgpipe_callback_and_delete(void) {
     reset_fixture();
@@ -13349,6 +14212,313 @@ static void test_msgpipe_callback_and_delete(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0u,
            "message-pipe callback fixture unregisters its callback");
     s_oracle_mode = saved_oracle_mode;
+}
+
+typedef struct {
+    TCB *owner;
+    TCB *waiter;
+    int owner_index;
+    int saved_oracle_mode;
+    uint32_t pipe_uid;
+    uint32_t callback_uid;
+    SelftestMsgPipeWaiterCtx outer;
+} SelftestMsgPipeNestedFixture;
+
+static int selftest_msgpipe_nested_fixture_begin(
+    SelftestMsgPipeNestedFixture *fixture, uint32_t owner_uid,
+    uint32_t waiter_uid, uint32_t nested_nid, uint32_t nested_size,
+    uint32_t nested_buffer, uint32_t seed_count) {
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->owner_index = -1;
+    fixture->saved_oracle_mode = s_oracle_mode;
+    reset_fixture();
+    sr_hle_init();
+    for (uint32_t i = 0; i < 24u; i++) {
+        MEM_W8(GUEST_BUF + i, (uint8_t)(0x70u + i));
+        MEM_W8(GUEST_OUT + i, 0xeeu);
+    }
+    MEM_W8(GUEST_NAME, 'n');
+    MEM_W8(GUEST_NAME + 1u, 'p');
+    MEM_W8(GUEST_NAME + 2u, 0u);
+
+    fixture->owner = fixture_thread(owner_uid, TH_RUNNING, 32);
+    if (!fixture->owner) return 0;
+    fixture->waiter = fixture_thread(waiter_uid, TH_READY, 40);
+    if (!fixture->waiter) return 0;
+    fixture->owner->started = 1;
+    fixture->waiter->started = 1;
+    fixture->owner_index = (int)(fixture->owner - s_tcb);
+    s_cur = fixture->owner_index;
+    fixture->pipe_uid = selftest_msgpipe_create(GUEST_NAME, 0u, 8u);
+    expect(fixture->pipe_uid != 0u && fixture->pipe_uid < 0x80000000u,
+           "nested-callback fixture creates an eight-byte pipe");
+    if (!fixture->pipe_uid || fixture->pipe_uid >= 0x80000000u) return 0;
+
+    CpuState cpu = {0};
+    msgpipe_setup(&cpu, fixture->pipe_uid, GUEST_BUF, seed_count, 0u,
+                  GUEST_RES + 8u);
+    uint32_t seed_rc = sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE);
+    expect(seed_rc == 0u,
+           "nested-callback fixture seeds the pipe");
+    if (seed_rc != 0u) return 0;
+
+    fixture->outer.tcb = fixture->waiter;
+    fixture->outer.pipe_uid = fixture->pipe_uid;
+    fixture->outer.buffer = GUEST_OUT;
+    fixture->outer.size = 8u;
+    fixture->outer.wait_mode = 0u;
+    fixture->outer.resultp = GUEST_RES;
+    fixture->outer.is_cb = 1;
+    fixture->waiter->coro = sr_coro_create(
+        selftest_msgpipe_waiter_fiber_body, &fixture->outer, (size_t)4 << 20);
+    expect(fixture->waiter->coro != NULL,
+           "nested-callback fixture creates a real waiter coroutine");
+    if (!fixture->waiter->coro) return 0;
+    s_cur = (int)(fixture->waiter - s_tcb);
+    sr_coro_switch(fixture->waiter->coro);
+    expect(fixture->waiter->state == TH_WAIT_OBJ && !fixture->outer.returned,
+           "outer callback-aware receiver parks before callback notification");
+    if (fixture->waiter->state != TH_WAIT_OBJ || fixture->outer.returned)
+        return 0;
+
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+    s_msgpipe_callback_nested_nid = nested_nid;
+    s_msgpipe_callback_nested_pipe = fixture->pipe_uid;
+    s_msgpipe_callback_nested_buffer = nested_buffer;
+    s_msgpipe_callback_nested_size = nested_size;
+    s_msgpipe_callback_nested_resultp = GUEST_RES + 4u;
+    s_msgpipe_callback_nested_ret = 0xffffffffu;
+    s_msgpipe_callback_nested_returned = 0;
+    s_cur = (int)(fixture->waiter - s_tcb);
+    fixture->callback_uid = issue339_create_pending_callback();
+    expect(fixture->callback_uid != 0u && fixture->waiter->state == TH_READY,
+           "pending guest callback readies the outer receiver");
+    if (!fixture->callback_uid || fixture->waiter->state != TH_READY) return 0;
+    selftest_msgpipe_waiter_resume(&fixture->outer);
+    expect(s_oracle_callback_calls == 1,
+           "outer callback-aware receiver dispatches its callback");
+    return s_oracle_callback_calls == 1;
+}
+
+static void selftest_msgpipe_nested_fixture_end(
+    SelftestMsgPipeNestedFixture *fixture) {
+    CpuState cpu = {0};
+    s_msgpipe_callback_nested_nid = 0u;
+    s_msgpipe_callback_nested_pipe = 0u;
+    s_msgpipe_callback_nested_buffer = 0u;
+    s_msgpipe_callback_nested_size = 0u;
+    s_msgpipe_callback_nested_resultp = 0u;
+    s_msgpipe_callback_nested_ret = 0u;
+    s_msgpipe_callback_nested_returned = 0;
+    if (fixture->owner_index >= 0) s_cur = fixture->owner_index;
+    SrMsgPipeState state;
+    if (fixture->owner_index >= 0 && fixture->pipe_uid &&
+        sr_hle_test_msgpipe_state(fixture->pipe_uid, &state)) {
+        cpu.r[4] = fixture->pipe_uid;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+    }
+    if (!fixture->outer.returned && fixture->waiter &&
+        fixture->waiter->coro)
+        selftest_msgpipe_waiter_resume(&fixture->outer);
+    if (fixture->waiter && fixture->waiter->coro) {
+        sr_coro_destroy(fixture->waiter->coro);
+        fixture->waiter->coro = NULL;
+    }
+    if (fixture->callback_uid) {
+        cpu = (CpuState){0};
+        cpu.r[4] = fixture->callback_uid;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+    }
+    s_oracle_mode = fixture->saved_oracle_mode;
+}
+
+static void test_msgpipe_nested_callback_wait_scopes(void) {
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    SelftestMsgPipeNestedFixture fixture;
+    CpuState cpu = {0};
+    SrMsgPipeState state;
+
+    /* An inner receive from the same thread must own a separate queue entry so
+     * its completion cannot erase the suspended outer receive. */
+    if (!selftest_msgpipe_nested_fixture_begin(
+        &fixture, 0x33924u, 0x33925u,
+        NID_SCE_KERNEL_RECEIVE_MSG_PIPE, 8u, GUEST_OUT + 16u, 6u)) {
+        selftest_msgpipe_nested_fixture_end(&fixture);
+        return;
+    }
+    expect(!s_msgpipe_callback_nested_returned &&
+           fixture.waiter->state == TH_WAIT_OBJ,
+           "same-direction nested receive blocks as its own waiter scope");
+    s_cur = fixture.owner_index;
+    msgpipe_setup(&cpu, fixture.pipe_uid, GUEST_BUF + 6u, 2u, 0u,
+                  GUEST_RES + 8u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+           fixture.waiter->state == TH_READY,
+           "two bytes wake the active same-direction nested receiver");
+    selftest_msgpipe_waiter_resume(&fixture.outer);
+    expect(s_msgpipe_callback_nested_returned &&
+           s_msgpipe_callback_nested_ret == 0u &&
+           MEM_R32(GUEST_RES + 4u) == 8u,
+           "same-direction inner receive completes with its own result");
+    expect(!fixture.outer.returned && fixture.waiter->state == TH_WAIT_OBJ &&
+           sr_hle_test_msgpipe_state(fixture.pipe_uid, &state) == 1 &&
+           state.count == 0u,
+           "outer receive reblocks after inner completion on an empty pipe");
+    msgpipe_setup(&cpu, fixture.pipe_uid, GUEST_BUF, 8u, 0u, GUEST_RES + 8u);
+    s_cur = fixture.owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+           fixture.waiter->state == TH_READY,
+           "later data wakes the retained outer same-direction scope");
+    selftest_msgpipe_waiter_resume(&fixture.outer);
+    int outer_bytes_match = fixture.outer.returned && fixture.outer.ret == 0u &&
+                            MEM_R32(GUEST_RES) == 8u;
+    for (uint32_t i = 0; i < 8u; i++)
+        if (MEM_R8(GUEST_OUT + i) != (uint8_t)(0x70u + i))
+            outer_bytes_match = 0;
+    expect(outer_bytes_match,
+           "retained outer receive completes once the remaining eight bytes arrive");
+    selftest_msgpipe_nested_fixture_end(&fixture);
+
+    /* Terminating a thread that is suspended inside the callback's nested
+     * receive must remove both its parked inner scope and its unparked outer
+     * scope. A later FIFO receiver must not be shadowed by either stale record. */
+    if (!selftest_msgpipe_nested_fixture_begin(
+        &fixture, 0x33930u, 0x33931u,
+        NID_SCE_KERNEL_RECEIVE_MSG_PIPE, 8u, GUEST_OUT + 16u, 6u)) {
+        selftest_msgpipe_nested_fixture_end(&fixture);
+        return;
+    }
+    expect(!s_msgpipe_callback_nested_returned &&
+           fixture.waiter->state == TH_WAIT_OBJ,
+           "termination fixture has nested and outer receive scopes suspended");
+
+    SelftestMsgPipeWaiterCtx survivor = {0};
+    survivor.tcb = fixture_thread(0x33932u, TH_READY, 50);
+    survivor.tcb->started = 1;
+    survivor.pipe_uid = fixture.pipe_uid;
+    survivor.buffer = GUEST_OUT + 16u;
+    survivor.size = 8u;
+    survivor.resultp = GUEST_RES + 12u;
+    survivor.tcb->coro = sr_coro_create(
+        selftest_msgpipe_waiter_fiber_body, &survivor, (size_t)4 << 20);
+    expect(survivor.tcb->coro != NULL,
+           "later live Message Pipe receiver coroutine is created");
+    if (!survivor.tcb->coro) {
+        selftest_msgpipe_nested_fixture_end(&fixture);
+        return;
+    }
+    s_cur = (int)(survivor.tcb - s_tcb);
+    sr_coro_switch(survivor.tcb->coro);
+    expect(survivor.tcb->state == TH_WAIT_OBJ && !survivor.returned,
+           "later live receiver parks behind the retained six bytes");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fixture.waiter->uid;
+    s_cur = fixture.owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0u &&
+           fixture.waiter->state == TH_DORMANT && !fixture.waiter->coro,
+           "TerminateThread releases a callback-nested Message Pipe waiter");
+    expect(survivor.tcb->state == TH_WAIT_OBJ && !survivor.returned,
+           "departure does not notify a successor whose complete transfer is unavailable");
+
+    msgpipe_setup(&cpu, fixture.pipe_uid, GUEST_BUF + 6u, 2u, 0u,
+                  GUEST_RES + 8u);
+    s_cur = fixture.owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "owner supplies the two bytes required by the live receiver");
+    expect(survivor.tcb->state == TH_READY,
+           "removed nested scopes do not shadow the later FIFO receiver");
+    if (survivor.tcb->state == TH_READY)
+        selftest_msgpipe_waiter_resume(&survivor);
+    int survivor_bytes_match = survivor.returned && survivor.ret == 0u &&
+                               MEM_R32(GUEST_RES + 12u) == 8u;
+    for (uint32_t i = 0; i < 8u; i++)
+        if (MEM_R8(GUEST_OUT + 16u + i) != (uint8_t)(0x70u + i))
+            survivor_bytes_match = 0;
+    expect(survivor_bytes_match,
+           "later receiver consumes the exact queued and newly sent bytes");
+    if (!survivor.returned && survivor.tcb->coro) {
+        if (survivor.tcb->state == TH_WAIT_OBJ) {
+            CpuState delete_cpu = {0};
+            delete_cpu.r[4] = fixture.pipe_uid;
+            s_cur = fixture.owner_index;
+            (void)sr_syscall(&delete_cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+            fixture.pipe_uid = 0u;
+        }
+        selftest_msgpipe_waiter_resume(&survivor);
+    }
+    sr_coro_destroy(survivor.tcb->coro);
+    survivor.tcb->coro = NULL;
+    selftest_msgpipe_nested_fixture_end(&fixture);
+
+    /* The opposite direction must not remove the earlier receive entry when
+     * the callback's blocked send returns. */
+    if (!selftest_msgpipe_nested_fixture_begin(
+        &fixture, 0x33926u, 0x33927u,
+        NID_SCE_KERNEL_SEND_MSG_PIPE, 3u, GUEST_BUF + 16u, 6u)) {
+        selftest_msgpipe_nested_fixture_end(&fixture);
+        return;
+    }
+    expect(!s_msgpipe_callback_nested_returned &&
+           fixture.waiter->state == TH_WAIT_OBJ,
+           "opposite-direction nested send blocks for three bytes of space");
+    s_cur = fixture.owner_index;
+    msgpipe_wait_setup(&cpu, fixture.pipe_uid, GUEST_OUT + 32u, 2u, 0u,
+                       GUEST_RES + 8u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u &&
+           fixture.waiter->state == TH_READY,
+           "freeing two bytes wakes the active nested sender");
+    selftest_msgpipe_waiter_resume(&fixture.outer);
+    expect(s_msgpipe_callback_nested_returned &&
+           s_msgpipe_callback_nested_ret == 0u &&
+           MEM_R32(GUEST_RES + 4u) == 3u,
+           "nested sender transfers three bytes and returns through its scope");
+    expect(!fixture.outer.returned && fixture.waiter->state == TH_WAIT_OBJ &&
+           sr_hle_test_msgpipe_state(fixture.pipe_uid, &state) == 1 &&
+           state.count == 7u,
+           "outer receive remains registered while the pipe contains seven bytes");
+    msgpipe_setup(&cpu, fixture.pipe_uid, GUEST_BUF + 20u, 1u, 0u,
+                  GUEST_RES + 8u);
+    s_cur = fixture.owner_index;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+           fixture.waiter->state == TH_READY,
+           "one final byte wakes the suspended outer receive after nested send cleanup");
+    selftest_msgpipe_waiter_resume(&fixture.outer);
+    outer_bytes_match = fixture.outer.returned && fixture.outer.ret == 0u &&
+                        MEM_R32(GUEST_RES) == 8u;
+    outer_bytes_match = outer_bytes_match &&
+        MEM_R8(GUEST_OUT) == 0x72u && MEM_R8(GUEST_OUT + 1u) == 0x73u &&
+        MEM_R8(GUEST_OUT + 2u) == 0x74u && MEM_R8(GUEST_OUT + 3u) == 0x75u &&
+        MEM_R8(GUEST_OUT + 4u) == 0x80u && MEM_R8(GUEST_OUT + 5u) == 0x81u &&
+        MEM_R8(GUEST_OUT + 6u) == 0x82u && MEM_R8(GUEST_OUT + 7u) == 0x84u;
+    expect(outer_bytes_match,
+           "outer receive completes with the exact remaining and nested-send bytes");
+    selftest_msgpipe_nested_fixture_end(&fixture);
+
+    /* A callback can satisfy the outer receive without parking an inner wait.
+     * The outer routine must recheck readiness before it blocks again. */
+    if (!selftest_msgpipe_nested_fixture_begin(
+        &fixture, 0x33928u, 0x33929u,
+        NID_SCE_KERNEL_TRY_SEND_MSG_PIPE, 2u, GUEST_BUF + 16u, 6u)) {
+        selftest_msgpipe_nested_fixture_end(&fixture);
+        return;
+    }
+    expect(s_msgpipe_callback_nested_returned &&
+           s_msgpipe_callback_nested_ret == 0u && fixture.outer.returned &&
+           fixture.outer.ret == 0u && MEM_R32(GUEST_RES) == 8u &&
+           sr_hle_test_msgpipe_state(fixture.pipe_uid, &state) == 1 &&
+           state.count == 0u,
+           "outer receive consumes callback-supplied bytes before it parks again");
+    expect(MEM_R32(GUEST_RES + 4u) == 2u,
+           "callback try-send reports its completed transfer");
+    selftest_msgpipe_nested_fixture_end(&fixture);
 }
 
 static uint32_t s_live_sema_obj;
@@ -14290,6 +15460,190 @@ static void test_vpl_nonblocking_roundtrip(void) {
     (void)sr_syscall(&cpu, 0xb6d61d02u);
 }
 
+static uint32_t selftest_tlspl_create(uint32_t name, uint32_t partition,
+                                      uint32_t attr, uint32_t block_size,
+                                      uint32_t num_blocks, uint32_t options);
+static uint32_t selftest_tlspl_simple(uint32_t uid, uint32_t nid);
+static uint32_t selftest_tlspl_refer(uint32_t uid, uint32_t info);
+static uint32_t selftest_tlspl_get_addr(uint32_t uid);
+
+static void test_tlspl_lifecycle_and_thread_isolation(void) {
+    extern void sr_hle_test_partition_reset(void);
+    static const char name[] = "tlspl-selftest";
+    static const uint32_t nids[] = {
+        NID_TLSPL_CREATE, NID_TLSPL_DELETE, NID_TLSPL_FREE,
+        NID_TLSPL_REFER, NID_TLSPL_GET_ADDR
+    };
+    int registered = 1;
+
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof nids / sizeof nids[0]; ++i) {
+        int has_nid = sr_hle_test_is_registered(nids[i]);
+        expect(has_nid, "TLSPL API is registered through production HLE mapping");
+        registered = registered && has_nid;
+    }
+    if (!registered) return;
+
+    for (size_t i = 0; i < sizeof name; ++i)
+        MEM_W8(TLSPL_NAMEBUF + (uint32_t)i, (uint8_t)name[i]);
+
+    TCB *thread_a = fixture_thread(0x3391u, TH_RUNNING, 32);
+    TCB *thread_b = fixture_thread(0x3392u, TH_READY, 32);
+    TCB *thread_c = fixture_thread(0x3393u, TH_READY, 32);
+    TCB *thread_d = fixture_thread(0x3394u, TH_READY, 32);
+    expect(thread_a != NULL && thread_b != NULL && thread_c != NULL && thread_d != NULL,
+           "TLSPL fixture creates four guest threads");
+    if (!thread_a || !thread_b || !thread_c || !thread_d) return;
+    s_cur = (int)(thread_a - s_tcb);
+
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 0u, 2u, 0u) == TLSPL_SIZE_ERR,
+           "TLSPL rejects a zero block size");
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 0u, 0u) == TLSPL_SIZE_ERR,
+           "TLSPL rejects a zero block count");
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 1u, 0u, 32u, 2u, 0u) == TLSPL_BAD_ID_ERR,
+           "TLSPL names unsupported partitions as an in-progress boundary");
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0x2u, 32u, 2u, 0u) == 0x80020191u,
+           "TLSPL names unsupported attributes as an in-progress boundary");
+    uint32_t pool = selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u, 0u);
+    expect(pool != 0u && pool < 0x80000000u, "TLSPL create returns a valid UID");
+    if (!pool || pool >= 0x80000000u) return;
+
+    expect(selftest_tlspl_refer(pool, TLSPL_INFO) == 0u,
+           "TLSPL ReferTlsplStatus succeeds for a writable status record");
+    expect(MEM_R32(TLSPL_INFO + 0u) == 56u,
+           "TLSPL status reports the PSP SceKernelTlsplInfo size");
+    expect(MEM_R8(TLSPL_INFO + 4u) == (uint8_t)'t' &&
+           MEM_R8(TLSPL_INFO + 18u) == 0u,
+           "TLSPL status reports the pool name");
+    expect(MEM_R32(TLSPL_INFO + 36u) == 0u &&
+           MEM_R32(TLSPL_INFO + 40u) == 32u &&
+           MEM_R32(TLSPL_INFO + 44u) == 2u &&
+           MEM_R32(TLSPL_INFO + 48u) == 2u,
+           "TLSPL status reports attributes, block size, block count, and free blocks");
+    expect(selftest_tlspl_refer(pool, 0u) == 0x80000103u,
+           "TLSPL status rejects a null output pointer");
+    expect(selftest_tlspl_refer(pool, 0xffffffffu) == 0x80000103u,
+           "TLSPL status rejects an unwritable output span");
+    expect(selftest_tlspl_refer(0xdeadbeefu, TLSPL_INFO) == TLSPL_BAD_ID_ERR,
+           "TLSPL status rejects an invalid pool UID");
+
+    uint32_t addr_a = selftest_tlspl_get_addr(pool);
+    expect(addr_a != 0u, "TLSPL GetTlsAddr allocates a slot for the current thread");
+    if (!addr_a) {
+        (void)selftest_tlspl_simple(pool, NID_TLSPL_DELETE);
+        return;
+    }
+    expect(sr_guest_span_writable(addr_a, 32u), "TLSPL address spans writable guest memory");
+    MEM_W32(addr_a, 0x3391a11au);
+
+    s_cur = (int)(thread_b - s_tcb);
+    uint32_t addr_b = selftest_tlspl_get_addr(pool);
+    expect(addr_b != 0u && addr_b != addr_a,
+           "TLSPL GetTlsAddr isolates allocations for distinct guest threads");
+    if (addr_b) {
+        expect(addr_b >= addr_a && addr_b < addr_a + 64u,
+               "TLSPL thread slots lie within the pool allocation");
+        expect(sr_guest_span_writable(addr_b, 32u), "TLSPL second slot spans writable guest memory");
+        MEM_W32(addr_b, 0x3392b22bu);
+        expect(MEM_R32(addr_b) == 0x3392b22bu,
+               "TLSPL second thread slot is readable and writable");
+    }
+
+    s_cur = (int)(thread_c - s_tcb);
+    expect(selftest_tlspl_get_addr(pool) == 0u,
+           "TLSPL exhausted pool returns null while blocking allocation is unimplemented");
+
+    s_cur = (int)(thread_a - s_tcb);
+    expect(selftest_tlspl_get_addr(pool) == addr_a && MEM_R32(addr_a) == 0x3391a11au,
+           "TLSPL GetTlsAddr returns the current thread's stable slot");
+    expect(selftest_tlspl_refer(pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == (addr_b ? 0u : 1u),
+           "TLSPL status reflects the remaining free block count");
+
+    s_cur = (int)(thread_b - s_tcb);
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_FREE) == 0u,
+           "TLSPL FreeTlspl releases the current thread's slot");
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_FREE) == TLSPL_BAD_ID_ERR,
+           "TLSPL FreeTlspl rejects a thread without an allocated slot");
+
+    s_cur = (int)(thread_a - s_tcb);
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_FREE) == 0u,
+           "TLSPL FreeTlspl releases the first thread's slot");
+    expect(selftest_tlspl_get_addr(0xdeadbeefu) == 0u,
+           "TLSPL GetTlsAddr returns null for an invalid pool UID");
+    expect(selftest_tlspl_simple(0xdeadbeefu, NID_TLSPL_FREE) == TLSPL_BAD_ID_ERR,
+           "TLSPL FreeTlspl rejects an invalid pool UID");
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_DELETE) == 0u,
+           "TLSPL DeleteTlspl releases the pool");
+    expect(selftest_tlspl_simple(pool, NID_TLSPL_DELETE) == TLSPL_BAD_ID_ERR,
+           "TLSPL DeleteTlspl rejects a deleted pool UID");
+
+    uint32_t teardown_pool = selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u, 0u);
+    expect(teardown_pool != 0u && teardown_pool < 0x80000000u,
+           "TLSPL teardown fixture creates a second pool");
+    if (!teardown_pool || teardown_pool >= 0x80000000u) return;
+    s_cur = (int)(thread_d - s_tcb);
+    uint32_t teardown_addr = selftest_tlspl_get_addr(teardown_pool);
+    expect(teardown_addr != 0u, "TLSPL teardown fixture allocates a thread slot");
+    expect(selftest_tlspl_refer(teardown_pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == 1u,
+           "TLSPL status shows one block held before thread termination");
+    s_cur = (int)(thread_b - s_tcb);
+    expect(sched_terminate_thread(thread_d->uid) == 0u,
+           "TLSPL fixture thread terminates through the scheduler");
+    expect(selftest_tlspl_refer(teardown_pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == 2u,
+           "TLSPL thread teardown releases its slot back to the unallocated count");
+
+    s_cur = (int)(thread_a - s_tcb);
+    uint32_t held_addr = selftest_tlspl_get_addr(teardown_pool);
+    expect(held_addr != 0u, "TLSPL delete fixture holds a block on a live thread");
+    s_cur = (int)(thread_b - s_tcb);
+    expect(selftest_tlspl_simple(teardown_pool, NID_TLSPL_DELETE) == TLSPL_BUSY_ERR,
+           "TLSPL DeleteTlspl refuses to free a pool with a held block");
+    expect(selftest_tlspl_refer(teardown_pool, TLSPL_INFO) == 0u &&
+           MEM_R32(TLSPL_INFO + 48u) == 1u,
+           "TLSPL pool and held-block accounting survive refused deletion");
+    s_cur = (int)(thread_a - s_tcb);
+    expect(selftest_tlspl_get_addr(teardown_pool) == held_addr,
+           "TLSPL held address remains owned after refused deletion");
+    expect(selftest_tlspl_simple(teardown_pool, NID_TLSPL_FREE) == 0u,
+           "TLSPL live thread releases the held block after refused deletion");
+    s_cur = (int)(thread_b - s_tcb);
+    expect(selftest_tlspl_simple(teardown_pool, NID_TLSPL_DELETE) == 0u,
+           "TLSPL pool deletes after all held blocks are released");
+
+    MEM_W32(TLSPL_OPTIONS, 8u);
+    MEM_W32(TLSPL_OPTIONS + 4u, 64u);
+    s_cur = (int)(thread_a - s_tcb);
+    uint32_t aligned_pool = selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u,
+                                                  TLSPL_OPTIONS);
+    expect(aligned_pool != 0u && aligned_pool < 0x80000000u,
+           "TLSPL accepts a valid options record with 64-byte alignment");
+    if (aligned_pool && aligned_pool < 0x80000000u) {
+        uint32_t aligned_a = selftest_tlspl_get_addr(aligned_pool);
+        s_cur = (int)(thread_b - s_tcb);
+        uint32_t aligned_b = selftest_tlspl_get_addr(aligned_pool);
+        expect(aligned_a != 0u && (aligned_a & 63u) == 0u,
+               "TLSPL option alignment produces a 64-byte-aligned address");
+        expect(aligned_b > aligned_a && aligned_b - aligned_a == 64u,
+               "TLSPL option alignment produces a 64-byte block stride");
+        expect(selftest_tlspl_simple(aligned_pool, NID_TLSPL_FREE) == 0u,
+               "TLSPL frees the second aligned block");
+        s_cur = (int)(thread_a - s_tcb);
+        expect(selftest_tlspl_simple(aligned_pool, NID_TLSPL_FREE) == 0u,
+               "TLSPL frees the first aligned block");
+        expect(selftest_tlspl_simple(aligned_pool, NID_TLSPL_DELETE) == 0u,
+               "TLSPL deletes the aligned pool after release");
+    }
+    MEM_W32(TLSPL_OPTIONS + 4u, 3u);
+    expect(selftest_tlspl_create(TLSPL_NAMEBUF, 2u, 0u, 32u, 2u, TLSPL_OPTIONS) ==
+           TLSPL_SIZE_ERR,
+           "TLSPL rejects a non-power-of-two alignment");
+}
+
 /* =========================================================================
  * PR-G Blocking Memory Pool Tests (FPL and VPL)
  * ========================================================================= */
@@ -14511,6 +15865,39 @@ static uint32_t selftest_vpl_free(uint32_t uid, uint32_t addr) {
     cpu.r[4] = uid;
     cpu.r[5] = addr;
     return sr_syscall(&cpu, NID_VPL_FREE);
+}
+
+static uint32_t selftest_tlspl_create(uint32_t name, uint32_t partition,
+                                      uint32_t attr, uint32_t block_size,
+                                      uint32_t num_blocks, uint32_t options) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = name;
+    cpu.r[5] = partition;
+    cpu.r[6] = attr;
+    cpu.r[7] = block_size;
+    cpu.r[8] = num_blocks;
+    cpu.r[9] = options;
+    return sr_syscall(&cpu, NID_TLSPL_CREATE);
+}
+
+static uint32_t selftest_tlspl_simple(uint32_t uid, uint32_t nid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, nid);
+}
+
+static uint32_t selftest_tlspl_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_TLSPL_REFER);
+}
+
+static uint32_t selftest_tlspl_get_addr(uint32_t uid) {
+    return selftest_tlspl_simple(uid, NID_TLSPL_GET_ADDR);
 }
 
 static void test_fpl_blocking_waits(void) {
@@ -15720,7 +17107,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
-                 "+ %d Message Pipe legs = %d, observed %lu)",
+                 "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
                  s_msgpipe_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
@@ -15734,6 +17121,7 @@ static void check_coroutine_lifecycle(void) {
     expect(lc.creates > 0, "the run actually created coroutines to observe");
     expect(lc.creates == lc.destroys, "every created coroutine was destroyed");
     expect(lc.live == 0, "no coroutine outlived the run");
+    expect(s_wait_invocations == NULL, "no semantic wait invocation outlived the run");
     expect(lc.double_destroys == 0, "no coroutine was destroyed more than once");
     expect(lc.destroy_while_running == 0, "no coroutine was destroyed while it was running");
     expect(lc.destroy_of_main == 0, "the adopted main coroutine was never destroyed");
@@ -19103,14 +20491,22 @@ int main(int argc, char **argv) {
     test_sas_state_contracts();
     test_msgpipe_safety();
     test_msgpipe_blocking();
+    test_msgpipe_departure_reconsiders_successor();
+    test_msgpipe_invocation_lifetime();
     test_msgpipe_waiter_order();
+    test_msgpipe_repeated_transfer_skips_readied_waiter();
+    test_msgpipe_callback_wakeup_skips_stale_head_waiter();
+    test_msgpipe_callback_wakeup_skips_stale_send_priority_waiter();
+    test_msgpipe_termination_requeues_readied_waiters();
     test_msgpipe_callback_and_delete();
+    test_msgpipe_nested_callback_wait_scopes();
     test_td23_guest_pointer_validation();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
+    test_tlspl_lifecycle_and_thread_isolation();
     test_vpl_blocking_waits();
     test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();

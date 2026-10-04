@@ -159,6 +159,7 @@ typedef struct {
                                   * would be blamed for the code that ran next */
     int      is_cb_wait;         /* 1 when thread is in callback-aware wait */
     int      deleted;             /* kernel object has been removed; slot may be recycled */
+    SrWaitHandle active_wait;    /* only the currently attached semantic block */
     int      resources_released;  /* libc/reent/callback ownership released exactly once */
     int      stack_released;      /* guest stack reservation returned exactly once */
     int      join_waiting;        /* current syscall is waiting for join_target */
@@ -171,6 +172,25 @@ typedef struct {
 } TCB;
 
 static TCB      s_tcb[MAXTHREADS];
+
+/* Heap-owned semantic records survive nonlocal C-frame abandonment. TCB slots
+ * cannot be reused until owner teardown drains these records; numeric handles
+ * never recycle, including across thread restarts and fixture resets. */
+typedef struct WaitInvocation {
+    SrWaitHandle handle;
+    TCB *owner;
+    uint32_t owner_uid, object;
+    uint64_t deadline;
+    int callback_enabled, result_valid;
+    uint32_t result;
+    SrWaitState state;
+    SrWaitDetach detach;
+    struct WaitInvocation *next;
+} WaitInvocation;
+static WaitInvocation *s_wait_invocations;
+static SrWaitHandle s_wait_sequence;
+static void sched_wait_abandon_owner(TCB *owner);
+static void sched_wait_record_wake(TCB *owner, int terminal, uint32_t result);
 
 typedef struct {
     uint32_t uid;
@@ -1875,6 +1895,7 @@ static void sched_release_thread_resources(TCB *t) {
     if (!t || t->resources_released) return;
     if (t->k0_init) unregister_libc_thread(t->k0_init);
     sr_callback_unregister_owner(t->uid);
+    sched_wait_abandon_owner(t);
     sr_hle_release_thread_resources(t->uid);
     /* Last net under this thread's nested host->guest call frames.  Every normal
      * and error return releases its own frame, and the coro_body unwind path
@@ -2220,6 +2241,7 @@ static void sched_promote_expired_waits(void) {
              * signalled. */
             s_tcb[i].wake != SCHED_WAIT_FOREVER &&
             s_vtime_us >= s_tcb[i].wake) {
+            sched_wait_record_wake(&s_tcb[i], 0, 0u);
             s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_WAKE, s_tcb[i].uid, s_tcb[i].uid, s_tcb[i].wait_obj, 1u);
 #ifdef SR_SCHED_LIVENESS_TEST
@@ -2655,6 +2677,133 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     return s_vtime_us >= deadline;   /* resumed: timed out if the deadline has passed */
 }
 
+static WaitInvocation *sched_wait_find(SrWaitHandle handle) {
+    for (WaitInvocation *w = s_wait_invocations; w; w = w->next)
+        if (w->handle == handle) return w;
+    return NULL;
+}
+
+SrWaitHandle sched_wait_begin(uint32_t object, uint64_t deadline,
+                              int callback_enabled, SrWaitDetach detach) {
+    if (s_cur < 0 || s_tcb[s_cur].deleted || s_wait_sequence == UINT64_MAX)
+        return 0u;
+    WaitInvocation *w = (WaitInvocation *)calloc(1, sizeof(*w));
+    if (!w) return 0u;
+    w->handle = ++s_wait_sequence;
+    w->owner = &s_tcb[s_cur];
+    w->owner_uid = w->owner->uid;
+    w->object = object;
+    w->deadline = deadline;
+    w->callback_enabled = callback_enabled;
+    w->state = SR_WAIT_EXECUTING;
+    w->detach = detach;
+    w->next = s_wait_invocations;
+    s_wait_invocations = w;
+    return w->handle;
+}
+
+int sched_wait_state(SrWaitHandle handle, SrWaitState *state, uint32_t *owner) {
+    WaitInvocation *w = sched_wait_find(handle);
+    if (!w || w->owner->deleted || w->owner->uid != w->owner_uid) return 0;
+    if (state) *state = w->state;
+    if (owner) *owner = w->owner_uid;
+    return 1;
+}
+
+static void sched_wait_record_wake(TCB *owner, int terminal, uint32_t result) {
+    WaitInvocation *w = sched_wait_find(owner->active_wait);
+    if (!w || w->owner != owner) return;
+    if (terminal && !w->result_valid) {
+        w->result = result;
+        w->result_valid = 1;
+    }
+    w->state = w->result_valid ? SR_WAIT_TERMINAL : SR_WAIT_NOTIFIED;
+}
+
+int sched_wait_notify(SrWaitHandle handle) {
+    WaitInvocation *w = sched_wait_find(handle);
+    if (!w || w->state != SR_WAIT_BLOCKED || w->owner->active_wait != handle ||
+        w->owner->uid != w->owner_uid || w->owner->deleted) return 0;
+    return sched_wake_one_object_waiter(w->object, w->owner_uid);
+}
+
+int sched_wait_block(SrWaitHandle handle, uint32_t remaining, int timed) {
+    WaitInvocation *w = sched_wait_find(handle);
+    if (!w || s_cur < 0 || w->owner != &s_tcb[s_cur] ||
+        w->owner->active_wait || w->owner->uid != w->owner_uid) abort();
+    if (w->result_valid) return 0;
+    TCB *owner = w->owner;
+    owner->active_wait = handle;
+    owner->is_cb_wait = w->callback_enabled;
+    w->state = SR_WAIT_BLOCKED;
+    int expired = 0;
+    if (timed) expired = sched_block_on_timeout(w->object, remaining);
+    else sched_block_on(w->object);
+    /* No callbacks execute between block return and outcome capture. The
+     * existing thread result slot is transport, not durable invocation storage. */
+    uint32_t result = 0;
+    if (sched_take_wake_result(&result) && !w->result_valid) {
+        w->result = result;
+        w->result_valid = 1;
+    }
+    owner->active_wait = 0u;
+    owner->is_cb_wait = 0;
+    w->state = w->result_valid ? SR_WAIT_TERMINAL : SR_WAIT_EXECUTING;
+    return expired;
+}
+
+void sched_wait_callback(SrWaitHandle handle, int active) {
+    WaitInvocation *w = sched_wait_find(handle);
+    if (!w || s_cur < 0 || w->owner != &s_tcb[s_cur] || w->owner->active_wait)
+        abort();
+    if (!w->result_valid) w->state = active ? SR_WAIT_CALLBACK : SR_WAIT_EXECUTING;
+}
+
+int sched_wait_take_result(SrWaitHandle handle, uint32_t *result) {
+    WaitInvocation *w = sched_wait_find(handle);
+    if (!w || s_cur < 0 || w->owner != &s_tcb[s_cur] || !w->result_valid) return 0;
+    if (result) *result = w->result;
+    w->result_valid = 0;
+    w->state = SR_WAIT_EXECUTING;
+    return 1;
+}
+
+int sched_wait_finish(SrWaitHandle handle) {
+    WaitInvocation **link = &s_wait_invocations;
+    while (*link && (*link)->handle != handle) link = &(*link)->next;
+    if (!*link) return 0;
+    WaitInvocation *w = *link;
+    *link = w->next; /* nonconsumable before calling object policy */
+    if (w->owner->active_wait == handle) w->owner->active_wait = 0u;
+    int notified = w->detach ? w->detach(handle, w->object) : 0;
+    free(w);
+    return notified;
+}
+
+static void sched_wait_abandon_owner(TCB *owner) {
+    /* Invalidate every nesting level before any detach hook selects successors. */
+    for (WaitInvocation *w = s_wait_invocations; w; w = w->next)
+        if (w->owner == owner) w->state = SR_WAIT_TERMINAL;
+    for (;;) {
+        WaitInvocation *w = s_wait_invocations;
+        while (w && w->owner != owner) w = w->next;
+        if (!w) break;
+        sched_wait_finish(w->handle);
+    }
+    owner->active_wait = 0u;
+}
+
+void sched_wait_cancel_object(uint32_t object, uint32_t result) {
+    for (WaitInvocation *w = s_wait_invocations; w; w = w->next) {
+        if (w->object != object) continue;
+        if (!w->result_valid) { w->result = result; w->result_valid = 1; }
+        w->state = SR_WAIT_TERMINAL;
+        /* A callback-parked parent cannot wake its unrelated inner wait. */
+        if (w->owner->active_wait == w->handle)
+            (void)sched_wake_one_object_waiter(w->object, w->owner_uid);
+    }
+}
+
 /* WaitThreadEnd uses the same scheduler object-wait primitive as semaphores
  * and event flags.  Marking a waiter explicitly lets a target that is deleted
  * before the waiter resumes deliver its exit result without keeping the kernel
@@ -2714,6 +2863,7 @@ void sched_wake(uint32_t obj) {
 #endif
     for (int i = 0; i < s_ntcb; i++)
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj) {
+            sched_wait_record_wake(&s_tcb[i], 0, 0u);
             s_tcb[i].state = TH_READY;
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_WAKE,
                                     s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u,
@@ -2742,6 +2892,7 @@ void sched_wake_with_result(uint32_t obj, uint32_t result) {
     for (int i = 0; i < s_ntcb; i++) {
         TCB *w = &s_tcb[i];
         if (!w->deleted && w->state == TH_WAIT_OBJ && w->wait_obj == obj) {
+            sched_wait_record_wake(w, 1, result);
             w->wake_result = result;
             w->wake_result_valid = 1;
             w->state = TH_READY;
@@ -2772,6 +2923,7 @@ int sched_take_wake_result(uint32_t *result_out) {
 int sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && !t->deleted && t->state == TH_WAIT_OBJ && t->wait_obj == obj) {
+        sched_wait_record_wake(t, 0, 0u);
         t->state = TH_READY;
 #ifdef SR_SCHED_LIVENESS_TEST
         sched_liveness_record_wake(obj, 1u);
@@ -2797,6 +2949,7 @@ int sched_count_waiters(uint32_t obj) {
 int sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && !t->deleted && t->state == TH_WAIT_OBJ) {
+        sched_wait_record_wake(t, 1, result);
         t->wake_result = result;
         t->wake_result_valid = 1;
         t->state = TH_READY;
@@ -2894,6 +3047,7 @@ void sched_set_current_cb_wait(int cb_wait) {
 void sched_wake_callbacks(uint32_t thread_uid) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && (t->state == TH_WAIT_OBJ || t->state == TH_WAIT_DELAY) && t->is_cb_wait) {
+        sched_wait_record_wake(t, 0, 0u);
         t->state = TH_READY;
         t->wake = s_vtime_us;
 #ifdef SR_SCHED_LIVENESS_TEST

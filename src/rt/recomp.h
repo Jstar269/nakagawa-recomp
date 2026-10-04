@@ -835,6 +835,24 @@ int      sched_take_wake_result(uint32_t *result_out); /* 1 + code when a wake r
 int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
 int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
+/* Semantic wait lifetime, independent of SrCoro's executable stack. Only the
+ * innermost block attaches to the TCB; callback-parked parents remain live.
+ * Detach hooks are object policy and MUST NOT preempt during owner teardown. */
+typedef uint64_t SrWaitHandle;
+typedef int (*SrWaitDetach)(SrWaitHandle handle, uint32_t object);
+typedef enum {
+    SR_WAIT_EXECUTING, SR_WAIT_CALLBACK, SR_WAIT_BLOCKED,
+    SR_WAIT_NOTIFIED, SR_WAIT_TERMINAL
+} SrWaitState;
+SrWaitHandle sched_wait_begin(uint32_t object, uint64_t deadline, int callback_enabled,
+                              SrWaitDetach detach);
+int      sched_wait_block(SrWaitHandle handle, uint32_t remaining, int timed);
+void     sched_wait_callback(SrWaitHandle handle, int active);
+int      sched_wait_state(SrWaitHandle handle, SrWaitState *state, uint32_t *owner);
+int      sched_wait_notify(SrWaitHandle handle); /* notification, not an object grant */
+int      sched_wait_take_result(SrWaitHandle handle, uint32_t *result);
+int      sched_wait_finish(SrWaitHandle handle); /* returns notifications; caller owns preemption */
+void     sched_wait_cancel_object(uint32_t object, uint32_t result);
 void     sched_set_current_wait_kind(int kind); /* latch Refer waitType before blocking */
 int      sched_is_intr_context(void);               /* 1 if running in interrupt context, 0 otherwise */
 void     sr_hle_release_thread_resources(uint32_t thread_uid); /* release HLE resources on thread teardown */

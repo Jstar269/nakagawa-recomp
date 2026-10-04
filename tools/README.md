@@ -57,6 +57,9 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
   developer-supplied private ELF locally — see [`docs/archive/IMPORT_AUDIT.md`](../docs/archive/IMPORT_AUDIT.md).
 - **`lint_docs.py`** — deterministic offline documentation-freshness gate. It scans tracked Markdown
   and rejects current-facing stale-status patterns while preserving explicitly historical evidence.
+  It also rejects a hand-written HLE registration / NID / fake-success count on a CURRENT page:
+  those counts are a generated artifact (`hle_manifest.py --census-markdown`), so prose may only
+  state them labelled historical/capture-time.
   The shared pre-commit/pre-push hooks run it automatically.
 - **`audit_public_issue_links.py`** — networked public Issue/PR reference audit for tracked Markdown.
   It verifies URL type, current-facing shorthand references, and explicit current-tracker state labels.
@@ -134,7 +137,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
-| `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table. |
+| `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
 | `hle_registry_meta.py` | Curated classification metadata for the HLE registration manifest. |
 | `gen_nidnames.py` | Generate the NID name header from the tracked NID corpus. |
 | `nid_name_proof.py` | Independently verify and classify the entries of the generated NID name header. |
