@@ -1205,24 +1205,29 @@ int main(int argc, char **argv)
     /* Drop the keystore.  After this returns, none of the key bytes may
      * remain reachable through the allocator.
      *
-     /* The two arrays are fixed-size (NK_KEYSTORE_MAX_ENTRIES entries), so their
-     * byte sizes are computable here and a same-size malloc reclaims the
-     * exact blocks that are about to be released.  This mirrors the private
-     * layout in nk_psp_keystore.c; if that layout changes these sizes stop
-     * matching the real allocations and the scan silently stops covering
-     * them, which is why the test asserts on leak counts and not merely on a
-     * clean exit. */
+     * The two arrays are fixed-size (NK_KEYSTORE_MAX_ENTRIES entries), so their
+     * byte sizes are computable here and a same-size malloc reclaims the blocks
+     * that are about to be released.  This mirrors the private layout in
+     * nk_psp_keystore.c.  TagEntry is {uint32_t tag; int have_code; int code;
+     * int have_key; uint8_t key[16]; int have_key144; uint8_t key144[144];
+     * int have_seed; uint8_t seed[16]; int have_xorpad; uint8_t xorpad[16]} --
+     * three ints before key[16], not two, so the four int fields are counted
+     * individually below.  If that layout changes these sizes stop matching the
+     * real allocations and the scan silently stops covering them, which is why
+     * the test asserts on leak counts and not merely on a clean exit. */
     flat_bytes = NK_KEYSTORE_MAX_ENTRIES *
                  (72u + 144u + sizeof(size_t));   /* FlatEntry */
     tag_bytes = NK_KEYSTORE_MAX_ENTRIES *
-                (4u + 4u + 4u + 16u + 4u + 144u + 4u + 16u + 4u + 16u);
+                (4u + 4u + 4u + 4u + 16u + 4u + 144u + 4u + 16u + 4u + 16u);
     nk_keystore_free(ks);
 
-    /* Sweep same-size allocations: this allocator (verified on MSYS2 UCRT64)
-     * hands a freed block straight back for a request of the same size, so any
-     * byte the implementation failed to wipe is still there to be found.  A
-     * differently sized request would not reclaim the block at all and would
-     * report a vacuous pass. */
+    /* Sweep same-size allocations.  Measured on this toolchain, a request of
+     * the same size reclaims the released blocks directly, so any byte the
+     * implementation failed to wipe is still there to be found.  A differently
+     * sized request is NOT guaranteed to miss the block -- an allocator may
+     * satisfy it from the same region -- so this test does not claim that a
+     * wrong size would be vacuous; it only claims that the size it uses is the
+     * real one, which the mirrored struct layout above keeps honest. */
     flat_probe = (unsigned char *)malloc(flat_bytes);
     tag_probe = (unsigned char *)malloc(tag_bytes);
     if (flat_probe == NULL || tag_probe == NULL) {
@@ -1263,9 +1268,8 @@ class TestKeystoreErasure(unittest.TestCase):
     Step 4 is deliberately allocation-based rather than reading through a
     dangling pointer: it only inspects live, owned memory, so the test is
     free of undefined behaviour while still proving the erasure happened.
-    The same-size request is what makes the observation meaningful -- measured
-    on this toolchain, a differently sized request does not reclaim the freed
-    block at all and would report a pass whether or not the keys were wiped.
+    The request uses the real allocation sizes, verified against sizeof of the
+    private structs, so the reclaimed region is the one the keystore released.
     """
 
     @classmethod

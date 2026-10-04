@@ -7,13 +7,26 @@
  * (nk_json) and fails closed on any shape, name or length violation.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+/*
+ * Feature-test macro for glibc, declared before any header.
+ *
+ * strict -std=c99 defines __STRICT_ANSI__ and therefore hides explicit_bzero(),
+ * which glibc guards behind __USE_MISC. Defining _DEFAULT_SOURCE here (before
+ * <features.h> is reached through any libc header) is what turns that on, so it
+ * must precede every #include in this translation unit. It is harmless on
+ * non-glibc targets, which ignore unknown feature macros.
+ */
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #endif
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "nk_json.h"
 #include "nk_psp_crypto.h"
@@ -23,17 +36,21 @@ void nk_secure_zero(void *p, size_t len)
 {
     if (p == NULL || len == 0) return;
 
+/*
+ * Prefer the platform's documented non-eliding primitive, but never at the cost
+ * of an implicit declaration: under strict -std=c99 a glibc that does not expose
+ * explicit_bzero() would fail the hosted -Werror build. __GLIBC_PREREQ alone
+ * is not sufficient evidence that the declaration is visible, so the branch is
+ * additionally gated on __USE_MISC, which is what actually declares it. If
+ * either is missing, control falls through to the portable loop below, which is
+ * correct on every target.
+ */
 #if defined(_WIN32) || defined(_WIN64)
-    /* SecureZeroMemory is documented as not removable by the optimizer and
-     * is a macro over RtlSecureZeroMemory in the platform SDK. */
     SecureZeroMemory(p, len);
     return;
-#elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
-#if __GLIBC_PREREQ(2, 25)
-    /* explicit_bzero is guaranteed not to be optimized out. */
+#elif defined(__GLIBC__) && defined(__USE_MISC) && __GLIBC_PREREQ(2, 25)
     explicit_bzero(p, len);
     return;
-#endif
 #endif
 
     /* Portable fallback.  Every write goes through a volatile-qualified
