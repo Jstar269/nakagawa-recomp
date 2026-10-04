@@ -241,6 +241,340 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/delay_zero_log.txt"
 #endif
 
+#define PROBE_TEARDOWN_CAPACITY 64u
+#define PROBE_TEARDOWN_PATH_CAPACITY 16u
+#define PROBE_TEARDOWN_PATH_LENGTH 96u
+
+enum {
+    PROBE_TEARDOWN_FAILED = -1,
+    PROBE_TEARDOWN_SKIPPED = 0,
+    PROBE_TEARDOWN_PASSED = 1,
+};
+#define PROBE_HOST0_ROUNDTRIP_PATH "host0:/nakagawa_transport_write.bin"
+
+typedef int (*ProbeUidDeleteFn)(SceUID);
+
+struct probe_owned_uid {
+    SceUID uid;
+    int active;
+};
+
+struct probe_owned_object {
+    SceUID uid;
+    ProbeUidDeleteFn delete_fn;
+    int active;
+};
+
+struct probe_owned_audio {
+    int channel;
+    int (*release_fn)(int);
+    int active;
+};
+
+struct probe_owned_subintr {
+    int intr;
+    int sub;
+    int (*release_fn)(int, int);
+    int active;
+};
+
+struct probe_owned_path {
+    char path[PROBE_TEARDOWN_PATH_LENGTH];
+    int active;
+};
+
+static struct probe_owned_uid s_owned_threads[PROBE_TEARDOWN_CAPACITY];
+static struct probe_owned_object s_owned_objects[PROBE_TEARDOWN_CAPACITY];
+static struct probe_owned_uid s_owned_memory[PROBE_TEARDOWN_CAPACITY];
+static struct probe_owned_uid s_owned_fds[PROBE_TEARDOWN_CAPACITY];
+static struct probe_owned_audio s_owned_audio[PROBE_TEARDOWN_CAPACITY];
+static struct probe_owned_subintr s_owned_subintr[PROBE_TEARDOWN_CAPACITY];
+static struct probe_owned_path s_owned_paths[PROBE_TEARDOWN_PATH_CAPACITY];
+static int s_teardown_tracking_failed;
+static int s_boot_cpu_mhz;
+static int s_boot_bus_mhz;
+static int s_have_clock_state;
+static int s_pending_intr_tokens[PROBE_TEARDOWN_CAPACITY];
+static int s_pending_intr_active[PROBE_TEARDOWN_CAPACITY];
+#if defined(__mips__)
+static uint32_t s_boot_fcr31;
+static int s_have_fcr31_state;
+#endif
+
+static int probe_track_uid(struct probe_owned_uid *entries, SceUID uid) {
+    if (uid < 0) return uid;
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!entries[i].active) {
+            entries[i].uid = uid;
+            entries[i].active = 1;
+            return uid;
+        }
+    }
+    s_teardown_tracking_failed = 1;
+    return uid;
+}
+
+static void probe_untrack_uid(struct probe_owned_uid *entries, SceUID uid) {
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (entries[i].active && entries[i].uid == uid) {
+            entries[i].active = 0;
+        }
+    }
+}
+
+SceUID probe_track_thread(SceUID uid) {
+    return probe_track_uid(s_owned_threads, uid);
+}
+
+int probe_delete_thread(SceUID uid) {
+    const int result = sceKernelDeleteThread(uid);
+    if (result >= 0) probe_untrack_uid(s_owned_threads, uid);
+    return result;
+}
+
+int probe_terminate_delete_thread(SceUID uid) {
+    const int result = sceKernelTerminateDeleteThread(uid);
+    if (result >= 0) probe_untrack_uid(s_owned_threads, uid);
+    return result;
+}
+
+SceUID probe_track_kernel_object(SceUID uid, ProbeUidDeleteFn delete_fn) {
+    if (uid < 0) return uid;
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_objects[i].active) {
+            s_owned_objects[i].uid = uid;
+            s_owned_objects[i].delete_fn = delete_fn;
+            s_owned_objects[i].active = 1;
+            return uid;
+        }
+    }
+    s_teardown_tracking_failed = 1;
+    return uid;
+}
+
+int probe_delete_kernel_object(SceUID uid, ProbeUidDeleteFn delete_fn) {
+    const int result = delete_fn(uid);
+    if (result >= 0) {
+        for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+            if (s_owned_objects[i].active && s_owned_objects[i].uid == uid &&
+                s_owned_objects[i].delete_fn == delete_fn) {
+                s_owned_objects[i].active = 0;
+            }
+        }
+    }
+    return result;
+}
+
+SceUID probe_track_partition_memory(SceUID uid) {
+    return probe_track_uid(s_owned_memory, uid);
+}
+
+int probe_free_partition_memory(SceUID uid) {
+    const int result = sceKernelFreePartitionMemory(uid);
+    if (result >= 0) probe_untrack_uid(s_owned_memory, uid);
+    return result;
+}
+
+static int probe_is_capture_path(const char *path) {
+#ifdef PROBE_HOST0_LOG
+    if (strcmp(path, PROBE_HOST0_LOG) == 0) return 1;
+#endif
+    return strcmp(path, PROBE_HOST0_ROUNDTRIP_PATH) == 0;
+}
+
+static void probe_track_disposable_path(const char *path) {
+    if (strncmp(path, "host0:/", 7) != 0 || probe_is_capture_path(path)) return;
+    for (size_t i = 0; i < PROBE_TEARDOWN_PATH_CAPACITY; i++) {
+        if (s_owned_paths[i].active && strcmp(s_owned_paths[i].path, path) == 0) return;
+        if (!s_owned_paths[i].active) {
+            const size_t length = strlen(path);
+            if (length >= sizeof(s_owned_paths[i].path)) {
+                s_teardown_tracking_failed = 1;
+                return;
+            }
+            memcpy(s_owned_paths[i].path, path, length + 1);
+            s_owned_paths[i].active = 1;
+            return;
+        }
+    }
+    s_teardown_tracking_failed = 1;
+}
+
+SceUID probe_io_open(const char *path, int flags, SceMode mode) {
+    const SceUID fd = sceIoOpen(path, flags, mode);
+    if (fd >= 0) {
+        (void)probe_track_uid(s_owned_fds, fd);
+        if ((flags & PSP_O_CREAT) != 0) probe_track_disposable_path(path);
+    }
+    return fd;
+}
+
+int probe_io_close(SceUID fd) {
+    const int result = sceIoClose(fd);
+    if (result >= 0) probe_untrack_uid(s_owned_fds, fd);
+    return result;
+}
+
+int probe_io_remove(const char *path) {
+    const int result = sceIoRemove(path);
+    if (result >= 0) {
+        for (size_t i = 0; i < PROBE_TEARDOWN_PATH_CAPACITY; i++) {
+            if (s_owned_paths[i].active && strcmp(s_owned_paths[i].path, path) == 0) {
+                s_owned_paths[i].active = 0;
+            }
+        }
+    }
+    return result;
+}
+
+int probe_track_audio_channel(int channel, int (*release_fn)(int)) {
+    if (channel < 0) return channel;
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_audio[i].active) {
+            s_owned_audio[i].channel = channel;
+            s_owned_audio[i].release_fn = release_fn;
+            s_owned_audio[i].active = 1;
+            return channel;
+        }
+    }
+    s_teardown_tracking_failed = 1;
+    return channel;
+}
+
+static void probe_untrack_audio_channel(int channel) {
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (s_owned_audio[i].active && s_owned_audio[i].channel == channel) {
+            s_owned_audio[i].active = 0;
+        }
+    }
+}
+
+int probe_release_audio_channel(int channel) {
+    const int result = sceAudioChRelease(channel);
+    if (result >= 0) probe_untrack_audio_channel(channel);
+    return result;
+}
+
+void probe_track_subintr(int intr, int sub, int (*release_fn)(int, int)) {
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_subintr[i].active) {
+            s_owned_subintr[i].intr = intr;
+            s_owned_subintr[i].sub = sub;
+            s_owned_subintr[i].release_fn = release_fn;
+            s_owned_subintr[i].active = 1;
+            return;
+        }
+    }
+    s_teardown_tracking_failed = 1;
+}
+
+int probe_release_subintr(int intr, int sub) {
+    const int result = sceKernelReleaseSubIntrHandler(intr, sub);
+    if (result >= 0) {
+        for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+            if (s_owned_subintr[i].active && s_owned_subintr[i].intr == intr &&
+                s_owned_subintr[i].sub == sub) {
+                s_owned_subintr[i].active = 0;
+            }
+        }
+    }
+    return result;
+}
+
+static void probe_track_intr_token(int token) {
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_pending_intr_active[i]) {
+            s_pending_intr_tokens[i] = token;
+            s_pending_intr_active[i] = 1;
+            return;
+        }
+    }
+    s_teardown_tracking_failed = 1;
+}
+
+static int probe_untrack_intr_token(int token) {
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (s_pending_intr_active[i] && s_pending_intr_tokens[i] == token) {
+            s_pending_intr_active[i] = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int probe_suspend_intr(void) {
+    const int token = sceKernelCpuSuspendIntr();
+    probe_track_intr_token(token);
+    return token;
+}
+
+int probe_resume_intr(int token) {
+    sceKernelCpuResumeIntr(token);
+    /* IsCpuIntrSuspended interprets the saved token; IsCpuIntrEnable verifies
+       the live post-resume state.  The resume contract checks the
+       complementary CPU-enabled state: token 0 means interrupts remain
+       suspended, while a nonzero token restores delivery. */
+    const int expected_enabled = !sceKernelIsCpuIntrSuspended((unsigned int)token);
+    if (sceKernelIsCpuIntrEnable() != expected_enabled) {
+        s_teardown_tracking_failed = 1;
+        return -1;
+    }
+    if (!probe_untrack_intr_token(token)) {
+        s_teardown_tracking_failed = 1;
+        return -1;
+    }
+    return 0;
+}
+
+#define sceKernelCreateThread(...) \
+    probe_track_thread(sceKernelCreateThread(__VA_ARGS__))
+#define sceKernelDeleteThread(uid) probe_delete_thread(uid)
+#define sceKernelTerminateDeleteThread(uid) probe_terminate_delete_thread(uid)
+#define sceKernelCreateCallback(...) \
+    probe_track_kernel_object(sceKernelCreateCallback(__VA_ARGS__), sceKernelDeleteCallback)
+#define sceKernelDeleteCallback(uid) \
+    probe_delete_kernel_object((uid), sceKernelDeleteCallback)
+#define sceKernelCreateSema(...) \
+    probe_track_kernel_object(sceKernelCreateSema(__VA_ARGS__), sceKernelDeleteSema)
+#define sceKernelDeleteSema(uid) probe_delete_kernel_object((uid), sceKernelDeleteSema)
+#define sceKernelCreateEventFlag(...) \
+    probe_track_kernel_object(sceKernelCreateEventFlag(__VA_ARGS__), sceKernelDeleteEventFlag)
+#define sceKernelDeleteEventFlag(uid) \
+    probe_delete_kernel_object((uid), sceKernelDeleteEventFlag)
+#define sceKernelCreateMbx(...) \
+    probe_track_kernel_object(sceKernelCreateMbx(__VA_ARGS__), sceKernelDeleteMbx)
+#define sceKernelDeleteMbx(uid) probe_delete_kernel_object((uid), sceKernelDeleteMbx)
+#define sceKernelCreateVTimer(...) \
+    probe_track_kernel_object(sceKernelCreateVTimer(__VA_ARGS__), sceKernelDeleteVTimer)
+#define sceKernelDeleteVTimer(uid) \
+    probe_delete_kernel_object((uid), sceKernelDeleteVTimer)
+#define sceKernelCreateFpl(...) \
+    probe_track_kernel_object(sceKernelCreateFpl(__VA_ARGS__), sceKernelDeleteFpl)
+#define sceKernelDeleteFpl(uid) probe_delete_kernel_object((uid), sceKernelDeleteFpl)
+#define sceKernelCreateVpl(...) \
+    probe_track_kernel_object(sceKernelCreateVpl(__VA_ARGS__), sceKernelDeleteVpl)
+#define sceKernelDeleteVpl(uid) probe_delete_kernel_object((uid), sceKernelDeleteVpl)
+#define sceKernelAllocPartitionMemory(...) \
+    probe_track_partition_memory(sceKernelAllocPartitionMemory(__VA_ARGS__))
+#define sceKernelFreePartitionMemory(uid) probe_free_partition_memory(uid)
+#define sceIoOpen(path, flags, mode) probe_io_open((path), (flags), (mode))
+#define sceIoClose(fd) probe_io_close(fd)
+#define sceIoRemove(path) probe_io_remove(path)
+#define sceAudioChReserve(...) \
+    probe_track_audio_channel(sceAudioChReserve(__VA_ARGS__), sceAudioChRelease)
+#define sceAudioChRelease(channel) probe_release_audio_channel(channel)
+#define sceKernelReleaseSubIntrHandler(intr, sub) probe_release_subintr((intr), (sub))
+#define sceKernelCpuSuspendIntr() probe_suspend_intr()
+#define sceKernelCpuResumeIntr(token) probe_resume_intr(token)
+
+#if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED && \
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
+#define sceKernelCreateMutex(...) \
+    probe_track_kernel_object(sceKernelCreateMutex(__VA_ARGS__), sceKernelDeleteMutex)
+#define sceKernelDeleteMutex(uid) \
+    probe_delete_kernel_object((uid), sceKernelDeleteMutex)
+#endif
+
 #if PSP_ORACLE_CASE != PSP_ORACLE_CASE_SMOKE
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CALLBACK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_WAIT_CANCEL || \
@@ -2529,7 +2863,7 @@ static void run_display_ge_mask(int emulated) {
    probe-owned disposable path, reads it back, and reports a checksum plus a
    match flag. The host independently hashes the file it receives. Pattern byte
    i is (0x5A ^ (i * 0x25 + (i >> 3))) & 0xFF. Only this one path is touched. */
-#define TRANSPORT_PATH "host0:/nakagawa_transport_write.bin"
+#define TRANSPORT_PATH PROBE_HOST0_ROUNDTRIP_PATH
 #define TRANSPORT_LEN 64u
 static uint32_t transport_fnv1a(const uint8_t *data, size_t len) {
     uint32_t hash = 2166136261u;
@@ -3089,18 +3423,13 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
-/* Teardown-method experiment: does ending main via sceKernelExitDeleteThread
-   (instead of returning into sceKernelExitGame) avoid poisoning the boot's
-   thread table for the NEXT launch? Main-thread only, no other threads.
-   Emits one record, then ExitDeleteThread(0). The DIAGNOSIS is the next
-   launch (any binary): loads+passes => teardown clean; startup-crash =>
-   same poison. NEVER run anything after this except the diagnostic. */
+/* Retired diagnostic: self-deleting main bypassed the CRT stop handshake.
+   Keep the case name buildable while reporting the unsupported experiment. */
 static void run_teardown_test(int emulated) {
     const uint32_t self = (uint32_t)sceKernelGetThreadId();
     const uint32_t out[] = {self};
     emit_record_extended(emulated, "PSP-TEARDOWN-001", "exitdelete-main",
-                         "PASS", self, out, 1);
-    sceKernelExitDeleteThread(0);
+                         "SKIP", self, out, 1);
 }
 #endif
 
@@ -4551,6 +4880,9 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
 
     int reg = sceKernelRegisterSubIntrHandler(PSP_VBLANK_INT, 0,
                                               oracle_subintr_handler, NULL);
+    if (reg >= 0) {
+        probe_track_subintr(PSP_VBLANK_INT, 0, sceKernelReleaseSubIntrHandler);
+    }
     int ena = sceKernelEnableSubIntr(PSP_VBLANK_INT, 0);
 
     /* Wait for all MUTEX_INTR_TRIALS to complete.  VBLANK fires at ~60 Hz so
@@ -4830,15 +5162,220 @@ static uint32_t run_mbx_delete_wait(int emulated) {
 }
 #endif
 
+static int probe_teardown_children(void) {
+    int success = 1;
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_threads[i].active) continue;
+        SceKernelThreadInfo info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (sceKernelReferThreadStatus(s_owned_threads[i].uid, &info) < 0) {
+            s_owned_threads[i].active = 0;
+            continue;
+        }
+        if (probe_terminate_delete_thread(s_owned_threads[i].uid) < 0) {
+            success = 0;
+        }
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (sceKernelReferThreadStatus(s_owned_threads[i].uid, &info) >= 0) {
+            success = 0;
+            /* The atomic helper untracks after a successful call, but a
+               still-visible UID means the teardown contract was not met.
+               Keep ownership live so the final verdict cannot swallow the
+               residue or lose a later cleanup attempt. */
+            s_owned_threads[i].active = 1;
+        } else {
+            s_owned_threads[i].active = 0;
+        }
+    }
+    return success;
+}
+
+static int probe_teardown_objects(void) {
+    int success = 1;
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_objects[i].active) continue;
+        if (probe_delete_kernel_object(s_owned_objects[i].uid,
+                                       s_owned_objects[i].delete_fn) < 0) {
+            success = 0;
+        }
+    }
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_subintr[i].active) continue;
+        if (s_owned_subintr[i].release_fn(s_owned_subintr[i].intr,
+                                          s_owned_subintr[i].sub) < 0) {
+            success = 0;
+        } else {
+            s_owned_subintr[i].active = 0;
+        }
+    }
+    return success;
+}
+
+static int probe_teardown_io_audio(void) {
+    int success = 1;
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_audio[i].active) continue;
+        if (s_owned_audio[i].release_fn(s_owned_audio[i].channel) < 0) {
+            success = 0;
+        } else {
+            s_owned_audio[i].active = 0;
+        }
+    }
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_fds[i].active) continue;
+        if (probe_io_close(s_owned_fds[i].uid) < 0) {
+            success = 0;
+        }
+    }
+    return success;
+}
+
+static int probe_teardown_memory(void) {
+    int success = 1;
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (!s_owned_memory[i].active) continue;
+        if (probe_free_partition_memory(s_owned_memory[i].uid) < 0) {
+            success = 0;
+        }
+    }
+    return success;
+}
+
+static int probe_teardown_state(void) {
+    int success = 1;
+    if (s_have_clock_state) {
+        if (scePowerGetCpuClockFrequencyInt() != s_boot_cpu_mhz) {
+            if (scePowerSetCpuClockFrequency(s_boot_cpu_mhz) < 0 ||
+                scePowerGetCpuClockFrequencyInt() != s_boot_cpu_mhz) {
+                success = 0;
+            }
+        }
+        if (scePowerGetBusClockFrequencyInt() != s_boot_bus_mhz) {
+            if (scePowerSetBusClockFrequency(s_boot_bus_mhz) < 0 ||
+                scePowerGetBusClockFrequencyInt() != s_boot_bus_mhz) {
+                success = 0;
+            }
+        }
+    } else {
+        success = 0;
+    }
+#if defined(__mips__)
+    if (s_have_fcr31_state) {
+        uint32_t current_fcr31 = 0;
+        __asm__ volatile("cfc1 %0, $31" : "=r"(current_fcr31) :: "memory");
+        if (current_fcr31 != s_boot_fcr31) {
+            __asm__ volatile("ctc1 %0, $31" :: "r"(s_boot_fcr31) : "memory");
+            __asm__ volatile("cfc1 %0, $31" : "=r"(current_fcr31) :: "memory");
+            if (current_fcr31 != s_boot_fcr31) success = 0;
+        }
+    } else {
+        success = 0;
+    }
+#endif
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; i++) {
+        if (s_pending_intr_active[i]) {
+            if (probe_resume_intr(s_pending_intr_tokens[i]) < 0) success = 0;
+        }
+    }
+    return success;
+}
+
+static int probe_host0_roundtrip(void) {
+    uint8_t expected[64];
+    uint8_t observed[64];
+    for (size_t i = 0; i < sizeof(expected); i++) {
+        expected[i] = (uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)));
+    }
+    memset(observed, 0, sizeof(observed));
+    SceUID fd = sceIoOpen(PROBE_HOST0_ROUNDTRIP_PATH,
+                          PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) return 0;
+    const int written = sceIoWrite(fd, expected, (SceSize)sizeof(expected));
+    const int write_close = sceIoClose(fd);
+    if (written != (int)sizeof(expected) || write_close < 0) return 0;
+
+    fd = sceIoOpen(PROBE_HOST0_ROUNDTRIP_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) return 0;
+    const int read = sceIoRead(fd, observed, (SceSize)sizeof(observed));
+    const int read_close = sceIoClose(fd);
+    return read == (int)sizeof(observed) && read_close >= 0 &&
+           memcmp(expected, observed, sizeof(expected)) == 0;
+}
+
+static int probe_teardown_host0(int emulated) {
+    if (emulated) return PROBE_TEARDOWN_SKIPPED;
+    int success = 1;
+    for (size_t i = 0; i < PROBE_TEARDOWN_PATH_CAPACITY; i++) {
+        if (!s_owned_paths[i].active) continue;
+        if (probe_io_remove(s_owned_paths[i].path) < 0) {
+            success = 0;
+        } else {
+            s_owned_paths[i].active = 0;
+        }
+    }
+    return probe_host0_roundtrip() && success
+               ? PROBE_TEARDOWN_PASSED
+               : PROBE_TEARDOWN_FAILED;
+}
+
+static void probe_teardown(int emulated) {
+    sceKernelDcacheWritebackAll();
+    int success = !s_teardown_tracking_failed && s_have_clock_state;
+    if (!probe_teardown_children()) success = 0;
+    if (!probe_teardown_objects()) success = 0;
+    if (!probe_teardown_io_audio()) success = 0;
+    if (!probe_teardown_memory()) success = 0;
+    if (!probe_teardown_state()) success = 0;
+    const int host0_result = probe_teardown_host0(emulated);
+    if (host0_result == PROBE_TEARDOWN_FAILED) success = 0;
+
+#ifdef PROBE_HOST0_LOG
+    SceUID log_fd = -1;
+    if (!emulated) {
+        log_fd = sceIoOpen(PROBE_HOST0_LOG, PSP_O_WRONLY | PSP_O_APPEND, 0777);
+        if (log_fd < 0) success = 0;
+    }
+#endif
+    char sentinel[80];
+    const char *status = !success ? "FAIL"
+                         : host0_result == PROBE_TEARDOWN_SKIPPED ? "NOT_RUN"
+                         : "PASS";
+    snprintf(sentinel, sizeof(sentinel),
+             "NAKAGAWA_PSP_COMPLETE schema=1 status=%s\n",
+             status);
+#ifdef PROBE_HOST0_LOG
+    if (log_fd >= 0) {
+        const int wrote = sceIoWrite(log_fd, sentinel, (SceSize)strlen(sentinel));
+        (void)sceIoClose(log_fd);
+        if (wrote != (int)strlen(sentinel)) {
+            success = 0;
+            snprintf(sentinel, sizeof(sentinel),
+                     "NAKAGAWA_PSP_COMPLETE schema=1 status=FAIL\n");
+        }
+    }
+#endif
+    emit(emulated, sentinel);
+    for (;;) sceKernelSleepThread();
+}
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
-#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
-    /* Capture boot FCR31 immediately at process entry before ANY other code runs */
+#if defined(__mips__)
     uint32_t boot_fcr31 = 0;
+    /* Save FCR31 before probe code; the FPU vector case then starts from zero. */
     __asm__ volatile("cfc1 %0, $31" : "=r"(boot_fcr31) :: "memory");
+    s_boot_fcr31 = boot_fcr31;
+    s_have_fcr31_state = 1;
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
     __asm__ volatile("ctc1 $0, $31" ::: "memory");
 #endif
+#endif
+    s_boot_cpu_mhz = scePowerGetCpuClockFrequencyInt();
+    s_boot_bus_mhz = scePowerGetBusClockFrequencyInt();
+    s_have_clock_state = s_boot_cpu_mhz > 0 && s_boot_bus_mhz > 0;
     const int emulated = emulator_present();
     /* Unbuffered stdout so a probe-induced exception stays attributable to
        the exact record instead of losing buffered output. Zero semantic
@@ -5002,16 +5539,6 @@ int main(int argc, char *argv[]) {
     emit(emulated, line);
 #endif
 
-    /* Returning is equivalent to calling sceKernelExitGame() explicitly: the
-       PSPSDK CRT emits `jal sceKernelExitGame` in _main once main() returns
-       (confirmed with psp-objdump on this fixture). The explicit call was
-       dropped only because it was redundant -- it does NOT stop PSPLINK from
-       resetting between probes.
-
-       PSPLINK's reset is controlled by `resetonexit` in psplink.ini. With
-       resetonexit=1 it calls psplinkStop() then sceKernelLoadExec to reload
-       itself, which re-enumerates the USB endpoint on every probe. Set
-       resetonexit=0 on the Memory Stick for multi-probe sessions. */
-    return 0;
+    probe_teardown(emulated);
 }
 #endif /* defined(__mips__) */

@@ -33,12 +33,21 @@ from psp_oracle.protocol import (
     DMAC_SIZE_MATRIX_TRIALS,
 )
 from psp_oracle.run_psplink import (
+    PsplinkCampaignRunner,
+    PsplinkSnapshot,
+    _campaign_stream_complete,
     _parse_campaign_records,
     _record_summary,
     _split_command,
     _validate_host0_capture,
     annotate_terminal_outcome,
+    evaluate_teardown_snapshots,
     main as run_psplink_main,
+    parse_psplink_meminfo,
+    parse_psplink_module_list,
+    parse_psplink_module_threads,
+    parse_psplink_thread_snapshot,
+    parse_probe_completion_sentinel,
 )
 from psp_oracle.parse_golden import (
     AUDIO_OUT_COUNTS,
@@ -1342,6 +1351,556 @@ class PspOracleRunnerTests(unittest.TestCase):
         launcher = Path(__file__).resolve().parent / "psp_oracle" / "run_nakagawa.py"
         self.assertTrue(launcher.is_file())
         self.assertIn("stdout=subprocess.PIPE", launcher.read_text(encoding="utf-8"))
+
+
+class PspLinkTeardownSnapshotTests(unittest.TestCase):
+    THREADS = (
+        "<Thread List (2 entries)>\n"
+        "UID: 0x00000001 - Name: PspLink\n"
+        "UID: 0x00000002 - Name: USBThread\n"
+    )
+    MEMORY = (
+        "Memory Partitions:\n"
+        "N  |    BASE    |   SIZE   | TOTALFREE |  MAXFREE  | ATTR |\n"
+        "---|------------|----------|-----------|-----------|------|\n"
+        "1  | 0x08800000 | 33554432 |  20971520 |  16777216 | 000F |\n"
+        "2  | 0x88000000 | 53687091 |  33554432 |  25165824 | 000F |\n"
+    )
+    MODULES = (
+        "<Module List (1 modules)>\n"
+        "UID: 0x00000003 Attr: 0000 - Name: PspLink\n"
+    )
+
+    def snapshot(self, *, threads=None, memory=None, modules=None) -> PsplinkSnapshot:
+        return PsplinkSnapshot(
+            threads=frozenset(threads if threads is not None else {
+                ("0x00000001", "PspLink"), ("0x00000002", "USBThread")
+            }),
+            memory_free_bytes=tuple(sorted((memory if memory is not None else {
+                1: (20971520, 16777216), 2: (33554432, 25165824)
+            }).items())),
+            modules=frozenset(modules if modules is not None else {
+                ("0x00000003", "PspLink")
+            }),
+        )
+
+    def clean_triplet(self):
+        before = self.snapshot()
+        module_main = ("0x00000009", "user_main")
+        after_probe = self.snapshot(
+            threads=set(before.threads) | {module_main},
+            modules=set(before.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
+        )
+        return before, after_probe, before, module_main
+
+    def test_campaign_stream_gate_excludes_only_one_final_teardown_marker(self) -> None:
+        stream = (
+            "NAKAGAWA_PSP_META schema=1 source=psp model=fixture firmware=test "
+            + "binary_sha256=" + "0" * 64 + " source_commit=" + "1" * 40 + "\n"
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SYSTEM-001 case_id=model-profile "
+            "status=PASS result=0x3 out0=0x3 out1=0x06060110 out2=0xde\n"
+        )
+        passing = stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
+        failing = stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=FAIL\n"
+        skipped = stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=NOT_RUN\n"
+
+        self.assertTrue(_campaign_stream_complete(passing, "model-profile"))
+        self.assertTrue(_campaign_stream_complete(failing, "model-profile"))
+        self.assertTrue(_campaign_stream_complete(skipped, "model-profile"))
+        self.assertEqual(parse_probe_completion_sentinel(passing), "PASS")
+        self.assertEqual(parse_probe_completion_sentinel(failing), "FAIL")
+        self.assertEqual(parse_probe_completion_sentinel(skipped), "NOT_RUN")
+        self.assertIsNone(parse_probe_completion_sentinel(
+            passing + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
+        ))
+        self.assertFalse(
+            _campaign_stream_complete(
+                passing + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n",
+                "model-profile",
+            )
+        )
+        self.assertFalse(
+            _campaign_stream_complete(
+                passing + "unexpected trailing output\n", "model-profile"
+            )
+        )
+
+    def test_thlist_parser_requires_complete_uid_and_name_set(self) -> None:
+        self.assertEqual(parse_psplink_thread_snapshot(self.THREADS), {
+            ("0x00000001", "PspLink"), ("0x00000002", "USBThread")
+        })
+        with self.assertRaises(ValueError):
+            parse_psplink_thread_snapshot(
+                "<Thread List (2 entries)>\nUID: 0x1 - Name: PspLink\n"
+            )
+
+    def test_meminfo_parser_compares_total_and_largest_free_bytes_per_partition(self) -> None:
+        self.assertEqual(parse_psplink_meminfo(self.MEMORY), {
+            1: (20971520, 16777216), 2: (33554432, 25165824)
+        })
+        with self.assertRaises(ValueError):
+            parse_psplink_meminfo(
+                "Memory Partitions:\nN | BASE | SIZE | TOTALFREE | MAXFREE | ATTR\n"
+            )
+
+    def test_modlist_and_module_thread_parsers_return_uid_name_sets(self) -> None:
+        self.assertEqual(parse_psplink_module_list(self.MODULES), {
+            ("0x00000003", "PspLink")
+        })
+        output = (
+            "UID: 0x00000008 Attr: 0000 - Name: NAKAGAWA_PSP_ORACLE\n"
+            "Module Thread (1)\nUID: 0x00000009 - Name: user_main\n"
+        )
+        self.assertEqual(parse_psplink_module_threads(output, "0x00000008"), {
+            ("0x00000009", "user_main")
+        })
+
+    def test_snapshot_uses_psplink_module_inventory_command(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        outputs = [
+            (0, self.THREADS, "", "PROCESS_EXITED"),
+            (0, self.MEMORY, "", "PROCESS_EXITED"),
+            (0, self.MODULES, "", "PROCESS_EXITED"),
+        ]
+        with patch.object(runner, "_request", side_effect=outputs) as request:
+            snapshot, problem = runner._take_snapshot()
+        self.assertIsNone(problem)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(
+            [entry.args[0] for entry in request.call_args_list],
+            ["thlist", "meminfo", "modlist"],
+        )
+
+    def test_three_snapshot_check_passes_clean_unload(self) -> None:
+        before, after_probe, after_unload, module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["issues"], [])
+
+    def test_unqualified_exprint_response_is_diagnostic_not_a_teardown_gate(self) -> None:
+        before, after_probe, after_unload, module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True, host0_roundtrip=True,
+            exprint_command_status="PROCESS_EXITED",
+        )
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["exprint_status"], "NOT_RUN")
+        self.assertEqual(report["exprint_command_status"], "PROCESS_EXITED")
+
+    def test_three_snapshot_check_reports_allocator_drift_without_failing_teardown(self) -> None:
+        before, after_probe, _after_unload, module_main = self.clean_triplet()
+        after_probe = self.snapshot(
+            threads=after_probe.threads,
+            memory={1: (20967424, 16773120), 2: (33550336, 25161216)},
+            modules=after_probe.modules,
+        )
+        after_unload = self.snapshot(
+            memory={1: (20970496, 16770000), 2: (33550336, 25161728)},
+        )
+
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True,
+            host0_roundtrip=True,
+        )
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["issues"], [])
+        self.assertTrue(report["memory_free_deltas_diagnostic_only"])
+        self.assertEqual(report["memory_free_deltas_bytes"], {
+            1: {
+                "s1": {"total_free": -4096, "largest_block": -4096},
+                "s2": {"total_free": -1024, "largest_block": -7216},
+            },
+            2: {
+                "s1": {"total_free": -4096, "largest_block": -4608},
+                "s2": {"total_free": -4096, "largest_block": -4096},
+            },
+        })
+
+    def test_three_snapshot_check_fails_on_thread_and_module_residue(self) -> None:
+        before, after_probe, _after_unload, module_main = self.clean_triplet()
+        after_probe = self.snapshot(
+            threads=set(after_probe.threads) | {("0x0000000a", "oracle-thread")},
+            modules=set(after_probe.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
+        )
+        after_unload = self.snapshot(
+            memory={1: (20971520, 16777216), 2: (33550336, 25161728)},
+            modules=set(before.modules) | {("0x00000008", "NAKAGAWA_PSP_ORACLE")},
+        )
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "FAIL")
+        self.assertTrue(any("child thread" in issue for issue in report["issues"]))
+        self.assertTrue(any("module set" in issue for issue in report["issues"]))
+        self.assertNotIn(
+            "post-unload per-partition free memory differs from S0", report["issues"]
+        )
+
+    def test_three_snapshot_check_fails_when_modstun_handshake_is_unconfirmed(self) -> None:
+        before, after_probe, after_unload, module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=False, sentinel_status="PASS",
+            shell_qualified=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "FAIL")
+        self.assertTrue(any("modstun" in issue for issue in report["issues"]))
+
+    def test_teardown_failure_enters_the_bounded_recovery_ladder(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        report = {
+            "status": "FAIL", "issues": ["thread set changed"],
+            "recovery_eligible": True,
+        }
+        with patch.object(runner, "_recover", return_value=True) as recover:
+            self.assertTrue(runner._enforce_teardown_check(
+                report, module_uid="0x00000008", probe_succeeded=True
+            ))
+        recover.assert_called_once_with(
+            "0x00000008", "probe teardown check failed: thread set changed"
+        )
+
+    def test_three_snapshot_check_keeps_missing_snapshots_unavailable(self) -> None:
+        before, _after_probe, _after_unload, module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, None, None, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True, host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("S1 snapshot unavailable", report["issues"])
+        self.assertIn("S2 snapshot unavailable", report["issues"])
+        self.assertFalse(report["recovery_eligible"])
+        self.assertIsNone(report["s1_thread_count"])
+        self.assertIsNone(report["s2_thread_count"])
+        self.assertIsNone(report["s2_module_count"])
+        for deltas in report["memory_free_deltas_bytes"].values():
+            self.assertIsNone(deltas["s1"])
+            self.assertIsNone(deltas["s2"])
+
+    def test_module_thread_query_failure_blocks_without_constructing_a_set(self) -> None:
+        before, after_probe, after_unload, _module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", None,
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True, host0_roundtrip=True,
+            module_threads_available=False,
+        )
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("module thread query unavailable", report["issues"])
+        self.assertFalse(report["recovery_eligible"])
+
+    def test_blocked_or_unsuccessful_probe_does_not_enter_recovery(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        cases = (
+            ({"status": "BLOCKED", "issues": ["S2 snapshot unavailable"]}, True),
+            ({
+                "status": "FAIL", "issues": ["confirmed unload failure"],
+                "recovery_eligible": True,
+            }, False),
+        )
+        with patch.object(runner, "_recover", return_value=True) as recover:
+            for report, probe_succeeded in cases:
+                self.assertFalse(runner._enforce_teardown_check(
+                    report, module_uid="0x00000008",
+                    probe_succeeded=probe_succeeded,
+                ))
+                self.assertEqual(report["recovery_status"], "NOT_RUN")
+        recover.assert_not_called()
+
+    def test_not_run_completion_marker_blocks_teardown_without_claiming_pass(self) -> None:
+        before, after_probe, after_unload, module_main = self.clean_triplet()
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="NOT_RUN",
+            shell_qualified=True, host0_roundtrip=None,
+        )
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("probe completion sentinel reports NOT_RUN", report["issues"])
+        self.assertFalse(report["recovery_eligible"])
+
+    def test_emulated_probe_teardown_marks_skipped_host0_stage_not_run(self) -> None:
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" /
+                 "probe.c").read_text(encoding="utf-8")
+        host0 = probe.split("static int probe_teardown_host0(", 1)[1].split("\n}", 1)[0]
+        teardown = probe.split("static void probe_teardown(", 1)[1].split("\n}", 1)[0]
+        self.assertRegex(host0, r"if\s*\(emulated\)\s*return\s+PROBE_TEARDOWN_SKIPPED;")
+        self.assertRegex(
+            teardown,
+            r'!success\s*\?\s*"FAIL"\s*:\s*host0_result\s*==\s*'
+            r'PROBE_TEARDOWN_SKIPPED\s*\?\s*"NOT_RUN"\s*:\s*"PASS"',
+        )
+
+    def test_interrupt_resume_failure_and_child_termination_reach_teardown_verdict(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        probe = (root / "fixtures" / "psp_oracle" /
+                 "probe.c").read_text(encoding="utf-8")
+        resume = probe.split("int probe_resume_intr(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("sceKernelCpuResumeIntr(token)", resume)
+        self.assertIn("probe_untrack_intr_token(token)", resume)
+        self.assertIn("return -1", resume)
+        self.assertIn("s_teardown_tracking_failed = 1", resume)
+
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is unavailable for the interrupt-resume harness")
+        untrack_start = probe.index("static int probe_untrack_intr_token(int token) {")
+        untrack_end = probe.index("\n}\n", untrack_start) + 2
+        untrack = probe[untrack_start:untrack_end]
+        resume_start = probe.index("int probe_resume_intr(int token) {")
+        resume_end = probe.index("\n}\n", resume_start) + 2
+        resume_function = probe[resume_start:resume_end]
+        harness = r'''#include <stddef.h>
+#include <string.h>
+
+#define PROBE_TEARDOWN_CAPACITY 4u
+static int s_teardown_tracking_failed;
+static int s_pending_intr_tokens[PROBE_TEARDOWN_CAPACITY];
+static int s_pending_intr_active[PROBE_TEARDOWN_CAPACITY];
+static int s_live_interrupts_enabled;
+static int s_resume_calls;
+
+void sceKernelCpuResumeIntr(int token) {
+    (void)token;
+    ++s_resume_calls;
+}
+
+/* PSP contract used by the fixture: token 0 means the saved state was
+   suspended, while a nonzero token means the saved state was enabled. */
+int sceKernelIsCpuIntrSuspended(unsigned int token) {
+    return token == 0u;
+}
+
+int sceKernelIsCpuIntrEnable(void) {
+    return s_live_interrupts_enabled;
+}
+
+'''+untrack+"\n"+resume_function+r'''
+
+static void setup(int token, int tracked, int live_enabled) {
+    memset(s_pending_intr_tokens, 0, sizeof(s_pending_intr_tokens));
+    memset(s_pending_intr_active, 0, sizeof(s_pending_intr_active));
+    s_pending_intr_tokens[0] = token;
+    s_pending_intr_active[0] = tracked;
+    s_teardown_tracking_failed = 0;
+    s_live_interrupts_enabled = live_enabled;
+    s_resume_calls = 0;
+}
+
+int main(void) {
+    setup(0, 1, 0);
+    if (probe_resume_intr(0) != 0 || s_pending_intr_active[0] ||
+        s_teardown_tracking_failed || s_resume_calls != 1) return 1;
+
+    setup(1, 1, 1);
+    if (probe_resume_intr(1) != 0 || s_pending_intr_active[0] ||
+        s_teardown_tracking_failed || s_resume_calls != 1) return 2;
+
+    /* A live post-resume mismatch is a teardown failure and retains the
+       token so the caller cannot silently lose the pending cleanup. */
+    setup(0, 1, 1);
+    if (probe_resume_intr(0) >= 0 || !s_pending_intr_active[0] ||
+        !s_teardown_tracking_failed) return 3;
+
+    /* A matching live state still fails when the token was never tracked. */
+    setup(1, 0, 1);
+    if (probe_resume_intr(1) >= 0 || s_pending_intr_active[0] ||
+        !s_teardown_tracking_failed) return 4;
+    return 0;
+}
+'''
+        fixture = root / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="interrupt-resume-host-", dir=fixture) as scratch:
+            source_path = Path(scratch) / "interrupt_resume_host.c"
+            binary_path = Path(scratch) / "interrupt_resume_host.exe"
+            source_path.write_text(harness, encoding="utf-8")
+            build = subprocess.run(
+                [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 str(source_path), "-o", str(binary_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr)
+            executed = subprocess.run(
+                [str(binary_path)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+
+        teardown_state = probe.split("static int probe_teardown_state(", 1)[1].split("\n}", 1)[0]
+        self.assertRegex(
+            teardown_state,
+            r"if\s*\(probe_resume_intr\(s_pending_intr_tokens\[i\]\)\s*<\s*0\)\s*"
+            r"success\s*=\s*0\s*;",
+        )
+        children = probe.split("static int probe_teardown_children(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("probe_terminate_delete_thread(s_owned_threads[i].uid)", children)
+        self.assertNotIn("sceKernelTerminateThread", children)
+        self.assertNotIn("probe_delete_thread(s_owned_threads[i].uid)", children)
+
+    def test_child_teardown_uses_atomic_terminate_delete_and_keeps_failures_tracked(self) -> None:
+        """Compile and execute the teardown helper against failing PSP calls."""
+        root = Path(__file__).resolve().parents[1]
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is unavailable for the child teardown harness")
+
+        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        helper_start = probe.index(
+            "int probe_terminate_delete_thread(SceUID uid) {"
+        )
+        helper_end = probe.index("\n}\n", helper_start) + 2
+        helper = probe[helper_start:helper_end]
+        children_start = probe.index("static int probe_teardown_children(void) {")
+        children_end = probe.index("\n}\n", children_start) + 2
+        children = probe[children_start:children_end]
+        harness = r'''#include <stddef.h>
+#include <string.h>
+
+#define PROBE_TEARDOWN_CAPACITY 2u
+#define PSP_THREAD_RUNNING 1u
+#define PSP_THREAD_READY 2u
+#define PSP_THREAD_WAITING 4u
+#define PSP_THREAD_SUSPEND 8u
+typedef int SceUID;
+typedef struct {
+    int size;
+    unsigned int status;
+} SceKernelThreadInfo;
+struct probe_owned_uid {
+    SceUID uid;
+    int active;
+};
+static struct probe_owned_uid s_owned_threads[PROBE_TEARDOWN_CAPACITY];
+static int atomic_rc;
+static int refer_present;
+static int refer_calls;
+static int atomic_calls;
+static int separate_terminate_calls;
+static int separate_delete_calls;
+
+static void reset_case(int rc, int present) {
+    memset(s_owned_threads, 0, sizeof(s_owned_threads));
+    s_owned_threads[0].uid = 7;
+    s_owned_threads[0].active = 1;
+    atomic_rc = rc;
+    refer_present = present;
+    refer_calls = 0;
+    atomic_calls = 0;
+    separate_terminate_calls = 0;
+    separate_delete_calls = 0;
+}
+
+static void probe_untrack_uid(struct probe_owned_uid *entries, SceUID uid) {
+    for (size_t i = 0; i < PROBE_TEARDOWN_CAPACITY; ++i) {
+        if (entries[i].active && entries[i].uid == uid) entries[i].active = 0;
+    }
+}
+
+int sceKernelTerminateDeleteThread(SceUID uid) {
+    (void)uid;
+    ++atomic_calls;
+    return atomic_rc;
+}
+
+int sceKernelTerminateThread(SceUID uid) {
+    (void)uid;
+    ++separate_terminate_calls;
+    return -1;
+}
+
+int probe_delete_thread(SceUID uid) {
+    (void)uid;
+    ++separate_delete_calls;
+    return -1;
+}
+
+int sceKernelReferThreadStatus(SceUID uid, SceKernelThreadInfo *info) {
+    (void)uid;
+    if (!refer_present || (refer_present == 2 && refer_calls++ > 0)) return -1;
+    ++refer_calls;
+    info->status = PSP_THREAD_WAITING;
+    return 0;
+}
+
+'''.replace("\n\n", "\n") + helper + "\n" + children + r'''
+
+int main(void) {
+    reset_case(-1, 1);
+    if (probe_teardown_children() || !s_owned_threads[0].active ||
+        atomic_calls != 1 || separate_terminate_calls != 0 ||
+        separate_delete_calls != 0) return 1;
+
+    reset_case(0, 1);
+    if (probe_teardown_children() || !s_owned_threads[0].active ||
+        atomic_calls != 1 || separate_terminate_calls != 0 ||
+        separate_delete_calls != 0) return 2;
+
+    reset_case(0, 2);
+    if (!probe_teardown_children() || s_owned_threads[0].active ||
+        atomic_calls != 1 || separate_terminate_calls != 0 ||
+        separate_delete_calls != 0) return 3;
+    return 0;
+}
+'''
+        fixture = root / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="child-teardown-host-", dir=fixture) as scratch:
+            source_path = Path(scratch) / "child_teardown_host.c"
+            binary_path = Path(scratch) / "child_teardown_host.exe"
+            source_path.write_text(harness, encoding="utf-8")
+            build = subprocess.run(
+                [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 str(source_path), "-o", str(binary_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr)
+            executed = subprocess.run(
+                [str(binary_path)], capture_output=True, text=True, check=False
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+
+    def test_probe_teardown_is_ordered_and_main_never_self_deletes(self) -> None:
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        teardown = probe.split("static void probe_teardown(", 1)[1].split("\n}\n", 1)[0]
+        ordered_calls = (
+            "sceKernelDcacheWritebackAll()", "probe_teardown_children()",
+            "probe_teardown_objects()", "probe_teardown_io_audio()",
+            "probe_teardown_memory()", "probe_teardown_state()",
+            "probe_teardown_host0(emulated)", "NAKAGAWA_PSP_COMPLETE",
+            "sceKernelSleepThread()",
+        )
+        positions = [teardown.index(call) for call in ordered_calls]
+        self.assertEqual(positions, sorted(positions))
+        main = probe.split("int main(int argc, char *argv[])", 1)[1]
+        self.assertNotIn("sceKernelExitDeleteThread", main)
+        teardown_test = probe.split("static void run_teardown_test(", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("sceKernelExitDeleteThread", teardown_test)
 
 
 class PspOracleBuildRouteTests(unittest.TestCase):
