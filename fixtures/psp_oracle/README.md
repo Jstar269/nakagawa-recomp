@@ -11,8 +11,8 @@ default `CASE=smoke` build emits `PSP-SMOKE-001`; kernel sessions build one
 case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-lifecycle`, `CASE=thread-delete-lifecycle`,
 `CASE=thread-delete-followup`, `CASE=thread-delete-explicit`, or
-`CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency` or one
-of the four `CASE=dma-invalid-tail-*` cases described below, or the size-matrix
+`CASE=thread-delete-boundary`. DMA sessions use `CASE=dma-concurrency`, the
+Tier S/B `CASE=dma-invalid-tail-*` cases described below, or the size-matrix
 cases described below. Display/interrupt-mask
 sessions use `CASE=display-mask-vcount`, `CASE=display-mask-duty`, or
 `CASE=display-ge-mask`. Transport sessions use `CASE=transport-write`, which
@@ -62,14 +62,14 @@ waited on and deleted so the launch leaks nothing in-process.
 
 ## Allocator boundary survey (`CASE=dmac-survey`)
 
-The invalid-tail cells' compiled-in user-end assumption (`0x0A000000`) is
-rejected by the firmware on 64 MiB units (partition 2 allocates there), so
-those cells SKIP by design. This case scans partition-2 fixed-address
-allocatability upward from the old assumption in 64 KiB steps (32 attempts),
-freeing every success immediately, and emits the highest provable base plus
-the first failure. Thread-free and write-free; failures are ordinary error
-codes. Its output is the redesign input for a corrected invalid-tail
-boundary — it settles no DMA semantics itself.
+An earlier invalid-tail probe's compiled-in user-end assumption
+(`0x0A000000`) was rejected by the firmware on 64 MiB units (partition 2
+allocates there), so that historical shape skipped by design. This case scans
+partition-2 fixed-address allocatability upward from the old assumption in
+64 KiB steps (32 attempts), freeing every success immediately, and emits the
+highest provable base plus the first failure. Thread-free and write-free;
+failures are ordinary error codes. It settles no DMA semantics. The current
+bounded Tier S/B cells are described below.
 Display-wait sessions use `CASE=display-wait-late`,
 `CASE=display-wait-priority`, or `CASE=display-vblank-window`. Plain-mutex
 sessions use one of the four `CASE=mutex-*` cases described below.
@@ -215,37 +215,40 @@ after the module unloads. Use a fresh scratch root per size so each session's
 host0 log and envelope remain available; the first transport failure stops
 before the matrix cell runs.
 
-The invalid-tail cases isolate one API and invalid endpoint per launch:
+The bounded invalid-tail cells use five isolated launches:
 
+- `dma-invalid-tail-s0` (Tier S pointer/size controls for both APIs);
 - `dma-invalid-tail-memcpy-dst`;
 - `dma-invalid-tail-memcpy-src`;
 - `dma-invalid-tail-try-dst`;
 - `dma-invalid-tail-try-src`.
 
-The Makefile keeps the invalid-tail variants on the bounded public memory
-baseline, and the probe does not assume a fixed partition end. It allocates a
-page-aligned `0x10000`-byte block from the current high end of partition 2 and
-probes an allocation beginning at the next address while the block is held.
-Even when the allocator rejects that adjacent allocation, it has only proved
-an ownership boundary; it has not proved that the address is unmapped or
-outside reserved/kernel memory. The probe therefore emits `SKIP` and never
-passes a span beyond its owned block to DMAC. The configured `0xC001` request
-and `0xC000` prefix remain in the record as the unrun measurement shape.
-Issue #303's invalid-span hardware semantics remain unmeasured until a
-PSP-specific safe boundary can be established.
+The Makefile keeps these variants at `PSP_LARGE_MEMORY=0`. Each allocates one
+page-aligned `0x11000`-byte block from the high end of partition 2. The block
+contains a `0x1000` pre-guard, the `0xC000` payload, a `0x1000` post-guard, a
+`0x2000` owned overflow band, and a `0x1000` tail-guard. While holding it, the
+probe uses `PSP_SMEM_Addr` to check one page at both `block_end` and
+`block_begin - 0x1000`; either successful neighbor allocation makes the run
+`SKIP` before DMAC. The full request is statically constrained to the owned
+post-guard and overflow band. Cache writeback/invalidation brackets each
+transfer. `setup_mask=0x0F` means block allocation, page geometry, end-neighbor
+refusal, and begin-neighbor refusal passed (bits 0 through 3 respectively).
+Any pre/tail guard mutation fails the record and its parser.
 
-For current invalid-tail `SKIP` records, `result` and `out5` carry the adjacent
-allocation result, and `out0` is the setup mask (`0x7` means all allocator
-gates passed). `out1`/`out2` are the configured request and measured-prefix
-sizes; `out3` is the endpoint (`0` destination, `1` source); `out4` is the API
-(`0` blocking, `1` try); and `out6` is the discovered block size. No DMAC
-return, copy count, guard mutation, or timing value is claimed.
+Tier S emits eight size-zero records: S0-a null destination, S0-b null source,
+S0-c both pointers owned, and S0-d destination `0xFFFFFFFF`, each for memcpy
+and try. Every cell must keep `P`, payload mutations, and all guards at zero.
+Tier B emits four records for each existing launch, with deltas 1, 4, `0x1000`,
+and `0x2000`; destination overrun bytes are classified separately in the
+post-guard and overflow band. These are bounded declared-payload controls,
+not actually invalid physical spans. All Tier S/B hardware results remain
+`NOT_RUN`; the K3/K4 invalid-span distinction remains in the works under #303.
 
 Terminal outcomes are deliberately distinct:
 
 | Outcome | Required evidence |
 | --- | --- |
-| Result | The expected one or three `PSP-DMAC-001` records exist; retain every scalar and status. |
+| Result | The complete Tier S set (8 records) or one Tier B delta set (4 records) exists; retain every scalar and status. |
 | Skip | An explicit `status=SKIP` record proves that a pre-call safety gate stopped the case. |
 | Hang | No test record, host `process_status=TIMEOUT`, and a human observes that the device remains stalled without rebooting. |
 | Reset | No test record and a human observes a device reboot/reset and PSPLink session loss. Never infer this from host process exit alone. |
@@ -439,13 +442,12 @@ input is used. Their ordered result streams have strict completion parsers in
   two measurement records and `delay-zero-done`. A `SKIP` means setup did not
   leave the worker ready and callback pending at the call boundary.
 
-The four `CASE=dma-invalid-tail-*` launches remain one case per launch. The
-current firmware-independent setup can prove only an allocator ownership edge;
-it cannot prove that the next address is unmapped user RAM. These cases still
-emit a single safe-boundary `SKIP` record and never call DMAC with an
-unowned source or destination. Their #303 invalid-span semantics remain
-`NOT_RUN` until a safe, probe-owned boundary can measure them without a
-successful transfer writing outside an owned buffer.
+The five `CASE=dma-invalid-tail-*` launches remain one case per launch. Tier S
+uses only size-zero requests. Tier B keeps the complete requested source and
+destination spans inside the probe-owned scratch block or module-owned array;
+it measures bounded overrun classification and never treats `K` as a physical
+invalid boundary. An unowned destination tail remains `SKIP`; invalid-span
+validation and K3/K4 remain `NOT_RUN` under #303.
 
 ## Build and hardware handoff
 
@@ -480,7 +482,7 @@ make -C fixtures/psp_oracle CASE=callback-notify-check EBOOT.PBP
 To build the complete DMA matrix without running it:
 
 ```bash
-for case in dma-concurrency \
+for case in dma-concurrency dma-invalid-tail-s0 \
   dma-invalid-tail-memcpy-dst dma-invalid-tail-memcpy-src \
   dma-invalid-tail-try-dst dma-invalid-tail-try-src; do
   make -C fixtures/psp_oracle clean
