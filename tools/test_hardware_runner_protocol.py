@@ -1440,29 +1440,80 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                     CAMPAIGN_META, case_id
                 ))
 
-        for campaign_case, (record_case, direction, api) in DMAC_INVALID_CASES.items():
+        def invalid_cell_row(case_id, *, tier, api, endpoint, delta=0,
+                             prefix=0, matches=0, post=0, band=0,
+                             source_addr=0x08811000,
+                             destination_addr=0x08822000):
+            fields = {
+                "result": 0, "rc": 0, "P": prefix, "matches": matches,
+                "guards_outside": 0, "post_guard": post,
+                "overflow_band": band, "source_intact": 1,
+                "setup_mask": 0xF, "K": 0xC000, "delta": delta,
+                "api": api, "endpoint": endpoint,
+                "cache_discipline": 1, "tier": tier, "executed": 1,
+                "payload_mutations": 0, "source_addr": source_addr,
+                "destination_addr": destination_addr,
+            }
+            encoded = " ".join(
+                f"{key}=0x{value:08x}" if isinstance(value, int)
+                else f"{key}={value}"
+                for key, value in fields.items()
+            )
+            return (
+                "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+                f"case_id={case_id} status=PASS {encoded}\n"
+            )
+
+        for campaign_case, launch in DMAC_INVALID_CASES.items():
             with self.subTest(case_id=campaign_case):
                 self.assertEqual(
                     run_psplink_module._campaign_completeness_contract(campaign_case),
-                    "strict-safe-dmac-skip",
+                    "strict-dmac-invalid-cell-records",
                 )
-                row = (
-                    "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
-                    f"case_id={record_case} status=SKIP result=0xfffffffe "
-                    f"out0=0x7 out1=0xc001 out2=0xc000 out3=0x{direction:x} "
-                    f"out4=0x{api:x} out5=0xfffffffe out6=0x10000\n"
-                )
+                self.assertFalse(run_psplink_module._campaign_stream_complete(
+                    CAMPAIGN_META, campaign_case
+                ))
+                rows = []
+                if launch.tier == "S":
+                    for api in ("memcpy", "try"):
+                        for shape, endpoint in (("a", "dst"), ("b", "src"),
+                                                ("c", "both"), ("d", "dst")):
+                            rows.append(invalid_cell_row(
+                                f"invalid-tail-s0-{shape}-{api}", tier="S",
+                                api=api, endpoint=endpoint,
+                                source_addr=0 if shape == "b" else 0x08811000,
+                                destination_addr=(
+                                    0 if shape == "a" else
+                                    0xFFFFFFFF if shape == "d" else 0x08822000
+                                ),
+                            ))
+                else:
+                    for delta in (1, 4, 0x1000, 0x2000):
+                        requested = 0xC000 + delta
+                        post = min(delta, 0x1000) if launch.endpoint == "dst" else 0
+                        band = max(delta - 0x1000, 0) if launch.endpoint == "dst" else 0
+                        rows.append(invalid_cell_row(
+                            f"invalid-tail-{launch.cell}-delta-{delta:04x}",
+                            tier="B", api=launch.api, endpoint=launch.endpoint,
+                            delta=delta, prefix=requested, matches=requested,
+                            post=post, band=band,
+                        ))
+                complete = CAMPAIGN_META + "".join(rows)
                 self.assertTrue(run_psplink_module._campaign_stream_complete(
-                    CAMPAIGN_META + row, campaign_case
+                    complete, campaign_case
                 ))
                 self.assertEqual(
-                    len(_parse_campaign_records(CAMPAIGN_META + row, campaign_case).results),
+                    len(_parse_campaign_records(complete, campaign_case).results),
+                    len(launch.case_ids),
+                )
+                malformed = complete.replace(
+                    "guards_outside=0x00000000",
+                    "guards_outside=0x00000001",
                     1,
                 )
-                malformed = row.replace("out1=0xc001", "out1=0xc000")
                 self.assertFalse(
                     run_psplink_module._campaign_stream_complete(
-                        CAMPAIGN_META + malformed, campaign_case
+                        malformed, campaign_case
                     )
                 )
 
@@ -1733,6 +1784,10 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(
             _campaign_host0_log_path(root, "dma-invalid-tail-memcpy-dst").name,
             "dmac_invalid_tail_memcpy_dst_log.txt",
+        )
+        self.assertEqual(
+            _campaign_host0_log_path(root, "dma-invalid-tail-s0").name,
+            "dmac_invalid_tail_s0_log.txt",
         )
         self.assertEqual(
             _campaign_host0_log_path(

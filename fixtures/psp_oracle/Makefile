@@ -10,9 +10,8 @@ PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 # Build one deterministic probe case at a time.  A physical session should
 # rebuild with CASE=callback-notify-check, CASE=wait-cancel, or
 # CASE=thread-lifecycle rather than mixing unrelated waits in one launch.  The
-# DMAC invalid-tail matrix is intentionally one case per launch because an
-# unexpected firmware response could terminate the probe before it emits a
-# record.
+# Keep each Tier S/B launch isolated; an unexpected kernel response could
+# terminate it before the complete record set is emitted.
 CASE ?= smoke
 # The hand-authored mutex imports are needed only by the mutex probes. Linking
 # them into unrelated PRXs leaves PSP SDK import stubs out of order.
@@ -48,6 +47,8 @@ else ifeq ($(CASE),dma-invalid-tail-try-dst)
 CASE_ID = 11
 else ifeq ($(CASE),dma-invalid-tail-try-src)
 CASE_ID = 12
+else ifeq ($(CASE),dma-invalid-tail-s0)
+CASE_ID = 60
 else ifeq ($(CASE),display-mask-vcount)
 CASE_ID = 13
 else ifeq ($(CASE),display-mask-duty)

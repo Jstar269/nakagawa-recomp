@@ -152,10 +152,90 @@ proposals. Each claim covers only the exact fixture named:
   `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
   and destination residues, paired unaligned addresses, and overlap in both
   directions. It records cache-disciplined copy observations and owned-buffer
-  guards; the previously measured size matrix is not repeated. The four
-  invalid-tail launches remain safe-boundary `SKIP` records because no safe
-  unowned address has been established. Invalid-span validation and atomicity
-  remain in the works under #303.
+  guards; the previously measured size matrix is not repeated. The Tier S and
+  Tier B invalid-tail cells below are built but `NOT_RUN`; they exercise only
+  zero-length pointer validation and bounded copies wholly inside owned RAM.
+  Kernel validation of an actually invalid span, including the K3/K4 atomicity
+  distinction, remains in the works under #303.
+
+**DMA invalid-tail cells (issue #303).**
+
+The old destination-tail shape issued a DMA write beyond probe ownership and
+therefore remains `SKIP`. The new `dma-invalid-tail-s0` and four existing
+`dma-invalid-tail-*` launch names use two bounded tiers. Their results are
+`NOT_RUN` until a physical PSP run is recorded. These are oracle measurements,
+not claims about the emulator or runtime.
+
+Each launch obtains one page-aligned partition-2 block from `PSP_SMEM_High`
+with `sceKernelAllocPartitionMemory`. Its `0x11000` bytes have this fixed
+layout:
+
+| Region | Size | Fill | Purpose |
+| --- | ---: | ---: | --- |
+| Pre-guard | `0x1000` | `0x5A` | Detect writes before the payload |
+| Payload | `K = 0xC000` | `0xC3` | Disputed oracle payload boundary |
+| Post-guard | `0x1000` | `0xC3` | Classify the first bounded overrun bytes |
+| Overflow band | `0x2000` | `0xA5` | Own and classify further bounded overrun bytes |
+| Tail-guard | `0x1000` | `0x96` | Detect writes past the owned band |
+
+A compile-time `_Static_assert` proves `K + max_delta` fits between the payload
+start and the end of the post-guard plus overflow band. While the block is
+held, the probe asks `PSP_SMEM_Addr` to allocate one page at `block_end` and at
+`block_begin - 0x1000`. Both must be refused and recorded in `setup_mask`; an
+allocation success or invalid geometry emits `SKIP` before any DMAC call. Each
+transfer is bracketed by `sceKernelDcacheWritebackInvalidateRange` and
+`sceKernelDcacheInvalidateRange` through the shared DMAC cache helpers.
+`setup_mask=0x0F` means allocation, page geometry, end-neighbor refusal, and
+begin-neighbor refusal all passed (bits 0 through 3 respectively).
+
+Records separate `guards_outside` (pre-guard plus tail-guard), `post_guard`,
+and `overflow_band` mutation counts. Any outside-guard mutation fails the
+record and the parser rejects it. Raw addresses are diagnostics only. A Tier B
+destination full copy changes `min(delta, 0x1000)` post-guard bytes and
+`max(delta - 0x1000, 0)` overflow-band bytes; their sum is the observed copy
+beyond `K`.
+
+Tier S runs S0-a through S0-d for both APIs with `size=0`: null destination,
+null source, both pointers owned, and destination `0xFFFFFFFF` respectively.
+Every PASS record must show `P=0`, no payload or guard mutations, intact
+source, and the complete ownership proof. A SKIP record uses
+`source_intact=0` to leave source integrity unmeasured and must not claim
+transfer or mutation observations. `S0-c` is the control for firmware that may
+reject a zero size even when both pointers are owned. These cells isolate
+pointer handling at zero length; the K1-K4 large-span hypotheses do not define
+all zero-length pointer outcomes, so raw return codes remain observations.
+
+Tier B keeps each entire request inside the same allocation or a module-owned
+array. The four existing launch names map to B1-B4, each with
+`delta ∈ {1, 4, 0x1000, 0x2000}`:
+
+| Cell | API | Endpoint | Owned shape |
+| --- | --- | --- | --- |
+| B1 | `sceDmacMemcpy` | destination | Destination begins at payload; the post-guard and overflow band absorb the requested tail |
+| B2 | `sceDmacMemcpy` | source | Source begins at payload and the owned post-guard/band contain the read tail; destination is fully owned |
+| B3 | `sceDmacTryMemcpy` | destination | Same bounded destination geometry as B1 |
+| B4 | `sceDmacTryMemcpy` | source | Same bounded source geometry as B2 |
+
+The candidate predictions for these declared-boundary controls are:
+
+| Candidate | B1/B3 destination observation | B2/B4 source observation |
+| --- | --- | --- |
+| K1 refuse-too-large | Error, `P=0`, no guard mutations | Error, `P=0`, no guard mutations |
+| K2 prefix-truncate at `0xC000` | `P=K`, no post-guard/band mutations | `P=K`, source stays intact |
+| K2′ stop at the declared payload end | `P=K`, no post-guard/band mutations | `P=K`, source stays intact |
+| K3 full copy without atomic validation | `P=K+delta`; mutations stay in the owned post-guard/band | `P=K+delta`; source stays intact |
+| K4 validate the complete physical span | Same as K3 because the whole request is owned | Same as K3 because the whole request is owned |
+
+The 2026-10-01 valid-span matrix already showed complete copies through 1 MiB,
+so K1/K2 remain listed for comparison but are refuted for those qualified
+valid spans. Tier B proves the guards can observe a contained destination
+overrun; it cannot distinguish K3 from K4 and does not make the declared
+payload end an invalid physical address. No cell sends a destination tail
+outside ownership, enters VRAM (`0x04000000..0x041FFFFF`), targets kernel/MMIO
+memory, uses an assumed top-of-RAM address, or re-enables the 1 MiB invalid-tail
+variant (`PSP_LARGE_MEMORY=0` remains in force). An actually invalid-span probe
+and its K3/K4 result remain in the works under #303.
+
 - **Zero-duration thread yield and callback behavior** (scheduler work tracked
   by #340, related to #290; `CASE=delay-zero`; exact cells
   `delay-threadcb-zero`, `delay-thread-zero`, and `delay-zero-done`):

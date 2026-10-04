@@ -1,6 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
+#include <stdint.h>
+
+#define DMAC_INVALID_PRE_GUARD_BYTES 0x1000u
+#define DMAC_INVALID_PAYLOAD_BYTES 0x0000c000u
+#define DMAC_INVALID_POST_GUARD_BYTES 0x1000u
+#define DMAC_INVALID_OVERFLOW_BAND_BYTES 0x2000u
+#define DMAC_INVALID_TAIL_GUARD_BYTES 0x1000u
+#define DMAC_INVALID_MAX_DELTA 0x2000u
+#define DMAC_INVALID_PRE_GUARD_FILL 0x5au
+#define DMAC_INVALID_PAYLOAD_FILL 0xc3u
+#define DMAC_INVALID_POST_GUARD_FILL 0xc3u
+#define DMAC_INVALID_OVERFLOW_BAND_FILL 0xa5u
+#define DMAC_INVALID_TAIL_GUARD_FILL 0x96u
+#define DMAC_INVALID_MAX_REQUEST \
+    (DMAC_INVALID_PAYLOAD_BYTES + DMAC_INVALID_MAX_DELTA)
+#define DMAC_INVALID_SCRATCH_BYTES \
+    (DMAC_INVALID_PRE_GUARD_BYTES + DMAC_INVALID_PAYLOAD_BYTES + \
+     DMAC_INVALID_POST_GUARD_BYTES + DMAC_INVALID_OVERFLOW_BAND_BYTES + \
+     DMAC_INVALID_TAIL_GUARD_BYTES)
+
+_Static_assert(
+    DMAC_INVALID_PAYLOAD_BYTES + DMAC_INVALID_MAX_DELTA <=
+        DMAC_INVALID_PAYLOAD_BYTES + DMAC_INVALID_POST_GUARD_BYTES +
+            DMAC_INVALID_OVERFLOW_BAND_BYTES,
+    "DMAC invalid-tail request must remain inside its owned scratch block");
+
+#if defined(__mips__)
 #include <pspkernel.h>
 #include <pspdisplay.h>
 #include <pspge.h>
@@ -66,6 +93,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_GE_NAN 57
 #define PSP_ORACLE_CASE_DMAC_CELLS 58
 #define PSP_ORACLE_CASE_DELAY_ZERO 59
+#define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0 60
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -114,7 +142,8 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 #endif
 
 #if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
-    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
+    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0
 /* The default newlib heap claims the largest free partition block. A bounded
    heap leaves the high-address system-memory allocation available to the
    invalid-tail probe without relying on unowned memory. */
@@ -184,6 +213,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/cache_alias_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
 #define PROBE_HOST0_LOG "host0:/dmac_size_matrix_cell_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0
+#define PROBE_HOST0_LOG "host0:/dmac_invalid_tail_s0_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX
 #define PROBE_HOST0_LOG "host0:/dmac_size_matrix_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
@@ -1137,8 +1168,9 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 }
 #endif
 
-#if (PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
-    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
+#if ((PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_CONCURRENCY && \
+      PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0) || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
@@ -1148,6 +1180,9 @@ static uint32_t run_thread_delete_followup_case(uint32_t *out0, uint32_t *out1,
 #define DMAC_REFERENCE_BUSY 0x80000021u
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY || \
+    (PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
+     PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC) || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0 || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
@@ -1723,89 +1758,396 @@ static void run_dmac_concurrency(int emulated) {
 #endif
 
 #if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
-    PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
-/* The old probe baked in a 32 MiB partition end.  That premise was false on
-   some PSP-3000/ARK configurations and made every tail result vacuous.  This
-   probe discovers the current allocator boundary, but never sends a DMA span
-   past an owned block: allocator rejection does not prove the next address is
-   unmapped or outside reserved/kernel memory. */
-#define DMAC_BOUNDARY_BLOCK_BYTES 0x00010000u
-#define DMAC_INVALID_REQUEST (DMAC_MEASURED_PREFIX + 1u)
+    (PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC || \
+     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0)
+
+#define DMAC_INVALID_PARTITION 2
+#define DMAC_INVALID_PAYLOAD_OFFSET DMAC_INVALID_PRE_GUARD_BYTES
+#define DMAC_INVALID_POST_OFFSET \
+    (DMAC_INVALID_PAYLOAD_OFFSET + DMAC_INVALID_PAYLOAD_BYTES)
+#define DMAC_INVALID_OVERFLOW_OFFSET \
+    (DMAC_INVALID_POST_OFFSET + DMAC_INVALID_POST_GUARD_BYTES)
+#define DMAC_INVALID_TAIL_OFFSET \
+    (DMAC_INVALID_OVERFLOW_OFFSET + DMAC_INVALID_OVERFLOW_BAND_BYTES)
+#define DMAC_INVALID_SETUP_MASK 0x0fu
+#define DMAC_INVALID_SETUP_BLOCK 0x01u
+#define DMAC_INVALID_SETUP_GEOMETRY 0x02u
+#define DMAC_INVALID_SETUP_END_NEIGHBOR 0x04u
+#define DMAC_INVALID_SETUP_BEGIN_NEIGHBOR 0x08u
+#define DMAC_INVALID_NEIGHBOR_BYTES 0x1000u
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST
 #define DMAC_INVALID_API DMAC_API_MEMCPY
-#define DMAC_INVALID_DIRECTION 0u
-#define DMAC_INVALID_CASE_ID "invalid-tail-memcpy-dst"
+#define DMAC_INVALID_API_NAME "memcpy"
+#define DMAC_INVALID_ENDPOINT "dst"
+#define DMAC_INVALID_B_CELL "b1"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_SRC
 #define DMAC_INVALID_API DMAC_API_MEMCPY
-#define DMAC_INVALID_DIRECTION 1u
-#define DMAC_INVALID_CASE_ID "invalid-tail-memcpy-src"
+#define DMAC_INVALID_API_NAME "memcpy"
+#define DMAC_INVALID_ENDPOINT "src"
+#define DMAC_INVALID_B_CELL "b2"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_DST
 #define DMAC_INVALID_API DMAC_API_TRY_MEMCPY
-#define DMAC_INVALID_DIRECTION 0u
-#define DMAC_INVALID_CASE_ID "invalid-tail-try-dst"
-#else
+#define DMAC_INVALID_API_NAME "try"
+#define DMAC_INVALID_ENDPOINT "dst"
+#define DMAC_INVALID_B_CELL "b3"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
 #define DMAC_INVALID_API DMAC_API_TRY_MEMCPY
-#define DMAC_INVALID_DIRECTION 1u
-#define DMAC_INVALID_CASE_ID "invalid-tail-try-src"
+#define DMAC_INVALID_API_NAME "try"
+#define DMAC_INVALID_ENDPOINT "src"
+#define DMAC_INVALID_B_CELL "b4"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0
+#define DMAC_INVALID_API DMAC_API_MEMCPY
+#define DMAC_INVALID_API_NAME "memcpy"
+#define DMAC_INVALID_ENDPOINT "dst"
+#define DMAC_INVALID_B_CELL "b1"
 #endif
 
-static void emit_dmac_invalid_setup(int emulated, const char *status,
-                                    uint32_t result, uint32_t setup_mask,
-                                    uint32_t tail_allocation_result) {
-    const uint32_t out[] = {
-        setup_mask,
-        DMAC_INVALID_REQUEST,
-        DMAC_MEASURED_PREFIX,
-        DMAC_INVALID_DIRECTION,
-        DMAC_INVALID_API,
-        tail_allocation_result,
-        DMAC_BOUNDARY_BLOCK_BYTES,
-    };
-    emit_record_extended(emulated, "PSP-DMAC-001", DMAC_INVALID_CASE_ID,
-                         status, result, out, sizeof(out) / sizeof(out[0]));
+static uint8_t s_dmac_invalid_io[DMAC_INVALID_MAX_REQUEST]
+    __attribute__((aligned(64)));
+
+static void dmac_cell_cache_before(void *ptr, uint32_t size) {
+    sceKernelDcacheWritebackInvalidateRange(ptr, size);
+}
+
+static void dmac_cell_cache_after(void *ptr, uint32_t size) {
+    sceKernelDcacheInvalidateRange(ptr, size);
+}
+
+static void dmac_invalid_fill_scratch(uint8_t *head) {
+    memset(head, DMAC_INVALID_PRE_GUARD_FILL, DMAC_INVALID_PRE_GUARD_BYTES);
+    memset(head + DMAC_INVALID_PAYLOAD_OFFSET, DMAC_INVALID_PAYLOAD_FILL,
+           DMAC_INVALID_PAYLOAD_BYTES);
+    memset(head + DMAC_INVALID_POST_OFFSET, DMAC_INVALID_POST_GUARD_FILL,
+           DMAC_INVALID_POST_GUARD_BYTES);
+    memset(head + DMAC_INVALID_OVERFLOW_OFFSET,
+           DMAC_INVALID_OVERFLOW_BAND_FILL,
+           DMAC_INVALID_OVERFLOW_BAND_BYTES);
+    memset(head + DMAC_INVALID_TAIL_OFFSET, DMAC_INVALID_TAIL_GUARD_FILL,
+           DMAC_INVALID_TAIL_GUARD_BYTES);
+}
+
+static uint32_t dmac_invalid_region_mutations(const uint8_t *bytes,
+                                              uint32_t offset,
+                                              uint32_t size,
+                                              uint8_t expected) {
+    uint32_t mutations = 0;
+    for (uint32_t index = 0; index < size; ++index) {
+        if (bytes[offset + index] != expected) ++mutations;
+    }
+    return mutations;
+}
+
+static uint8_t dmac_invalid_expected_source_byte(uint32_t offset) {
+    if (offset < DMAC_INVALID_PAYLOAD_BYTES + DMAC_INVALID_POST_GUARD_BYTES) {
+        return DMAC_INVALID_PAYLOAD_FILL;
+    }
+    return DMAC_INVALID_OVERFLOW_BAND_FILL;
+}
+
+static void dmac_invalid_fill_io_source(uint32_t size) {
+    for (uint32_t index = 0; index < size; ++index) {
+        s_dmac_invalid_io[index] = dmac_pattern(index);
+    }
+}
+
+static uint32_t dmac_invalid_io_source_intact(uint32_t size) {
+    for (uint32_t index = 0; index < size; ++index) {
+        if (s_dmac_invalid_io[index] != dmac_pattern(index)) return 0u;
+    }
+    return 1u;
+}
+
+static void dmac_invalid_emit_record(int emulated, const char *case_id,
+                                     const char *status, uint32_t rc,
+                                     uint32_t prefix, uint32_t matches,
+                                     uint32_t guards_outside,
+                                     uint32_t post_guard,
+                                     uint32_t overflow_band,
+                                     uint32_t source_intact,
+                                     uint32_t setup_mask, uint32_t delta,
+                                     const char *api, const char *endpoint,
+                                     uint32_t cache_discipline,
+                                     const char *tier, uint32_t executed,
+                                     uint32_t payload_mutations,
+                                     uint32_t source_addr,
+                                     uint32_t destination_addr) {
+    char line[768];
+    snprintf(line, sizeof(line),
+             "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-DMAC-001 "
+             "case_id=%s status=%s result=0x%08x rc=0x%08x "
+             "P=0x%08x matches=0x%08x guards_outside=0x%08x "
+             "post_guard=0x%08x overflow_band=0x%08x "
+             "source_intact=0x%08x setup_mask=0x%08x K=0x%08x "
+             "delta=0x%08x api=%s endpoint=%s cache_discipline=0x%08x "
+             "tier=%s executed=0x%08x payload_mutations=0x%08x "
+             "source_addr=0x%08x destination_addr=0x%08x\n",
+             case_id, status, (unsigned int)rc, (unsigned int)rc,
+             (unsigned int)prefix, (unsigned int)matches,
+             (unsigned int)guards_outside, (unsigned int)post_guard,
+             (unsigned int)overflow_band, (unsigned int)source_intact,
+             (unsigned int)setup_mask, (unsigned int)DMAC_INVALID_PAYLOAD_BYTES,
+             (unsigned int)delta, api, endpoint,
+             (unsigned int)cache_discipline, tier, (unsigned int)executed,
+             (unsigned int)payload_mutations, (unsigned int)source_addr,
+             (unsigned int)destination_addr);
+    emit(emulated, line);
+#ifdef PROBE_HOST0_LOG
+    if (!emulated) {
+        const SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND,
+                                    0777);
+        if (fd >= 0) {
+            sceIoWrite(fd, line, strlen(line));
+            sceIoClose(fd);
+        }
+    }
+#endif
+}
+
+static int dmac_invalid_probe_neighbor(const char *name, uint8_t *address) {
+    const SceUID neighbor = sceKernelAllocPartitionMemory(
+        DMAC_INVALID_PARTITION, name, PSP_SMEM_Addr,
+        DMAC_INVALID_NEIGHBOR_BYTES, address);
+    if (neighbor < 0) return 1;
+    sceKernelFreePartitionMemory(neighbor);
+    return 0;
+}
+
+static int dmac_invalid_acquire(uint32_t *setup_mask, uint32_t *setup_error,
+                                SceUID *block_uid, uint8_t **block_head) {
+    *setup_mask = 0;
+    *setup_error = 0;
+    *block_uid = sceKernelAllocPartitionMemory(
+        DMAC_INVALID_PARTITION, "oracle-dmac-scratch", PSP_SMEM_High,
+        DMAC_INVALID_SCRATCH_BYTES, NULL);
+    if (*block_uid < 0) {
+        *setup_error = (uint32_t)*block_uid;
+        return 0;
+    }
+    *setup_mask |= DMAC_INVALID_SETUP_BLOCK;
+    *block_head = (uint8_t *)sceKernelGetBlockHeadAddr(*block_uid);
+    if (!*block_head || ((uintptr_t)*block_head & 0xfffu) != 0u ||
+        (uintptr_t)*block_head < DMAC_INVALID_NEIGHBOR_BYTES ||
+        (uintptr_t)*block_head > UINTPTR_MAX - DMAC_INVALID_SCRATCH_BYTES) {
+        *setup_error = 1u;
+        sceKernelFreePartitionMemory(*block_uid);
+        *block_uid = -1;
+        return 0;
+    }
+    *setup_mask |= DMAC_INVALID_SETUP_GEOMETRY;
+
+    uint8_t *const block_end = *block_head + DMAC_INVALID_SCRATCH_BYTES;
+    if (!dmac_invalid_probe_neighbor("oracle-dmac-neighbor-end", block_end)) {
+        *setup_error = 1u;
+        sceKernelFreePartitionMemory(*block_uid);
+        *block_uid = -1;
+        return 0;
+    }
+    *setup_mask |= DMAC_INVALID_SETUP_END_NEIGHBOR;
+    if (!dmac_invalid_probe_neighbor(
+            "oracle-dmac-neighbor-begin",
+            *block_head - DMAC_INVALID_NEIGHBOR_BYTES)) {
+        *setup_error = 1u;
+        sceKernelFreePartitionMemory(*block_uid);
+        *block_uid = -1;
+        return 0;
+    }
+    *setup_mask |= DMAC_INVALID_SETUP_BEGIN_NEIGHBOR;
+    return 1;
+}
+
+static void dmac_invalid_emit_skips(int emulated, uint32_t setup_mask,
+                                    uint32_t setup_error) {
+    static const char *const shapes[] = {"a", "b", "c", "d"};
+    if (PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0) {
+        for (uint32_t api = 0; api < 2u; ++api) {
+            const char *const api_name = api == 0u ? "memcpy" : "try";
+            for (uint32_t shape = 0; shape < 4u; ++shape) {
+                char case_id[48];
+                snprintf(case_id, sizeof(case_id), "invalid-tail-s0-%s-%s",
+                         shapes[shape], api_name);
+                dmac_invalid_emit_record(
+                    emulated, case_id, "SKIP", setup_error, 0u, 0u,
+                    0u, 0u, 0u, 0u, setup_mask, 0u, api_name,
+                    shape == 0u || shape == 3u ? "dst" :
+                        (shape == 1u ? "src" : "both"),
+                    0u, "S", 0u, 0u, 0u, 0u);
+            }
+        }
+        return;
+    }
+    static const uint32_t deltas[] = {1u, 4u, 0x1000u, 0x2000u};
+    for (uint32_t index = 0; index < sizeof(deltas) / sizeof(deltas[0]); ++index) {
+        char case_id[48];
+        snprintf(case_id, sizeof(case_id), "invalid-tail-%s-delta-%04x",
+                 DMAC_INVALID_B_CELL, (unsigned int)deltas[index]);
+        dmac_invalid_emit_record(emulated, case_id, "SKIP", setup_error,
+                                 0u, 0u, 0u, 0u, 0u, 0u, setup_mask,
+                                 deltas[index], DMAC_INVALID_API_NAME,
+                                 DMAC_INVALID_ENDPOINT, 0u, "B", 0u, 0u,
+                                 0u, 0u);
+    }
+}
+
+static void run_dmac_invalid_tier_s(int emulated, uint8_t *block_head,
+                                    uint32_t setup_mask) {
+    static const char *const shapes[] = {"a", "b", "c", "d"};
+    for (uint32_t api = 0; api < 2u; ++api) {
+        const char *const api_name = api == 0u ? "memcpy" : "try";
+        for (uint32_t shape = 0; shape < 4u; ++shape) {
+            uint8_t *const payload = block_head + DMAC_INVALID_PAYLOAD_OFFSET;
+            void *dst = payload;
+            const void *src = s_dmac_invalid_io;
+            const char *const endpoint = shape == 0u || shape == 3u ? "dst" :
+                (shape == 1u ? "src" : "both");
+            if (shape == 0u) dst = NULL;
+            if (shape == 1u) src = NULL;
+            if (shape == 3u) dst = (void *)(uintptr_t)UINT32_MAX;
+
+            dmac_invalid_fill_scratch(block_head);
+            dmac_invalid_fill_io_source(DMAC_INVALID_MAX_REQUEST);
+            dmac_cell_cache_before(block_head, DMAC_INVALID_SCRATCH_BYTES);
+            dmac_cell_cache_before(s_dmac_invalid_io, DMAC_INVALID_MAX_REQUEST);
+            const int rc = dmac_call(api, dst, src, 0u);
+            dmac_cell_cache_after(block_head, DMAC_INVALID_SCRATCH_BYTES);
+            dmac_cell_cache_after(s_dmac_invalid_io, DMAC_INVALID_MAX_REQUEST);
+
+            const uint32_t guards_outside =
+                dmac_invalid_region_mutations(
+                    block_head, 0u, DMAC_INVALID_PRE_GUARD_BYTES,
+                    DMAC_INVALID_PRE_GUARD_FILL) +
+                dmac_invalid_region_mutations(
+                    block_head, DMAC_INVALID_TAIL_OFFSET,
+                    DMAC_INVALID_TAIL_GUARD_BYTES,
+                    DMAC_INVALID_TAIL_GUARD_FILL);
+            const uint32_t post_guard = dmac_invalid_region_mutations(
+                block_head, DMAC_INVALID_POST_OFFSET,
+                DMAC_INVALID_POST_GUARD_BYTES,
+                DMAC_INVALID_POST_GUARD_FILL);
+            const uint32_t overflow_band = dmac_invalid_region_mutations(
+                block_head, DMAC_INVALID_OVERFLOW_OFFSET,
+                DMAC_INVALID_OVERFLOW_BAND_BYTES,
+                DMAC_INVALID_OVERFLOW_BAND_FILL);
+            const uint32_t payload_mutations = dmac_invalid_region_mutations(
+                block_head, DMAC_INVALID_PAYLOAD_OFFSET,
+                DMAC_INVALID_PAYLOAD_BYTES, DMAC_INVALID_PAYLOAD_FILL);
+            const uint32_t source_intact = dmac_invalid_io_source_intact(
+                DMAC_INVALID_MAX_REQUEST);
+            const char *const status = guards_outside == 0u && post_guard == 0u &&
+                overflow_band == 0u && payload_mutations == 0u &&
+                source_intact != 0u ? "PASS" : "FAIL";
+            char case_id[48];
+            snprintf(case_id, sizeof(case_id), "invalid-tail-s0-%s-%s",
+                     shapes[shape], api_name);
+            dmac_invalid_emit_record(
+                emulated, case_id, status, (uint32_t)rc, 0u, 0u,
+                guards_outside, post_guard, overflow_band, source_intact,
+                setup_mask, 0u, api_name, endpoint, 1u, "S", 1u,
+                payload_mutations, (uint32_t)(uintptr_t)src,
+                (uint32_t)(uintptr_t)dst);
+        }
+    }
+}
+
+static void run_dmac_invalid_tier_b(int emulated, uint8_t *block_head,
+                                    uint32_t setup_mask) {
+    static const uint32_t deltas[] = {1u, 4u, 0x1000u, 0x2000u};
+    uint8_t *const payload = block_head + DMAC_INVALID_PAYLOAD_OFFSET;
+    for (uint32_t delta_index = 0;
+         delta_index < sizeof(deltas) / sizeof(deltas[0]); ++delta_index) {
+        const uint32_t delta = deltas[delta_index];
+        const uint32_t requested = DMAC_INVALID_PAYLOAD_BYTES + delta;
+        void *dst;
+        const void *src;
+        dmac_invalid_fill_scratch(block_head);
+        if (DMAC_INVALID_ENDPOINT[0] == 'd') {
+            dmac_invalid_fill_io_source(DMAC_INVALID_MAX_REQUEST);
+            dst = payload;
+            src = s_dmac_invalid_io;
+            dmac_cell_cache_before(s_dmac_invalid_io, requested);
+            dmac_cell_cache_before(block_head, DMAC_INVALID_SCRATCH_BYTES);
+        } else {
+            memset(s_dmac_invalid_io, 0xeeu, requested);
+            dst = s_dmac_invalid_io;
+            src = payload;
+            dmac_cell_cache_before(block_head, DMAC_INVALID_SCRATCH_BYTES);
+            dmac_cell_cache_before(s_dmac_invalid_io, requested);
+        }
+        const int rc = dmac_call(DMAC_INVALID_API, dst, src, requested);
+        dmac_cell_cache_after(block_head, DMAC_INVALID_SCRATCH_BYTES);
+        dmac_cell_cache_after(s_dmac_invalid_io, requested);
+
+        uint32_t prefix = 0;
+        uint32_t matches = 0;
+        uint32_t source_intact = 1u;
+        for (uint32_t offset = 0; offset < requested; ++offset) {
+            const uint8_t expected = DMAC_INVALID_ENDPOINT[0] == 'd'
+                ? dmac_pattern(offset)
+                : dmac_invalid_expected_source_byte(offset);
+            const uint8_t observed = DMAC_INVALID_ENDPOINT[0] == 'd'
+                ? payload[offset] : s_dmac_invalid_io[offset];
+            if (observed == expected) ++matches;
+            if (prefix == offset && observed == expected) ++prefix;
+            if (DMAC_INVALID_ENDPOINT[0] == 'd' &&
+                s_dmac_invalid_io[offset] != dmac_pattern(offset)) {
+                source_intact = 0u;
+            }
+            if (DMAC_INVALID_ENDPOINT[0] == 's' &&
+                payload[offset] != dmac_invalid_expected_source_byte(offset)) {
+                source_intact = 0u;
+            }
+        }
+        const uint32_t guards_outside =
+            dmac_invalid_region_mutations(
+                block_head, 0u, DMAC_INVALID_PRE_GUARD_BYTES,
+                DMAC_INVALID_PRE_GUARD_FILL) +
+            dmac_invalid_region_mutations(
+                block_head, DMAC_INVALID_TAIL_OFFSET,
+                DMAC_INVALID_TAIL_GUARD_BYTES, DMAC_INVALID_TAIL_GUARD_FILL);
+        const uint32_t post_guard = dmac_invalid_region_mutations(
+            block_head, DMAC_INVALID_POST_OFFSET,
+            DMAC_INVALID_POST_GUARD_BYTES, DMAC_INVALID_POST_GUARD_FILL);
+        const uint32_t overflow_band = dmac_invalid_region_mutations(
+            block_head, DMAC_INVALID_OVERFLOW_OFFSET,
+            DMAC_INVALID_OVERFLOW_BAND_BYTES, DMAC_INVALID_OVERFLOW_BAND_FILL);
+        const uint32_t payload_mutations = DMAC_INVALID_ENDPOINT[0] == 's'
+            ? dmac_invalid_region_mutations(
+                block_head, DMAC_INVALID_PAYLOAD_OFFSET,
+                DMAC_INVALID_PAYLOAD_BYTES, DMAC_INVALID_PAYLOAD_FILL)
+            : 0u;
+        const int safe = guards_outside == 0u && source_intact != 0u &&
+            (DMAC_INVALID_ENDPOINT[0] == 'd' ||
+             (post_guard == 0u && overflow_band == 0u &&
+              payload_mutations == 0u));
+        char case_id[48];
+        snprintf(case_id, sizeof(case_id), "invalid-tail-%s-delta-%04x",
+                 DMAC_INVALID_B_CELL, (unsigned int)delta);
+        dmac_invalid_emit_record(
+            emulated, case_id, safe ? "PASS" : "FAIL", (uint32_t)rc,
+            prefix, matches, guards_outside, post_guard, overflow_band,
+            source_intact, setup_mask, delta, DMAC_INVALID_API_NAME,
+            DMAC_INVALID_ENDPOINT, 1u, "B", 1u, payload_mutations,
+            (uint32_t)(uintptr_t)src, (uint32_t)(uintptr_t)dst);
+    }
 }
 
 static void run_dmac_invalid_tail(int emulated) {
     uint32_t setup_mask = 0;
-    /* Allocate a page-aligned block from the high end and check whether an
-       adjacent partition-2 allocation can begin immediately after it. */
-    const SceUID block = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-boundary", PSP_SMEM_High,
-        DMAC_BOUNDARY_BLOCK_BYTES, NULL);
-    if (block < 0) {
-        emit_dmac_invalid_setup(emulated, "SKIP", (uint32_t)block,
-                                setup_mask, 0);
+    uint32_t setup_error = 0;
+    SceUID block_uid = -1;
+    uint8_t *block_head = NULL;
+    if (!dmac_invalid_acquire(&setup_mask, &setup_error,
+                              &block_uid, &block_head)) {
+        dmac_invalid_emit_skips(emulated, setup_mask, setup_error);
         return;
     }
-    setup_mask |= 1u;
-    uint8_t *const block_head = (uint8_t *)sceKernelGetBlockHeadAddr(block);
-    if (!block_head || ((uintptr_t)block_head & 0xfffu) != 0u ||
-        (uintptr_t)block_head > UINTPTR_MAX - DMAC_BOUNDARY_BLOCK_BYTES) {
-        sceKernelFreePartitionMemory(block);
-        emit_dmac_invalid_setup(emulated, "SKIP", 0, setup_mask, 0);
-        return;
+    if (PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0) {
+        run_dmac_invalid_tier_s(emulated, block_head, setup_mask);
+    } else {
+        run_dmac_invalid_tier_b(emulated, block_head, setup_mask);
     }
-    setup_mask |= 2u;
-
-    uint8_t *const candidate_tail = block_head + DMAC_BOUNDARY_BLOCK_BYTES;
-    const SceUID tail_probe = sceKernelAllocPartitionMemory(
-        2, "oracle-dmac-tail-probe", PSP_SMEM_Addr, 0x100, candidate_tail);
-    const uint32_t tail_error = tail_probe < 0
-        ? (uint32_t)tail_probe : UINT32_MAX;
-    if (tail_probe >= 0) {
-        /* A successful or ambiguous allocation means the candidate is not a
-           proven invalid byte.  Never issue the DMAC request in that case. */
-        sceKernelFreePartitionMemory(tail_probe);
-        sceKernelFreePartitionMemory(block);
-        emit_dmac_invalid_setup(emulated, "SKIP", 1u, setup_mask,
-                                tail_error);
-        return;
-    }
-    setup_mask |= 4u;
-    sceKernelFreePartitionMemory(block);
-    emit_dmac_invalid_setup(emulated, "SKIP", tail_error, setup_mask,
-                            tail_error);
+    sceKernelFreePartitionMemory(block_uid);
 }
 #endif
 
@@ -5122,6 +5464,8 @@ int main(int argc, char *argv[]) {
 #elif PSP_ORACLE_CASE >= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST && \
       PSP_ORACLE_CASE <= PSP_ORACLE_CASE_DMAC_INVALID_TAIL_TRY_SRC
     run_dmac_invalid_tail(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0
+    run_dmac_invalid_tail(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_VCOUNT
     run_display_mask_vcount(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY
@@ -5197,3 +5541,4 @@ int main(int argc, char *argv[]) {
 
     probe_teardown(emulated);
 }
+#endif /* defined(__mips__) */

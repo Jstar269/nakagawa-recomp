@@ -720,7 +720,7 @@ def _campaign_completeness_contract(case_id: str) -> str:
                    "mbx-delete-wait", "ge-nan", "dma-cells", "delay-zero"}:
         return "strict-golden-sequence"
     if case_id in DMAC_INVALID_CASES:
-        return "strict-safe-dmac-skip"
+        return "strict-dmac-invalid-cell-records"
     if case_id in {"transport-write", "model-profile"}:
         return "exactly-one-known-record"
     return "unregistered-no-completion-contract"
