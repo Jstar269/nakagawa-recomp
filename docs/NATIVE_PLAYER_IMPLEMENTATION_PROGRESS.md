@@ -38,6 +38,8 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
   non-experimental catalog runtime ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)),
   `BUILD PACKAGE`/`REBUILD PACKAGE` when the package is missing or stale, and
   a `RUNTIME REQUIRED` status for a staged entry with no runnable runtime.
+  A failed package-status worker shows `PACKAGE CHECK FAILED` with the
+  `RETRY PACKAGE CHECK` action; background retries use bounded backoff.
 - `--iso=<path> --stage-only` is a headless path through the same native staging,
   atomic promotion, registration, and state transition. `--stage` starts the
   same transaction from the interactive wizard.

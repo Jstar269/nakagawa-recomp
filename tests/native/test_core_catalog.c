@@ -31,45 +31,57 @@ int main(void) {
         /* Every disc id resolves, and resolves to THIS entry. Two entries sharing
            a disc id used to be reachable: unassigned synthetic titles all shared a
            "TEST00000" sentinel, so lookup silently returned whichever came first. */
-        assert(nk_title_catalog_find_by_disc_id(e->primary_disc_id) == e);
-        assert(nk_title_catalog_find_by_id(e->id) == e);
+        NkTitleEntrySnapshot by_disc = {0};
+        NkTitleEntrySnapshot by_id = {0};
+        assert(nk_title_catalog_find_by_disc_id(e->primary_disc_id, &by_disc));
+        assert(nk_title_catalog_find_by_id(e->id, &by_id));
+        assert(strcmp(by_disc.entry.id, e->id) == 0);
+        assert(strcmp(by_id.entry.id, e->id) == 0);
+        nk_title_catalog_snapshot_release(&by_disc);
+        nk_title_catalog_snapshot_release(&by_id);
     }
 
     printf("[NATIVE_TEST] Verifying public source-owned title lookups...\n");
-    const NkTitleEntry *t_synth1 = nk_title_catalog_find_by_disc_id("TEST00001");
-    assert(t_synth1 != NULL);
-    assert(strcmp(t_synth1->id, "synthetic-allegrex-v1") == 0);
-    assert(t_synth1->kind == NK_TITLE_KIND_SYNTHETIC);
+    NkTitleEntrySnapshot t_synth1 = {0};
+    assert(nk_title_catalog_find_by_disc_id("TEST00001", &t_synth1));
+    assert(strcmp(t_synth1.entry.id, "synthetic-allegrex-v1") == 0);
+    assert(t_synth1.entry.kind == NK_TITLE_KIND_SYNTHETIC);
 
-    const NkTitleEntry *t_p5 = nk_title_catalog_find_by_disc_id("TEST00005");
-    assert(t_p5 != NULL);
-    assert(strcmp(t_p5->id, "pspdev-phase5-v1") == 0);
-    assert(t_p5->kind == NK_TITLE_KIND_SYNTHETIC);
+    NkTitleEntrySnapshot t_p5 = {0};
+    assert(nk_title_catalog_find_by_disc_id("TEST00005", &t_p5));
+    assert(strcmp(t_p5.entry.id, "pspdev-phase5-v1") == 0);
+    assert(t_p5.entry.kind == NK_TITLE_KIND_SYNTHETIC);
 
-    const NkTitleEntry *t_synth2 = nk_title_catalog_find_by_disc_id("TEST00002");
-    assert(t_synth2 != NULL);
-    assert(strcmp(t_synth2->id, "synthetic-title2-v1") == 0);
+    NkTitleEntrySnapshot t_synth2 = {0};
+    assert(nk_title_catalog_find_by_disc_id("TEST00002", &t_synth2));
+    assert(strcmp(t_synth2.entry.id, "synthetic-title2-v1") == 0);
 
     /* The display fixture is the one public title built under the layout
        src/core/nk_launch.c can actually resolve, so its addresses are load
        bearing for the launch path, not just for the catalog. */
-    const NkTitleEntry *t_disp = nk_title_catalog_find_by_disc_id("TEST00006");
-    assert(t_disp != NULL);
-    assert(strcmp(t_disp->id, "display-smoke-v1") == 0);
-    assert(t_disp->kind == NK_TITLE_KIND_SYNTHETIC);
-    assert(strcmp(t_disp->game_name, "display-smoke") == 0);
-    assert(t_disp->executable_base == 0x08810000u);
-    assert(t_disp->executable_entry == 0x08810000u);
+    NkTitleEntrySnapshot t_disp = {0};
+    assert(nk_title_catalog_find_by_disc_id("TEST00006", &t_disp));
+    assert(strcmp(t_disp.entry.id, "display-smoke-v1") == 0);
+    assert(t_disp.entry.kind == NK_TITLE_KIND_SYNTHETIC);
+    assert(strcmp(t_disp.entry.game_name, "display-smoke") == 0);
+    assert(t_disp.entry.executable_base == 0x08810000u);
+    assert(t_disp.entry.executable_entry == 0x08810000u);
 
     /* Verify normalization (hyphens/spaces) */
-    assert(nk_title_catalog_find_by_disc_id("test-00001") == t_synth1);
-    assert(nk_title_catalog_find_by_disc_id("  TEST_00005  ") == t_p5);
+    NkTitleEntrySnapshot normalized = {0};
+    assert(nk_title_catalog_find_by_disc_id("test-00001", &normalized));
+    assert(strcmp(normalized.entry.id, t_synth1.entry.id) == 0);
+    nk_title_catalog_snapshot_release(&normalized);
+    assert(nk_title_catalog_find_by_disc_id("  TEST_00005  ", &normalized));
+    assert(strcmp(normalized.entry.id, t_p5.entry.id) == 0);
+    nk_title_catalog_snapshot_release(&normalized);
 
     printf("[NATIVE_TEST] Verifying retail IDs are NOT present in public catalog...\n");
-    assert(nk_title_catalog_find_by_disc_id("UCUS98701") == NULL);
-    assert(nk_title_catalog_find_by_disc_id("UCES01402") == NULL);
-    assert(nk_title_catalog_find_by_disc_id("ULUS99999") == NULL);
-    assert(nk_title_catalog_find_by_id("hst-ucus98701-v1") == NULL);
+    NkTitleEntrySnapshot missing = {0};
+    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("UCES01402", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("ULUS99999", &missing));
+    assert(!nk_title_catalog_find_by_id("hst-ucus98701-v1", &missing));
 
     printf("[NATIVE_TEST] Verifying in-memory private overlay registration...\n");
     NkTitleEntry private_overlay;
@@ -80,19 +92,24 @@ int main(void) {
     private_overlay.primary_disc_id = "UCUS98701";
 
     /* Before registration: NULL */
-    assert(nk_title_catalog_find_by_disc_id("UCUS98701") == NULL);
+    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
 
     /* Register overlay */
     nk_title_catalog_register_overlay(&private_overlay);
-    const NkTitleEntry *found_ov = nk_title_catalog_find_by_disc_id("UCUS-98701");
-    assert(found_ov != NULL);
-    assert(strcmp(found_ov->id, "private-local-test-v1") == 0);
-    assert(nk_title_catalog_find_by_id("private-local-test-v1") == found_ov);
+    NkTitleEntrySnapshot found_ov = {0};
+    NkTitleEntrySnapshot found_ov_by_id = {0};
+    assert(nk_title_catalog_find_by_disc_id("UCUS-98701", &found_ov));
+    assert(strcmp(found_ov.entry.id, "private-local-test-v1") == 0);
+    assert(nk_title_catalog_find_by_id("private-local-test-v1",
+                                       &found_ov_by_id));
+    assert(strcmp(found_ov_by_id.entry.id, found_ov.entry.id) == 0);
 
     /* Clear overlay */
     nk_title_catalog_clear_overlay();
-    assert(nk_title_catalog_find_by_disc_id("UCUS98701") == NULL);
-    assert(nk_title_catalog_find_by_id("private-local-test-v1") == NULL);
+    assert(strcmp(found_ov.entry.display_name,
+                  "Local Acceptance Private Title") == 0);
+    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
+    assert(!nk_title_catalog_find_by_id("private-local-test-v1", &missing));
 
     printf("[NATIVE_TEST] Verifying library in-memory operations...\n");
     NkLibrary lib;
@@ -102,8 +119,8 @@ int main(void) {
     NkGameEntry g1;
     memset(&g1, 0, sizeof(g1));
     snprintf(g1.disc_id, sizeof(g1.disc_id), "TEST00001");
-    snprintf(g1.title_name, sizeof(g1.title_name), "%s", t_synth1->display_name);
-    snprintf(g1.title_id, sizeof(g1.title_id), "%s", t_synth1->id);
+    snprintf(g1.title_name, sizeof(g1.title_name), "%s", t_synth1.entry.display_name);
+    snprintf(g1.title_id, sizeof(g1.title_id), "%s", t_synth1.entry.id);
     g1.status = NK_STATUS_VERIFIED;
     g1.is_prepared = true;
 
@@ -172,5 +189,11 @@ int main(void) {
     assert(nk_platform_get_file_size(u_file) == (int64_t)sizeof(test_data));
 
     printf("[NATIVE_TEST] ALL CORE NATIVE C TESTS PASSED SUCCESSFULLY!\n");
+    nk_title_catalog_snapshot_release(&found_ov);
+    nk_title_catalog_snapshot_release(&found_ov_by_id);
+    nk_title_catalog_snapshot_release(&t_synth1);
+    nk_title_catalog_snapshot_release(&t_p5);
+    nk_title_catalog_snapshot_release(&t_synth2);
+    nk_title_catalog_snapshot_release(&t_disp);
     return 0;
 }

@@ -113,6 +113,8 @@ typedef struct {
     char disc_id[MAX_DISC_ID_LEN];
     char title_id[64];
     char selected_executable[MAX_PATH_LEN];
+    uint32_t failure_count;
+    uint64_t retry_after_ms;
 } PlayerRuntimePackageWorkerFailure;
 
 typedef struct {
@@ -378,14 +380,17 @@ bool player_app_runtime_package_check_failed(const PlayerApp *app,
                                               const GameRecord *game);
 bool player_app_runtime_package_worker_start_failed(const PlayerApp *app,
                                                      const GameRecord *game);
+bool player_app_runtime_package_worker_start_failed_retry_due(
+    const PlayerApp *app, const GameRecord *game, uint64_t now_ms);
 void player_app_runtime_package_worker_start_failed_record(
-    PlayerApp *app, const GameRecord *game);
+    PlayerApp *app, const GameRecord *game, uint64_t now_ms);
 void player_app_runtime_package_worker_start_failed_clear(
     PlayerApp *app, const GameRecord *game);
 void player_app_runtime_package_cache_mark_explicit_retry(PlayerApp *app,
                                                           int game_index);
 void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
-                                                  int game_index);
+                                                  int game_index,
+                                                  uint64_t now_ms);
 void player_app_runtime_package_cache_invalidate(PlayerApp *app);
 void player_app_runtime_package_cache_mark_pending(PlayerApp *app, int game_index);
 void player_app_runtime_package_cache_store(

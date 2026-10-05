@@ -327,13 +327,18 @@ typedef struct {
     SDL_Texture *pic1_tex;
     float pic1_w;
     float pic1_h;
+    /* "attempted" is terminal: loaded, unsupported by this SDL build, or
+       exhausted the bounded retry budget. */
     bool pic1_attempted;
+    uint8_t icon_attempt_count;
+    uint8_t pic1_attempt_count;
     uint64_t retry_after_ns;
     UiArtJob *job;
 } GameTextureCacheEntry;
 
 #define GAME_TEXTURE_CACHE_SIZE 64
 #define GAME_ART_RETRY_COOLDOWN_NS UINT64_C(1000000000)
+#define GAME_ART_MAX_ATTEMPTS 3u
 static GameTextureCacheEntry s_game_textures[GAME_TEXTURE_CACHE_SIZE];
 
 enum { PLAYER_UI_ART_EVENT_CODE = 0x55494152 };
@@ -383,6 +388,14 @@ static bool ui_art_push_completion(SDL_Event *event) {
 static int SDLCALL ui_art_thread_main(void *userdata) {
     UiArtJob *job = (UiArtJob *)userdata;
     if (!job) return 1;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    const char *delay_text = getenv("PLAYER_UI_TEST_ART_DELAY_MS");
+    if (delay_text && delay_text[0]) {
+        char *end = NULL;
+        unsigned long delay = strtoul(delay_text, &end, 10);
+        if (end && *end == '\0' && delay <= 5000) SDL_Delay((Uint32)delay);
+    }
+#endif
     NkIsoImageData icon;
     NkIsoImageData background;
     nk_iso_read_game_art(job->iso_path, job->wanted, &icon, &background);
@@ -410,9 +423,34 @@ static int SDLCALL ui_art_thread_main(void *userdata) {
     return 0;
 }
 
-static void ui_art_set_retry_deadline(GameTextureCacheEntry *entry) {
+static void ui_art_record_failure(GameTextureCacheEntry *entry,
+                                  unsigned wanted) {
     if (!entry) return;
-    entry->retry_after_ns = SDL_GetTicksNS() + GAME_ART_RETRY_COOLDOWN_NS;
+    if ((wanted & NK_ISO_ART_ICON) && !entry->icon_attempted) {
+        if (entry->icon_attempt_count < GAME_ART_MAX_ATTEMPTS)
+            entry->icon_attempt_count++;
+        if (entry->icon_attempt_count >= GAME_ART_MAX_ATTEMPTS)
+            entry->icon_attempted = true;
+    }
+    if ((wanted & NK_ISO_ART_PICTURE) && !entry->pic1_attempted) {
+        if (entry->pic1_attempt_count < GAME_ART_MAX_ATTEMPTS)
+            entry->pic1_attempt_count++;
+        if (entry->pic1_attempt_count >= GAME_ART_MAX_ATTEMPTS)
+            entry->pic1_attempted = true;
+    }
+    if (entry->icon_attempted && entry->pic1_attempted) {
+        entry->retry_after_ns = 0;
+        return;
+    }
+    unsigned attempts = 0;
+    if (!entry->icon_attempted && entry->icon_attempt_count > attempts)
+        attempts = entry->icon_attempt_count;
+    if (!entry->pic1_attempted && entry->pic1_attempt_count > attempts)
+        attempts = entry->pic1_attempt_count;
+    unsigned backoff_shift = attempts > 1 ? attempts - 1 : 0;
+    if (backoff_shift > 2) backoff_shift = 2;
+    entry->retry_after_ns = SDL_GetTicksNS() +
+        (GAME_ART_RETRY_COOLDOWN_NS << backoff_shift);
 }
 
 static bool ui_start_art_job(GameTextureCacheEntry *entry,
@@ -433,7 +471,7 @@ static bool ui_start_art_job(GameTextureCacheEntry *entry,
     UiArtJob *job = (UiArtJob *)calloc(1, sizeof(*job));
     if (!job || slot < 0) {
         free(job);
-        ui_art_set_retry_deadline(entry);
+        ui_art_record_failure(entry, wanted);
         return false;
     }
     job->wanted = wanted;
@@ -441,13 +479,13 @@ static bool ui_start_art_job(GameTextureCacheEntry *entry,
                                iso_path);
     if (path_length <= 0 || (size_t)path_length >= sizeof(job->iso_path)) {
         free(job);
-        ui_art_set_retry_deadline(entry);
+        ui_art_record_failure(entry, wanted);
         return false;
     }
     job->thread = SDL_CreateThread(ui_art_thread_main, "nakagawa-ui-art", job);
     if (!job->thread) {
         free(job);
-        ui_art_set_retry_deadline(entry);
+        ui_art_record_failure(entry, wanted);
         return false;
     }
     entry->job = job;
@@ -606,42 +644,56 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
     }
     if (entry) {
         entry->job = NULL;
-        if (!entry->icon_tex && job->icon_status == NK_ICON_OK &&
-            job->icon_bytes && job->icon_size) {
+        if (job->wanted & NK_ISO_ART_ICON) {
 #if SDL_VERSION_ATLEAST(3, 4, 0)
-            SDL_IOStream *io = SDL_IOFromConstMem(job->icon_bytes, job->icon_size);
-            SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
-            if (surface) {
-                entry->icon_tex = SDL_CreateTextureFromSurface(renderer, surface);
-                if (entry->icon_tex) {
-                    SDL_GetTextureSize(entry->icon_tex, &entry->icon_w,
-                                       &entry->icon_h);
+            if (!entry->icon_tex && job->icon_status == NK_ICON_OK &&
+                job->icon_bytes && job->icon_size) {
+                SDL_IOStream *io = SDL_IOFromConstMem(job->icon_bytes,
+                                                      job->icon_size);
+                SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
+                if (surface) {
+                    entry->icon_tex = SDL_CreateTextureFromSurface(renderer,
+                                                                  surface);
+                    if (entry->icon_tex) {
+                        SDL_GetTextureSize(entry->icon_tex, &entry->icon_w,
+                                           &entry->icon_h);
+                    }
+                    SDL_DestroySurface(surface);
                 }
-                SDL_DestroySurface(surface);
             }
+#else
+            (void)renderer;
+            entry->icon_attempted = true;
 #endif
+            if (entry->icon_tex) entry->icon_attempted = true;
+            else ui_art_record_failure(entry, NK_ISO_ART_ICON);
         }
-        if (!entry->pic1_tex && job->pic1_status == NK_ICON_OK &&
-            job->pic1_bytes && job->pic1_size) {
+        if (job->wanted & NK_ISO_ART_PICTURE) {
 #if SDL_VERSION_ATLEAST(3, 4, 0)
-            SDL_IOStream *io = SDL_IOFromConstMem(job->pic1_bytes, job->pic1_size);
-            SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
-            if (surface) {
-                entry->pic1_tex = SDL_CreateTextureFromSurface(renderer, surface);
-                if (entry->pic1_tex) {
-                    SDL_GetTextureSize(entry->pic1_tex, &entry->pic1_w,
-                                       &entry->pic1_h);
+            if (!entry->pic1_tex && job->pic1_status == NK_ICON_OK &&
+                job->pic1_bytes && job->pic1_size) {
+                SDL_IOStream *io = SDL_IOFromConstMem(job->pic1_bytes,
+                                                      job->pic1_size);
+                SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
+                if (surface) {
+                    entry->pic1_tex = SDL_CreateTextureFromSurface(renderer,
+                                                                  surface);
+                    if (entry->pic1_tex) {
+                        SDL_GetTextureSize(entry->pic1_tex, &entry->pic1_w,
+                                           &entry->pic1_h);
+                    }
+                    SDL_DestroySurface(surface);
                 }
-                SDL_DestroySurface(surface);
             }
+#else
+            (void)renderer;
+            entry->pic1_attempted = true;
 #endif
+            if (entry->pic1_tex) entry->pic1_attempted = true;
+            else ui_art_record_failure(entry, NK_ISO_ART_PICTURE);
         }
-        entry->icon_attempted = entry->icon_tex != NULL;
-        entry->pic1_attempted = entry->pic1_tex != NULL;
         if (entry->icon_attempted && entry->pic1_attempted) {
             entry->retry_after_ns = 0;
-        } else {
-            ui_art_set_retry_deadline(entry);
         }
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -650,8 +702,8 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
            "icon_loaded=%d pic1_loaded=%d wanted=%u\n",
            s_ui_test_art_attempt_count,
            (unsigned long long)SDL_GetTicksNS(),
-           entry && entry->icon_attempted ? 1 : 0,
-           entry && entry->pic1_attempted ? 1 : 0,
+           entry && entry->icon_tex ? 1 : 0,
+           entry && entry->pic1_tex ? 1 : 0,
            job->wanted);
 #endif
     free(job->icon_bytes);
@@ -673,10 +725,8 @@ void ui_renderer_recover_lost_art_handoffs(void) {
         if (!job || !SDL_GetAtomicInt(&job->handoff_failed)) continue;
         GameTextureCacheEntry *entry = ui_game_texture_entry_for_job(job);
         if (entry) {
-            /* Leave the attempt flags clear so the cooldown retries the read
-               rather than presenting a missing image as a decided answer. */
             entry->job = NULL;
-            ui_art_set_retry_deadline(entry);
+            ui_art_record_failure(entry, job->wanted);
         }
         ui_art_job_discard(job);
     }
@@ -709,11 +759,7 @@ bool ui_renderer_test_saturate_art_cache(SDL_Renderer *renderer,
     unsigned saturated = 0;
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
         char path[512];
-        if (strchr(base_path, '%')) {
-            snprintf(path, sizeof(path), base_path, i);
-        } else {
-            snprintf(path, sizeof(path), "%s#slot_%d", base_path, i);
-        }
+        snprintf(path, sizeof(path), "%s#slot_%d", base_path, i);
         GameTextureCacheEntry *entry = ui_get_game_texture_entry(path);
         if (entry && ui_start_art_job(entry, path)) {
             saturated++;

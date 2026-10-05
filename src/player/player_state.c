@@ -162,15 +162,23 @@ bool player_app_runtime_package_worker_start_failed(
     return player_runtime_worker_failure_index(app, game) >= 0;
 }
 
+bool player_app_runtime_package_worker_start_failed_retry_due(
+    const PlayerApp *app, const GameRecord *game, uint64_t now_ms) {
+    int index = player_runtime_worker_failure_index(app, game);
+    return index >= 0 &&
+        now_ms >= app->runtime_package_worker_failures[index].retry_after_ms;
+}
+
 void player_app_runtime_package_worker_start_failed_record(
-    PlayerApp *app, const GameRecord *game) {
+    PlayerApp *app, const GameRecord *game, uint64_t now_ms) {
     if (!app || !game) return;
-    if (player_runtime_worker_failure_index(app, game) >= 0) return;
-    int slot = -1;
-    for (int i = 0; i < MAX_LIBRARY_GAMES; i++) {
-        if (!app->runtime_package_worker_failures[i].valid) {
-            slot = i;
-            break;
+    int slot = player_runtime_worker_failure_index(app, game);
+    if (slot < 0) {
+        for (int i = 0; i < MAX_LIBRARY_GAMES; i++) {
+            if (!app->runtime_package_worker_failures[i].valid) {
+                slot = i;
+                break;
+            }
         }
     }
     /* The side table is bounded to the maximum library size. A full table can
@@ -179,12 +187,22 @@ void player_app_runtime_package_worker_start_failed_record(
     if (slot < 0) return;
     PlayerRuntimePackageWorkerFailure *failure =
         &app->runtime_package_worker_failures[slot];
-    memset(failure, 0, sizeof(*failure));
-    failure->valid = true;
-    snprintf(failure->disc_id, sizeof(failure->disc_id), "%s", game->disc_id);
-    snprintf(failure->title_id, sizeof(failure->title_id), "%s", game->title_id);
-    snprintf(failure->selected_executable, sizeof(failure->selected_executable),
-             "%s", game->selected_executable);
+    if (!failure->valid) {
+        memset(failure, 0, sizeof(*failure));
+        failure->valid = true;
+        snprintf(failure->disc_id, sizeof(failure->disc_id), "%s", game->disc_id);
+        snprintf(failure->title_id, sizeof(failure->title_id), "%s", game->title_id);
+        snprintf(failure->selected_executable, sizeof(failure->selected_executable),
+                 "%s", game->selected_executable);
+    }
+    if (failure->failure_count < 5) failure->failure_count++;
+    uint64_t delay_ms = 5000;
+    for (uint32_t i = 1; i < failure->failure_count && delay_ms < 60000; i++) {
+        delay_ms *= 2;
+    }
+    if (delay_ms > 60000) delay_ms = 60000;
+    failure->retry_after_ms = now_ms > UINT64_MAX - delay_ms
+        ? UINT64_MAX : now_ms + delay_ms;
 }
 
 void player_app_runtime_package_worker_start_failed_clear(
@@ -242,7 +260,8 @@ void player_app_runtime_package_cache_mark_explicit_retry(PlayerApp *app,
 }
 
 void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
-                                                   int game_index) {
+                                                   int game_index,
+                                                   uint64_t now_ms) {
     if (!app || game_index < 0 || game_index >= app->game_count) return;
     PlayerRuntimePackageCacheEntry *entry =
         &app->runtime_package_cache[game_index];
@@ -254,7 +273,7 @@ void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
     entry->package_identity[0] = '\0';
     entry->last_checked_ms = 0;
     player_app_runtime_package_worker_start_failed_record(
-        app, &app->games[game_index]);
+        app, &app->games[game_index], now_ms);
 }
 
 void player_app_runtime_package_cache_store(

@@ -26,9 +26,9 @@ bool iso_inspect_file(const char *iso_path, IsoInspectResult *out_result) {
     out_result->is_supported = meta.is_supported;
     out_result->param_sfo_parsed = meta.param_sfo_parsed;
     out_result->executables = meta.executables;
-    if (meta.matched_title && meta.matched_title->id) {
-        snprintf(out_result->matched_title_id, sizeof(out_result->matched_title_id), "%s", meta.matched_title->id);
-    }
+    snprintf(out_result->matched_title_id,
+             sizeof(out_result->matched_title_id), "%s",
+             meta.matched_title_id);
     out_result->status = (GameSupportStatus)meta.status;
     out_result->success = true;
 

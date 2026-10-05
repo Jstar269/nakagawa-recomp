@@ -152,7 +152,9 @@ crashes.
   launcher resolves, which is playable without a package
   ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)); a stale
   package shows **REBUILD PACKAGE** and an incompatible one shows
-  `PACKAGE INCOMPATIBLE`.
+  `PACKAGE INCOMPATIBLE`. If the package-check worker cannot start, the card
+  shows `PACKAGE CHECK FAILED` with a `RETRY PACKAGE CHECK` action; background
+  rescans retry after a bounded backoff.
 - **Missing firmware fonts:** if in-game fonts cannot be found, the player notes
   that the PSP font `jpn0.pgf` is missing and directs you to run
   `python tools/nk_cli.py fonts import <folder>`

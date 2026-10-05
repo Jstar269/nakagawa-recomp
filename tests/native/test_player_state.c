@@ -1448,20 +1448,28 @@ int main(int argc, char **argv) {
                  nk_platform_path_separator());
         snprintf(font_path, sizeof(font_path), "%s%cjpn0.pgf", font_dir,
                  nk_platform_path_separator());
-        const NkTitleEntry *synthetic = nk_title_catalog_find_by_id(
-            "synthetic-allegrex-v1");
+        NkTitleEntrySnapshot synthetic_snapshot = {0};
+        assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
+                                           &synthetic_snapshot));
+        const NkTitleEntry *synthetic = &synthetic_snapshot.entry;
         assert(synthetic != NULL && synthetic->game_name != NULL &&
                synthetic->primary_disc_id != NULL);
-        const char *synthetic_disc_id = synthetic->primary_disc_id;
+        char synthetic_game_name[65];
+        char synthetic_disc_id[MAX_DISC_ID_LEN];
+        snprintf(synthetic_game_name, sizeof(synthetic_game_name), "%s",
+                 synthetic->game_name);
+        snprintf(synthetic_disc_id, sizeof(synthetic_disc_id), "%s",
+                 synthetic->primary_disc_id);
+        nk_title_catalog_snapshot_release(&synthetic_snapshot);
         char build_dir[760], runtime_exe[900], runtime_image[900];
         char package_dir[900], package_json[1100], package_report[1100];
         snprintf(build_dir, sizeof(build_dir), "%s%cbuild%c%s", preflight_root,
                  nk_platform_path_separator(), nk_platform_path_separator(),
-                 synthetic->game_name);
+                 synthetic_game_name);
         snprintf(runtime_exe, sizeof(runtime_exe), "%s%c%s.exe", build_dir,
-                 nk_platform_path_separator(), synthetic->game_name);
+                 nk_platform_path_separator(), synthetic_game_name);
         snprintf(runtime_image, sizeof(runtime_image), "%s%c%s_image.bin", build_dir,
-                 nk_platform_path_separator(), synthetic->game_name);
+                 nk_platform_path_separator(), synthetic_game_name);
         snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s", preflight_root,
                  nk_platform_path_separator(), nk_platform_path_separator(),
                  synthetic_disc_id);
@@ -1615,6 +1623,21 @@ int main(int argc, char **argv) {
         write_experimental_profile_fixture(preflight_root, "ULUS99998",
                                            "experimental-ulus99998", "EBOOT.BIN",
                                            FIXTURE_SHA256);
+        NkTitleEntrySnapshot profile_snapshot = {0};
+        char profile_hash[65] = "";
+        char profile_error[512] = "";
+        assert(nk_title_manifest_read_experimental_profile(
+            preflight_root, "ULUS99998", "experimental-ulus99998", "EBOOT.BIN",
+            &profile_snapshot, profile_hash, profile_error,
+            sizeof(profile_error)));
+        assert(strcmp(profile_snapshot.entry.id, "experimental-ulus99998") == 0);
+        assert(strcmp(profile_snapshot.entry.display_name,
+                      "Synthetic experiment") == 0);
+        nk_title_catalog_clear_overlay();
+        assert(strcmp(profile_snapshot.entry.id, "experimental-ulus99998") == 0);
+        assert(strcmp(profile_snapshot.entry.display_name,
+                      "Synthetic experiment") == 0);
+        nk_title_catalog_snapshot_release(&profile_snapshot);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
@@ -2308,10 +2331,15 @@ int main(int argc, char **argv) {
         char report_json[960];
         char executable[960];
         char image[960];
-        const NkTitleEntry *cached_title = nk_title_catalog_find_by_id(
-            "synthetic-allegrex-v1");
+        NkTitleEntrySnapshot cached_title_snapshot = {0};
+        assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
+                                           &cached_title_snapshot));
+        const NkTitleEntry *cached_title = &cached_title_snapshot.entry;
         assert(cached_title && cached_title->primary_disc_id);
-        const char *cached_disc_id = cached_title->primary_disc_id;
+        char cached_disc_id[MAX_DISC_ID_LEN];
+        snprintf(cached_disc_id, sizeof(cached_disc_id), "%s",
+                 cached_title->primary_disc_id);
+        nk_title_catalog_snapshot_release(&cached_title_snapshot);
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
         snprintf(validation_root, sizeof(validation_root), "%s%cpackage-validation-cache",
                  cache_root, nk_platform_path_separator());
@@ -2370,6 +2398,26 @@ int main(int argc, char **argv) {
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo refreshed_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &refreshed_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(!refreshed_info.validation_cache_hit);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &cached_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(cached_info.validation_cache_hit);
+
+        assert(remove(image) == 0);
+        assert(!nk_launch_runtime_package_cache_identity(
+            validation_root, &game, identity_after));
+        NkRuntimePackageInfo missing_image_info;
+        NkRuntimePackageStatus missing_image_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &missing_image_info, reason, sizeof(reason));
+        assert(missing_image_status == NK_RUNTIME_PACKAGE_STALE);
+        assert(!missing_image_info.validation_cache_hit);
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &refreshed_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -2456,10 +2504,14 @@ int main(int argc, char **argv) {
         snprintf(git_before, sizeof(git_before), "%s%cgit_before.txt", scratch, sep);
         snprintf(git_after, sizeof(git_after), "%s%cgit_after.txt", scratch, sep);
 
-        const NkTitleEntry *title =
-            nk_title_catalog_find_by_id("synthetic-allegrex-v1");
+        NkTitleEntrySnapshot title_snapshot = {0};
+        assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
+                                           &title_snapshot));
+        const NkTitleEntry *title = &title_snapshot.entry;
         assert(title && title->primary_disc_id && title->primary_disc_id[0]);
-        const char *disc_id = title->primary_disc_id;
+        char disc_id[MAX_DISC_ID_LEN];
+        snprintf(disc_id, sizeof(disc_id), "%s", title->primary_disc_id);
+        nk_title_catalog_snapshot_release(&title_snapshot);
 
         write_runtime_package_fixture(user_root, disc_id, "synthetic-allegrex-v1",
                                       2, "synthetic-allegrex-v1.exe",
@@ -2978,7 +3030,11 @@ int main(int argc, char **argv) {
         player_app_sync_library(failure_state);
         assert(failure_state->game_count == 2);
         GameRecord failed_game = failure_state->games[0];
-        player_app_runtime_package_cache_mark_failed(failure_state, 0);
+        player_app_runtime_package_cache_mark_failed(failure_state, 0, 1000);
+        assert(!player_app_runtime_package_worker_start_failed_retry_due(
+            failure_state, &failed_game, 5999));
+        assert(player_app_runtime_package_worker_start_failed_retry_due(
+            failure_state, &failed_game, 6000));
         assert(player_app_runtime_package_worker_start_failed(
             failure_state, &failed_game));
         assert(player_app_cached_runtime_package_status(
@@ -3007,6 +3063,58 @@ int main(int argc, char **argv) {
             failure_state, &failure_state->games[readded_index]));
         remove(failure_state->library.library_path);
         free(failure_state);
+    }
+
+    printf("[PLAYER_STATE_TEST] Subtest 23: runtime-package cache key and transitions\n");
+    fflush(stdout);
+    {
+        PlayerApp *cache_state = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(cache_state != NULL);
+        cache_state->game_count = 1;
+        seed_entry(&cache_state->games[0], "CACHE6591", "Cache fixture");
+        snprintf(cache_state->games[0].title_id,
+                 sizeof(cache_state->games[0].title_id), "cache-title-a");
+        snprintf(cache_state->games[0].selected_executable,
+                 sizeof(cache_state->games[0].selected_executable), "EBOOT.BIN");
+        GameRecord cache_game = cache_state->games[0];
+
+        player_app_runtime_package_cache_mark_pending(cache_state, 0);
+        assert(player_app_runtime_package_check_pending(cache_state,
+                                                        &cache_game));
+        assert(!player_app_cached_game_has_runtime(cache_state, &cache_game));
+        player_app_runtime_package_cache_store(
+            cache_state, 0, &cache_game, true, "fixture-package-identity",
+            NK_RUNTIME_PACKAGE_OK, true, 100);
+        assert(!player_app_runtime_package_check_pending(cache_state,
+                                                         &cache_game));
+        assert(player_app_cached_runtime_package_status(
+                   cache_state, &cache_game) == NK_RUNTIME_PACKAGE_OK);
+        assert(player_app_cached_game_has_runtime(cache_state, &cache_game));
+
+        GameRecord different_executable = cache_game;
+        snprintf(different_executable.selected_executable,
+                 sizeof(different_executable.selected_executable), "PBOOT.PBP");
+        assert(player_app_cached_runtime_package_status(
+                   cache_state, &different_executable) == NK_RUNTIME_PACKAGE_MISSING);
+        assert(!player_app_cached_game_has_runtime(cache_state,
+                                                   &different_executable));
+
+        snprintf(cache_state->games[0].title_id,
+                 sizeof(cache_state->games[0].title_id), "cache-title-b");
+        GameRecord changed_title = cache_state->games[0];
+        assert(player_app_cached_runtime_package_status(
+                   cache_state, &changed_title) == NK_RUNTIME_PACKAGE_MISSING);
+        assert(!player_app_cached_game_has_runtime(cache_state, &changed_title));
+        player_app_runtime_package_cache_mark_pending(cache_state, 0);
+        assert(player_app_runtime_package_check_pending(cache_state,
+                                                        &changed_title));
+        player_app_runtime_package_cache_invalidate(cache_state);
+        assert(!player_app_runtime_package_check_pending(cache_state,
+                                                        &changed_title));
+        assert(player_app_cached_runtime_package_status(
+                   cache_state, &changed_title) == NK_RUNTIME_PACKAGE_MISSING);
+        assert(!player_app_cached_game_has_runtime(cache_state, &changed_title));
+        free(cache_state);
     }
 
     free(app);

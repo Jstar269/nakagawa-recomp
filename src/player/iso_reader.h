@@ -18,7 +18,7 @@ typedef struct {
     bool is_supported;
     bool param_sfo_parsed;
     NkIsoExecutableReport executables;
-    char matched_title_id[64];
+    char matched_title_id[65];
     GameSupportStatus status;
 } IsoInspectResult;
 

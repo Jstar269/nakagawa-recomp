@@ -246,57 +246,77 @@ static void launch_bind_name_sources(
  * and addresses from one title with session data from another. An identity
  * that resolves to no catalog entry fails closed with the same diagnostic
  * the launch path has always reported for unknown titles. */
-static const NkTitleEntry *launch_select_entry(const NkGameEntry *game,
-                                               char *error_message,
-                                               size_t error_message_size) {
-    const NkTitleEntry *by_disc = NULL;
-    const NkTitleEntry *by_id = NULL;
+static bool launch_select_entry(const NkGameEntry *game,
+                                NkTitleEntrySnapshot *out_snapshot,
+                                char *error_message,
+                                size_t error_message_size) {
+    if (out_snapshot) memset(out_snapshot, 0, sizeof(*out_snapshot));
+    if (!out_snapshot) return false;
+    NkTitleEntrySnapshot by_disc = {0};
+    NkTitleEntrySnapshot by_id = {0};
+    NkTitleEntrySnapshot *chosen = NULL;
     if (!game) {
         launch_error(error_message, error_message_size,
                      "launch identity received invalid arguments");
-        return NULL;
+        return false;
     }
-    if (game->disc_id[0]) by_disc = nk_title_catalog_find_by_disc_id(game->disc_id);
-    if (game->title_id[0]) by_id = nk_title_catalog_find_by_id(game->title_id);
+    if (game->disc_id[0]) {
+        (void)nk_title_catalog_find_by_disc_id(game->disc_id, &by_disc);
+    }
+    if (game->title_id[0]) {
+        (void)nk_title_catalog_find_by_id(game->title_id, &by_id);
+    }
 
     if (game->disc_id[0] && game->title_id[0]) {
-        if (by_disc && by_id) {
-            if (by_disc == by_id || strcmp(by_disc->id, by_id->id) == 0) {
-                return by_disc;
+        if (by_disc.owned_storage && by_id.owned_storage) {
+            if (by_disc.entry.id && by_id.entry.id &&
+                strcmp(by_disc.entry.id, by_id.entry.id) == 0) {
+                chosen = &by_disc;
+            } else {
+                if (error_message && error_message_size > 0) {
+                    snprintf(error_message, error_message_size,
+                             "Session identity disagreement: disc_id '%.16s' resolves "
+                             "to title '%.64s' but title_id '%.64s' resolves to title "
+                             "'%.64s'",
+                             game->disc_id, by_disc.entry.id ? by_disc.entry.id : "(none)",
+                             game->title_id, by_id.entry.id ? by_id.entry.id : "(none)");
+                }
+                goto failed;
             }
-            if (error_message && error_message_size > 0) {
-                snprintf(error_message, error_message_size,
-                         "Session identity disagreement: disc_id '%.16s' resolves "
-                         "to title '%.64s' but title_id '%.64s' resolves to title "
-                         "'%.64s'",
-                         game->disc_id, by_disc->id, game->title_id, by_id->id);
-            }
-            return NULL;
-        }
-        if (by_disc) {
+        } else if (by_disc.owned_storage) {
             if (error_message && error_message_size > 0) {
                 snprintf(error_message, error_message_size,
                          "Session identity disagreement: disc_id '%.16s' resolves "
                          "to title '%.64s' but title_id '%.64s' does not name a "
                          "catalog title",
-                         game->disc_id, by_disc->id, game->title_id);
+                         game->disc_id, by_disc.entry.id ? by_disc.entry.id : "(none)",
+                         game->title_id);
             }
-            return NULL;
-        }
-        if (by_id) {
+            goto failed;
+        } else if (by_id.owned_storage) {
             if (error_message && error_message_size > 0) {
                 snprintf(error_message, error_message_size,
                          "Session identity disagreement: title_id '%.64s' resolves "
                          "to title '%.64s' but disc_id '%.16s' does not name a "
                          "catalog disc",
-                         game->title_id, by_id->id, game->disc_id);
+                         game->title_id,
+                         by_id.entry.id ? by_id.entry.id : "(none)",
+                         game->disc_id);
             }
-            return NULL;
+            goto failed;
         }
-    } else if (by_disc) {
-        return by_disc;
-    } else if (by_id) {
-        return by_id;
+    } else if (by_disc.owned_storage) {
+        chosen = &by_disc;
+    } else if (by_id.owned_storage) {
+        chosen = &by_id;
+    }
+
+    if (chosen) {
+        *out_snapshot = *chosen;
+        memset(chosen, 0, sizeof(*chosen));
+        nk_title_catalog_snapshot_release(&by_disc);
+        nk_title_catalog_snapshot_release(&by_id);
+        return true;
     }
 
     /* No validated identity: the historic unknown-title diagnostic, unchanged. */
@@ -305,7 +325,10 @@ static const NkTitleEntry *launch_select_entry(const NkGameEntry *game,
                  "No catalog entry describes this title (disc_id=%.16s title_id=%.32s)",
                  game->disc_id, game->title_id);
     }
-    return NULL;
+failed:
+    nk_title_catalog_snapshot_release(&by_disc);
+    nk_title_catalog_snapshot_release(&by_id);
+    return false;
 }
 
 /* The executable's final two path components must BE the selected title's own
@@ -403,11 +426,14 @@ static bool find_candidate_executable(
 bool nk_launch_runtime_available(const char *root, const char *title_id) {
     char resolved[NK_MAX_PATH];
     const char *effective_root = (root && *root) ? root : ".";
-    const NkTitleEntry *entry =
-        (title_id && *title_id) ? nk_title_catalog_find_by_id(title_id) : NULL;
-    if (!entry) return false;
-    return find_candidate_executable(effective_root, entry->game_name, entry->id,
-                                     resolved, sizeof(resolved));
+    NkTitleEntrySnapshot snapshot = {0};
+    bool found = title_id && *title_id &&
+        nk_title_catalog_find_by_id(title_id, &snapshot);
+    bool available = found && find_candidate_executable(
+        effective_root, snapshot.entry.game_name, snapshot.entry.id,
+        resolved, sizeof(resolved));
+    nk_title_catalog_snapshot_release(&snapshot);
+    return available;
 }
 
 NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
@@ -754,14 +780,20 @@ static bool find_candidate_image(
 
 bool nk_launch_runtime_package_available(const char *root, const char *title_id) {
     const char *effective_root = (root && *root) ? root : ".";
-    const NkTitleEntry *entry =
-        (title_id && *title_id) ? nk_title_catalog_find_by_id(title_id) : NULL;
+    NkTitleEntrySnapshot snapshot = {0};
+    bool found = title_id && *title_id &&
+        nk_title_catalog_find_by_id(title_id, &snapshot);
+    const NkTitleEntry *entry = found ? &snapshot.entry : NULL;
     if (!entry || !entry->id || !*entry->id ||
-        !entry->primary_disc_id || !*entry->primary_disc_id) return false;
+        !entry->primary_disc_id || !*entry->primary_disc_id) {
+        nk_title_catalog_snapshot_release(&snapshot);
+        return false;
+    }
     NkGameEntry game;
     memset(&game, 0, sizeof(game));
     snprintf(game.disc_id, sizeof(game.disc_id), "%s", entry->primary_disc_id);
     snprintf(game.title_id, sizeof(game.title_id), "%s", entry->id);
+    nk_title_catalog_snapshot_release(&snapshot);
     return nk_launch_validate_runtime_package(
         effective_root, &game, NULL, NULL, 0
     ) == NK_RUNTIME_PACKAGE_OK;
@@ -901,27 +933,28 @@ NkResult nk_launch_prepare_session(
     /* Catalog identities remain tied to the generated catalog. Experimental
        entries use their validated private profile's generic manifest. */
     char identity_error[512] = "";
-    NkTitleEntry experimental_entry;
-    const NkTitleEntry *entry = NULL;
+    NkTitleEntrySnapshot title_snapshot = {0};
     if (game->is_experimental) {
         char profile_hash[65];
         if (!nk_title_manifest_read_experimental_profile(
                 root, game->disc_id, game->title_id, game->selected_executable,
-                &experimental_entry, profile_hash, identity_error,
+                &title_snapshot, profile_hash, identity_error,
                 sizeof(identity_error))) {
+            nk_title_catalog_snapshot_release(&title_snapshot);
             snprintf(session->last_error, sizeof(session->last_error), "%s",
                      identity_error[0] ? identity_error : "Experimental profile is invalid.");
             return NK_ERROR_UNSUPPORTED_TITLE;
         }
-        entry = &experimental_entry;
     } else {
-        entry = launch_select_entry(game, identity_error, sizeof(identity_error));
+        if (!launch_select_entry(game, &title_snapshot, identity_error,
+                                 sizeof(identity_error))) {
+            nk_title_catalog_snapshot_release(&title_snapshot);
+            snprintf(session->last_error, sizeof(session->last_error), "%s",
+                     identity_error);
+            return NK_ERROR_UNSUPPORTED_TITLE;
+        }
     }
-    if (!entry) {
-        snprintf(session->last_error, sizeof(session->last_error), "%s",
-                 identity_error);
-        return NK_ERROR_UNSUPPORTED_TITLE;
-    }
+    const NkTitleEntry *entry = &title_snapshot.entry;
     const char *game_name = entry->game_name;
 
     /* Catalogued developer layouts remain available to direct launch API
@@ -932,6 +965,7 @@ NkResult nk_launch_prepare_session(
         snprintf(session->last_error, sizeof(session->last_error),
                  "Runtime binary not found for title %.64s under root: %.120s",
                  entry->id, root);
+        nk_title_catalog_snapshot_release(&title_snapshot);
         return NK_ERROR_FILE_NOT_FOUND;
     }
     if (!package_valid && !find_candidate_image(session->working_directory,
@@ -941,6 +975,7 @@ NkResult nk_launch_prepare_session(
         snprintf(session->last_error, sizeof(session->last_error),
                  "Runtime image not found for title %.64s under root: %.120s",
                  entry->id, session->working_directory);
+        nk_title_catalog_snapshot_release(&title_snapshot);
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
@@ -969,6 +1004,7 @@ NkResult nk_launch_prepare_session(
             snprintf(session->last_error, sizeof(session->last_error),
                      "Staged title %s has no EBOOT.BIN under prepared_root",
                      session->disc_id);
+            nk_title_catalog_snapshot_release(&title_snapshot);
             return NK_ERROR_FILE_NOT_FOUND;
         }
         char staged_error[256];
@@ -978,6 +1014,7 @@ NkResult nk_launch_prepare_session(
         if (staged_result != NK_OK) {
             snprintf(session->last_error, sizeof(session->last_error), "%s",
                      staged_error[0] ? staged_error : "Staged executable validation failed");
+            nk_title_catalog_snapshot_release(&title_snapshot);
             return staged_result;
         }
         session->staged_executable_checked = true;
@@ -1035,6 +1072,7 @@ NkResult nk_launch_prepare_session(
                                             sizeof(session->loose_content_roots))) {
         snprintf(session->last_error, sizeof(session->last_error),
                  "Loose-content root binding #289 (in the works) could not be resolved.");
+        nk_title_catalog_snapshot_release(&title_snapshot);
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
@@ -1123,6 +1161,7 @@ NkResult nk_launch_prepare_session(
         snprintf(session->last_error, sizeof(session->last_error),
                  "No writable save location: neither the install directory nor the "
                  "per-user save directory could be created or written.");
+        nk_title_catalog_snapshot_release(&title_snapshot);
         return NK_ERROR_IO;
     }
 
@@ -1142,10 +1181,12 @@ NkResult nk_launch_prepare_session(
             session->iso_path[0] = '\0';
         } else {
             snprintf(session->last_error, sizeof(session->last_error), "Game source ISO not found: %.*s", (int)(sizeof(session->last_error) - 30), game->iso_path);
+            nk_title_catalog_snapshot_release(&title_snapshot);
             return NK_ERROR_FILE_NOT_FOUND;
         }
     }
 
+    nk_title_catalog_snapshot_release(&title_snapshot);
     return NK_OK;
 }
 
@@ -1194,11 +1235,15 @@ NkResult nk_launch_start(NkLaunchSession *session) {
                  session->disc_id);
         snprintf(identity.title_id, sizeof(identity.title_id), "%s",
                  session->title_id);
-        const NkTitleEntry *bound_entry = launch_select_entry(
-            &identity, gate_error, sizeof(gate_error));
+        NkTitleEntrySnapshot bound_snapshot = {0};
+        bool bound_found = launch_select_entry(
+            &identity, &bound_snapshot, gate_error, sizeof(gate_error));
+        const NkTitleEntry *bound_entry = bound_found
+            ? &bound_snapshot.entry : NULL;
         if (!bound_entry) {
             snprintf(session->last_error, sizeof(session->last_error), "%s",
                      gate_error);
+            nk_title_catalog_snapshot_release(&bound_snapshot);
             return NK_ERROR_UNSUPPORTED_TITLE;
         }
         if (!launch_executable_bound_to_entry(session->executable_path,
@@ -1207,8 +1252,10 @@ NkResult nk_launch_start(NkLaunchSession *session) {
                      "Resolved executable does not match the selected title "
                      "'%.48s': %.140s",
                      bound_entry->id, session->executable_path);
+            nk_title_catalog_snapshot_release(&bound_snapshot);
             return NK_ERROR_INVALID_EXECUTABLE;
         }
+        nk_title_catalog_snapshot_release(&bound_snapshot);
     }
     }
 

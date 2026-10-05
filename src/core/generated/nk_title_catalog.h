@@ -59,26 +59,37 @@ typedef struct {
     int module_count;
 } NkTitleEntry;
 
+/* An owned title snapshot remains valid across overlay reloads until released. */
+typedef struct {
+    NkTitleEntry entry;
+    void *owned_storage;
+} NkTitleEntrySnapshot;
+
 /* Total public titles in static catalog */
 extern const int nk_title_catalog_count;
 extern const NkTitleEntry nk_title_catalog_entries[];
 
-/* Public lookup functions */
-const NkTitleEntry *nk_title_catalog_find_by_disc_id(const char *disc_id);
-const NkTitleEntry *nk_title_catalog_find_by_id(const char *title_id);
+/* Public lookup functions return owned copies. Release each successful
+ * snapshot with nk_title_catalog_snapshot_release(). */
+bool nk_title_catalog_find_by_disc_id(const char *disc_id, NkTitleEntrySnapshot *out_snapshot);
+bool nk_title_catalog_find_by_id(const char *title_id, NkTitleEntrySnapshot *out_snapshot);
+bool nk_title_catalog_get_overlay(NkTitleEntrySnapshot *out_snapshot);
+bool nk_title_catalog_snapshot_copy_locked(const NkTitleEntry *entry, NkTitleEntrySnapshot *out_snapshot);
+void nk_title_catalog_snapshot_release(NkTitleEntrySnapshot *snapshot);
 
-/* Overlay storage and package-status snapshots share this lock. */
+/* The overlay registry and parser-owned storage share this lock. The
+ * package-validation cache has a separate lock; callers snapshot the
+ * catalog epoch here and pass it by value to that cache. */
 void nk_title_catalog_lock(void);
 void nk_title_catalog_unlock(void);
 uint64_t nk_title_catalog_epoch(void);
 uint64_t nk_title_catalog_epoch_locked(void);
 void nk_title_catalog_advance_epoch_locked(void);
 
-/* Lookup variants for callers that already hold the lock. The overlay
- * registry can be rewritten by the manifest parser on another thread,
- * so a reader must hold nk_title_catalog_lock() for the whole walk. The
- * public find_by_* entry points take the lock themselves; a caller that
- * holds it must use these instead (the lock is not recursive). */
+/* These borrowed-pointer lookup variants require the caller to hold
+ * nk_title_catalog_lock() until every field read is complete. The lock
+ * is not recursive; use the owned snapshot APIs when data must live
+ * beyond the critical section. */
 const NkTitleEntry *nk_title_catalog_find_by_disc_id_locked(const char *disc_id);
 const NkTitleEntry *nk_title_catalog_find_by_id_locked(const char *title_id);
 const NkTitleEntry *nk_title_catalog_get_overlay_locked(void);
@@ -90,15 +101,16 @@ const NkTitleEntry *nk_title_catalog_get_overlay_locked(void);
  * is still refused as colliding with it and the fixed overlay-slot
  * capacity stays consumed. This generated catalog is a standalone data
  * table and must not depend on the parser, so the parser installs this
- * hook when it first stores an overlay. */
-typedef void (*NkOverlayStorageResetFn)(void);
+ * hook when it first stores an overlay. The hook runs while the
+ * non-recursive catalog lock is held, must not call catalog APIs, and
+ * returns true only if it released parser-owned storage. */
+typedef bool (*NkOverlayStorageResetFn)(void);
 void nk_title_catalog_set_overlay_storage_reset(NkOverlayStorageResetFn reset_fn);
 void nk_title_catalog_set_overlay_storage_reset_locked(NkOverlayStorageResetFn reset_fn);
 
 void nk_title_catalog_register_overlay(const NkTitleEntry *overlay_entry);
 void nk_title_catalog_register_overlay_locked(const NkTitleEntry *overlay_entry);
 void nk_title_catalog_clear_overlay(void);
-const NkTitleEntry *nk_title_catalog_get_overlay(void);
 
 
 /* Generic launch-resolution candidate contract (#366).

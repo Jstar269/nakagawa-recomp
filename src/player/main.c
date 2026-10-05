@@ -34,11 +34,22 @@ static bool player_populate_inspected_game(PlayerApp *app, const char *iso_path,
     if (!app || !iso_path || !result) return false;
     GameRecord *game = &app->inspecting_game;
     memset(game, 0, sizeof(*game));
+    const char *title_id_end = memchr(result->matched_title_id, '\0',
+                                      sizeof(result->matched_title_id));
+    if (!title_id_end ||
+        (size_t)(title_id_end - result->matched_title_id) >= sizeof(game->title_id)) {
+        if (error && error_len) {
+            snprintf(error, error_len,
+                     "Inspected catalog title ID exceeds the player identity limit.");
+        }
+        return false;
+    }
     snprintf(game->disc_id, sizeof(game->disc_id), "%s", result->disc_id);
     snprintf(game->title_name, sizeof(game->title_name), "%s", result->title_name);
     snprintf(game->disc_version, sizeof(game->disc_version), "%s", result->disc_version);
     snprintf(game->iso_path, sizeof(game->iso_path), "%s", iso_path);
-    snprintf(game->title_id, sizeof(game->title_id), "%s", result->matched_title_id);
+    memcpy(game->title_id, result->matched_title_id,
+           (size_t)(title_id_end - result->matched_title_id) + 1);
     game->iso_size_bytes = result->file_size;
     game->status = (NkGameSupportStatus)result->status;
     game->executable_eboot_kind = (uint32_t)result->executables.eboot.kind;
@@ -574,7 +585,8 @@ enum {
     PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE = -20261003,
     PLAYER_UI_TEST_ACTION_START_SYNTHETIC_BUILD = -20261004,
     PLAYER_UI_TEST_ACTION_INVALIDATE_AND_START_SYNTHETIC_BUILD = -20261005,
-    PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE = -20261006
+    PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE = -20261006,
+    PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE = -20261007
 };
 
 static unsigned s_ui_test_package_status_thread_create_attempts;
@@ -778,6 +790,11 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         s_ui_test_wait_package_failure_target = (unsigned)target;
         event->type = SDL_EVENT_USER;
         event->user.code = PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE;
+        return 1;
+    }
+    if (strcmp(token, "INVALIDATE_PACKAGE_CACHE") == 0) {
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE;
         return 1;
     }
     if (strcmp(token, "MOUNT_ART_ISO") == 0) {
@@ -1119,7 +1136,6 @@ typedef struct {
     uint64_t cache_generation;
     uint64_t build_session_generation;
     bool force;
-    bool explicit_retry;
     bool prior_status_valid;
     bool prior_identity_valid;
     bool status_unchanged;
@@ -1172,6 +1188,14 @@ static bool player_package_status_push_completion(SDL_Event *event) {
 static int SDLCALL player_package_status_thread_main(void *userdata) {
     PlayerPackageStatusJob *job = (PlayerPackageStatusJob *)userdata;
     if (!job) return 1;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    const char *delay_text = getenv("NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS");
+    if (delay_text && delay_text[0]) {
+        char *end = NULL;
+        unsigned long delay = strtoul(delay_text, &end, 10);
+        if (end && *end == '\0' && delay <= 5000) SDL_Delay((Uint32)delay);
+    }
+#endif
     char default_root[NK_MAX_PATH];
     const char *root = NULL;
     if (player_game_is_showcase(&job->game) && job->showcase_root[0]) {
@@ -1265,12 +1289,16 @@ static void player_package_status_queue_game(PlayerApp *app, int game_index,
                      strcmp(cached->title_id, game->title_id) == 0 &&
                      strcmp(cached->selected_executable,
                             game->selected_executable) == 0;
-    /* A failed worker start is not a package result. Keep it unresolved until
-       an explicit retry or another operation with a fresh validation reason. */
-    if (!force && player_app_runtime_package_worker_start_failed(app, game)) {
-        return;
-    }
-    if (!force && same_game && cached->validation_failed) return;
+    /* Worker creation failures recover on a bounded title-keyed backoff.
+       Explicit retries bypass the deadline; ordinary selection and periodic
+       scans can re-arm only after it expires. */
+    bool worker_start_failed =
+        player_app_runtime_package_worker_start_failed(app, game);
+    bool retry_due = player_app_runtime_package_worker_start_failed_retry_due(
+        app, game, SDL_GetTicks());
+    if (!force && worker_start_failed && !retry_due) return;
+    if (!force && same_game && cached->validation_failed &&
+        !worker_start_failed) return;
     requested[game_index] = true;
     if (force) force_requested[game_index] = true;
     /* A queued-but-not-yet-started title has no status of its own. Claiming it
@@ -1300,6 +1328,7 @@ static bool player_package_status_start_next(
     uint64_t build_check_cache_generation,
     bool *build_check_pending) {
     if (!app || !job_slot || *job_slot) return false;
+    (void)build_check_cache_generation;
     int selected = app->selected_game_index;
     int index = -1;
     if (selected >= 0 && selected < app->game_count && requested[selected]) {
@@ -1325,8 +1354,7 @@ static bool player_package_status_start_next(
         build_check_disc_id &&
         strcmp(build_check_disc_id, job->game.disc_id) == 0 &&
         build_check_session_generation != 0 &&
-        app->build_session.session_generation == build_check_session_generation &&
-        job->cache_generation == build_check_cache_generation) {
+        app->build_session.session_generation == build_check_session_generation) {
         job->build_session_generation = build_check_session_generation;
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -1355,7 +1383,6 @@ static bool player_package_status_start_next(
              app->showcase_root);
     PlayerRuntimePackageCacheEntry *cached =
         &app->runtime_package_cache[index];
-    job->explicit_retry = cached->explicit_retry_pending;
     cached->explicit_retry_pending = false;
     bool same_game = strcmp(cached->disc_id, job->game.disc_id) == 0 &&
                      strcmp(cached->title_id, job->game.title_id) == 0 &&
@@ -1407,7 +1434,8 @@ static bool player_package_status_start_next(
             SDL_DestroySemaphore(job->catalog_test_done);
         }
 #endif
-        player_app_runtime_package_cache_mark_failed(app, index);
+        player_app_runtime_package_cache_mark_failed(app, index,
+                                                     SDL_GetTicks());
         fprintf(stderr,
                 "[PLAYER] Package status for %s is unresolved because its "
                 "worker could not start; use Retry Package Check.\n",
@@ -1474,6 +1502,12 @@ static void player_package_status_finish(PlayerApp *app,
     }
     bool cache_generation_matches =
         job->cache_generation == app->runtime_package_cache_generation;
+    /* Any completed worker result resolves a prior worker-start failure for
+       this title. A stale cache generation requires revalidation, not a
+       permanent failure badge that outranks that later result. */
+    if (current_index >= 0) {
+        player_app_runtime_package_worker_start_failed_clear(app, &job->game);
+    }
     if (current_index >= 0 && cache_generation_matches) {
         if (job->status == NK_RUNTIME_PACKAGE_OK) {
             app->games[current_index].is_prepared = true;
@@ -1490,14 +1524,15 @@ static void player_package_status_finish(PlayerApp *app,
             app, current_index, &job->game, job->identity_valid,
             job->package_identity, job->status, job->runtime_available,
             SDL_GetTicks());
-        if (job->explicit_retry) {
-            player_app_runtime_package_worker_start_failed_clear(
-                app, &job->game);
-        }
         if (job->identity_changed_during_validation) {
             player_package_status_queue_game(app, current_index, true,
                                              requested, force_requested);
         }
+    } else if (current_index >= 0) {
+        /* The worker result belongs to an invalidated cache generation. Its
+           failure side record was cleared above; claim a fresh result now. */
+        player_package_status_queue_game(app, current_index, false,
+                                         requested, force_requested);
     }
 
     /* The finished job owns the build's outcome only when it is still the same
@@ -1506,15 +1541,12 @@ static void player_package_status_finish(PlayerApp *app,
     bool handles_build = build_check_pending && *build_check_pending &&
                          current_index >= 0 && build_check_disc_id &&
                          strcmp(build_check_disc_id, job->game.disc_id) == 0 &&
-                         cache_generation_matches &&
                          build_check_session_generation &&
                          *build_check_session_generation != 0 &&
                          job->build_session_generation ==
                              *build_check_session_generation &&
                          app->build_session.session_generation ==
-                             *build_check_session_generation &&
-                         build_check_cache_generation &&
-                         job->cache_generation == *build_check_cache_generation;
+                             *build_check_session_generation;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (handles_build) {
         printf("[PLAYER_UI_TEST] post_build_validation status=%d reason=%s "
@@ -1543,10 +1575,6 @@ static void player_package_status_finish(PlayerApp *app,
                     app, current_index, &job->game, job->identity_valid,
                     job->package_identity, job->status,
                     job->runtime_available, SDL_GetTicks());
-                if (job->explicit_retry) {
-                    player_app_runtime_package_worker_start_failed_clear(
-                        app, &job->game);
-                }
             }
             player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -1620,48 +1648,60 @@ static bool player_copy_staging_roots(
 ) {
     if (!game || !storage || !roots || !root_count) return false;
     *root_count = 0;
-    const NkTitleEntry *entry = NULL;
-    NkTitleEntry experimental_entry;
     if (game->is_experimental) {
         char user_data_root[NK_MAX_PATH];
         char profile_hash[65];
         char error[256];
+        NkTitleEntrySnapshot snapshot = {0};
         if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root)) ||
             !nk_title_manifest_read_experimental_profile(
                 user_data_root, game->disc_id, game->title_id,
-                game->selected_executable, &experimental_entry,
-                profile_hash, error, sizeof(error))) return false;
-        entry = &experimental_entry;
+                game->selected_executable, &snapshot,
+                profile_hash, error, sizeof(error))) {
+            nk_title_catalog_snapshot_release(&snapshot);
+            return false;
+        }
+        const NkTitleEntry *entry = &snapshot.entry;
+        bool valid = entry->id && strcmp(entry->id, game->title_id) == 0 &&
+            entry->primary_disc_id &&
+            strcmp(entry->primary_disc_id, game->disc_id) == 0 &&
+            entry->loose_content_root_count >= 0 &&
+            entry->loose_content_root_count <= NK_TITLE_MAX_LOOSE_CONTENT_ROOTS &&
+            (entry->loose_content_root_count == 0 || entry->loose_content_roots);
+        for (int i = 0; valid && i < entry->loose_content_root_count; i++) {
+            const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
+            if (!binding->root || strlen(binding->root) >= sizeof(storage[i])) {
+                valid = false;
+                break;
+            }
+            snprintf(storage[i], sizeof(storage[i]), "%s", binding->root);
+            roots[i] = storage[i];
+            (*root_count)++;
+        }
+        nk_title_catalog_snapshot_release(&snapshot);
+        if (!valid) *root_count = 0;
+        return valid;
     }
 
     nk_title_catalog_lock();
-    if (game->is_experimental) {
-        if (!entry->id || strcmp(entry->id, game->title_id) != 0 ||
-            !entry->primary_disc_id ||
-            strcmp(entry->primary_disc_id, game->disc_id) != 0) {
-            nk_title_catalog_unlock();
-            return false;
-        }
-    } else {
-        const NkTitleEntry *by_disc = game->disc_id[0]
-            ? nk_title_catalog_find_by_disc_id_locked(game->disc_id) : NULL;
-        const NkTitleEntry *by_id = game->title_id[0]
-            ? nk_title_catalog_find_by_id_locked(game->title_id) : NULL;
-        if (!by_disc && !by_id) {
-            nk_title_catalog_unlock();
-            return true;
-        }
-        if (by_disc && game->title_id[0] &&
-            (!by_id || strcmp(by_disc->id, by_id->id) != 0)) {
-            nk_title_catalog_unlock();
-            return false;
-        }
-        if (!by_disc) {
-            nk_title_catalog_unlock();
-            return true;
-        }
-        entry = by_disc;
+    const NkTitleEntry *by_disc = game->disc_id[0]
+        ? nk_title_catalog_find_by_disc_id_locked(game->disc_id) : NULL;
+    const NkTitleEntry *by_id = game->title_id[0]
+        ? nk_title_catalog_find_by_id_locked(game->title_id) : NULL;
+    if (!by_disc && !by_id) {
+        nk_title_catalog_unlock();
+        return true;
     }
+    if (by_disc && game->title_id[0] &&
+        (!by_id || strcmp(by_disc->id, by_id->id) != 0)) {
+        nk_title_catalog_unlock();
+        return false;
+    }
+    if (!by_disc) {
+        nk_title_catalog_unlock();
+        return true;
+    }
+    const NkTitleEntry *entry = by_disc;
     if (!entry || entry->loose_content_root_count < 0 ||
         entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
         (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) {
@@ -3292,6 +3332,11 @@ int main(int argc, char *argv[]) {
                            s_ui_test_wait_package_failure_disc,
                            s_ui_test_wait_package_failure_target);
                 } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE) {
+                    player_app_runtime_package_cache_invalidate(&app);
+                    printf("[PLAYER_UI_TEST] invalidate_package_cache generation=%llu\n",
+                           (unsigned long long)app.runtime_package_cache_generation);
+                } else if (scripted_event.type == SDL_EVENT_USER &&
                            scripted_event.user.code == PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO) {
                     bool mounted = player_ui_test_copy_file(
                         ui_test_art_mount_source, ui_test_iso_path);
@@ -3606,13 +3651,10 @@ int main(int argc, char *argv[]) {
              strcmp(build_check_disc_id, app.build_session.disc_id) != 0 ||
              build_check_session_generation == 0 ||
              app.build_session.session_generation !=
-                 build_check_session_generation ||
-             app.runtime_package_cache_generation !=
-                 build_check_cache_generation);
+                 build_check_session_generation);
         if (build_check_identity_changed) {
-            /* A new build session or cache epoch owns this validation.
-               Release the abandoned check latch without changing that
-               title's failed-cache/retry state. */
+            /* Only a different build session or title releases the latch;
+               cache epochs describe status identity, not build identity. */
             build_check_pending = false;
             build_check_disc_id[0] = '\0';
             build_check_session_generation = 0;

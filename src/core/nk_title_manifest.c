@@ -105,9 +105,11 @@ static int s_overlay_slot_count = 0;
    pointer registry. Without it a manifest reusing a cleared overlay's disc ID
    was still refused as colliding with an overlay the caller had cleared, and
    the fixed slot capacity stayed consumed for the life of the process. */
-static void nk_manifest_reset_overlay_storage(void) {
+static bool nk_manifest_reset_overlay_storage(void) {
+    if (!s_overlay_slot_count) return false;
     memset(s_overlay_slots, 0, sizeof(s_overlay_slots));
     s_overlay_slot_count = 0;
+    return true;
 }
 
 static FILE *manifest_fopen(const char *path) {
@@ -1669,6 +1671,10 @@ static bool nk_title_manifest_parse_buffer_locked(
     dest->entry.modules = dest->modules;
     dest->entry.module_count = dest->module_count;
 
+    /* The parser-owned slot may back an entry already present in the catalog.
+       Publish its new contents as a catalog generation before unlocking. */
+    nk_title_catalog_advance_epoch_locked();
+
     if (out_entry) {
         *out_entry = dest->entry;
     }
@@ -1689,7 +1695,6 @@ bool nk_title_manifest_parse_buffer(
     bool ok = nk_title_manifest_parse_buffer_locked(
         json_data, json_len, allow_override, out_entry, error_buf,
         error_buf_len);
-    if (ok) nk_title_catalog_advance_epoch_locked();
     nk_title_catalog_unlock();
     return ok;
 }
@@ -2720,7 +2725,10 @@ static void package_cache_identity_update_file(NkSha256 *ctx,
     }
 }
 
-bool nk_title_manifest_aot_package_cache_identity(
+static bool package_completion_identity(const char *package_root,
+                                        char out_digest[65]);
+
+static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     const char *user_data_root,
     const char *disc_id,
     const char *title_id,
@@ -2728,6 +2736,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     const char *selected_executable,
     const char *current_disc_version,
     uint32_t player_abi_version,
+    uint64_t catalog_epoch,
     char out_identity[65]
 ) {
     if (out_identity) out_identity[0] = '\0';
@@ -2761,7 +2770,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     package_cache_identity_update_text(&identity_ctx, current_disc_version);
     package_identity_update_u64(&identity_ctx, is_experimental ? 1u : 0u);
     package_identity_update_u64(&identity_ctx, player_abi_version);
-    package_identity_update_u64(&identity_ctx, nk_title_catalog_epoch());
+    package_identity_update_u64(&identity_ctx, catalog_epoch);
     package_cache_identity_update_file(&identity_ctx, "package.json", package_path);
     package_cache_identity_update_file(&identity_ctx, "build-report.json", report_path);
     package_cache_identity_update_file(&identity_ctx,
@@ -2808,6 +2817,30 @@ bool nk_title_manifest_aot_package_cache_identity(
                                        executable_relative[0]
                                            ? executable_relative : "executable-unresolved",
                                        executable_path[0] ? executable_path : package_path);
+
+    /* Bind status-cache entries to every completion artifact as well as the
+       completion manifest itself. If a runtime image disappears, the
+       otherwise-stable package/report metadata must not keep the old status. */
+    char completion_digest[65];
+    if (!package_completion_identity(package_root, completion_digest)) return false;
+    package_cache_identity_update_text(&identity_ctx, completion_digest);
+
+    /* The validator also requires the runtime image derived from the
+       executable path, whether or not a future completion schema lists it. */
+    if (!executable_relative[0]) return false;
+    char image_relative[NK_MAX_PATH];
+    const char *extension = strrchr(executable_relative, '.');
+    size_t stem_length = extension && extension != executable_relative
+        ? (size_t)(extension - executable_relative) : strlen(executable_relative);
+    int image_name_length = snprintf(image_relative, sizeof(image_relative),
+                                     "%.*s_image.bin", (int)stem_length,
+                                     executable_relative);
+    char image_path[NK_MAX_PATH * 2];
+    if (image_name_length <= 0 ||
+        (size_t)image_name_length >= sizeof(image_relative) ||
+        !package_direct_file(package_root, image_relative, image_path,
+                             sizeof(image_path))) return false;
+    package_cache_identity_update_file(&identity_ctx, image_relative, image_path);
 
     if (is_experimental) {
         char profile_relative[NK_MAX_DISC_ID_LEN + 64];
@@ -2864,6 +2897,23 @@ bool nk_title_manifest_aot_package_cache_identity(
 
     package_identity_finish(&identity_ctx, out_identity);
     return true;
+}
+
+bool nk_title_manifest_aot_package_cache_identity(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    bool is_experimental,
+    const char *selected_executable,
+    const char *current_disc_version,
+    uint32_t player_abi_version,
+    char out_identity[65]
+) {
+    uint64_t catalog_epoch = nk_title_catalog_epoch();
+    return nk_title_manifest_aot_package_cache_identity_at_epoch(
+        user_data_root, disc_id, title_id, is_experimental,
+        selected_executable, current_disc_version, player_abi_version,
+        catalog_epoch, out_identity);
 }
 
 static void package_identity_update_u64(NkSha256 *ctx, uint64_t value) {
@@ -2974,17 +3024,28 @@ static bool package_validation_cache_get(
         strcmp(cached.status_identity_digest, status_identity_digest) != 0) {
         return false;
     }
-    char identity_digest[65];
-    if (!package_completion_identity(package_root, identity_digest) ||
-        strcmp(identity_digest, cached.identity_digest) != 0) {
+    char identity_digest[65] = "";
+    bool identity_valid = package_completion_identity(package_root,
+                                                      identity_digest);
+    if (!identity_valid || strcmp(identity_digest, cached.identity_digest) != 0) {
         /* The completion this entry was validated against has changed, so the
            entry is no longer a cache hit. Drop it, but only when it is still the
            entry this read observed: a concurrent validation may have replaced
            it with a result for the current completion. */
         package_validation_cache_lock();
-        if (s_package_validation_cache.valid &&
-            strcmp(s_package_validation_cache.identity_digest,
-                   identity_digest) == 0) {
+        PackageValidationCache *current = &s_package_validation_cache;
+        if (current->valid &&
+            current->catalog_epoch == cached.catalog_epoch &&
+            current->player_abi_version == cached.player_abi_version &&
+            strcmp(current->package_root, cached.package_root) == 0 &&
+            strcmp(current->disc_id, cached.disc_id) == 0 &&
+            strcmp(current->title_id, cached.title_id) == 0 &&
+            strcmp(current->current_input_identity_digest,
+                   cached.current_input_identity_digest) == 0 &&
+            strcmp(current->disc_version, cached.disc_version) == 0 &&
+            strcmp(current->status_identity_digest,
+                   cached.status_identity_digest) == 0 &&
+            strcmp(current->identity_digest, cached.identity_digest) == 0) {
             s_package_validation_cache.valid = false;
         }
         package_validation_cache_unlock();
@@ -4001,13 +4062,14 @@ bool nk_title_manifest_read_experimental_profile(
     const char *disc_id,
     const char *title_id,
     const char *selected_executable,
-    NkTitleEntry *out_title,
+    NkTitleEntrySnapshot *out_title,
     char out_executable_sha256[65],
     char *error_buf,
     size_t error_buf_len
 ) {
     if (error_buf && error_buf_len) error_buf[0] = '\0';
-    if (!user_data_root || !*user_data_root || !out_title || !out_executable_sha256) return false;
+    if (out_title) memset(out_title, 0, sizeof(*out_title));
+    if (!user_data_root || !*user_data_root || !out_executable_sha256) return false;
     char normalized[10];
     if (!nk_manifest_normalize_disc_id(disc_id, normalized)) {
         if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental package has an invalid disc ID.");
@@ -4088,7 +4150,14 @@ bool nk_title_manifest_read_experimental_profile(
             strcmp(parsed_title.id, expected_id) == 0 &&
             parsed_title.primary_disc_id &&
             strcmp(parsed_title.primary_disc_id, normalized) == 0;
-        if (matches) *out_title = parsed_title;
+        if (matches && out_title &&
+            !nk_title_catalog_snapshot_copy_locked(&parsed_title, out_title)) {
+            if (error_buf && error_buf_len) {
+                snprintf(error_buf, error_buf_len,
+                         "Unable to allocate an owned snapshot for the experimental profile.");
+            }
+            matches = false;
+        }
         nk_title_catalog_unlock();
         valid = matches;
     }
@@ -4141,6 +4210,9 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     if (is_experimental) {
+        nk_title_catalog_lock();
+        catalog_epoch = nk_title_catalog_epoch_locked();
+        nk_title_catalog_unlock();
         char profile_id[64];
         for (size_t i = 0; i < 9; i++) profile_id[13 + i] = (char)tolower((unsigned char)normalized[i]);
         memcpy(profile_id, "experimental-", 13);
@@ -4188,9 +4260,10 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     }
     char status_identity_digest[65] = "";
     bool status_identity_valid = !is_experimental &&
-        nk_title_manifest_aot_package_cache_identity(
+        nk_title_manifest_aot_package_cache_identity_at_epoch(
             user_data_root, normalized, title_id, false, selected_executable,
-            current_disc_version, player_abi_version, status_identity_digest);
+            current_disc_version, player_abi_version, catalog_epoch,
+            status_identity_digest);
     if (status_identity_valid &&
         package_validation_cache_get(package_root, normalized, title_id,
                                      current_identity_file_digest,
@@ -4263,12 +4336,11 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     }
 
     if (is_experimental) {
-        NkTitleEntry profile_title;
         char profile_hash[65];
         char profile_error[320] = "";
         if (!nk_title_manifest_read_experimental_profile(
                 user_data_root, normalized, title_id, selected_executable,
-                &profile_title, profile_hash, profile_error, sizeof(profile_error))) {
+                NULL, profile_hash, profile_error, sizeof(profile_error))) {
             package_rebuild_reason(reason, reason_size, profile_error,
                                    user_data_root, normalized);
             json_free(package);
@@ -4360,7 +4432,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                 package_validation_cache_put(
                     package_root, normalized, title_id,
                     validated_identity_file_digest, current_disc_version,
-                    player_abi_version, nk_title_catalog_epoch(),
+                    player_abi_version, catalog_epoch,
                     package_identity_digest, status_identity_digest,
                     &resolved_info);
             }

@@ -433,9 +433,10 @@ class NativePlayerUiTests(unittest.TestCase):
             art_mount_source: Path | None = None
             if art_iso is not None:
                 if art_iso == "saturated":
-                    for i in range(64):
-                        synthetic_art_iso(scratch / f"art_{i}.iso", include_picture=True)
-                    ui_iso_path = scratch / "art_%d.iso"
+                    # The cache exerciser appends a per-slot suffix. Keep
+                    # printf tokens in this caller-owned path to prove it is
+                    # always passed as data to a fixed format string.
+                    ui_iso_path = scratch / "art_%s_%p.iso"
                 else:
                     ui_iso_path = scratch / "source-owned-synthetic.iso"
                     synthetic_art_iso(ui_iso_path, include_picture=art_iso != "icon-only")
@@ -736,11 +737,29 @@ class NativePlayerUiTests(unittest.TestCase):
         and the only font/texture teardown. Every exit has to reach it, so the
         launcher never destroys the SDL queue or renderer while a worker is
         still inside it."""
-        run = self.run_player("ready", art_iso="available")
+        run = self.run_player(
+            "ready",
+            art_iso="available",
+            env_extra={"PLAYER_UI_TEST_ART_DELAY_MS": "1000"},
+        )
         shutdown = re.findall(
             r"\[PLAYER_UI_TEST\] font_shutdown art_jobs_drained=(\d+)", run["stdout"]
         )
         self.assertEqual(len(shutdown), 1, run["stdout"])
+        self.assertEqual(shutdown[0], "1", run["stdout"])
+
+    def test_iso_art_failures_reach_a_terminal_state_after_bounded_retries(self) -> None:
+        run = self.run_player(
+            "ready",
+            ("WAIT_ART_ATTEMPT=3", "WAIT_MS=2500"),
+            art_iso="unavailable",
+        )
+        attempts = re.findall(
+            r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
+            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d) wanted=(\d+)",
+            run["stdout"],
+        )
+        self.assertEqual(len(attempts), 3, run["stdout"])
 
     def test_iso_art_retry_rereads_only_the_image_that_is_still_missing(self) -> None:
         """A disc with ICON0.PNG and no PIC1.PNG must not re-read its icon
@@ -844,11 +863,12 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["selected_package_status"], "1")
         self.assertEqual(frames[-1]["package_building"], "0")
 
-    def test_failed_post_build_worker_start_can_retry_to_ready_library(self) -> None:
+    def test_failed_post_build_worker_start_survives_cache_invalidation_and_retries(self) -> None:
         run = self.run_player(
             "ready",
             events=(
                 "WAIT_VIEW=library,5000",
+                "INVALIDATE_PACKAGE_CACHE",
                 "KEY_RETURN",
                 "WAIT_MS=100",
                 "WAIT_VIEW=ready_library,10000",
@@ -869,6 +889,10 @@ class NativePlayerUiTests(unittest.TestCase):
             "[PLAYER_UI_TEST] assert_view result=PASS actual=ready_library",
             run["stdout"],
         )
+        self.assertRegex(
+            run["stdout"],
+            r"\[PLAYER_UI_TEST\] invalidate_package_cache generation=\d+",
+        )
         failed_frames = [frame for frame in frames
                          if frame["selected_package_check_failed"] == "1"]
         self.assertTrue(failed_frames, run["stdout"])
@@ -881,6 +905,58 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertGreaterEqual(
             int(frames[-1]["package_status_thread_attempts"]), 3
         )
+
+    def test_worker_start_failure_automatically_retries_after_bounded_backoff(self) -> None:
+        run = self.run_player(
+            "ready",
+            events=("WAIT_MS=6200",),
+            wait_background=True,
+            env_extra={
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "1"
+            },
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertTrue(
+            any(frame["package_status_thread_attempts"] == "1" and
+                int(frame["ticks_ms"]) < 5000
+                for frame in frames),
+            run["stdout"],
+        )
+        self.assertGreaterEqual(
+            int(frames[-1]["package_status_thread_attempts"]), 2,
+            run["stdout"],
+        )
+        self.assertEqual(frames[-1]["selected_package_check_failed"], "0")
+        self.assertEqual(frames[-1]["selected_package_status"], "1")
+
+    def test_completed_retry_clears_failure_when_cache_generation_changes(self) -> None:
+        run = self.run_player(
+            "ready",
+            events=(
+                "WAIT_MS=100",
+                "KEY_RETURN",
+                "WAIT_MS=100",
+                "INVALIDATE_PACKAGE_CACHE",
+                "WAIT_MS=1700",
+            ),
+            wait_background=True,
+            env_extra={
+                "NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT": "1",
+                "NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "600",
+            },
+        )
+        self.assertIn("[PLAYER_UI_TEST] invalidate_package_cache", run["stdout"])
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertGreaterEqual(
+            int(frames[-1]["package_status_thread_attempts"]), 3,
+            run["stdout"],
+        )
+        self.assertEqual(frames[-1]["selected_package_check_failed"], "0",
+                         run["stdout"])
+        self.assertEqual(frames[-1]["selected_package_status"], "1",
+                         run["stdout"])
 
     def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
         run = self.run_player(
@@ -1079,14 +1155,15 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["selected_package_status"], "4")
         self.assertEqual(frames[-1]["titles_pending"], "0")
 
-    def test_texture_cache_saturation_with_in_flight_jobs_does_not_double_free(
+    def test_texture_cache_saturation_with_in_flight_jobs_does_not_double_free_or_format_percent_tokens(
         self,
     ) -> None:
         """When all 64 texture cache slots have in-flight art jobs, a new
         request must return no slot rather than evicting and freeing a job whose
         completion event is already in the SDL event queue. Evicting the in-flight
         job would cause a use-after-free and double-free when its completion
-        event is subsequently delivered."""
+        event is subsequently delivered. The caller-owned path contains literal
+        %s/%p tokens to catch its accidental use as a printf format string."""
         run = self.run_player(
             "ready",
             ("SATURATE_ART_CACHE",),

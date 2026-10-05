@@ -162,7 +162,10 @@ the developer toolchain remain unbuilt ([#295](https://github.com/Jstar269/nakag
    Otherwise it shows *"REBUILD PACKAGE"* for a stale package, *"BUILD
    PACKAGE"* for a missing one, a `PACKAGE INCOMPATIBLE` status for an
    incompatible one, `RUNTIME REQUIRED` for a staged entry with no runnable
-   runtime, and `PREPARATION UNAVAILABLE` when nothing is staged.
+   runtime, and `PREPARATION UNAVAILABLE` when nothing is staged. A package
+   status worker that cannot start shows `PACKAGE CHECK FAILED` and offers
+   `RETRY PACKAGE CHECK`; ordinary background rescans retry that failure only
+   after a bounded backoff.
 
 ---
 
