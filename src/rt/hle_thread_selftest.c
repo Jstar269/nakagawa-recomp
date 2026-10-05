@@ -19348,8 +19348,21 @@ static intptr_t exit_game_spawn_child(const char *self) {
                         &startup, &child)) {
         return -1;
     }
-    WaitForSingleObject(child.hProcess, INFINITE);
-    GetExitCodeProcess(child.hProcess, &status);
+    /* Both calls can fail, and a failure must not be mistaken for an exit
+       status: the caller's first assertion is `rc != -1`, and returning 0
+       here would let it read as a clean child run. WAIT_FAILED means the
+       handle wait did not happen; a failed GetExitCodeProcess leaves *status*
+       at its STILL_ACTIVE initial value. */
+    if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
+    if (!GetExitCodeProcess(child.hProcess, &status)) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
     CloseHandle(child.hThread);
     CloseHandle(child.hProcess);
     return (intptr_t)status;
