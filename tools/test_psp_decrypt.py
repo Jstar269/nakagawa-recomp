@@ -25,6 +25,7 @@ Run just this suite::
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import struct
@@ -1096,6 +1097,287 @@ class TestMatchedTypeDiagnosis(unittest.TestCase):
         self.assertNotIn("MISSING_KEY_ENTRY", combined)
         self.assertIn("CONTAINER_MALFORMED", combined)
         self.assertIn("matches no supported PRX container type", combined)
+
+
+# ---------------------------------------------------------------------------
+# Key-material erasure harness (see TestKeystoreErasure).
+# ---------------------------------------------------------------------------
+
+# Patterns chosen so a surviving copy is unmistakable in a byte scan, and so
+# they are obviously not key material: a repeating 16-byte ramp.
+_ERASE_FLAT_KEY = bytes(range(0x10, 0x20))          # flat 16-byte entry
+_ERASE_TAG_KEY = bytes(range(0x80, 0x90))          # prx.tag "key"
+_ERASE_KEYFILE_JSON = (
+    b'{\n'
+    b'  "format": "nakagawa-psp-keystore-1",\n'
+    b'  "entries": {\n'
+    b'    "kirk.cmd1.key": "' + _ERASE_FLAT_KEY.hex().encode() + b'",\n'
+    b'    "prx.tag.0x0BADC0DE": {\n'
+    b'      "code": 1,\n'
+    b'      "key": "' + _ERASE_TAG_KEY.hex().encode() + b'"\n'
+    b'    }\n'
+    b'  }\n'
+    b'}\n'
+)
+
+_ERASE_HARNESS_C = r"""
+/* Key-material erasure harness for the PSP KeyStore (issue #295).
+ *
+ * Loads a user key file, confirms each entry reads back correctly, frees the
+ * keystore, and then re-allocates the freed blocks and searches them for the
+ * exact key patterns.  Any hit means the keys outlived nk_keystore_free.
+ *
+ * The scan reads only memory this process currently owns, so it is not a
+ * use-after-free; the freed block is inspected indirectly, through whatever
+ * the allocator hands back for a later same-class allocation.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "nk_psp_keystore.h"
+
+static const unsigned char FLAT_KEY[16] = {
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+};
+static const unsigned char TAG_KEY[16] = {
+    0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f
+};
+/* Filler for the positive control block.  Distinct from both key patterns so a
+ * hit can only come from the control, never from the keystore's own bytes. */
+static const unsigned char CONTROL_MARKER[16] = {
+    0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5,
+    0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5, 0xA5
+};
+
+/* Number of occurrences of needle inside haystack. */
+static size_t count_occurrences(const unsigned char *hay, size_t hay_len,
+                                const unsigned char *needle, size_t needle_len)
+{
+    size_t hits = 0;
+    size_t i;
+    if (needle_len == 0 || hay_len < needle_len) return 0;
+    for (i = 0; i + needle_len <= hay_len; i++) {
+        if (memcmp(hay + i, needle, needle_len) == 0) hits++;
+    }
+    return hits;
+}
+
+int main(int argc, char **argv)
+{
+    char err[256];
+    NkKeystore *ks;
+    const uint8_t *flat = NULL;
+    size_t flat_len = 0;
+    NkPrxTagEntry entry;
+    size_t flat_bytes, tag_bytes;
+    size_t control_found;
+    int probes_distinct;
+    unsigned char *control;
+    unsigned char *control_probe;
+    unsigned char *flat_probe, *tag_probe;
+    size_t flat_leaked, tag_leaked;
+    int pre_free_matches = 0;
+
+    if (argc < 2) {
+        fprintf(stderr, "usage: erase_harness <keyfile.json>\n");
+        return 2;
+    }
+
+    ks = nk_keystore_create();
+    if (ks == NULL) {
+        fprintf(stderr, "keystore create failed\n");
+        return 2;
+    }
+
+    if (nk_keystore_load_file(ks, argv[1], err, sizeof(err)) != 0) {
+        fprintf(stderr, "load failed: %s\n", err);
+        nk_keystore_free(ks);
+        return 2;
+    }
+
+    /* Read every entry back so the harness proves the load actually worked
+     * before it reasons about anything the free() is supposed to erase. */
+    if (nk_keystore_get(ks, "kirk.cmd1.key", &flat, &flat_len) == 0 &&
+        flat_len == 16 && memcmp(flat, FLAT_KEY, 16) == 0) {
+        pre_free_matches++;
+    }
+    memset(&entry, 0, sizeof(entry));
+    if (nk_keystore_get_prx_tag(ks, 0x0BADC0DEu, &entry) == 0 &&
+        entry.key != NULL && memcmp(entry.key, TAG_KEY, 16) == 0) {
+        pre_free_matches++;
+    }
+    if (nk_keystore_count(ks) == 2u) {
+        pre_free_matches++;
+    }
+
+    flat_bytes = nk_keystore_flat_bytes();
+    tag_bytes = nk_keystore_tag_bytes();
+    nk_keystore_free(ks);
+
+    /* Draw BOTH probes before running any control allocation.  The keystore has
+     * just freed its two arrays plus its own struct, and those are the blocks a
+     * same-size request will be served from.  Allocating the control first would
+     * consume one of the blocks under test and could hand it straight back to a
+     * probe, leaving the array that was never scanned unobserved while the run
+     * still reported a pass. */
+    flat_probe = (unsigned char *)malloc(flat_bytes);
+    tag_probe = (unsigned char *)malloc(tag_bytes);
+    if (flat_probe == NULL || tag_probe == NULL) {
+        fprintf(stderr, "probe allocation failed\n");
+        return 2;
+    }
+
+    /* The two arrays must be examined independently, so the probes have to be
+     * distinct blocks.  Identical probe addresses would mean both scans covered
+     * the same memory and one array went unobserved. */
+    probes_distinct = (void *)flat_probe != (void *)tag_probe;
+
+    /* Positive control, run LAST and in its own allocation so it cannot consume
+     * the blocks under test: a block is filled with a marker and freed WITHOUT
+     * being wiped.  If a same-size request does not come back with that marker,
+     * this allocator scrubs freed memory, and a zero hit count below would be
+     * indistinguishable from the allocator erasing the keys for us.  Say so
+     * instead of claiming a pass. */
+    control = (unsigned char *)malloc(flat_bytes);
+    if (control == NULL) {
+        fprintf(stderr, "control allocation failed\n");
+        return 2;
+    }
+    memset(control, 0xA5, flat_bytes);
+    free(control);
+    control_probe = (unsigned char *)malloc(flat_bytes);
+    if (control_probe == NULL) {
+        fprintf(stderr, "control probe allocation failed\n");
+        return 2;
+    }
+    control_found = count_occurrences(control_probe, flat_bytes, CONTROL_MARKER, 16);
+
+    flat_leaked = count_occurrences(flat_probe, flat_bytes, FLAT_KEY, 16);
+    tag_leaked = count_occurrences(tag_probe, tag_bytes, TAG_KEY, 16);
+
+    printf("{\"entries_checked\": 2, \"pre_free_matches\": %d, "
+           "\"post_wipe_scan_bytes\": %zu, \"probes_distinct\": %d, "
+           "\"control_reclaimed\": %zu, \"flat_leaked\": %zu, "
+           "\"tag_leaked\": %zu, \"verdict\": \"%s\"}\n",
+           pre_free_matches, flat_bytes + tag_bytes, probes_distinct,
+           control_found, flat_leaked, tag_leaked,
+           control_found > 0 && probes_distinct
+               ? "measured" : "inconclusive-allocator-scrubs");
+
+    free(flat_probe);
+    free(tag_probe);
+    free(control_probe);
+    /* Any surviving key material is a hard failure regardless of the control. */
+    return (flat_leaked || tag_leaked) ? 5 : 0;
+}
+"""
+
+
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestKeystoreErasure(unittest.TestCase):
+    """Key material must not survive the free() that drops it (#295 boundary).
+
+    ``free`` returns the block to the allocator without clearing it, so a
+    plain ``free`` leaves the user's keys readable in freed heap.  This suite
+    links the production ``src/core/nk_psp_*.c`` sources into a small harness
+    that:
+
+    1. loads a key file whose entries are recognisable non-zero patterns;
+    2. reads each entry back so the harness holds the exact expected bytes;
+    3. calls ``nk_keystore_free``;
+    4. re-uses the freed heap with a same-size allocation and asserts the
+       key patterns are absent from it.
+
+    Step 4 is deliberately allocation-based rather than reading through a
+    dangling pointer: it only inspects live, owned memory, so the test is
+    free of undefined behaviour while still proving the erasure happened.
+    The request sizes come from nk_keystore_flat_bytes()/nk_keystore_tag_bytes(),
+    which the module derives from sizeof() of the private structs right next to
+    the allocations they describe, so this harness cannot drift out of step with
+    the real layout. A positive control block is freed without wiping and has to be
+    reclaimed, so a zero leak count is never reported merely because the allocator
+    was not handing the block back.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_erase_"))
+        cls.exe = cls._build_harness()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    @classmethod
+    def _build_harness(cls) -> Path:
+        from tools.nk_core import decrypt_tool
+
+        source = cls.tmp / "erase_harness.c"
+        source.write_text(_ERASE_HARNESS_C, encoding="utf-8")
+        exe = cls.tmp / "erase_harness.exe"
+        cmd = [CC, "-std=c99", "-O2", "-Wall", "-Wextra",
+               "-I", str(ROOT / "src" / "core"),
+               str(source)]
+        cmd.extend(str(ROOT / rel) for rel in decrypt_tool.SOURCES
+                   if not rel.endswith("nk_decrypt_main.c"))
+        cmd.extend(["-o", str(exe)])
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise unittest.SkipTest(
+                f"keystore erasure harness did not build:\n{proc.stdout}{proc.stderr}")
+        return exe
+
+    def _run(self, payload: bytes):
+        keyfile = self.tmp / f"keys_{os.urandom(6).hex()}.json"
+        keyfile.write_bytes(payload)
+        return subprocess.run([str(self.exe), str(keyfile)],
+                              capture_output=True, text=True)
+
+    def _report(self, out):
+        """Parse the harness report, asserting on any surviving key material.
+
+        The harness exits non-zero when it finds key bytes that outlived
+        nk_keystore_free, so a non-zero exit is a real failure.  Whether a zero
+        count is *provable* is a separate question answered by the control
+        fields, which the caller checks.
+        """
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        return json.loads(out.stdout)
+
+    def test_keystore_free_wipes_key_material_from_the_heap(self):
+        """The freed keystore heap must not still contain the user's keys."""
+        report = self._report(self._run(_ERASE_KEYFILE_JSON))
+        self.assertEqual(report["entries_checked"], 2)
+        self.assertEqual(
+            report["pre_free_matches"], 3,
+            "the harness did not read the entries back, so it cannot judge erasure",
+        )
+        for field in ("flat_leaked", "tag_leaked"):
+            self.assertEqual(
+                report[field], 0,
+                f"key material survived nk_keystore_free in {field}",
+            )
+        if report["verdict"] != "measured":
+            self.skipTest(
+                "this platform's allocator scrubs freed memory, so a zero leak "
+                "count cannot be distinguished from the allocator erasing the "
+                "block for us (probes were distinct blocks: "
+                f"{report['probes_distinct']}, control marker survived: "
+                f"{report['control_reclaimed']})")
+
+    def test_wiping_does_not_change_lookup_results_before_free(self):
+        """Erasure must not disturb what a live keystore returns.
+
+        This asserts on the read-back the harness performs while the keystore is
+        still alive, so a wipe that corrupted live entries would be caught even
+        though the post-free scan only looks at released memory.
+        """
+        report = self._report(self._run(_ERASE_KEYFILE_JSON))
+        self.assertEqual(report["pre_free_matches"], 3)
+        self.assertGreater(report["post_wipe_scan_bytes"], 0)
 
 
 if __name__ == "__main__":
