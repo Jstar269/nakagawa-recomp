@@ -722,11 +722,13 @@ static void repeat_launch_and_settle(PlayerApp *app, int game_index,
     assert(strcmp(app->last_error.error_code, error_before) == 0);
 }
 
-/* Catalog-epoch coherence probe (#670). The checkpoint runs inside
+/* Catalog-epoch coherence probe (#670). Built only with the test seam macro,
+ * like the SR_CD_TEST_HOOKS selftests. The checkpoint runs inside
  * nk_title_manifest_validate_aot_package at the package-validation cache
  * publication point, so the forced catalog reload is deterministic rather than
  * timing-dependent: it cannot land before the epoch snapshot or after the
  * cache insertion, only exactly between them. */
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
 static uint64_t s_epoch_publication_before = 0;
 static uint64_t s_epoch_publication_after = 0;
 
@@ -736,6 +738,7 @@ static void force_catalog_reload_at_publication(void *ctx) {
     nk_title_catalog_clear_overlay();
     s_epoch_publication_after = nk_title_catalog_epoch();
 }
+#endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
@@ -2480,24 +2483,33 @@ int main(int argc, char **argv) {
         remove(image);
     }
 
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
     {
         /* 19b. One catalog epoch across package validation and its cache
          * identity (#670).
          *
-         * validate_aot_package() snapshots the catalog epoch once, under the
-         * catalog lock, and that one snapshot must describe the identity
-         * digest, the cache lookup, and the insertion. A catalog clear/reload
-         * landing between the snapshot and the publication used to be absorbed
-         * into the published entry: the entry was stamped with the snapshot
-         * epoch while its identity digest was recomputed by a helper that
-         * sampled the epoch again.
+         * This is a deterministic interposition test, NOT a concurrency stress
+         * test. The defect it pins is a sequence defect, not a race in the
+         * memory-model sense: validate_aot_package() reads the catalog epoch
+         * once for the lookup and then read it a second time when it published,
+         * so a reload interleaved anywhere between those two reads produced an
+         * entry stamped with one epoch whose status identity digest belonged to
+         * another. A real concurrent reload can only land somewhere in that
+         * window; the seam puts it at the exact publication point, which is the
+         * strongest placement, and does so on every run.
          *
-         * The checkpoint below forces exactly that interleaving, and the
-         * assertions are coherence assertions, not timing ones: the epoch
-         * really advanced, the digest really is epoch-sensitive, and the entry
-         * that was published carries both the snapshot epoch and the digest
-         * computed under that epoch. The final validation proves the
-         * superseded entry cannot be served. */
+         * That is why the assertions below are sufficient and provable rather
+         * than probabilistic: the epoch provably advanced between the snapshot
+         * and the publication, the digest provably is epoch-sensitive, and the
+         * published entry therefore either carries the snapshot epoch with its
+         * own epoch's digest (correct) or mixes the two (the defect). No
+         * scheduling, sleep, or repetition is involved, and the test cannot
+         * pass by luck.
+         *
+         * Concurrent clear/reparse coverage lives separately in the SDL3-gated
+         * player UI regression
+         * (test_player_ui.py::test_package_status_worker_and_catalog_reload_do_not_deadlock_or_corrupt_status,
+         * 128 reloads against the status worker); it is not duplicated here. */
         printf("[PLAYER_STATE_TEST] Subtest 19b: single catalog epoch across validation and cache publication\n");
         fflush(stdout);
 
@@ -2524,9 +2536,10 @@ int main(int argc, char **argv) {
         snprintf(epoch_game.selected_executable,
                  sizeof(epoch_game.selected_executable), "EBOOT.BIN");
 
-        /* Registering an overlay installs the catalog's storage-reset callback,
-           so clearing through the catalog advances the published epoch exactly
-           as a real title-manifest reload does. */
+        /* A real title-manifest reload: load the overlay from disk, which
+           registers it in the catalog and installs the parser's storage-reset
+           callback. Registration is asserted below, so the checkpoint really
+           clears a registered overlay rather than an empty registry. */
         static const char epoch_overlay_json[] =
             "{\n"
             "  \"schema_version\": 1,\n"
@@ -2541,12 +2554,21 @@ int main(int argc, char **argv) {
             "  \"feature_requirements\": [\"allegrex\"],\n"
             "  \"verification_profile\": \"smoke\"\n"
             "}\n";
-        NkTitleEntry epoch_overlay_entry;
+        char epoch_overlay_path[768];
         char epoch_overlay_error[512];
-        assert(nk_title_manifest_parse_buffer(
-                   epoch_overlay_json, strlen(epoch_overlay_json), false,
-                   &epoch_overlay_entry, epoch_overlay_error,
-                   sizeof(epoch_overlay_error)));
+        snprintf(epoch_overlay_path, sizeof(epoch_overlay_path),
+                 "%s%cepoch-coherence-overlay.json", epoch_root,
+                 nk_platform_path_separator());
+        write_text_file(epoch_overlay_path, epoch_overlay_json);
+        assert(nk_title_manifest_load_overlay(epoch_overlay_path,
+                                              epoch_overlay_error,
+                                              sizeof(epoch_overlay_error)));
+
+        /* The reload target is genuinely registered: the catalog resolves it. */
+        NkTitleEntrySnapshot epoch_registered = {0};
+        assert(nk_title_catalog_find_by_id("epoch-coherence-overlay",
+                                           &epoch_registered));
+        nk_title_catalog_snapshot_release(&epoch_registered);
         uint64_t const epoch_at_snapshot = nk_title_catalog_epoch();
 
         char identity_at_snapshot[65];
@@ -2571,6 +2593,12 @@ int main(int argc, char **argv) {
         assert(s_epoch_publication_before == epoch_at_snapshot);
         assert(s_epoch_publication_after > s_epoch_publication_before);
 
+        /* The clear that advanced the epoch removed a registered overlay, so
+           the epoch change under test is the one a real reload publishes. */
+        NkTitleEntrySnapshot epoch_cleared = {0};
+        assert(!nk_title_catalog_find_by_id("epoch-coherence-overlay",
+                                            &epoch_cleared));
+
         char identity_after_reload[65];
         assert(nk_launch_runtime_package_cache_identity(
             epoch_root, &epoch_game, identity_after_reload));
@@ -2593,6 +2621,10 @@ int main(int argc, char **argv) {
 
         nk_title_catalog_clear_overlay();
     }
+#else
+    printf("[PLAYER_STATE_TEST] Subtest 19b SKIPPED: built without "
+           "NK_TITLE_MANIFEST_TEST_SEAMS\n");
+#endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
     /* 20. A prepared package launched TWICE through the player-owned session
      * path (#511).

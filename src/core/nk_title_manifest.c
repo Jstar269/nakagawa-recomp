@@ -2684,13 +2684,17 @@ static void package_validation_cache_unlock(void) {
 }
 #endif
 
-/* White-box seams (#670). Production never installs a checkpoint. A native
-   regression installs one so a catalog clear/reload lands deterministically at
-   the cache publication point, and then reads back what was actually
-   published: which catalog epoch the entry is stamped with, and the status
-   identity digest it carries. Without the read-back the coherence of a
-   published entry (stamp epoch == digest epoch) is not observable, because the
-   epoch field alone already makes a mixed entry unservable. */
+/* White-box seams (#670), compiled only into a test build that defines
+   NK_TITLE_MANIFEST_TEST_SEAMS (the player-state test binary), the same shape
+   as SR_CD_TEST_HOOKS and SR_PROFILER_SELFTEST. Production builds contain no
+   seam storage, no setter, and no branch at the publication point. A test
+   installs a checkpoint so a catalog clear/reload lands deterministically at
+   the cache publication point, then reads back what was actually published:
+   which catalog epoch the entry is stamped with and the status identity digest
+   it carries. Without the read-back the coherence of a published entry (stamp
+   epoch == digest epoch) is not observable, because the epoch field alone
+   already makes a mixed entry unservable. */
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
 typedef void (*NkPackageValidationCheckpointFn)(void *ctx);
 static NkPackageValidationCheckpointFn s_package_validation_checkpoint = NULL;
 static void *s_package_validation_checkpoint_ctx = NULL;
@@ -2715,6 +2719,7 @@ bool nk_title_manifest_test_package_cache_entry(uint64_t *out_catalog_epoch,
     package_validation_cache_unlock();
     return valid;
 }
+#endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
 static bool package_file_identity(const char *path, PackageFileIdentity *identity) {
     if (!path || !identity) return false;
@@ -4461,9 +4466,11 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                gets published next to `catalog_epoch`, so it has to be computed
                at the snapshot epoch rather than re-sampling the catalog. The
                checkpoint is NULL in production. */
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
             if (s_package_validation_checkpoint) {
                 s_package_validation_checkpoint(s_package_validation_checkpoint_ctx);
             }
+#endif
             char status_identity_digest[65] = "";
             if (nk_title_manifest_aot_package_cache_identity_at_epoch(
                     user_data_root, normalized, title_id, false,
