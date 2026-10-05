@@ -89,6 +89,35 @@ typedef enum {
 } PlayerCloseDecision;
 
 typedef struct {
+    bool status_valid;
+    bool identity_valid;
+    bool validation_pending;
+    bool validation_failed;
+    bool explicit_retry_pending;
+    bool runtime_available;
+    char disc_id[MAX_DISC_ID_LEN];
+    char title_id[64];
+    char selected_executable[MAX_PATH_LEN];
+    char package_identity[65];
+    NkRuntimePackageStatus status;
+    uint64_t last_checked_ms;
+} PlayerRuntimePackageCacheEntry;
+
+/* A worker-create failure has no validator result to keep in the cache. Keep
+ * that unresolved state in a bounded, title-keyed side record so a successful
+ * validation of another title can invalidate the cache without making this
+ * title look like MISSING. The key includes the selected executable because a
+ * title may legitimately switch between EBOOT.BIN and a fallback. */
+typedef struct {
+    bool valid;
+    char disc_id[MAX_DISC_ID_LEN];
+    char title_id[64];
+    char selected_executable[MAX_PATH_LEN];
+    uint32_t failure_count;
+    uint64_t retry_after_ms;
+} PlayerRuntimePackageWorkerFailure;
+
+typedef struct {
     PlayerPrepStage stage;
     char operation[64];
     char current_item[128];
@@ -218,6 +247,9 @@ typedef struct {
 typedef struct {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
+    PlayerRuntimePackageCacheEntry runtime_package_cache[MAX_LIBRARY_GAMES];
+    PlayerRuntimePackageWorkerFailure runtime_package_worker_failures[MAX_LIBRARY_GAMES];
+    uint64_t runtime_package_cache_generation;
     int game_count;
     int selected_game_index;
     GameRecord inspecting_game;
@@ -262,6 +294,9 @@ typedef struct {
        renderer has no SDL_Window and must stay free of platform dialog calls,
        so it raises this and the event loop in main.c consumes it. */
     bool request_file_picker;
+    /* The library card requests a package-status worker retry through this
+       flag; worker creation and queue ownership stay on the main event loop. */
+    bool request_package_status_retry;
 
     /* Index of the leftmost visible card in the library strip. The strip
        lays cards out horizontally and a 1280-wide window fits about four, so
@@ -335,6 +370,37 @@ NkRuntimePackageStatus player_app_validate_runtime_package(
     size_t reason_size
 );
 bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game);
+NkRuntimePackageStatus player_app_cached_runtime_package_status(
+    const PlayerApp *app, const GameRecord *game);
+bool player_app_cached_game_has_runtime(const PlayerApp *app,
+                                        const GameRecord *game);
+bool player_app_runtime_package_check_pending(const PlayerApp *app,
+                                               const GameRecord *game);
+bool player_app_runtime_package_check_failed(const PlayerApp *app,
+                                              const GameRecord *game);
+bool player_app_runtime_package_worker_start_failed(const PlayerApp *app,
+                                                     const GameRecord *game);
+bool player_app_runtime_package_worker_start_failed_retry_due(
+    const PlayerApp *app, const GameRecord *game, uint64_t now_ms);
+void player_app_runtime_package_worker_start_failed_record(
+    PlayerApp *app, const GameRecord *game, uint64_t now_ms);
+void player_app_runtime_package_worker_start_failed_clear(
+    PlayerApp *app, const GameRecord *game);
+void player_app_runtime_package_cache_mark_explicit_retry(PlayerApp *app,
+                                                          int game_index);
+void player_app_runtime_package_cache_mark_failed(PlayerApp *app,
+                                                  int game_index,
+                                                  uint64_t now_ms);
+void player_app_runtime_package_cache_invalidate(PlayerApp *app);
+void player_app_runtime_package_cache_mark_pending(PlayerApp *app, int game_index);
+void player_app_runtime_package_cache_store(
+    PlayerApp *app, int game_index, const GameRecord *game,
+    bool identity_valid, const char *package_identity,
+    NkRuntimePackageStatus status, bool runtime_available,
+    uint64_t checked_ms);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+uint64_t player_app_ui_test_validation_calls(void);
+#endif
 
 #define NK_PLAYER_SETTINGS_SCHEMA_VERSION 1
 

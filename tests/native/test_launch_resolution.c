@@ -43,6 +43,12 @@
 #define test_rmdir rmdir
 #endif
 
+static const NkTitleEntry *lookup_title_snapshot(
+    const char *title_id, NkTitleEntrySnapshot *snapshot) {
+    return snapshot && nk_title_catalog_find_by_id(title_id, snapshot)
+        ? &snapshot->entry : NULL;
+}
+
 static void write_file(const char *path, const char *data) {
     FILE *f = fopen(path, "wb");
     assert(f != NULL);
@@ -598,11 +604,13 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
     snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN", root, sep);
     /* The staged image is validated against the selected title's own catalog
      * addresses, so it is written at that title's declared base/entry. */
-    const NkTitleEntry *unicode_entry =
-        nk_title_catalog_find_by_id(unicode_game.title_id);
+    NkTitleEntrySnapshot unicode_entry_snapshot = {0};
+    const NkTitleEntry *unicode_entry = lookup_title_snapshot(
+        unicode_game.title_id, &unicode_entry_snapshot);
     assert(unicode_entry != NULL);
     write_valid_elf(staged_eboot, unicode_entry->executable_base,
                     unicode_entry->run_entry);
+    nk_title_catalog_snapshot_release(&unicode_entry_snapshot);
 
     NkResult unicode_result =
         nk_launch_prepare_session(&unicode_session, &unicode_game, root);
@@ -859,8 +867,10 @@ int main(int argc, char **argv) {
     /* The addresses must come from the catalog, not from a constant. */
     assert(session.base_address == 0x08810000u);
     assert(session.entry_point == 0x08810000u);
-    assert(strcmp(nk_title_catalog_find_by_id("display-smoke-v1")->game_name,
-                  "display-smoke") == 0);
+    NkTitleEntrySnapshot display_snapshot = {0};
+    assert(lookup_title_snapshot("display-smoke-v1", &display_snapshot));
+    assert(strcmp(display_snapshot.entry.game_name, "display-smoke") == 0);
+    nk_title_catalog_snapshot_release(&display_snapshot);
 
     /* 6. A manifest may choose a build name that is different from its
      * versioned title id. The parser must retain it and launch discovery must
@@ -908,7 +918,9 @@ int main(int argc, char **argv) {
     char custom_error[512];
     assert(nk_title_manifest_load_overlay_ext(custom_manifest, false,
                                               custom_error, sizeof(custom_error)));
-    const NkTitleEntry *custom_entry = nk_title_catalog_find_by_id("launch-name-test-v1");
+    NkTitleEntrySnapshot custom_snapshot = {0};
+    const NkTitleEntry *custom_entry = lookup_title_snapshot(
+        "launch-name-test-v1", &custom_snapshot);
     assert(custom_entry != NULL);
     assert(strcmp(custom_entry->game_name, "custom-launch") == 0);
     make_game(&game, iso_path);
@@ -923,6 +935,7 @@ int main(int argc, char **argv) {
     assert(strstr(session.loose_content_roots, "custom-root-a\tdata\t10\t0\t0\n") != NULL);
     assert(strstr(session.loose_content_roots, "custom-root-b\tdata\t20\t0\t0\n") != NULL);
     nk_title_catalog_clear_overlay();
+    nk_title_catalog_snapshot_release(&custom_snapshot);
     remove(custom_exe);
     remove(custom_img);
     remove(custom_manifest);
@@ -943,7 +956,9 @@ int main(int argc, char **argv) {
     char staged_data_relative[NK_MAX_PATH];
     snprintf(staged_root, sizeof(staged_root), "%s%cstaged-game", base, sep);
     snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN", staged_root, sep);
-    const NkTitleEntry *staged_entry = nk_title_catalog_find_by_id("display-smoke-v1");
+    NkTitleEntrySnapshot staged_snapshot = {0};
+    const NkTitleEntry *staged_entry = lookup_title_snapshot(
+        "display-smoke-v1", &staged_snapshot);
     assert(staged_entry != NULL && staged_entry->data_root != NULL);
     assert(strlen(staged_entry->data_root) < sizeof(staged_data_relative));
     snprintf(staged_data_relative, sizeof(staged_data_relative), "%s",
@@ -1008,6 +1023,7 @@ int main(int argc, char **argv) {
                                                 sizeof(staged_error)) == NK_OK);
     assert(staged_info.is_psp_container == true);
     assert(staged_info.is_elf == false);
+    nk_title_catalog_snapshot_release(&staged_snapshot);
     remove(staged_eboot);
     /* `memstick` may have been created by preparation. */
     {
@@ -1085,7 +1101,9 @@ int main(int argc, char **argv) {
     /* The second title's OWN runtime (its catalog game_name layout) satisfies
      * it, even while every stale artifact above still exists. */
     {
-        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        NkTitleEntrySnapshot t2_snapshot = {0};
+        const NkTitleEntry *t2 = lookup_title_snapshot(
+            "pspdev-phase5-v1", &t2_snapshot);
         char t2_dir[800];
         char t2_exe[900];
         char t2_img[900];
@@ -1106,6 +1124,7 @@ int main(int argc, char **argv) {
         assert(nk_launch_runtime_available(root9, "pspdev-phase5-v1") == true);
         remove(t2_exe);
         remove(t2_img);
+        nk_title_catalog_snapshot_release(&t2_snapshot);
     }
 
     /* 10. A root-level retail-shaped binary cannot satisfy any other title,
@@ -1146,7 +1165,9 @@ int main(int argc, char **argv) {
     snprintf(root11, sizeof(root11), "%s%croot11", base, sep);
     assert(nk_platform_mkdir_p(root11));
     {
-        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        NkTitleEntrySnapshot t2_snapshot = {0};
+        const NkTitleEntry *t2 = lookup_title_snapshot(
+            "pspdev-phase5-v1", &t2_snapshot);
         assert(t2 != NULL && t2->game_name != NULL);
         snprintf(t2_dir11, sizeof(t2_dir11), "%s%cbuild%c%s", root11, sep, sep,
                  t2->game_name);
@@ -1154,6 +1175,7 @@ int main(int argc, char **argv) {
         snprintf(t2_exe11, sizeof(t2_exe11), "%s%c%s.exe", t2_dir11, sep,
                  t2->game_name);
         write_file(t2_exe11, "MZfake");
+        nk_title_catalog_snapshot_release(&t2_snapshot);
     }
     snprintf(plant, sizeof(plant), "%s%chst_image.bin", t2_dir11, sep);
     write_file(plant, "image");
@@ -1189,7 +1211,9 @@ int main(int argc, char **argv) {
     char root12[700];
     snprintf(root12, sizeof(root12), "%s%croot12", base, sep);
     {
-        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        NkTitleEntrySnapshot t2_snapshot = {0};
+        const NkTitleEntry *t2 = lookup_title_snapshot(
+            "pspdev-phase5-v1", &t2_snapshot);
         char dir[800];
         char exe[900];
         char img[900];
@@ -1200,6 +1224,7 @@ int main(int argc, char **argv) {
         snprintf(img, sizeof(img), "%s%c%s_image.bin", dir, sep, t2->game_name);
         write_file(exe, "MZfake");
         write_file(img, "image");
+        nk_title_catalog_snapshot_release(&t2_snapshot);
     }
     {
         char dir[800];
@@ -1274,7 +1299,9 @@ int main(int argc, char **argv) {
     assert(nk_platform_mkdir_p(root14a));
     assert(nk_platform_mkdir_p(root14b));
     {
-        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        NkTitleEntrySnapshot t2_snapshot = {0};
+        const NkTitleEntry *t2 = lookup_title_snapshot(
+            "pspdev-phase5-v1", &t2_snapshot);
         char dir[800];
         char exe[900];
         char img[900];
@@ -1285,6 +1312,7 @@ int main(int argc, char **argv) {
         snprintf(img, sizeof(img), "%s%c%s_image.bin", dir, sep, t2->game_name);
         write_file(exe, "binary");
         write_file(img, "image");
+        nk_title_catalog_snapshot_release(&t2_snapshot);
     }
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
@@ -1316,7 +1344,9 @@ int main(int argc, char **argv) {
     char root15[700];
     snprintf(root15, sizeof(root15), "%s%croot with spaces", base, sep);
     {
-        const NkTitleEntry *t2 = nk_title_catalog_find_by_id("pspdev-phase5-v1");
+        NkTitleEntrySnapshot t2_snapshot = {0};
+        const NkTitleEntry *t2 = lookup_title_snapshot(
+            "pspdev-phase5-v1", &t2_snapshot);
         char dir[800];
         char exe[900];
         char img[900];
@@ -1327,6 +1357,7 @@ int main(int argc, char **argv) {
         snprintf(img, sizeof(img), "%s%c%s_image.bin", dir, sep, t2->game_name);
         write_file(exe, "binary");
         write_file(img, "image");
+        nk_title_catalog_snapshot_release(&t2_snapshot);
     }
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");

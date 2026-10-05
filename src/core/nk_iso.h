@@ -94,7 +94,7 @@ typedef struct {
     bool is_supported;
     bool param_sfo_parsed;
     NkIsoExecutableReport executables;
-    const NkTitleEntry *matched_title;
+    char matched_title_id[65];
     NkGameSupportStatus status;
     char error_message[256];
 } NkIsoMetadata;

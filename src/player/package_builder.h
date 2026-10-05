@@ -78,6 +78,9 @@ typedef struct {
 typedef struct {
     char disc_id[NK_MAX_DISC_ID_LEN];
     char title_name[NK_MAX_TITLE_LEN];
+    /* Monotonic process-local identity for this build invocation. Disc IDs
+       can be reused after a cache invalidation, so they are not a session key. */
+    uint64_t session_generation;
     PackageBuildStage current_stage;
     char current_stage_name[32];
     char current_message[512];

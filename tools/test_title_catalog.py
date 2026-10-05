@@ -124,6 +124,12 @@ class TitleCatalogTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, portability_doc)
 
+    def test_generated_header_states_snapshot_and_lock_contract(self) -> None:
+        header = title_catalog_codegen.generate_header("test-digest", [])
+        self.assertIn("package-validation cache has a separate lock", header)
+        self.assertIn("owned copies", header)
+        self.assertIn("must not call catalog APIs", header)
+
     def test_live_catalog_verify_passes(self) -> None:
         """Verify that current live repo catalog matches assets/titles/ exactly."""
         res = subprocess.run(
@@ -237,25 +243,28 @@ int main(void) {{
     assert(nk_title_catalog_count == {expected_titles});
 
     /* Test synthetic title lookups in public catalog */
-    const NkTitleEntry *t_synth = nk_title_catalog_find_by_disc_id("TEST00001");
-    assert(t_synth != NULL);
-    assert(strcmp(t_synth->id, "synthetic-allegrex-v1") == 0);
-    assert(t_synth->kind == NK_TITLE_KIND_SYNTHETIC);
+    NkTitleEntrySnapshot t_synth = {{0}};
+    assert(nk_title_catalog_find_by_disc_id("TEST00001", &t_synth));
+    assert(strcmp(t_synth.entry.id, "synthetic-allegrex-v1") == 0);
+    assert(t_synth.entry.kind == NK_TITLE_KIND_SYNTHETIC);
 
-    const NkTitleEntry *t_p5 = nk_title_catalog_find_by_disc_id("TEST00005");
-    assert(t_p5 != NULL);
-    assert(strcmp(t_p5->id, "pspdev-phase5-v1") == 0);
+    NkTitleEntrySnapshot t_p5 = {{0}};
+    assert(nk_title_catalog_find_by_disc_id("TEST00005", &t_p5));
+    assert(strcmp(t_p5.entry.id, "pspdev-phase5-v1") == 0);
 
     /* Test hyphen and whitespace normalization */
-    const NkTitleEntry *t2 = nk_title_catalog_find_by_disc_id("test-00001");
-    assert(t2 == t_synth);
-    const NkTitleEntry *t3 = nk_title_catalog_find_by_disc_id("  TEST_00005  ");
-    assert(t3 == t_p5);
+    NkTitleEntrySnapshot t2 = {{0}};
+    NkTitleEntrySnapshot t3 = {{0}};
+    assert(nk_title_catalog_find_by_disc_id("test-00001", &t2));
+    assert(strcmp(t2.entry.id, t_synth.entry.id) == 0);
+    assert(nk_title_catalog_find_by_disc_id("  TEST_00005  ", &t3));
+    assert(strcmp(t3.entry.id, t_p5.entry.id) == 0);
 
     /* Retail IDs must return NULL in public catalog */
-    assert(nk_title_catalog_find_by_disc_id("UCUS98701") == NULL);
-    assert(nk_title_catalog_find_by_disc_id("UCES01402") == NULL);
-    assert(nk_title_catalog_find_by_id("hst-ucus98701-v1") == NULL);
+    NkTitleEntrySnapshot missing = {{0}};
+    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("UCES01402", &missing));
+    assert(!nk_title_catalog_find_by_id("hst-ucus98701-v1", &missing));
 
     /* Test in-memory private overlay */
     NkTitleEntry overlay;
@@ -265,18 +274,61 @@ int main(void) {{
     overlay.kind = NK_TITLE_KIND_RETAIL;
     overlay.primary_disc_id = "UCUS98701";
 
+    uint64_t start_epoch = nk_title_catalog_epoch();
     nk_title_catalog_register_overlay(&overlay);
-    assert(nk_title_catalog_find_by_disc_id("UCUS98701") == &overlay);
-    assert(nk_title_catalog_find_by_id("private-test-v1") == &overlay);
+    assert(nk_title_catalog_epoch() == start_epoch + 1);
+    uint64_t overlay_epoch = nk_title_catalog_epoch();
+    nk_title_catalog_register_overlay(&overlay);
+    assert(nk_title_catalog_epoch() == overlay_epoch);
+    NkTitleEntrySnapshot found_overlay = {{0}};
+    NkTitleEntrySnapshot found_overlay_by_id = {{0}};
+    assert(nk_title_catalog_find_by_disc_id("UCUS98701", &found_overlay));
+    assert(nk_title_catalog_find_by_id("private-test-v1", &found_overlay_by_id));
+    assert(strcmp(found_overlay.entry.id, "private-test-v1") == 0);
 
     nk_title_catalog_clear_overlay();
-    assert(nk_title_catalog_find_by_disc_id("UCUS98701") == NULL);
-    assert(nk_title_catalog_find_by_id("private-test-v1") == NULL);
+    assert(strcmp(found_overlay.entry.display_name, "Private Overlay Test") == 0);
+    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
+    assert(!nk_title_catalog_find_by_id("private-test-v1", &missing));
+    uint64_t empty_epoch = nk_title_catalog_epoch();
+    nk_title_catalog_clear_overlay();
+    assert(nk_title_catalog_epoch() == empty_epoch);
+
+    NkTitleEntry capacity[9] = {{0}};
+    char capacity_ids[9][32];
+    char capacity_discs[9][32];
+    for (int i = 0; i < 9; i++) {{
+        snprintf(capacity_ids[i], sizeof(capacity_ids[i]), "capacity-title-%d", i);
+        snprintf(capacity_discs[i], sizeof(capacity_discs[i]), "CAP%05d", i);
+        capacity[i].id = capacity_ids[i];
+        capacity[i].primary_disc_id = capacity_discs[i];
+    }}
+    uint64_t capacity_epoch = nk_title_catalog_epoch();
+    for (int i = 0; i < 8; i++) nk_title_catalog_register_overlay(&capacity[i]);
+    assert(nk_title_catalog_epoch() == capacity_epoch + 8);
+    capacity_epoch = nk_title_catalog_epoch();
+    nk_title_catalog_register_overlay(&capacity[0]);
+    nk_title_catalog_register_overlay(&capacity[8]);
+    assert(nk_title_catalog_epoch() == capacity_epoch);
+    nk_title_catalog_clear_overlay();
+    assert(nk_title_catalog_epoch() == capacity_epoch + 1);
+    empty_epoch = nk_title_catalog_epoch();
+    nk_title_catalog_clear_overlay();
+    assert(nk_title_catalog_epoch() == empty_epoch);
 
     /* Test nonexistent disc ID */
-    assert(nk_title_catalog_find_by_disc_id("ULUS99999") == NULL);
-    assert(nk_title_catalog_find_by_disc_id("") == NULL);
-    assert(nk_title_catalog_find_by_disc_id(NULL) == NULL);
+    assert(!nk_title_catalog_find_by_disc_id("ULUS99999", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("", &missing));
+    assert(!nk_title_catalog_find_by_disc_id(NULL, &missing));
+
+    nk_title_catalog_snapshot_release(&found_overlay);
+    nk_title_catalog_snapshot_release(&found_overlay_by_id);
+    nk_title_catalog_snapshot_release(&t_synth);
+    nk_title_catalog_snapshot_release(&t_p5);
+    nk_title_catalog_snapshot_release(&t2);
+    nk_title_catalog_snapshot_release(&t3);
+    nk_title_catalog_snapshot_release(&found_overlay);
+    nk_title_catalog_snapshot_release(&found_overlay_by_id);
 
     printf("ALL_NATIVE_CATALOG_C_ASSERTIONS_PASSED\\n");
     return 0;

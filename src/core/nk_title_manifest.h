@@ -38,7 +38,9 @@ typedef enum {
     NK_RUNTIME_PACKAGE_OK = 0,
     NK_RUNTIME_PACKAGE_MISSING,
     NK_RUNTIME_PACKAGE_INCOMPATIBLE,
-    NK_RUNTIME_PACKAGE_STALE
+    NK_RUNTIME_PACKAGE_STALE,
+    /* A cached check has not produced a trustworthy package result. */
+    NK_RUNTIME_PACKAGE_UNKNOWN = 4
 } NkRuntimePackageStatus;
 
 typedef struct {
@@ -51,6 +53,10 @@ typedef struct {
 /* Parse and validate a manifest from a memory buffer.
  * If allow_override is false, collisions with public catalog entries are rejected.
  * If allow_override is true, collisions generate a noisy warning and are accepted.
+ * The optional out_entry borrows parser overlay storage and is valid only until
+ * the next manifest parse or overlay clear; callers that retain parsed titles
+ * across catalog operations must copy them into an owned catalog snapshot while
+ * holding nk_title_catalog_lock().
  */
 bool nk_title_manifest_parse_buffer(
     const char *json_str,
@@ -107,15 +113,15 @@ bool nk_title_manifest_write_experimental_profile(
 );
 
 /* Read the private experimental profile for one library identity. The embedded
- * manifest is fully validated and returned from bounded native overlay
- * storage; executable SHA-256 and selected-executable identity are returned
- * only to the caller. */
+ * manifest is fully validated and, when requested, returned as an owned title
+ * snapshot that survives subsequent overlay reloads. Release the snapshot with
+ * nk_title_catalog_snapshot_release(). */
 bool nk_title_manifest_read_experimental_profile(
     const char *user_data_root,
     const char *disc_id,
     const char *title_id,
     const char *selected_executable,
-    NkTitleEntry *out_title,
+    NkTitleEntrySnapshot *out_title,
     char out_executable_sha256[65],
     char *error_buf,
     size_t error_buf_len
@@ -136,6 +142,21 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     NkRuntimePackageInfo *out_info,
     char *reason,
     size_t reason_size
+);
+
+/* Build a metadata identity for package status caches. It covers package.json,
+ * build-report.json, the declared executable, every artifact in the completion
+ * manifest, and the experimental profile identity when applicable. Missing
+ * files are part of the identity too. */
+bool nk_title_manifest_aot_package_cache_identity(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    bool is_experimental,
+    const char *selected_executable,
+    const char *current_disc_version,
+    uint32_t player_abi_version,
+    char out_identity[65]
 );
 
 #ifdef __cplusplus
