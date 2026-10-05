@@ -19270,7 +19270,8 @@ static int run_exit_game_poisoned(void) {
  * in a fresh process. The CRT spawn family builds the child command line by
  * naive concatenation and never quotes an argument containing a space, and the
  * program path used here is unconditionally this executable's own path. When
- * that path contains a space -- a checkout under "C:/Program Files/...", or the
+ * that path contains a space -- a checkout under a directory whose name holds
+ * one, such as a "Program Files" tree, or the
  * relocatable demo folder #667 exercises -- the child either does not start at
  * all, or starts from a command line that splits into more arguments and loses
  * the mode flag, so it re-runs the whole suite and exits 0 instead of entering
@@ -19326,6 +19327,7 @@ static size_t append_quoted_argument(wchar_t *out, size_t cap, const wchar_t *ar
 static intptr_t exit_game_spawn_child(const char *self) {
     static const wchar_t kMode[] = L" --exit-game-poisoned";
     wchar_t self_path[EXITGAME_SPAWN_CAP];
+    wchar_t resolved[EXITGAME_SPAWN_CAP];
     wchar_t command[EXITGAME_SPAWN_CAP];
     STARTUPINFOW startup;
     PROCESS_INFORMATION child;
@@ -19337,7 +19339,19 @@ static intptr_t exit_game_spawn_child(const char *self) {
                             (int)(sizeof(self_path) / sizeof(self_path[0]))) <= 0) {
         return -1;
     }
-    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, self_path);
+    /* CreateProcessW receives the program through the command line, and it does
+       not resolve every way argv[0] can be spelled: a relative path written
+       with forward slashes fails with ERROR_FILE_NOT_FOUND, which is exactly
+       how the Makefile's hle-thread-selftest recipe starts this binary
+       (build/mygame/hle_thread_selftest.exe). Resolve to the absolute native
+       form so the respawn works from a relative argv[0] as well as a full one --
+       measured on the recipe before this line existed: 54976 checks, 1 failure
+       ("exit-game child process starts") through make, against 54979 and 0
+       failures when the same binary is started by an absolute path. */
+    DWORD resolved_length = GetFullPathNameW(self_path, EXITGAME_SPAWN_CAP,
+                                            resolved, NULL);
+    if (resolved_length == 0 || resolved_length >= EXITGAME_SPAWN_CAP) return -1;
+    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, resolved);
     if (quoted == 0) return -1;
     if (quoted + sizeof(kMode) / sizeof(kMode[0]) > EXITGAME_SPAWN_CAP) return -1;
     memcpy(command + quoted, kMode, sizeof(kMode));
@@ -19378,7 +19392,7 @@ static void exit_game_command_line_is_quoted(void) {
     size_t quoted;
 
     quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP,
-                                    L"C:\\Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe");
+                                    L"Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe");
     expect(quoted != 0, "a spaced program path fits the command line buffer");
     if (quoted != 0) {
         memcpy(command + quoted, L" --exit-game-poisoned", sizeof(L" --exit-game-poisoned"));
@@ -19387,12 +19401,12 @@ static void exit_game_command_line_is_quoted(void) {
                "the mode flag stays outside the quoted program path");
     }
 
-    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, L"C:\\nk\\selftest.exe");
+    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, L"selftest.exe");
     expect(quoted != 0 && command[0] == L'"',
            "a space-free path is still one quoted argument");
 
     /* A trailing backslash must not escape the closing quote. */
-    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, L"C:\\dir with space\\");
+    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, L"dir with space\\");
     expect(quoted != 0, "a trailing backslash still fits");
     if (quoted != 0) {
         expect(command[quoted - 1] == L'"', "the closing quote survives a trailing backslash");
@@ -19401,7 +19415,7 @@ static void exit_game_command_line_is_quoted(void) {
     }
 
     expect(append_quoted_argument(tiny, 4,
-                                  L"C:\\Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe") == 0,
+                                  L"Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe") == 0,
            "an undersized buffer is refused instead of truncated");
 }
 
