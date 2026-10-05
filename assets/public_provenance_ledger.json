@@ -1114,7 +1114,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1082d75de1932ab51c5d4f2b37e7693b67484b722f4ff95fc80ef438672a2001"
+      "sha256": "f56d0b95393b7fe0575862818274e5479eebfb3ca69612545257c1dfa2c58616"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -4531,7 +4531,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ad481ff03f152cc84c06b102a71bd8cec78bbeb23c73d8d2dd6ccb166a881360"
+      "sha256": "a147b309615ce60594f93f195233730600071a2ce1c508dc2888d0bee40e70cd"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4569,7 +4569,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f7a23be22f9d12bd11e35a1a6a7aaed5a27f514ef7d74e0ef4e43e569ee96eda"
+      "sha256": "07f702eebca66a231e4084a637cecb1454df7640bde2d89358aaae365f856354"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4862,7 +4862,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a2585219afb6f6f425cd5c1b2e7f62842e285d28d7b14bbe95a14d55578e3570"
+      "sha256": "9e32d8926ea5cb1a8df9528bdff2754c2f1c7f1a31ab17e05a892e7d9ab25b62"
     },
     {
       "path": "src/rt/savedata.c",
@@ -4888,7 +4888,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0535b6a27fd0500a7107c12cc0c98a88fde45f6bcfd6844968bc92039f578112"
+      "sha256": "6954945f9fa58b6cd782595b6548dd224ff3b78e2321ff1eb9f6bd91fa3b5dd5"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -7512,7 +7512,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb60ebafa4973bcac3df26ef07138b2ee68cafe2ee0298377a88773ba464e9a4"
+      "sha256": "3d196953a316640330b8d2fb2018835077e9683659365e1ed0660b5a75c65503"
     },
     {
       "path": "tools/test_domain_mode.py",

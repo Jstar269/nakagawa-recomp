@@ -181,7 +181,7 @@ typedef struct WaitInvocation {
     TCB *owner;
     uint32_t owner_uid, object;
     uint64_t deadline;
-    int callback_enabled, result_valid;
+    int callback_enabled, result_valid, thread_join;
     uint32_t result;
     SrWaitState state;
     SrWaitDetach detach;
@@ -2702,6 +2702,27 @@ SrWaitHandle sched_wait_begin(uint32_t object, uint64_t deadline,
     return w->handle;
 }
 
+SrWaitHandle sched_wait_begin_join(uint32_t target, uint64_t deadline,
+                                    int callback_enabled) {
+    SrWaitHandle handle = sched_wait_begin(target, deadline, callback_enabled, NULL);
+    WaitInvocation *w = sched_wait_find(handle);
+    if (w) w->thread_join = 1;
+    return handle;
+}
+
+int sched_wait_complete(SrWaitHandle handle, uint32_t result) {
+    WaitInvocation *w = sched_wait_find(handle);
+    if (!w || w->result_valid || w->state == SR_WAIT_TERMINAL ||
+        w->owner->deleted || w->owner->uid != w->owner_uid) return 0;
+    w->result = result;
+    w->result_valid = 1;
+    w->state = SR_WAIT_TERMINAL;
+    /* A completed callback parent retains its result without waking a child. */
+    if (w->owner->active_wait == handle)
+        (void)sched_wake_one_object_waiter(w->object, w->owner_uid);
+    return 1;
+}
+
 int sched_wait_state(SrWaitHandle handle, SrWaitState *state, uint32_t *owner) {
     WaitInvocation *w = sched_wait_find(handle);
     if (!w || w->owner->deleted || w->owner->uid != w->owner_uid) return 0;
@@ -2836,6 +2857,19 @@ int sched_take_current_join_result(uint32_t uid, uint32_t *result_out) {
 }
 
 static void sched_wake_thread_joiners(uint32_t uid, uint32_t result) {
+    for (WaitInvocation *w = s_wait_invocations; w; w = w->next) {
+        if (!w->thread_join || w->object != uid) continue;
+        if (sched_wait_complete(w->handle, result) &&
+            w->owner->active_wait == w->handle) {
+            TCB *waiter = w->owner;
+            waiter->wait_obj = 0u;
+            waiter->wake = 0u;
+            waiter->wait_kind = waiter->pending_wait_kind = 0;
+            waiter->wake_result_valid = waiter->is_cb_wait = 0;
+        }
+    }
+    /* Legacy scheduler fixtures use the thread latch; production joins above
+     * have one durable result per invocation, not per TCB. */
     for (int i = 0; i < s_ntcb; i++) {
         TCB *waiter = &s_tcb[i];
         if (waiter->deleted || waiter->state != TH_WAIT_OBJ ||
