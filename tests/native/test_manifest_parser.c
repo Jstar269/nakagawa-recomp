@@ -642,18 +642,24 @@ static int launch_loose_roots_transport(int argc, char *argv[]) {
         fprintf(stderr, "native launch manifest rejected: %s\n", error);
         return 2;
     }
-    const NkTitleEntry *entry = nk_title_catalog_find_by_id(title_id);
+    NkTitleEntrySnapshot entry_snapshot = {0};
+    const NkTitleEntry *entry = nk_title_catalog_find_by_id(title_id,
+                                                           &entry_snapshot)
+        ? &entry_snapshot.entry : NULL;
     if (!entry || !entry->game_name) {
         fprintf(stderr, "native launch manifest lookup failed: %s\n", title_id);
         return 3;
     }
+    char game_name[65];
+    snprintf(game_name, sizeof(game_name), "%s", entry->game_name);
+    nk_title_catalog_snapshot_release(&entry_snapshot);
 
     char separator = nk_platform_path_separator();
     char runtime_dir[NK_MAX_PATH * 2];
     char runtime_path[NK_MAX_PATH * 2];
     char image_path[NK_MAX_PATH * 2];
     int written = snprintf(runtime_dir, sizeof(runtime_dir), "%s%cbuild%c%s",
-                           root, separator, separator, entry->game_name);
+                           root, separator, separator, game_name);
     if (written <= 0 || (size_t)written >= sizeof(runtime_dir) ||
         !nk_platform_mkdir_p(runtime_dir)) {
         fprintf(stderr, "native launch fixture runtime directory failed\n");
@@ -661,14 +667,14 @@ static int launch_loose_roots_transport(int argc, char *argv[]) {
     }
 #if defined(_WIN32) || defined(_WIN64)
     written = snprintf(runtime_path, sizeof(runtime_path), "%s%c%s.exe",
-                       runtime_dir, separator, entry->game_name);
+                       runtime_dir, separator, game_name);
 #else
     written = snprintf(runtime_path, sizeof(runtime_path), "%s%c%s",
-                       runtime_dir, separator, entry->game_name);
+                       runtime_dir, separator, game_name);
 #endif
     if (written <= 0 || (size_t)written >= sizeof(runtime_path)) return 5;
     written = snprintf(image_path, sizeof(image_path), "%s%c%s_image.bin",
-                       runtime_dir, separator, entry->game_name);
+                       runtime_dir, separator, game_name);
     if (written <= 0 || (size_t)written >= sizeof(image_path)) return 5;
     const char *fixture_paths[] = {runtime_path, image_path};
     for (size_t i = 0; i < sizeof(fixture_paths) / sizeof(fixture_paths[0]); i++) {

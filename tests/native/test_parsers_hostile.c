@@ -447,7 +447,7 @@ static void test_hostile_iso_parser(const char *test_dir) {
     assert(meta.param_sfo_parsed == false);
     assert(meta.is_supported == false);
     assert(meta.status != NK_STATUS_VERIFIED);
-    assert(meta.matched_title == NULL);
+    assert(meta.matched_title_id[0] == '\0');
 
     printf("[HOSTILE_TEST] embedded valid SFO with no directory provenance\n"); fflush(stdout);
     char fpath_embed[512];
@@ -486,7 +486,7 @@ static void test_hostile_iso_parser(const char *test_dir) {
     assert(meta.param_sfo_parsed == false);
     assert(meta.is_supported == false);
     assert(meta.status != NK_STATUS_VERIFIED);
-    assert(meta.matched_title == NULL);
+    assert(meta.matched_title_id[0] == '\0');
 
 
     /* 11. An identity field declaring a non-string parameter format.
@@ -541,7 +541,7 @@ static void test_hostile_iso_parser(const char *test_dir) {
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_fmt, &meta) == NK_ERROR_INVALID_ISO);
     assert(meta.is_supported == false);
-    assert(meta.matched_title == NULL);
+    assert(meta.matched_title_id[0] == '\0');
 
     /* The same image with the string format parses and identifies. Without
      * this the subtest above could pass for some unrelated reason. */
