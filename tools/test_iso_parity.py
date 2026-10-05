@@ -364,7 +364,7 @@ int main(int argc, char **argv) {{
         printf("BOOT_KIND:%d\\n", (int)meta.executables.boot.kind);
         printf("SELECTED_EXECUTABLE:%d\\n", (int)meta.executables.selected);
         printf("BOOT_FALLBACK:%d\\n", meta.executables.boot_fallback ? 1 : 0);
-        printf("MATCHED_ID:%s\\n", meta.matched_title ? meta.matched_title->id : "NONE");
+        printf("MATCHED_ID:%s\\n", meta.matched_title_id[0] ? meta.matched_title_id : "NONE");
         printf("STATUS:%d\\n", (int)meta.status);
         return 0;
     }}

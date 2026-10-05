@@ -938,24 +938,28 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     }
 
     /* Look up in native title catalog */
+    nk_title_catalog_lock();
     const NkTitleEntry *entry = identity_structured
-        ? nk_title_catalog_find_by_disc_id(out_meta->disc_id)
+        ? nk_title_catalog_find_by_disc_id_locked(out_meta->disc_id)
         : NULL;
+    out_meta->matched_title_id[0] = '\0';
     if (entry) {
         out_meta->is_supported = true;
-        out_meta->matched_title = entry;
+        snprintf(out_meta->matched_title_id, sizeof(out_meta->matched_title_id),
+                 "%s", entry->id ? entry->id : "");
         out_meta->status = NK_STATUS_VERIFIED;
         if (out_meta->title_name[0] == '\0') {
-            snprintf(out_meta->title_name, sizeof(out_meta->title_name), "%s", entry->display_name);
+            snprintf(out_meta->title_name, sizeof(out_meta->title_name), "%s",
+                     entry->display_name ? entry->display_name : "");
         }
     } else {
         out_meta->is_supported = false;
-        out_meta->matched_title = NULL;
         out_meta->status = NK_STATUS_IDENTIFIED;
         if (out_meta->title_name[0] == '\0') {
             snprintf(out_meta->title_name, sizeof(out_meta->title_name), "PSP Title (%s)", out_meta->disc_id);
         }
     }
+    nk_title_catalog_unlock();
 
     /* Executable classification is advisory preflight data. A valid disc can
        still be inspected when its SYSDIR files are missing or unsupported. */

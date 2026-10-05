@@ -22,6 +22,8 @@
 #include <bcrypt.h>
 #endif
 
+static uint64_t s_package_build_session_generation;
+
 static inline void safe_str_copy(char *dest, size_t dest_size, const char *src);
 
 static bool copy_json_string(const NkJsonNode *object, const char *key,
@@ -1273,6 +1275,10 @@ void package_builder_init_session(
 ) {
     if (!session) return;
     memset(session, 0, sizeof(*session));
+    session->session_generation = ++s_package_build_session_generation;
+    if (session->session_generation == 0) {
+        session->session_generation = ++s_package_build_session_generation;
+    }
     safe_str_copy(session->disc_id, sizeof(session->disc_id), disc_id);
     safe_str_copy(session->title_name, sizeof(session->title_name), title_name);
     session->current_stage = PACKAGE_BUILD_STAGE_IDLE;

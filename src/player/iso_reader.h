@@ -18,7 +18,7 @@ typedef struct {
     bool is_supported;
     bool param_sfo_parsed;
     NkIsoExecutableReport executables;
-    char matched_title_id[64];
+    char matched_title_id[65];
     GameSupportStatus status;
 } IsoInspectResult;
 
@@ -35,6 +35,14 @@ typedef enum {
 } NkIconStatus;
 
 #define NK_ICON_MAX_BYTES (1024 * 1024) /* 1 MiB bound */
+
+typedef struct {
+    NkIconStatus status;
+    uint8_t *data;
+    size_t size;
+    uint32_t width;
+    uint32_t height;
+} NkIsoImageData;
 
 /* Validates a PNG buffer in memory:
  * - Checks PNG 8-byte signature: \x89PNG\r\n\x1a\n
@@ -54,5 +62,21 @@ NkIconStatus nk_iso_validate_png_header(const uint8_t *data, size_t size, uint32
 NkIconStatus nk_iso_read_image_entry(const char *iso_path, const char *rel_path,
                                      uint8_t **out_data, size_t *out_size,
                                      uint32_t *out_w, uint32_t *out_h);
+
+/* Which library images an attempt still needs. A disc without one of them is
+ * common, so a retry only asks for the image whose texture is still absent
+ * instead of re-reading the other one. */
+enum {
+    NK_ISO_ART_ICON = 1u << 0,
+    NK_ISO_ART_PICTURE = 1u << 1
+};
+
+/* Read the wanted library images while opening/indexing the ISO once. An image
+ * whose bit is absent from `wanted` is left as not read
+ * (NK_ICON_ERR_INVALID_PARAM, no buffer) and the ISO is still opened only when
+ * at least one image was wanted. Returned image buffers are owned by the caller
+ * and must be freed. */
+void nk_iso_read_game_art(const char *iso_path, unsigned wanted,
+                          NkIsoImageData *icon, NkIsoImageData *background);
 
 #endif /* NAKAGAWA_ISO_READER_H */

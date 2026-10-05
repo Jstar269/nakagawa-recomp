@@ -1161,6 +1161,10 @@ def encode_loose_content_roots(
         except (OSError, RuntimeError, ValueError) as exc:
             fail(f"configured loose-content root could not be resolved: {exc}")
         host_text = os.fspath(host_root)
+        if os.name == "nt":
+            # Match GetFullPathNameA, which emits backslashes even when
+            # pathlib retained forward slashes from an absolute input.
+            host_text = host_text.replace("/", "\\")
         host_bytes = host_text.encode("utf-8")
         if len(host_bytes) >= NK_LAUNCH_MAX_PATH_BYTES * 2:
             fail("a resolved loose-content root exceeds the native launch path limit")

@@ -64,16 +64,16 @@ int main(int argc, char **argv) {
     assert(nk_iso_inspect(iso2, &m2) == NK_OK);
 
     assert(m1.is_supported == true);
-    assert(m1.matched_title != NULL);
-    assert(strcmp(m1.matched_title->id, "synthetic-allegrex-v1") == 0);
+    assert(m1.matched_title_id[0] != 0);
+    assert(strcmp(m1.matched_title_id, "synthetic-allegrex-v1") == 0);
 
     assert(m2.is_supported == true);
-    assert(m2.matched_title != NULL);
-    assert(strcmp(m2.matched_title->id, "pspdev-phase5-v1") == 0);
+    assert(m2.matched_title_id[0] != 0);
+    assert(strcmp(m2.matched_title_id, "pspdev-phase5-v1") == 0);
 
     /* Verify distinct profile attributes */
-    assert(strcmp(m1.matched_title->id, m2.matched_title->id) != 0);
-    assert(strcmp(m1.matched_title->primary_disc_id, m2.matched_title->primary_disc_id) != 0);
+    assert(strcmp(m1.matched_title_id, m2.matched_title_id) != 0);
+    assert(strcmp(m1.disc_id, m2.disc_id) != 0);
 
     /* Add both to native library and persist */
     NkLibrary lib;
@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     memset(&g1, 0, sizeof(g1));
     snprintf(g1.disc_id, sizeof(g1.disc_id), "%s", m1.disc_id);
     snprintf(g1.title_name, sizeof(g1.title_name), "%s", m1.title_name);
-    snprintf(g1.title_id, sizeof(g1.title_id), "%s", m1.matched_title->id);
+    snprintf(g1.title_id, sizeof(g1.title_id), "%.63s", m1.matched_title_id);
     snprintf(g1.iso_path, sizeof(g1.iso_path), "%s", iso1);
     g1.status = NK_STATUS_VERIFIED;
     g1.is_prepared = true;
@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
     memset(&g2, 0, sizeof(g2));
     snprintf(g2.disc_id, sizeof(g2.disc_id), "%s", m2.disc_id);
     snprintf(g2.title_name, sizeof(g2.title_name), "%s", m2.title_name);
-    snprintf(g2.title_id, sizeof(g2.title_id), "%s", m2.matched_title->id);
+    snprintf(g2.title_id, sizeof(g2.title_id), "%.63s", m2.matched_title_id);
     snprintf(g2.iso_path, sizeof(g2.iso_path), "%s", iso2);
     snprintf(g2.boot_executable, sizeof(g2.boot_executable), "EBOOT.OLD");
     g2.status = NK_STATUS_VERIFIED;
