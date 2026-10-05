@@ -148,7 +148,7 @@ endif
 # Direct Make callers may provide VULKAN_SDK explicitly (or export it).
 # If unset, discover dynamically via tools/vulkan_sdk.py.
 ifeq ($(VULKAN_SDK),)
-VULKAN_SDK := $(shell $(PYTHON) -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
+VULKAN_SDK := $(shell "$(PYTHON)" -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
 endif
 # PowerShell commonly exports this with backslashes while nk_manager passes the
 # same directory with slashes. Canonicalize before hashing CFLAGS so direct Make
@@ -168,11 +168,11 @@ GLSLC ?= glslc
 # directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
 # (no override, no discovery) is the system loader.
 ifeq ($(OS),Windows_NT)
-VULKAN_INC_FLAGS := -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
-VULKAN_LIB_FLAGS := -L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib
+VULKAN_INC_FLAGS := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
+VULKAN_LIB_FLAGS := -L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib"
 else
-VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I$(VULKAN_SDK)/include,)
-VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L$(VULKAN_SDK)/lib,) -lvulkan
+VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
+VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
 endif
 
 # SDL3 dependency discovery and isolation (issue #331).
@@ -183,7 +183,7 @@ endif
 SDL3_DIR ?=
 SDL3_MAKE_FRAGMENT := build/.sdl3-discovery.mk
 ifeq ($(strip $(filter clean distclean clean-preview,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
-_SDL3_DISCOVERY := $(shell $(PYTHON) -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
+_SDL3_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
 ifneq ($(strip $(_SDL3_DISCOVERY)),)
 $(error SDL3 discovery failed: $(_SDL3_DISCOVERY))
 endif
@@ -205,7 +205,7 @@ override CFLAGS += -DSR_FLIGHT_RECORDER_LINKED -DPERF_AOT_INSTRUCTIONS=$(PERF_AO
 # title-configured build carries the expectation via runtime_bindings
 # (expected_data_file_count) validated from the title manifest. See
 # tools/title_manifest.py, tools/title_runtime_config.py and docs/PORTING.md C-2.
-LDFLAGS ?= $(SDL3_LDFLAGS) $(if $(VULKAN_SDK),-L$(VULKAN_SDK)/Lib -L$(VULKAN_SDK)/lib,)
+LDFLAGS ?= $(SDL3_LDFLAGS) $(if $(VULKAN_SDK),-L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib",)
 # Optional per-package linker map. Kept separate from LDFLAGS so package builds
 # can request it without replacing the SDK/library search paths.
 LINK_MAP ?=
@@ -253,10 +253,14 @@ BUILD_DIR  ?= build/$(GAME_NAME)
 # after the remaining fragments in the repository root. Failing closed here names
 # the boundary instead of corrupting the tree.
 #
-# The repository ROOT may contain spaces freely: BUILD_DIR defaults to the
-# relative `build/$(GAME_NAME)`, which carries none. tools/title_codegen_plan.py
-# already picks a Make-safe build root (NK_BUILD_ROOT, then the 8.3 short name)
-# for every route that accepts an operator-chosen output directory (#296).
+# The repository ROOT may contain spaces: BUILD_DIR defaults to the relative
+# `build/$(GAME_NAME)`, which carries none; every parse-time $(shell) call
+# quotes "$(PYTHON)" so no command interpreter re-splits a spaced path; and the
+# -I/-L search paths are quoted before they reach the compiler or the profile
+# hasher, whose entries travel through the environment rather than argv (#667).
+# tools/title_codegen_plan.py already picks a Make-safe build root
+# (NK_BUILD_ROOT, then the 8.3 short name) for every route that accepts an
+# operator-chosen output directory (#296).
 ifneq ($(subst $(SPACE),,$(BUILD_DIR)),$(BUILD_DIR))
 $(error BUILD_DIR '$(BUILD_DIR)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a relative BUILD_DIR under the repository root (the default `build/<game>`), or set NK_BUILD_ROOT to a folder without spaces so tools/title_codegen_plan.py can pick a Make-safe build root (issue #296).)
 endif
@@ -304,7 +308,7 @@ endif
 # falls back to a clock.
 GIT ?= git
 ifndef NK_INFO_ONLY
-NK_GIT_REV_HEAD := $(strip $(shell $(PYTHON) -c "import shutil, subprocess, sys; exe = shutil.which(sys.argv[1]); print(subprocess.run([exe, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip() if exe else '')" "$(GIT)"))
+NK_GIT_REV_HEAD := $(strip $(shell "$(PYTHON)" -c "import shutil, subprocess, sys; exe = shutil.which(sys.argv[1]); print(subprocess.run([exe, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip() if exe else '')" "$(GIT)"))
 endif
 
 # Production-HLE PSP oracle stream. The target reuses hle_thread_selftest.exe, so the
@@ -457,7 +461,7 @@ TITLE_CONFIG_ARG := $(if $(strip $(TITLE_MANIFEST)),--manifest $(strip $(TITLE_M
 ifdef NK_INFO_ONLY
 TITLE_CONFIG_DIGEST := info-only
 else
-TITLE_CONFIG_DIGEST := $(shell $(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest)
+TITLE_CONFIG_DIGEST := $(shell "$(PYTHON)" $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --print-digest)
 endif
 # An unreadable or invalid manifest prints nothing. Refusing here keeps a rejected title
 # configuration from becoming an empty profile entry that hashes like some other build.
@@ -581,7 +585,7 @@ ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
 # it is about to plan over, so it skips this parse-time mkdir entirely.
 ifeq ($(strip $(filter clean-preview,$(MAKECMDGOALS))),)
 ifndef NK_INFO_ONLY
-_MKDIRS := $(shell $(PYTHON) -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
+_MKDIRS := $(shell "$(PYTHON)" -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
 endif
 endif
 
@@ -605,7 +609,7 @@ PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 # test can assert it derives from $(VULKAN_SDK) rather than an intermediate
 # variable; on Linux it is empty by default and only set when the caller names
 # an explicit VULKAN_SDK.
-PLAYER_VULKAN_INC   := -I$(VULKAN_SDK)/Include -I$(VULKAN_SDK)/include
+PLAYER_VULKAN_INC   := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
 PLAYER_VULKAN_LIB   :=
 EXE_EXT             := .exe
 # Post-link asset copy for the runtime `compile` link. On Windows this is the
@@ -761,7 +765,7 @@ ifneq ($(strip $(SOURCE_DATE_EPOCH)),)
 # no operator value reaches a command interpreter as syntax. Fail closed on a
 # non-decimal value: flight_recorder.c emits it as a JSON number.
 export SOURCE_DATE_EPOCH
-SR_SOURCE_DATE_EPOCH := $(shell $(PYTHON) -c "import os; v = os.environ.get('SOURCE_DATE_EPOCH', ''); print(v if v.isdigit() else '')")
+SR_SOURCE_DATE_EPOCH := $(shell "$(PYTHON)" -c "import os; v = os.environ.get('SOURCE_DATE_EPOCH', ''); print(v if v.isdigit() else '')")
 ifeq ($(strip $(SR_SOURCE_DATE_EPOCH)),)
 $(error SOURCE_DATE_EPOCH must be a decimal Unix timestamp (reproducible-builds.org), got "$(SOURCE_DATE_EPOCH)")
 endif
@@ -1450,7 +1454,7 @@ profile-zero-e2e:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
-CODEGEN_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY))
+CODEGEN_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY))
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
@@ -1490,12 +1494,13 @@ override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 ifeq ($(TRACE),1)
 override CFLAGS += -DSR_INSTRUCTION_TRACE
 endif
-RUNTIME_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
+RUNTIME_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)")
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entry "CFLAGS=$(CFLAGS)" --entry "GE_CFLAGS=$(GE_CFLAGS)" --entry "TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)" --entry "SDL3_PROVIDER=$(SDL3_PROVIDER)" --entry "SDL3_VERSION=$(SDL3_VERSION)" --entry "SDL3_DIR=$(SDL3_DIR)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -1524,7 +1529,7 @@ TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
 	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
-RECOMP_PROFILE_HASH := $(shell $(PYTHON) $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"

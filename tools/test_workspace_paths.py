@@ -412,5 +412,62 @@ class TrackedMachinePathTests(unittest.TestCase):
             )
 
 
+class ArtifactIgnoreTests(unittest.TestCase):
+    """Generated artifacts stay outside `git add -A` reach (#368).
+
+    Every path below was verified ignored against the live .gitignore rules
+    when this guard landed; a rule removal, a pattern broadened past its
+    output root, or an accidental `git add -f` of one of these names fails
+    here instead of at a maintainer's next `git status`.
+    """
+
+    GENERATED_ARTIFACTS = (
+        "progress.json",
+        "visual_regression_report.json",
+        "watchpoints.json",
+        "benchmarks_report.json",
+        "compile_commands.json",
+        "logs/build_out_recomp.log",
+        "build/mygame/mygame.o",
+        "tools/__pycache__/cache.pyc",
+        "scratch/notes.txt",
+        "nidseq_mine.txt",
+        "tex_0.pgm",
+        "capture.psess",
+        "capture.ngef",
+        "notes.bak",
+        "crash.dmp",
+        "crash.stackdump",
+        "guest_image.bin",
+        "run.trace",
+        "payload.obj",
+        "SDL3.dll",
+        "package/SDL3.dll",
+    )
+
+    def test_declared_output_roots_are_gitignored(self) -> None:
+        # Bytes stdin: Python text-mode pipes translate \n to os.linesep on
+        # Windows, and git check-ignore does not strip a trailing \r, which
+        # would silently miss every real rule (#368).
+        proc = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            input=("\n".join(self.GENERATED_ARTIFACTS) + "\n").encode("utf-8"),
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        reported = {
+            line for line in proc.stdout.decode("utf-8", "replace").splitlines() if line
+        }
+        missing = sorted(set(self.GENERATED_ARTIFACTS) - reported)
+        self.assertEqual(
+            missing,
+            [],
+            "these generated artifacts are no longer gitignored (or are now "
+            "tracked), so a build/test run can stage them by accident (#368):\n  "
+            + "\n  ".join(missing),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

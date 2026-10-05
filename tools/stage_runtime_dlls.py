@@ -22,8 +22,11 @@ non-system import that cannot be resolved to a file is a named, fail-closed
 error -- a half-staged closure would merely move the silent fallback.
 
 Root DLLs follow the ``SDL3_DLL`` override pattern from #296: an environment
-override names the exact file, otherwise the toolchain bin directory
-(``C:/msys64/ucrt64/bin`` by default) is searched.
+override names the exact file, otherwise the search directories are consulted --
+an explicit ``MSYS_PATH`` bin directory first, then the discovered toolchain
+root (``MINGW_PREFIX``, a ``gcc`` on ``PATH``, or the installer's pinned
+toolchain), then ``C:/msys64/ucrt64/bin`` as the last resort. Resolution
+failures name both the per-file override and those environment knobs (#667 A5).
 
 Licence texts are staged beside the DLLs through
 ``tools/package_notices.py`` (``THIRD_PARTY_NOTICES/``), which fails closed when
@@ -57,17 +60,33 @@ RUNTIME_ROOTS: tuple[tuple[str, str], ...] = (
 #: Default toolchain bin directory used when no override resolves.
 DEFAULT_TOOLCHAIN_BIN = Path("C:/msys64/ucrt64/bin")
 
+#: Environment variable naming the toolchain bin directory explicitly, the same
+#: knob ``nk.ps1`` and ``tools/nk_doctor.py`` honour. ``MINGW_PREFIX`` (naming
+#: the prefix rather than ``bin/``) is consulted through
+#: ``package_notices.resolve_toolchain_root``.
+TOOLCHAIN_BIN_ENV = "MSYS_PATH"
+
 
 class StageError(RuntimeError):
     """A runtime DLL that must be staged is missing or has no licence record."""
 
 
-def default_search_dirs() -> list[Path]:
-    """Directories searched for runtime DLLs: the toolchain bin directory."""
+def default_search_dirs(env: Mapping[str, str] | None = None) -> list[Path]:
+    """Directories searched for runtime DLLs: the toolchain bin directory.
+
+    An explicit ``MSYS_PATH`` entry wins over discovery, so a non-default
+    toolchain root stages without per-file overrides being set by hand.
+    """
+    environ = os.environ if env is None else env
     dirs: list[Path] = []
+    explicit = environ.get(TOOLCHAIN_BIN_ENV, "").strip()
+    if explicit:
+        dirs.append(Path(explicit))
     toolchain_root = package_notices.resolve_toolchain_root()
     if toolchain_root is not None:
-        dirs.append(toolchain_root / "bin")
+        discovered = toolchain_root / "bin"
+        if discovered not in dirs:
+            dirs.append(discovered)
     if DEFAULT_TOOLCHAIN_BIN not in dirs and DEFAULT_TOOLCHAIN_BIN.is_dir():
         dirs.append(DEFAULT_TOOLCHAIN_BIN)
     return dirs
@@ -77,6 +96,8 @@ def resolve_root_dll(
     name: str,
     override: str,
     search_dirs: Sequence[Path],
+    *,
+    override_env: str | None = None,
 ) -> Path:
     """Resolve one root DLL: explicit override first, then the search dirs."""
     if override:
@@ -92,9 +113,15 @@ def resolve_root_dll(
         if candidate.is_file():
             return candidate
     searched = ", ".join(str(d) for d in search_dirs) or "(no search directories)"
+    override_hint = (
+        f"set {override_env} to the exact file"
+        if override_env
+        else "use the per-file override"
+    )
     raise StageError(
-        f"{name} could not be resolved; set the override environment variable or "
-        f"install it under {searched}"
+        f"{name} could not be resolved; {override_hint}, or set {TOOLCHAIN_BIN_ENV} "
+        f"(a bin directory) or MINGW_PREFIX (a toolchain prefix) so its bin/ "
+        f"directory is searched, or install it under {searched}"
     )
 
 
@@ -184,7 +211,7 @@ def stage_runtime_dlls(
     names = list(roots) if roots is not None else [name for name, _ in RUNTIME_ROOTS]
     overrides = dict(RUNTIME_ROOTS)
     environ = os.environ if env is None else env
-    dirs = list(search_dirs) if search_dirs is not None else default_search_dirs()
+    dirs = list(search_dirs) if search_dirs is not None else default_search_dirs(environ)
 
     staged: set[str] = set()
     for name in names:
@@ -192,7 +219,12 @@ def stage_runtime_dlls(
         if existing.is_file():
             root_dll = existing
         else:
-            root_dll = resolve_root_dll(name, environ.get(overrides.get(name, ""), ""), dirs)
+            root_dll = resolve_root_dll(
+                name,
+                environ.get(overrides.get(name, ""), ""),
+                dirs,
+                override_env=overrides.get(name),
+            )
         closure = resolve_dll_closure(
             root_dll, search_dirs=dirs, imports_of=imports_of, is_system=is_system
         )

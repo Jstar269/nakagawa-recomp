@@ -6,6 +6,8 @@ import sys
 import json
 import tempfile
 import unittest
+from unittest import mock
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -78,6 +80,49 @@ class TestPublicCandidate(unittest.TestCase):
                 policy_path=policy_path, export_path=export_path,
             )
             self.assertEqual(findings, [])
+
+    def test_manifest_lands_beside_the_tree_with_lf_endings(self):
+        """#667 A2: the export manifest must not live inside the audited tree.
+
+        Before the fix, ``materialize()`` wrote ``PUBLIC_CANDIDATE.json`` into the
+        destination, so every fresh export failed its own audit
+        (POLICY_UNCLASSIFIED / UNRESOLVED_PUBLIC on that path, plus CRLF from the
+        host-default newline). The manifest now sits beside the destination, and
+        its bytes are pinned to LF.
+        """
+        def fake_git(*args):
+            if args[0] == "rev-parse":
+                return "0" * 40
+            output = next(
+                arg.split("=", 1)[1] for arg in args if arg.startswith("--output=")
+            )
+            with zipfile.ZipFile(output, "w") as archive:
+                archive.writestr("docs/example.md", "# example\n")
+                archive.writestr("nested/marker.txt", "marker\n")
+            return ""
+
+        with tempfile.TemporaryDirectory() as temp_raw:
+            destination = Path(temp_raw) / "candidate"
+            with mock.patch.object(public_candidate, "_git", fake_git):
+                metadata = public_candidate.materialize(
+                    "HEAD", destination, public_candidate.DEFAULT_PROFILE
+                )
+
+            manifest = destination.parent / (
+                destination.name + ".PUBLIC_CANDIDATE.json"
+            )
+            self.assertEqual(sorted(p.name for p in destination.rglob("*")), [
+                "docs", "example.md", "marker.txt", "nested",
+            ])
+            self.assertFalse((destination / "PUBLIC_CANDIDATE.json").exists())
+            self.assertTrue(manifest.is_file())
+            raw = manifest.read_bytes()
+            self.assertNotIn(b"\r", raw)
+            payload = json.loads(raw)
+            self.assertEqual(payload["source_commit"], "0" * 40)
+            self.assertEqual(payload["file_count"], 2)
+            self.assertEqual(payload["profile"], self.profile["name"])
+            self.assertEqual(metadata, payload)
 
 
 if __name__ == "__main__":

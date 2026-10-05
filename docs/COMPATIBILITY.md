@@ -25,6 +25,21 @@ numbers, other unrecognized or title-specific fields before comparing it. Issue 
 come from the checked-in schema allowlist also used by the public `nk_cli.py` report
 generator; no network lookup is involved.
 
+The sweep reads externally supplied JSON through the bounded parser. Per-title bring-up
+reports and import sidecars allow 32 MiB, 32 levels, 262,144 object members and
+comma-separated items, and 1,048,576 structural nodes because their import inventories
+scale with a title. The private resume report allows 64 MiB, 32 levels, 1,048,576 members
+and items, and 4,194,304 nodes because it contains one row per ISO; a test round-trips
+10,000 rich rows in a report larger than 1 MiB under these limits. The writer enforces
+the same resume limits before replacing either output, so it cannot leave a checkpoint
+that its next run rejects. A
+bring-up report over its limits becomes the existing no-report route outcome, and an
+over-limit sidecar is ignored before the existing build-report/runtime fallback. The
+previous public aggregate uses the shared 1 MiB cache-artifact budget because its
+validated schema is compact and title-free. Duplicate fields, invalid UTF-8, non-finite
+numbers, malformed JSON, and exceeded resource budgets are rejected; `build-report.json`
+continues to use its separate 4 MiB build-report budget.
+
 The `ratchet.furthest_stage_high_water` values are high-water counts. They can increase
 when the source identity, route budget, and ISO count match the previous aggregate, and
 never decrease during that matched comparison. `coverage` and blocker fields describe the

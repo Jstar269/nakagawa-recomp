@@ -804,9 +804,9 @@ def sdl3_make_fragment(explicit: str | None = None, compiler: str | None = None)
             inc = p.include_dir.as_posix()
             lib = p.import_lib.parent.as_posix()
             if inc not in _DEFAULT_SYSTEM_INCLUDE_DIRS:
-                values["SDL3_INC_FLAGS"] = f"-I{inc}"
+                values["SDL3_INC_FLAGS"] = f'-I"{inc}"'
             if not lib.startswith(("/usr/lib", "/lib")):
-                values["SDL3_LDFLAGS"] = f"-L{lib}"
+                values["SDL3_LDFLAGS"] = f'-L"{lib}"'
     return "".join(f"{k} := {_make_escape(v)}\n" for k, v in values.items())
 
 

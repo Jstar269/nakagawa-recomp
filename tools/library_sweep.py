@@ -30,6 +30,22 @@ NK_CLI = ROOT / "tools" / "nk_cli.py"
 DEFAULT_TIME_BUDGET_SECONDS = 120
 MACHINE_POLL_SECONDS = 60
 MACHINE_MAX_WAIT_SECONDS = 20 * 60
+# External per-title reports carry variable-size import inventories. The
+# project-artifact budgets accept the tested 20,000-entry reports while keeping
+# one route's parser work bounded independently of build-report.json.
+_SWEEP_TITLE_JSON_MAX_BYTES = 32 * 1024 * 1024
+_SWEEP_TITLE_JSON_MAX_DEPTH = 32
+_SWEEP_TITLE_JSON_MAX_MEMBERS = 262144
+_SWEEP_TITLE_JSON_MAX_ITEMS = 262144
+_SWEEP_TITLE_JSON_MAX_NODES = 1048576
+# Resume reports have one row per discovered ISO and no input-count ceiling.
+# The limits admit the tested 10,000 rich-row checkpoint and larger sweeps; the
+# writer applies the same limits before replacing files.
+_SWEEP_RESUME_JSON_MAX_BYTES = 64 * 1024 * 1024
+_SWEEP_RESUME_JSON_MAX_DEPTH = 32
+_SWEEP_RESUME_JSON_MAX_MEMBERS = 1048576
+_SWEEP_RESUME_JSON_MAX_ITEMS = 1048576
+_SWEEP_RESUME_JSON_MAX_NODES = 4194304
 STAGES = (
     "identify",
     "decrypt",
@@ -168,16 +184,23 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _atomic_json(path: Path, payload: dict) -> None:
+def _json_document_bytes(payload: dict) -> bytes:
+    return (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def _atomic_json_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    temporary.write_bytes(content)
     if os.name != "nt":
         temporary.chmod(0o600)
     os.replace(temporary, path)
+
+
+def _atomic_json(path: Path, payload: dict) -> None:
+    _atomic_json_bytes(path, _json_document_bytes(payload))
 
 
 def _source_commit() -> str:
@@ -235,8 +258,15 @@ def _read_existing_rows(
     if not path.is_file():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = package_cache.read_bounded_json(
+            path,
+            max_bytes=_SWEEP_RESUME_JSON_MAX_BYTES,
+            max_depth=_SWEEP_RESUME_JSON_MAX_DEPTH,
+            max_members=_SWEEP_RESUME_JSON_MAX_MEMBERS,
+            max_items=_SWEEP_RESUME_JSON_MAX_ITEMS,
+            max_nodes=_SWEEP_RESUME_JSON_MAX_NODES,
+        )
+    except (OSError, ValueError) as exc:
         raise ValueError("existing private sweep report is unreadable") from exc
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         raise ValueError("existing private sweep report has an unsupported schema")
@@ -449,8 +479,15 @@ def _run_bringup(
     if not report_path.is_file():
         return RouteOutcome(None, return_code=process.returncode)
     try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        report = package_cache.read_bounded_json(
+            report_path,
+            max_bytes=_SWEEP_TITLE_JSON_MAX_BYTES,
+            max_depth=_SWEEP_TITLE_JSON_MAX_DEPTH,
+            max_members=_SWEEP_TITLE_JSON_MAX_MEMBERS,
+            max_items=_SWEEP_TITLE_JSON_MAX_ITEMS,
+            max_nodes=_SWEEP_TITLE_JSON_MAX_NODES,
+        )
+    except (OSError, ValueError):
         return RouteOutcome(None, return_code=process.returncode)
     if not isinstance(report, dict):
         return RouteOutcome(None, return_code=process.returncode)
@@ -492,8 +529,15 @@ def _normalize_nid_rows(values) -> list[dict]:
 def _read_private_nid_rows(sidecar_path: Path, report: dict | None) -> tuple[list[dict], str]:
     if sidecar_path.is_file():
         try:
-            payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            payload = package_cache.read_bounded_json(
+                sidecar_path,
+                max_bytes=_SWEEP_TITLE_JSON_MAX_BYTES,
+                max_depth=_SWEEP_TITLE_JSON_MAX_DEPTH,
+                max_members=_SWEEP_TITLE_JSON_MAX_MEMBERS,
+                max_items=_SWEEP_TITLE_JSON_MAX_ITEMS,
+                max_nodes=_SWEEP_TITLE_JSON_MAX_NODES,
+            )
+        except (OSError, ValueError):
             payload = None
         if isinstance(payload, dict) and payload.get("schema_version") == 1:
             rows = _normalize_nid_rows(payload.get("unsupported_imports"))
@@ -789,8 +833,8 @@ def _read_previous_public_aggregate(path: Path | None) -> dict | None:
     if not path.is_file():
         raise ValueError("previous public aggregate is unavailable")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = package_cache.read_bounded_json(path)
+    except (OSError, ValueError) as exc:
         raise ValueError("previous public aggregate is unreadable") from exc
     try:
         return _validate_public_aggregate(payload)
@@ -1047,7 +1091,20 @@ def _write_outputs(
         total_isos,
         previous_aggregate=previous_aggregate,
     )
-    _atomic_json(private_path, private_payload)
+    private_document = _json_document_bytes(private_payload)
+    if len(private_document) > _SWEEP_RESUME_JSON_MAX_BYTES:
+        raise ValueError("private sweep report exceeds its configured byte budget")
+    try:
+        package_cache.bounded_json_loads(
+            private_document.decode("utf-8"),
+            max_depth=_SWEEP_RESUME_JSON_MAX_DEPTH,
+            max_members=_SWEEP_RESUME_JSON_MAX_MEMBERS,
+            max_items=_SWEEP_RESUME_JSON_MAX_ITEMS,
+            max_nodes=_SWEEP_RESUME_JSON_MAX_NODES,
+        )
+    except ValueError as exc:
+        raise ValueError("private sweep report exceeds its configured JSON limits") from exc
+    _atomic_json_bytes(private_path, private_document)
     _atomic_json(public_path, public_aggregate)
 
 

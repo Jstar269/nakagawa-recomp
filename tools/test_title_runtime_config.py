@@ -1134,12 +1134,19 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
             line for line in makefile.splitlines()
             if line.startswith("RUNTIME_PROFILE_HASH :=")
         )
-        self.assertIn("TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)", hash_line)
+        self.assertIn("--entries-env NK_RUNTIME_PROFILE_ENTRIES", hash_line)
         record_line = next(
             line for line in makefile.splitlines()
             if "--section runtime" in line
         )
-        self.assertIn("TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)", record_line)
+        self.assertIn("--entries-env NK_RUNTIME_PROFILE_ENTRIES", record_line)
+        # The digest travels through the newline-joined export rather than a
+        # quoted --entry word, so a spaced value cannot split the argv (#667).
+        export_line = next(
+            line for line in makefile.splitlines()
+            if line.startswith("export NK_RUNTIME_PROFILE_ENTRIES :=")
+        )
+        self.assertIn("TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)", export_line)
         # The generic build must not default to a title manifest.
         self.assertRegex(makefile, r"(?m)^TITLE_MANIFEST \?=\s*$")
         # The scheduler matrix must cover a generic build and two distinct fixtures.
