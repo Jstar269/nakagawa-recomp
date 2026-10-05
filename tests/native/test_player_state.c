@@ -2402,7 +2402,12 @@ int main(int argc, char **argv) {
                  cached_title->primary_disc_id);
         nk_title_catalog_snapshot_release(&cached_title_snapshot);
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
-        snprintf(validation_root, sizeof(validation_root), "%s%cpackage-validation-cache",
+        /* A root this subtest owns, named for the probe rather than for a
+           cache: it is not a runtime directory, and a name that reads like one
+           invites the next reader to assume some other component owns whatever
+           it finds underneath. Nothing else in the tree writes here, so a
+           previous run's leftovers can only come from this test itself. */
+        snprintf(validation_root, sizeof(validation_root), "%s%cpr670_validation_probe",
                  cache_root, nk_platform_path_separator());
         snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s",
                  validation_root, nk_platform_path_separator(),
@@ -2524,11 +2529,15 @@ int main(int argc, char **argv) {
                NK_RUNTIME_PACKAGE_STALE);
         assert(!changed_info.validation_cache_hit);
 
-        remove(package_json);
-        remove(completion_json);
-        remove(report_json);
-        remove(executable);
-        remove(image);
+        /* Leave the machine as found. These five removes already ran here, but
+           the root they cleaned still held the fixture's
+           title-input-identities/<disc>/title-input-identity.json (written by
+           write_runtime_package_fixture below the same root) and the package
+           directory itself, so every run left a fresh identity document in the
+           shared cache tree. remove_runtime_package_fixture() drops the same
+           five files and the identity, then the now-empty directories. */
+        remove_runtime_package_fixture(validation_root, cached_disc_id,
+                                       "synthetic-allegrex-v1");
     }
 
 #if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
