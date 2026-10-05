@@ -601,6 +601,49 @@ static void write_runtime_package_fixture(const char *user_root,
     write_text_file(completion_path, completion_json);
 }
 
+/* Remove exactly what write_runtime_package_fixture() writes under *user_root*
+ * for *disc_id*, then the directories that held it. Every subtest that builds a
+ * synthetic package owns a dedicated root under the cache directory and clears
+ * it before it writes, so a re-run or a later subtest can never inherit a
+ * package, an identity document or a completion manifest from an earlier one.
+ *
+ * Best-effort by design: rmdir() only removes an empty directory, so a root
+ * that still holds something unrecognised is left in place rather than followed
+ * into. Every failure mode here is "the tree is still there", which the next
+ * pre-clean handles. */
+static void remove_runtime_package_fixture(const char *user_root,
+                                           const char *disc_id,
+                                           const char *title_id) {
+    char sep = nk_platform_path_separator();
+    char packages[768], package_dir[896];
+    char identities[768], identity_dir[896];
+    char path[1100];
+    static const char *const kPackageFiles[] = {
+        "package.json", "build-report.json", "completion-manifest.json",
+    };
+    snprintf(packages, sizeof(packages), "%s%cpackages", user_root, sep);
+    snprintf(package_dir, sizeof(package_dir), "%s%c%s", packages, sep, disc_id);
+    snprintf(identities, sizeof(identities), "%s%ctitle-input-identities",
+             user_root, sep);
+    snprintf(identity_dir, sizeof(identity_dir), "%s%c%s", identities, sep,
+             disc_id);
+    for (size_t i = 0; i < sizeof(kPackageFiles) / sizeof(kPackageFiles[0]); i++) {
+        snprintf(path, sizeof(path), "%s%c%s", package_dir, sep, kPackageFiles[i]);
+        remove(path);
+    }
+    snprintf(path, sizeof(path), "%s%c%s.exe", package_dir, sep, title_id);
+    remove(path);
+    snprintf(path, sizeof(path), "%s%c%s_image.bin", package_dir, sep, title_id);
+    remove(path);
+    snprintf(path, sizeof(path), "%s%ctitle-input-identity.json", identity_dir, sep);
+    remove(path);
+    test_rmdir(package_dir);
+    test_rmdir(identity_dir);
+    test_rmdir(packages);
+    test_rmdir(identities);
+    test_rmdir(user_root);
+}
+
 static void write_experimental_profile_fixture(const char *user_root,
                                                const char *disc_id,
                                                const char *title_id,
@@ -2375,6 +2418,11 @@ int main(int argc, char **argv) {
                  package_dir, nk_platform_path_separator());
         snprintf(image, sizeof(image), "%s%csynthetic-allegrex-v1_image.bin",
                  package_dir, nk_platform_path_separator());
+        /* Start from a clean root: this subtest asserts cache-hit and
+           cache-invalidation decisions, so it must not inherit a package tree
+           from a previous run. */
+        remove_runtime_package_fixture(validation_root, cached_disc_id,
+                                       "synthetic-allegrex-v1");
         assert(nk_platform_mkdir_p(package_dir));
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
@@ -2513,7 +2561,7 @@ int main(int argc, char **argv) {
         printf("[PLAYER_STATE_TEST] Subtest 19b: single catalog epoch across validation and cache publication\n");
         fflush(stdout);
 
-        char epoch_root[512];
+        char epoch_root[640];
         char epoch_reason[1024];
         NkTitleEntrySnapshot epoch_title_snapshot = {0};
         assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
@@ -2522,7 +2570,16 @@ int main(int argc, char **argv) {
         snprintf(epoch_disc_id, sizeof(epoch_disc_id), "%s",
                  epoch_title_snapshot.entry.primary_disc_id);
         nk_title_catalog_snapshot_release(&epoch_title_snapshot);
-        assert(nk_platform_get_path(NK_PATH_CACHE, epoch_root, sizeof(epoch_root)));
+        /* A dedicated probe root, not the cache root itself: a subtest that
+           writes a synthetic package straight into the shared cache root
+           collides with every other consumer of <cache>/packages. */
+        char epoch_cache_root[512];
+        assert(nk_platform_get_path(NK_PATH_CACHE, epoch_cache_root,
+                                    sizeof(epoch_cache_root)));
+        snprintf(epoch_root, sizeof(epoch_root), "%s%cpr670_epoch_probe",
+                 epoch_cache_root, nk_platform_path_separator());
+        remove_runtime_package_fixture(epoch_root, epoch_disc_id,
+                                       "synthetic-allegrex-v1");
         write_runtime_package_fixture(epoch_root, epoch_disc_id,
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
@@ -2620,6 +2677,11 @@ int main(int argc, char **argv) {
         assert(!revalidated_info.validation_cache_hit);
 
         nk_title_catalog_clear_overlay();
+        /* Leave the machine as found: drop the overlay the probe wrote and the
+           synthetic package it validated. */
+        remove(epoch_overlay_path);
+        remove_runtime_package_fixture(epoch_root, epoch_disc_id,
+                                       "synthetic-allegrex-v1");
     }
 #else
     printf("[PLAYER_STATE_TEST] Subtest 19b SKIPPED: built without "
