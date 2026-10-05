@@ -60,6 +60,9 @@ class CallbackCorrectnessTests(unittest.TestCase):
             (SCHED_SOURCE, "sched_thread_sleep_cb"),
         ):
             body = strip_comments(function_body(source, name))
+            if name == "h_WaitThreadEndCB":
+                self.assertIn("h_WaitThreadEnd_impl(s, 1)", body)
+                body = strip_comments(function_body(HLE_SOURCE, "h_WaitThreadEnd_impl"))
             self.assertIn("sr_thread_dispatch_callbacks", body)
 
     def test_callback_delay_entry_points_share_the_pumping_helper(self):
@@ -178,14 +181,18 @@ class CallbackCorrectnessTests(unittest.TestCase):
         )
 
     def test_wait_thread_end_returns_exit_status_and_zeros_timeout(self):
-        for name in ("h_WaitThreadEnd", "h_WaitThreadEndCB"):
+        for name, callback_flag in (("h_WaitThreadEnd", 0), ("h_WaitThreadEndCB", 1)):
             body = strip_comments(function_body(HLE_SOURCE, name))
-            self.assertIn("h_wait_thread_status", body)
-            self.assertIn("0x80020197u", body)
-            self.assertIn("MEM_W32(toptr, 0)", body)
-            self.assertIn("0x800201A8u", body)
-        helper = strip_comments(function_body(HLE_SOURCE, "h_wait_thread_status"))
-        self.assertIn("sched_thread_exit_status", helper)
+            self.assertIn(f"h_WaitThreadEnd_impl(s, {callback_flag})", body)
+
+        impl = strip_comments(function_body(HLE_SOURCE, "h_WaitThreadEnd_impl"))
+        self.assertIn("0x80020197u", impl)
+        self.assertIn("sched_thread_exit_status(uid)", impl)
+        self.assertIn("SCE_KERNEL_ERROR_WAIT_TIMEOUT", impl)
+        self.assertIn("MEM_W32(toptr, now < deadline", impl)
+        self.assertIn("sched_wait_begin_join(uid, deadline, is_cb)", impl)
+        self.assertIn("sched_wait_take_result(invocation, &status)", impl)
+        self.assertIn("sched_wait_finish(invocation)", impl)
 
     def test_terminate_delete_delegates_owned_callback_cleanup_to_scheduler(self):
         body = strip_comments(function_body(HLE_SOURCE, "h_TerminateDeleteThread"))

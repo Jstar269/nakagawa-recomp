@@ -188,6 +188,16 @@ transfer is bracketed by `sceKernelDcacheWritebackInvalidateRange` and
 `setup_mask=0x0F` means allocation, page geometry, end-neighbor refusal, and
 begin-neighbor refusal all passed (bits 0 through 3 respectively).
 
+The setup-failure **SKIP rule is shared by Tier S (S0) and Tier B (B1-B4)**:
+`setup_mask != 0x0F`, `executed=0`, `cache_discipline=0`, and
+`source_intact=0` (unmeasured, not a failed integrity observation). `P`,
+`matches`, `guards_outside`, `post_guard`, `overflow_band`, and
+`payload_mutations` must all be zero; SKIP cannot claim transfer observations.
+The native producer regression compiles the real `dmac_invalid_emit_skips`
+calls and feeds their S0/B1-B4 output to the shared parser. It also executes
+wrong-integrity-argument mutants and requires parser rejection. This is
+public-safe producer/protocol evidence, not a physical PSP capture.
+
 Records separate `guards_outside` (pre-guard plus tail-guard), `post_guard`,
 and `overflow_band` mutation counts. Any outside-guard mutation fails the
 record and the parser rejects it. Raw addresses are diagnostics only. A Tier B
@@ -198,9 +208,7 @@ beyond `K`.
 Tier S runs S0-a through S0-d for both APIs with `size=0`: null destination,
 null source, both pointers owned, and destination `0xFFFFFFFF` respectively.
 Every PASS record must show `P=0`, no payload or guard mutations, intact
-source, and the complete ownership proof. A SKIP record uses
-`source_intact=0` to leave source integrity unmeasured and must not claim
-transfer or mutation observations. `S0-c` is the control for firmware that may
+source, and the complete ownership proof. `S0-c` is the control for firmware that may
 reject a zero size even when both pointers are owned. These cells isolate
 pointer handling at zero length; the K1-K4 large-span hypotheses do not define
 all zero-length pointer outcomes, so raw return codes remain observations.

@@ -623,6 +623,7 @@ static uint32_t s_msgpipe_callback_nested_resultp;
 static uint32_t s_msgpipe_callback_nested_ret;
 static int s_msgpipe_callback_nested_returned;
 static void (*s_msgpipe_callback_after_nested)(void);
+static void (*s_kernel_nested_callback)(void);
 
 static void msgpipe_setup(CpuState *cpu, uint32_t uid, uint32_t buf,
                           uint32_t size, uint32_t wait_mode, uint32_t resultp);
@@ -711,6 +712,7 @@ void dispatch(CpuState *cpu, uint32_t target) {
         s_oracle_callback_calls++;
         s_oracle_callback_arg1 = cpu->r[4];
         s_oracle_callback_arg2 = cpu->r[5];
+        if (s_kernel_nested_callback) s_kernel_nested_callback();
         if (s_msgpipe_callback_nested_nid != 0u) {
             CpuState nested = {0};
             uint32_t nid = s_msgpipe_callback_nested_nid;
@@ -16751,6 +16753,175 @@ static int mtx_get_info(uint32_t uid, SceKernelMutexInfoTest *out) {
     return 1;
 }
 
+/* Public-safe production-NID schedules for #668/#669. Guest callback bodies
+ * are synthetic; PSP-specific callback policy is not hardware-qualified here. */
+static uint32_t s_kernel_inner_object, s_kernel_inner_nid, s_kernel_inner_count;
+static uint32_t s_kernel_inner_result;
+static int s_kernel_inner_returned;
+static void kernel_nested_callback(void) {
+    CpuState cpu = {0};
+    cpu.r[4] = s_kernel_inner_object;
+    cpu.r[5] = s_kernel_inner_nid == 0xb011b11fu ? s_kernel_inner_count : 0u;
+    s_kernel_inner_result = sr_syscall(&cpu, s_kernel_inner_nid);
+    s_kernel_inner_returned = 1;
+}
+
+static void kernel_nested_resume(TCB *thread) {
+    s_cur = (int)(thread - s_tcb);
+    thread->state = TH_RUNNING;
+    sr_coro_switch(thread->coro);
+    s_cur = -1;
+}
+
+static void test_kernel_nested_join(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *outer_target = fixture_thread(0x6680u, TH_READY, 40);
+    TCB *inner_target = fixture_thread(0x6681u, TH_READY, 40);
+    TCB *joiner = fixture_thread(0x6682u, TH_RUNNING, 32);
+    outer_target->started = inner_target->started = joiner->started = 1;
+    s_joiner_woken = s_kernel_inner_returned = 0;
+    s_joiner_ret = s_kernel_inner_result = 0xffffffffu;
+    joiner->coro = sr_coro_create(joiner_cb_coro_body, outer_target, (size_t)4 << 20);
+    expect(joiner->coro != NULL, "#668 creates a real callback join coroutine");
+    if (!joiner->coro) return;
+    kernel_nested_resume(joiner);
+    expect(joiner->state == TH_WAIT_OBJ && joiner->wait_obj == outer_target->uid,
+           "#668 outer production WaitThreadEndCB blocks on X");
+    s_oracle_mode = 1;
+    s_kernel_nested_callback = kernel_nested_callback;
+    s_kernel_inner_object = inner_target->uid;
+    s_kernel_inner_nid = NID_SCE_KERNEL_WAIT_THREAD_END;
+    s_cur = (int)(joiner - s_tcb);
+    uint32_t callback = issue339_create_pending_callback();
+    kernel_nested_resume(joiner);
+    expect(!s_kernel_inner_returned && joiner->state == TH_WAIT_OBJ &&
+           joiner->wait_obj == inner_target->uid,
+           "#668 callback nests production WaitThreadEnd on Y");
+    s_exit_argument = 0x68;
+    run_worker(outer_target);
+    CpuState cpu = {0};
+    s_cur = (int)(inner_target - s_tcb);
+    cpu.r[4] = outer_target->uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_THREAD) == 0,
+           "#668 X exits and is deleted while the callback waits for Y");
+    expect(joiner->state == TH_WAIT_OBJ && !s_kernel_inner_returned,
+           "#668 X's retained result does not wake the unrelated Y wait");
+    s_exit_argument = 0x69;
+    run_worker(inner_target);
+    kernel_nested_resume(joiner);
+    expect(s_kernel_inner_returned && s_kernel_inner_result == 0x69u,
+           "#668 inner join consumes only Y's exit result");
+    expect(s_joiner_woken && s_joiner_ret == 0x68u,
+           "#668 outer join retains X's exit result after X deletion");
+    s_cur = (int)(joiner - s_tcb);
+    cpu.r[4] = callback;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+    s_kernel_nested_callback = NULL;
+    s_oracle_mode = 0;
+    sr_coro_destroy(joiner->coro); joiner->coro = NULL;
+    if (outer_target->coro) { sr_coro_destroy(outer_target->coro); outer_target->coro = NULL; }
+    if (inner_target->coro) { sr_coro_destroy(inner_target->coro); inner_target->coro = NULL; }
+}
+
+static void test_kernel_nested_mutex_case(uint32_t attr, int departure) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x6690u, TH_RUNNING, 32);
+    TCB *thread = fixture_thread(0x6691u, TH_READY, 40);
+    owner->started = thread->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t mutex = mtx_create("nested-grants", attr, 1);
+    MtxWaiterCtx outer = {0};
+    outer.tcb = thread; outer.uid = thread->uid;
+    outer.mtx_uid = mutex; outer.count = 1; outer.is_cb = 1;
+    thread->coro = sr_coro_create(mtx_waiter_fiber_body, &outer, (size_t)4 << 20);
+    expect(thread->coro != NULL, "#669 creates a real mutex waiter coroutine");
+    if (!thread->coro) return;
+    kernel_nested_resume(thread);
+    s_oracle_mode = 1;
+    s_kernel_nested_callback = kernel_nested_callback;
+    s_kernel_inner_object = mutex;
+    s_kernel_inner_nid = 0xb011b11fu;
+    s_kernel_inner_count = attr & 0x0200u ? 2u : 1u;
+    s_kernel_inner_returned = 0;
+    s_kernel_inner_result = 0xffffffffu;
+    s_cur = (int)(thread - s_tcb);
+    uint32_t callback = issue339_create_pending_callback();
+    kernel_nested_resume(thread);
+    SceKernelMutexInfoTest info;
+    expect(mtx_get_info(mutex, &info) && info.numWaitThreads == 2 &&
+           !outer.returned && !s_kernel_inner_returned,
+           "#669 distinct outer and inner requests are queued");
+    s_cur = (int)(owner - s_tcb);
+    if (departure == 1 || departure == 2) {
+        uint32_t error = departure == 1 ? 0x800201a9u : 0x800201b5u;
+        expect((departure == 1 ? mtx_cancel(mutex, 0, 0) : mtx_delete(mutex)) == 0u,
+               "#669 cancel/delete completes both unfinished invocations");
+        kernel_nested_resume(thread);
+        expect(s_kernel_inner_returned && s_kernel_inner_result == error &&
+               outer.returned && outer.ret == error && !s_wait_invocations,
+               "#669 parent and child retain their own cancel/delete results");
+    } else if (departure == 4) {
+        CpuState cpu = {0}; cpu.r[4] = thread->uid;
+        expect(sr_syscall(&cpu, NID_WCR_RELEASE_WAIT) == 0u,
+               "#669 release targets the active child acquisition only");
+        kernel_nested_resume(thread);
+        expect(s_kernel_inner_returned && s_kernel_inner_result == 0x800201aau &&
+               !outer.returned && mtx_get_info(mutex, &info) && info.numWaitThreads == 1,
+               "#669 released child detaches without removing its queued parent");
+        s_cur = (int)(owner - s_tcb);
+        expect(mtx_unlock(mutex, 1) == 0u, "#669 parent remains eligible for a later grant");
+        kernel_nested_resume(thread);
+        expect(outer.returned && outer.ret == 0u && mtx_get_info(mutex, &info) &&
+               info.currentCount == 1 && info.numWaitThreads == 0,
+               "#669 parent completes once after child release");
+        s_cur = (int)(thread - s_tcb);
+        expect(mtx_unlock(mutex, 1) == 0u, "#669 parent releases its own count");
+    } else if (departure == 3) {
+        CpuState cpu = {0}; cpu.r[4] = thread->uid;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_THREAD) == 0u &&
+               !thread->coro && !s_wait_invocations,
+               "#669 terminating a nested waiter drains every acquisition scope");
+        expect(mtx_get_info(mutex, &info) && info.numWaitThreads == 0 &&
+               info.lockThread == (int32_t)owner->uid && info.currentCount == 1,
+               "#669 waiter teardown preserves the original owner and queue");
+        expect(mtx_unlock(mutex, 1) == 0u, "#669 no dead invocation receives a later grant");
+    } else {
+        expect(mtx_unlock(mutex, 1) == 0, "#669 original owner unlocks");
+        kernel_nested_resume(thread);
+        uint32_t inner_result = attr & 0x0200u ? 0u : 0x800201c8u;
+        int total = attr & 0x0200u ? 3 : 1;
+        expect(s_kernel_inner_returned && s_kernel_inner_result == inner_result &&
+               outer.returned && outer.ret == 0u,
+               "#669 inner applies recursive policy independently of the parent's grant");
+        expect(mtx_get_info(mutex, &info) && info.currentCount == total &&
+               info.lockThread == (int32_t)thread->uid && info.numWaitThreads == 0,
+               "#669 each successful invocation establishes its own requested count");
+        s_cur = (int)(thread - s_tcb);
+        if (attr & 0x0200u)
+            expect(mtx_unlock(mutex, 2) == 0 && mtx_get_info(mutex, &info) &&
+                   info.currentCount == 1,
+                   "#669 releasing the inner count preserves the outer acquisition");
+        expect(mtx_unlock(mutex, 1) == 0, "#669 outer acquisition releases separately");
+    }
+    CpuState cpu = {0}; cpu.r[4] = callback;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+    (void)mtx_delete(mutex);
+    s_kernel_nested_callback = NULL;
+    s_oracle_mode = 0;
+    if (thread->coro) { sr_coro_destroy(thread->coro); thread->coro = NULL; }
+}
+
+static void test_kernel_nested_mutex(void) {
+    test_kernel_nested_mutex_case(0x0200u, 0); /* recursive: 1 + 2 */
+    test_kernel_nested_mutex_case(0u, 0);      /* nonrecursive child rejects */
+    test_kernel_nested_mutex_case(0x0200u, 1); /* nested cancel */
+    test_kernel_nested_mutex_case(0x0200u, 2); /* nested delete */
+    test_kernel_nested_mutex_case(0x0200u, 3); /* owner abandonment */
+    test_kernel_nested_mutex_case(0x0200u, 4); /* child release, parent reblocks */
+}
+
 static void test_psp_mutex(void) {
     reset_fixture();
     sr_hle_init();
@@ -17153,7 +17324,8 @@ static void test_psp_mutex(void) {
     expect(w_exit.tcb->state == TH_WAIT_OBJ, "Lifetime 4: t_exit waiting on m_other");
     expect(mtx_get_info(m_other, &info) && info.numWaitThreads == 1, "Lifetime 4: m_other has 1 waiter");
 
-    sr_hle_release_thread_resources(t_exit->uid);
+    /* Exercise the complete production teardown, including semantic waits. */
+    sched_release_thread_resources(t_exit);
 
     expect(mtx_get_info(m_held1, &info) && info.lockThread == (int32_t)t_wait_held->uid && info.numWaitThreads == 0,
            "Lifetime 3: held1 transferred to waiter on thread exit");
@@ -17219,10 +17391,10 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 8 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[640];
         snprintf(msg, sizeof msg,
-                 "every parking body parked exactly once (2 joiners + 1 sema CB body "
+                 "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
@@ -20192,8 +20364,9 @@ static void test_issue339_terminate_waiting_thread(void) {
     expect(joiner->coro != NULL, "issue #339 joiner coroutine created");
     s_cur = (int)(joiner - s_tcb);
     if (joiner->coro) sr_coro_switch(joiner->coro);
-    expect(joiner->state == TH_WAIT_OBJ && joiner->join_waiting &&
-           joiner->join_target == target_uid,
+    SrWaitHandle join_invocation = joiner->active_wait;
+    expect(joiner->state == TH_WAIT_OBJ && join_invocation != 0u &&
+           joiner->wait_obj == target_uid,
            "issue #339 joiner parks on the target through WaitThreadEnd");
 
     TCB *dormant = fixture_thread(0x3392u, TH_DORMANT, 40);
@@ -20226,9 +20399,10 @@ static void test_issue339_terminate_waiting_thread(void) {
     expect(selftest_mbx_refer(mbx_uid, MBX_INFO) == 0 &&
            MEM_R32(MBX_INFO + 40) == 0u,
            "TerminateThread removes the target from its mailbox wait queue");
-    expect(joiner->state == TH_READY && !joiner->join_waiting &&
-           joiner->join_result_valid &&
-           joiner->join_result == 0x800201acu && joiner->wait_obj == 0 &&
+    WaitInvocation *join_outcome = sched_wait_find(join_invocation);
+    expect(joiner->state == TH_READY && join_outcome &&
+           join_outcome->result_valid &&
+           join_outcome->result == 0x800201acu && joiner->wait_obj == 0 &&
            joiner->wait_kind == 0 && joiner->pending_wait_kind == 0,
            "TerminateThread wakes the joiner with a clean THREAD_TERMINATED result");
 
@@ -20488,6 +20662,14 @@ int main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--kernel-nested-sync") == 0) {
+        test_kernel_nested_join();
+        test_kernel_nested_mutex();
+        fprintf(stderr, "kernel-nested-sync: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--b1-kobj") == 0) {
         test_sema_hardware_codes();
         test_lwmutex_hardware_codes();
@@ -20633,6 +20815,8 @@ int main(int argc, char **argv) {
     test_mbx_lifecycle_and_ordering();
     test_intr_context_conformance();
     test_psp_mutex();
+    test_kernel_nested_join();
+    test_kernel_nested_mutex();
     test_real_module_start_lifecycle();
     test_late_prx_unload_reload_lifecycle();
     test_late_prx_duplicate_base_last_reference();

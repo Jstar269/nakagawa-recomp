@@ -2199,141 +2199,66 @@ static uint32_t h_CancelWakeupThread(CpuState *s) {
     if (getenv("SR_WAKELOG")) { static int n=0; if (n++<8) fprintf(stderr, "CANCEL_WAKE target=0x%x old=%d (from 0x%x)\n", A0, old, sched_current_uid()); }
     return old < 0 ? 0x800201a0u : (uint32_t)old;
 }
-static uint32_t h_wait_thread_status(uint32_t uid) {
-    uint32_t result = 0;
-    if (sched_take_current_join_result(uid, &result)) return result;
-    return sched_thread_exit_status(uid);
-}
-/* Would a join on `uid` actually have to block? Answered without side effects, so a
- * handler that is about to reject the call does not consume the banked join result
- * that h_wait_thread_status() would take. A target that is anything other than
- * NOT_DORMANT (0x800201a4) resolves the join immediately. */
-static int h_wait_thread_would_block(uint32_t uid) {
-    if (sched_current_join_result_pending(uid)) return 0;
-    return sched_thread_exit_status(uid) == 0x800201A4u;
-}
-static uint32_t h_WaitThreadEnd(CpuState *s) {
-    uint32_t uid = A0;
-    uint32_t toptr = A1;
+static uint32_t h_WaitThreadEnd_impl(CpuState *s, int is_cb) {
+    uint32_t uid = A0, toptr = A1;
     uint32_t self = sched_current_uid();
     if (uid == 0 || uid == self) return 0x80020197u;
-
-    /* ILLEGAL_THID above wins over the context restriction on hardware in every
-     * context (L204/L205/L383), so the object check stays first. Only once the
-     * target is established to still be running is this a genuine wait. Rejecting
-     * here touches no join target, no timeout word and no wait state. (L208/L209) */
-    if (h_wait_thread_would_block(uid) && !sched_wait_permitted())
+    uint32_t status = sched_thread_exit_status(uid);
+    /* ILLEGAL_THID wins; reject a genuine wait before guest callbacks (L208/L217). */
+    if (status == 0x800201A4u && !sched_wait_permitted())
         return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-
-    uint32_t status = h_wait_thread_status(uid);
-    if (status != 0x800201A4u) return status;
-
-    if (!toptr) {
-        sched_set_current_join_target(uid);
-        while ((status = h_wait_thread_status(uid)) == 0x800201A4u)
-            sched_block_on(uid);
-        sched_clear_current_join_target();
+    if (status != 0x800201A4u) {
+        /* Immediate CB joins still dispatch callbacks and leave timeout untouched. */
+        if (is_cb && sr_thread_has_pending_callbacks(self)) {
+            sr_thread_dispatch_callbacks();
+            status = sched_thread_exit_status(uid);
+        }
         return status;
     }
 
-    sched_vtime_refresh();
-    uint64_t deadline = sched_vtime_deadline_after(MEM_R32(toptr));
-    for (;;) {
-        status = h_wait_thread_status(uid);
-        if (status != 0x800201A4u) {
-            sched_vtime_refresh();
-            uint64_t now = sched_vtime_us();
-            MEM_W32(toptr, now < deadline ? (uint32_t)(deadline - now) : 0u);
-            return status;
-        }
-        sched_vtime_refresh();
-        uint64_t now = sched_vtime_us();
-        if (now >= deadline) {
-            MEM_W32(toptr, 0);
-            return 0x800201A8u;
-        }
-        uint32_t remaining = (uint32_t)(deadline - now);
-        sched_set_current_join_target(uid);
-        if (sched_block_on_timeout(uid, remaining)) {
-            sched_clear_current_join_target();
-            MEM_W32(toptr, 0);
-            return 0x800201A8u;
-        }
-    }
-}
-static uint32_t h_WaitThreadEndCB(CpuState *s) {
-    uint32_t uid = A0;
-    uint32_t toptr = A1;
-    uint32_t self = sched_current_uid();
-    if (uid == 0 || uid == self) return 0x80020197u;
-
-    /* Rejected before the callback dispatch below, not after: a call that returns
-     * CAN_NOT_WAIT must not have run guest callback code on its way out. (L216/L217) */
-    if (h_wait_thread_would_block(uid) && !sched_wait_permitted())
-        return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-
-    /* CB waits process callbacks even if the target was already dormant when the
-     * syscall began. Hardware leaves the timeout untouched in that immediate case. */
-    if (sr_thread_has_pending_callbacks(self))
-        sr_thread_dispatch_callbacks();
-
-    uint32_t status = h_wait_thread_status(uid);
-    if (status != 0x800201A4u) return status;
-
-    uint64_t deadline = 0;
+    uint64_t deadline = 0u;
     if (toptr) {
         sched_vtime_refresh();
         deadline = sched_vtime_deadline_after(MEM_R32(toptr));
     }
-
+    /* Register before callbacks: even an initial callback can nest a join and
+     * allow this target to exit/delete before this invocation first blocks. */
+    SrWaitHandle invocation = sched_wait_begin_join(uid, deadline, is_cb);
+    if (!invocation) return 0x80020190u;
     for (;;) {
-        if (sr_thread_has_pending_callbacks(self)) {
+        if (sched_wait_take_result(invocation, &status)) break;
+        if (is_cb && sr_thread_has_pending_callbacks(self)) {
+            sched_wait_callback(invocation, 1);
             sr_thread_dispatch_callbacks();
-            status = h_wait_thread_status(uid);
-            if (status != 0x800201A4u) {
-                if (toptr) {
-                    sched_vtime_refresh();
-                    uint64_t now = sched_vtime_us();
-                    MEM_W32(toptr, now < deadline ? (uint32_t)(deadline - now) : 0u);
-                }
-                return status;
-            }
+            sched_wait_callback(invocation, 0);
+            if (sched_wait_take_result(invocation, &status)) break;
         }
-
+        status = sched_thread_exit_status(uid);
+        if (status != 0x800201A4u) break;
+        uint32_t remaining = 0u;
         if (toptr) {
             sched_vtime_refresh();
             uint64_t now = sched_vtime_us();
-            if (now >= deadline) {
-                MEM_W32(toptr, 0);
-                return 0x800201A8u;
-            }
-            uint32_t remaining = (uint32_t)(deadline - now);
-            sched_set_current_join_target(uid);
-            sched_set_current_cb_wait(1);
-            int timed_out = sched_block_on_timeout(uid, remaining);
-            sched_set_current_cb_wait(0);
-            if (timed_out) {
-                sched_clear_current_join_target();
-                MEM_W32(toptr, 0);
-                return 0x800201A8u;
-            }
-        } else {
-            sched_set_current_join_target(uid);
-            sched_set_current_cb_wait(1);
-            sched_block_on(uid);
-            sched_set_current_cb_wait(0);
+            if (now >= deadline) { status = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
+            remaining = (uint32_t)(deadline - now);
         }
-
-        status = h_wait_thread_status(uid);
-        if (status != 0x800201A4u) {
-            if (toptr) {
-                sched_vtime_refresh();
-                uint64_t now = sched_vtime_us();
-                MEM_W32(toptr, now < deadline ? (uint32_t)(deadline - now) : 0u);
-            }
-            return status;
-        }
+        int expired = sched_wait_block(invocation, remaining, toptr != 0u);
+        if (sched_wait_take_result(invocation, &status)) break;
+        if (expired) { status = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
     }
+    if (toptr) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        MEM_W32(toptr, now < deadline ? (uint32_t)(deadline - now) : 0u);
+    }
+    (void)sched_wait_finish(invocation);
+    return status;
+}
+static uint32_t h_WaitThreadEnd(CpuState *s) {
+    return h_WaitThreadEnd_impl(s, 0);
+}
+static uint32_t h_WaitThreadEndCB(CpuState *s) {
+    return h_WaitThreadEnd_impl(s, 1);
 }
 static uint32_t h_ReferThreadRunStatus(CpuState *s) {
     uint32_t out = A1;
@@ -17634,6 +17559,7 @@ static void hle_register_cancel_release_handlers(void) {
 
 typedef struct {
     uint32_t thread_uid;
+    SrWaitHandle invocation;
     int      requested_count;
 } MutexWaiter;
 
@@ -17711,7 +17637,8 @@ static void mutex_free(Mutex *m) {
     free(m);
 }
 
-static int mutex_enqueue_waiter(Mutex *m, uint32_t thread_uid, int requested_count) {
+static int mutex_enqueue_waiter(Mutex *m, uint32_t thread_uid,
+                                 SrWaitHandle invocation, int requested_count) {
     if (m->wait_count >= m->wait_cap) {
         int next;
         if (m->wait_cap) {
@@ -17727,15 +17654,16 @@ static int mutex_enqueue_waiter(Mutex *m, uint32_t thread_uid, int requested_cou
         m->wait_cap = next;
     }
     m->waiters[m->wait_count].thread_uid = thread_uid;
+    m->waiters[m->wait_count].invocation = invocation;
     m->waiters[m->wait_count].requested_count = requested_count;
     m->wait_count++;
     m->num_wait_threads++;
     return 1;
 }
 
-static void mutex_remove_waiter(Mutex *m, uint32_t thread_uid) {
+static void mutex_remove_waiter(Mutex *m, SrWaitHandle invocation) {
     for (int i = 0; i < m->wait_count; i++) {
-        if (m->waiters[i].thread_uid == thread_uid) {
+        if (m->waiters[i].invocation == invocation) {
             for (int j = i; j + 1 < m->wait_count; j++) {
                 m->waiters[j] = m->waiters[j + 1];
             }
@@ -17747,20 +17675,21 @@ static void mutex_remove_waiter(Mutex *m, uint32_t thread_uid) {
 }
 
 static int mutex_select_and_dequeue_waiter(Mutex *m, MutexWaiter *out) {
-    if (m->wait_count <= 0) return 0;
-    int best_idx = 0;
-    if (m->attr & PSP_MUTEX_ATTR_PRIORITY) {
-        int best_pri = 0x7FFFFFFF;
-        for (int i = 0; i < m->wait_count; i++) {
-            SrThreadRunStatus rs;
-            if (sched_thread_run_status(m->waiters[i].thread_uid, &rs) == 0) {
-                if ((int)rs.currentPriority < best_pri) {
-                    best_pri = (int)rs.currentPriority;
-                    best_idx = i;
-                }
-            }
+    int best_idx = -1, best_pri = INT_MAX;
+    for (int i = 0; i < m->wait_count; i++) {
+        SrWaitState state;
+        uint32_t owner;
+        SrThreadRunStatus rs;
+        if (!sched_wait_state(m->waiters[i].invocation, &state, &owner) ||
+            state == SR_WAIT_TERMINAL || owner != m->waiters[i].thread_uid ||
+            sched_thread_run_status(owner, &rs) != 0) continue;
+        if (best_idx < 0 || ((m->attr & PSP_MUTEX_ATTR_PRIORITY) &&
+                            (int)rs.currentPriority < best_pri)) {
+            best_idx = i;
+            best_pri = (int)rs.currentPriority;
         }
     }
+    if (best_idx < 0) return 0;
     *out = m->waiters[best_idx];
     for (int j = best_idx; j + 1 < m->wait_count; j++) {
         m->waiters[j] = m->waiters[j + 1];
@@ -17770,23 +17699,38 @@ static int mutex_select_and_dequeue_waiter(Mutex *m, MutexWaiter *out) {
     return 1;
 }
 
+static int mutex_grant_next(Mutex *m) {
+    MutexWaiter next;
+    if (!mutex_select_and_dequeue_waiter(m, &next)) {
+        m->lock_thread = 0u;
+        m->current_count = 0;
+        return 0;
+    }
+    m->lock_thread = next.thread_uid;
+    m->current_count = next.requested_count;
+    (void)sched_wait_complete(next.invocation, 0u);
+    /* A callback child on this same mutex may now acquire recursively, but it
+     * must add its own count (or reject recursion). Notification is not a grant. */
+    for (int i = 0; i < m->wait_count; i++)
+        if (m->waiters[i].thread_uid == next.thread_uid)
+            (void)sched_wait_notify(m->waiters[i].invocation);
+    return 1;
+}
+
+static int mutex_detach_invocation(SrWaitHandle invocation, uint32_t uid) {
+    Mutex *m = mutex_find(uid);
+    if (!m) return 0;
+    mutex_remove_waiter(m, invocation);
+    return m->current_count == 0 ? mutex_grant_next(m) : 0;
+}
+
 void sr_mutex_release_thread(uint32_t thread_uid) {
     if (!thread_uid || !s_mutexes) return;
     for (size_t i = 0; i < s_mutex_len; i++) {
         Mutex *m = s_mutexes[i];
         if (!m) continue;
-        mutex_remove_waiter(m, thread_uid);
-        if (m->lock_thread == thread_uid) {
-            MutexWaiter next;
-            if (mutex_select_and_dequeue_waiter(m, &next)) {
-                m->lock_thread = next.thread_uid;
-                m->current_count = next.requested_count;
-                sched_wake_one_object_waiter(m->uid, next.thread_uid);
-            } else {
-                m->lock_thread = 0;
-                m->current_count = 0;
-            }
-        }
+        /* Scheduler owner teardown has already detached every nesting level. */
+        if (m->lock_thread == thread_uid) (void)mutex_grant_next(m);
     }
 }
 
@@ -17856,7 +17800,7 @@ static uint32_t h_DeleteMutex(CpuState *s) {
     Mutex *m = mutex_find(uid);
     if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
 
-    sched_wake(uid);
+    sched_wait_cancel_object(uid, SCE_KERNEL_ERROR_WAIT_DELETE);
     mutex_free(m);
     return 0;
 }
@@ -17908,84 +17852,54 @@ static uint32_t h_LockMutex_impl(CpuState *s, int is_cb) {
         has_timeout = 1;
     }
 
-    uint32_t start_cancel = m->cancel_seq;
-    if (!mutex_enqueue_waiter(m, cur_thid, count)) {
-        return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+    SrWaitHandle invocation = sched_wait_begin(uid, end_time, is_cb,
+                                                mutex_detach_invocation);
+    if (!invocation) return SCE_KERNEL_ERROR_NO_MEMORY;
+    if (!mutex_enqueue_waiter(m, cur_thid, invocation, count)) {
+        (void)sched_wait_finish(invocation);
+        return SCE_KERNEL_ERROR_NO_MEMORY;
     }
 
-    m = NULL;
-
+    uint32_t result;
     for (;;) {
+        /* Only this invocation's grant completes this queued request. */
+        if (sched_wait_take_result(invocation, &result)) break;
         if (is_cb && sr_thread_has_pending_callbacks(cur_thid)) {
+            sched_wait_callback(invocation, 1);
             sr_thread_dispatch_callbacks();
-            m = mutex_find(uid);
-            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
-            if (m->cancel_seq != start_cancel) {
-                mutex_remove_waiter(m, cur_thid);
-                return SCE_KERNEL_ERROR_WAIT_CANCEL;
-            }
-            if (m->lock_thread == cur_thid) {
-                if (has_timeout) {
-                    sched_vtime_refresh();
-                    uint64_t now = sched_vtime_us();
-                    uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0;
-                    MEM_W32(toptr, rem);
-                }
-                return 0;
-            }
-            m = NULL;
-            continue;
+            sched_wait_callback(invocation, 0);
+            if (sched_wait_take_result(invocation, &result)) break;
         }
-
+        m = mutex_find(uid);
+        if (!m) { result = SCE_KERNEL_ERROR_WAIT_DELETE; break; }
+        /* A parked parent may have established thread ownership. That is not
+         * this child's grant: apply the ordinary recursive-lock policy anew. */
+        if (m->current_count > 0 && m->lock_thread == cur_thid) {
+            if (!(m->attr & PSP_MUTEX_ATTR_ALLOW_RECURSIVE))
+                result = SCE_KERNEL_ERROR_MUTEX_RECURSIVE_NOT_ALLOWED;
+            else if ((uint64_t)m->current_count + (uint64_t)count > INT_MAX)
+                result = SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW;
+            else { m->current_count += count; result = 0u; }
+            break;
+        }
+        uint32_t remaining = 0u;
         if (has_timeout) {
             sched_vtime_refresh();
             uint64_t now = sched_vtime_us();
-            if (now >= end_time) {
-                m = mutex_find(uid);
-                if (m) mutex_remove_waiter(m, cur_thid);
-                MEM_W32(toptr, 0);
-                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
-            }
-            uint32_t remaining = (uint32_t)(end_time - now);
-            if (is_cb) sched_set_current_cb_wait(1);
-            int timed_out = sched_block_on_timeout(uid, remaining);
-            if (is_cb) sched_set_current_cb_wait(0);
-
-            m = mutex_find(uid);
-            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
-            if (m->cancel_seq != start_cancel) {
-                mutex_remove_waiter(m, cur_thid);
-                return SCE_KERNEL_ERROR_WAIT_CANCEL;
-            }
-            if (m->lock_thread == cur_thid) {
-                sched_vtime_refresh();
-                now = sched_vtime_us();
-                uint32_t rem = (now < end_time) ? (uint32_t)(end_time - now) : 0;
-                MEM_W32(toptr, rem);
-                return 0;
-            }
-            if (timed_out) {
-                mutex_remove_waiter(m, cur_thid);
-                MEM_W32(toptr, 0);
-                return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
-            }
-        } else {
-            if (is_cb) sched_set_current_cb_wait(1);
-            sched_block_on(uid);
-            if (is_cb) sched_set_current_cb_wait(0);
-
-            m = mutex_find(uid);
-            if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
-            if (m->cancel_seq != start_cancel) {
-                mutex_remove_waiter(m, cur_thid);
-                return SCE_KERNEL_ERROR_WAIT_CANCEL;
-            }
-            if (m->lock_thread == cur_thid) {
-                return 0;
-            }
+            if (now >= end_time) { result = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
+            remaining = (uint32_t)(end_time - now);
         }
-        m = NULL;
+        int expired = sched_wait_block(invocation, remaining, has_timeout);
+        if (sched_wait_take_result(invocation, &result)) break;
+        if (expired) { result = SCE_KERNEL_ERROR_WAIT_TIMEOUT; break; }
     }
+    if (has_timeout && (result == 0u || result == SCE_KERNEL_ERROR_WAIT_TIMEOUT)) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        MEM_W32(toptr, now < end_time ? (uint32_t)(end_time - now) : 0u);
+    }
+    if (sched_wait_finish(invocation)) sched_preempt();
+    return result;
 }
 
 static uint32_t h_LockMutex(CpuState *s) {
@@ -18053,15 +17967,7 @@ static uint32_t h_UnlockMutex(CpuState *s) {
         return 0;
     }
 
-    MutexWaiter next;
-    if (mutex_select_and_dequeue_waiter(m, &next)) {
-        m->lock_thread = next.thread_uid;
-        m->current_count = next.requested_count;
-        sched_wake_one_object_waiter(uid, next.thread_uid);
-        sched_preempt();
-    } else {
-        m->lock_thread = 0;
-    }
+    if (mutex_grant_next(m)) sched_preempt();
     return 0;
 }
 
@@ -18093,7 +17999,7 @@ static uint32_t h_CancelMutex(CpuState *s) {
     m->wait_count = 0;
     m->num_wait_threads = 0;
 
-    sched_wake(uid);
+    sched_wait_cancel_object(uid, SCE_KERNEL_ERROR_WAIT_CANCEL);
     return 0;
 }
 

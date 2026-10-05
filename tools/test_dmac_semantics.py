@@ -19,7 +19,17 @@ this module must not turn it into an invented synchronous state machine.
 
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
+
+try:
+    from .psp_oracle.parse_golden import parse_dmac_invalid_tail_output
+    from .psp_oracle.protocol import ProtocolError
+except ImportError:
+    from psp_oracle.parse_golden import parse_dmac_invalid_tail_output
+    from psp_oracle.protocol import ProtocolError
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -139,6 +149,91 @@ class TestDmacExecutableCoverage(unittest.TestCase):
     def test_code_invalidation_boundary_is_explicit(self) -> None:
         region = _dmac_region()
         self.assertIn("does not currently translate guest self-modifying code", region)
+
+
+class TestDmacSkipProducer(unittest.TestCase):
+    """Compile the real C producer, not Python lookalike protocol rows.
+
+    Only emit() and the launch constants are synthetic. No PSP SDK, hardware,
+    private input, allocation or DMAC call is involved in this setup-failure path.
+    """
+
+    def test_s0_and_b1_b4_producer_rows_satisfy_shared_skip_shape(self) -> None:
+        compiler = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+        if not compiler:
+            self.skipTest("a native C compiler is required for producer execution")
+        probe = (ROOT / "fixtures/psp_oracle/probe.c").read_text(encoding="utf-8")
+        record_start = probe.index("static void dmac_invalid_emit_record(")
+        record = probe[record_start:probe.index("static int dmac_invalid_probe_neighbor", record_start)]
+        skip_start = probe.index("static void dmac_invalid_emit_skips(")
+        skips = probe[skip_start:probe.index("static void run_dmac_invalid_tier_s", skip_start)]
+        macro_start = probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST", probe.index("#define DMAC_INVALID_MAX_DELTA"))
+        macros = probe[macro_start:probe.index("static uint8_t s_dmac_invalid_io", macro_start)]
+        constants = "\n".join(re.findall(
+            r"^#define (?:PSP_ORACLE_CASE_DMAC_INVALID_TAIL_\w+|DMAC_INVALID_PAYLOAD_BYTES) .+$",
+            probe, re.MULTILINE,
+        ))
+        launches = (
+            ("dma-invalid-tail-s0", "S0", 8),
+            ("dma-invalid-tail-memcpy-dst", "MEMCPY_DST", 4),
+            ("dma-invalid-tail-memcpy-src", "MEMCPY_SRC", 4),
+            ("dma-invalid-tail-try-dst", "TRY_DST", 4),
+            ("dma-invalid-tail-try-src", "TRY_SRC", 4),
+        )
+        with tempfile.TemporaryDirectory(prefix="dmac-skip-producer-") as directory:
+            root = Path(directory)
+            for campaign, case, count in launches:
+                for mutation in (False, True):
+                    with self.subTest(campaign=campaign, integrity_mutation=mutation):
+                        body = skips
+                        if mutation:
+                            # Generate/compile/execute the wrong source_intact argument
+                            # for BOTH tiers; never mutate the tracked producer in place.
+                            body = body.replace(
+                                "0u, 0u, 0u, 0u, setup_mask",
+                                "0u, 0u, 0u, 1u, setup_mask",
+                            )
+                            self.assertNotEqual(body, skips)
+                        source = root / "producer.c"
+                        binary = root / "producer.exe"
+                        source.write_text(
+                            "#include <stdint.h>\n#include <stdio.h>\n" + constants +
+                            f"\n#define PSP_ORACLE_CASE PSP_ORACLE_CASE_DMAC_INVALID_TAIL_{case}\n" +
+                            macros +
+                            "static void emit(int emulated, const char *line) { (void)emulated; fputs(line, stdout); }\n" +
+                            record + body +
+                            "int main(void) { dmac_invalid_emit_skips(1, 7u, 0x80020190u); return 0; }\n",
+                            encoding="utf-8",
+                        )
+                        built = subprocess.run(
+                            [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                             str(source), "-o", str(binary)],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+                        emitted = subprocess.run(
+                            [str(binary)], capture_output=True, text=True, timeout=10,
+                        )
+                        self.assertEqual(emitted.returncode, 0, emitted.stderr)
+                        self.assertEqual(len(emitted.stdout.splitlines()), count)
+                        stream = (
+                            "NAKAGAWA_PSP_META schema=1 source=nakagawa model=synthetic "
+                            "firmware=test binary_sha256=" + "0" * 64 +
+                            " source_commit=" + "0" * 40 + "\n" + emitted.stdout
+                        )
+                        if mutation:
+                            with self.assertRaisesRegex(ProtocolError, "SKIP cannot claim source integrity"):
+                                parse_dmac_invalid_tail_output(stream, campaign)
+                        else:
+                            parsed = parse_dmac_invalid_tail_output(stream, campaign)
+                            self.assertEqual(len(parsed.results), count)
+                            for result in parsed.results:
+                                values = dict(result.values)
+                                self.assertEqual(result.status, "SKIP")
+                                for field in ("source_intact", "executed", "cache_discipline",
+                                              "P", "matches", "guards_outside", "post_guard",
+                                              "overflow_band", "payload_mutations"):
+                                    self.assertEqual(int(values[field], 0), 0, field)
 
 
 class TestDmacGpuAliasBoundary(unittest.TestCase):
