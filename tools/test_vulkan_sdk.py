@@ -178,7 +178,7 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
         make = shutil.which("mingw32-make") or shutil.which("make")
         if not make:
             self.skipTest("GNU Make is required")
-        with tempfile.TemporaryDirectory(prefix="td33-vk-override-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="td33-vk override-") as tmp:
             sdk = self.make_sdk(Path(tmp), "9.9.9.9")
             env = dict(os.environ)
             env["VULKAN_SDK"] = str(sdk)
@@ -199,9 +199,11 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
             # library search path. On Linux the headers live under /usr/include
             # and only the library search path is emitted, so the -I half is
             # asserted only on Windows.
-            self.assertIn(f"-L{root}", blob)
+            # Keep the quotes visible in the dry-run: they preserve SDK roots
+            # with spaces as a single compiler argument.
+            self.assertIn(f'-L"{root}/', blob)
             if os.name == "nt":
-                self.assertIn(f"-I{root}", blob)
+                self.assertIn(f'-I"{root}/', blob)
 
 
 if __name__ == "__main__":
