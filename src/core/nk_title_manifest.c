@@ -2684,6 +2684,38 @@ static void package_validation_cache_unlock(void) {
 }
 #endif
 
+/* White-box seams (#670). Production never installs a checkpoint. A native
+   regression installs one so a catalog clear/reload lands deterministically at
+   the cache publication point, and then reads back what was actually
+   published: which catalog epoch the entry is stamped with, and the status
+   identity digest it carries. Without the read-back the coherence of a
+   published entry (stamp epoch == digest epoch) is not observable, because the
+   epoch field alone already makes a mixed entry unservable. */
+typedef void (*NkPackageValidationCheckpointFn)(void *ctx);
+static NkPackageValidationCheckpointFn s_package_validation_checkpoint = NULL;
+static void *s_package_validation_checkpoint_ctx = NULL;
+
+void nk_title_manifest_test_set_validation_checkpoint(
+    NkPackageValidationCheckpointFn checkpoint, void *ctx) {
+    s_package_validation_checkpoint = checkpoint;
+    s_package_validation_checkpoint_ctx = ctx;
+}
+
+bool nk_title_manifest_test_package_cache_entry(uint64_t *out_catalog_epoch,
+                                                char out_status_identity[65]) {
+    package_validation_cache_lock();
+    bool valid = s_package_validation_cache.valid;
+    if (out_catalog_epoch) {
+        *out_catalog_epoch = s_package_validation_cache.catalog_epoch;
+    }
+    if (out_status_identity) {
+        snprintf(out_status_identity, 65, "%s",
+                 s_package_validation_cache.status_identity_digest);
+    }
+    package_validation_cache_unlock();
+    return valid;
+}
+
 static bool package_file_identity(const char *path, PackageFileIdentity *identity) {
     if (!path || !identity) return false;
 #if defined(_WIN32) || defined(_WIN64)
@@ -4424,11 +4456,20 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                strlen(resolved_executable) + 1);
         memcpy(resolved_info.image_path, resolved_image, strlen(resolved_image) + 1);
         if (!is_experimental) {
+            /* The publication point. A catalog clear/reload landing here must
+               not be absorbed into the entry: the digest below is the one that
+               gets published next to `catalog_epoch`, so it has to be computed
+               at the snapshot epoch rather than re-sampling the catalog. The
+               checkpoint is NULL in production. */
+            if (s_package_validation_checkpoint) {
+                s_package_validation_checkpoint(s_package_validation_checkpoint_ctx);
+            }
             char status_identity_digest[65] = "";
-            if (nk_title_manifest_aot_package_cache_identity(
+            if (nk_title_manifest_aot_package_cache_identity_at_epoch(
                     user_data_root, normalized, title_id, false,
                     selected_executable, current_disc_version,
-                    player_abi_version, status_identity_digest)) {
+                    player_abi_version, catalog_epoch,
+                    status_identity_digest)) {
                 package_validation_cache_put(
                     package_root, normalized, title_id,
                     validated_identity_file_digest, current_disc_version,

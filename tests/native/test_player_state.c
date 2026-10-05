@@ -722,6 +722,21 @@ static void repeat_launch_and_settle(PlayerApp *app, int game_index,
     assert(strcmp(app->last_error.error_code, error_before) == 0);
 }
 
+/* Catalog-epoch coherence probe (#670). The checkpoint runs inside
+ * nk_title_manifest_validate_aot_package at the package-validation cache
+ * publication point, so the forced catalog reload is deterministic rather than
+ * timing-dependent: it cannot land before the epoch snapshot or after the
+ * cache insertion, only exactly between them. */
+static uint64_t s_epoch_publication_before = 0;
+static uint64_t s_epoch_publication_after = 0;
+
+static void force_catalog_reload_at_publication(void *ctx) {
+    (void)ctx;
+    s_epoch_publication_before = nk_title_catalog_epoch();
+    nk_title_catalog_clear_overlay();
+    s_epoch_publication_after = nk_title_catalog_epoch();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -2463,6 +2478,120 @@ int main(int argc, char **argv) {
         remove(report_json);
         remove(executable);
         remove(image);
+    }
+
+    {
+        /* 19b. One catalog epoch across package validation and its cache
+         * identity (#670).
+         *
+         * validate_aot_package() snapshots the catalog epoch once, under the
+         * catalog lock, and that one snapshot must describe the identity
+         * digest, the cache lookup, and the insertion. A catalog clear/reload
+         * landing between the snapshot and the publication used to be absorbed
+         * into the published entry: the entry was stamped with the snapshot
+         * epoch while its identity digest was recomputed by a helper that
+         * sampled the epoch again.
+         *
+         * The checkpoint below forces exactly that interleaving, and the
+         * assertions are coherence assertions, not timing ones: the epoch
+         * really advanced, the digest really is epoch-sensitive, and the entry
+         * that was published carries both the snapshot epoch and the digest
+         * computed under that epoch. The final validation proves the
+         * superseded entry cannot be served. */
+        printf("[PLAYER_STATE_TEST] Subtest 19b: single catalog epoch across validation and cache publication\n");
+        fflush(stdout);
+
+        char epoch_root[512];
+        char epoch_reason[1024];
+        NkTitleEntrySnapshot epoch_title_snapshot = {0};
+        assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
+                                           &epoch_title_snapshot));
+        char epoch_disc_id[MAX_DISC_ID_LEN];
+        snprintf(epoch_disc_id, sizeof(epoch_disc_id), "%s",
+                 epoch_title_snapshot.entry.primary_disc_id);
+        nk_title_catalog_snapshot_release(&epoch_title_snapshot);
+        assert(nk_platform_get_path(NK_PATH_CACHE, epoch_root, sizeof(epoch_root)));
+        write_runtime_package_fixture(epoch_root, epoch_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+
+        NkGameEntry epoch_game;
+        memset(&epoch_game, 0, sizeof(epoch_game));
+        snprintf(epoch_game.disc_id, sizeof(epoch_game.disc_id), "%s",
+                 epoch_disc_id);
+        snprintf(epoch_game.title_id, sizeof(epoch_game.title_id),
+                 "synthetic-allegrex-v1");
+        snprintf(epoch_game.selected_executable,
+                 sizeof(epoch_game.selected_executable), "EBOOT.BIN");
+
+        /* Registering an overlay installs the catalog's storage-reset callback,
+           so clearing through the catalog advances the published epoch exactly
+           as a real title-manifest reload does. */
+        static const char epoch_overlay_json[] =
+            "{\n"
+            "  \"schema_version\": 1,\n"
+            "  \"id\": \"epoch-coherence-overlay\",\n"
+            "  \"display_name\": \"Epoch Coherence Overlay\",\n"
+            "  \"kind\": \"retail\",\n"
+            "  \"disc\": {\"id\": \"UCUS99901\", \"region\": \"NA\", \"revision_policy\": \"exact-disc-id\"},\n"
+            "  \"executable\": {\"base\": \"0x08800000\", \"entry\": \"0x08804000\", \"bss_metadata_source\": \"elf\", \"extra_executable_spans\": []},\n"
+            "  \"modules\": [{\"name\": \"epoch.prx\", \"load_address\": \"0x08900000\", \"required\": true, \"role\": \"guest-prx\"}],\n"
+            "  \"filesystem\": {\"data_root\": \"data/epoch\", \"memory_stick_root\": \"ms/epoch\", \"device_prefixes\": [\"host0:\"]},\n"
+            "  \"hle_profile\": \"standard\",\n"
+            "  \"feature_requirements\": [\"allegrex\"],\n"
+            "  \"verification_profile\": \"smoke\"\n"
+            "}\n";
+        NkTitleEntry epoch_overlay_entry;
+        char epoch_overlay_error[512];
+        assert(nk_title_manifest_parse_buffer(
+                   epoch_overlay_json, strlen(epoch_overlay_json), false,
+                   &epoch_overlay_entry, epoch_overlay_error,
+                   sizeof(epoch_overlay_error)));
+        uint64_t const epoch_at_snapshot = nk_title_catalog_epoch();
+
+        char identity_at_snapshot[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            epoch_root, &epoch_game, identity_at_snapshot));
+
+        s_epoch_publication_before = 0;
+        s_epoch_publication_after = 0;
+        nk_title_manifest_test_set_validation_checkpoint(
+            force_catalog_reload_at_publication, NULL);
+        NkRuntimePackageInfo epoch_info;
+        NkRuntimePackageStatus epoch_status = nk_launch_validate_runtime_package(
+            epoch_root, &epoch_game, &epoch_info, epoch_reason,
+            sizeof(epoch_reason));
+        nk_title_manifest_test_set_validation_checkpoint(NULL, NULL);
+        assert(epoch_status == NK_RUNTIME_PACKAGE_OK);
+        assert(!epoch_info.validation_cache_hit);
+
+        /* The forced reload ran, and it ran between the snapshot and the
+           publication: without both halves the coherence assertion below would
+           be vacuous. */
+        assert(s_epoch_publication_before == epoch_at_snapshot);
+        assert(s_epoch_publication_after > s_epoch_publication_before);
+
+        char identity_after_reload[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            epoch_root, &epoch_game, identity_after_reload));
+        assert(strcmp(identity_at_snapshot, identity_after_reload) != 0);
+
+        uint64_t published_epoch = 0;
+        char published_identity[65];
+        assert(nk_title_manifest_test_package_cache_entry(&published_epoch,
+                                                          published_identity));
+        assert(published_epoch == epoch_at_snapshot);
+        assert(strcmp(published_identity, identity_at_snapshot) == 0);
+
+        /* A superseded entry is never served: the next validation revalidates
+           against the current catalog instead of hitting it. */
+        NkRuntimePackageInfo revalidated_info;
+        assert(nk_launch_validate_runtime_package(
+                   epoch_root, &epoch_game, &revalidated_info, epoch_reason,
+                   sizeof(epoch_reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(!revalidated_info.validation_cache_hit);
+
+        nk_title_catalog_clear_overlay();
     }
 
     /* 20. A prepared package launched TWICE through the player-owned session

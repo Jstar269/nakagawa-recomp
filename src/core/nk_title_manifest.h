@@ -159,6 +159,17 @@ bool nk_title_manifest_aot_package_cache_identity(
     char out_identity[65]
 );
 
+/* White-box seams for the package-validation cache epoch contract (#670).
+ * Production never installs a checkpoint. A native regression installs one to
+ * land a catalog clear/reload deterministically at the cache publication point,
+ * and reads the published entry back so it can assert that the epoch stamped on
+ * the entry is the epoch its identity digest was computed under. */
+typedef void (*NkPackageValidationCheckpointFn)(void *ctx);
+void nk_title_manifest_test_set_validation_checkpoint(
+    NkPackageValidationCheckpointFn checkpoint, void *ctx);
+bool nk_title_manifest_test_package_cache_entry(uint64_t *out_catalog_epoch,
+                                                char out_status_identity[65]);
+
 #ifdef __cplusplus
 }
 #endif
