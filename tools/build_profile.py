@@ -319,6 +319,14 @@ def parse_args() -> argparse.Namespace:
         command = subparsers.add_parser(action)
         command.add_argument("--compiler", required=True)
         command.add_argument("--entry", action="append", default=[])
+        command.add_argument(
+            "--entries-env",
+            metavar="VAR",
+            help="read newline-separated KEY=VALUE entries from environment "
+                 "variable VAR instead of --entry; flag lists whose text may "
+                 "contain quotes or spaces travel this way so no byte of the "
+                 "value reaches a command interpreter as syntax",
+        )
         command.add_argument("--file", action="append", default=[], metavar="PATH")
         if action == "record":
             command.add_argument("--output", type=Path, required=True)
@@ -360,7 +368,21 @@ def main() -> int:
     if args.action == "stamp":
         activate_stamp(args.output, args.stale_glob, args.value, invalidate=args.invalidate)
         return 0
-    payload = profile_payload(args.compiler, args.entry, args.file)
+    try:
+        entries = (
+            resolve_list(
+                args.entries_env,
+                use_env=True,
+                cli_values=args.entry,
+                flag="--entries-env",
+            )
+            if args.entries_env
+            else list(args.entry)
+        )
+    except BuildInputError as exc:
+        sys.stderr.write(f"build_profile: {exc}\n")
+        return 2
+    payload = profile_payload(args.compiler, entries, args.file)
     digest = profile_hash(payload)
     if args.action == "hash":
         print(digest)

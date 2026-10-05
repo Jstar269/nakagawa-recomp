@@ -116,9 +116,13 @@ Corrections to the mission list:
    `project_authored_attested` with `upstream_attribution: ppsspp` — i.e.
    `behavior-informed` in model vocabulary (tiers R, R, S respectively).
    Two caveats: `evf.h`'s own header still carries a `Derived from PPSSPP`
-   line while its ledger entry claims project-authored expression (a
-   header/ledger mismatch the campaign must resolve, not by deleting the
-   comment but by earning the replacement citation per the model rules);
+   line while its ledger entry claims project-authored expression with null
+   upstream attribution. Maintainer decision (2026-10-01, #342): authorship
+   of `evf.h` is unknown, so the derived attribution STAYS as the
+   conservative claim; the remaining work is making the public
+   ledger/projection record that derived lineage and retiring the three
+   tool lineage exceptions separately (overlapping the #304 licensing
+   decision);
    and the `guest_interp` record (`daybreak4-guest-interpreter`) was
    **unbacked** until the maintainer promoted the existing human-authored
    record into the trusted authority; it is backed as of 2026-09-24 (#332,
@@ -261,10 +265,13 @@ replacement by an LLE path that makes the component unnecessary ·
   packet exists outside the public tree; the public seam stays
   fail-closed. Any future item here needs maintainer + qualified review,
   not just this plan.
-- **G15 behaviour-hardening → evidence, not rewrite.** `evf.h`: resolve
-  the header/ledger mismatch by replacing the PPSSPP cross-check citation
-  with Loop C event-flag cells + PSPSDK declarations, then drop the stale
-  header line together with the citation change (model rule: earn first).
+- **G15 behaviour-hardening → evidence, not rewrite.** `evf.h`: the
+  maintainer decision (2026-10-01, #342) keeps the `Derived from PPSSPP`
+  header attribution as the conservative claim; the remaining work is
+  making the public ledger/projection record derived-from-PPSSPP instead
+  of project-authored with null upstream, then retiring the three tool
+  lineage exceptions separately — maintainer-paced, blocked on the trusted
+  record update and the #304 licensing decision.
   `fp_convert.h`: closest to done — PSPAutotests pin + MIPS32 rationale
   already in-header; remaining work is confirming the exact pin's licence
   permits the use and recording hardware corroboration where Loop A/B
@@ -378,7 +385,7 @@ AI-agent + maintainer-review loop, speculative by nature).
 | 10 | G10/G11 GE software + Vulkan | Needs the homebrew pixel-measurement corpus first; current oracle role must be replaced before the code, not with it | Corpus 2–4 (hardware-bound); rewrites 3–5 after |
 | — | G9 HLE core | Not sequenced as a rewrite: shrinks via LLE domain takeovers; residual (a) rewrite scoped once the domain map stabilises | Per-domain with LLE phases |
 | — | G14 PGD/amctrl | Excluded until qualified review; no engineering sequence to give | — |
-| — | G15 hardening | Fast wins alongside: fp_convert licence-use confirmation, evf citation swap, guest_interp maintainer attestation | Days, maintainer-paced |
+| — | G15 hardening | Fast wins alongside: fp_convert licence-use confirmation, evf ledger/projection correction (2026-10-01 decision), guest_interp maintainer attestation | Days, maintainer-paced |
 
 ## 7. Interaction with LLE Phase 1 PRs 4–9
 
@@ -449,9 +456,11 @@ Ledger end-state (checked mechanically):
    entries explicitly carrying a bounded-(c) disposition with an expiry or
    review condition (G10-interim, G14) — and every (c) entry must name the
    exclusion or bound that contains it.
-2. `guest_interp`/`evf`/`fp_convert` carry `upstream_attribution: null`
-   with tier H/S/A citations, or stay honestly `behavior-informed` with the
-   consultation recorded — no silent upgrades (the merge gate's T5 already
+2. `guest_interp`/`fp_convert` carry `upstream_attribution: null` with tier
+   H/S/A citations, or stay honestly `behavior-informed` with the
+   consultation recorded; `evf.h` instead records its
+   derived-from-PPSSPP lineage in the public ledger/projection per the
+   2026-10-01 decision (#342) — no silent upgrades (the merge gate's T5 already
    treats a claim change as unbacked without authority).
 3. `assets/vfpu/*.dat` are regenerated-from-measurement or re-reviewed
    with the regeneration proof in `assets/vfpu/PROVENANCE.json`; the
@@ -495,8 +504,11 @@ that authority.
 3. `fp_convert`'s PSPAutotests pin: confirm the licence permits the
    behavioural use and record the answer with the pin, or drop the pin
    citation to hardware-only evidence.
-4. `evf.h` header/ledger mismatch: confirm the citation-swap approach
-   (earn Loop C cells, then change header + ledger together).
+4. `evf.h` header/ledger mismatch: resolved as a plan question by the
+   2026-10-01 maintainer decision (#342) — keep the derived header,
+   correct the ledger/projection to derived-from-PPSSPP (blocked on the
+   trusted-record update and the #304 licensing decision), and retire the
+   three tool lineage exceptions separately.
 5. PGF payload admission ultimately needs counsel answers (font-origins
    §8: OFL aggregation vs GPL program, RFN rename sufficiency, metric
    reproduction exposure, camouflage-name redistribution). Is counsel

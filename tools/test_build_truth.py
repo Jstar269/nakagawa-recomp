@@ -1820,8 +1820,11 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertIn("$(SDL3_INC_FLAGS)", cflags)
         sdl3_cflags_pos = cflags.index("$(SDL3_INC_FLAGS)")
         # CFLAGS carries the Vulkan include flags through VULKAN_INC_FLAGS, whose
-        # Windows definition derives from $(VULKAN_SDK).
-        self.assertRegex(makefile_text, r"VULKAN_INC_FLAGS\s*:=\s*-I\$\(VULKAN_SDK\)/Include")
+        # Windows definition derives from $(VULKAN_SDK); the path stays quoted so
+        # a spaced SDK root remains a single shell word (#667).
+        self.assertRegex(
+            makefile_text, r'VULKAN_INC_FLAGS\s*:=\s*-I"\$\(VULKAN_SDK\)/Include'
+        )
         vulkan_cflags_pos = cflags.index("$(VULKAN_INC_FLAGS)")
         self.assertLess(sdl3_cflags_pos, vulkan_cflags_pos, "SDL3 includes must precede Vulkan SDK in CFLAGS")
 
@@ -1830,7 +1833,7 @@ class MachinePortabilityTests(unittest.TestCase):
         ldflags = ldflags_match.group(1)
         self.assertIn("$(SDL3_LDFLAGS)", ldflags)
         sdl3_ld_pos = ldflags.index("$(SDL3_LDFLAGS)")
-        vulkan_ld_pos = ldflags.index("-L$(VULKAN_SDK)")
+        vulkan_ld_pos = ldflags.index('-L"$(VULKAN_SDK)')
         self.assertLess(sdl3_ld_pos, vulkan_ld_pos, "SDL3 lib flags must precede Vulkan SDK in LDFLAGS")
 
         player_inc_match = re.search(r"PLAYER_INCLUDES\s*:=\s*([^\r\n]+)", makefile_text)
@@ -2144,8 +2147,16 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
     def test_nonstandard_root_is_placed_on_the_search_path(self) -> None:
         values = self._fragment(self._provider("msys2_ucrt64", "C:/msys64/ucrt64/include",
                                                "C:/msys64/ucrt64/lib/libSDL3.dll.a"))
-        self.assertEqual(values["SDL3_INC_FLAGS"], "-IC:/msys64/ucrt64/include")
-        self.assertEqual(values["SDL3_LDFLAGS"], "-LC:/msys64/ucrt64/lib")
+        self.assertEqual(values["SDL3_INC_FLAGS"], '-I"C:/msys64/ucrt64/include"')
+        self.assertEqual(values["SDL3_LDFLAGS"], '-L"C:/msys64/ucrt64/lib"')
+
+    def test_a_spaced_toolchain_root_stays_a_single_shell_word(self) -> None:
+        """#667 A4: an unquoted spaced -I/-L splits into phantom compiler arguments."""
+        values = self._fragment(self._provider(
+            "msys2_ucrt64", "C:/Program Files/SDL3/include",
+            "C:/Program Files/SDL3/lib/libSDL3.dll.a"))
+        self.assertEqual(values["SDL3_INC_FLAGS"], '-I"C:/Program Files/SDL3/include"')
+        self.assertEqual(values["SDL3_LDFLAGS"], '-L"C:/Program Files/SDL3/lib"')
 
     def test_msys2_provider_with_a_foreign_compiler_fails_closed_without_flags(self) -> None:
         import nk_doctor_checks as ndc
@@ -2171,12 +2182,76 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
             text = ndc.sdl3_make_fragment(compiler="gcc")
         values = dict(line.split(" := ", 1) for line in text.splitlines())
         self.assertEqual(values["SDL3_ERROR"], "")
-        self.assertEqual(values["SDL3_LDFLAGS"], "-LC:/msys64/ucrt64/lib")
+        self.assertEqual(values["SDL3_LDFLAGS"], '-L"C:/msys64/ucrt64/lib"')
 
     def test_makefile_discovers_sdl3_once_per_parse(self) -> None:
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertEqual(sum("write_sdl3_make_fragment" in line for line in makefile_text.splitlines()), 1)
         self.assertNotIn("query_sdl3_info", makefile_text)
+
+
+class ProfileEntriesEnvTransportTests(unittest.TestCase):
+    """Runtime profile entries with quotes/spaces travel through the environment (#667 A4).
+
+    A flag list such as CFLAGS now carries quoted -I/-L paths; handing that text
+    to `build_profile hash --entry` on a command line would let cmd.exe/sh split
+    it into phantom arguments before Python ever sees it. The environment is the
+    transport that survives, matching GAME_EXTRA_ELFS_ENV, and the digest must
+    not depend on which transport was used.
+    """
+
+    ENV_VAR = "NK_TEST_PROFILE_ENTRIES"
+
+    def _run(self, args: list[str], env) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(PROFILE_TOOL), *args],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False, env=env,
+        )
+
+    @staticmethod
+    def _compiler() -> str:
+        return shutil.which("python") or shutil.which("python3") or sys.executable
+
+    def test_entries_env_hash_matches_identical_argv_entries(self) -> None:
+        entries = [
+            'CFLAGS=-O0 -I"C:/a b/include" -DSR_BUILD_DIR=\\"build/x\\"',
+            "SDL3_DIR=C:/a b/sdl3",
+        ]
+        argv_args = ["hash", "--compiler", self._compiler()]
+        for entry in entries:
+            argv_args += ["--entry", entry]
+        argv_run = self._run(argv_args, dict(os.environ))
+        env = dict(os.environ, **{self.ENV_VAR: "\n".join(entries)})
+        env_run = self._run(
+            ["hash", "--compiler", self._compiler(),
+             "--entries-env", self.ENV_VAR],
+            env,
+        )
+        self.assertEqual(argv_run.returncode, 0, argv_run.stderr)
+        self.assertEqual(env_run.returncode, 0, env_run.stderr)
+        self.assertEqual(argv_run.stdout.strip(), env_run.stdout.strip())
+
+    def test_entries_env_and_argv_entries_conflict_fails_closed(self) -> None:
+        env = dict(os.environ, **{self.ENV_VAR: "A=1"})
+        proc = self._run(
+            ["hash", "--compiler", self._compiler(),
+             "--entry", "A=1", "--entries-env", self.ENV_VAR],
+            env,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("conflicting sources", proc.stderr)
+
+    def test_unset_entries_env_fails_closed(self) -> None:
+        env = dict(os.environ)
+        env.pop(self.ENV_VAR, None)
+        proc = self._run(
+            ["hash", "--compiler", self._compiler(),
+             "--entries-env", self.ENV_VAR],
+            env,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn(self.ENV_VAR, proc.stderr)
 
 
 class ToolsModuleImportPathTests(unittest.TestCase):

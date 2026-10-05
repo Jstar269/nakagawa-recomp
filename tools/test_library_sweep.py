@@ -814,5 +814,324 @@ class LibrarySweepTests(unittest.TestCase):
         )
         self.assertEqual((copied, status), (0, "NO_MATCH"))
 
+
+class LibrarySweepExternalJsonTests(unittest.TestCase):
+    """Drive hostile synthetic files through each external sweep JSON reader."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="library_sweep_json_")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def _private_report(self) -> dict:
+        return {
+            "schema_version": 1,
+            "source_commit": SOURCE_COMMIT,
+            "source_fingerprint": SOURCE_FINGERPRINT,
+            "rows": [_sweep_row("launch")],
+        }
+
+    def _route_outcome(self, report_path: Path):
+        iso_path = self.root / "synthetic.iso"
+        iso_path.write_bytes(b"synthetic ISO placeholder")
+        work_dir = self.root / "work"
+        work_dir.mkdir(exist_ok=True)
+        sidecar_path = work_dir / "sweep-imports.json"
+        route_payload = report_path.read_bytes()
+
+        class CompletedProcess:
+            returncode = 0
+
+            @staticmethod
+            def communicate(timeout=None):
+                report_path.write_bytes(route_payload)
+                return "", ""
+
+        with (
+            mock.patch.object(library_sweep, "_route_environment", return_value={}),
+            mock.patch.object(
+                library_sweep.subprocess, "Popen", return_value=CompletedProcess()
+            ),
+        ):
+            return library_sweep._run_bringup(
+                iso_path, work_dir, report_path, sidecar_path, 1
+            )
+
+    def test_duplicate_schema_field_is_rejected_in_previous_aggregate(self) -> None:
+        previous = library_sweep._public_aggregate(
+            [_sweep_row("launch")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1
+        )
+        previous_path = self.root / "previous.json"
+        previous_path.write_text(
+            '{"schema_version":999,' + json.dumps(previous)[1:], encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError, "previous public aggregate is unreadable"):
+            library_sweep._read_previous_public_aggregate(previous_path)
+
+    def test_duplicate_schema_field_is_rejected_in_private_resume_report(self) -> None:
+        resume_path = self.root / "library-sweep.json"
+        resume_path.write_text(
+            '{"schema_version":999,' + json.dumps(self._private_report())[1:],
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "existing private sweep report is unreadable"):
+            library_sweep._read_existing_rows(
+                resume_path, SOURCE_COMMIT, SOURCE_FINGERPRINT, {"private/launch.iso"}
+            )
+
+    def test_duplicate_schema_field_is_rejected_in_bringup_report(self) -> None:
+        route_path = self.root / "bringup.json"
+        route_path.write_text(
+            '{"schema_version":999,"schema_version":1,"failure_class":"NONE"}',
+            encoding="utf-8",
+        )
+        self.assertIsNone(self._route_outcome(route_path).report)
+
+    def test_duplicate_schema_field_in_import_sidecar_uses_runtime_fallback(self) -> None:
+        sidecar_path = self.root / "sweep-imports.json"
+        sidecar_path.write_text(
+            '{"schema_version":999,' + json.dumps({
+                "schema_version": 1,
+                "unsupported_imports": [{
+                    "library": "sceOld",
+                    "nid": "0x12345678",
+                    "nid_name": "capturedOnlyIfDuplicateIsAccepted",
+                }],
+            })[1:],
+            encoding="utf-8",
+        )
+        runtime_rows, status = library_sweep._read_private_nid_rows(
+            sidecar_path,
+            {"runtime_imports": [{
+                "library": "sceAudio",
+                "nid": "0x87654321",
+                "nid_name": "runtimeFallback",
+            }]},
+        )
+        self.assertEqual(status, "RUNTIME_ONLY")
+        self.assertEqual(runtime_rows[0]["nid"], "0x87654321")
+
+    def test_valid_route_report_keeps_its_normal_reader_path(self) -> None:
+        route_path = self.root / "bringup.json"
+        route_path.write_text(json.dumps(_bringup_report()), encoding="utf-8")
+
+        outcome = self._route_outcome(route_path)
+
+        self.assertEqual(outcome.report["failure_class"], "UNSUPPORTED_IMPORT")
+
+    def test_route_reader_accepts_a_large_valid_import_inventory(self) -> None:
+        report = _bringup_report()
+        report["unsupported_imports"] = [
+            {"library": "sceAudio", "nid_name": f"sceFunction{index:05}"}
+            for index in range(20000)
+        ]
+        route_path = self.root / "bringup-large.json"
+        route_path.write_text(json.dumps(report, separators=(",", ":")), encoding="utf-8")
+        self.assertGreater(route_path.stat().st_size, 1024 * 1024)
+
+        outcome = self._route_outcome(route_path)
+
+        self.assertEqual(len(outcome.report["unsupported_imports"]), 20000)
+
+    def test_sidecar_reader_accepts_a_large_valid_import_inventory(self) -> None:
+        sidecar_path = self.root / "sweep-imports-large.json"
+        payload = {
+            "schema_version": 1,
+            "unsupported_imports": [
+                {
+                    "library": "sceAudio",
+                    "nid": f"0x{index:08x}",
+                    "nid_name": f"sceFunction{index:05}",
+                }
+                for index in range(20000)
+            ],
+        }
+        sidecar_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.assertGreater(sidecar_path.stat().st_size, 1024 * 1024)
+
+        rows, status = library_sweep._read_private_nid_rows(sidecar_path, None)
+
+        self.assertEqual(status, "CAPTURED")
+        self.assertEqual(len(rows), 20000)
+
+    def test_large_valid_resume_checkpoint_is_readable_after_writer_serializes_it(self) -> None:
+        rows = []
+        for index in range(10000):
+            row = _sweep_row("launch")
+            row.update({
+                "source_key": f"library/{index:05}.iso",
+                "source_file": f"{index:05}.iso",
+                "disc_id": "UCUS99999",
+                "title_name": "Synthetic PSP title",
+                "inspect_error": None,
+                "input_size_bytes": 123456789,
+                "input_mtime_ns": 123456789,
+                "first_missing_nids": [{
+                    "library": "sceAudio",
+                    "nid": "0x12345678",
+                    "nid_name": "sceAudioInit",
+                }],
+                "nid_evidence_status": "CAPTURED",
+                "wall_time_ms": 125,
+                "bringup_wall_time_ms": 100,
+                "machine_load_wait_ms": 25,
+                "machine_load_still_active_after_wait": False,
+                "decrypted_inputs_staged": 0,
+                "decrypted_input_status": "NO_MATCH",
+                "route_exit_code": 1,
+                "input_responsive": "NOT_MEASURED",
+            })
+            rows.append(row)
+        private_path = self.root / "library-sweep.json"
+        public_path = self.root / "aggregate.json"
+
+        library_sweep._write_outputs(
+            private_path,
+            public_path,
+            SOURCE_COMMIT,
+            SOURCE_FINGERPRINT,
+            120,
+            rows,
+            total_isos=len(rows),
+            ran_this_invocation=len(rows),
+            resumed_this_invocation=0,
+        )
+
+        self.assertGreater(private_path.stat().st_size, 1024 * 1024)
+        retained = library_sweep._read_existing_rows(
+            private_path,
+            SOURCE_COMMIT,
+            SOURCE_FINGERPRINT,
+            {row["source_key"] for row in rows},
+        )
+        self.assertEqual(len(retained), 10000)
+
+    def test_resume_reader_enforces_configured_bytes_depth_and_counts(self) -> None:
+        path = self.root / "bounded-resume.json"
+        path.write_text(json.dumps(self._private_report()), encoding="utf-8")
+        cases = (
+            ("_SWEEP_RESUME_JSON_MAX_BYTES", 16),
+            ("_SWEEP_RESUME_JSON_MAX_DEPTH", 1),
+            ("_SWEEP_RESUME_JSON_MAX_MEMBERS", 1),
+            ("_SWEEP_RESUME_JSON_MAX_ITEMS", 1),
+            ("_SWEEP_RESUME_JSON_MAX_NODES", 1),
+        )
+        for name, limit in cases:
+            with self.subTest(limit=name), mock.patch.object(library_sweep, name, limit):
+                with self.assertRaisesRegex(ValueError, "existing private sweep report is unreadable"):
+                    library_sweep._read_existing_rows(
+                        path,
+                        SOURCE_COMMIT,
+                        SOURCE_FINGERPRINT,
+                        {"private/launch.iso"},
+                    )
+
+    def test_resume_writer_refuses_over_budget_checkpoint_before_replacing_outputs(self) -> None:
+        private_path = self.root / "library-sweep.json"
+        public_path = self.root / "aggregate.json"
+        private_path.write_bytes(b"PRIVATE_CHECKPOINT")
+        public_path.write_bytes(b"PUBLIC_CHECKPOINT")
+
+        with mock.patch.object(library_sweep, "_SWEEP_RESUME_JSON_MAX_BYTES", 32):
+            with self.assertRaisesRegex(ValueError, "private sweep report exceeds its configured byte budget"):
+                library_sweep._write_outputs(
+                    private_path,
+                    public_path,
+                    SOURCE_COMMIT,
+                    SOURCE_FINGERPRINT,
+                    120,
+                    [_sweep_row("launch")],
+                    total_isos=1,
+                    ran_this_invocation=0,
+                    resumed_this_invocation=0,
+                )
+
+        self.assertEqual(private_path.read_bytes(), b"PRIVATE_CHECKPOINT")
+        self.assertEqual(public_path.read_bytes(), b"PUBLIC_CHECKPOINT")
+
+        with mock.patch.object(library_sweep, "_SWEEP_RESUME_JSON_MAX_ITEMS", 1):
+            with self.assertRaisesRegex(ValueError, "private sweep report exceeds its configured JSON limits"):
+                library_sweep._write_outputs(
+                    private_path,
+                    public_path,
+                    SOURCE_COMMIT,
+                    SOURCE_FINGERPRINT,
+                    120,
+                    [_sweep_row("launch")],
+                    total_isos=1,
+                    ran_this_invocation=0,
+                    resumed_this_invocation=0,
+                )
+
+        self.assertEqual(private_path.read_bytes(), b"PRIVATE_CHECKPOINT")
+        self.assertEqual(public_path.read_bytes(), b"PUBLIC_CHECKPOINT")
+
+    def test_route_and_sidecar_readers_enforce_configured_structural_limits(self) -> None:
+        route_path = self.root / "bounded-bringup.json"
+        route_path.write_text(json.dumps(_bringup_report()), encoding="utf-8")
+        sidecar_path = self.root / "bounded-imports.json"
+        sidecar_path.write_text(json.dumps({
+            "schema_version": 1,
+            "unsupported_imports": [{
+                "library": "sceOld",
+                "nid": "0x12345678",
+                "nid_name": "capturedOnlyIfAccepted",
+            }],
+        }), encoding="utf-8")
+        runtime_report = {"runtime_imports": [{
+            "library": "sceAudio",
+            "nid": "0x87654321",
+            "nid_name": "runtimeFallback",
+        }]}
+        limits = (
+            ("_SWEEP_TITLE_JSON_MAX_BYTES", 16),
+            ("_SWEEP_TITLE_JSON_MAX_DEPTH", 1),
+            ("_SWEEP_TITLE_JSON_MAX_MEMBERS", 1),
+            ("_SWEEP_TITLE_JSON_MAX_ITEMS", 1),
+            ("_SWEEP_TITLE_JSON_MAX_NODES", 1),
+        )
+        for name, limit in limits:
+            with self.subTest(reader="route", limit=name), mock.patch.object(
+                library_sweep, name, limit
+            ):
+                self.assertIsNone(self._route_outcome(route_path).report)
+            with self.subTest(reader="sidecar", limit=name), mock.patch.object(
+                library_sweep, name, limit
+            ):
+                rows, status = library_sweep._read_private_nid_rows(sidecar_path, runtime_report)
+                self.assertEqual(status, "RUNTIME_ONLY")
+                self.assertEqual(rows[0]["nid"], "0x87654321")
+
+    def test_external_readers_reject_nonfinite_or_invalid_utf8_without_path_details(self) -> None:
+        resume_path = self.root / "nonfinite-resume.json"
+        resume = self._private_report()
+        resume["time_budget_seconds"] = float("nan")
+        resume_path.write_text(json.dumps(resume), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "existing private sweep report is unreadable"):
+            library_sweep._read_existing_rows(
+                resume_path, SOURCE_COMMIT, SOURCE_FINGERPRINT, {"private/launch.iso"}
+            )
+
+        route_path = self.root / "invalid-utf8-bringup.json"
+        route_path.write_bytes(b'{"failure_class":"' + bytes((0xFF,)) + b'"}')
+        outcome = self._route_outcome(route_path)
+        self.assertIsNone(outcome.report)
+
+        sidecar_path = self.root / "invalid-utf8-sidecar.json"
+        sidecar_path.write_bytes(
+            b'{"schema_version":1,"unsupported_imports":[],"x":"'
+            + bytes((0xFF,))
+            + b'"}'
+        )
+        rows, status = library_sweep._read_private_nid_rows(sidecar_path, {
+            "runtime_imports": [{
+                "library": "sceAudio",
+                "nid": "0x87654321",
+                "nid_name": "runtimeFallback",
+            }]
+        })
+        self.assertEqual(status, "RUNTIME_ONLY")
+        self.assertEqual(rows[0]["nid"], "0x87654321")
+
 if __name__ == "__main__":
     unittest.main()

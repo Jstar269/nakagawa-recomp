@@ -71,6 +71,14 @@ def _git(*args: str) -> str:
 
 
 def materialize(ref: str, destination: Path, profile_path: Path) -> dict:
+    """Materialize the candidate at ``destination`` and return its manifest metadata.
+
+    The manifest is written beside the destination as
+    ``<destination>.PUBLIC_CANDIDATE.json``, never inside the tree: the tree must
+    stay exactly equal to its declared public scope, and a self-manifest inside it
+    is rejected by the export's own audit (#667). Line endings are pinned to LF
+    rather than the host default.
+    """
     destination = destination.resolve()
     if destination == ROOT or destination.is_relative_to(ROOT):
         raise ValueError("candidate destination must be outside the repository")
@@ -106,8 +114,9 @@ def materialize(ref: str, destination: Path, profile_path: Path) -> dict:
         "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
         "file_count": len(copied),
     }
-    (destination / "PUBLIC_CANDIDATE.json").write_text(
-        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+    manifest = destination.parent / f"{destination.name}.PUBLIC_CANDIDATE.json"
+    manifest.write_text(
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     return metadata
 
