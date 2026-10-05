@@ -7,17 +7,63 @@
  * (nk_json) and fails closed on any shape, name or length violation.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+/*
+ * Feature-test macro for glibc, declared before any header.
+ *
+ * strict -std=c99 defines __STRICT_ANSI__ and therefore hides explicit_bzero(),
+ * which glibc guards behind __USE_MISC. Defining _DEFAULT_SOURCE here (before
+ * <features.h> is reached through any libc header) is what turns that on, so it
+ * must precede every #include in this translation unit. It is harmless on
+ * non-glibc targets, which ignore unknown feature macros.
+ */
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #endif
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "nk_json.h"
 #include "nk_psp_crypto.h"
 #include "nk_psp_keystore.h"
+
+void nk_secure_zero(void *p, size_t len)
+{
+    if (p == NULL || len == 0) return;
+
+/*
+ * Prefer the platform's documented non-eliding primitive, but never at the cost
+ * of an implicit declaration: under strict -std=c99 a glibc that does not expose
+ * explicit_bzero() would fail the hosted -Werror build. __GLIBC_PREREQ alone
+ * is not sufficient evidence that the declaration is visible, so the branch is
+ * additionally gated on __USE_MISC, which is what actually declares it. If
+ * either is missing, control falls through to the portable loop below, which is
+ * correct on every target.
+ */
+#if defined(_WIN32) || defined(_WIN64)
+    SecureZeroMemory(p, len);
+    return;
+#elif defined(__GLIBC__) && defined(__USE_MISC) && __GLIBC_PREREQ(2, 25)
+    explicit_bzero(p, len);
+    return;
+#endif
+
+    /* Portable fallback.  Every write goes through a volatile-qualified
+     * lvalue, so the store is an observable side effect the compiler is not
+     * permitted to drop, even though the buffer is dead immediately after. */
+    {
+        volatile unsigned char *v = (volatile unsigned char *)p;
+        size_t i;
+        for (i = 0; i < len; i++) {
+            v[i] = 0;
+        }
+    }
+}
 
 typedef struct {
     char name[72];
@@ -394,6 +440,9 @@ int nk_keystore_load_file(NkKeystore *ks, const char *path,
             snprintf(err, err_len, "key file %s: %s", path, detail);
         }
     }
+    /* The buffer holds the user's keys in hex text form, so it is wiped before
+     * release for the same reason the entry arrays are. */
+    nk_secure_zero(buffer, NK_KEYSTORE_MAX_BYTES + 1);
     free(buffer);
     return status;
 }
@@ -436,6 +485,16 @@ size_t nk_keystore_count(const NkKeystore *ks)
     return ks ? ks->flat_count + ks->tag_count : 0;
 }
 
+size_t nk_keystore_flat_bytes(void)
+{
+    return NK_KEYSTORE_MAX_ENTRIES * sizeof(FlatEntry);
+}
+
+size_t nk_keystore_tag_bytes(void)
+{
+    return NK_KEYSTORE_MAX_ENTRIES * sizeof(TagEntry);
+}
+
 NkKeystore *nk_keystore_create(void)
 {
     NkKeystore *ks = (NkKeystore *)calloc(1, sizeof(*ks));
@@ -452,6 +511,16 @@ NkKeystore *nk_keystore_create(void)
 void nk_keystore_free(NkKeystore *ks)
 {
     if (ks == NULL) return;
+    /* Wipe the entry storage before releasing it: these arrays hold the user's
+     * keys verbatim, and free() alone leaves them readable in the heap.  The
+     * byte counts come from the same accessors the erasure harness uses, so the
+     * wiped extent and the observed extent cannot disagree. */
+    if (ks->flat != NULL) {
+        nk_secure_zero(ks->flat, nk_keystore_flat_bytes());
+    }
+    if (ks->tags != NULL) {
+        nk_secure_zero(ks->tags, nk_keystore_tag_bytes());
+    }
     free(ks->flat);
     free(ks->tags);
     free(ks);
