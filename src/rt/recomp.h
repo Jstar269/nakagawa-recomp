@@ -850,6 +850,8 @@ int      sched_wait_block(SrWaitHandle handle, uint32_t remaining, int timed);
 void     sched_wait_callback(SrWaitHandle handle, int active);
 int      sched_wait_state(SrWaitHandle handle, SrWaitState *state, uint32_t *owner);
 int      sched_wait_notify(SrWaitHandle handle); /* notification, not an object grant */
+int      sched_wait_complete(SrWaitHandle handle, uint32_t result); /* exact invocation, including callback parents */
+SrWaitHandle sched_wait_begin_join(uint32_t target, uint64_t deadline, int callback_enabled);
 int      sched_wait_take_result(SrWaitHandle handle, uint32_t *result);
 int      sched_wait_finish(SrWaitHandle handle); /* returns notifications; caller owns preemption */
 void     sched_wait_cancel_object(uint32_t object, uint32_t result);
