@@ -318,18 +318,33 @@ static void ui_font_ensure(void) {
 /* --- Per-game ISO texture cache (ICON0.PNG and PIC1.PNG) --- */
 typedef struct UiArtJob UiArtJob;
 
+/* Why an image stopped being retried. `*_attempted` stays the gate every other
+   site reads; these fields are the reason it was set, and each write sets the
+   gate and the reason together so the two cannot drift (#671).
+
+   UNSUPPORTED and EXHAUSTED are different answers and used to be the same
+   state: a readable image this build's decoder rejects is settled on the first
+   attempt, while a read or texture failure a retry could clear only becomes
+   terminal when the bounded budget runs out. */
+typedef enum {
+    UI_ART_TERMINAL_PENDING = 0,
+    UI_ART_TERMINAL_LOADED,
+    UI_ART_TERMINAL_UNSUPPORTED,
+    UI_ART_TERMINAL_EXHAUSTED,
+} UiArtTerminalState;
+
 typedef struct {
     char iso_path[MAX_PATH_LEN];
     SDL_Texture *icon_tex;
     float icon_w;
     float icon_h;
     bool icon_attempted;
+    uint8_t icon_terminal;
     SDL_Texture *pic1_tex;
     float pic1_w;
     float pic1_h;
-    /* "attempted" is terminal: loaded, unsupported by this SDL build, or
-       exhausted the bounded retry budget. */
     bool pic1_attempted;
+    uint8_t pic1_terminal;
     uint8_t icon_attempt_count;
     uint8_t pic1_attempt_count;
     uint64_t retry_after_ns;
@@ -372,6 +387,19 @@ static bool s_ui_test_drop_art_event;
 
 void ui_renderer_test_drop_art_events(bool drop) {
     s_ui_test_drop_art_event = drop;
+}
+#endif
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+/* The harness reads the terminal state off the attempt line, so a test can
+   tell "this build cannot decode it" from "the retry budget ran out" (#671). */
+static const char *ui_art_terminal_name(uint8_t state) {
+    switch (state) {
+        case UI_ART_TERMINAL_LOADED: return "loaded";
+        case UI_ART_TERMINAL_UNSUPPORTED: return "unsupported";
+        case UI_ART_TERMINAL_EXHAUSTED: return "exhausted";
+        default: return "pending";
+    }
 }
 #endif
 
@@ -429,14 +457,18 @@ static void ui_art_record_failure(GameTextureCacheEntry *entry,
     if ((wanted & NK_ISO_ART_ICON) && !entry->icon_attempted) {
         if (entry->icon_attempt_count < GAME_ART_MAX_ATTEMPTS)
             entry->icon_attempt_count++;
-        if (entry->icon_attempt_count >= GAME_ART_MAX_ATTEMPTS)
+        if (entry->icon_attempt_count >= GAME_ART_MAX_ATTEMPTS) {
             entry->icon_attempted = true;
+            entry->icon_terminal = UI_ART_TERMINAL_EXHAUSTED;
+        }
     }
     if ((wanted & NK_ISO_ART_PICTURE) && !entry->pic1_attempted) {
         if (entry->pic1_attempt_count < GAME_ART_MAX_ATTEMPTS)
             entry->pic1_attempt_count++;
-        if (entry->pic1_attempt_count >= GAME_ART_MAX_ATTEMPTS)
+        if (entry->pic1_attempt_count >= GAME_ART_MAX_ATTEMPTS) {
             entry->pic1_attempted = true;
+            entry->pic1_terminal = UI_ART_TERMINAL_EXHAUSTED;
+        }
     }
     if (entry->icon_attempted && entry->pic1_attempted) {
         entry->retry_after_ns = 0;
@@ -577,7 +609,9 @@ static void ui_game_textures_shutdown(void) {
         }
         s_game_textures[i].iso_path[0] = '\0';
         s_game_textures[i].icon_attempted = false;
+        s_game_textures[i].icon_terminal = UI_ART_TERMINAL_PENDING;
         s_game_textures[i].pic1_attempted = false;
+        s_game_textures[i].pic1_terminal = UI_ART_TERMINAL_PENDING;
         s_game_textures[i].retry_after_ns = 0;
         s_game_textures[i].job = NULL;
     }
@@ -645,6 +679,7 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
     if (entry) {
         entry->job = NULL;
         if (job->wanted & NK_ISO_ART_ICON) {
+            bool icon_decoded = false;
 #if SDL_VERSION_ATLEAST(3, 4, 0)
             if (!entry->icon_tex && job->icon_status == NK_ICON_OK &&
                 job->icon_bytes && job->icon_size) {
@@ -652,6 +687,7 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
                                                       job->icon_size);
                 SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
                 if (surface) {
+                    icon_decoded = true;
                     entry->icon_tex = SDL_CreateTextureFromSurface(renderer,
                                                                   surface);
                     if (entry->icon_tex) {
@@ -664,11 +700,31 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
 #else
             (void)renderer;
             entry->icon_attempted = true;
+            entry->icon_terminal = UI_ART_TERMINAL_UNSUPPORTED;
 #endif
-            if (entry->icon_tex) entry->icon_attempted = true;
-            else ui_art_record_failure(entry, NK_ISO_ART_ICON);
+            if (entry->icon_tex) {
+                entry->icon_attempted = true;
+                entry->icon_terminal = UI_ART_TERMINAL_LOADED;
+            } else if (icon_decoded) {
+                /* The bytes decoded but no texture came out of them (VRAM, or
+                   a renderer that rejects the surface): a retry can clear
+                   that, so it keeps the bounded budget. */
+                ui_art_record_failure(entry, NK_ISO_ART_ICON);
+            } else if (job->icon_status == NK_ICON_OK && job->icon_bytes &&
+                       job->icon_size) {
+                /* The image came off the disc intact and this build still
+                   could not decode it. Identical bytes decode identically, so
+                   a retry cannot change the answer: terminal on this attempt,
+                   without spending the budget, and recorded as its own state
+                   rather than as an exhausted retry (#671). */
+                entry->icon_attempted = true;
+                entry->icon_terminal = UI_ART_TERMINAL_UNSUPPORTED;
+            } else {
+                ui_art_record_failure(entry, NK_ISO_ART_ICON);
+            }
         }
         if (job->wanted & NK_ISO_ART_PICTURE) {
+            bool pic1_decoded = false;
 #if SDL_VERSION_ATLEAST(3, 4, 0)
             if (!entry->pic1_tex && job->pic1_status == NK_ICON_OK &&
                 job->pic1_bytes && job->pic1_size) {
@@ -676,6 +732,7 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
                                                       job->pic1_size);
                 SDL_Surface *surface = io ? SDL_LoadPNG_IO(io, true) : NULL;
                 if (surface) {
+                    pic1_decoded = true;
                     entry->pic1_tex = SDL_CreateTextureFromSurface(renderer,
                                                                   surface);
                     if (entry->pic1_tex) {
@@ -688,9 +745,20 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
 #else
             (void)renderer;
             entry->pic1_attempted = true;
+            entry->pic1_terminal = UI_ART_TERMINAL_UNSUPPORTED;
 #endif
-            if (entry->pic1_tex) entry->pic1_attempted = true;
-            else ui_art_record_failure(entry, NK_ISO_ART_PICTURE);
+            if (entry->pic1_tex) {
+                entry->pic1_attempted = true;
+                entry->pic1_terminal = UI_ART_TERMINAL_LOADED;
+            } else if (pic1_decoded) {
+                ui_art_record_failure(entry, NK_ISO_ART_PICTURE);
+            } else if (job->pic1_status == NK_ICON_OK && job->pic1_bytes &&
+                       job->pic1_size) {
+                entry->pic1_attempted = true;
+                entry->pic1_terminal = UI_ART_TERMINAL_UNSUPPORTED;
+            } else {
+                ui_art_record_failure(entry, NK_ISO_ART_PICTURE);
+            }
         }
         if (entry->icon_attempted && entry->pic1_attempted) {
             entry->retry_after_ns = 0;
@@ -699,12 +767,16 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     s_ui_test_art_attempt_count++;
     printf("[PLAYER_UI_TEST] art_attempt index=%u completed_ns=%llu "
-           "icon_loaded=%d pic1_loaded=%d wanted=%u\n",
+           "icon_loaded=%d pic1_loaded=%d wanted=%u icon_state=%s pic1_state=%s\n",
            s_ui_test_art_attempt_count,
            (unsigned long long)SDL_GetTicksNS(),
            entry && entry->icon_tex ? 1 : 0,
            entry && entry->pic1_tex ? 1 : 0,
-           job->wanted);
+           job->wanted,
+           ui_art_terminal_name(entry ? entry->icon_terminal
+                                      : UI_ART_TERMINAL_PENDING),
+           ui_art_terminal_name(entry ? entry->pic1_terminal
+                                      : UI_ART_TERMINAL_PENDING));
 #endif
     free(job->icon_bytes);
     free(job->pic1_bytes);

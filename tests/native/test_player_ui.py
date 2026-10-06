@@ -64,21 +64,44 @@ def pixel_rgb(
     return red, green, blue
 
 
-def png_pixel(red: int, green: int, blue: int) -> bytes:
-    def chunk(kind: bytes, payload: bytes) -> bytes:
-        body = kind + payload
-        return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
+def png_chunk(kind: bytes, payload: bytes) -> bytes:
+    body = kind + payload
+    return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
 
+
+def png_pixel(red: int, green: int, blue: int) -> bytes:
     return (
         b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(b"\x00" + bytes((red, green, blue, 255))))
-        + chunk(b"IEND", b"")
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+        + png_chunk(b"IDAT", zlib.compress(b"\x00" + bytes((red, green, blue, 255))))
+        + png_chunk(b"IEND", b"")
     )
 
 
-def synthetic_art_iso(path: Path, *, include_picture: bool = True) -> None:
+def undecodable_png() -> bytes:
+    """PNG-shaped bytes the disc reader accepts and the decoder cannot decode.
+
+    The signature, IHDR and IEND are well formed, so the image is an ordinary
+    ISO entry that reads back intact; the IDAT carries bytes that are not a
+    zlib stream, so SDL_LoadPNG_IO returns no surface for content that was
+    never damaged on the way in. That is the "this build cannot decode it"
+    case, as opposed to an image that could not be read at all (#671).
+    """
+    ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + ihdr
+        + png_chunk(b"IDAT", b"not a zlib stream")
+        + png_chunk(b"IEND", b"")
+    )
+
+
+def synthetic_art_iso(
+    path: Path, *, include_picture: bool = True, icon_bytes: bytes | None = None
+) -> None:
     sector_size = 2048
+    icon_image = png_pixel(50, 190, 120) if icon_bytes is None else icon_bytes
+    assert len(icon_image) <= sector_size, "the synthetic icon must fit one sector"
     image = bytearray(22 * sector_size)
 
     def both_endian(value: int) -> bytes:
@@ -115,7 +138,7 @@ def synthetic_art_iso(path: Path, *, include_picture: bool = True) -> None:
     game_records = (
         record(b"\x00", 18, sector_size, True)
         + record(b"\x01", 17, sector_size, True)
-        + record(b"ICON0.PNG;1", 19, len(png_pixel(50, 190, 120)), False)
+        + record(b"ICON0.PNG;1", 19, len(icon_image), False)
     )
     picture_size = 0
     if include_picture:
@@ -123,9 +146,7 @@ def synthetic_art_iso(path: Path, *, include_picture: bool = True) -> None:
         picture_size = len(png_pixel(50, 100, 190))
     image[17 * sector_size : 17 * sector_size + len(root_records)] = root_records
     image[18 * sector_size : 18 * sector_size + len(game_records)] = game_records
-    image[19 * sector_size : 19 * sector_size + len(png_pixel(50, 190, 120))] = png_pixel(
-        50, 190, 120
-    )
+    image[19 * sector_size : 19 * sector_size + len(icon_image)] = icon_image
     if picture_size:
         image[20 * sector_size : 20 * sector_size + picture_size] = png_pixel(50, 100, 190)
     path.write_bytes(image)
@@ -439,13 +460,17 @@ class NativePlayerUiTests(unittest.TestCase):
                     ui_iso_path = scratch / "art_%s_%p.iso"
                 else:
                     ui_iso_path = scratch / "source-owned-synthetic.iso"
-                    synthetic_art_iso(ui_iso_path, include_picture=art_iso != "icon-only")
+                    synthetic_art_iso(
+                        ui_iso_path,
+                        include_picture=art_iso != "icon-only",
+                        icon_bytes=undecodable_png() if art_iso == "undecodable" else None,
+                    )
                     if art_iso == "unavailable":
                         ui_iso_path.rename(scratch / "source-owned-synthetic.iso.offline")
                     elif art_iso == "late":
                         art_mount_source = ui_iso_path
                         ui_iso_path = scratch / "late-mounted-synthetic.iso"
-                    elif art_iso not in ("available", "icon-only"):
+                    elif art_iso not in ("available", "icon-only", "undecodable"):
                         raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
             if stale_package:
                 synthetic_stale_package(runtime_root)
@@ -756,10 +781,45 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         attempts = re.findall(
             r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
-            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d) wanted=(\d+)",
+            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d) wanted=(\d+) "
+            r"icon_state=(\w+) pic1_state=(\w+)",
             run["stdout"],
         )
         self.assertEqual(len(attempts), 3, run["stdout"])
+        # An image that could not be read is a failure a retry could clear, so
+        # the budget must run out and the state must say exhausted - never
+        # "unsupported", which is reserved for bytes this build cannot decode.
+        self.assertEqual(attempts[-1][5:], ("exhausted", "exhausted"), run["stdout"])
+
+    def test_undecodable_art_is_terminal_on_its_first_attempt(self) -> None:
+        """A readable image this build cannot decode is not a transient failure.
+
+        The ICON0.PNG is read off the disc intact and the decoder rejects it,
+        so no retry can change the answer: the entry must reach its terminal
+        state on the first attempt instead of spending the bounded budget, and
+        it must report *unsupported* rather than the value an exhausted retry
+        reports (#671). WAIT_MS is long enough that the old code, which retried
+        a decode failure, would have recorded a second attempt.
+        """
+        run = self.run_player(
+            "ready",
+            ("WAIT_ART_ATTEMPT=1", "WAIT_MS=2500"),
+            art_iso="undecodable",
+            wait_background=True,
+        )
+        attempts = re.findall(
+            r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
+            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d) wanted=(\d+) "
+            r"icon_state=(\w+) pic1_state=(\w+)",
+            run["stdout"],
+        )
+        self.assertEqual(len(attempts), 1, run["stdout"])
+        self.assertEqual(
+            attempts[0][2:],
+            ("0", "1", "3", "unsupported", "loaded"),
+            run["stdout"],
+        )
+        self.assertFalse(has_icon_art(run["bmp"]), run["stdout"])
 
     def test_iso_art_retry_rereads_only_the_image_that_is_still_missing(self) -> None:
         """A disc with ICON0.PNG and no PIC1.PNG must not re-read its icon

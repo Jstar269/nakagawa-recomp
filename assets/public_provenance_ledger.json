@@ -2936,7 +2936,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2698ba8380372ec051b55e8567e47fb67724f0b1e14f8575c5e4dc0cf229c42f"
+      "sha256": "aedeff2eb65e57105a90672bb2600652c431732955c3b955df9745723d257933"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -5394,7 +5394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "33e057ee3f609e81868c19cfad6248f9b5c539f5aa4864a3a96314b6e2eaf3cd"
+      "sha256": "712ec7020a17dc5e93f79942eb2facc24c1e0ec181ca5e09bfc9b1afa6af5943"
     },
     {
       "path": "tests/native/test_posix_process.c",
