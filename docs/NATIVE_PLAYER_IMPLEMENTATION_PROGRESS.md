@@ -17,7 +17,7 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
    - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
-   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. Separately, the built-in decryption boundary (`src/core/nk_psp_container.c`) unwraps the disc's encrypted executable and its encrypted PRX modules, but only when the user's own key file is present (`<user data>/keys/psp-keyfile.json` or `NAKAGAWA_PSP_KEY_FILE`) and only into the private per-title folder. The player holds no key material, a user-supplied plain module still wins, and a missing key entry fails closed naming the entry
+   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. Separately, the built-in decryption boundary (`src/core/nk_psp_container.c`) unwraps the disc's encrypted executable and selected/required encrypted PRX modules, but only when the user's own key file is present (`<user data>/keys/psp-keyfile.json` or `NAKAGAWA_PSP_KEY_FILE`) and only into the private per-title folder. The player holds no key material, a user-supplied plain module still wins, and a missing key entry fails closed naming the entry
      ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - `ui_renderer.c` / `ui_renderer.h`: High-performance SDL3 renderer using the Dark Court palette, responsive card layouts, auto-scaled typography, and offscreen screenshot capabilities.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
@@ -171,7 +171,7 @@ plain executable plus a built package.
 
 The library card's `ICON0.PNG` icon and `PIC1.PNG` backdrop are read from the
 ISO on a worker thread, so a disc image is never parsed on the UI thread.
-`src/player/ui_renderer.c` keeps one cache entry per title (64 slots), and each
+`src/player/ui_renderer.c` keeps up to 64 cache entries keyed by ISO path, and each
 image carries its own attempt count and terminal result: loaded, absent, failed,
 or unsupported by a build without a PNG decoder.
 

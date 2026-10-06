@@ -65,10 +65,11 @@ PSP UMD disc images contain executables in two primary container formats:
 
 #### Encrypted containers
 
-Public builds do not decrypt `~PSP`/`~SCE` containers and accept only plain ELF/PRX inputs. Whether
-any lawful decryption capability can be offered, and in what form, is an open maintainer legal
-decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); this document proposes no decryption or key-handling design, and the
-public repository never contains keys.
+The player and CLI provide a built-in boundary for supported `~PSP`/`~SCE` executable and PRX
+containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The analyzer itself still
+requires plain ELF/PRX inputs; missing key entries and unsupported container forms fail closed.
+The repository ships no keys, and this boundary does not imply support for PGD-protected game
+data or every PSP encryption form.
 
 ---
 

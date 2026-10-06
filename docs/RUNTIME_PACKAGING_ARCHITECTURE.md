@@ -3,10 +3,10 @@
 > **Status: CURRENT — maintained packaging decision record.** The process-isolation
 > boundary, a local developer AOT package build, and the library's build-package →
 > validate → launch route are implemented ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)).
-> `tools/nk_cli.py build-package <disc_id>` extracts the plaintext executable from a
-> library disc image and the player consumes the resulting package; unwrapping an
-> encrypted `~PSP` executable (#295), installers, and one-click end-user preparation
-> without the developer toolchain (#308) are not built.
+> `tools/nk_cli.py build-package <disc_id>` resolves the executable from a library disc
+> image, using the supported local-key boundary for encrypted inputs (#295), and the
+> player consumes the resulting package. Retail-disc hash validation, installers, and
+> one-click end-user preparation without the developer toolchain (#308) are not built.
 
 ## 1. Context and Goals
 

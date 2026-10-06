@@ -204,7 +204,7 @@ Every substantial document carries one status.
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
 | `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build; carries the proposed preview copy |
-| `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists (PR #202) and the library's build-package → validate → launch route exists (PR #487), while module decryption, retail-disc hash validation, and one-click play without the developer toolchain remain unbuilt and are marked inline |
+| `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging and supported local-key executable/PRX decryption exist, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; the zero-toolchain recommended routes remain unimplemented |
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and one-click end-user preparation remain unbuilt |
 | `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and the remaining retail-preparation stages are distinguished inline |

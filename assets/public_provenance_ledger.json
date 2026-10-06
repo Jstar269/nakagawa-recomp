@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "621a47825e3f871e7cd6d465ad206c82a911097734b0553c5983008867f03ffd"
+      "sha256": "9fe9d2878306e0500f95a7ff4a00ddb8224f329737146ff26f72ee29558f95c1"
     },
     {
       "path": "REVIEW.md",
@@ -348,7 +348,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "00d8e02d259068ed4dc034378b6b39484bc349e8fd2f63522fb19900a87ce296"
+      "sha256": "1a65bb929e7d6d39406b0bae2ed64be133c1720591e07093964da0f1dbd6306c"
     },
     {
       "path": "THIRD_PARTY_LICENSES/Brotli.txt",
@@ -1066,7 +1066,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ba71ddb6d5ff00b5f679b1f1ac73cba4322fbcf28fbd548b6a5a5d80755c4ca9"
+      "sha256": "ff19bfd890366ef8c69adb766d573d27721a6bf6c26fe703032210fa0fbac14f"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1141,7 +1141,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a8380ecfffd4defc0fc78e297b1045585c2c02d965494694db49da3de46bdc3"
+      "sha256": "118964b14e993edaced53ee310487c235b05f701266c153b74c84a06179c7731"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1150,7 +1150,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e2e9b2f23adba0391b512f4f647327750b59c59f9be794fce27a8ac79240e5f5"
+      "sha256": "0bbbef6ceb1fcb2645cc49bf96ac2c0f46203e7a2551ce3b2e9b6e1209124af4"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
@@ -1168,7 +1168,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a1c8e91020962c5469746e89fe9e10b1134c593eca7a4dc7ff4d71692acee4ee"
+      "sha256": "1045d613238e2a901e803b63ac21da3f26e0eedd52c2cfdadc286f6db76d1ec0"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -1177,7 +1177,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4c5b05cc0508303e76cd3bf98d940d98143321e36dbb68a26ac52f8418c034c1"
+      "sha256": "cee86f2c6aed648a816f06751b90685e8af80bf64d6e53fb999eebf3e268d0cd"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1186,7 +1186,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "75598adaf48d9461679711568f4104daa3292f5af6dce17f5be5e3f88cadf05b"
+      "sha256": "b3e5d6321e2f7b9cb9be07d5689bdf6c0a30a466f7fa6606c7b9fff4e7cc174c"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -1195,7 +1195,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a8243d92e597cb1dcd03c085ef3d22320bdb91926a8a564c8ec5c64e444d4cbd"
+      "sha256": "0eacc102ce87faf14942ebda2d74856b9554732c89e2383aa505a45b6514f370"
     },
     {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
@@ -1225,7 +1225,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ce94420e749e928ed1089228b189b745b691bf68c96d87835d7cc1fed64d139e"
+      "sha256": "fface64c3fee4a3e616ee10a3e7d6ac6011d536f14e83381596695c299db4b1b"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1309,7 +1309,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a82e927bc282231b99d6242ee54b8714e2df9ab61f72a73b04f77db5cad348b"
+      "sha256": "ae344f956330bfdbb32ea21f1f92a867ca57a79034120816eb048e721eb8502b"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1318,7 +1318,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "23ed5369447eb756a20b17162cd730cd64612bebfb4c1fc2991d3c52d81a0b6d"
+      "sha256": "7b6dbcb0f29625c427ec1b59fafbd15c072b0c4d4403735d2cf9453e23524613"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1327,7 +1327,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f6412977b087630a9d6c5e4a23dc36a63f20963108d119f5b8fa5f02260fcb27"
+      "sha256": "d360a400f780991192313402fafce99b3932d01fd099942609599b4d63f26b13"
     },
     {
       "path": "docs/SETUP.md",
@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3f4f5d979c6ddf5e18ebd0035a8514d137bb42db9a15bc3de9fe5a55ac83365a"
+      "sha256": "1ce9e522bd24cf6603e91455b90f525183903e921a5562d751ae680d5c3ce3c1"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1399,7 +1399,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "71ab0b18218348591a3c995cfa2978f372d45c1018cc2061bb121c3c02e606fc"
+      "sha256": "e705ed3636403f86fa06151d966d77b049714571d5607051e5ac409d2e374064"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -1462,7 +1462,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3a4758765d92b3b5216b8a97e7e82464fe883085b1586c8cb4102fb64d835e05"
+      "sha256": "90ab4b17207cc89d94db14553b03d70cf9387663da64520a27062df61b3fd219"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
