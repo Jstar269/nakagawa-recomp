@@ -95,8 +95,9 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 
 The diagram below is the target separation. The implemented public slice currently reaches
 title lookup, bounded ISO inspection and ISO/XB staging, library package build and
-validation, launch-session validation, and child-process lifecycle. Retail-disc hash
-validation, module decryption, and overlay parity remain unbuilt.
+validation, launch-session validation, and child-process lifecycle. Supported executable
+and PRX container decryption is available through the local-key boundary (#295); retail-disc
+hash validation and overlay parity remain unbuilt.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -138,9 +139,10 @@ capability layers rather than being reimplemented in the launcher.
 The flow below is the complete productization target, not a description of the current
 executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
 bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
-live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). Retail-disc hash
-validation, encrypted-module decryption, and one-click play from an arbitrary ISO without
-the developer toolchain remain unbuilt ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player and CLI decrypt supported
+executable and PRX containers with a user-supplied local key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
+and one-click play from an arbitrary ISO without the developer toolchain remain unbuilt
+([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
 1. **Immediate Window Appearance**: The SDL3 window initializes and presents the UI in under 100 milliseconds.
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.
@@ -150,12 +152,13 @@ the developer toolchain remain unbuilt ([#295](https://github.com/Jstar269/nakag
    - Staging directory created under `.staging_<disc_id>/` in local application data.
    - `EBOOT.BIN` and `PSP_GAME/USRDIR/xbdata` are copied by the native ISO reader.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`; the player never decrypts.
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the player's separate compatibility preflight can decrypt supported executable and selected PRX containers with the user's local key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
-   - Encrypted `~PSP`/`~SCE` executables are not supported (open maintainer legal
-     decision, #295); a missing recompiled child is reported instead of fabricated.
+   - Supported `~PSP`/`~SCE` executables can use the built-in local-key boundary
+     ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). Without a supported plain or decrypted
+     executable, a missing recompiled child is reported instead of fabricated.
 6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a validating
    package is present or, for a non-experimental catalog title, when the
    launcher resolves that title's developer runtime ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)).

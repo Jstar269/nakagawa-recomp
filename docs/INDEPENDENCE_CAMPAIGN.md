@@ -194,8 +194,10 @@ replacement by an LLE path that makes the component unnecessary ·
 - **G3 loader slice → (a).** ELF32, `~PSP`/`~SCE` containers, and MIPS
   relocation application are public-format facts; NID/import-table
   resolution cites PSPSDK structures and the project's NID corpus
-  (`tools/nid_corpus.json`, IND-1). Any decryption capability is outside
-  this campaign pending the maintainer's legal decision (#295).
+  (`tools/nid_corpus.json`, IND-1). Container decryption is a separate
+  user-key boundary implemented under #295; this campaign tracks loader
+  provenance and rewrite scope, not whether that consumer route is available.
+  The public repository ships no keys.
 - **G4 PGF → (a) + (a).** Both the publishable reader (against `pgf_api.h`,
   from the PGF format and the font-origins metric targets) and the
   project-owned converter (from pinned OFL/Ume inputs, deterministic

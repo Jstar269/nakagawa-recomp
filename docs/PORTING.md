@@ -123,7 +123,7 @@ pass `--extra-span=LO,HI` to `codegen.py` for a direct Make build.
 
 ## Step 2: Supply a plain (unencrypted) ELF
 
-The recompiler needs a **plain** PSP ELF: a file that begins with the ELF magic bytes `7F 45 4C 46`. A file beginning with `~PSP` or `~SCE` is an encrypted container and is rejected. When a disc carries an unencrypted `BOOT.BIN`, the player and CLI select it automatically. This project does not provide, recommend, or document decryption tools or keys; whether any lawful decryption capability can be offered is an open maintainer decision ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+The direct recompiler/codegen input must be a **plain** PSP ELF: a file that begins with the ELF magic bytes `7F 45 4C 46`; a `~PSP` or `~SCE` container is rejected at that boundary. For player and CLI disc workflows, the built-in boundary can decrypt supported executable and PRX containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The project ships no keys, and missing key entries or unsupported containers fail closed. When a disc carries an unencrypted `BOOT.BIN`, the player and CLI select it automatically. For a direct Make/codegen route, supply a plain ELF such as a lawful user-decrypted executable.
 
 Keep the result in a Git-ignored private-input location such as `place_game_here/EBOOT.elf`, or pass its actual path to Make. Do not commit the decrypted game executable.
 
