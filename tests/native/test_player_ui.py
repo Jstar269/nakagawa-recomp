@@ -79,13 +79,12 @@ def png_pixel(red: int, green: int, blue: int) -> bytes:
 
 
 def undecodable_png() -> bytes:
-    """PNG-shaped bytes the disc reader accepts and the decoder cannot decode.
+    """PNG-shaped bytes the header reader accepts but the decoder rejects.
 
     The signature, IHDR and IEND are well formed, so the image is an ordinary
     ISO entry that reads back intact; the IDAT carries bytes that are not a
-    zlib stream, so SDL_LoadPNG_IO returns no surface for content that was
-    never damaged on the way in. That is the "this build cannot decode it"
-    case, as opposed to an image that could not be read at all (#671).
+    zlib stream, so SDL_LoadPNG_IO rejects it. This exercises decoder failure
+    separately from missing ISO data and from a build with no PNG decoder.
     """
     ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
     return (
@@ -94,6 +93,11 @@ def undecodable_png() -> bytes:
         + png_chunk(b"IDAT", b"not a zlib stream")
         + png_chunk(b"IEND", b"")
     )
+
+
+def corrupt_png_header() -> bytes:
+    """Bytes that the ISO reader rejects before a decoder is involved."""
+    return b"not a PNG image"
 
 
 def synthetic_art_iso(
@@ -463,14 +467,17 @@ class NativePlayerUiTests(unittest.TestCase):
                     synthetic_art_iso(
                         ui_iso_path,
                         include_picture=art_iso != "icon-only",
-                        icon_bytes=undecodable_png() if art_iso == "undecodable" else None,
+                        icon_bytes=(
+                            undecodable_png() if art_iso == "undecodable" else
+                            corrupt_png_header() if art_iso == "corrupt" else None
+                        ),
                     )
                     if art_iso == "unavailable":
                         ui_iso_path.rename(scratch / "source-owned-synthetic.iso.offline")
                     elif art_iso == "late":
                         art_mount_source = ui_iso_path
                         ui_iso_path = scratch / "late-mounted-synthetic.iso"
-                    elif art_iso not in ("available", "icon-only", "undecodable"):
+                    elif art_iso not in ("available", "icon-only", "undecodable", "corrupt"):
                         raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
             if stale_package:
                 synthetic_stale_package(runtime_root)
@@ -764,14 +771,20 @@ class NativePlayerUiTests(unittest.TestCase):
         still inside it."""
         run = self.run_player(
             "ready",
+            ("WAIT_ART_DELAY_ACTIVE", "QUIT"),
             art_iso="available",
-            env_extra={"PLAYER_UI_TEST_ART_DELAY_MS": "1000"},
+            env_extra={"PLAYER_UI_TEST_ART_DELAY_MS": "5000"},
+        )
+        self.assertIn(
+            "[PLAYER_UI_TEST] wait_art_delay_active result=PASS", run["stdout"]
         )
         shutdown = re.findall(
-            r"\[PLAYER_UI_TEST\] font_shutdown art_jobs_drained=(\d+)", run["stdout"]
+            r"\[PLAYER_UI_TEST\] font_shutdown "
+            r"art_jobs_active_at_shutdown=(\d+) art_jobs_drained=(\d+)",
+            run["stdout"],
         )
         self.assertEqual(len(shutdown), 1, run["stdout"])
-        self.assertEqual(shutdown[0], "1", run["stdout"])
+        self.assertEqual(shutdown[0], ("1", "1"), run["stdout"])
 
     def test_iso_art_failures_reach_a_terminal_state_after_bounded_retries(self) -> None:
         run = self.run_player(
@@ -787,10 +800,25 @@ class NativePlayerUiTests(unittest.TestCase):
             run["stdout"],
         )
         self.assertEqual(len(attempts), 3, run["stdout"])
-        # An image that could not be read is a failure a retry could clear, so
-        # the budget must run out and the state must say exhausted - never
-        # "unsupported", which is reserved for bytes this build cannot decode.
-        self.assertEqual(attempts[-1][5:], ("exhausted", "exhausted"), run["stdout"])
+        # A missing image remains retryable, then ends specifically as absent;
+        # it is not the same result as corrupt bytes or an unsupported decoder.
+        self.assertEqual(attempts[-1][5:], ("absent", "absent"), run["stdout"])
+
+    def test_corrupt_art_is_failed_after_bounded_retries(self) -> None:
+        run = self.run_player(
+            "ready",
+            ("WAIT_ART_ATTEMPT=3", "WAIT_MS=2500"),
+            art_iso="corrupt",
+            wait_background=True,
+        )
+        attempts = re.findall(
+            r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
+            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d) wanted=(\d+) "
+            r"icon_state=(\w+) pic1_state=(\w+)",
+            run["stdout"],
+        )
+        self.assertEqual(len(attempts), 3, run["stdout"])
+        self.assertEqual(attempts[-1][5:], ("failed", "loaded"), run["stdout"])
 
     def test_readable_art_without_png_decoder_is_unsupported(self) -> None:
         run = self.run_player(
@@ -814,19 +842,11 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assertFalse(has_icon_art(run["bmp"]), run["stdout"])
 
-    def test_undecodable_art_is_terminal_on_its_first_attempt(self) -> None:
-        """A readable image this build cannot decode is not a transient failure.
-
-        The ICON0.PNG is read off the disc intact and the decoder rejects it,
-        so no retry can change the answer: the entry must reach its terminal
-        state on the first attempt instead of spending the bounded budget, and
-        it must report *unsupported* rather than the value an exhausted retry
-        reports (#671). WAIT_MS is long enough that the old code, which retried
-        a decode failure, would have recorded a second attempt.
-        """
+    def test_decoder_rejection_is_failed_after_bounded_retries(self) -> None:
+        """A decoder rejection is a failed image, not a build capability result."""
         run = self.run_player(
             "ready",
-            ("WAIT_ART_ATTEMPT=1", "WAIT_MS=2500"),
+            ("WAIT_ART_ATTEMPT=3", "WAIT_MS=2500"),
             art_iso="undecodable",
             wait_background=True,
         )
@@ -836,12 +856,13 @@ class NativePlayerUiTests(unittest.TestCase):
             r"icon_state=(\w+) pic1_state=(\w+)",
             run["stdout"],
         )
-        self.assertEqual(len(attempts), 1, run["stdout"])
+        self.assertEqual(len(attempts), 3, run["stdout"])
         self.assertEqual(
             attempts[0][2:],
-            ("0", "1", "3", "unsupported", "loaded"),
+            ("0", "1", "3", "pending", "loaded"),
             run["stdout"],
         )
+        self.assertEqual(attempts[-1][5:], ("failed", "loaded"), run["stdout"])
         self.assertFalse(has_icon_art(run["bmp"]), run["stdout"])
 
     def test_iso_art_retry_rereads_only_the_image_that_is_still_missing(self) -> None:

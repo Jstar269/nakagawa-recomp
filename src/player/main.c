@@ -586,7 +586,8 @@ enum {
     PLAYER_UI_TEST_ACTION_START_SYNTHETIC_BUILD = -20261004,
     PLAYER_UI_TEST_ACTION_INVALIDATE_AND_START_SYNTHETIC_BUILD = -20261005,
     PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE = -20261006,
-    PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE = -20261007
+    PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE = -20261007,
+    PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE = -20261008
 };
 
 static unsigned s_ui_test_package_status_thread_create_attempts;
@@ -774,6 +775,11 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->type = SDL_EVENT_USER;
         event->user.code = PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT;
         event->user.windowID = (Uint32)attempt;
+        return 1;
+    }
+    if (strcmp(token, "WAIT_ART_DELAY_ACTIVE") == 0) {
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE;
         return 1;
     }
     if (strncmp(token, "WAIT_PACKAGE_FAILURE=", 21) == 0) {
@@ -2389,6 +2395,8 @@ int main(int argc, char *argv[]) {
     bool ui_test_waiting_for_time = false;
     bool ui_test_waiting_for_view = false;
     bool ui_test_waiting_for_art_attempt = false;
+    bool ui_test_waiting_for_art_delay = false;
+    uint64_t ui_test_wait_art_delay_deadline = 0;
     unsigned ui_test_wait_art_attempt_target = 0;
     uint64_t ui_test_wait_deadline = 0;
     uint32_t ui_test_wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
@@ -3288,6 +3296,21 @@ int main(int argc, char *argv[]) {
                     ui_test_block_script = true;
                 }
             }
+            if (ui_test_waiting_for_art_delay) {
+                if (ui_renderer_test_art_delay_active()) {
+                    printf("[PLAYER_UI_TEST] wait_art_delay_active result=PASS\n");
+                    ui_test_waiting_for_art_delay = false;
+                } else if (ui_test_now >= ui_test_wait_art_delay_deadline) {
+                    fprintf(stderr,
+                            "[PLAYER_UI_TEST] wait_art_delay_active result=FAIL\n");
+                    ui_test_failed = true;
+                    ui_test_quit_queued = true;
+                    ui_test_waiting_for_art_delay = false;
+                    running = false;
+                } else {
+                    ui_test_block_script = true;
+                }
+            }
             if (s_ui_test_waiting_for_package_failure) {
                 int failure_index = player_ui_test_fail_title_index(
                     s_ui_test_wait_package_failure_disc);
@@ -3324,6 +3347,11 @@ int main(int argc, char *argv[]) {
                     ui_test_waiting_for_art_attempt = true;
                     printf("[PLAYER_UI_TEST] wait_art_attempt target=%u started\n",
                            ui_test_wait_art_attempt_target);
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE) {
+                    ui_test_waiting_for_art_delay = true;
+                    ui_test_wait_art_delay_deadline = ui_test_now + 10000;
+                    printf("[PLAYER_UI_TEST] wait_art_delay_active started\n");
                 } else if (scripted_event.type == SDL_EVENT_USER &&
                            scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE) {
                     s_ui_test_waiting_for_package_failure = true;
