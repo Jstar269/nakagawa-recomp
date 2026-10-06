@@ -142,6 +142,8 @@ class TestPs1Parse(TrackerTestBase):
         return p
 
     def test_valid_script_verifies(self):
+        if pt._find_powershell() is None:
+            self.skipTest("no PowerShell interpreter available for a real parse")
         good = self._write_ps1("good.ps1",
                                "function Invoke-NkBuild { param([string]$Mode) Write-Host $Mode }\n")
         self.assertEqual(pt._check_ps1_parse(good), "verified")
