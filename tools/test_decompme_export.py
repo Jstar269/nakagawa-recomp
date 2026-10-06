@@ -7,8 +7,8 @@
 Hermetic tests cover the pure pieces - the minimal MIPS ELF object (built then
 parsed back), the base context, and the function-extent bounding. An optional
 integration test runs the exporter against the private place_game_here/EBOOT.elf
-if present, checking only structural invariants (it never prints game bytes) and
-skipping cleanly when the private input is absent.
+only after explicit private-title opt-in, checking structural invariants without
+printing game bytes.
 """
 
 from __future__ import annotations
@@ -136,7 +136,10 @@ class TestContextAndExtent(unittest.TestCase):
             self.assertNotIn("sceIoOpen", ctx_corrupt)
 
 
-@unittest.skipUnless(EBOOT.exists(), "private place_game_here/EBOOT.elf not present")
+@unittest.skipUnless(
+    os.environ.get("NK_PRIVATE_TITLE_TESTS") == "1" and EBOOT.is_file(),
+    "set NK_PRIVATE_TITLE_TESTS=1 and provide private place_game_here/EBOOT.elf",
+)
 class TestExportAgainstRealEboot(unittest.TestCase):
     """Structure-only end-to-end check on the real game input. Never prints bytes."""
 

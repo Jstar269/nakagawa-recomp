@@ -13,8 +13,8 @@ proved were shadowing real, fully-translatable guest code:
                reached via .data pointer tables at +0x21f8/+0x2200.
 
 These tests fail if either address stops being emitted as a real translation
-(stub reintroduced, or discovery loses the entry). They need the decrypted
-EBOOT and skip when it is absent (CI has no game data).
+(stub reintroduced, or discovery loses the entry). They need explicit
+private-title opt-in and the decrypted EBOOT (CI has no game data).
 """
 
 import os
@@ -32,7 +32,10 @@ ELF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "place_game_here", "EBOOT.elf")
 
 
-@unittest.skipUnless(os.path.isfile(ELF), "decrypted EBOOT.elf not present")
+@unittest.skipUnless(
+    os.environ.get("NK_PRIVATE_TITLE_TESTS") == "1" and os.path.isfile(ELF),
+    "set NK_PRIVATE_TITLE_TESTS=1 and provide decrypted EBOOT.elf",
+)
 class TestNoShadowStubs(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
