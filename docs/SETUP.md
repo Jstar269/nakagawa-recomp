@@ -602,11 +602,26 @@ These targets strictly operate within `build/` and transient log paths, never de
 
 ### Checkout path and `BUILD_DIR`
 
-The repository may be cloned to any path, including one that contains spaces or other characters a
-command interpreter treats specially (`C:/path/with spaces/nakagawa`). A build, `mingw32-make
-native-core-tests`, `mingw32-make contrib-check` and the Python tooling suite all work from there;
-`tools/test_relocated_clone.py` runs a bounded contributor check from a spaced copy of the tracked
-tree so this stays true.
+The repository may be cloned under a path that contains spaces (`C:/path/with spaces/nakagawa`): a
+build, `mingw32-make native-core-tests`, `mingw32-make contrib-check` and the Python tooling suite
+all work from there, and `tools/test_relocated_clone.py` runs a bounded contributor command set from
+a copy of the tracked tree placed under a spaced directory, so the property is exercised rather than
+assumed.
+
+Two limits are stated rather than implied, because that check does not reach them:
+
+- **Non-ASCII characters in the checkout path are unverified.** No hosted gate runs from such a path.
+  The places measured are the selftest respawn sites named here, and they were measured locally, not
+  by a hosted gate.
+- **The selftest respawn sites quote their command line only recently.** `src/rt/hle_thread_selftest.c`,
+  `src/rt/cpu_lle_selftest.c` and `src/rt/dispatch_isolation_selftest.c` start a second copy of their
+  own binary, and they used the CRT's `_spawnl`/`_spawnv`, which joins its arguments without quoting:
+  a spaced self path was re-parsed as extra arguments, the mode flag never arrived, and the child ran
+  the whole suite instead of the requested mode. The HLE exit-game site was corrected in PR #680 and
+  the CPU-LLE and dispatch-isolation sites in PR #681, which also changed all three to decode
+  `argv[0]` in the active code page rather than assuming UTF-8, since that is the encoding the CRT
+  produced it in. [Issue #667](https://github.com/Jstar269/nakagawa-recomp/issues/667) tracks the
+  remaining path handling.
 
 `BUILD_DIR` is a narrower contract. GNU Make splits a target or prerequisite name on whitespace, so a
 `BUILD_DIR` containing a space cannot be named by Make at all: the name silently becomes several
