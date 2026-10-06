@@ -13,6 +13,7 @@ regenerating the controls from the private trusted ledger.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -93,6 +94,77 @@ class TestGateStatusVocabulary(unittest.TestCase):
             gate = contrib_check.ruff_gate(["tools/a.py"])
         self.assertEqual(gate.status, contrib_check.FAIL)
         self.assertIn("timed out", gate.detail)
+
+
+class TestStrictCompileIncludePath(unittest.TestCase):
+    """A `tests/native` unit may include a `src/player` header by bare name.
+
+    Those units sit outside `src/`, so the include resolves only when the
+    strict-compile line carries `-Isrc/player`.  The flag was missing, so five
+    tracked test units the change never touched failed the gate with a bare
+    `fatal error: <player header>: No such file or directory`.
+    """
+
+    def _player_headers(self) -> set[str]:
+        return {path.name for path in (ROOT / "src" / "player").glob("*.h")}
+
+    def _unit_player_includes(self, relative: str) -> list[str]:
+        """The `src/player` headers a `tests/native` unit includes by bare name."""
+        source = (ROOT / relative).read_text(encoding="utf-8", errors="replace")
+        names = {
+            Path(name).name
+            for name in re.findall(r'#\s*include\s+"([^"]+)"', source)
+        }
+        return sorted(names & self._player_headers())
+
+    def _player_including_tests(self) -> list[str]:
+        found: list[str] = []
+        for path in sorted((ROOT / "tests" / "native").glob("*.c")):
+            relative = path.relative_to(ROOT).as_posix()
+            if self._unit_player_includes(relative):
+                found.append(relative)
+        return found
+
+    def _needs_installed_sdk(self, relative: str) -> bool:
+        """Does one of the unit's player headers pull a header outside the project?
+
+        A slash inside an angle include means an SDK header (`<SDL3/SDL.h>`), and
+        standard C headers never carry one.  `ui_clip.h` and `ui_renderer.h`
+        pull SDL3, which the native and UI gates build and the Python-only shard
+        that runs this file does not install.
+        """
+        for name in self._unit_player_includes(relative):
+            header = (ROOT / "src" / "player" / name).read_text(encoding="utf-8")
+            if re.search(r'#\s*include\s+<[^>]*/[^>]*>', header):
+                return True
+        return False
+
+    def test_the_player_include_path_is_on_the_strict_compile_line(self) -> None:
+        self.assertIn("-Isrc/player", contrib_check.STRICT_C_FLAGS)
+
+    def test_every_unit_including_a_player_header_compiles(self) -> None:
+        files = self._player_including_tests()
+        self.assertTrue(
+            files,
+            "no tests/native unit includes a src/player header any more; "
+            "retire this regression together with the last such unit",
+        )
+        for relative in files:
+            with self.subTest(unit=relative):
+                gate = contrib_check.c_gate([relative])
+                if gate.status == contrib_check.SKIP:
+                    self.skipTest(gate.detail)
+                if gate.status == contrib_check.PASS:
+                    continue
+                # This regression owns the include path, not every dependency of
+                # every unit.  A unit whose player header pulls an SDK header can
+                # only reach a full compile where that SDK is installed, so on a
+                # runner that installs none the SDK header may be what is
+                # missing - a *player* header may not, which is the claim here.
+                self.assertTrue(self._needs_installed_sdk(relative), gate.detail)
+                for name in self._unit_player_includes(relative):
+                    self.assertNotIn(f"{name}: No such file or directory",
+                                     gate.detail)
 
 
 class TestPublicationGateSplit(unittest.TestCase):
