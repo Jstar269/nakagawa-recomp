@@ -2427,7 +2427,7 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 player-state-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+	$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c \
 		tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o build/test_player_state$(EXE_EXT)
 
