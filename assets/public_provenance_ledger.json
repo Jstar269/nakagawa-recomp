@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1edf8f11e773feb02516f3b793fbeac70e18f5d0ae174b5e2b8cfa552dd9a423"
+      "sha256": "3f4f5d979c6ddf5e18ebd0035a8514d137bb42db9a15bc3de9fe5a55ac83365a"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1390,7 +1390,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5f27923d18b90c78770e88d0ed4fe55da18b0bfe57338a53da2cc3cbff0f5a3e"
+      "sha256": "0ea57d10021b3cb563104707993a84f65bd16ef109c33b33a288de760cca2ede"
     },
     {
       "path": "docs/YOUR_OWN_GAMES.md",
