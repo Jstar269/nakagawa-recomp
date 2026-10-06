@@ -46,6 +46,7 @@
 #define nk_ps_getcwd _getcwd
 #else
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define test_rmdir rmdir
@@ -896,11 +897,59 @@ static void repeat_launch_and_settle(PlayerApp *app, int game_index,
 static uint64_t s_epoch_publication_before = 0;
 static uint64_t s_epoch_publication_after = 0;
 
-static void force_catalog_reload_at_publication(void *ctx) {
-    (void)ctx;
-    s_epoch_publication_before = nk_title_catalog_epoch();
+typedef struct {
+    const char *overlay_path;
+    uint64_t epoch_before;
+    uint64_t epoch_after;
+    bool loaded;
+    char error[512];
+} CatalogReloadAtPublication;
+
+static void reload_catalog_overlay(CatalogReloadAtPublication *reload) {
+    reload->epoch_before = nk_title_catalog_epoch();
     nk_title_catalog_clear_overlay();
-    s_epoch_publication_after = nk_title_catalog_epoch();
+    reload->loaded = nk_title_manifest_load_overlay(
+        reload->overlay_path, reload->error, sizeof(reload->error));
+    reload->epoch_after = nk_title_catalog_epoch();
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+static unsigned __stdcall reload_catalog_overlay_thread(void *ctx) {
+    reload_catalog_overlay((CatalogReloadAtPublication *)ctx);
+    return 0;
+}
+#else
+static void *reload_catalog_overlay_thread(void *ctx) {
+    reload_catalog_overlay((CatalogReloadAtPublication *)ctx);
+    return NULL;
+}
+#endif
+
+static void force_catalog_reload_at_publication(void *ctx) {
+    CatalogReloadAtPublication *reload = (CatalogReloadAtPublication *)ctx;
+    assert(reload != NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    uintptr_t thread = _beginthreadex(NULL, 0,
+                                      reload_catalog_overlay_thread, reload,
+                                      0, NULL);
+    if (!thread) abort();
+    HANDLE handle = (HANDLE)thread;
+    if (WaitForSingleObject(handle, INFINITE) != WAIT_OBJECT_0) abort();
+    CloseHandle(handle);
+#else
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, reload_catalog_overlay_thread, reload) != 0) {
+        abort();
+    }
+    if (pthread_join(thread, NULL) != 0) abort();
+#endif
+    if (!reload->loaded) {
+        fprintf(stderr, "[PLAYER_STATE_TEST] catalog reload failed: %s\n",
+                reload->error);
+    }
+    assert(reload->loaded);
+    s_epoch_publication_before = reload->epoch_before;
+    s_epoch_publication_after = reload->epoch_after;
 }
 #endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
@@ -2728,29 +2777,25 @@ int main(int argc, char **argv) {
         /* 19b. One catalog epoch across package validation and its cache
          * identity (#670).
          *
-         * This is a deterministic interposition test, NOT a concurrency stress
-         * test. The defect it pins is a sequence defect, not a race in the
+         * This is deterministic cross-thread interposition at the publication
+         * checkpoint. The validator waits while a second thread clears and
+         * reparses a registered overlay, then joins it before cache insertion.
+         * The defect it pins is a sequence defect, not a race in the
          * memory-model sense: validate_aot_package() reads the catalog epoch
          * once for the lookup and then read it a second time when it published,
          * so a reload interleaved anywhere between those two reads produced an
          * entry stamped with one epoch whose status identity digest belonged to
-         * another. A real concurrent reload can only land somewhere in that
-         * window; the seam puts it at the exact publication point, which is the
-         * strongest placement, and does so on every run.
+         * another. The checkpoint puts the clear/reparse exactly between the
+         * snapshot and publication on every run.
          *
          * That is why the assertions below are sufficient and provable rather
          * than probabilistic: the epoch provably advanced between the snapshot
          * and the publication, the digest provably is epoch-sensitive, and the
          * published entry therefore either carries the snapshot epoch with its
-         * own epoch's digest (correct) or mixes the two (the defect). No
-         * scheduling, sleep, or repetition is involved, and the test cannot
-         * pass by luck.
-         *
-         * Concurrent clear/reparse coverage lives separately in the SDL3-gated
-         * player UI regression
-         * (test_player_ui.py::test_package_status_worker_and_catalog_reload_do_not_deadlock_or_corrupt_status,
-         * 128 reloads against the status worker); it is not duplicated here. */
-        printf("[PLAYER_STATE_TEST] Subtest 19b: single catalog epoch across validation and cache publication\n");
+         * own epoch's digest (correct) or mixes the two (the defect). The
+         * second thread is joined at the checkpoint, so no sleep or scheduler
+         * timing determines where the reload lands. */
+        printf("[PLAYER_STATE_TEST] Subtest 19b: concurrent clear/reparse across validation and cache publication\n");
         fflush(stdout);
 
         char epoch_root[640];
@@ -2824,10 +2869,13 @@ int main(int argc, char **argv) {
         assert(nk_launch_runtime_package_cache_identity(
             epoch_root, &epoch_game, identity_at_snapshot));
 
+        CatalogReloadAtPublication reload;
+        memset(&reload, 0, sizeof(reload));
+        reload.overlay_path = epoch_overlay_path;
         s_epoch_publication_before = 0;
         s_epoch_publication_after = 0;
         nk_title_manifest_test_set_validation_checkpoint(
-            force_catalog_reload_at_publication, NULL);
+            force_catalog_reload_at_publication, &reload);
         NkRuntimePackageInfo epoch_info;
         NkRuntimePackageStatus epoch_status = nk_launch_validate_runtime_package(
             epoch_root, &epoch_game, &epoch_info, epoch_reason,
@@ -2842,11 +2890,14 @@ int main(int argc, char **argv) {
         assert(s_epoch_publication_before == epoch_at_snapshot);
         assert(s_epoch_publication_after > s_epoch_publication_before);
 
-        /* The clear that advanced the epoch removed a registered overlay, so
-           the epoch change under test is the one a real reload publishes. */
-        NkTitleEntrySnapshot epoch_cleared = {0};
-        assert(!nk_title_catalog_find_by_id("epoch-coherence-overlay",
-                                            &epoch_cleared));
+        /* The second thread completed a real clear/reparse, leaving the
+           replacement overlay visible through an owned catalog snapshot. */
+        NkTitleEntrySnapshot epoch_reloaded = {0};
+        assert(nk_title_catalog_find_by_id("epoch-coherence-overlay",
+                                           &epoch_reloaded));
+        assert(strcmp(epoch_reloaded.entry.display_name,
+                      "Epoch Coherence Overlay") == 0);
+        nk_title_catalog_snapshot_release(&epoch_reloaded);
 
         char identity_after_reload[65];
         assert(nk_launch_runtime_package_cache_identity(
