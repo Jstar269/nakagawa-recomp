@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4a14ace1e70c1bc01f74190b5362422e4565818560c52c6ec541f707eff25ae8"
+      "sha256": "d32cc03d688874ea6994e153dc23f8fb57d14f316df333d8720207fdf492ae21"
     },
     {
       "path": "NOTICE.md",
@@ -5394,7 +5394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e87c8a5243343da6fb19928784de445e98b68426dfd73ddd5111d9674d581857"
+      "sha256": "70e0c4bdabbe5cf3c13fa453b2c872c37bb1aeb2d6dcee4226e7e5d6b0a3315f"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -8233,7 +8233,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ba2bad5ddee81fede16374ce6d999711b8933abc157eb54294ee8e976418d564"
+      "sha256": "ace3cb9809c154c7fd97727953352dd28bfa4f5c28e2ae3053487c6d1472b2c4"
     },
     {
       "path": "tools/test_package_cache.py",

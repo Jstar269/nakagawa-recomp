@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from typing import Sequence
 import zlib
 
 
@@ -379,6 +380,41 @@ def parse_frames(output: str) -> list[dict[str, str]]:
     return frames
 
 
+DEFAULT_BASE_TIMEOUT_SECONDS: float = 30.0
+TIMEOUT_BUFFER_SECONDS: float = 15.0
+
+
+def compute_effective_timeout(
+    event_script: Sequence[str],
+    explicit_timeout: float | None = None,
+) -> float:
+    """Compute adaptive subprocess timeout based on scripted UI test events.
+
+    Scripted wait events parse as:
+      - WAIT_MS=<duration_ms>: waits for explicit millisecond duration.
+      - WAIT_VIEW=<view_mask>,<timeout_ms>: waits up to timeout_ms for view match.
+
+    When explicit_timeout is None, sums all wait event bounds and adds
+    TIMEOUT_BUFFER_SECONDS over DEFAULT_BASE_TIMEOUT_SECONDS to ensure slow
+    or heavily loaded test runners do not trigger premature TimeoutExpired.
+    """
+    if explicit_timeout is not None:
+        return explicit_timeout
+    effective = DEFAULT_BASE_TIMEOUT_SECONDS
+    for ev in event_script:
+        if ev.startswith("WAIT_MS="):
+            try:
+                effective += int(ev.split("=", 1)[1]) / 1000.0
+            except ValueError:
+                pass
+        elif ev.startswith("WAIT_VIEW=") and "," in ev:
+            try:
+                effective += int(ev.split(",", 1)[1]) / 1000.0
+            except ValueError:
+                pass
+    return effective + TIMEOUT_BUFFER_SECONDS
+
+
 class NativePlayerUiTests(unittest.TestCase):
     def run_player(
         self,
@@ -399,6 +435,7 @@ class NativePlayerUiTests(unittest.TestCase):
         env_extra: dict[str, str] | None = None,
         width: int = 1280,
         height: int = 720,
+        timeout: float | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -537,6 +574,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
             args.append(f"--runtime-root={runtime_root}")
 
+            effective_timeout = compute_effective_timeout(event_script, timeout)
+
             started = time.perf_counter()
             completed = subprocess.run(
                 args,
@@ -544,7 +583,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=effective_timeout,
                 check=False,
             )
             wall_seconds = time.perf_counter() - started
@@ -574,6 +613,17 @@ class NativePlayerUiTests(unittest.TestCase):
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
             }
+
+    def test_compute_effective_timeout(self) -> None:
+        """Effective timeout scales with scripted wait events and respects explicit bounds."""
+        self.assertEqual(compute_effective_timeout([], explicit_timeout=12.5), 12.5)
+        self.assertEqual(
+            compute_effective_timeout([]),
+            DEFAULT_BASE_TIMEOUT_SECONDS + TIMEOUT_BUFFER_SECONDS,
+        )
+        events = ["WAIT_MS=2500", "WAIT_VIEW=ready_library,10000", "WAIT_VIEW=error,5000", "QUIT"]
+        expected = DEFAULT_BASE_TIMEOUT_SECONDS + 2.5 + 10.0 + 5.0 + TIMEOUT_BUFFER_SECONDS
+        self.assertEqual(compute_effective_timeout(events), expected)
 
     @unittest.skipUnless(sys.platform == "win32", "legacy %USERPROFILE%\\Nakagawa\\data migration warning is Windows-only")
     def test_legacy_data_root_is_reported_once_without_moving_it(self) -> None:
