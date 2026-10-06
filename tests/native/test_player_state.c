@@ -2663,12 +2663,10 @@ int main(int argc, char **argv) {
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo pinned_entry_info;
-        assert(nk_launch_validate_runtime_package(
-                   validation_root, &game, &pinned_entry_info, reason,
-                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
-        /* The fixture was just rewritten, so its change values advanced past
-           the entry that validated the previous tree. */
-        assert(!pinned_entry_info.validation_cache_hit);
+        NkRuntimePackageStatus pinned_entry_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &pinned_entry_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   pinned_entry_status, &pinned_entry_info);
         char pinned_identity_before[65];
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, pinned_identity_before));
