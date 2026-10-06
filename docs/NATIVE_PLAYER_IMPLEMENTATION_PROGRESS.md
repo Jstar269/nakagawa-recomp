@@ -167,6 +167,47 @@ plain executable plus a built package.
 
 ---
 
+## 3b. The ISO art worker contract
+
+The library card's `ICON0.PNG` icon and `PIC1.PNG` backdrop are read from the
+ISO on a worker thread, so a disc image is never parsed on the UI thread.
+`src/player/ui_renderer.c` keeps one cache entry per title (64 slots), and each
+of the two images carries its own attempt count and its own reason for
+stopping: "this build cannot decode it" and "the retry budget ran out" are
+different answers, and one boolean used to report both.
+
+| Terminal state | Set when | Retries |
+| :--- | :--- | :--- |
+| `UI_ART_TERMINAL_LOADED` | a texture was created for that image | terminal |
+| `UI_ART_TERMINAL_UNSUPPORTED` | the image was read off the disc intact (`NK_ICON_OK` with bytes) and this build's decoder still produced no surface, or the build links no PNG decoder at all (SDL < 3.4) | terminal on the **first** attempt |
+| `UI_ART_TERMINAL_EXHAUSTED` | a read or texture-creation failure a retry could clear reached `GAME_ART_MAX_ATTEMPTS` (3) | terminal |
+
+- A *successful* decode whose texture creation fails keeps the retry budget:
+  that is a VRAM/renderer condition, not a decoder verdict.
+- Retries are spaced by `GAME_ART_RETRY_COOLDOWN_NS` (1 s) shifted by
+  `min(attempt - 1, 2)`, so the delay grows 1 s → 2 s → 4 s and then stops.
+- A retry asks only for the image that is still missing, so a disc without
+  `PIC1.PNG` never re-reads its `ICON0.PNG`.
+- When a completion event cannot be queued, the worker marks the handoff
+  failed, the UI thread reclaims that job, and the entry retries instead of
+  staying pending for the session.
+- `ui_font_shutdown()` joins every in-flight art worker and releases its decoded
+  bytes before the renderer and the SDL event queue go away; the regression
+  harness reports the drain (`font_shutdown art_jobs_drained=<n>`).
+
+The states are observable from the outside: a build with
+`NK_PLAYER_UI_REGRESSION_TEST` prints `art_attempt index=… icon_loaded=…
+pic1_loaded=… wanted=… icon_state=… pic1_state=…` for every completion, which is
+what `tests/native/test_player_ui.py` reads to tell an image this build cannot
+decode (one attempt, `unsupported`) from an image whose reads kept failing
+(three attempts, `exhausted`).
+
+What this does not claim: the suite decodes no retail disc, `unsupported` is
+this build's decoder reporting rather than a statement about the file, and
+nothing here speaks to the correctness of the artwork pixels themselves.
+
+---
+
 ## 4. Architectural Boundaries & LLE Compliance
 
 1. **Rejection of Premature HLE**:
