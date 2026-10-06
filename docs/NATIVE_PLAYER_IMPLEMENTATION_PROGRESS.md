@@ -167,6 +167,56 @@ plain executable plus a built package.
 
 ---
 
+## 3b. The ISO art worker contract
+
+The library card's `ICON0.PNG` icon and `PIC1.PNG` backdrop are read from the
+ISO on a worker thread, so a disc image is never parsed on the UI thread.
+`src/player/ui_renderer.c` keeps one cache entry per title (64 slots), and each
+image carries its own attempt count and terminal result: loaded, absent, failed,
+or unsupported by a build without a PNG decoder.
+
+| Terminal state | Set when | Retries |
+| :--- | :--- | :--- |
+| `UI_ART_TERMINAL_LOADED` | a texture was created for that image | terminal |
+| `UI_ART_TERMINAL_ABSENT` | the ISO or image entry was missing on the last read after `GAME_ART_MAX_ATTEMPTS` (3) | terminal |
+| `UI_ART_TERMINAL_FAILED` | corrupt/oversized data or a transient decoder/renderer/worker failure persisted through the bounded retry budget | terminal |
+| `UI_ART_TERMINAL_UNSUPPORTED` | the image was read off the disc intact (`NK_ICON_OK` with bytes), but this build has no PNG decoder (SDL < 3.4) | terminal on the **first** attempt |
+
+- Even without a PNG decoder, an absent or unreadable ISO entry remains a
+  retryable read failure; `unsupported` applies only after intact bytes arrive.
+- A *successful* decode whose texture creation fails keeps the retry budget:
+  that is a VRAM/renderer condition, not a decoder verdict.
+- Retries are spaced by `GAME_ART_RETRY_COOLDOWN_NS` (1 s) shifted by
+  `min(attempt - 1, 2)`, so the delay grows 1 s → 2 s → 4 s and then stops.
+- A retry asks only for the image that is still missing, so a disc without
+  `PIC1.PNG` never re-reads its `ICON0.PNG`.
+- When a completion event cannot be queued, the worker marks the handoff
+  failed, the UI thread reclaims that job, and the entry retries instead of
+  staying pending for the session.
+- `ui_font_shutdown()` joins every in-flight art worker and releases its decoded
+  bytes before the renderer and the SDL event queue go away; the regression
+  harness waits for a worker to enter its test-only delay before quitting, then
+  reports both `art_jobs_active_at_shutdown` and `art_jobs_drained`.
+
+The states are observable from the outside: a build with
+`NK_PLAYER_UI_REGRESSION_TEST` prints `art_attempt index=… icon_loaded=…
+pic1_loaded=… wanted=… icon_state=… pic1_state=…` for every completion, which is
+what `tests/native/test_player_ui.py` reads to distinguish a missing image
+(`absent` after three attempts), corrupt or persistent operational failure
+(`failed` after three attempts), and readable bytes on a build without PNG
+support (`unsupported` on the first attempt). A decoder rejection on a build
+with PNG support is a bounded `failed` result.
+
+The shutdown regression waits for the worker to confirm it is inside a test-only
+delay, quits while that known job is active, and asserts the job is joined before
+renderer/window teardown.
+
+What this does not claim: the suite decodes no retail disc, `unsupported` says
+the build lacks a PNG decoder rather than making a statement about the file, and
+nothing here speaks to the correctness of the artwork pixels themselves.
+
+---
+
 ## 4. Architectural Boundaries & LLE Compliance
 
 1. **Rejection of Premature HLE**:

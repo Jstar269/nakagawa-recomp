@@ -44,6 +44,7 @@ bool ui_renderer_art_pending(void);
 void ui_renderer_recover_lost_art_handoffs(void);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 unsigned ui_renderer_test_art_attempt_count(void);
+bool ui_renderer_test_art_delay_active(void);
 /* Make every ISO-art completion event behave as if SDL refused it, so the
  * reclaim path is exercised by the scripted harness. */
 void ui_renderer_test_drop_art_events(bool drop);
