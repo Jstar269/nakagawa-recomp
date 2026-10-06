@@ -156,6 +156,19 @@ module, `SFO revision`, or `manifest/profile`; it never prints input hashes.
 Revision qualification that needs a title-specific compatibility decision is
 an explicit boundary and remains in the works under [issue #315](https://github.com/Jstar269/nakagawa-recomp/issues/315).
 
+Validation is memoized for the life of a process, so the memo is keyed on a
+status identity that covers every input it must not go stale against: the
+package metadata files, the selected executable and the runtime image derived
+from it, the current per-user title input record, and every artifact the
+completion marker publishes. Each of those files contributes its size, its
+write timestamp, and the platform's change value (`ChangeTime` on Windows,
+`ctime` on POSIX). The change value is what keeps the memo honest for a
+same-size edit inside one write-timestamp tick, where size and write time are
+both unchanged ([issue #683](https://github.com/Jstar269/nakagawa-recomp/issues/683));
+it only ever turns a would-be hit into a revalidation. Where a filesystem
+reports no change value, or a file cannot be opened for its metadata, the
+identity falls back to size and write timestamp.
+
 `build-report.json` has format `nakagawa-build-report`, schema version `1`, the
 same `input_hashes`, Python/planner/analyzer/codegen/Make versions, the compiler
 identity, runtime ABI, and deterministic coverage counts (`analyzed_functions`,

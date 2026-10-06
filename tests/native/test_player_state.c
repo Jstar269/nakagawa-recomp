@@ -40,10 +40,12 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #include <process.h>
+#include <windows.h>
 #define test_rmdir _rmdir
 #define nk_ps_chdir _chdir
 #define nk_ps_getcwd _getcwd
 #else
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define test_rmdir rmdir
@@ -105,10 +107,11 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
-/* Bytes on disk. The package identity the validator compares is (size,
- * mtime) per file, so a mutation whose size provably changes is a guaranteed
- * identity change on every host, while a same-size rewrite may be invisible to
- * a filesystem with a coarse write timestamp. */
+/* Bytes on disk. The package identity the validator compares is (size, write
+ * timestamp, platform change value) per file, so a mutation whose size
+ * provably changes is a guaranteed identity change on every host, while a
+ * same-size rewrite is only guaranteed to be visible through the change value
+ * (#683) - see rewrite_preserving_size_and_mtime below. */
 static long fixture_file_size(const char *path) {
     FILE *file = fopen(path, "rb");
     assert(file != NULL);
@@ -117,6 +120,53 @@ static long fixture_file_size(const char *path) {
     assert(size >= 0);
     assert(fclose(file) == 0);
     return size;
+}
+
+/* Rewrite *path* with *bytes* and put the write timestamp back to the value the
+ * file had on entry, so the (size, write timestamp) half of the package
+ * identity is provably unchanged and only the platform change value can
+ * differ. *bytes* must have exactly the current length of the file. Returns
+ * false when the host cannot restore the timestamp exactly, which the caller
+ * asserts rather than tolerating: the point of the probe is that the bytes on
+ * disk really are indistinguishable in size and write time. */
+static bool rewrite_preserving_size_and_mtime(const char *path, const char *bytes) {
+    assert(strlen(bytes) == (size_t)fixture_file_size(path));
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[32768];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                            wide, 32768) <= 0) {
+        return false;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA before;
+    if (!GetFileAttributesExW(wide, GetFileExInfoStandard, &before)) return false;
+    write_text_file(path, bytes);
+    HANDLE handle = CreateFileW(wide, FILE_WRITE_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                    FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    BOOL restored = SetFileTime(handle, NULL, NULL, &before.ftLastWriteTime);
+    CloseHandle(handle);
+    if (!restored) return false;
+    WIN32_FILE_ATTRIBUTE_DATA after;
+    if (!GetFileAttributesExW(wide, GetFileExInfoStandard, &after)) return false;
+    return after.ftLastWriteTime.dwLowDateTime ==
+               before.ftLastWriteTime.dwLowDateTime &&
+           after.ftLastWriteTime.dwHighDateTime ==
+               before.ftLastWriteTime.dwHighDateTime;
+#else
+    struct stat before;
+    if (stat(path, &before) != 0) return false;
+    write_text_file(path, bytes);
+    struct timespec times[2];
+    times[0] = before.st_atim;
+    times[1] = before.st_mtim;
+    if (utimensat(AT_FDCWD, path, times, 0) != 0) return false;
+    struct stat after;
+    if (stat(path, &after) != 0) return false;
+    return after.st_mtim.tv_sec == before.st_mtim.tv_sec &&
+           after.st_mtim.tv_nsec == before.st_mtim.tv_nsec;
+#endif
 }
 
 /* Seed a fixture executable with real bytes (a self-copy of this test binary
@@ -714,17 +764,23 @@ static bool fixture_status_identity(const char *user_root, const NkGameEntry *ga
  * synthetic package tree; *identity_when_validated* is the status identity the
  * accepted cache entry was validated against.
  *
- * The identity the validator compares is (size, mtime) for each metadata file
- * and artifact. A repair that writes the accepted bytes back can therefore
- * reproduce the identity the entry was validated against: filesystems advance
- * the write timestamp on a coarse tick (Windows moves ftLastWriteTime in
- * ~15.6 ms steps), so two writes inside one tick are indistinguishable. When
- * the identity does come back, a hit is the CORRECT answer - the entry
- * describes exactly the bytes now on disk - so an unconditional
- * "!validation_cache_hit" here would be a bet on the host clock rather than on
- * the validator. That is the bet this subtest lost in the hosted Windows gate,
- * which aborts on the assertion at the repair below the removed image while
- * the whole subtest runs inside ~36 ms - two ticks.
+ * The identity the validator compares is (size, write timestamp, platform
+ * change value) for each metadata file and artifact - see PackageFileIdentity
+ * in nk_title_manifest.c. The change value is what makes a byte-identical
+ * repair visible (#683): it advances on every write, so a repair normally
+ * moves the identity and the strict assertion below applies. The tolerant
+ * branch is kept for the host where the change value is unavailable (a
+ * filesystem that does not report one, or a file that cannot be opened for its
+ * metadata), where the identity degrades to exactly (size, write timestamp) and
+ * a repair that writes the accepted bytes back can reproduce the identity the
+ * entry was validated against: Windows moves ftLastWriteTime in ~15.6 ms steps,
+ * so two writes inside one tick are indistinguishable there. When the identity
+ * does come back, a hit is the CORRECT answer - the entry describes exactly the
+ * bytes now on disk - so an unconditional "!validation_cache_hit" would be a
+ * bet on the host clock rather than on the validator. That is the bet this
+ * subtest lost in the hosted Windows gate, which aborts on the assertion at the
+ * repair below the removed image while the whole subtest runs inside ~36 ms -
+ * two ticks.
  *
  * What must hold on every host is the contract itself: the repaired tree
  * validates, and a hit is served only for the identity that was validated. The
@@ -2579,11 +2635,11 @@ int main(int argc, char **argv) {
 
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_before));
-        /* A mutation the identity cannot miss: size is compared before mtime,
-           so a size change is visible on every host and this input can never
-           be served from the entry that validated the smaller file. (The
-           same-size case is the fragile one - see assert_repaired_validation
-           - and it is deliberately not asserted here.) */
+        /* A mutation the identity cannot miss: size is compared before the
+           write timestamp, so a size change is visible on every host and this
+           input can never be served from the entry that validated the smaller
+           file. The same-size case needs the platform change value to be
+           visible at all, and it is asserted on its own below. */
         long executable_size_before = fixture_file_size(executable);
         write_text_file(executable, "modified package executable");
         assert(fixture_file_size(executable) != executable_size_before);
@@ -2595,6 +2651,46 @@ int main(int argc, char **argv) {
                    validation_root, &game, &changed_info, reason, sizeof(reason)) ==
                NK_RUNTIME_PACKAGE_STALE);
         assert(!changed_info.validation_cache_hit);
+
+        /* A same-size edit inside one write-timestamp tick (#683): rewrite the
+           executable with different bytes of the same length, then put its
+           write timestamp back to the value it had, so size and write time are
+           provably unchanged. Only the platform change value can tell these
+           bytes from the ones the entry was validated against, so the entry
+           must not be served and the mutation must be reported instead of
+           being accepted as the cached validation. */
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        NkRuntimePackageInfo pinned_entry_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &pinned_entry_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        /* The fixture was just rewritten, so its change values advanced past
+           the entry that validated the previous tree. */
+        assert(!pinned_entry_info.validation_cache_hit);
+        char pinned_identity_before[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, pinned_identity_before));
+        long pinned_size = fixture_file_size(executable);
+        assert(pinned_size > 0);
+        char *same_size_bytes = (char *)malloc((size_t)pinned_size + 1);
+        assert(same_size_bytes != NULL);
+        memset(same_size_bytes, 'm', (size_t)pinned_size);
+        same_size_bytes[pinned_size] = '\0';
+        assert(strcmp(same_size_bytes, "fixture") != 0);
+        assert(rewrite_preserving_size_and_mtime(executable, same_size_bytes));
+        free(same_size_bytes);
+        assert(fixture_file_size(executable) == pinned_size);
+        char pinned_identity_after[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, pinned_identity_after));
+        assert(strcmp(pinned_identity_before, pinned_identity_after) != 0);
+        NkRuntimePackageInfo pinned_info;
+        NkRuntimePackageStatus pinned_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &pinned_info, reason, sizeof(reason));
+        assert(pinned_status == NK_RUNTIME_PACKAGE_STALE);
+        assert(!pinned_info.validation_cache_hit);
 
         /* Leave the machine as found. These five removes already ran here, but
            the root they cleaned still held the fixture's
