@@ -1127,8 +1127,10 @@ CONTRIB_BASE ?= origin/main
 # an environment variable rather than a make variable because an interpreter
 # path usually contains a space, and the rest of this Makefile expands
 # $(PYTHON) unquoted.
+CONTRIB_PYTHON ?= $(PYTHON)
+contrib-check: export CONTRIB_PYTHON := $(CONTRIB_PYTHON)
 contrib-check:
-	CONTRIB_PYTHON="$${CONTRIB_PYTHON:-$(PYTHON)}" $(PYTHON) tools/contrib_check.py --base "$(CONTRIB_BASE)"
+	$(PYTHON) tools/contrib_check.py --base "$(CONTRIB_BASE)"
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
@@ -1635,8 +1637,9 @@ $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 .PHONY: player-ui-regressions
+player-ui-regressions: export NAKAGAWA_PLAYER_UI_TEST_EXE = $(PLAYER_UI_TEST_EXE)
 player-ui-regressions: $(PLAYER_UI_TEST_EXE)
-	NAKAGAWA_PLAYER_UI_TEST_EXE="$(PLAYER_UI_TEST_EXE)" $(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
+	$(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)

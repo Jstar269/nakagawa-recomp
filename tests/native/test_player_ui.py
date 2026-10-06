@@ -399,6 +399,7 @@ class NativePlayerUiTests(unittest.TestCase):
         env_extra: dict[str, str] | None = None,
         width: int = 1280,
         height: int = 720,
+        timeout: float | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -537,6 +538,23 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
             args.append(f"--runtime-root={runtime_root}")
 
+            if timeout is None:
+                effective_timeout = 30.0
+                for ev in event_script:
+                    if ev.startswith("WAIT_MS="):
+                        try:
+                            effective_timeout += int(ev.split("=", 1)[1]) / 1000.0
+                        except ValueError:
+                            pass
+                    elif ev.startswith("WAIT_VIEW=") and "," in ev:
+                        try:
+                            effective_timeout += int(ev.split(",", 1)[1]) / 1000.0
+                        except ValueError:
+                            pass
+                effective_timeout = max(effective_timeout, 30.0) + 15.0
+            else:
+                effective_timeout = timeout
+
             started = time.perf_counter()
             completed = subprocess.run(
                 args,
@@ -544,7 +562,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=effective_timeout,
                 check=False,
             )
             wall_seconds = time.perf_counter() - started
