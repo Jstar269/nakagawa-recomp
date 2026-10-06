@@ -105,6 +105,20 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
+/* Bytes on disk. The package identity the validator compares is (size,
+ * mtime) per file, so a mutation whose size provably changes is a guaranteed
+ * identity change on every host, while a same-size rewrite may be invisible to
+ * a filesystem with a coarse write timestamp. */
+static long fixture_file_size(const char *path) {
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    long size = ftell(file);
+    assert(size >= 0);
+    assert(fclose(file) == 0);
+    return size;
+}
+
 /* Seed a fixture executable with real bytes (a self-copy of this test binary
  * standing in for a recompiled runtime). The stub path keeps writing the
  * historical "fixture" payload, whose digest is FIXTURE_SHA256 below. */
@@ -685,6 +699,51 @@ static const PlayerPreflightCheck *find_preflight_check(
         if (strcmp(preflight->checks[i].code, code) == 0) return &preflight->checks[i];
     }
     return NULL;
+}
+
+/* The package-status identity the validator itself computes for *user_root*
+ * (nk_launch_runtime_package_cache_identity) - the digest a package-validation
+ * cache entry is bound to. Re-measuring it is how this test tells "the identity
+ * came back" from "the identity changed" instead of guessing from a clock. */
+static bool fixture_status_identity(const char *user_root, const NkGameEntry *game,
+                                    char out_identity[65]) {
+    return nk_launch_runtime_package_cache_identity(user_root, game, out_identity);
+}
+
+/* Assert the cache contract for the validation that follows repairing a
+ * synthetic package tree; *identity_when_validated* is the status identity the
+ * accepted cache entry was validated against.
+ *
+ * The identity the validator compares is (size, mtime) for each metadata file
+ * and artifact. A repair that writes the accepted bytes back can therefore
+ * reproduce the identity the entry was validated against: filesystems advance
+ * the write timestamp on a coarse tick (Windows moves ftLastWriteTime in
+ * ~15.6 ms steps), so two writes inside one tick are indistinguishable. When
+ * the identity does come back, a hit is the CORRECT answer - the entry
+ * describes exactly the bytes now on disk - so an unconditional
+ * "!validation_cache_hit" here would be a bet on the host clock rather than on
+ * the validator. That is the bet this subtest lost in the hosted Windows gate,
+ * which aborts on the assertion at the repair below the removed image while
+ * the whole subtest runs inside ~36 ms - two ticks.
+ *
+ * What must hold on every host is the contract itself: the repaired tree
+ * validates, and a hit is served only for the identity that was validated. The
+ * identity is re-measured here, and the strict assertion is made in the branch
+ * where it is provable - when the identity did NOT come back, a hit could only
+ * be a stale entry being served. */
+static void assert_repaired_validation(const char *user_root, const NkGameEntry *game,
+                                       const char *identity_when_validated,
+                                       NkRuntimePackageStatus status,
+                                       const NkRuntimePackageInfo *info) {
+    assert(status == NK_RUNTIME_PACKAGE_OK);
+    char identity_now[65];
+    assert(fixture_status_identity(user_root, game, identity_now));
+    if (strcmp(identity_now, identity_when_validated) == 0) {
+        /* Exact identity restored: either answer is sound, and neither is
+           evidence of a stale entry. */
+        return;
+    }
+    assert(!info->validation_cache_hit);
 }
 
 static const char *runtime_package_status_name(NkRuntimePackageStatus status) {
@@ -2469,10 +2528,11 @@ int main(int argc, char **argv) {
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo refreshed_info;
-        assert(nk_launch_validate_runtime_package(
-                   validation_root, &game, &refreshed_info, reason,
-                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
-        assert(!refreshed_info.validation_cache_hit);
+        NkRuntimePackageStatus refreshed_status;
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status, &refreshed_info);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -2489,10 +2549,10 @@ int main(int argc, char **argv) {
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
-        assert(nk_launch_validate_runtime_package(
-                   validation_root, &game, &refreshed_info, reason,
-                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
-        assert(!refreshed_info.validation_cache_hit);
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status, &refreshed_info);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -2508,10 +2568,10 @@ int main(int argc, char **argv) {
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
-        assert(nk_launch_validate_runtime_package(
-                   validation_root, &game, &refreshed_info, reason,
-                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
-        assert(!refreshed_info.validation_cache_hit);
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status, &refreshed_info);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -2519,7 +2579,14 @@ int main(int argc, char **argv) {
 
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_before));
+        /* A mutation the identity cannot miss: size is compared before mtime,
+           so a size change is visible on every host and this input can never
+           be served from the entry that validated the smaller file. (The
+           same-size case is the fragile one - see assert_repaired_validation
+           - and it is deliberately not asserted here.) */
+        long executable_size_before = fixture_file_size(executable);
         write_text_file(executable, "modified package executable");
+        assert(fixture_file_size(executable) != executable_size_before);
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_after));
         assert(strcmp(identity_before, identity_after) != 0);
