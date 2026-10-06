@@ -159,6 +159,22 @@ bool nk_title_manifest_aot_package_cache_identity(
     char out_identity[65]
 );
 
+/* White-box seams for the package-validation cache epoch contract (#670).
+ * Declared and defined only when the test build defines
+ * NK_TITLE_MANIFEST_TEST_SEAMS, the same shape as SR_CD_TEST_HOOKS and
+ * SR_PROFILER_SELFTEST; production builds do not carry them. A native
+ * regression installs a checkpoint to land a catalog clear/reload
+ * deterministically at the cache publication point, and reads the published
+ * entry back so it can assert that the epoch stamped on the entry is the epoch
+ * its identity digest was computed under. */
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+typedef void (*NkPackageValidationCheckpointFn)(void *ctx);
+void nk_title_manifest_test_set_validation_checkpoint(
+    NkPackageValidationCheckpointFn checkpoint, void *ctx);
+bool nk_title_manifest_test_package_cache_entry(uint64_t *out_catalog_epoch,
+                                                char out_status_identity[65]);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
