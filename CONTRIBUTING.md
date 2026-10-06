@@ -118,7 +118,9 @@ matrix, and not evidence that a pull request is ready to merge. A green `contrib
 stand in for:
 
 - **Windows runtime compile gate** — the runtime build, `native-core-tests` and the selftests on
-  MSYS2 UCRT64. Nothing in `contrib-check` compiles or runs anything on Windows.
+  MSYS2 UCRT64. `contrib-check`'s strict compile goes no further than `gcc -fsyntax-only` over the
+  changed C files on your own host: it does not build the Windows runtime objects, run
+  `native-core-tests`, or run the Windows selftests.
 - **CodeQL, dependency-review and OSV** — the hosted static and dependency security scans.
 - **Trusted provenance attestation** — your head commit checked against the private trusted
   ledger, which only a maintainer can run.
