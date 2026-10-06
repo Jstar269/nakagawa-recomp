@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7a10d32623d798f3dab0babc42eb99cde6ec869f3793aa5e860715476d7b90b6"
+      "sha256": "4a14ace1e70c1bc01f74190b5362422e4565818560c52c6ec541f707eff25ae8"
     },
     {
       "path": "NOTICE.md",
@@ -2732,7 +2732,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6437f86cbf9295c23e4abbf31472266e6175ca144f7a003f21130eab53b63a38"
+      "sha256": "76e3790f8dd38eb320a56d58ad667f66858b7a6d5af5075f22dad0d346659b18"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -2744,7 +2744,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4baf153c7da26def1568537610aa979f78a535392cc880f5e9f0e4f1f70da467"
+      "sha256": "2886a06585ef71f818d9b0a5e3d1fc168ad89b17381ab7f32c9cc3479c121b06"
     },
     {
       "path": "src/core/nk_types.h",
@@ -5382,7 +5382,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "338eaa960c295d84a697f9ec912763b305def18bccb737c3565de416461e6503"
+      "sha256": "7ab14fa17e6c833ceec7533296b018fbc6424d18fc1df41d612da69c35b71d7e"
     },
     {
       "path": "tests/native/test_player_ui.py",
