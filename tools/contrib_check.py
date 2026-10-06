@@ -56,6 +56,12 @@ MAINTAINER_SIDE_CODES = (
 STRICT_C_FLAGS = (
     "-fsyntax-only", "-std=c11", "-Wall", "-Wextra", "-Werror",
     "-Isrc/rt", "-Isrc/core",
+    # A `tests/native/*.c` unit lives outside `src/`, so a bare include of a
+    # player header (`player_state.h`, `input_settings.h`, `ui_clip.h`, ...)
+    # resolves only with `src/player` on the include path.  Player sources are
+    # unaffected: they are their own directory, so the same include is found
+    # relative to the including file.
+    "-Isrc/player",
     "-Isrc/rt/atrac3p", "-Isrc/rt/atrac3p/libavcodec", "-Isrc/rt/atrac3p/libavutil",
 )
 
