@@ -179,9 +179,11 @@ different answers, and one boolean used to report both.
 | Terminal state | Set when | Retries |
 | :--- | :--- | :--- |
 | `UI_ART_TERMINAL_LOADED` | a texture was created for that image | terminal |
-| `UI_ART_TERMINAL_UNSUPPORTED` | the image was read off the disc intact (`NK_ICON_OK` with bytes) and this build's decoder still produced no surface, or the build links no PNG decoder at all (SDL < 3.4) | terminal on the **first** attempt |
+| `UI_ART_TERMINAL_UNSUPPORTED` | the image was read off the disc intact (`NK_ICON_OK` with bytes), but this build cannot decode it (SDL >= 3.4's decoder produced no surface, or SDL < 3.4 has no PNG decoder) | terminal on the **first** attempt |
 | `UI_ART_TERMINAL_EXHAUSTED` | a read or texture-creation failure a retry could clear reached `GAME_ART_MAX_ATTEMPTS` (3) | terminal |
 
+- Even without a PNG decoder, an absent or unreadable ISO entry remains a
+  retryable read failure; `unsupported` applies only after intact bytes arrive.
 - A *successful* decode whose texture creation fails keeps the retry budget:
   that is a VRAM/renderer condition, not a decoder verdict.
 - Retries are spaced by `GAME_ART_RETRY_COOLDOWN_NS` (1 s) shifted by

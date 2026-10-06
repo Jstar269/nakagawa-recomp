@@ -401,6 +401,11 @@ static const char *ui_art_terminal_name(uint8_t state) {
         default: return "pending";
     }
 }
+
+static bool ui_test_png_decoder_disabled(void) {
+    const char *value = getenv("PLAYER_UI_TEST_NO_PNG_DECODER");
+    return value && strcmp(value, "1") == 0;
+}
 #endif
 
 static bool ui_art_push_completion(SDL_Event *event) {
@@ -681,7 +686,11 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
         if (job->wanted & NK_ISO_ART_ICON) {
             bool icon_decoded = false;
 #if SDL_VERSION_ATLEAST(3, 4, 0)
-            if (!entry->icon_tex && job->icon_status == NK_ICON_OK &&
+            if (
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+                !ui_test_png_decoder_disabled() &&
+#endif
+                !entry->icon_tex && job->icon_status == NK_ICON_OK &&
                 job->icon_bytes && job->icon_size) {
                 SDL_IOStream *io = SDL_IOFromConstMem(job->icon_bytes,
                                                       job->icon_size);
@@ -699,8 +708,6 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
             }
 #else
             (void)renderer;
-            entry->icon_attempted = true;
-            entry->icon_terminal = UI_ART_TERMINAL_UNSUPPORTED;
 #endif
             if (entry->icon_tex) {
                 entry->icon_attempted = true;
@@ -726,7 +733,11 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
         if (job->wanted & NK_ISO_ART_PICTURE) {
             bool pic1_decoded = false;
 #if SDL_VERSION_ATLEAST(3, 4, 0)
-            if (!entry->pic1_tex && job->pic1_status == NK_ICON_OK &&
+            if (
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+                !ui_test_png_decoder_disabled() &&
+#endif
+                !entry->pic1_tex && job->pic1_status == NK_ICON_OK &&
                 job->pic1_bytes && job->pic1_size) {
                 SDL_IOStream *io = SDL_IOFromConstMem(job->pic1_bytes,
                                                       job->pic1_size);
@@ -744,8 +755,6 @@ bool ui_renderer_handle_async_event(SDL_Renderer *renderer,
             }
 #else
             (void)renderer;
-            entry->pic1_attempted = true;
-            entry->pic1_terminal = UI_ART_TERMINAL_UNSUPPORTED;
 #endif
             if (entry->pic1_tex) {
                 entry->pic1_attempted = true;

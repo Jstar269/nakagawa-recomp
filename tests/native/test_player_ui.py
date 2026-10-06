@@ -778,6 +778,7 @@ class NativePlayerUiTests(unittest.TestCase):
             "ready",
             ("WAIT_ART_ATTEMPT=3", "WAIT_MS=2500"),
             art_iso="unavailable",
+            env_extra={"PLAYER_UI_TEST_NO_PNG_DECODER": "1"},
         )
         attempts = re.findall(
             r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
@@ -790,6 +791,28 @@ class NativePlayerUiTests(unittest.TestCase):
         # the budget must run out and the state must say exhausted - never
         # "unsupported", which is reserved for bytes this build cannot decode.
         self.assertEqual(attempts[-1][5:], ("exhausted", "exhausted"), run["stdout"])
+
+    def test_readable_art_without_png_decoder_is_unsupported(self) -> None:
+        run = self.run_player(
+            "ready",
+            ("WAIT_ART_ATTEMPT=1", "WAIT_MS=2500"),
+            art_iso="available",
+            wait_background=True,
+            env_extra={"PLAYER_UI_TEST_NO_PNG_DECODER": "1"},
+        )
+        attempts = re.findall(
+            r"\[PLAYER_UI_TEST\] art_attempt index=(\d+) "
+            r"completed_ns=(\d+) icon_loaded=(\d) pic1_loaded=(\d) wanted=(\d+) "
+            r"icon_state=(\w+) pic1_state=(\w+)",
+            run["stdout"],
+        )
+        self.assertEqual(len(attempts), 1, run["stdout"])
+        self.assertEqual(
+            attempts[0][2:],
+            ("0", "0", "3", "unsupported", "unsupported"),
+            run["stdout"],
+        )
+        self.assertFalse(has_icon_art(run["bmp"]), run["stdout"])
 
     def test_undecodable_art_is_terminal_on_its_first_attempt(self) -> None:
         """A readable image this build cannot decode is not a transient failure.

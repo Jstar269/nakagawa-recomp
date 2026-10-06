@@ -1186,7 +1186,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a38676646fd5ec313dd333e4322928113d5ceec73674cd0af0c8914ba02b7f06"
+      "sha256": "0901b1b7b960c4610c8c2deda047bb81d34e39f3579a91874f5e55ccedca6fd3"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -2936,7 +2936,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aedeff2eb65e57105a90672bb2600652c431732955c3b955df9745723d257933"
+      "sha256": "0fd325afc2fbec03ee24dd6bb499097c3619adf5f1230812a67816159b5d3619"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -5394,7 +5394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "712ec7020a17dc5e93f79942eb2facc24c1e0ec181ca5e09bfc9b1afa6af5943"
+      "sha256": "3e7caef36b71b2400c7ae7c8c91169e317e8f9afadffd82da4d162925d35e293"
     },
     {
       "path": "tests/native/test_posix_process.c",
