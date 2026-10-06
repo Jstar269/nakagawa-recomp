@@ -1644,7 +1644,7 @@ $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input
 # Target-specific export exports NAKAGAWA_PLAYER_UI_TEST_EXE into the recipe's
 # child process environment across platforms, avoiding POSIX shell syntax
 # (e.g. VAR=val cmd) that fails under Windows cmd.exe.
-player-ui-regressions: export NAKAGAWA_PLAYER_UI_TEST_EXE = $(PLAYER_UI_TEST_EXE)
+player-ui-regressions: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
 player-ui-regressions: $(PLAYER_UI_TEST_EXE)
 	$(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
 

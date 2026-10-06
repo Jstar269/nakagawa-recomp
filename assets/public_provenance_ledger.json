@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5da9ce07f9fbcf91f791ba9214adbca99f4f2093111d3bc7a4b96278c2fa15dc"
+      "sha256": "d32cc03d688874ea6994e153dc23f8fb57d14f316df333d8720207fdf492ae21"
     },
     {
       "path": "NOTICE.md",
@@ -5394,7 +5394,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c726912ea583e3e18c90aa08f0e275a2d94efbb57f1908703bc0f17faa7b4edd"
+      "sha256": "70e0c4bdabbe5cf3c13fa453b2c872c37bb1aeb2d6dcee4226e7e5d6b0a3315f"
     },
     {
       "path": "tests/native/test_posix_process.c",

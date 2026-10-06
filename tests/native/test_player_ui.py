@@ -412,7 +412,7 @@ def compute_effective_timeout(
                 effective += int(ev.split(",", 1)[1]) / 1000.0
             except ValueError:
                 pass
-    return max(effective, DEFAULT_BASE_TIMEOUT_SECONDS) + TIMEOUT_BUFFER_SECONDS
+    return effective + TIMEOUT_BUFFER_SECONDS
 
 
 class NativePlayerUiTests(unittest.TestCase):
