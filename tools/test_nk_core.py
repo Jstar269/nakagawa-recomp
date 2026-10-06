@@ -550,8 +550,9 @@ class NkCoreTests(unittest.TestCase):
         launcher = RuntimeLauncher(repo_root=self.temp_dir)
         with self.assertRaises(RuntimeLaunchError) as cm:
             launcher.build_launch_plan(game_dir)
-        self.assertIn("Runtime image not found", str(cm.exception))
-        self.assertNotIn("hst", str(cm.exception))
+        msg = str(cm.exception).replace(str(self.temp_dir), "<TEMP_DIR>")
+        self.assertIn("Runtime image not found", msg)
+        self.assertNotIn("hst", msg)
 
     def test_runtime_launcher_resolves_extensionless_binary(self) -> None:
         """The runtime has no .exe suffix on Linux or macOS."""
