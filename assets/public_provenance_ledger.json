@@ -7921,7 +7921,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d9de4101de4805c89212ee3ea99b99f90171069337bd9eade2f127e95ee02dac"
+      "sha256": "2791dbbeea3b2fcf79823cc25b79ee39943228061351f00307be19b56c6864d1"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
