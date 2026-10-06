@@ -1127,6 +1127,10 @@ CONTRIB_BASE ?= origin/main
 # an environment variable rather than a make variable because an interpreter
 # path usually contains a space, and the rest of this Makefile expands
 # $(PYTHON) unquoted.
+#
+# GNU Make target-specific export exports CONTRIB_PYTHON into the recipe's
+# child process environment across platforms, avoiding POSIX shell syntax
+# (e.g. VAR=val cmd) that fails under Windows cmd.exe.
 CONTRIB_PYTHON ?= $(PYTHON)
 contrib-check: export CONTRIB_PYTHON := $(CONTRIB_PYTHON)
 contrib-check:
@@ -1637,6 +1641,9 @@ $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 .PHONY: player-ui-regressions
+# Target-specific export exports NAKAGAWA_PLAYER_UI_TEST_EXE into the recipe's
+# child process environment across platforms, avoiding POSIX shell syntax
+# (e.g. VAR=val cmd) that fails under Windows cmd.exe.
 player-ui-regressions: export NAKAGAWA_PLAYER_UI_TEST_EXE = $(PLAYER_UI_TEST_EXE)
 player-ui-regressions: $(PLAYER_UI_TEST_EXE)
 	$(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
