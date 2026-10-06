@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1edf8f11e773feb02516f3b793fbeac70e18f5d0ae174b5e2b8cfa552dd9a423"
+      "sha256": "3f4f5d979c6ddf5e18ebd0035a8514d137bb42db9a15bc3de9fe5a55ac83365a"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1390,7 +1390,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5f27923d18b90c78770e88d0ed4fe55da18b0bfe57338a53da2cc3cbff0f5a3e"
+      "sha256": "0ea57d10021b3cb563104707993a84f65bd16ef109c33b33a288de760cca2ede"
     },
     {
       "path": "docs/YOUR_OWN_GAMES.md",
@@ -3950,7 +3950,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be8e0e804abe7a90247e23cf7a4c67b1fc3049012b86db76f7e5851690d89c5f"
+      "sha256": "b70d9d23f930375e8459dc0455b50ca316866ef42ca34ff9089d8666acda5a1d"
     },
     {
       "path": "src/rt/debug.c",
@@ -3998,7 +3998,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a0196a77591a8ccadaa36c973b52fb3b416183444be56fc3cc1e2d83e85e8db3"
+      "sha256": "f161cae9d39fcb7a7bc77b6ae0b7f467187ac400a76542909a07b69a20fe4d17"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
