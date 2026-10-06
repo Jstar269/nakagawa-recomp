@@ -2644,10 +2644,12 @@ static bool package_hash_file(const char *path, char out_hex[65]) {
  * indistinguishable from the bytes that were read (#683).
  *
  * The change value is NTFS `ChangeTime` (GetFileInformationByHandleEx with
- * FileBasicInfo) on Windows and st_ctim on POSIX. Both advance on a write and
- * on a metadata change and are not moved by a read, so a read-only validation
- * observes a stable identity while any rewrite - even a byte-identical one -
- * is visible.
+ * FileBasicInfo) on Windows and st_ctim on POSIX. These are filesystem
+ * timestamps, not generation counters: a write normally advances them, but
+ * filesystem support and resolution vary. If the value advances, a same-size
+ * edit remains visible even when the write timestamp is restored. An edit that
+ * lands within both timestamp granularities can still collide and return a
+ * cache hit; guaranteed byte-level detection would require hashing contents.
  *
  * This is a strict addition to the previous key: equality can only become
  * harder to satisfy, so the field can turn a false hit into a miss (which
