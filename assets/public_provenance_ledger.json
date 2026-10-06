@@ -1327,7 +1327,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2d1b43f000d3e98a8bac57db3388a6da2ac226a9ae355fb17ac66aef6e517f17"
+      "sha256": "f6412977b087630a9d6c5e4a23dc36a63f20963108d119f5b8fa5f02260fcb27"
     },
     {
       "path": "docs/SETUP.md",
@@ -2732,7 +2732,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d48d4c5dda7c4e1c26214365e9ddbfa42299950ffd5dd72b8b0257bb41e6b253"
+      "sha256": "f9cedc93a0b7e7aa473d17a46528092402b633f5acfc62cf762a1ec8f6d8ad5d"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -5382,7 +5382,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8a7c4f47b2e6f83bbe21f78e72a9de9d03029c6396cc570777a72c4da70efee"
+      "sha256": "668017103933d348374a1c1720f74ae22ddd614007018c60fd3af7f803a0f118"
     },
     {
       "path": "tests/native/test_player_ui.py",
