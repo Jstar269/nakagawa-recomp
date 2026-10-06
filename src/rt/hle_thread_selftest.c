@@ -55,6 +55,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>            /* wcsstr: assert the built child command line */
 #include <windows.h>
 #include <process.h>
 #include <io.h>              /* _dup/_dup2/_fileno/_close: capture the runtime's stderr */
@@ -19263,13 +19264,169 @@ static int run_exit_game_poisoned(void) {
     return EXITGAME_RETURNED;
 }
 
+/* --- self-respawn for the exit-game regression ---------------------------
+ *
+ * This check re-executes the selftest binary so sceKernelExitGame is observed
+ * in a fresh process. The CRT spawn family builds the child command line by
+ * naive concatenation and never quotes an argument containing a space, and the
+ * program path used here is unconditionally this executable's own path. When
+ * that path contains a space -- a checkout under a directory whose name holds
+ * one, such as a "Program Files" tree, or the
+ * relocatable demo folder #667 exercises -- the child either does not start at
+ * all, or starts from a command line that splits into more arguments and loses
+ * the mode flag, so it re-runs the whole suite and exits 0 instead of entering
+ * the poison probe. Either way the four assertions below stop describing
+ * sceKernelExitGame. Both were measured on one binary from two directories.
+ *
+ * `_spawnv` is not a fix: it mis-parses identically (the same measurement). The
+ * only mechanism that delivers the flag is CreateProcessW with an explicitly
+ * quoted command line, so the command line is built here.
+ * ---------------------------------------------------------------------- */
+
+#define EXITGAME_SPAWN_CAP 4096
+
+/* Append *arg* to *out* quoted for a CreateProcess command line; returns the
+ * number of wide characters written, or 0 when *out* cannot hold the result.
+ * Escaping follows the rule the child's own parser uses: a run of backslashes
+ * before a quote doubles, and an even run always precedes the closing quote. */
+static size_t append_quoted_argument(wchar_t *out, size_t cap, const wchar_t *arg) {
+    size_t n = 0;
+    size_t backslashes = 0;
+    if (cap < 3) return 0;
+    out[n++] = L'"';
+    for (const wchar_t *p = arg; *p; ++p) {
+        if (*p == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == L'"') {
+            size_t escapes = backslashes * 2 + 1;
+            if (n + escapes + 2 > cap) return 0;
+            while (escapes-- > 0) out[n++] = L'\\';
+            out[n++] = L'"';
+            backslashes = 0;
+            continue;
+        }
+        if (n + backslashes + 2 > cap) return 0;
+        while (backslashes-- > 0) out[n++] = L'\\';
+        backslashes = 0;
+        out[n++] = *p;
+    }
+    if (n + backslashes * 2 + 2 > cap) return 0;
+    while (backslashes-- > 0) {
+        out[n++] = L'\\';
+        out[n++] = L'\\';
+    }
+    out[n++] = L'"';
+    out[n] = L'\0';
+    return n;
+}
+
+/* Re-execute *self* in the poisoned-child mode. Returns the child's exit
+ * status, or -1 when it could not be started. */
+static intptr_t exit_game_spawn_child(const char *self) {
+    static const wchar_t kMode[] = L" --exit-game-poisoned";
+    wchar_t self_path[EXITGAME_SPAWN_CAP];
+    wchar_t resolved[EXITGAME_SPAWN_CAP];
+    wchar_t command[EXITGAME_SPAWN_CAP];
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION child;
+    DWORD status = 0;
+    size_t quoted;
+
+    /* argv is ANSI on this console entry point; CreateProcessW wants UTF-16. */
+    if (MultiByteToWideChar(CP_ACP, 0, self, -1, self_path,
+                            (int)(sizeof(self_path) / sizeof(self_path[0]))) <= 0) {
+        return -1;
+    }
+    /* CreateProcessW receives the program through the command line, and it does
+       not resolve every way argv[0] can be spelled: a relative path written
+       with forward slashes fails with ERROR_FILE_NOT_FOUND, which is exactly
+       how the Makefile's hle-thread-selftest recipe starts this binary
+       (build/mygame/hle_thread_selftest.exe). Resolve to the absolute native
+       form so the respawn works from a relative argv[0] as well as a full one --
+       measured on the recipe before this line existed: 54976 checks, 1 failure
+       ("exit-game child process starts") through make, against 54979 and 0
+       failures when the same binary is started by an absolute path. */
+    DWORD resolved_length = GetFullPathNameW(self_path, EXITGAME_SPAWN_CAP,
+                                            resolved, NULL);
+    if (resolved_length == 0 || resolved_length >= EXITGAME_SPAWN_CAP) return -1;
+    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, resolved);
+    if (quoted == 0) return -1;
+    if (quoted + sizeof(kMode) / sizeof(kMode[0]) > EXITGAME_SPAWN_CAP) return -1;
+    memcpy(command + quoted, kMode, sizeof(kMode));
+
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL,
+                        &startup, &child)) {
+        return -1;
+    }
+    /* Both calls can fail, and a failure must not be mistaken for an exit
+       status: the caller's first assertion is `rc != -1`, and returning 0
+       here would let it read as a clean child run. WAIT_FAILED means the
+       handle wait did not happen; a failed GetExitCodeProcess leaves *status*
+       at its STILL_ACTIVE initial value. */
+    if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
+    if (!GetExitCodeProcess(child.hProcess, &status)) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return (intptr_t)status;
+}
+
+/* The command line must keep a spaced program path and the mode flag as two
+ * arguments. Checked in-process so the regression holds on a host whose
+ * checkout lives at a space-free path, where the spawned child alone cannot
+ * distinguish the two behaviours. */
+static void exit_game_command_line_is_quoted(void) {
+    wchar_t command[EXITGAME_SPAWN_CAP];
+    wchar_t tiny[4];
+    size_t quoted;
+
+    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP,
+                                    L"Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe");
+    expect(quoted != 0, "a spaced program path fits the command line buffer");
+    if (quoted != 0) {
+        memcpy(command + quoted, L" --exit-game-poisoned", sizeof(L" --exit-game-poisoned"));
+        expect(command[0] == L'"', "the program path is quoted");
+        expect(wcsstr(command, L"Recomp\\hle_thread_selftest.exe\" --exit-game-poisoned") != NULL,
+               "the mode flag stays outside the quoted program path");
+    }
+
+    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, L"selftest.exe");
+    expect(quoted != 0 && command[0] == L'"',
+           "a space-free path is still one quoted argument");
+
+    /* A trailing backslash must not escape the closing quote. */
+    quoted = append_quoted_argument(command, EXITGAME_SPAWN_CAP, L"dir with space\\");
+    expect(quoted != 0, "a trailing backslash still fits");
+    if (quoted != 0) {
+        expect(command[quoted - 1] == L'"', "the closing quote survives a trailing backslash");
+        expect(quoted >= 3 && command[quoted - 2] == L'\\' && command[quoted - 3] == L'\\',
+               "the trailing backslash run is doubled");
+    }
+
+    expect(append_quoted_argument(tiny, 4,
+                                  L"Program Files\\Nakagawa Recomp\\hle_thread_selftest.exe") == 0,
+           "an undersized buffer is refused instead of truncated");
+}
+
 static void test_exit_game_ignores_argument_registers(const char *self) {
     intptr_t rc;
+    exit_game_command_line_is_quoted();
     if (!self) {
         expect(0, "exit-game regression knows its own executable path");
         return;
     }
-    rc = _spawnl(_P_WAIT, self, self, "--exit-game-poisoned", (const char *)NULL);
+    rc = exit_game_spawn_child(self);
     expect(rc != -1, "exit-game child process starts");
     if (rc == -1) return;
     expect(rc != (intptr_t)EXITGAME_RETURNED,
