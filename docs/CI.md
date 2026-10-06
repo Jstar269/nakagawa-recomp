@@ -35,6 +35,10 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 A draft pull request now receives the same path-applicable substantive gates as
 a ready pull request. No `Ready for review` transition or manual
 `workflow_dispatch` is needed to discover whether the exact head passes. The
+workflow runs on the head-changing pull-request events only - `opened`,
+`synchronize` and `reopened` - so a `Ready for review` (or back-to-draft)
+transition, which cannot change the head, does not start a second run over a
+tree that already carries its validation. The
 workflow still cancels superseded runs, and docs-only or other irrelevant jobs
 remain skipped by the classifier. `workflow_dispatch` remains available when a
 maintainer deliberately wants the complete matrix regardless of changed paths.
@@ -289,7 +293,9 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   pull request receive the same path classification and applicable gates, so
   progress does not depend on a status transition or manual dispatch. The
   classifier still exports `draft` for diagnostics and keeps the main-push
-  suppression policy separate.
+  suppression policy separate. Because the gates do not depend on draft status,
+  the workflow triggers only on head-changing events: a status transition would
+  duplicate gates over a tree that already ran them.
 - **`hygiene` is ungated, and that is load-bearing.** The all-files pre-commit
   run — which includes `publish_audit --provenance-self-consistency`,
   `policy_sync`, and the Betterleaks scan — executes on every event, so the
