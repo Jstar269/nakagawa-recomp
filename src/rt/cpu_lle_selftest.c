@@ -1363,9 +1363,17 @@ static int run_child_process(const char *self_path, const char *mode) {
     wchar_t resolved[CHILD_SPAWN_CAP];
     wchar_t command[CHILD_SPAWN_CAP];
     wchar_t wide_mode[CHILD_SPAWN_CAP];
-    if (MultiByteToWideChar(CP_UTF8, 0, self_path, -1, wide_path,
+    /* argv[0] arrives from the CRT as the narrow form of this process's
+       command line, so its bytes are the active ANSI code page's, and CP_ACP
+       is its inverse. Converting them as UTF-8 instead replaces every
+       non-ASCII byte with U+FFFD, GetFullPathNameW then resolves a path that
+       names no file, and the child never starts. Measured on this host
+       (code page 1252) from a directory whose name holds U+00E9: CP_UTF8 here
+       produced three "child status=-1" FAIL lines and a FAILED verdict, with
+       CP_ACP none, from the same binary and directory. */
+    if (MultiByteToWideChar(CP_ACP, 0, self_path, -1, wide_path,
                             CHILD_SPAWN_CAP) <= 0) return -1;
-    if (MultiByteToWideChar(CP_UTF8, 0, mode, -1, wide_mode,
+    if (MultiByteToWideChar(CP_ACP, 0, mode, -1, wide_mode,
                             CHILD_SPAWN_CAP) <= 0) return -1;
     /* CreateProcessW is given the program through the command line, and it does
        not resolve every way argv[0] can be spelled: a relative path written with
