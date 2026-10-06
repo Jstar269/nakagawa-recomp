@@ -41,6 +41,7 @@ outside this vocabulary.
 | ID | Capability | Status | Surface | Owning evidence |
 | --- | :--- | :---: | :--- | :--- |
 | `ISO_INSPECT_WORKS` | ISO9660 PVD and directory parsing from a raw disc image | **PASS** | native player, headless `nk_cli` | `tests/native/test_xb_parser.c`, `tools/test_nk_core.py` (`test_iso_inspection_success`) |
+| `ISO_ART_TERMINAL_OUTCOMES` | Per-image loaded, absent, failed, and unsupported outcomes with bounded recovery and joined worker shutdown | **PASS** | native player | `tests/native/test_player_ui.py` |
 | `TITLE_ID_DETECTION_WORKS` | `DISC_ID` / `TITLE` from `PARAM.SFO`, matched against the qualified title catalog | **PASS** | native player, headless `nk_cli` | `tools/test_nk_core.py` (`test_title_registry_matching_and_normalization`), `tests/native/test_launch_resolution.c` |
 | `PREPARED_FOLDER_VALIDATION_WORKS` | Transactional staging and validation of the game directory | **PASS** | native player | `tests/native/test_xb_parser.c`, `tests/native/test_launch_resolution.c` |
 | `MODULE_DECRYPTION` | Local-key decryption of an encrypted executable and its PRX modules | **PASS** | native player, headless `nk_cli` | `tools/test_psp_decrypt.py`; `src/core/nk_psp_kirk.c` and `tools/nk_cli.py` `build-package`. Keys are never shipped and decrypted bytes stay in the private per-title folder ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)) |
