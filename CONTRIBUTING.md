@@ -120,7 +120,8 @@ stand in for:
 - **Windows runtime compile gate** — the runtime build, `native-core-tests` and the selftests on
   MSYS2 UCRT64. `contrib-check`'s strict compile goes no further than `gcc -fsyntax-only` over the
   changed C files on your own host: it does not build the Windows runtime objects, run
-  `native-core-tests`, or run the Windows selftests.
+  `native-core-tests`, or run the Windows selftests. It compiles against whatever headers your host
+  has, so a unit that includes an SDK header (SDL3, for example) needs that SDK installed locally.
 - **CodeQL, dependency-review and OSV** — the hosted static and dependency security scans.
 - **Trusted provenance attestation** — your head commit checked against the private trusted
   ledger, which only a maintainer can run.
