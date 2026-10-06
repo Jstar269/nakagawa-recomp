@@ -113,6 +113,25 @@ changed Markdown, and the publication-safety audit. It finishes in minutes, and 
 change usually takes seconds. It is a *subset*: `make check` and `make readiness` remain the
 authoritative gates, and CI still runs the hosted matrix.
 
+It is a local pre-push helper with its own smaller gate set — not a representation of the hosted
+matrix, and not evidence that a pull request is ready to merge. A green `contrib-check` does **not**
+stand in for:
+
+- **Windows runtime compile gate** — the runtime build, `native-core-tests` and the selftests on
+  MSYS2 UCRT64. `contrib-check`'s strict compile goes no further than `gcc -fsyntax-only` over the
+  changed C files on your own host: it does not build the Windows runtime objects, run
+  `native-core-tests`, or run the Windows selftests. It compiles against whatever headers your host
+  has, so a unit that includes an SDK header (SDL3, for example) needs that SDK installed locally.
+- **CodeQL, dependency-review and OSV** — the hosted static and dependency security scans.
+- **Trusted provenance attestation** — your head commit checked against the private trusted
+  ledger, which only a maintainer can run.
+- **CI required** — the aggregate status that branch protection actually requires.
+
+`contrib-check` is a `Makefile` target, not a workflow: no hosted job invokes it (the pull-request
+template points contributors at it instead). The evidence a pull request needs is the hosted check
+set on its exact head commit — see [docs/CI.md](docs/CI.md) for which jobs run for which changed
+paths and what each one means.
+
 Every gate reports one of four outcomes, and they are not interchangeable:
 
 | Outcome | Meaning |
