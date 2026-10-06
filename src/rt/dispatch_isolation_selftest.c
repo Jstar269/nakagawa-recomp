@@ -37,7 +37,8 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
-#include <process.h>
+#include <windows.h>
+#include <wchar.h>
 #else
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -970,14 +971,118 @@ static void test_high_virtual_module_authority_is_fail_closed(void) {
     sr_exec_span_reset();
 }
 
+#ifdef _WIN32
+#define CHILD_SPAWN_CAP 4096
+
+/* Quote one argument into *out* with the CommandLineToArgvW rule: a run of
+ * backslashes is doubled only where it precedes a quote or the closing quote,
+ * and every argument is wrapped. Returns the number of wide characters written,
+ * or 0 when *cap* cannot hold the result. */
+static size_t append_quoted_argument(wchar_t *out, size_t cap, const wchar_t *arg) {
+    size_t n = 0;
+    size_t backslashes = 0;
+    if (cap < 3) return 0;
+    out[n++] = L'"';
+    for (const wchar_t *p = arg; *p; ++p) {
+        if (*p == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == L'"') {
+            size_t escapes = backslashes * 2 + 1;
+            if (n + escapes + 2 > cap) return 0;
+            while (escapes-- > 0) out[n++] = L'\\';
+            out[n++] = L'"';
+            backslashes = 0;
+            continue;
+        }
+        if (n + backslashes + 2 > cap) return 0;
+        while (backslashes-- > 0) out[n++] = L'\\';
+        backslashes = 0;
+        out[n++] = *p;
+    }
+    if (n + backslashes * 2 + 2 > cap) return 0;
+    while (backslashes-- > 0) {
+        out[n++] = L'\\';
+        out[n++] = L'\\';
+    }
+    out[n++] = L'"';
+    out[n] = L'\0';
+    return n;
+}
+#endif /* _WIN32 */
+
+/* Respawn this binary as the unregistered-dispatch child and return its exit
+ * status, or -1 when it could not be spawned or waited for.
+ *
+ * Win32 cannot use the CRT's _spawnv() here: it joins argv into the child
+ * command line without quoting, so a self path containing a space is re-parsed
+ * as two arguments, the flag is lost and the child re-runs this whole matrix
+ * sweep instead of the one case the check is about -- while the top level still
+ * reports "OK (configuration ...)" and exits 0. The command line is built here
+ * with both arguments quoted, and the wait and the exit-code read are checked
+ * so a failed wait cannot read as a child status. */
 static int run_unregistered_dispatch_child(const char *self_path) {
 #ifdef _WIN32
-    const char *const argv[] = {self_path, "--unregistered-dispatch-child", NULL};
-    return (int)_spawnv(_P_WAIT, self_path, argv);
+    static const char kMode[] = "--unregistered-dispatch-child";
+    wchar_t wide_path[CHILD_SPAWN_CAP];
+    wchar_t resolved[CHILD_SPAWN_CAP];
+    wchar_t wide_mode[CHILD_SPAWN_CAP];
+    wchar_t command[CHILD_SPAWN_CAP];
+    /* argv[0] arrives from the CRT as the narrow form of this process's
+       command line, so its bytes are the active ANSI code page's, and CP_ACP
+       is its inverse. Converting them as UTF-8 instead replaces every
+       non-ASCII byte with U+FFFD, GetFullPathNameW then resolves a path that
+       names no file, and the child never starts. Measured on this host
+       (code page 1252) from a directory whose name holds U+00E9: CP_UTF8 here
+       produced "status=-1" and a 1 FAILURE(S) verdict, with CP_ACP none, from
+       the same binary and directory. */
+    if (MultiByteToWideChar(CP_ACP, 0, self_path, -1, wide_path,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    if (MultiByteToWideChar(CP_ACP, 0, kMode, -1, wide_mode,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    /* CreateProcessW is given the program through the command line, and it does
+       not resolve every way argv[0] can be spelled: a relative path written with
+       forward slashes fails with ERROR_FILE_NOT_FOUND, which is how this binary
+       is normally started (the Makefile runs
+       build/mygame/dispatch_isolation_selftest_generic.exe). Resolve to the
+       absolute native form first. */
+    DWORD resolved_length = GetFullPathNameW(wide_path, CHILD_SPAWN_CAP,
+                                            resolved, NULL);
+    if (resolved_length == 0 || resolved_length >= CHILD_SPAWN_CAP) return -1;
+    size_t written = append_quoted_argument(command, CHILD_SPAWN_CAP, resolved);
+    if (written == 0) return -1;
+    /* The separator belongs between the arguments: without it the two quoted
+       arguments parse as one, the program is not found, and CreateProcessW
+       fails. */
+    if (written + 1 >= CHILD_SPAWN_CAP) return -1;
+    command[written++] = L' ';
+    if (append_quoted_argument(command + written, CHILD_SPAWN_CAP - written,
+                               wide_mode) == 0) return -1;
+
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION child;
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL,
+                        &startup, &child)) {
+        return -1;
+    }
+    DWORD status = 0;
+    if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(child.hProcess, &status)) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return (int)status;
 #else
     pid_t child = fork();
     if (child == 0) {
-        execl(self_path, self_path, "--unregistered-dispatch-child", (char *)NULL);
+        execl(self_path, self_path, "--unregistered-dispatch-child",
+              (char *)NULL);
         _exit(127);
     }
     if (child < 0) return -1;
