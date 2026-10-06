@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 try:
@@ -112,11 +113,27 @@ class CiRequiredTests(unittest.TestCase):
         )
         self.assertTrue(evaluate_environment(ready_env))
 
-    def test_workflow_preserves_ready_transition_and_cancellation_contract(self) -> None:
+    def test_workflow_triggers_only_on_head_changing_pull_request_events(self) -> None:
+        """CI must start for a new head, not for a status transition.
+
+        A draft head already runs the full path-applicable matrix
+        (allow_substantive does not depend on draft), so a ready/draft
+        transition can only re-run gates over a tree that was already
+        validated - and since concurrency cancels in progress, the transition's
+        own run used to cancel the run it then duplicated. Every head-changing
+        event stays listed, so nothing that changes code can go unvalidated.
+        """
         workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("ready_for_review", workflow)
+        # Match the declared list, not the file text: the rationale comment
+        # above it names the events that must NOT trigger.
+        match = re.search(
+            r"^\s*pull_request:\s*\n\s*types:\s*\[([^\]]*)\]", workflow, re.MULTILINE
+        )
+        self.assertIsNotNone(match, "ci.yml must list the pull_request event types explicitly")
+        declared = {item.strip() for item in match.group(1).split(",")}
+        self.assertEqual(declared, {"opened", "synchronize", "reopened"})
         self.assertIn("cancel-in-progress: true", workflow)
         self.assertIn("DRAFT: ${{ needs.classify.outputs.draft }}", workflow)
 
