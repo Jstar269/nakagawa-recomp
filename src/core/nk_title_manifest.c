@@ -2634,9 +2634,31 @@ static bool package_hash_file(const char *path, char out_hex[65]) {
     return true;
 }
 
+/* The identity of one package input file that the validation cache is keyed on.
+ *
+ * It is (size, write timestamp, platform change value). The change value is the
+ * field that can see a same-size edit inside one write-timestamp tick. Size and
+ * write timestamp alone cannot: Windows moves ftLastWriteTime in ~15.6 ms steps
+ * and the POSIX timestamp is only as fine as the filesystem reports, so a
+ * rewrite that lands in the same step as the state it follows is
+ * indistinguishable from the bytes that were read (#683).
+ *
+ * The change value is NTFS `ChangeTime` (GetFileInformationByHandleEx with
+ * FileBasicInfo) on Windows and st_ctim on POSIX. Both advance on a write and
+ * on a metadata change and are not moved by a read, so a read-only validation
+ * observes a stable identity while any rewrite - even a byte-identical one -
+ * is visible.
+ *
+ * This is a strict addition to the previous key: equality can only become
+ * harder to satisfy, so the field can turn a false hit into a miss (which
+ * revalidates the package) and never the other way round. Where a filesystem
+ * does not report a change value, or the file cannot be opened for its
+ * metadata, the field stays 0 and the identity degrades to exactly the old
+ * (size, write timestamp) key. */
 typedef struct {
     uint64_t size;
     uint64_t modified;
+    uint64_t changed;
 } PackageFileIdentity;
 
 static void package_identity_update_u64(NkSha256 *ctx, uint64_t value);
@@ -2648,7 +2670,8 @@ static bool package_local_identity_file(const char *user_data_root,
 static bool package_file_identity_equal(const PackageFileIdentity *left,
                                         const PackageFileIdentity *right) {
     return left && right && left->size == right->size &&
-           left->modified == right->modified;
+           left->modified == right->modified &&
+           left->changed == right->changed;
 }
 
 typedef struct {
@@ -2723,6 +2746,7 @@ bool nk_title_manifest_test_package_cache_entry(uint64_t *out_catalog_epoch,
 
 static bool package_file_identity(const char *path, PackageFileIdentity *identity) {
     if (!path || !identity) return false;
+    identity->changed = 0;
 #if defined(_WIN32) || defined(_WIN64)
     WCHAR wide[32768];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
@@ -2733,12 +2757,30 @@ static bool package_file_identity(const char *path, PackageFileIdentity *identit
     identity->size = ((uint64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow;
     identity->modified = ((uint64_t)data.ftLastWriteTime.dwHighDateTime << 32) |
                          data.ftLastWriteTime.dwLowDateTime;
+    /* Read-only metadata access: this must not require write rights, and it
+       must not perturb what it reports. A file another process holds without
+       read sharing degrades the identity to (size, write timestamp). */
+    HANDLE handle = CreateFileW(wide, FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                    FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle != INVALID_HANDLE_VALUE) {
+        FILE_BASIC_INFO basic;
+        memset(&basic, 0, sizeof(basic));
+        if (GetFileInformationByHandleEx(handle, FileBasicInfo, &basic,
+                                         sizeof(basic))) {
+            identity->changed = (uint64_t)basic.ChangeTime.QuadPart;
+        }
+        CloseHandle(handle);
+    }
 #else
     struct stat data;
     if (stat(path, &data) != 0 || !S_ISREG(data.st_mode)) return false;
     identity->size = (uint64_t)data.st_size;
     identity->modified = (uint64_t)data.st_mtime * 1000000000ull +
                          (uint64_t)data.st_mtim.tv_nsec;
+    identity->changed = (uint64_t)data.st_ctim.tv_sec * 1000000000ull +
+                        (uint64_t)data.st_ctim.tv_nsec;
 #endif
     return true;
 }
@@ -2759,6 +2801,7 @@ static void package_cache_identity_update_file(NkSha256 *ctx,
     if (present) {
         package_identity_update_u64(ctx, identity.size);
         package_identity_update_u64(ctx, identity.modified);
+        package_identity_update_u64(ctx, identity.changed);
     }
 }
 
@@ -2966,6 +3009,7 @@ static void package_identity_update_file(NkSha256 *ctx, const char *relative,
     nk_sha256_update(ctx, (const uint8_t *)relative, strlen(relative) + 1);
     package_identity_update_u64(ctx, identity->size);
     package_identity_update_u64(ctx, identity->modified);
+    package_identity_update_u64(ctx, identity->changed);
 }
 
 static void package_identity_finish(NkSha256 *ctx, char out_hex[65]) {
