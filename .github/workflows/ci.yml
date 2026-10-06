@@ -1,11 +1,19 @@
 name: CI
 
 on:
-  # Pull-request events include the draft/ready transitions so every new head
-  # gets fresh path-applicable validation. Draft status does not suppress
-  # substantive gates.
+  # Pull-request events that can carry a new head: opened (the first head),
+  # synchronize (new commits), reopened. Draft status does not suppress
+  # substantive gates (tools/ci_paths.py exports allow_substantive
+  # independently of draft), so a draft head is already fully validated and
+  # needs no transition to become so.
+  #
+  # The status transitions are deliberately NOT listed. ready_for_review and
+  # converted_to_draft never change the head, so they could only re-run the
+  # matrix over a tree that was already validated - and, because concurrency
+  # cancels in progress, a draft -> ready transition used to cancel the very
+  # run it then duplicated. A new head is still covered by synchronize.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened]
   # Feature-branch commits are covered by pull_request.  A normal main push
   # keeps only the compact smoke gate; workflow changes are the exception and
   # request the full validation needed to prove the new CI itself.
