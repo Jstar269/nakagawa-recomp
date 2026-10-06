@@ -8437,7 +8437,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0de5a236364e5d51758d626e899186003962d7e8ba69be92e1ed1845af824fd1"
+      "sha256": "d382fdcdfdca04c3f5ebd0e42a6968585da67225cc5ddde88d114d3c12d77f76"
     },
     {
       "path": "tools/test_provenance_attest_verify.py",
@@ -8822,7 +8822,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "24fd26046546be45650785690d53864639f2c307c1cf089a9d8e504132429228"
+      "sha256": "ea6d406e8d8679fd4284ffb196a6e27c6eaaf46e94b2d3e8f04b74fbe769d9c8"
     },
     {
       "path": "tools/test_sbom_binding.py",
