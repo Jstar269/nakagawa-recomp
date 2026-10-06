@@ -23,7 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
-#include <process.h>
+#include <windows.h>
+#include <wchar.h>
 #else
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1300,10 +1301,118 @@ static int run_fatal_dispatch_child(void) {
     return g_aot_fatal_native_caller_after_call ? 98 : 99;
 }
 
+#ifdef _WIN32
+#define CHILD_SPAWN_CAP 4096
+
+/* Quote one argument into *out* with the CommandLineToArgvW rule: a run of
+ * backslashes is doubled only where it precedes a quote or the closing quote,
+ * and every argument is wrapped. Returns the number of wide characters written,
+ * or 0 when *cap* cannot hold the result. */
+static size_t append_quoted_argument(wchar_t *out, size_t cap, const wchar_t *arg) {
+    size_t n = 0;
+    size_t backslashes = 0;
+    if (cap < 3) return 0;
+    out[n++] = L'"';
+    for (const wchar_t *p = arg; *p; ++p) {
+        if (*p == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == L'"') {
+            size_t escapes = backslashes * 2 + 1;
+            if (n + escapes + 2 > cap) return 0;
+            while (escapes-- > 0) out[n++] = L'\\';
+            out[n++] = L'"';
+            backslashes = 0;
+            continue;
+        }
+        if (n + backslashes + 2 > cap) return 0;
+        while (backslashes-- > 0) out[n++] = L'\\';
+        backslashes = 0;
+        out[n++] = *p;
+    }
+    if (n + backslashes * 2 + 2 > cap) return 0;
+    while (backslashes-- > 0) {
+        out[n++] = L'\\';
+        out[n++] = L'\\';
+    }
+    out[n++] = L'"';
+    out[n] = L'\0';
+    return n;
+}
+#endif /* _WIN32 */
+
+/* Respawn this binary in one of its child modes and return the child's exit
+ * status, or -1 when the child could not be spawned or waited for.
+ *
+ * Win32 cannot use the CRT's _spawnv() here. _spawnv() joins argv into the
+ * child command line without quoting any of it, so once this executable's own
+ * path contains a space that line is re-parsed as more arguments than we
+ * passed: the mode flag never arrives as argv[1], the child re-runs this whole
+ * suite instead of the mode, and -- because the child's own respawn fails and
+ * that nested process exits 1 -- the `status == 1` assertions below are
+ * satisfied by a process that ran the wrong thing. Measured on a spaced self
+ * path, this file printed nine FAIL lines from those nested runs and still
+ * ended with "cpu-lle selftest: OK" and exit status 0. The command line is
+ * built here instead, with the program path and the mode each quoted, and the
+ * wait and the exit-code read are checked so a failed wait cannot be mistaken
+ * for a child status. */
 static int run_child_process(const char *self_path, const char *mode) {
 #ifdef _WIN32
-    const char *const argv[] = {self_path, mode, NULL};
-    return (int)_spawnv(_P_WAIT, self_path, argv);
+    wchar_t wide_path[CHILD_SPAWN_CAP];
+    wchar_t resolved[CHILD_SPAWN_CAP];
+    wchar_t command[CHILD_SPAWN_CAP];
+    wchar_t wide_mode[CHILD_SPAWN_CAP];
+    /* argv[0] arrives from the CRT as the narrow form of this process's
+       command line, so its bytes are the active ANSI code page's, and CP_ACP
+       is its inverse. Converting them as UTF-8 instead replaces every
+       non-ASCII byte with U+FFFD, GetFullPathNameW then resolves a path that
+       names no file, and the child never starts. Measured on this host
+       (code page 1252) from a directory whose name holds U+00E9: CP_UTF8 here
+       produced three "child status=-1" FAIL lines and a FAILED verdict, with
+       CP_ACP none, from the same binary and directory. */
+    if (MultiByteToWideChar(CP_ACP, 0, self_path, -1, wide_path,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    if (MultiByteToWideChar(CP_ACP, 0, mode, -1, wide_mode,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    /* CreateProcessW is given the program through the command line, and it does
+       not resolve every way argv[0] can be spelled: a relative path written with
+       forward slashes fails with ERROR_FILE_NOT_FOUND, which is how this
+       binary is normally started (the Makefile runs
+       build/mygame/cpu_lle_selftest.exe). Resolve the path to the absolute
+       native form first so neither a relative nor a mixed-separator argv[0]
+       decides whether the child starts. */
+    DWORD resolved_length = GetFullPathNameW(wide_path, CHILD_SPAWN_CAP,
+                                            resolved, NULL);
+    if (resolved_length == 0 || resolved_length >= CHILD_SPAWN_CAP) return -1;
+    size_t written = append_quoted_argument(command, CHILD_SPAWN_CAP, resolved);
+    if (written == 0) return -1;
+    /* The separator belongs between the arguments: without it the two quoted
+       arguments parse as one, the program is not found, and CreateProcessW
+       fails. */
+    if (written + 1 >= CHILD_SPAWN_CAP) return -1;
+    command[written++] = L' ';
+    if (append_quoted_argument(command + written, CHILD_SPAWN_CAP - written,
+                               wide_mode) == 0) return -1;
+
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION child;
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL,
+                        &startup, &child)) {
+        return -1;
+    }
+    DWORD status = 0;
+    if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(child.hProcess, &status)) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return (int)status;
 #else
     pid_t child = fork();
     if (child == 0) {

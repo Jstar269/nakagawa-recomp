@@ -224,6 +224,11 @@ tooling suite; `tools/test_relocated_clone.py` runs a bounded contributor comman
 the tracked tree placed under a directory whose own name contains spaces, so that property is tested
 rather than assumed.
 
+That check covers spaces, not every character. A checkout whose path contains non-ASCII characters is
+not exercised by any hosted gate, and the selftest respawn sites that start a second copy of their own
+binary only began quoting their command line, and decoding `argv[0]` in the active code page rather
+than assuming UTF-8, in PRs #680 and #681. Treat such a path as unverified rather than supported.
+
 Two boundaries remain, and both fail closed with a named message instead of a mysterious failure:
 
 - a `BUILD_DIR` containing a space cannot be represented by GNU Make, so the Makefile refuses it
