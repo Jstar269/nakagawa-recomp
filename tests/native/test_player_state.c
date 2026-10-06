@@ -105,6 +105,20 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
+/* Bytes on disk. The package identity the validator compares is (size,
+ * mtime) per file, so a mutation whose size provably changes is a guaranteed
+ * identity change on every host, while a same-size rewrite may be invisible to
+ * a filesystem with a coarse write timestamp. */
+static long fixture_file_size(const char *path) {
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    long size = ftell(file);
+    assert(size >= 0);
+    assert(fclose(file) == 0);
+    return size;
+}
+
 /* Seed a fixture executable with real bytes (a self-copy of this test binary
  * standing in for a recompiled runtime). The stub path keeps writing the
  * historical "fixture" payload, whose digest is FIXTURE_SHA256 below. */
@@ -601,6 +615,49 @@ static void write_runtime_package_fixture(const char *user_root,
     write_text_file(completion_path, completion_json);
 }
 
+/* Remove exactly what write_runtime_package_fixture() writes under *user_root*
+ * for *disc_id*, then the directories that held it. Every subtest that builds a
+ * synthetic package owns a dedicated root under the cache directory and clears
+ * it before it writes, so a re-run or a later subtest can never inherit a
+ * package, an identity document or a completion manifest from an earlier one.
+ *
+ * Best-effort by design: rmdir() only removes an empty directory, so a root
+ * that still holds something unrecognised is left in place rather than followed
+ * into. Every failure mode here is "the tree is still there", which the next
+ * pre-clean handles. */
+static void remove_runtime_package_fixture(const char *user_root,
+                                           const char *disc_id,
+                                           const char *title_id) {
+    char sep = nk_platform_path_separator();
+    char packages[768], package_dir[896];
+    char identities[768], identity_dir[896];
+    char path[1100];
+    static const char *const kPackageFiles[] = {
+        "package.json", "build-report.json", "completion-manifest.json",
+    };
+    snprintf(packages, sizeof(packages), "%s%cpackages", user_root, sep);
+    snprintf(package_dir, sizeof(package_dir), "%s%c%s", packages, sep, disc_id);
+    snprintf(identities, sizeof(identities), "%s%ctitle-input-identities",
+             user_root, sep);
+    snprintf(identity_dir, sizeof(identity_dir), "%s%c%s", identities, sep,
+             disc_id);
+    for (size_t i = 0; i < sizeof(kPackageFiles) / sizeof(kPackageFiles[0]); i++) {
+        snprintf(path, sizeof(path), "%s%c%s", package_dir, sep, kPackageFiles[i]);
+        remove(path);
+    }
+    snprintf(path, sizeof(path), "%s%c%s.exe", package_dir, sep, title_id);
+    remove(path);
+    snprintf(path, sizeof(path), "%s%c%s_image.bin", package_dir, sep, title_id);
+    remove(path);
+    snprintf(path, sizeof(path), "%s%ctitle-input-identity.json", identity_dir, sep);
+    remove(path);
+    test_rmdir(package_dir);
+    test_rmdir(identity_dir);
+    test_rmdir(packages);
+    test_rmdir(identities);
+    test_rmdir(user_root);
+}
+
 static void write_experimental_profile_fixture(const char *user_root,
                                                const char *disc_id,
                                                const char *title_id,
@@ -642,6 +699,51 @@ static const PlayerPreflightCheck *find_preflight_check(
         if (strcmp(preflight->checks[i].code, code) == 0) return &preflight->checks[i];
     }
     return NULL;
+}
+
+/* The package-status identity the validator itself computes for *user_root*
+ * (nk_launch_runtime_package_cache_identity) - the digest a package-validation
+ * cache entry is bound to. Re-measuring it is how this test tells "the identity
+ * came back" from "the identity changed" instead of guessing from a clock. */
+static bool fixture_status_identity(const char *user_root, const NkGameEntry *game,
+                                    char out_identity[65]) {
+    return nk_launch_runtime_package_cache_identity(user_root, game, out_identity);
+}
+
+/* Assert the cache contract for the validation that follows repairing a
+ * synthetic package tree; *identity_when_validated* is the status identity the
+ * accepted cache entry was validated against.
+ *
+ * The identity the validator compares is (size, mtime) for each metadata file
+ * and artifact. A repair that writes the accepted bytes back can therefore
+ * reproduce the identity the entry was validated against: filesystems advance
+ * the write timestamp on a coarse tick (Windows moves ftLastWriteTime in
+ * ~15.6 ms steps), so two writes inside one tick are indistinguishable. When
+ * the identity does come back, a hit is the CORRECT answer - the entry
+ * describes exactly the bytes now on disk - so an unconditional
+ * "!validation_cache_hit" here would be a bet on the host clock rather than on
+ * the validator. That is the bet this subtest lost in the hosted Windows gate,
+ * which aborts on the assertion at the repair below the removed image while
+ * the whole subtest runs inside ~36 ms - two ticks.
+ *
+ * What must hold on every host is the contract itself: the repaired tree
+ * validates, and a hit is served only for the identity that was validated. The
+ * identity is re-measured here, and the strict assertion is made in the branch
+ * where it is provable - when the identity did NOT come back, a hit could only
+ * be a stale entry being served. */
+static void assert_repaired_validation(const char *user_root, const NkGameEntry *game,
+                                       const char *identity_when_validated,
+                                       NkRuntimePackageStatus status,
+                                       const NkRuntimePackageInfo *info) {
+    assert(status == NK_RUNTIME_PACKAGE_OK);
+    char identity_now[65];
+    assert(fixture_status_identity(user_root, game, identity_now));
+    if (strcmp(identity_now, identity_when_validated) == 0) {
+        /* Exact identity restored: either answer is sound, and neither is
+           evidence of a stale entry. */
+        return;
+    }
+    assert(!info->validation_cache_hit);
 }
 
 static const char *runtime_package_status_name(NkRuntimePackageStatus status) {
@@ -721,6 +823,24 @@ static void repeat_launch_and_settle(PlayerApp *app, int game_index,
     assert_session_released(&app->launch_session);
     assert(strcmp(app->last_error.error_code, error_before) == 0);
 }
+
+/* Catalog-epoch coherence probe (#670). Built only with the test seam macro,
+ * like the SR_CD_TEST_HOOKS selftests. The checkpoint runs inside
+ * nk_title_manifest_validate_aot_package at the package-validation cache
+ * publication point, so the forced catalog reload is deterministic rather than
+ * timing-dependent: it cannot land before the epoch snapshot or after the
+ * cache insertion, only exactly between them. */
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+static uint64_t s_epoch_publication_before = 0;
+static uint64_t s_epoch_publication_after = 0;
+
+static void force_catalog_reload_at_publication(void *ctx) {
+    (void)ctx;
+    s_epoch_publication_before = nk_title_catalog_epoch();
+    nk_title_catalog_clear_overlay();
+    s_epoch_publication_after = nk_title_catalog_epoch();
+}
+#endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
@@ -2341,7 +2461,12 @@ int main(int argc, char **argv) {
                  cached_title->primary_disc_id);
         nk_title_catalog_snapshot_release(&cached_title_snapshot);
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
-        snprintf(validation_root, sizeof(validation_root), "%s%cpackage-validation-cache",
+        /* A root this subtest owns, named for the probe rather than for a
+           cache: it is not a runtime directory, and a name that reads like one
+           invites the next reader to assume some other component owns whatever
+           it finds underneath. Nothing else in the tree writes here, so a
+           previous run's leftovers can only come from this test itself. */
+        snprintf(validation_root, sizeof(validation_root), "%s%cpr670_validation_probe",
                  cache_root, nk_platform_path_separator());
         snprintf(package_dir, sizeof(package_dir), "%s%cpackages%c%s",
                  validation_root, nk_platform_path_separator(),
@@ -2357,6 +2482,11 @@ int main(int argc, char **argv) {
                  package_dir, nk_platform_path_separator());
         snprintf(image, sizeof(image), "%s%csynthetic-allegrex-v1_image.bin",
                  package_dir, nk_platform_path_separator());
+        /* Start from a clean root: this subtest asserts cache-hit and
+           cache-invalidation decisions, so it must not inherit a package tree
+           from a previous run. */
+        remove_runtime_package_fixture(validation_root, cached_disc_id,
+                                       "synthetic-allegrex-v1");
         assert(nk_platform_mkdir_p(package_dir));
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
@@ -2398,10 +2528,11 @@ int main(int argc, char **argv) {
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo refreshed_info;
-        assert(nk_launch_validate_runtime_package(
-                   validation_root, &game, &refreshed_info, reason,
-                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
-        assert(!refreshed_info.validation_cache_hit);
+        NkRuntimePackageStatus refreshed_status;
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status, &refreshed_info);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -2418,10 +2549,10 @@ int main(int argc, char **argv) {
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
-        assert(nk_launch_validate_runtime_package(
-                   validation_root, &game, &refreshed_info, reason,
-                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
-        assert(!refreshed_info.validation_cache_hit);
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status, &refreshed_info);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -2437,10 +2568,10 @@ int main(int argc, char **argv) {
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", 2,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
-        assert(nk_launch_validate_runtime_package(
-                   validation_root, &game, &refreshed_info, reason,
-                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
-        assert(!refreshed_info.validation_cache_hit);
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status, &refreshed_info);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
@@ -2448,7 +2579,14 @@ int main(int argc, char **argv) {
 
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_before));
+        /* A mutation the identity cannot miss: size is compared before mtime,
+           so a size change is visible on every host and this input can never
+           be served from the entry that validated the smaller file. (The
+           same-size case is the fragile one - see assert_repaired_validation
+           - and it is deliberately not asserted here.) */
+        long executable_size_before = fixture_file_size(executable);
         write_text_file(executable, "modified package executable");
+        assert(fixture_file_size(executable) != executable_size_before);
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_after));
         assert(strcmp(identity_before, identity_after) != 0);
@@ -2458,12 +2596,173 @@ int main(int argc, char **argv) {
                NK_RUNTIME_PACKAGE_STALE);
         assert(!changed_info.validation_cache_hit);
 
-        remove(package_json);
-        remove(completion_json);
-        remove(report_json);
-        remove(executable);
-        remove(image);
+        /* Leave the machine as found. These five removes already ran here, but
+           the root they cleaned still held the fixture's
+           title-input-identities/<disc>/title-input-identity.json (written by
+           write_runtime_package_fixture below the same root) and the package
+           directory itself, so every run left a fresh identity document in the
+           shared cache tree. remove_runtime_package_fixture() drops the same
+           five files and the identity, then the now-empty directories. */
+        remove_runtime_package_fixture(validation_root, cached_disc_id,
+                                       "synthetic-allegrex-v1");
     }
+
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+    {
+        /* 19b. One catalog epoch across package validation and its cache
+         * identity (#670).
+         *
+         * This is a deterministic interposition test, NOT a concurrency stress
+         * test. The defect it pins is a sequence defect, not a race in the
+         * memory-model sense: validate_aot_package() reads the catalog epoch
+         * once for the lookup and then read it a second time when it published,
+         * so a reload interleaved anywhere between those two reads produced an
+         * entry stamped with one epoch whose status identity digest belonged to
+         * another. A real concurrent reload can only land somewhere in that
+         * window; the seam puts it at the exact publication point, which is the
+         * strongest placement, and does so on every run.
+         *
+         * That is why the assertions below are sufficient and provable rather
+         * than probabilistic: the epoch provably advanced between the snapshot
+         * and the publication, the digest provably is epoch-sensitive, and the
+         * published entry therefore either carries the snapshot epoch with its
+         * own epoch's digest (correct) or mixes the two (the defect). No
+         * scheduling, sleep, or repetition is involved, and the test cannot
+         * pass by luck.
+         *
+         * Concurrent clear/reparse coverage lives separately in the SDL3-gated
+         * player UI regression
+         * (test_player_ui.py::test_package_status_worker_and_catalog_reload_do_not_deadlock_or_corrupt_status,
+         * 128 reloads against the status worker); it is not duplicated here. */
+        printf("[PLAYER_STATE_TEST] Subtest 19b: single catalog epoch across validation and cache publication\n");
+        fflush(stdout);
+
+        char epoch_root[640];
+        char epoch_reason[1024];
+        NkTitleEntrySnapshot epoch_title_snapshot = {0};
+        assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
+                                           &epoch_title_snapshot));
+        char epoch_disc_id[MAX_DISC_ID_LEN];
+        snprintf(epoch_disc_id, sizeof(epoch_disc_id), "%s",
+                 epoch_title_snapshot.entry.primary_disc_id);
+        nk_title_catalog_snapshot_release(&epoch_title_snapshot);
+        /* A dedicated probe root, not the cache root itself: a subtest that
+           writes a synthetic package straight into the shared cache root
+           collides with every other consumer of <cache>/packages. */
+        char epoch_cache_root[512];
+        assert(nk_platform_get_path(NK_PATH_CACHE, epoch_cache_root,
+                                    sizeof(epoch_cache_root)));
+        snprintf(epoch_root, sizeof(epoch_root), "%s%cpr670_epoch_probe",
+                 epoch_cache_root, nk_platform_path_separator());
+        remove_runtime_package_fixture(epoch_root, epoch_disc_id,
+                                       "synthetic-allegrex-v1");
+        write_runtime_package_fixture(epoch_root, epoch_disc_id,
+                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+
+        NkGameEntry epoch_game;
+        memset(&epoch_game, 0, sizeof(epoch_game));
+        snprintf(epoch_game.disc_id, sizeof(epoch_game.disc_id), "%s",
+                 epoch_disc_id);
+        snprintf(epoch_game.title_id, sizeof(epoch_game.title_id),
+                 "synthetic-allegrex-v1");
+        snprintf(epoch_game.selected_executable,
+                 sizeof(epoch_game.selected_executable), "EBOOT.BIN");
+
+        /* A real title-manifest reload: load the overlay from disk, which
+           registers it in the catalog and installs the parser's storage-reset
+           callback. Registration is asserted below, so the checkpoint really
+           clears a registered overlay rather than an empty registry. */
+        static const char epoch_overlay_json[] =
+            "{\n"
+            "  \"schema_version\": 1,\n"
+            "  \"id\": \"epoch-coherence-overlay\",\n"
+            "  \"display_name\": \"Epoch Coherence Overlay\",\n"
+            "  \"kind\": \"retail\",\n"
+            "  \"disc\": {\"id\": \"UCUS99901\", \"region\": \"NA\", \"revision_policy\": \"exact-disc-id\"},\n"
+            "  \"executable\": {\"base\": \"0x08800000\", \"entry\": \"0x08804000\", \"bss_metadata_source\": \"elf\", \"extra_executable_spans\": []},\n"
+            "  \"modules\": [{\"name\": \"epoch.prx\", \"load_address\": \"0x08900000\", \"required\": true, \"role\": \"guest-prx\"}],\n"
+            "  \"filesystem\": {\"data_root\": \"data/epoch\", \"memory_stick_root\": \"ms/epoch\", \"device_prefixes\": [\"host0:\"]},\n"
+            "  \"hle_profile\": \"standard\",\n"
+            "  \"feature_requirements\": [\"allegrex\"],\n"
+            "  \"verification_profile\": \"smoke\"\n"
+            "}\n";
+        char epoch_overlay_path[768];
+        char epoch_overlay_error[512];
+        snprintf(epoch_overlay_path, sizeof(epoch_overlay_path),
+                 "%s%cepoch-coherence-overlay.json", epoch_root,
+                 nk_platform_path_separator());
+        write_text_file(epoch_overlay_path, epoch_overlay_json);
+        assert(nk_title_manifest_load_overlay(epoch_overlay_path,
+                                              epoch_overlay_error,
+                                              sizeof(epoch_overlay_error)));
+
+        /* The reload target is genuinely registered: the catalog resolves it. */
+        NkTitleEntrySnapshot epoch_registered = {0};
+        assert(nk_title_catalog_find_by_id("epoch-coherence-overlay",
+                                           &epoch_registered));
+        nk_title_catalog_snapshot_release(&epoch_registered);
+        uint64_t const epoch_at_snapshot = nk_title_catalog_epoch();
+
+        char identity_at_snapshot[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            epoch_root, &epoch_game, identity_at_snapshot));
+
+        s_epoch_publication_before = 0;
+        s_epoch_publication_after = 0;
+        nk_title_manifest_test_set_validation_checkpoint(
+            force_catalog_reload_at_publication, NULL);
+        NkRuntimePackageInfo epoch_info;
+        NkRuntimePackageStatus epoch_status = nk_launch_validate_runtime_package(
+            epoch_root, &epoch_game, &epoch_info, epoch_reason,
+            sizeof(epoch_reason));
+        nk_title_manifest_test_set_validation_checkpoint(NULL, NULL);
+        assert(epoch_status == NK_RUNTIME_PACKAGE_OK);
+        assert(!epoch_info.validation_cache_hit);
+
+        /* The forced reload ran, and it ran between the snapshot and the
+           publication: without both halves the coherence assertion below would
+           be vacuous. */
+        assert(s_epoch_publication_before == epoch_at_snapshot);
+        assert(s_epoch_publication_after > s_epoch_publication_before);
+
+        /* The clear that advanced the epoch removed a registered overlay, so
+           the epoch change under test is the one a real reload publishes. */
+        NkTitleEntrySnapshot epoch_cleared = {0};
+        assert(!nk_title_catalog_find_by_id("epoch-coherence-overlay",
+                                            &epoch_cleared));
+
+        char identity_after_reload[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            epoch_root, &epoch_game, identity_after_reload));
+        assert(strcmp(identity_at_snapshot, identity_after_reload) != 0);
+
+        uint64_t published_epoch = 0;
+        char published_identity[65];
+        assert(nk_title_manifest_test_package_cache_entry(&published_epoch,
+                                                          published_identity));
+        assert(published_epoch == epoch_at_snapshot);
+        assert(strcmp(published_identity, identity_at_snapshot) == 0);
+
+        /* A superseded entry is never served: the next validation revalidates
+           against the current catalog instead of hitting it. */
+        NkRuntimePackageInfo revalidated_info;
+        assert(nk_launch_validate_runtime_package(
+                   epoch_root, &epoch_game, &revalidated_info, epoch_reason,
+                   sizeof(epoch_reason)) == NK_RUNTIME_PACKAGE_OK);
+        assert(!revalidated_info.validation_cache_hit);
+
+        nk_title_catalog_clear_overlay();
+        /* Leave the machine as found: drop the overlay the probe wrote and the
+           synthetic package it validated. */
+        remove(epoch_overlay_path);
+        remove_runtime_package_fixture(epoch_root, epoch_disc_id,
+                                       "synthetic-allegrex-v1");
+    }
+#else
+    printf("[PLAYER_STATE_TEST] Subtest 19b SKIPPED: built without "
+           "NK_TITLE_MANIFEST_TEST_SEAMS\n");
+#endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
     /* 20. A prepared package launched TWICE through the player-owned session
      * path (#511).
