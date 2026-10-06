@@ -264,7 +264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0736b18c13457d15df3bebc9bae13e6c1ab28e7f6536a4ce76eb4dc7925e2bf3"
+      "sha256": "f22f3325e674ed20552993a202dab0dbbdb43c8c3290b9975ae1ba3649dfc81b"
     },
     {
       "path": "CREDITS.md",
@@ -7368,7 +7368,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "af1e89c17332ec20ffa2082d851856e79703489a69223a54311cb88cef7d2bf2"
+      "sha256": "cf37802417407832e95fe15686993426c5232152b26e1a2e436e711a3bf431f4"
     },
     {
       "path": "tools/test_cosim_fixture.py",
