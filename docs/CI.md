@@ -1,7 +1,8 @@
 # Continuous integration and dependency maintenance
 
-The public workflow is intentionally one always-present workflow with a cheap
-classifier followed by job-level applicability checks. The classifier lives in
+The public workflow (`.github/workflows/ci.yml`) is intentionally one
+always-present workflow with a cheap classifier followed by job-level
+applicability checks. The classifier lives in
 [`tools/ci_paths.py`](../tools/ci_paths.py), and its regression tests are in
 [`tools/test_ci_paths.py`](../tools/test_ci_paths.py). The stable aggregate is
 implemented by [`tools/ci_required.py`](../tools/ci_required.py) and tested in
@@ -23,6 +24,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Ready pull request, docs-only | classification, hygiene/security, Markdown, CI required | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
+| Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
 | Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
@@ -34,10 +36,15 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 A draft pull request now receives the same path-applicable substantive gates as
 a ready pull request. No `Ready for review` transition or manual
-`workflow_dispatch` is needed to discover whether the exact head passes. The
-workflow still cancels superseded runs, and docs-only or other irrelevant jobs
-remain skipped by the classifier. `workflow_dispatch` remains available when a
-maintainer deliberately wants the complete matrix regardless of changed paths.
+`workflow_dispatch` is needed to discover whether the exact head passes.
+`.github/workflows/ci.yml` declares its `pull_request` trigger list as exactly
+`opened`, `synchronize` and `reopened` - the events that can carry a new head -
+so a `Ready for review` (or back-to-draft) transition, which cannot change the
+head, does not start a second run over a tree that already carries its
+validation. That workflow still cancels superseded runs, and docs-only or other
+irrelevant jobs remain skipped by the classifier. `workflow_dispatch` remains
+available when a maintainer deliberately wants the complete matrix regardless of
+changed paths.
 
 The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
@@ -289,7 +296,10 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   pull request receive the same path classification and applicable gates, so
   progress does not depend on a status transition or manual dispatch. The
   classifier still exports `draft` for diagnostics and keeps the main-push
-  suppression policy separate.
+  suppression policy separate. Because the gates do not depend on draft status,
+  `.github/workflows/ci.yml` lists only the head-changing events in its
+  `pull_request` types (`opened`, `synchronize`, `reopened`): a status transition
+  would duplicate gates over a tree that already ran them.
 - **`hygiene` is ungated, and that is load-bearing.** The all-files pre-commit
   run — which includes `publish_audit --provenance-self-consistency`,
   `policy_sync`, and the Betterleaks scan — executes on every event, so the
