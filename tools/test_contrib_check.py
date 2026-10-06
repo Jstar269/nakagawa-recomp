@@ -13,6 +13,7 @@ regenerating the controls from the private trusted ledger.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -93,6 +94,41 @@ class TestGateStatusVocabulary(unittest.TestCase):
             gate = contrib_check.ruff_gate(["tools/a.py"])
         self.assertEqual(gate.status, contrib_check.FAIL)
         self.assertIn("timed out", gate.detail)
+
+
+class TestStrictCompileIncludePath(unittest.TestCase):
+    """A `tests/native` unit may include a `src/player` header by bare name.
+
+    Those units sit outside `src/`, so the include resolves only when the
+    strict-compile line carries `-Isrc/player`.  The flag was missing, so five
+    tracked test units the change never touched failed the gate with a bare
+    `fatal error: <player header>: No such file or directory`.
+    """
+
+    def _player_including_tests(self) -> list[str]:
+        headers = {path.name for path in (ROOT / "src" / "player").glob("*.h")}
+        found: list[str] = []
+        for path in sorted((ROOT / "tests" / "native").glob("*.c")):
+            source = path.read_text(encoding="utf-8", errors="replace")
+            includes = re.findall(r'#\s*include\s+"([^"]+)"', source)
+            if any(Path(name).name in headers for name in includes):
+                found.append(path.relative_to(ROOT).as_posix())
+        return found
+
+    def test_the_player_include_path_is_on_the_strict_compile_line(self) -> None:
+        self.assertIn("-Isrc/player", contrib_check.STRICT_C_FLAGS)
+
+    def test_every_unit_including_a_player_header_compiles(self) -> None:
+        files = self._player_including_tests()
+        self.assertTrue(
+            files,
+            "no tests/native unit includes a src/player header any more; "
+            "retire this regression together with the last such unit",
+        )
+        gate = contrib_check.c_gate(files)
+        if gate.status == contrib_check.SKIP:
+            self.skipTest(gate.detail)
+        self.assertEqual(gate.status, contrib_check.PASS, gate.detail)
 
 
 class TestPublicationGateSplit(unittest.TestCase):

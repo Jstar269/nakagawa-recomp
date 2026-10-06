@@ -5715,7 +5715,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12577de2affb9abe0082974fb61b1dfa3763b6172b5a6f2f05a6016b3e7eb401"
+      "sha256": "7e5f2352c58ac4f7fd2192ebb672ea91433ee23262ea105d31191088863ace95"
     },
     {
       "path": "tools/copy_build_assets.ps1",
@@ -7368,7 +7368,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7683f55b79db92f2b9df545868b755f034746b6c11e89af6a5ced0524457e7f7"
+      "sha256": "af1e89c17332ec20ffa2082d851856e79703489a69223a54311cb88cef7d2bf2"
     },
     {
       "path": "tools/test_cosim_fixture.py",
