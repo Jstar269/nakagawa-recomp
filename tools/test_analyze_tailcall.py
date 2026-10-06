@@ -9,7 +9,7 @@ dispatch entry at runtime (silent NONPLT_MISS, same class as 0x000e1724).
 Found by tools/ghidra_crosscheck.py against a ghidra-allegrex analysis.
 
 The pure predicate is tested everywhere; the end-to-end discovery assertions
-need the real decrypted EBOOT and skip when it is absent (CI has no game data).
+need explicit private-title opt-in and the real decrypted EBOOT.
 """
 
 import os
@@ -53,7 +53,10 @@ class TestHardTerminator(unittest.TestCase):
         self.assertFalse(analyze._is_hard_terminator(0x27bdffe8))  # addiu $sp (prologue)
 
 
-@unittest.skipUnless(os.path.isfile(ELF), "decrypted EBOOT.elf not present")
+@unittest.skipUnless(
+    os.environ.get("NK_PRIVATE_TITLE_TESTS") == "1" and os.path.isfile(ELF),
+    "set NK_PRIVATE_TITLE_TESTS=1 and provide decrypted EBOOT.elf",
+)
 class TestTailcallPromotionOnEboot(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -531,6 +531,73 @@ class OptInGateTests(unittest.TestCase):
         self.assertIn("unavailable", str(manager_ctx.exception))
 
 
+class PrivateEbootSuiteOptInTests(unittest.TestCase):
+    """Private EBOOT test classes require explicit opt-in even when input exists."""
+
+    CASES = (
+        ("tools/test_analyze_tailcall.py", "TestTailcallPromotionOnEboot"),
+        ("tools/test_codegen_no_shadow_stubs.py", "TestNoShadowStubs"),
+        ("tools/test_decompme_export.py", "TestExportAgainstRealEboot"),
+    )
+
+    def _load_case_with_synthetic_eboot(
+        self, rel_path: str, class_name: str, *, opted_in: bool, input_present: bool
+    ):
+        source = ROOT / rel_path
+        eboot = ROOT / "place_game_here" / "EBOOT.elf"
+        eboot_key = os.path.normcase(os.path.abspath(os.fspath(eboot)))
+        original_isfile = os.path.isfile
+        original_exists = Path.exists
+        original_is_file = Path.is_file
+
+        def is_eboot(candidate) -> bool:
+            return os.path.normcase(os.path.abspath(os.fspath(candidate))) == eboot_key
+
+        def fake_isfile(candidate) -> bool:
+            return input_present if is_eboot(candidate) else original_isfile(candidate)
+
+        def fake_exists(candidate) -> bool:
+            return input_present if is_eboot(candidate) else original_exists(candidate)
+
+        def fake_is_file(candidate) -> bool:
+            return input_present if is_eboot(candidate) else original_is_file(candidate)
+
+        namespace = {"__name__": "_private_eboot_suite_gate_probe", "__file__": str(source)}
+        with mock.patch.dict(os.environ):
+            os.environ.pop(PRIVATE_TITLE_TESTS_ENV, None)
+            if opted_in:
+                os.environ[PRIVATE_TITLE_TESTS_ENV] = "1"
+            with (
+                mock.patch("os.path.isfile", side_effect=fake_isfile),
+                mock.patch.object(Path, "exists", fake_exists),
+                mock.patch.object(Path, "is_file", fake_is_file),
+            ):
+                code = compile(source.read_text(encoding="utf-8"), str(source), "exec")
+                exec(code, namespace)
+        return namespace[class_name]
+
+    def test_private_eboot_classes_require_explicit_opt_in(self):
+        for rel_path, class_name in self.CASES:
+            with self.subTest(path=rel_path, opted_in=False, input_present=True):
+                case = self._load_case_with_synthetic_eboot(
+                    rel_path, class_name, opted_in=False, input_present=True
+                )
+                self.assertTrue(getattr(case, "__unittest_skip__", False), f"{rel_path} opened with only an ambient EBOOT")
+                self.assertIn(PRIVATE_TITLE_TESTS_ENV + "=1", getattr(case, "__unittest_skip_why__", ""))
+
+            with self.subTest(path=rel_path, opted_in=True, input_present=True):
+                case = self._load_case_with_synthetic_eboot(
+                    rel_path, class_name, opted_in=True, input_present=True
+                )
+                self.assertFalse(getattr(case, "__unittest_skip__", False), f"{rel_path} did not open after explicit opt-in")
+
+            with self.subTest(path=rel_path, opted_in=True, input_present=False):
+                case = self._load_case_with_synthetic_eboot(
+                    rel_path, class_name, opted_in=True, input_present=False
+                )
+                self.assertTrue(getattr(case, "__unittest_skip__", False), f"{rel_path} opened without its EBOOT")
+
+
 class PublicationEnforcementTests(unittest.TestCase):
     """Untracked/ignored material stays invisible; staged material must fail."""
 
