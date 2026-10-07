@@ -10,17 +10,16 @@
 // separately scheduled step.  Nothing here is PSP-measured: every behaviour is
 // either taken from the #695 behavioural contract and labelled
 // SPEC_ASSUMPTION (#343 oracle pending), or left open by that contract and
-// exposed as an explicit SrGeF24Policy reading labelled SPEC_AMBIGUITY.  No
+// labelled SPEC_AMBIGUITY — as an explicit SrGeF24Policy reading where both
+// readings are implementable, otherwise as a fixed, named project reading.  No
 // result of this module is a hardware-accuracy claim.
 //
-// Format (SPEC_ASSUMPTION (#343 oracle pending), A1): an SrGeF24 holds 24 bits
-// in its low bits — sign [23], biased exponent [22:15], fraction [14:0].  A
-// normal value is (-1)^sign * 1.fraction * 2^(exponent - 127): the 24-bit word
-// is read as the upper 24 bits of an IEEE-754 binary32 pattern, which fixes the
-// bias at 127 and the hidden bit.  Bits [31:24] of an SrGeF24 must be zero;
-// every entry point masks them off.
+// Format: the contract fixes 1 sign, 8 exponent and 15 fraction bits with a
+// 16-bit significand when normalised.  An SrGeF24 holds those 24 bits in its
+// low bits — sign [23], biased exponent [22:15], fraction [14:0] — and bits
+// [31:24] must be zero (every entry point masks them off).
 //
-// Spec-stated rules modelled here (all SPEC_ASSUMPTION (#343 oracle pending)):
+// Rules stated by the contract (all SPEC_ASSUMPTION (#343 oracle pending)):
 //   A2  finite conversion and arithmetic truncate toward zero to the 16-bit
 //       significand (sign-magnitude truncation: magnitude never grows);
 //   A3  denormal inputs and results flush to zero;
@@ -34,13 +33,21 @@
 //       once — not as a chain of independently rounded scalar additions;
 //   A6  World, View and Projection are composed into one matrix before any
 //       vertex is transformed;
-//   A7  the perspective reciprocal is a 128-segment piecewise-linear lookup;
+//   A7  the perspective reciprocal is a 128-segment piecewise-linear lookup.
+//
+// Fixed project readings where the contract is silent (SPEC_AMBIGUITY; each
+// has an oracle cell below and is not configurable here):
+//   A1  bit layout and bias: a normal value is
+//       (-1)^sign * 1.fraction * 2^(exponent - 127), i.e. the word is read as
+//       the upper 24 bits of an IEEE-754 binary32 pattern, and exponent field 0
+//       is the zero/denormal class;
 //   A8  the 128 segments partition the significand interval [1, 2) uniformly
 //       by the top 7 fraction bits, leaving 8 bits of in-segment position t;
 //   A9  in-segment interpolation is y = base - ((slope * t) >> slope_shift)
-//       with the product truncated, y read as a fixed-point 1/significand.
+//       with the product truncated, y read as a fixed-point 1/significand
+//       (the widths are caller-supplied table fields).
 //
-// Readings the contract does not determine (SPEC_AMBIGUITY, see SrGeF24Policy):
+// Configurable readings (SPEC_AMBIGUITY, see SrGeF24Policy):
 //   exponent-255 patterns (IEEE-like Inf/NaN vs. an ordinary finite exponent),
 //   overflow (Inf vs. saturation), the sign of generated zeros, whether row-sum
 //   terms are truncated products or exact products, and the association order
@@ -106,7 +113,7 @@ typedef uint32_t SrGeF24;
 #define SR_GE_F24_EXP_MASK 0x007F8000u
 #define SR_GE_F24_FRAC_MASK 0x00007FFFu
 #define SR_GE_F24_EXP_SHIFT 15
-#define SR_GE_F24_EXP_BIAS 127 /* SPEC_ASSUMPTION (#343 oracle pending), A1 */
+#define SR_GE_F24_EXP_BIAS 127 /* SPEC_AMBIGUITY project reading A1 (#343 oracle pending) */
 #define SR_GE_F24_SIG_BITS 16  /* hidden bit + 15 fraction bits */
 #define SR_GE_F24_CANONICAL_NAN 0x007FC000u
 #define SR_GE_F24_ONE 0x003F8000u

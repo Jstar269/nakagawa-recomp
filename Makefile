@@ -1944,8 +1944,8 @@ fp-convert-selftest:
 
 # ge-float24-selftest — project-authored GE float24, row-sum transform and
 # reciprocal-framework reference model (issue #695): exhaustive format checks,
-# contract vectors and a differential against an independent double model under
-# every SPEC_AMBIGUITY policy reading.  Strict C99; not wired into the renderer.
+# contract vectors and a differential against a second, host-double model of the
+# same rules under every SPEC_AMBIGUITY policy reading.  Strict C99; not wired into the renderer.
 ge-float24-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/ge_float24_selftest.exe src/rt/ge_float24_selftest.c src/rt/ge_float24.c -lm

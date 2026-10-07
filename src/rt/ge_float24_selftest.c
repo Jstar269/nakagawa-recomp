@@ -10,9 +10,12 @@
 //   2. hand-derived vectors whose expected words are constants chosen so that
 //      truncation, guard-bit-less alignment and row-sum evaluation each give a
 //      different answer from the obvious alternative rule;
-//   3. a randomized differential against an independent model written in host
-//      double arithmetic (exact for 16- and 32-bit significands), run under
-//      every valid SrGeF24Policy reading.
+//   3. a randomized differential against a second model of the same rules,
+//      written in host double arithmetic (exact for 16- and 32-bit
+//      significands) and sharing no code with the module, run under every
+//      valid SrGeF24Policy reading.
+// The O7 witnesses in test_matrices were found by a deterministic search over
+// the module and cross-checked against an exact-rational model during review.
 // None of this is PSP-hardware evidence (SPEC_ASSUMPTION (#343 oracle pending)).
 
 #include "ge_float24.h"
@@ -74,7 +77,7 @@ static int all_valid_policies(SrGeF24Policy* out) {
     return n;
 }
 
-/* ---- independent double-precision model --------------------------------- */
+/* ---- second model: host double arithmetic -------------------------------- */
 
 static unsigned t_field(SrGeF24 v) {
     return (v >> 15) & 0xFFu;
@@ -502,6 +505,51 @@ static void test_rowsum_model(void) {
     CHECK(r.value == 0x380000u, "O6 truncated products -> %#x", r.value);
     r = sr_gef24_rowsum(&ex, u, w, 2);
     CHECK(r.value == 0x380001u, "O6 exact products -> %#x", r.value);
+
+    /* Special terms, the full 8-term width, overflow and signed zeros. */
+    {
+        SrGeF24Policy pos = tr;
+        SrGeF24Policy fin = make_policy(SR_GE_F24_EXP255_FINITE, SR_GE_F24_OVERFLOW_SATURATE, SR_GE_F24_ZERO_IEEE,
+                                        SR_GE_F24_PRODUCT_EXACT, SR_GE_F24_COMPOSE_PV_THEN_W);
+        const SrGeF24 inf_row[2] = {0x7F8000u, SR_GE_F24_ONE};
+        const SrGeF24 infs[2] = {0x7F8000u, 0xFF8000u};
+        const SrGeF24 nan_row[2] = {0x7FC000u, SR_GE_F24_ONE};
+        const SrGeF24 one_one[2] = {SR_GE_F24_ONE, SR_GE_F24_ONE};
+        const SrGeF24 zero_one[2] = {0, SR_GE_F24_ONE};
+        const SrGeF24 big[2] = {0x7F0000u, 0x7F0000u}; /* 2^127 */
+        const SrGeF24 big126[2] = {0x7E8000u, 0x7E8000u};
+        const SrGeF24 two[2] = {0x400000u, 0x400000u};
+        const SrGeF24 negz[2] = {0x800000u, 0x800000u};
+        SrGeF24 eight_a[8], eight_b[8];
+        int j;
+        pos.zero_sign = SR_GE_F24_ZERO_POSITIVE;
+        CHECK(sr_gef24_rowsum(&tr, inf_row, one_one, 2).value == 0x7F8000u, "Inf + 1 row -> Inf");
+        CHECK(sr_gef24_rowsum(&ex, infs, one_one, 2).value == SR_GE_F24_CANONICAL_NAN, "Inf - Inf row -> NaN");
+        CHECK(sr_gef24_rowsum(&tr, inf_row, zero_one, 2).value == SR_GE_F24_CANONICAL_NAN, "Inf * 0 term -> NaN");
+        CHECK(sr_gef24_rowsum(&ex, nan_row, one_one, 2).value == SR_GE_F24_CANONICAL_NAN, "NaN term -> NaN");
+        for (j = 0; j < 8; ++j) {
+            eight_a[j] = 0x3FFFFFu;
+            eight_b[j] = SR_GE_F24_ONE;
+        }
+        /* 8 * 0xFFFF on the 2^-15 grid is 0x7FFF8: exact, 15.99976 = 0x417FFF */
+        r = sr_gef24_rowsum(&tr, eight_a, eight_b, 8);
+        CHECK(r.value == 0x417FFFu && r.flags == 0, "8-term row sum -> %#x flags %#x", r.value, r.flags);
+        r = sr_gef24_rowsum(&ex, eight_a, eight_b, 8);
+        CHECK(r.value == 0x417FFFu && r.flags == 0, "8-term exact row sum -> %#x", r.value);
+        /* exact products 2^128 + 2^128 overflow only at the end; truncated
+           products overflow per term */
+        r = sr_gef24_rowsum(&ex, big, two, 2);
+        CHECK(r.value == 0x7F8000u && (r.flags & SR_GE_F24_FLAG_OVERFLOW), "exact-product overflow -> Inf");
+        r = sr_gef24_rowsum(&tr, big, two, 2);
+        CHECK(r.value == 0x7F8000u && (r.flags & SR_GE_F24_FLAG_OVERFLOW), "truncated-product overflow -> Inf");
+        r = sr_gef24_rowsum(&fin, big126, two, 2);
+        CHECK(r.value == 0x7F8000u && r.flags == 0, "2^128 is finite under the finite reading, got %#x", r.value);
+        r = sr_gef24_rowsum(&ex, big126, two, 2);
+        CHECK(r.value == 0x7F8000u && (r.flags & SR_GE_F24_FLAG_OVERFLOW), "2^128 overflows exponent 254");
+        CHECK(sr_gef24_rowsum(&tr, negz, one_one, 2).value == 0x800000u, "(-0)(1) + (-0)(1) = -0 (IEEE)");
+        CHECK(sr_gef24_rowsum(&pos, negz, one_one, 2).value == 0, "(-0)(1) + (-0)(1) = +0 (positive)");
+        CHECK(sr_gef24_rowsum(&ex, negz, negz, 2).value == 0, "(-0)(-0) + (-0)(-0) = +0");
+    }
 
     /* A row sum is invariant under every permutation of its terms; a chain is not. */
     for (a = 0; a < 4; ++a) {
