@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d32cc03d688874ea6994e153dc23f8fb57d14f316df333d8720207fdf492ae21"
+      "sha256": "394a648a1d7f3bae9f8f2493097683e3d6976f03ab5952a831cc765c7aedec8f"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "05f1ca163a7202a4f61dc43e10b31f8c0ea41ac4ab1700a6c91943e66444d87b"
+      "sha256": "d33ed682422ab83326308f1dc81df793d0de898fd498967820fd8ffbf7a1df5a"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -4255,6 +4255,42 @@
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "333acb7ff1dce50d60e7586e3d4fb6d53672b4902b7195b64604b60d92432ebb"
+    },
+    {
+      "path": "src/rt/ge_texture_ref.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-texture-ref-703",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "2563ba6061fd0a5d062e1d207ec7d9353584a239aedd8d53098f85155d8c6378"
+    },
+    {
+      "path": "src/rt/ge_texture_ref.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-texture-ref-703",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6f9b73f4ca5e51602e6fcbcea67c5683e98ae6349a43e64920ff24878ab3f865"
+    },
+    {
+      "path": "src/rt/ge_texture_ref_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-texture-ref-703",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "931c0e671d20cddfc7f579a1039e84c54540e79c25215e1cb3ba2b73ab4ac338"
     },
     {
       "path": "src/rt/gpu_capture_selftest.c",
