@@ -512,22 +512,34 @@ class HstManagerManifestTests(unittest.TestCase):
         assert_helper_rejects(json.dumps(control))
 
     def test_nonzero_python_planner_is_rejected_without_make(self) -> None:
-        failing = self.root / "failing-python.cmd"
-        failing.write_text("@echo planner failed 1>&2\r\n@exit /b 7\r\n", encoding="ascii")
+        # The stand-in planner must be directly executable on this host. A .cmd file is
+        # not executable under PowerShell on Linux: pwsh hands it to xdg-open, which can
+        # start an editor that holds the output pipe forever (or, with no handler, fails
+        # for a reason unrelated to the planner's exit code).
+        if os.name == "nt":
+            failing = self.root / "failing-python.cmd"
+            failing.write_text("@echo planner failed 1>&2\r\n@exit /b 7\r\n", encoding="ascii")
+        else:
+            failing = self.root / "failing-python.sh"
+            failing.write_text("#!/bin/sh\necho 'planner failed' >&2\nexit 7\n", encoding="ascii")
+            failing.chmod(0o755)
         command = (
             f". '{HELPER}'; "
             f"try {{ Invoke-TitleManagerPlan -PlannerScript 'missing.py' -ManifestPath '{SYNTHETIC_MANIFEST}' "
             f"-GameName synthetic -GameElf fixtures/synthetic.elf -BuildDir build/synthetic -ModuleDir modules "
             f"-PspHeader header.bin -FuncsPerChunk 2000 -PythonCommand '{failing}'; exit 1 }} "
-            "catch { exit 0 }"
+            "catch { Write-Output $_.Exception.Message; exit 0 }"
         )
         proc = subprocess.run(
             [self.shell, "-NoProfile", "-Command", command],
             capture_output=True,
             text=True,
             check=False,
+            timeout=120,
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        # Rejected because the planner itself exited 7, not because it could not be started.
+        self.assertIn("exit code 7", proc.stdout, proc.stdout + proc.stderr)
         self.assert_no_make()
 
     def test_vulkan_sdk_helper_precedence_and_validity(self) -> None:
