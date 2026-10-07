@@ -957,13 +957,27 @@ static void test_legacy_feed_take_path(void) {
         free(bytes);
         return;
     }
-    sr_h264_feed(dec, bytes + 2048u, size - 2048u);
+    CHECK(sr_h264_feed(dec, bytes + 2048u, size - 2048u) == 0,
+          "common program-stream demux accepts the source-owned PSMF bytes");
+    const int64_t expected_pts[FIX_PICTURES] = {
+        FIX_BASE, FIX_BASE + FIX_PTS_STEP, -1
+    };
+    uint64_t previous_consumed = 0;
     int frames = 0, taken = 0;
     for (int guard = 0; guard < 64; guard++) {
         uint64_t consumed = 0;
         int64_t pts = 0;
         int took = sr_h264_au_take(dec, 0, &consumed, &pts);
-        if (took > 0) taken++;
+        if (took > 0) {
+            CHECK(taken < FIX_PICTURES, "legacy demux does not emit extra pictures");
+            if (taken < FIX_PICTURES)
+                CHECK(pts == expected_pts[taken],
+                      "common demux preserves raw PTS and unknown timestamp presence");
+            CHECK(consumed >= previous_consumed && consumed <= size - 2048u,
+                  "legacy demux consumption offsets remain within the fed PS stream");
+            previous_consumed = consumed;
+            taken++;
+        }
         for (int i = 0; i < 8; i++) {
             int r = sr_h264_frame(dec, 0, GUEST_BUF, 64, 3);
             if (r < 0) { CHECK(0, "legacy path decode failed"); break; }
@@ -973,7 +987,16 @@ static void test_legacy_feed_take_path(void) {
         if (took <= 0) break;
     }
     uint64_t consumed = 0;
-    if (sr_h264_au_take(dec, 1, &consumed, NULL) > 0) taken++;
+    int64_t final_pts = 0;
+    if (sr_h264_au_take(dec, 1, &consumed, &final_pts) > 0) {
+        CHECK(taken < FIX_PICTURES, "EOS closes only the one trailing picture");
+        if (taken < FIX_PICTURES)
+            CHECK(final_pts == expected_pts[taken],
+                  "EOS preserves the trailing picture's absent PTS");
+        CHECK(consumed >= previous_consumed && consumed <= size - 2048u,
+              "EOS consumption offset remains within the fed PS stream");
+        taken++;
+    }
     for (int i = 0; i < 16; i++) {
         int r = sr_h264_frame(dec, 1, GUEST_BUF, 64, 3);
         if (r < 0) { CHECK(0, "legacy path end-of-stream decode failed"); break; }
