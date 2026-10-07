@@ -18,7 +18,7 @@
   },
   "toolchain_policy": {
     "compiler": ">=4.9.0 (rolling-msys2)",
-    "make": ">=3.81 (rolling-msys2)",
+    "make": ">=4.0 (rolling-msys2)",
     "python": ">=3.14,<3.15",
     "sdl3": ">=3.0.0 (rolling-msys2)",
     "vulkan_sdk": ">=1.1.0"
