@@ -735,7 +735,7 @@ class CanonicalCfgTests(unittest.TestCase):
             ),
         )
         by_address = {node["address"]: node for node in report["instructions"]}
-        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["schema_version"], analyze.CFG_SCHEMA_VERSION)
         self.assertTrue(any(edge["kind"] == "call" and edge["target"] == 0x1100 for edge in report["call_edges"]))
         self.assertTrue(any(edge["kind"] == "tail-call" and edge["target"] == 0x1200 for edge in report["tail_call_edges"]))
         self.assertTrue(any(edge["kind"] == "tail-call" and edge["target"] == 0x1A00 for edge in report["tail_call_edges"]))
