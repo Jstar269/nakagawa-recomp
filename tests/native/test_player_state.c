@@ -505,6 +505,102 @@ static void write_synthetic_mips_elf(const char *path) {
     assert(fclose(file) == 0);
 }
 
+/* A PSP PRX guest module (issue #729): e_type 0xFFA0 with the unset e_entry
+ * 0xFFFFFFFF, relocatable at 0, and one executable PT_LOAD with code bytes.
+ * Its start routine comes from the module info, so e_entry is not an address. */
+static void build_synthetic_guest_prx(unsigned char elf[88]) {
+    memset(elf, 0, 88);
+    memcpy(elf, "\x7f" "ELF", 4);
+    elf[4] = 1; /* ELF32 */
+    elf[5] = 1; /* little-endian */
+    elf[6] = 1; /* current ELF version */
+    elf[16] = 0xa0; elf[17] = 0xff; /* ET_SCE_PRX */
+    elf[18] = 8; /* MIPS */
+    elf[20] = 1;
+    elf[24] = 0xff; elf[25] = 0xff; elf[26] = 0xff; elf[27] = 0xff; /* e_entry */
+    elf[28] = 52; /* program-header table offset */
+    elf[40] = 52; /* ELF header size */
+    elf[42] = 32; /* program-header entry size */
+    elf[44] = 1;  /* program-header count */
+    elf[52] = 1;  /* PT_LOAD */
+    elf[56] = 84; /* file offset */
+    elf[68] = 4;  /* file size */
+    elf[72] = 4;  /* memory size */
+    elf[76] = 5;  /* readable + executable */
+    elf[80] = 4;  /* alignment */
+    elf[84] = 0x34; elf[85] = 0x12;
+}
+
+static void write_synthetic_guest_prx(const char *path, size_t length) {
+    unsigned char elf[88];
+    build_synthetic_guest_prx(elf);
+    assert(length <= sizeof(elf));
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(elf, 1, length, file) == length);
+    assert(fclose(file) == 0);
+}
+
+/* ISO 9660 directory record (ECMA-119 9.1); both-endian extents and sizes. */
+static size_t iso_dir_record(uint8_t *record, const uint8_t *name, size_t name_len,
+                             uint32_t lba, uint32_t size, bool is_dir) {
+    size_t rec_len = 33 + name_len + ((name_len & 1u) == 0 ? 1u : 0u);
+    memset(record, 0, rec_len);
+    record[0] = (uint8_t)rec_len;
+    for (int i = 0; i < 4; i++) {
+        record[2 + i] = (uint8_t)(lba >> (8 * i));
+        record[9 - i] = (uint8_t)(lba >> (8 * i));
+        record[10 + i] = (uint8_t)(size >> (8 * i));
+        record[17 - i] = (uint8_t)(size >> (8 * i));
+    }
+    record[25] = is_dir ? 0x02 : 0x00;
+    record[28] = 1; /* volume sequence number 1, both-endian */
+    record[31] = 1;
+    record[32] = (uint8_t)name_len;
+    memcpy(record + 33, name, name_len);
+    return rec_len;
+}
+
+/* A minimal ISO whose PSP_GAME/SYSDIR holds one guest module: PVD at sector
+ * 16, root 17, PSP_GAME 18, SYSDIR 19, module data from sector 20. */
+static void write_guest_module_iso(const char *path, const char *name,
+                                   const unsigned char *module, size_t module_size) {
+    enum { SECTOR = 2048, DATA_LBA = 20 };
+    static const uint8_t dot[1] = { 0 };
+    static const uint8_t dotdot[1] = { 1 };
+    size_t data_sectors = (module_size + SECTOR - 1) / SECTOR;
+    size_t total = ((size_t)DATA_LBA + data_sectors) * SECTOR;
+    uint8_t *image = (uint8_t *)calloc(1, total);
+    assert(image != NULL);
+    uint8_t *pvd = image + 16 * SECTOR;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    iso_dir_record(pvd + 156, dot, 1, 17, SECTOR, true);
+    uint8_t *root = image + 17 * SECTOR;
+    size_t off = 0;
+    off += iso_dir_record(root + off, dot, 1, 17, SECTOR, true);
+    off += iso_dir_record(root + off, dotdot, 1, 17, SECTOR, true);
+    off += iso_dir_record(root + off, (const uint8_t *)"PSP_GAME", 8, 18, SECTOR, true);
+    uint8_t *game = image + 18 * SECTOR;
+    off = 0;
+    off += iso_dir_record(game + off, dot, 1, 18, SECTOR, true);
+    off += iso_dir_record(game + off, dotdot, 1, 17, SECTOR, true);
+    off += iso_dir_record(game + off, (const uint8_t *)"SYSDIR", 6, 19, SECTOR, true);
+    uint8_t *sysdir = image + 19 * SECTOR;
+    off = 0;
+    off += iso_dir_record(sysdir + off, dot, 1, 19, SECTOR, true);
+    off += iso_dir_record(sysdir + off, dotdot, 1, 18, SECTOR, true);
+    iso_dir_record(sysdir + off, (const uint8_t *)name, strlen(name), DATA_LBA,
+                   (uint32_t)module_size, false);
+    memcpy(image + (size_t)DATA_LBA * SECTOR, module, module_size);
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, total, file) == total);
+    assert(fclose(file) == 0);
+    free(image);
+}
+
 static void write_synthetic_pgf(const char *path, uint16_t header_offset, uint16_t header_size,
                                 const char magic[4], uint16_t first_glyph, uint16_t last_glyph,
                                 size_t total_size) {
@@ -1805,6 +1901,80 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "decryption is in the works") == NULL);
         assert(check->issue_count == 0);
         assert(remove(decrypted_elf) == 0);
+
+        /* Issue #729: a PSP PRX guest module whose e_entry is the unset
+           0xFFFFFFFF is ready under the module rule, as a plain disc copy and
+           as a user-supplied decrypted copy; a truncated copy is not ready. */
+        {
+            unsigned char prx_bytes[88];
+            char module_iso_path[NK_MAX_PATH];
+            char module_dir[NK_MAX_PATH];
+            char module_copy[NK_MAX_PATH + 32];
+            char saved_iso_path[sizeof(wiz->inspecting_game.iso_path)];
+            char saved_disc_id[sizeof(wiz->inspecting_game.disc_id)];
+            char saved_selected[sizeof(wiz->inspecting_game.selected_executable)];
+            const PlayerPreflightCheck *module_check;
+            int written;
+
+            build_synthetic_guest_prx(prx_bytes);
+            snprintf(saved_iso_path, sizeof(saved_iso_path), "%s",
+                     wiz->inspecting_game.iso_path);
+            snprintf(saved_disc_id, sizeof(saved_disc_id), "%s",
+                     wiz->inspecting_game.disc_id);
+            snprintf(saved_selected, sizeof(saved_selected), "%s",
+                     wiz->inspecting_game.selected_executable);
+            written = snprintf(module_iso_path, sizeof(module_iso_path),
+                "%s%cguest-module-729.iso", preflight_root,
+                nk_platform_path_separator());
+            assert(written > 0 && (size_t)written < sizeof(module_iso_path));
+            write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
+                                   sizeof(prx_bytes));
+            written = snprintf(module_dir, sizeof(module_dir), "%s%ctitles%cULUS99996%cdecrypted",
+                preflight_root, nk_platform_path_separator(),
+                nk_platform_path_separator(), nk_platform_path_separator());
+            assert(written > 0 && (size_t)written < sizeof(module_dir));
+            assert(nk_platform_mkdir_p(module_dir));
+            written = snprintf(module_copy, sizeof(module_copy), "%s%clibfont.prx",
+                module_dir, nk_platform_path_separator());
+            assert(written > 0 && (size_t)written < sizeof(module_copy));
+            snprintf(wiz->inspecting_game.iso_path, sizeof(wiz->inspecting_game.iso_path),
+                     "%s", module_iso_path);
+            snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
+                     "%s", "ULUS99996");
+            snprintf(wiz->inspecting_game.selected_executable,
+                     sizeof(wiz->inspecting_game.selected_executable), "%s", "EBOOT.BIN");
+
+            /* Plain disc copy only: the PRX is the module and needs no decryption. */
+            remove(module_copy);
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+            assert(module_check && module_check->status == PREFLIGHT_OK);
+            assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+
+            /* A user-supplied decrypted copy that is a valid PRX is ready. */
+            write_synthetic_guest_prx(module_copy, sizeof(prx_bytes));
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+            assert(module_check && module_check->status == PREFLIGHT_OK);
+            assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+
+            /* A truncated user copy (header cut inside the program headers) is not. */
+            write_synthetic_guest_prx(module_copy, 60);
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+            assert(module_check && module_check->status == PREFLIGHT_UNSUPPORTED);
+            assert(strstr(module_check->message, "Guest modules: 0 of 1 ready") != NULL);
+            assert(strstr(module_check->message, "not a usable plain module") != NULL);
+
+            assert(remove(module_copy) == 0);
+            assert(remove(module_iso_path) == 0);
+            snprintf(wiz->inspecting_game.iso_path, sizeof(wiz->inspecting_game.iso_path),
+                     "%s", saved_iso_path);
+            snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
+                     "%s", saved_disc_id);
+            snprintf(wiz->inspecting_game.selected_executable,
+                     sizeof(wiz->inspecting_game.selected_executable), "%s", saved_selected);
+        }
 
         wiz->inspecting_game.is_experimental = true;
         snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),

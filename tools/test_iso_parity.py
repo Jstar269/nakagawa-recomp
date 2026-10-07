@@ -21,6 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 from nk_core.iso_inspect import (
+    _classify_decrypted_elf_file,
+    decrypt_needed_modules,
+    decrypted_module_dir,
     inspect_compatibility_preflight,
     inspect_iso,
     plan_provisional_module_bindings,
@@ -254,14 +257,16 @@ def create_test_iso_with_modules(
 
 
 def build_plain_mips_elf(
-    e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4
+    e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4,
+    entry: int | None = None, p_type: int = 1, p_flags: int = 5, filesz: int = 4,
 ) -> bytes:
+    """A one-segment ELF32/MIPS image; ``entry`` defaults to ``vaddr``."""
     elf = bytearray(88)
     elf[:7] = b"\x7fELF\x01\x01\x01"
     struct.pack_into("<HHI", elf, 16, e_type, 8, 1)
-    struct.pack_into("<III", elf, 24, vaddr, 52, 0)
+    struct.pack_into("<III", elf, 24, vaddr if entry is None else entry, 52, 0)
     struct.pack_into("<HHHHH", elf, 40, 52, 32, 1, 0, 0)
-    struct.pack_into("<8I", elf, 52, 1, 84, vaddr, vaddr, 4, memsz, 5, 4)
+    struct.pack_into("<8I", elf, 52, p_type, 84, vaddr, vaddr, filesz, memsz, p_flags, 4)
     elf[84:88] = b"\x34\x12\x00\x00"
     return bytes(elf)
 
@@ -1725,6 +1730,139 @@ int main(int argc, char **argv) {{
         res = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertIn("READER:OPEN_FAILED", res.stdout)
+
+
+class GuestModuleElfRuleTests(unittest.TestCase):
+    """Issue #729: a PSP PRX guest module is usable by its real contract (an
+    executable PT_LOAD with code bytes), not by an executable e_entry.  The
+    module checklist and package extraction apply the same rule, while the
+    executable rule keeps its e_entry requirement."""
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_prx_rule_"))
+        self.addCleanup(shutil.rmtree, self.temp_dir, True)
+
+    def _write(self, name: str, data: bytes) -> Path:
+        path = self.temp_dir / name
+        path.write_bytes(data)
+        return path
+
+    def test_prx_with_unset_entry_and_code_segment_is_usable_module(self) -> None:
+        prx = self._write(
+            "libfont.prx", build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        )
+        self.assertEqual(_classify_decrypted_elf_file(prx, module=True), "PLAIN_MIPS_ELF32")
+
+    def test_executables_with_entry_in_code_segment_stay_usable(self) -> None:
+        for e_type in (2, 3):
+            with self.subTest(e_type=e_type):
+                path = self._write(f"plain_{e_type}.elf", build_plain_mips_elf(e_type))
+                self.assertEqual(_classify_decrypted_elf_file(path), "PLAIN_MIPS_ELF32")
+                self.assertEqual(
+                    _classify_decrypted_elf_file(path, module=True), "PLAIN_MIPS_ELF32"
+                )
+
+    def test_prx_without_load_segment_is_rejected(self) -> None:
+        path = self._write(
+            "noload.prx", build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF, p_type=4)
+        )
+        self.assertEqual(_classify_decrypted_elf_file(path, module=True), "UNKNOWN")
+
+    def test_prx_whose_only_load_segment_is_not_executable_is_rejected(self) -> None:
+        path = self._write(
+            "data.prx", build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF, p_flags=4)
+        )
+        self.assertEqual(_classify_decrypted_elf_file(path, module=True), "UNKNOWN")
+
+    def test_prx_code_segment_without_file_bytes_is_rejected(self) -> None:
+        path = self._write(
+            "bss.prx",
+            build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF, filesz=0),
+        )
+        self.assertEqual(_classify_decrypted_elf_file(path, module=True), "UNKNOWN")
+
+    def test_truncated_prx_is_rejected(self) -> None:
+        prx = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        for length in (40, 60):
+            with self.subTest(length=length):
+                path = self._write(f"truncated_{length}.prx", prx[:length])
+                self.assertEqual(_classify_decrypted_elf_file(path, module=True), "UNKNOWN")
+
+    def test_unset_entry_stays_rejected_for_executables(self) -> None:
+        executable = self._write(
+            "unset.elf", build_plain_mips_elf(2, entry=0xFFFFFFFF)
+        )
+        self.assertEqual(_classify_decrypted_elf_file(executable), "UNKNOWN")
+        self.assertEqual(_classify_decrypted_elf_file(executable, module=True), "UNKNOWN")
+        # A PRX-format main image still needs its e_entry in a code segment:
+        # the launcher starts at e_entry, so the module rule does not apply.
+        main_prx = self._write(
+            "main_prx.elf", build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        )
+        self.assertEqual(_classify_decrypted_elf_file(main_prx), "UNKNOWN")
+
+    def test_checklist_and_extraction_agree_on_prx_modules(self) -> None:
+        prx = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        truncated = prx[:60]
+        iso = self.temp_dir / "guest-modules.iso"
+        create_test_iso_with_modules(
+            iso, build_plain_mips_elf(),
+            sysdir_modules={"libfont.prx": prx, "truncated.prx": truncated},
+            usrdir_modules={},
+        )
+        user_root = self.temp_dir / "user-data"
+
+        def spec(name: str) -> dict:
+            return {"names": [name], "members": [("PSP_GAME", "SYSDIR", name)]}
+
+        # Checklist, disc copies: the valid PRX is ready, the truncated one is not.
+        checklist = decrypt_needed_modules(
+            iso, user_data_root=user_root, disc_id="TEST00001",
+            modules=[spec("libfont.prx"), spec("truncated.prx")],
+        )
+        status = {result["name"]: result["status"] for result in checklist["results"]}
+        self.assertEqual(status["libfont.prx"], "skipped")
+        self.assertNotEqual(status["truncated.prx"], "skipped")
+
+        # Extraction, disc copies: the same two modules, the same verdicts.
+        for name, expect_ok in (("libfont.prx", True), ("truncated.prx", False)):
+            with self.subTest(source="disc", module=name):
+                manifest = {"modules": [{"name": name, "role": "guest-prx", "required": True}]}
+                cache = self.temp_dir / f"disc-cache-{name}"
+                if expect_ok:
+                    output = nk_cli._copy_optional_modules(iso, manifest, cache, None)
+                    self.assertEqual((output / name).read_bytes(), prx)
+                else:
+                    with self.assertRaisesRegex(nk_cli.PackageBuildError, "not a usable plain MIPS ELF32"):
+                        nk_cli._copy_optional_modules(iso, manifest, cache, None)
+                    self.assertFalse((cache / "modules" / name).exists())
+
+        # Checklist and extraction, user-supplied decrypted copies.
+        decrypted = decrypted_module_dir(user_root, "TEST00001")
+        decrypted.mkdir(parents=True)
+        for name, data, expect_ok in (("libfont.prx", prx, True),
+                                      ("truncated.prx", truncated, False)):
+            with self.subTest(source="user", module=name):
+                (decrypted / name).write_bytes(data)
+                checklist = decrypt_needed_modules(
+                    iso, user_data_root=user_root, disc_id="TEST00001",
+                    modules=[spec(name)],
+                )
+                result = checklist["results"][0]
+                manifest = {"modules": [{"name": name, "role": "guest-prx", "required": True}]}
+                cache = self.temp_dir / f"user-cache-{name}"
+                if expect_ok:
+                    self.assertEqual((result["status"], result["reason"]), ("skipped", "user-supplied"))
+                    output = nk_cli._copy_optional_modules(
+                        iso, manifest, cache, decrypted
+                    )
+                    self.assertEqual((output / name).read_bytes(), data)
+                else:
+                    self.assertEqual(result["status"], "failed")
+                    self.assertEqual(result["reason"], "user-supplied-invalid")
+                    with self.assertRaisesRegex(nk_cli.PackageBuildError, "not a usable plain MIPS ELF32"):
+                        nk_cli._copy_optional_modules(iso, manifest, cache, decrypted)
+                    self.assertFalse((cache / "modules" / name).exists())
 
 
 if __name__ == "__main__":
