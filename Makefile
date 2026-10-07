@@ -855,6 +855,7 @@ PUBLIC_TARGETS := \
 	memory-watch-selftest \
 	asset-index-selftest \
 	fp-convert-selftest \
+	ge-float24-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	vfpu-interp-selftest \
@@ -966,6 +967,7 @@ HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation s
 HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
+HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
@@ -1939,6 +1941,17 @@ fp-convert-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/fp_convert_selftest.exe \
 		src/rt/fp_convert_selftest.c -lm
 	$(BUILD_DIR)/fp_convert_selftest.exe
+
+# ge-float24-selftest — project-authored GE float24, row-sum transform and
+# reciprocal-framework reference model (issue #695): exhaustive format checks,
+# contract vectors and a differential against an independent double model under
+# every SPEC_AMBIGUITY policy reading.  Strict C99; not wired into the renderer.
+ge-float24-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/ge_float24_selftest.exe src/rt/ge_float24_selftest.c src/rt/ge_float24.c -lm
+	$(BUILD_DIR)/ge_float24_selftest.exe
+
+native-core-tests: ge-float24-selftest
 
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
