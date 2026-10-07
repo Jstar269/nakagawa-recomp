@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d2a8fffb12a1779c593fdba6a3c66d2f061abbb31f1581678600fa65962d953f"
+      "sha256": "a86c15cc4ed6d8aea835e6b3e2082a834eeddee317639ff4f01e88e6fe89adee"
     },
     {
       "path": "NOTICE.md",
@@ -1084,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5864e792454531de06eada82f18e45a9d7cbf940da420b4b298c4429a0f700c3"
+      "sha256": "ba067d3b36ee20b8f74acdf34f00cfd902f0b85ca8191497bf7c6ecf95de31e6"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4639,7 +4639,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a147b309615ce60594f93f195233730600071a2ce1c508dc2888d0bee40e70cd"
+      "sha256": "a720805e0ca76d62f76b35c59f22c00dc5c0e47bdf3af2b009261645192df141"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4908,7 +4908,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b164bb5ff3bacca862e1ba7f669c7315c7871e7772bf28f2965968cd886525a5"
+      "sha256": "0b483e4fb5460736ad1362aedc0071d5ed62d1562cae1b78b78b0ba62a75abc1"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -4920,7 +4920,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ec93f1e26cc43f00fca7c9d9d6da5d35748c76dc005019493c1e5c3d51499855"
+      "sha256": "300c3fb649e8f09360d1e3ccd38362aae231ef7b8b799c20b40a915186595d32"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -4932,7 +4932,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0a51ec28b823022f9619a852d1ae5fa74257c5f221380c1c57868324ebba3ebe"
+      "sha256": "f29f0fda12a57caec728029dd1222b1a6b4d8b06e67f14f114ede897626ca3eb"
     },
     {
       "path": "src/rt/psmf_producer_selftest.c",
@@ -4944,7 +4944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b2d689dc12688064c0ecfdac2b0d033f4c41356aa9694f7ea82c62a014879ea4"
+      "sha256": "6d17b427c584574aea1d5225fb23046b79e8e494150dc8f2b17fc5970658d983"
     },
     {
       "path": "src/rt/recomp.c",
