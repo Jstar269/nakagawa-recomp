@@ -331,6 +331,15 @@ def resolve_exe_argument(exe):
     return exe if os.path.isabs(exe) else os.path.join(find_repo_root(), exe)
 
 
+def missing_exe_error(path):
+    """The one message for a ``--exe`` target that is not an existing file.
+
+    A directory (including the repository root an empty ``--exe ""`` resolves
+    to) is not an executable, so it gets the same clear error."""
+    return ("Target executable does not exist: %s; build the runtime first or "
+            "pass --exe <path> to an existing executable" % path)
+
+
 def build_artifact_dir(exe_path=None):
     """Directory the attached runtime writes its diagnostic artifacts into.
 
@@ -557,11 +566,8 @@ class MemoryDebugger:
         if not self.expected_exe:
             raise ValueError("No target executable specified; pass --exe <path> (e.g. --exe build/<game>/<game>.exe) instead of assuming HST")
 
-        if not os.path.exists(self.expected_exe):
-            raise ValueError(
-                "Target executable does not exist: %s; build the runtime "
-                "first or pass --exe <path> to an existing executable"
-                % self.expected_exe)
+        if not os.path.isfile(self.expected_exe):
+            raise ValueError(missing_exe_error(self.expected_exe))
 
         expected_exe = self.expected_exe
         candidates = enumerate_process_candidates(self.expected_exe_name)
@@ -1278,12 +1284,8 @@ def main():
 
     if not simulate and exe:
         resolved_exe = resolve_exe_argument(exe)
-        if not os.path.exists(resolved_exe):
-            print(json.dumps({
-                "error": ("Target executable does not exist: %s; build the "
-                          "runtime first or pass --exe <path> to an "
-                          "existing executable" % resolved_exe)
-            }))
+        if not os.path.isfile(resolved_exe):
+            print(json.dumps({"error": missing_exe_error(resolved_exe)}))
             sys.exit(1)
 
     try:

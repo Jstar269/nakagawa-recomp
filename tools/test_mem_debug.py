@@ -591,6 +591,18 @@ class TargetDispositionTest(unittest.TestCase):
             self.assertIn("does not exist", str(ctx.exception))
             self.assertIn(missing, str(ctx.exception))
 
+    def test_directory_or_empty_exe_target_fails_clearly(self):
+        # A directory exists but is not an executable target.
+        with tempfile.TemporaryDirectory(prefix="mem_debug_target_") as tmp_dir:
+            with self.assertRaises(ValueError) as ctx:
+                md.MemoryDebugger(simulate=False, exe=tmp_dir)
+            self.assertIn("does not exist", str(ctx.exception))
+        # An empty --exe would resolve to the repository root; it is refused as
+        # "no target" before any path is resolved.
+        with self.assertRaises(ValueError) as ctx:
+            md.MemoryDebugger(simulate=False, exe="")
+        self.assertIn("--exe", str(ctx.exception))
+
     def test_cli_reports_missing_target_clearly(self):
         with tempfile.TemporaryDirectory(prefix="mem_debug_target_") as tmp_dir:
             missing = os.path.join(tmp_dir, "missing_title.exe")
