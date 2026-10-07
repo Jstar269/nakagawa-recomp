@@ -73,19 +73,18 @@ static LONG WINAPI sr_crash_filter(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     extern CpuState *s_cpu;
 
-    /* First-exception trigger: hand the fault to the opt-in flight recorder
-     * before the crash report is printed, so the retained prefix is dumped
-     * with the fault as its terminal. No effect when the recorder is disabled. */
-    {
-        uint32_t guest_pc = (s_cpu != NULL) ? s_cpu->pc : 0u;
-        uint32_t guest_fault = 0u;
-        if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
-            const uint8_t *fa = (const uint8_t *)er->ExceptionInformation[1];
-            if (g_mem && fa >= g_mem - 0x04000000 && fa < g_mem + 0x04000000) {
-                guest_fault = (uint32_t)(fa - g_mem) + 0x08000000u;
-            }
+    /* Integer arithmetic, not pointer comparison: the faulting address may be
+     * unrelated to the guest arena. The report and the recorder both use it. */
+    int guest_mapped = 0;
+    uint32_t guest_fault = 0u;
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2 && g_mem) {
+        uintptr_t fault = (uintptr_t)er->ExceptionInformation[1];
+        uintptr_t base = (uintptr_t)g_mem;
+        /* Same +/-64 MiB window as before, as one wraparound-safe unsigned check. */
+        if ((uintptr_t)(fault - base + 0x04000000u) < 0x08000000u) {
+            guest_mapped = 1;
+            guest_fault = (uint32_t)(fault - base) + 0x08000000u;
         }
-        sr_flight_host_fault(guest_pc, (uint32_t)er->ExceptionCode, guest_fault);
     }
 
     fprintf(stderr, "\n");
@@ -96,8 +95,8 @@ static LONG WINAPI sr_crash_filter(EXCEPTION_POINTERS *ep) {
         const uint8_t *fa = (const uint8_t *)er->ExceptionInformation[1];
         int is_write = er->ExceptionInformation[0];
         fprintf(stderr, "Fault: %s of host %p", is_write ? "WRITE" : "READ", fa);
-        if (g_mem && fa >= g_mem - 0x04000000 && fa < g_mem + 0x04000000) {
-            uint32_t guest_addr = (uint32_t)(fa - g_mem) + 0x08000000u;
+        if (guest_mapped) {
+            uint32_t guest_addr = guest_fault;
             fprintf(stderr, " -> guest 0x%08x", guest_addr);
             // Check if address is in a known memory watch
             for (int i = 0; i < g_sr_mem_watch_count; i++) {
@@ -137,6 +136,12 @@ static LONG WINAPI sr_crash_filter(EXCEPTION_POINTERS *ep) {
 
     fprintf(stderr, "\n=== END CRASH REPORT ===\n");
     fflush(stderr);
+
+    /* First-exception trigger, after the report: a fault that also breaks the
+     * bundle writer (heap corruption, a broken stream) cannot cost the report.
+     * The opt-in flight recorder dumps its retained prefix with this fault as
+     * the terminal; it returns at once when the recorder is disabled. */
+    sr_flight_host_fault(s_cpu != NULL ? s_cpu->pc : 0u, (uint32_t)er->ExceptionCode, guest_fault);
     return EXCEPTION_CONTINUE_SEARCH;   /* still crash (after reporting) */
 }
 #endif
