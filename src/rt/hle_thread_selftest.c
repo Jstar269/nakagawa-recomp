@@ -20375,6 +20375,99 @@ static void test_flight_recorder_trace(void) {
     SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
 }
 
+static void test_flight_recorder_fault_trigger(void) {
+    const char *output = "flight_recorder_fault_selftest.json";
+    char bundle[16384];
+    SrFlightSnapshot snapshot;
+    SrFlightEvent flight_event;
+    size_t bundle_size;
+    FILE *bundle_file;
+
+    remove(output);
+    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_fault_selftest.json");
+    sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
+    sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, 0x08900000u, 0xdead0001u, 0u);
+    sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, 0x08900004u, 0xdead0002u, 0u);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 1u && snapshot.retained == 1u,
+           "first-exception trigger freezes the recorder after the first fault");
+    expect(snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
+           "first fault triggers exactly one recorder dump");
+    expect(sr_flight_event_count() == 1 && sr_flight_event_at(0, &flight_event) != 0 &&
+               flight_event.event_class == SR_FLIGHT_CLASS_FAULT &&
+               flight_event.kind == SR_FLIGHT_KIND_FAULT_EXCEPTION &&
+               flight_event.arg0 == 0x08900000u,
+           "first fault event is retained with its exception pc");
+    bundle[0] = '\0';
+    bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"fatal\"") != NULL &&
+               strstr(bundle, "\"kind\": 10") != NULL,
+           "first-exception bundle carries the fatal terminal with the fault kind");
+    remove(output);
+    sr_flight_test_disable();
+    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+}
+
+static void test_flight_recorder_host_fault(void) {
+    const char *output = "flight_recorder_host_fault_selftest.json";
+    char bundle[16384];
+    SrFlightSnapshot snapshot;
+    SrFlightEvent flight_event;
+    size_t bundle_size;
+    FILE *bundle_file;
+
+    /* Fault inside guest memory: exactly one bundle whose fatal terminal names
+     * the fault kind and carries the host exception code and guest address. */
+    remove(output);
+    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_host_fault_selftest.json");
+    sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
+    sr_flight_host_fault(0x08901234u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0x08012345u);
+    sr_flight_host_fault(0x08901238u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0x08012349u);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 1u && snapshot.retained == 1u,
+           "host fault freezes the recorder after the first fault");
+    expect(snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
+           "host fault triggers exactly one recorder dump");
+    expect(snapshot.terminal_reason == SR_FLIGHT_TERMINAL_FATAL &&
+               snapshot.terminal_kind == SR_FLIGHT_KIND_FAULT_EXCEPTION &&
+               snapshot.terminal_arg == (uint32_t)EXCEPTION_ACCESS_VIOLATION,
+           "host fault terminal names the fault kind and carries the exception code");
+    expect(sr_flight_event_count() == 1 && sr_flight_event_at(0, &flight_event) != 0 &&
+               flight_event.event_class == SR_FLIGHT_CLASS_FAULT &&
+               flight_event.kind == SR_FLIGHT_KIND_FAULT_EXCEPTION &&
+               flight_event.arg0 == 0x08901234u &&
+               flight_event.arg1 == (uint32_t)EXCEPTION_ACCESS_VIOLATION &&
+               flight_event.arg2 == 0x08012345u,
+           "host fault event carries the guest pc and fault address");
+    bundle[0] = '\0';
+    bundle_file = fopen(output, "rb");
+    bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
+    if (bundle_file) fclose(bundle_file);
+    bundle[bundle_size] = '\0';
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"fatal\"") != NULL &&
+               strstr(bundle, "\"kind\": 10") != NULL,
+           "host fault bundle carries the fatal terminal with the fault kind");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* Fault outside guest memory records address 0 and still dumps one bundle. */
+    remove(output);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_FAULT, 8u);
+    sr_flight_host_fault(0x08901234u, (uint32_t)EXCEPTION_ACCESS_VIOLATION, 0u);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
+           "host fault outside guest memory still triggers one recorder dump");
+    expect(sr_flight_event_count() == 1 && sr_flight_event_at(0, &flight_event) != 0 &&
+               flight_event.kind == SR_FLIGHT_KIND_FAULT_EXCEPTION && flight_event.arg2 == 0u,
+           "host fault outside guest memory records address 0");
+    remove(output);
+    sr_flight_test_disable();
+    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+}
+
 static void test_flight_recorder_ge_present_events(void) {
     const uint32_t list_addr = 0x08980000u;
     SrFlightSnapshot snapshot;
@@ -20980,6 +21073,8 @@ int main(int argc, char **argv) {
     test_late_prx_duplicate_base_last_reference();
     test_psmf_rejected_stream_names_the_boundary();
     test_flight_recorder_trace();
+    test_flight_recorder_fault_trigger();
+    test_flight_recorder_host_fault();
     test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
