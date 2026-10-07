@@ -797,7 +797,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5fbf4f3f25453fe7f3a6090688a624eb2d6d2c89316fc3b8b7d2fcafd2b6762a"
+      "sha256": "b7b6a28ae5e96c94b6df1ab12354e0278e3521902580644e2d6ac251981355f1"
     },
     {
       "path": "assets/upstream/pspdev.evidence.json",
@@ -810,7 +810,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1806b02a3802dd41347d32ad759073407d37e4a4d7b1196f50307c8825cd28b8"
+      "sha256": "da8b88a23887a0d6d225562f378342540f436a026f3dae3ef6050f86f4261ddb"
     },
     {
       "path": "assets/upstream/pspdev.lock.json",
@@ -823,7 +823,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8409d03f2c148cef29ba2041081068bbc17da217a09591c094a501716548d6c4"
+      "sha256": "aae1782066dc50da84a02f9889d73ed4442c6c17c07c98df8902ffd51e4ab518"
     },
     {
       "path": "assets/vfpu/PROVENANCE.json",
@@ -1159,7 +1159,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8cf2481d750c094c81de510ec694440c10afe3a95f74f22ee167f14c9b3ae331"
+      "sha256": "9de2b4319d2734a237880d968d9f4a7c7efc8d637c12c17c24ccac8c68982425"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1261,7 +1261,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0c80777b7bc4eeba5b203ac402c233fca616b425c8e6e2be4041f520bcbc8185"
+      "sha256": "59d9f44f8d069a17371d237fadd1d2e09b10487643eed810b1c33de8b4ec7c62"
     },
     {
       "path": "docs/PSP_INTR_WAITS_CENSUS.md",
@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1ce9e522bd24cf6603e91455b90f525183903e921a5562d751ae680d5c3ce3c1"
+      "sha256": "f40fcff368e40f364404cc6a00d3624d05ba2c21b79823cc6ff2bad42cec364d"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1732,7 +1732,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8078d4e2eef3718aa34c885ff3af95a9632e4dcf6664f2c89d7da141a3c4e463"
+      "sha256": "3ece51032126c0c0bc8d862130a94013660aae1ac5261aa560db5cf8438afc0c"
     },
     {
       "path": "fixtures/profile_zero/main.c",
@@ -6899,7 +6899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13e5dcecdf6e5ddf3532c5224991c1cb4c739a508202e2a96d0ccbf1b6632680"
+      "sha256": "bb5ac0be6a900028214be54f5002e5f83c8de21722ee917f7ef462cd23fa7e4d"
     },
     {
       "path": "tools/pspdev_probe.py",
@@ -8449,7 +8449,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5c22431993f11e0eedf3d924c263be5e08900ba3a2dfb32fcd286d6ecc88d3e7"
+      "sha256": "126e05a4d639044745506c286599a0ef2a8619284a5b7ba132aa8268c048c3dc"
     },
     {
       "path": "tools/test_progress_evidence.py",

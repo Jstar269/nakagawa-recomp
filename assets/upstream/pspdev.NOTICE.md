@@ -9,7 +9,7 @@ binary distribution.
 
 | Component | Repository | Pin | License disposition |
 | --- | --- | --- | --- |
-| PSPDEV distribution metadata | <https://github.com/pspdev/pspdev> | `v20260501` / `cc874700eaef9e00c8ec63e0d116926e1048b656` | MIT |
+| PSPDEV distribution metadata | <https://github.com/pspdev/pspdev> | `v20260601` / `681088f7a4eaae47da5a4b277c12f27de3e9afbc` | MIT |
 | PSPSDK | <https://github.com/pspdev/pspsdk> | `314b2083f2e1eaf145fc5de342736336fe1f0148` | Root 3-clause BSD grant; `tools/PrxEncrypter` separately GPL-3.0-only |
 | PSP toolchain driver | <https://github.com/pspdev/psptoolchain> | `57a4fc650324dea4637ea5ef9dfc2fc292c004f8` | `NOASSERTION` pending component-level SBOM review |
 | Allegrex toolchain scripts | <https://github.com/pspdev/psptoolchain-allegrex> | `a95b7da838d9f506656092c3e0232dcf50389d89` | `NOASSERTION`; fetched compiler components retain their own licenses |

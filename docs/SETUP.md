@@ -10,7 +10,7 @@ headless showcase route for the runtime. For an ISO/player workflow, start with
 
 Linux can build and run the two source-owned showcase packages through the runtime.
 The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.16,
-and PSPDEV v20260501 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
+and PSPDEV v20260601 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
 3.4.16 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
