@@ -8113,7 +8113,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f18c4120a60a0b4ebe3cb46e0f113162d4b56759106d0350e004adb8fc9a735"
+      "sha256": "6fdf786c37321f9edd95fc260d9bfa8b3c098d341677324871343fab5f839733"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
