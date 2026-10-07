@@ -14,6 +14,11 @@
 # NOTE: HST (flat-PRX image) requires GAME_BASE=0 GAME_ENTRY=0. The defaults below
 # are for a generic rebased ELF. Using the wrong base → cascading label errors at link.
 # Prefer nk_manager.ps1 (sets the correct values automatically).
+# The title link writes its object list with $(file ...), which needs GNU Make 4.0 or newer.
+ifeq ($(filter 4.% 5.% 6.% 7.% 8.% 9.%,$(MAKE_VERSION)),)
+$(error GNU Make 4.0 or newer is required (found $(MAKE_VERSION)); install a current GNU Make such as MSYS2 UCRT64 mingw32-make)
+endif
+
 GAME_NAME  ?= mygame
 GAME_ELF   ?= eboot.elf
 GAME_BASE  ?= 0x08804000
