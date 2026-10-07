@@ -1737,7 +1737,7 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _build_with_failing_compile(self, disc_id: str, stderr: str, returncode: int,
-                                    with_log: bool) -> tuple[int, str, Path]:
+                                    with_log: bool, stdout: str = "") -> tuple[int, str, Path]:
         user_root = self.temp_dir / f"user-{disc_id}"
         user_root.mkdir(parents=True, exist_ok=True)
         iso_file = self.temp_dir / f"{disc_id}.iso"
@@ -1771,7 +1771,7 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
         })()
 
         def fake_compile(command, **_kwargs):
-            return subprocess.CompletedProcess(list(command), returncode, stdout="", stderr=stderr)
+            return subprocess.CompletedProcess(list(command), returncode, stdout=stdout, stderr=stderr)
 
         with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \
              patch.object(nk_cli, "_has_private_backends", return_value=False), \
@@ -1788,7 +1788,7 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
     def test_linker_failure_names_first_diagnostic_and_exit_code(self) -> None:
         stderr = (
             "make: *** [Makefile:12: atrac3p.o] Error 1\n"
-            "ld.exe: cannot find C:/nk/build/.build-package-xyz/atrac3p: No such file or directory\n"
+            "ld.exe: cannot find D:/games/packages/.build-package-xyz/atrac3p: No such file or directory\n"
             "collect2.exe: error: ld returned 1 exit status\n"
             "make: *** [Makefile:88: all] Error 1\n"
         )
@@ -1797,9 +1797,43 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertEqual(
             message,
-            "PACKAGE_BUILD_FAILED: ld.exe: cannot find C:/nk/build/.build-package-xyz/atrac3p: "
+            "PACKAGE_BUILD_FAILED: ld.exe: cannot find D:/games/packages/.build-package-xyz/atrac3p: "
             f"No such file or directory (exit code 2; full log: {log_file})",
         )
+
+    def test_diagnostic_on_stdout_without_log_file(self) -> None:
+        stdout = (
+            "gcc -c src/rt/hle.c -o build/hle.o\n"
+            "src/rt/hle.c:12:5: error: 'missing' undeclared (first use in this function)\n"
+        )
+        rc, message, _log_file = self._build_with_failing_compile(
+            "TEST00103", "make: *** [Makefile:88: all] Error 2\n", returncode=2,
+            with_log=False, stdout=stdout)
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            message,
+            "PACKAGE_BUILD_FAILED: src/rt/hle.c:12:5: error: 'missing' undeclared "
+            "(first use in this function) (exit code 2)",
+        )
+
+    def test_diagnostic_markers_skip_make_noise_and_warnings(self) -> None:
+        first = nk_cli._first_build_diagnostic
+        self.assertEqual(
+            first("a.c:1:1: warning: unused variable 'x'\n"
+                  "ld: game.o: in function `main': undefined reference to `missing_fn'\n"),
+            "ld: game.o: in function `main': undefined reference to `missing_fn'",
+        )
+        self.assertEqual(first("make: *** [Makefile:1: x] error: 1\nb.c:2:3: error: bad\n"),
+                         "b.c:2:3: error: bad")
+        self.assertIsNone(first("make: *** [Makefile:1: all] Error 2\nwarning: nothing\n"))
+        self.assertEqual(len(first("x.c:1:1: error: " + "y" * 1000)), 300)
+
+    def test_fallback_names_log_file_when_one_was_requested(self) -> None:
+        rc, message, log_file = self._build_with_failing_compile(
+            "TEST00104", "make: *** [Makefile:88: all] Error 4\n", returncode=4, with_log=True)
+        self.assertEqual(rc, 4)
+        self.assertEqual(
+            message, f"PACKAGE_BUILD_FAILED: build exited with code 4 (full log: {log_file})")
 
     def test_failure_without_diagnostic_uses_fallback(self) -> None:
         stderr = "make: *** [Makefile:88: all] Error 3\n"
