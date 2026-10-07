@@ -152,6 +152,12 @@ history lives in git, so nothing is deleted.
   shadow-map variants ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521));
   the remaining composite, revision, and hardware-confirmation boundaries are
   named in that specification's §4.
+- [`cleanroom/PGF_CONVERTER_SPEC.md`](cleanroom/PGF_CONVERTER_SPEC.md) is the
+  project-authored behaviour specification and independence/provenance record
+  for the deterministic OpenType/TTF to PGF converter `tools/ttf2pgf.py`
+  ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)): input
+  subset, refusal catalogue, determinism rules, metric-target policy, source
+  pin, and conversion manifest.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
   is the path-hashed public provenance ledger; unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
@@ -214,6 +220,7 @@ Every substantial document carries one status.
 | `cleanroom/SCHED_SPEC.md` | DRAFT | Scheduler clean-room behaviour spec; read for intent, never cite as shipped behaviour |
 | `cleanroom/PRX_LOADER_SPEC.md` | DRAFT | Runtime PRX loader clean-room behaviour spec (G3); read for intent, never cite as shipped behaviour |
 | `cleanroom/PGF_SPEC.md` | DRAFT | Runtime PGF reader clean-room behaviour spec (G4); read for intent, never cite as shipped behaviour |
+| `cleanroom/PGF_CONVERTER_SPEC.md` | CURRENT | Deterministic TTF to PGF converter behaviour spec, refusal catalogue, and independence/provenance record (#313) |
 | `provenance/GUEST_INTERP_ATTESTATION.md` | CURRENT | Live attestation finding |
 | `provenance/FONT_ORIGINS.md` | CURRENT | PGF replacement-font origin evidence and route decision |
 | `archive/IMPORT_AUDIT.md` | ARCHIVED | Pre-republication import-coverage audit; method current, snapshot superseded |
