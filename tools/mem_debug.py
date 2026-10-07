@@ -4,12 +4,17 @@
 """
 Interactive Memory and CpuState Query / Mutation Tool.
 
-Attaches to hst.exe on Windows using ctypes APIs. Mock state is available only with
-an explicit ``--simulate`` flag; an absent process is otherwise reported as offline.
+Attaches to a running Windows process using ctypes APIs. Mock state
+is available only with an explicit ``--simulate`` flag; an absent
+process is otherwise reported as offline.
 
-Private flagship-only tooling (#368): this tool serves the HST/Product-1 title,
-whose managed executable is ``build/hst/hst.exe``. It is not advertised as a
-generic runtime facility; any other title must be named explicitly with ``--exe``.
+Disposition (#368 item 2): this is title-specific private tooling for
+the HST/Product-1 title.  Live attachment always requires an explicit
+``--exe`` target; no process is ever attached by an ambient default.
+The HST build directory survives only as the named, documented
+fallback ``HST_DEFAULT_BUILD_DIR`` for the simulation mock state and
+the unattached artifact root.  A ``--exe`` target that does not exist
+on disk is a clear error, never an "offline" report.
 
 Safety contract (issue #180):
 
@@ -17,8 +22,9 @@ Safety contract (issue #180):
   ``write_cpu``) require the explicit high-friction ``--mutate`` flag.  Simulation
   mode also requires ``--mutate`` for mutating actions so the contract is uniform
   and simulation can never accidentally fall through to live mutation.
-* Unique process identity.  Automatic attachment requires exactly one process whose
-  normalized executable path equals the expected ``build/hst/hst.exe`` path.  Name-
+* Unique process identity.  Path-based attachment requires exactly one
+  process whose normalized executable path equals the ``--exe`` target
+  path.  Name-
   only matches are never used.  An explicit ``--pid`` selects a specific process and
   its identity (path, image base, on-disk hash) is displayed for confirmation.
 * PE image identity.  Before any address-space mutation the running image's first
@@ -56,6 +62,12 @@ DEFAULT_RVAS = {
     "g_mem": 0xbf61400,
     "s_cpu": 0xc5dbee8
 }
+
+# Issue #368 item 2 disposition: live attachment always requires an
+# explicit ``--exe``.  This HST default is kept only as a named,
+# documented fallback for the simulation mock state and the unattached
+# artifact root; it is never an automatic attach target.
+HST_DEFAULT_BUILD_DIR = os.path.join("build", "hst")
 
 # --- Guest memory model (mirrors src/rt/recomp.h) ----------------------------
 GUEST_PHYS_MASK = 0x1FFFFFFF
@@ -309,6 +321,16 @@ def find_repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def resolve_exe_argument(exe):
+    """Resolve a ``--exe`` value against the repository root.
+
+    An absolute value is taken verbatim; a relative value is resolved
+    against the repository root (not the caller's cwd) so the same
+    invocation means the same executable from any working directory
+    (#294)."""
+    return exe if os.path.isabs(exe) else os.path.join(find_repo_root(), exe)
+
+
 def build_artifact_dir(exe_path=None):
     """Directory the attached runtime writes its diagnostic artifacts into.
 
@@ -413,7 +435,8 @@ def get_symbol_rvas(exe_path):
 # --- Mock State Manager ------------------------------------------------------
 def get_mock_state_path():
     repo_root = find_repo_root()
-    return os.path.join(repo_root, "build", "hst", "mock_debug_state.json")
+    return os.path.join(
+        repo_root, HST_DEFAULT_BUILD_DIR, "mock_debug_state.json")
 
 
 def _migrate_mock_state(mock):
@@ -516,7 +539,7 @@ class MemoryDebugger:
         self.identity_note = None
 
         if exe:
-            resolved_exe = exe if os.path.isabs(exe) else os.path.join(find_repo_root(), exe)
+            resolved_exe = resolve_exe_argument(exe)
             self.expected_exe = resolved_exe
             # The attach target is always a Windows process, so split on Windows separators.
             self.expected_exe_name = ntpath.basename(resolved_exe)
@@ -533,6 +556,12 @@ class MemoryDebugger:
 
         if not self.expected_exe:
             raise ValueError("No target executable specified; pass --exe <path> (e.g. --exe build/<game>/<game>.exe) instead of assuming HST")
+
+        if not os.path.exists(self.expected_exe):
+            raise ValueError(
+                "Target executable does not exist: %s; build the runtime "
+                "first or pass --exe <path> to an existing executable"
+                % self.expected_exe)
 
         expected_exe = self.expected_exe
         candidates = enumerate_process_candidates(self.expected_exe_name)
@@ -1246,6 +1275,16 @@ def main():
             "error": "No target executable specified; pass --exe <path> (e.g. --exe build/<game>/<game>.exe) instead of assuming HST"
         }))
         sys.exit(1)
+
+    if not simulate and exe:
+        resolved_exe = resolve_exe_argument(exe)
+        if not os.path.exists(resolved_exe):
+            print(json.dumps({
+                "error": ("Target executable does not exist: %s; build the "
+                          "runtime first or pass --exe <path> to an "
+                          "existing executable" % resolved_exe)
+            }))
+            sys.exit(1)
 
     try:
         dbg = MemoryDebugger(simulate=simulate, mutate=mutate, pid=pid, exe=exe)
