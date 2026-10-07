@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d32cc03d688874ea6994e153dc23f8fb57d14f316df333d8720207fdf492ae21"
+      "sha256": "e920eca03a2ad54f1236a2baadd72d97c5126556ba2edc52f295a11c5217ef09"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9b3b63014c35bff3a78e55aab36286d2a2b799bc70d0e36b7fc04f41d99cc28f"
+      "sha256": "bd42841b63bb21c2cac7d305ddedd206de00745512f465af8c239eacd31cd0e5"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -2777,7 +2777,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f9cedc93a0b7e7aa473d17a46528092402b633f5acfc62cf762a1ec8f6d8ad5d"
+      "sha256": "d8c6eef584da79580f9ace49c1372d8770800bd48293adfcba745b470b2b72a1"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -2789,7 +2789,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2886a06585ef71f818d9b0a5e3d1fc168ad89b17381ab7f32c9cc3479c121b06"
+      "sha256": "a686a774f186543f4ae1eb3120e84c1964306598c50f5aca1ad63f0f0e6fa5be"
     },
     {
       "path": "src/core/nk_types.h",
@@ -4277,6 +4277,42 @@
       "sha256": "01e810aedb40e8bdcd250cfde11d6a64afa0dcf86683159cef6f35cbaa1ed399"
     },
     {
+      "path": "src/rt/ge_float24.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-float24-ref-695",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "5ad7e46a553f4cb83ae8684bcbd84145c3ffb2a0bcf02250b1d5bb581b298d29"
+    },
+    {
+      "path": "src/rt/ge_float24.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-float24-ref-695",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f90224a58e13ed9a2a27d50e54830069f76647d11aaf16b7dfedf67de86d1248"
+    },
+    {
+      "path": "src/rt/ge_float24_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-float24-ref-695",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3adba3f9e7c67cebcb7bc9c34d132308c9f6271133a287e85affa638bd8b9322"
+    },
+    {
       "path": "src/rt/ge_replay.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5427,7 +5463,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c2d603d7e790ce6b2c7549b126326085af06f0d68ee078d39160fe243137353e"
+      "sha256": "05e1fdafd94a5fe2126d14763bba7801391eccaae78363cf897a931be1776b14"
     },
     {
       "path": "tests/native/test_player_ui.py",
