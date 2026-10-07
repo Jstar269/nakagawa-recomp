@@ -1914,6 +1914,28 @@ int main(int argc, char **argv) {
         }
         NkTitleEntrySnapshot leaked_profile = {0};
         assert(!nk_title_catalog_find_by_id("experimental-ulus99998", &leaked_profile));
+
+        /* Writing a profile validates the same way and must not either. With
+           no executable selected the writer reads nothing from the disc path. */
+        char written_profile_id[64] = "";
+        char write_error[512] = "";
+        if (!nk_title_manifest_write_experimental_profile(
+                "unread.iso", true, "ULUS99997", "Writer Guard", NULL, preflight_root,
+                written_profile_id, sizeof(written_profile_id), write_error,
+                sizeof(write_error))) {
+            fprintf(stderr, "[PLAYER_STATE_TEST] experimental write: %s\n", write_error);
+            assert(false);
+        }
+        assert(strcmp(written_profile_id, "experimental-ulus99997") == 0);
+        assert(nk_title_catalog_epoch() == epoch_before_profile_read);
+        for (int slot = 0; slot < 8; slot++) {
+            char slot_id[32];
+            snprintf(slot_id, sizeof(slot_id), "slot-guard-%d", slot);
+            NkTitleEntrySnapshot slot_entry = {0};
+            assert(nk_title_catalog_find_by_id(slot_id, &slot_entry));
+            nk_title_catalog_snapshot_release(&slot_entry);
+        }
+        assert(!nk_title_catalog_find_by_id("experimental-ulus99997", &leaked_profile));
         nk_title_catalog_clear_overlay();
 
         NkTitleEntrySnapshot profile_snapshot = {0};
@@ -2840,8 +2862,11 @@ int main(int argc, char **argv) {
          * identity (#670).
          *
          * This is deterministic cross-thread interposition at the publication
-         * checkpoint. The validator waits while a second thread clears and
-         * reparses a registered overlay, then joins it before cache insertion.
+         * checkpoint, NOT a concurrency stress test: the validator blocks
+         * while a second thread clears and reparses a registered overlay, then
+         * joins it before cache insertion, so the two never run at the same
+         * time. Running the reload on another thread proves the catalog lock
+         * and epoch do not depend on the validator's thread identity.
          * The defect it pins is a sequence defect, not a race in the
          * memory-model sense: validate_aot_package() reads the catalog epoch
          * once for the lookup and then read it a second time when it published,
@@ -2856,8 +2881,13 @@ int main(int argc, char **argv) {
          * published entry therefore either carries the snapshot epoch with its
          * own epoch's digest (correct) or mixes the two (the defect). The
          * second thread is joined at the checkpoint, so no sleep or scheduler
-         * timing determines where the reload lands. */
-        printf("[PLAYER_STATE_TEST] Subtest 19b: concurrent clear/reparse across validation and cache publication\n");
+         * timing determines where the reload lands.
+         *
+         * Truly concurrent clear/reparse coverage lives in the SDL3-gated
+         * player UI regression
+         * (test_player_ui.py::test_package_status_worker_and_catalog_reload_do_not_deadlock_or_corrupt_status,
+         * 128 reloads against the status worker). */
+        printf("[PLAYER_STATE_TEST] Subtest 19b: cross-thread clear/reparse across validation and cache publication\n");
         fflush(stdout);
 
         char epoch_root[640];
