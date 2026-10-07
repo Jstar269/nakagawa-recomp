@@ -84,7 +84,7 @@ class PackageCacheTests(unittest.TestCase):
             encoding="utf-8"
         )
         match = re.search(
-            r"(?m)^#define NK_BUILD_REPORT_MAX_BYTES \((\d+) \* 1024 \* 1024\)$",
+            r"(?m)^\s*#\s*define\s+NK_BUILD_REPORT_MAX_BYTES\s+\(\s*(\d+)\s*\*\s*1024\s*\*\s*1024\s*\)\s*$",
             header,
         )
         self.assertIsNotNone(match)
