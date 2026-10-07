@@ -6,16 +6,26 @@ a PSPDEV installation, or controlled downloads.
 
 ## Completed immutable baseline
 
-The `v20260501` local evidence gate is complete in
-`assets/upstream/pspdev.evidence.json`:
+The authoritative `v20260601` local evidence gate is complete in
+`assets/upstream/pspdev.evidence.json` (#708):
 
-- the official Debian release asset was downloaded and its 172,418,140-byte
-  payload independently matched GitHub's published SHA-256;
-- the official Docker Hub `v20260501` tag was pulled by immutable digest and
+- the official `pspdev-ubuntu-latest-x86_64.tar.gz` release asset was downloaded
+  and its 171,708,474-byte payload independently matched GitHub's published
+  SHA-256;
+- the official Docker Hub `v20260601` tag was pulled by immutable digest and
   inspected as `linux/amd64`;
-- all 13 required/optional tools were executed inside that exact image and their
-  executable sizes, SHA-256 values, and bounded identity output were recorded;
+- all 13 required/optional tools from that release asset were installed at
+  `/usr/local/pspdev` in WSL Ubuntu, byte-compared tool-by-tool against the
+  release archive, and their executable sizes, SHA-256 values, and bounded
+  identity output were recorded;
+- a clean rebuild of `fixtures/profile_zero/{main.c,Makefile}` with that exact
+  toolchain reproduced the committed profile-zero fixture byte-for-byte;
 - `assets/upstream/pspdev.lock.json` now passes `--require-local`.
+
+The earlier `v20260501` Debian evidence gate was superseded by this pin
+(#708): neither the v20260501 Debian archive nor the v20260601 Debian archive
+reproduces the committed profile-zero fixture, and only the v20260601
+`ubuntu-latest` release asset does.
 
 This proves the locked distribution and tool identities. It still does not
 assert that the independently pinned component repository heads are the exact
@@ -129,7 +139,7 @@ source pins.
 
 ## Phase 4: resolve release/container digests
 
-The source lock deliberately leaves release archive and container digests null.
+The first implementation slice deliberately left release archive and container digests null.
 A local model may resolve them only from official PSPDEV release/package sources.
 Record:
 
