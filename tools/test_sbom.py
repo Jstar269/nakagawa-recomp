@@ -19,6 +19,7 @@ import generate_sbom
 import nk_doctor_checks
 import record_toolchain
 import verify_sbom
+import vulkan_sdk
 
 
 class TestSBOMTooling(unittest.TestCase):
@@ -820,10 +821,16 @@ class TestToolchainPolicyVerification(unittest.TestCase):
 
     def test_live_toolchain_recorder_and_verification(self):
         # Inspects the real build environment; hosts without the native toolchain (for example
-        # the Linux Python-only CI shards, which have no SDL3) skip rather than fail.
+        # the Linux Python-only CI shards, which have no SDL3, or a Linux host that has SDL3
+        # but no Windows-layout Vulkan SDK) skip rather than fail.
         try:
             recorded = record_toolchain.record_observed_toolchain()
-        except (nk_doctor_checks.Sdl3ProviderError, FileNotFoundError, OSError) as exc:
+        except (
+            nk_doctor_checks.Sdl3ProviderError,
+            vulkan_sdk.VulkanSdkError,
+            FileNotFoundError,
+            OSError,
+        ) as exc:
             self.skipTest(f"native toolchain not available on this host: {exc}")
         expected = {"candidate", "compiler", "make", "python", "sdl3", "vulkan_sdk", "shader_compiler"}
         self.assertTrue(expected.issubset(recorded.keys()))
