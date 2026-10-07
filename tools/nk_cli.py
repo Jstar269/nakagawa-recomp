@@ -300,6 +300,15 @@ class PackageBuildError(ValueError):
     """A named, fail-closed package build refusal."""
 
 
+class ExperimentalProfileBuildError(PackageBuildError):
+    """A package-build refusal with a player-safe sentence and local detail."""
+
+    def __init__(self, code: str, issue: int, message: str, detail: str):
+        self.user_message = message
+        self.detail = f"{code} (#{issue}, in the works): {detail}"
+        super().__init__(self.detail)
+
+
 def default_user_data_root() -> Path:
     try:
         return default_data_root()
@@ -655,6 +664,38 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
     if manifest.get("disc", {}).get("id") != disc_id and disc_id not in manifest.get("disc", {}).get("compatible_revisions", []):
         raise PackageBuildError(f"Public manifest identity does not match library disc {disc_id}.")
     return manifest_path, manifest, None
+
+
+def _is_native_legacy_experimental_manifest(
+    manifest: dict, disc_id: str, title_id: str
+) -> bool:
+    """Match only the generic zero-layout profile emitted by older native imports."""
+    expected_id = f"experimental-{disc_id.lower()}"
+    return (
+        title_id == expected_id
+        and manifest.get("id") == expected_id
+        and manifest.get("game_name") == expected_id
+        and manifest.get("kind") == "retail"
+        and manifest.get("codegen_profile") is None
+        and manifest.get("hle_profile") == "generic"
+        and manifest.get("feature_requirements") == []
+        and manifest.get("verification_profile") == "experimental-unverified"
+        and manifest.get("executable") == {
+            "base": 0,
+            "entry": 0,
+            "bss_metadata_source": "none",
+            "extra_executable_spans": [],
+        }
+        and manifest.get("modules") == []
+        and manifest.get("filesystem") == {
+            "data_root": "data",
+            "memory_stick_root": "savedata",
+            "device_prefixes": ["disc0:", "ms0:"],
+            "loose_content_roots": [],
+        }
+        and "runtime_bindings" not in manifest
+        and "required_runtime_bindings" not in manifest
+    )
 
 
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
@@ -1109,22 +1150,27 @@ class _BuildProgressReporter:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 self._out_stream = p.open("a", encoding="utf-8")
 
-    def report(self, stage: str, status: str, message: str) -> None:
+    def report(self, stage: str, status: str, message: str,
+               detail: str | None = None) -> None:
         self.current_stage = stage
         if status == "FAIL":
             self._failed = True
         payload = {"stage": stage, "status": status, "message": message}
+        if detail:
+            payload["detail"] = detail
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         if self._out_stream is not None:
             self._out_stream.write(line)
             self._out_stream.flush()
         if self._log_stream is not None:
             self._log_stream.write(f"[{stage}] {status}: {message}\n")
+            if detail:
+                self._log_stream.write(f"DETAIL: {detail}\n")
             self._log_stream.flush()
 
-    def report_failure(self, message: str) -> None:
+    def report_failure(self, message: str, detail: str | None = None) -> None:
         if not self._failed:
-            self.report(self.current_stage, "FAIL", message)
+            self.report(self.current_stage, "FAIL", message, detail=detail)
 
     def log(self, text: str) -> None:
         if self._log_stream is not None:
@@ -1258,6 +1304,35 @@ def _build_package(args: argparse.Namespace, stage_observer,
         manifest_source, manifest, expected_hash = _load_entry_manifest(
             user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
         )
+        if entry.get("is_experimental") and "codegen_profile" not in manifest:
+            if not _is_native_legacy_experimental_manifest(
+                manifest, disc_id, entry["title_id"]
+            ):
+                raise ExperimentalProfileBuildError(
+                    "EXPERIMENTAL_CODEGEN_PROFILE_MISSING",
+                    730,
+                    "This experimental profile is missing its generic build setting; "
+                    "re-import the disc to rebuild the profile, then retry.",
+                    "codegen_profile is absent from a non-default experimental profile",
+                )
+            try:
+                # The player’s native importer predates the shared Python profile
+                # writer used by bring-up. Rebuild only its untouched zero-layout
+                # default so ELF entry/load metadata and codegen_profile come from
+                # the same reviewed generic logic used by bring-up.
+                write_experimental_profile(iso_path, user_root, metadata=metadata)
+            except (IsoInspectionError, OSError, ValueError) as exc:
+                raise ExperimentalProfileBuildError(
+                    "GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE",
+                    308,
+                    "This executable needs a supported generic MIPS ELF layout; "
+                    "provide a decrypted ELF with a documented load binding, then "
+                    "retry the build.",
+                    str(exc),
+                ) from exc
+            manifest_source, manifest, expected_hash = _load_entry_manifest(
+                user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
+            )
         requires_local_identity = bool(
             manifest.get("disc", {}).get("require_local_compatibility_record", False)
         )
@@ -1650,7 +1725,10 @@ def _build_package(args: argparse.Namespace, stage_observer,
         reporter.close()
         return 0
     except (PackageBuildError, OSError, ValueError, KeyError, TypeError) as exc:
-        reporter.report_failure(str(exc))
+        if isinstance(exc, ExperimentalProfileBuildError):
+            reporter.report_failure(exc.user_message, detail=exc.detail)
+        else:
+            reporter.report_failure(str(exc))
         reporter.close()
         sys.stderr.write(f"Package build refused: {exc}\n")
         return 1
