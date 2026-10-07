@@ -36,6 +36,7 @@ import entry_frame_balance
 
 
 CPU_STATE_ABI_VERSION = 2
+EMITTED_OWNERSHIP_SCHEMA_VERSION = 1
 
 # LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
 # exceptions via sr_cpu_raise_exception instead of the default HLE path
@@ -328,6 +329,73 @@ def build_entry_catalog(analyzed, ranges, profile=None, elf=None):
 
 def entry_symbol(addr, resume_owners=None):
     return f"r_{addr:08x}" if resume_owners and addr in resume_owners else f"f_{addr:08x}"
+
+
+def build_emitted_ownership_map(cfg_report, catalog, emitted):
+    """Project the existing CFG onto codegen's entry catalog without steering it."""
+    emitted_addresses = set(emitted)
+    ownership_rows = {
+        row["address"]: row
+        for row in cfg_report.get("ownership_map", ())
+        if isinstance(row, dict) and type(row.get("address")) is int
+    }
+    coverage = cfg_report.get("byte_classification", ())
+    if not isinstance(coverage, list):
+        coverage = []
+    regions = []
+    for span in coverage:
+        if not isinstance(span, dict):
+            continue
+        start, end = span.get("start"), span.get("end")
+        if type(start) is not int or type(end) is not int or end <= start:
+            continue
+        ownership = ownership_rows.get(start, {})
+        info = catalog.get(start)
+        owners = ownership.get("owners", ())
+        if ownership.get("classification") == "owner-conflict":
+            classification = "ambiguous"
+            region_owners = list(owners) if isinstance(owners, list) else []
+        elif info is not None and info.resumable and type(info.owner) is int:
+            classification = "resume"
+            region_owners = [info.owner]
+        elif info is not None and info.callable:
+            classification = "callable"
+            region_owners = [start]
+        elif isinstance(owners, list) and owners:
+            classification = "interior"
+            region_owners = list(owners)
+        elif span.get("classification") == "padding":
+            classification = "padding"
+            region_owners = []
+        elif span.get("classification") in ("unreadable-executable", "partial-executable"):
+            classification = "invalid-unowned"
+            region_owners = []
+        else:
+            classification = "unowned"
+            region_owners = []
+
+        is_emitted = start in emitted_addresses
+        row = {
+            "start": start,
+            "end": end,
+            "classification": classification,
+            "owners": region_owners,
+            "emitted": is_emitted,
+            "analysis_classification": span.get("classification"),
+        }
+        if is_emitted and info is not None and (info.callable or info.resumable):
+            row["symbol"] = entry_symbol(
+                start,
+                {start: info.owner} if info.resumable else None,
+            )
+        else:
+            row["symbol"] = None
+        regions.append(row)
+    return {
+        "schema_version": EMITTED_OWNERSHIP_SCHEMA_VERSION,
+        "source_cfg_schema_version": cfg_report.get("schema_version"),
+        "regions": regions,
+    }
 
 
 def write_funcs_header(path, emitted, resume_owners=None):
@@ -2925,6 +2993,8 @@ def main(argv):
             stubbed.append((a, reason))
             sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
 
+    primary_emitted = tuple(sorted(set(emitted)))
+
     # Process extra ELF files (PRX modules)
     for extra_elf_path, extra_base in extra_elfs:
         sys.stderr.write(f"Processing extra ELF: {extra_elf_path} @ 0x{extra_base:08x}\n")
@@ -3150,6 +3220,13 @@ def main(argv):
                     a_val = int(m.group(2), 16)
                     f.write(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
             f.write("}\n")
+
+    if cfg_report_path is not None:
+        cfg_report["emitted_ownership_map"] = build_emitted_ownership_map(
+            cfg_report, catalog, primary_emitted,
+        )
+        with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
+            output.write(canonical_cfg_json(cfg_report))
 
     # Delete stale chunk files from previous runs
     j = num_files
