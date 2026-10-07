@@ -862,6 +862,7 @@ PUBLIC_TARGETS := \
 	vfpu-interp-selftest \
 	atrac3p-selftest \
 	atrac3p-bridge-selftest \
+	ge-texture-ref-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
@@ -975,6 +976,7 @@ HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasteri
 HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
 HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
+HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
@@ -1873,6 +1875,17 @@ watchpoints-file-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/watchpoints_file_selftest.exe \
 		src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c $(LIBS)
 	$(BUILD_DIR)/watchpoints_file_selftest.exe
+
+# ge-texture-ref-selftest — project-authored GE texture sampling reference model
+# (issue #703): 5650/5551/4444 unpacking, CLUT shift/mask, power-of-two wrap and
+# clamp, and 4-bit bilinear filtering under every SPEC_AMBIGUITY reading.
+# Strict C99; not wired into the renderer.  No game inputs.
+ge-texture-ref-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/ge_texture_ref_selftest.exe src/rt/ge_texture_ref_selftest.c src/rt/ge_texture_ref.c -lm
+	$(BUILD_DIR)/ge_texture_ref_selftest.exe
+
+native-core-tests: ge-texture-ref-selftest
 
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
 # src/rt/atrac3p/). Public checks are source-owned (create validation, NULL/
