@@ -296,6 +296,70 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
     },
+    # sceRtc family (issue #341). Contract sources: the public PSPSDK header
+    # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
+    # component ranges) and the firmware-measured PSPAutotests tests/rtc corpus
+    # (convert.expected, rtc.expected, arithmetic.expected).  PSPAutotests
+    # records firmware CRASHING on several NULL arguments (rtc.c/convert.c
+    # "Crash." comments), so the NULL edges have no firmware return code to
+    # match; the runtime fails closed with SCE_KERNEL_ERROR_ILLEGAL_ADDR there
+    # and the tests declare that as a product boundary, not an equivalence.
+    "h_RtcGetCurrentTick": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_time_domains_are_coherent",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcGetCurrentTick",
+            "public PSPSDK contract (psprtc.h: sceRtcGetCurrentTick, 0 on success, <0 on error)",
+            "PSPAutotests tests/rtc/rtc.expected (tick advances across a 2 ms delay)",
+        ],
+    },
+    "h_RtcGetCurrentClock": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_time_domains_are_coherent",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcGetCurrentClock",
+            "public PSPSDK contract (psprtc.h: sceRtcGetCurrentClock, tz is minutes from UTC)",
+            "PSPAutotests tests/rtc/rtc.expected (0/+13/+60/-60/-600000/INT_MAX/-INT_MAX all return 0; -60 is one hour before the UTC baseline)",
+        ],
+    },
+    "h_RtcGetCurrentClockLocal": {
+        "status": "partial",
+        "limitation": "timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)",
+    },
+    "h_RtcConvertUtcToLocal": {
+        "status": "partial",
+        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+    },
+    "h_RtcConvertLocalToUtc": {
+        "status": "partial",
+        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+    },
+    "h_RtcGetTick": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcGetTick",
+            "public PSPSDK contract (psprtc.h: sceRtcGetTick, pspRtcCheckValidErrors component ranges)",
+            "PSPAutotests tests/rtc/convert.expected (year 0/10000 -> 0x800001fe with output untouched; year 10/9998/9999 exact ticks)",
+        ],
+    },
+    "h_RtcSetTick": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcSetTick",
+            "public PSPSDK contract (psprtc.h: sceRtcSetTick, 0 on success, <0 on error)",
+            "PSPAutotests tests/rtc/convert.expected (checkSetTick: 835072 -> 0001-01-01, 62135596800000000 -> 1970-01-01)",
+        ],
+    },
+    "h_RtcGetWin32FileTime": {
+        "status": "partial",
+        "limitation": "cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
