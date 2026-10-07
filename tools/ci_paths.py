@@ -217,8 +217,11 @@ def _is_build_system(path: str) -> bool:
 # routes every gate.  That is right for anything that can change how a shared object,
 # flag or rule is built, and wrong for the common edit that only rewrites the recipe
 # of one phony tool or test target (``player-ui-regressions``, ``contrib-check``):
-# such an edit changes what that target runs and nothing that any other recipe or
-# compile step sees.
+# such an edit changes what that target runs, not how any variable, flag, header or
+# shared rule is defined.  A file rule that depends on the phony target still runs
+# the new recipe, so the narrowed route keeps every native and Windows gate (they
+# execute recipes) and only trims Python modules that neither read the Makefile nor
+# run make.
 #
 # ``makefile_recipe_only_targets`` proves that narrower claim structurally or returns
 # None.  It parses both revisions into per-line kinds, diffs them line by line, and
@@ -267,6 +270,16 @@ def _strip_make_comment(text: str) -> str:
         index += 1
 
 
+def _continues(line: str) -> bool:
+    """True when ``line`` continues onto the next one.
+
+    GNU make joins lines only on an odd number of trailing backslashes; an even
+    count is literal backslashes (``C:\\\\``) and ends the line.
+    """
+
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+
+
 def _makefile_line_kinds(text: str) -> tuple[list[tuple[object, ...]], frozenset[str]]:
     """Return one kind tuple per physical line, and the literal ``.PHONY`` names.
 
@@ -287,7 +300,7 @@ def _makefile_line_kinds(text: str) -> tuple[list[tuple[object, ...]], frozenset
     while index < len(lines):
         start = index
         logical = lines[index]
-        while logical.endswith("\\") and index + 1 < len(lines):
+        while _continues(logical) and index + 1 < len(lines):
             index += 1
             logical = logical[:-1] + " " + lines[index]
         span = index - start + 1
@@ -296,8 +309,13 @@ def _makefile_line_kinds(text: str) -> tuple[list[tuple[object, ...]], frozenset
 
         if in_define:
             kinds.extend([("other", "define")] * span)
-            if logical.strip().split(None, 1)[:1] == ["endef"]:
+            words = logical.strip().split()
+            if words[:1] == ["endef"]:
                 in_define = False
+            elif "define" in words[:3]:
+                # GNU make nests define blocks; the first endef would close only
+                # the inner one. Not modelled, so refuse to narrow.
+                raise _MakefileUnsupported(f"line {start + 1}: nested define")
             continue
         if raw.startswith("\t"):
             if context is None:

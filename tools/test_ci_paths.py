@@ -651,6 +651,24 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         self.assertEqual(ci_paths_module._makefile_line_kinds(edited)[0][line][0], "other")
         self.assertIsNone(self.analyse(base, edited))
 
+    def test_even_trailing_backslashes_do_not_continue_a_line(self) -> None:
+        """GNU make joins a line only on an odd number of trailing backslashes."""
+        flag_base = "# keep C:\\\\\nCFLAGS = -O2\n.PHONY: t\nt:\n\techo $(CFLAGS)\n"
+        kinds, _ = ci_paths_module._makefile_line_kinds(flag_base)
+        self.assertEqual(kinds[1], ("other", "assignment"))
+        self.assertIsNone(self.analyse(flag_base, flag_base.replace("-O2", "-O3")))
+        rule_base = ".PHONY: t\nt:\n\techo C:\\\\\nall: foo\n\tcc foo\n"
+        kinds, _ = ci_paths_module._makefile_line_kinds(rule_base)
+        self.assertEqual(kinds[3][:3], ("other", "rule-header", ("all",)))
+        self.assertIsNone(self.analyse(rule_base, rule_base.replace("all: foo", "all: foo bar")))
+        # An odd count still continues: the next line belongs to the recipe.
+        odd = ".PHONY: t\nt:\n\techo a \\\n  b\n"
+        self.assertEqual(ci_paths_module._makefile_line_kinds(odd)[0][3], ("recipe", ("t",), True))
+
+    def test_nested_define_fails_safe(self) -> None:
+        nested = "define A\ndefine B\nx\nendef\n.PHONY: t\nt:\n\ta\nendef\n"
+        self.assertIsNone(self.analyse(nested, nested.replace("\ta\n", "\tb\n")))
+
     def test_static_pattern_rules_are_conservatively_shared(self) -> None:
         base = _SYNTHETIC_MAKEFILE + ".PHONY: check-a check-b\ncheck-a check-b: check-%:\n\techo $*\n"
         self.assertEqual(ci_paths_module._makefile_line_kinds(base)[1] >= {"check-a", "check-b"}, True)

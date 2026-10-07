@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -112,7 +114,9 @@ class LiveRepositoryPlanTests(unittest.TestCase):
         self.assertIn(
             "shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}", self.python_job
         )
-        self.assertEqual(json.loads("[0, 1, 2, 3]"), list(range(ci_paths.PYTHON_SHARDS_FULL)))
+        fallback = re.search(r"python_shards \|\| '(\[[^']*\])'", self.python_job)
+        self.assertIsNotNone(fallback)
+        self.assertEqual(json.loads(fallback.group(1)), list(range(ci_paths.PYTHON_SHARDS_FULL)))
         self.assertIn("NUM_SHARDS: ${{ needs.classify.outputs.python_num_shards }}", self.python_job)
         self.assertIn("PYTHON_SCOPE: ${{ needs.classify.outputs.python_scope }}", self.python_job)
         self.assertNotIn("< <(python tools/ci_test_shards.py", self.python_job,
@@ -127,6 +131,45 @@ class LiveRepositoryPlanTests(unittest.TestCase):
         classify_outputs = workflow.split("\n  classify:", 1)[1].split("\n    steps:", 1)[0]
         for output in ("python_scope", "python_num_shards", "python_shards"):
             self.assertIn(f"{output}: ${{{{ steps.paths.outputs.{output} }}}}", classify_outputs)
+
+    @unittest.skipIf(shutil.which("bash") is None, "the workflow step is a bash script")
+    def test_workflow_step_stops_on_a_failing_or_empty_planner(self) -> None:
+        """Execute the step's own script with stand-in planners: a planner that fails
+        or prints nothing must fail the step before unittest runs."""
+        lines = self.python_job.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.strip() == "run: |"
+                     and any("ci_test_shards.py" in later for later in lines[i:i + 4]))
+        indent = len(lines[start + 1]) - len(lines[start + 1].lstrip())
+        body = []
+        for line in lines[start + 1:]:
+            if line.strip() and len(line) - len(line.lstrip()) < indent:
+                break
+            body.append(line[indent:])
+        script = "\n".join(body) + "\n"
+        for label, planner, expect_rc, expect_modules in (
+            ("planner fails", "exit 2", False, None),
+            ("planner prints nothing", "exit 0", False, None),
+            ("planner lists modules", "printf 'test_a\\ntest_b\\n'", True, "test_a test_b"),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as scratch:
+                stub = Path(scratch) / "python"
+                ran = Path(scratch) / "unittest-args"
+                stub.write_text(
+                    "#!/bin/sh\n"
+                    'if [ "$1" = "-m" ]; then shift 3; echo "$@" > "' + str(ran) + '"; exit 0; fi\n'
+                    + planner + "\n",
+                    encoding="utf-8",
+                )
+                stub.chmod(0o755)
+                env = {"PATH": f"{scratch}:/usr/bin:/bin", "SHARD": "0", "NUM_SHARDS": "4",
+                       "PYTHON_SCOPE": "all"}
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True,
+                                        text=True, check=False)
+                self.assertEqual(result.returncode == 0, expect_rc, result.stdout + result.stderr)
+                if expect_modules is None:
+                    self.assertFalse(ran.exists(), "unittest ran after a planner failure")
+                else:
+                    self.assertEqual(ran.read_text(encoding="utf-8").strip(), expect_modules)
 
     def test_classifier_shard_outputs_match_the_planner_choices(self) -> None:
         for paths, scope in ((["tools/codegen.py"], "all"), (["Makefile"], "makefile")):
