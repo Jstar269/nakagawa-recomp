@@ -485,6 +485,23 @@ class TestProductionSmoke(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    def _assert_title_link_uses_response_file(self, makefile):
+        """The title link reads its objects from a response file, never the command line.
+
+        A package build under the player's user-data folder expanded the inline
+        object list past the Windows command-line limit; the command was cut
+        mid-path and ld reported a missing ".../atrac3p" input. Every object the
+        compile target depends on must reach the linker through the file."""
+        compile_rule = makefile.split("\ncompile: shader-verify ", 1)[1].split("\n\n", 1)[0]
+        prerequisites = compile_rule.split("\n", 1)[0].split("|", 1)[0].split()
+        recipe = compile_rule.split("\n", 1)[1]
+        link_objects = makefile.split("\nLINK_OBJECTS = ", 1)[1].split("\n", 1)[0].split()
+        self.assertEqual(sorted(link_objects), sorted(prerequisites))
+        self.assertIn("$(file >$(LINK_OBJECTS_RSP),$(subst \\,/,$(LINK_OBJECTS)))", recipe)
+        self.assertIn("@$(LINK_OBJECTS_RSP)", recipe)
+        for group in link_objects:
+            self.assertNotIn(group, recipe, f"{group} is still passed on the link command line")
+
     def test_build_and_ci_route_use_the_production_targets(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -496,7 +513,8 @@ class TestProductionSmoke(unittest.TestCase):
         self.assertIn("GAME_PSP_HEADER=$(PRODUCTION_SMOKE_PSP)", production_recipe)
         self.assertIn("FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1", production_recipe)
         self.assertNotIn("gate_stub", production_recipe)
-        gap_recipe = makefile.split("production-smoke-gap:\n", 1)[1].split(
+        self._assert_title_link_uses_response_file(makefile)
+        gap_recipe =makefile.split("production-smoke-gap:\n", 1)[1].split(
             "production-smoke-gap-clean:", 1
         )[0]
         self.assertIn("--mode aot-gap", gap_recipe)
