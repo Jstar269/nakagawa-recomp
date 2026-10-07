@@ -2002,5 +2002,121 @@ int main(int argc, char **argv) {{
         self.assertIn("READER:OPEN_FAILED", res.stdout)
 
 
+class PackageBuildFailureMessageTests(unittest.TestCase):
+    """The generic compile/link failure branch names the first real diagnostic line."""
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_build_fail_test_"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _build_with_failing_compile(self, disc_id: str, stderr: str, returncode: int,
+                                    with_log: bool, stdout: str = "") -> tuple[int, str, Path]:
+        user_root = self.temp_dir / f"user-{disc_id}"
+        user_root.mkdir(parents=True, exist_ok=True)
+        iso_file = self.temp_dir / f"{disc_id}.iso"
+        create_test_iso_with_executables(iso_file, build_psp_container(), disc_id=disc_id,
+                                         title="Build Fail Title")
+        title_id = "synthetic-title2-v1"
+        entry = {
+            "disc_id": disc_id,
+            "title_id": title_id,
+            "iso_path": str(iso_file),
+            "selected_executable": "",
+            "is_experimental": False,
+        }
+        (user_root / "library.json").write_text(
+            json.dumps({"schema_version": 1, "games": [entry]}), encoding="utf-8")
+        decrypted_dir = user_root / "titles" / disc_id / "decrypted"
+        decrypted_dir.mkdir(parents=True, exist_ok=True)
+        (decrypted_dir / "EBOOT.elf").write_bytes(build_plain_mips_elf())
+        manifest_path = ROOT / "assets" / "titles" / "synthetic-title2.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        progress = self.temp_dir / f"{disc_id}-progress.jsonl"
+        log_file = self.temp_dir / f"{disc_id}-build.log"
+        args = type("BuildArgs", (), {
+            "disc_id": disc_id,
+            "user_data_root": user_root,
+            "module_dir": None,
+            "psp_header": None,
+            "progress_json": progress,
+            "log_file": log_file if with_log else None,
+        })()
+
+        def fake_compile(command, **_kwargs):
+            return subprocess.CompletedProcess(list(command), returncode, stdout=stdout, stderr=stderr)
+
+        with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \
+             patch.object(nk_cli, "_has_private_backends", return_value=False), \
+             patch.object(nk_cli.subprocess, "run", side_effect=fake_compile), \
+             patch.object(nk_cli, "_stage_runtime_assets"), \
+             patch.object(nk_cli.package_cache, "validate_package_cache", return_value=(True, "")):
+            rc = nk_cli.cmd_build_package(args)
+
+        events = [json.loads(line) for line in progress.read_text(encoding="utf-8").splitlines()]
+        compile_failures = [e for e in events if e["stage"] == "compile" and e["status"] == "FAIL"]
+        self.assertEqual(len(compile_failures), 1)
+        return rc, compile_failures[0]["message"], log_file
+
+    def test_linker_failure_names_first_diagnostic_and_exit_code(self) -> None:
+        stderr = (
+            "make: *** [Makefile:12: atrac3p.o] Error 1\n"
+            "ld.exe: cannot find D:/games/packages/.build-package-xyz/atrac3p: No such file or directory\n"
+            "collect2.exe: error: ld returned 1 exit status\n"
+            "make: *** [Makefile:88: all] Error 1\n"
+        )
+        rc, message, log_file = self._build_with_failing_compile(
+            "TEST00101", stderr, returncode=2, with_log=True)
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            message,
+            "PACKAGE_BUILD_FAILED: ld.exe: cannot find D:/games/packages/.build-package-xyz/atrac3p: "
+            f"No such file or directory (exit code 2; full log: {log_file})",
+        )
+
+    def test_diagnostic_on_stdout_without_log_file(self) -> None:
+        stdout = (
+            "gcc -c src/rt/hle.c -o build/hle.o\n"
+            "src/rt/hle.c:12:5: error: 'missing' undeclared (first use in this function)\n"
+        )
+        rc, message, _log_file = self._build_with_failing_compile(
+            "TEST00103", "make: *** [Makefile:88: all] Error 2\n", returncode=2,
+            with_log=False, stdout=stdout)
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            message,
+            "PACKAGE_BUILD_FAILED: src/rt/hle.c:12:5: error: 'missing' undeclared "
+            "(first use in this function) (exit code 2)",
+        )
+
+    def test_diagnostic_markers_skip_make_noise_and_warnings(self) -> None:
+        first = nk_cli._first_build_diagnostic
+        self.assertEqual(
+            first("a.c:1:1: warning: unused variable 'x'\n"
+                  "ld: game.o: in function `main': undefined reference to `missing_fn'\n"),
+            "ld: game.o: in function `main': undefined reference to `missing_fn'",
+        )
+        self.assertEqual(first("make: *** [Makefile:1: x] error: 1\nb.c:2:3: error: bad\n"),
+                         "b.c:2:3: error: bad")
+        self.assertIsNone(first("make: *** [Makefile:1: all] Error 2\nwarning: nothing\n"))
+        self.assertEqual(len(first("x.c:1:1: error: " + "y" * 1000)), 300)
+
+    def test_fallback_names_log_file_when_one_was_requested(self) -> None:
+        rc, message, log_file = self._build_with_failing_compile(
+            "TEST00104", "make: *** [Makefile:88: all] Error 4\n", returncode=4, with_log=True)
+        self.assertEqual(rc, 4)
+        self.assertEqual(
+            message, f"PACKAGE_BUILD_FAILED: build exited with code 4 (full log: {log_file})")
+
+    def test_failure_without_diagnostic_uses_fallback(self) -> None:
+        stderr = "make: *** [Makefile:88: all] Error 3\n"
+        rc, message, _log_file = self._build_with_failing_compile(
+            "TEST00102", stderr, returncode=3, with_log=False)
+        self.assertEqual(rc, 3)
+        self.assertEqual(message, "PACKAGE_BUILD_FAILED: build exited with code 3")
+
+
 if __name__ == "__main__":
     unittest.main()

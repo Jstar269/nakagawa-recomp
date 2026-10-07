@@ -1164,6 +1164,30 @@ class _BuildProgressReporter:
             self._log_stream = None
 
 
+_BUILD_DIAGNOSTIC_MARKERS = ("error:", "cannot find", "undefined reference")
+
+
+def _first_build_diagnostic(output: str, limit: int = 300) -> str | None:
+    """Return the first compiler/linker diagnostic line, skipping Make noise and warnings."""
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line or "***" in line or "warning:" in line:
+            continue
+        if any(marker in line for marker in _BUILD_DIAGNOSTIC_MARKERS):
+            return line[:limit].strip()
+    return None
+
+
+def _package_build_failure_message(output: str, returncode: int, log_file: Path | None) -> str:
+    diagnostic = _first_build_diagnostic(output)
+    log_note = f"full log: {log_file}" if log_file else ""
+    if diagnostic:
+        notes = [f"exit code {returncode}"] + ([log_note] if log_note else [])
+        return f"PACKAGE_BUILD_FAILED: {diagnostic} ({'; '.join(notes)})"
+    message = f"PACKAGE_BUILD_FAILED: build exited with code {returncode}"
+    return f"{message} ({log_note})" if log_note else message
+
+
 def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
     reporter = _BuildProgressReporter(getattr(args, "progress_json", None),
                                       getattr(args, "log_file", None))
@@ -1537,7 +1561,14 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 reporter.report("compile", "FAIL", path_err)
                 reporter.close()
                 raise PackageBuildError(path_err)
-            reporter.report("compile", "FAIL", f"Subprocess exited with code {completed.returncode}")
+            reporter.report(
+                "compile", "FAIL",
+                _package_build_failure_message(
+                    completed.stderr + completed.stdout,
+                    completed.returncode,
+                    reporter.log_file,
+                ),
+            )
             reporter.close()
             return completed.returncode
         if stage_observer is not None:
