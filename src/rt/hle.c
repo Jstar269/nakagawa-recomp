@@ -8368,9 +8368,19 @@ static uint32_t h_StartModule(CpuState *s) {
     const char *path = mod->path;
     switch (mod->state) {
     case MODULE_STATE_LOADED:
+        break;
     case MODULE_STATE_STOPPED:
+        /* Inference, not hardware-measured: a stopped module is restartable. */
         break;
     case MODULE_STATE_STARTED:
+        /* A start the host skipped (startup unavailable, or the module is host-HLE'd)
+         * ran no guest code, and titles retry an unavailable startup: take the same
+         * nonfatal host-skip path again rather than refusing it. */
+        if (!mod->start_entry_ran) break;
+        /* One module_start per live module record: a repeated StartModule would re-run
+         * the guest entry (and its one-shot init side effects) over an initialised module. */
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> already started, "
+                        "refusing re-entry\n", uid, mod->path);
         return reject_module_transition("sceKernelStartModule", uid, mod,
                                         SCE_KERNEL_ERROR_ALREADY_STARTED);
     case MODULE_STATE_STARTING:
