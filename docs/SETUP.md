@@ -34,7 +34,7 @@ The supported and tested core development environment is:
 - CPython 3.14.x (`>=3.14,<3.15`), with `python` resolving to that feature line.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
-  (GCC 4.9+), GNU Make 3.81+, SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.14. The rolling
+  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.14. The rolling
   MSYS2 packages are not pinned; `tools/record_toolchain.py` records the versions a release
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
