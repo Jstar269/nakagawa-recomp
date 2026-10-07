@@ -112,6 +112,50 @@ static bool nk_manifest_reset_overlay_storage(void) {
     return true;
 }
 
+/* Point a slot's entry (and its nested pointer arrays) at the slot's own
+   storage. A slot is copied by value, so every copy must be re-anchored before
+   its entry is used. */
+static void overlay_slot_anchor(OverlayStorageSlot *dest) {
+    dest->entry.id = dest->id;
+    dest->entry.game_name = dest->game_name;
+    dest->entry.display_name = dest->display_name;
+    dest->entry.kind = dest->kind;
+    dest->entry.primary_disc_id = dest->primary_disc_id[0] ? dest->primary_disc_id : NULL;
+    for (int c = 0; dest->compat_id_ptrs[c]; c++) {
+        dest->compat_id_ptrs[c] = dest->compat_ids_storage[c];
+    }
+    dest->entry.compatible_disc_ids = dest->compat_id_ptrs[0] ? dest->compat_id_ptrs : NULL;
+    dest->entry.executable_base = dest->executable_base;
+    dest->entry.executable_entry = dest->executable_entry;
+    dest->entry.run_entry = dest->run_entry;
+    dest->entry.bss_metadata_source = dest->bss_metadata_source;
+    dest->entry.data_root = dest->data_root;
+    for (size_t i = 0; i < dest->loose_root_count; i++) {
+        dest->loose_roots[i].root = dest->loose_root_paths[i];
+        dest->loose_roots[i].mount = dest->loose_root_mounts[i];
+        for (int exclude_index = 0;
+             exclude_index < dest->loose_roots[i].exclude_count; exclude_index++) {
+            dest->loose_root_exclude_ptrs[i][exclude_index] =
+                dest->loose_root_exclude_paths[i][exclude_index];
+        }
+        dest->loose_roots[i].exclude = dest->loose_roots[i].exclude_count
+            ? dest->loose_root_exclude_ptrs[i] : NULL;
+    }
+    dest->entry.loose_content_roots = dest->loose_root_count ? dest->loose_roots : NULL;
+    dest->entry.loose_content_root_count = (int)dest->loose_root_count;
+    dest->entry.memory_stick_root = dest->memory_stick_root;
+    dest->entry.hle_profile = dest->hle_profile;
+    dest->entry.codegen_profile = dest->codegen_profile;
+    dest->entry.expected_data_file_count = dest->expected_data_file_count;
+    dest->entry.requires_font_firmware = dest->requires_font_firmware;
+    dest->entry.requires_psmf = dest->requires_psmf;
+    for (int m = 0; m < dest->module_count; m++) {
+        dest->modules[m].name = dest->module_names[m];
+    }
+    dest->entry.modules = dest->modules;
+    dest->entry.module_count = dest->module_count;
+}
+
 static FILE *manifest_fopen(const char *path) {
 #if defined(_WIN32) || defined(_WIN64)
     if (!path || !*path) return NULL;
@@ -446,11 +490,18 @@ static bool check_object_keys(
 /* -----------------------------------------------------------------------------
  * Manifest Buffer Parser
  * -------------------------------------------------------------------------- */
-static bool nk_title_manifest_parse_buffer_locked(
+/* Parse and validate one manifest. With validate_into == NULL an accepted
+ * manifest is stored in a parser overlay slot and published as a new catalog
+ * generation (the caller then registers it, or keeps the borrowed out_entry).
+ * With validate_into set, the accepted manifest is written only to that
+ * caller-owned slot: no parser slot is taken or replaced, and no catalog
+ * generation is published (#670). Collision checks are identical in both modes. */
+static bool nk_manifest_parse_locked(
     const char *json_str,
     size_t json_len,
     bool allow_override,
     NkTitleEntry *out_entry,
+    OverlayStorageSlot *validate_into,
     char *error_buf,
     size_t error_buf_len
 ) {
@@ -1612,6 +1663,14 @@ static bool nk_title_manifest_parse_buffer_locked(
         }
     }
 
+    if (validate_into) {
+        *validate_into = temp;
+        overlay_slot_anchor(validate_into);
+        if (out_entry) *out_entry = validate_into->entry;
+        json_free(root);
+        return true;
+    }
+
     /* Assign to multi-overlay storage slot */
     int target_slot = -1;
     for (int i = 0; i < s_overlay_slot_count; i++) {
@@ -1632,44 +1691,7 @@ static bool nk_title_manifest_parse_buffer_locked(
     s_overlay_slots[target_slot] = temp;
     /* Re-anchor self pointers for the chosen slot */
     OverlayStorageSlot *dest = &s_overlay_slots[target_slot];
-    dest->entry.id = dest->id;
-    dest->entry.game_name = dest->game_name;
-    dest->entry.display_name = dest->display_name;
-    dest->entry.kind = dest->kind;
-    dest->entry.primary_disc_id = dest->primary_disc_id[0] ? dest->primary_disc_id : NULL;
-    for (int c = 0; dest->compat_id_ptrs[c]; c++) {
-        dest->compat_id_ptrs[c] = dest->compat_ids_storage[c];
-    }
-    dest->entry.compatible_disc_ids = dest->compat_id_ptrs[0] ? dest->compat_id_ptrs : NULL;
-    dest->entry.executable_base = dest->executable_base;
-    dest->entry.executable_entry = dest->executable_entry;
-    dest->entry.run_entry = dest->run_entry;
-    dest->entry.bss_metadata_source = dest->bss_metadata_source;
-    dest->entry.data_root = dest->data_root;
-    for (size_t i = 0; i < dest->loose_root_count; i++) {
-        dest->loose_roots[i].root = dest->loose_root_paths[i];
-        dest->loose_roots[i].mount = dest->loose_root_mounts[i];
-        for (int exclude_index = 0;
-             exclude_index < dest->loose_roots[i].exclude_count; exclude_index++) {
-            dest->loose_root_exclude_ptrs[i][exclude_index] =
-                dest->loose_root_exclude_paths[i][exclude_index];
-        }
-        dest->loose_roots[i].exclude = dest->loose_roots[i].exclude_count
-            ? dest->loose_root_exclude_ptrs[i] : NULL;
-    }
-    dest->entry.loose_content_roots = dest->loose_root_count ? dest->loose_roots : NULL;
-    dest->entry.loose_content_root_count = (int)dest->loose_root_count;
-    dest->entry.memory_stick_root = dest->memory_stick_root;
-    dest->entry.hle_profile = dest->hle_profile;
-    dest->entry.codegen_profile = dest->codegen_profile;
-    dest->entry.expected_data_file_count = dest->expected_data_file_count;
-    dest->entry.requires_font_firmware = dest->requires_font_firmware;
-    dest->entry.requires_psmf = dest->requires_psmf;
-    for (int m = 0; m < dest->module_count; m++) {
-        dest->modules[m].name = dest->module_names[m];
-    }
-    dest->entry.modules = dest->modules;
-    dest->entry.module_count = dest->module_count;
+    overlay_slot_anchor(dest);
 
     /* The parser-owned slot may back an entry already present in the catalog.
        Publish its new contents as a catalog generation before unlocking. */
@@ -1681,6 +1703,33 @@ static bool nk_title_manifest_parse_buffer_locked(
 
     json_free(root);
     return true;
+}
+
+static bool nk_title_manifest_parse_buffer_locked(
+    const char *json_str,
+    size_t json_len,
+    bool allow_override,
+    NkTitleEntry *out_entry,
+    char *error_buf,
+    size_t error_buf_len
+) {
+    return nk_manifest_parse_locked(json_str, json_len, allow_override, out_entry,
+                                    NULL, error_buf, error_buf_len);
+}
+
+/* Validate a manifest that is not being registered (an experimental profile's
+ * embedded manifest). The result lives in the caller-owned *scratch, which the
+ * caller allocates and frees; nothing shared changes. */
+static bool nk_manifest_validate_buffer_locked(
+    const char *json_str,
+    size_t json_len,
+    bool allow_override,
+    OverlayStorageSlot *scratch,
+    char *error_buf,
+    size_t error_buf_len
+) {
+    return nk_manifest_parse_locked(json_str, json_len, allow_override, NULL,
+                                    scratch, error_buf, error_buf_len);
 }
 
 bool nk_title_manifest_parse_buffer(
@@ -2183,11 +2232,19 @@ bool nk_title_manifest_write_experimental_profile(
         if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Experimental manifest exceeded its size limit.");
         return false;
     }
-    NkTitleEntry parsed_entry;
-    if (!nk_title_manifest_parse_buffer(manifest, (size_t)manifest_len, false,
-                                        &parsed_entry, error_buf, error_buf_len)) {
+    /* Validate only: writing a private profile registers nothing, so it must
+       neither take a parser overlay slot nor publish a catalog generation. */
+    OverlayStorageSlot *validated = (OverlayStorageSlot *)calloc(1, sizeof(*validated));
+    if (!validated) {
+        if (error_buf && error_buf_len) snprintf(error_buf, error_buf_len, "Out of memory validating the experimental manifest.");
         return false;
     }
+    nk_title_catalog_lock();
+    bool manifest_valid = nk_manifest_validate_buffer_locked(
+        manifest, (size_t)manifest_len, false, validated, error_buf, error_buf_len);
+    nk_title_catalog_unlock();
+    free(validated);
+    if (!manifest_valid) return false;
 
     char executable_hash[65] = "";
     const char *identity_executable = "";
@@ -4435,18 +4492,33 @@ bool nk_title_manifest_read_experimental_profile(
     NkJsonWriter writer = {0};
     if (valid) valid = json_writer_node(&writer, manifest, 0) && !writer.failed &&
                        writer.length <= NK_MANIFEST_MAX_BYTES;
+    /* Validate only (#670): reading a profile registers nothing, so the
+       embedded manifest is parsed into owned scratch rather than a parser
+       overlay slot, and no catalog generation is published. The caller's
+       title is an owned snapshot copied from that scratch. */
+    OverlayStorageSlot *validated = NULL;
     if (valid) {
-        NkTitleEntry parsed_title;
+        validated = (OverlayStorageSlot *)calloc(1, sizeof(*validated));
+        if (!validated) {
+            if (error_buf && error_buf_len) {
+                snprintf(error_buf, error_buf_len,
+                         "Out of memory validating the experimental profile.");
+            }
+            valid = false;
+        }
+    }
+    if (valid) {
         nk_title_catalog_lock();
-        bool parsed = nk_title_manifest_parse_buffer_locked(
-            writer.data, writer.length, false, &parsed_title, error_buf,
+        bool parsed = nk_manifest_validate_buffer_locked(
+            writer.data, writer.length, false, validated, error_buf,
             error_buf_len);
-        bool matches = parsed && parsed_title.id &&
-            strcmp(parsed_title.id, expected_id) == 0 &&
-            parsed_title.primary_disc_id &&
-            strcmp(parsed_title.primary_disc_id, normalized) == 0;
+        const NkTitleEntry *parsed_title = &validated->entry;
+        bool matches = parsed && parsed_title->id &&
+            strcmp(parsed_title->id, expected_id) == 0 &&
+            parsed_title->primary_disc_id &&
+            strcmp(parsed_title->primary_disc_id, normalized) == 0;
         if (matches && out_title &&
-            !nk_title_catalog_snapshot_copy_locked(&parsed_title, out_title)) {
+            !nk_title_catalog_snapshot_copy_locked(parsed_title, out_title)) {
             if (error_buf && error_buf_len) {
                 snprintf(error_buf, error_buf_len,
                          "Unable to allocate an owned snapshot for the experimental profile.");
@@ -4461,6 +4533,7 @@ bool nk_title_manifest_read_experimental_profile(
                  "Experimental profile is stale or does not match disc %s and selected executable %s.",
                  normalized, selected_leaf ? selected_leaf : "(none)");
     }
+    free(validated);
     if (valid) snprintf(out_executable_sha256, 65, "%s", profile_hash);
     json_free(profile);
     free(writer.data);
