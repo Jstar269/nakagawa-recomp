@@ -103,6 +103,7 @@
 #define SR_GE_RASTER_FLAG_DEGENERATE 0x04u /* zero area: no coverage, no plane */
 #define SR_GE_RASTER_FLAG_OVERFLOW 0x08u   /* a plane value left the int64 range */
 #define SR_GE_RASTER_FLAG_INVALID 0x10u    /* bad argument, parameter or table */
+#define SR_GE_RASTER_FLAG_NO_SETUP 0x20u   /* the selected reading defines no plane for this nonzero area */
 
 typedef enum SrGeSnap {
     SR_GE_SNAP_TRUNCATE = 0, /* toward zero */
@@ -148,10 +149,13 @@ typedef struct SrGeVertex {
 uint32_t sr_ge_snap_12_4(const SrGeRasterParams* params, double pixels, int32_t* out);
 
 /* Twice the signed area in subpixel^2 units: positive when a, b, c run
-   clockwise on screen (y down). */
+   clockwise on screen (y down).  Coordinates must be 0..SR_GE_COORD_MAX;
+   any other coordinate yields 0 (callers validate first). */
 int64_t sr_ge_area2(const SrGeVertex* a, const SrGeVertex* b, const SrGeVertex* c);
 
-/* Coverage of one pixel; 1 covered, 0 not.  Winding does not matter. */
+/* Coverage of one pixel; 1 covered, 0 not.  Winding does not matter.  Invalid
+   params or an out-of-range triangle also return 0; use
+   sr_ge_raster_coverage() when the reason matters. */
 int sr_ge_raster_covers(const SrGeRasterParams* params, const SrGeVertex tri[3], int32_t px, int32_t py);
 
 /* Coverage of the window [0, width) x [0, height): mask[py * width + px] is
@@ -209,7 +213,10 @@ int sr_ge_plane_anchor_leftmost(const SrGeRasterParams* params, const SrGeVertex
 
 /* Set up one plane anchored at tri[anchor] for per-vertex attribute values
    attr[0..2] (each SR_GE_ATTR_MIN..SR_GE_ATTR_MAX, caller fixed point).  The
-   params' grad_frac_bits must not exceed the table's out_frac_bits. */
+   params' grad_frac_bits must not exceed the table's out_frac_bits.  On any
+   flag other than INEXACT, *out is zeroed and holds no plane.  Under the
+   RECIP_INPUT reading a doubled area below 16 rounds to zero and returns
+   NO_SETUP (the triangle still has coverage). */
 uint32_t sr_ge_plane_setup_anchored(const SrGeRasterParams* params, const SrGeSetupRecipTable* table,
                                     const SrGeVertex tri[3], const int32_t attr[3], int anchor, SrGePlane* out);
 

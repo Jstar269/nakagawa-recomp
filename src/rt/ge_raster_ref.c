@@ -58,7 +58,12 @@ uint32_t sr_ge_snap_12_4(const SrGeRasterParams* params, double pixels, int32_t*
         snapped = floor(scaled);
         break;
     default:
-        snapped = floor(scaled + 0.5);
+        /* floor(scaled + 1/2) without the rounding error of adding 0.5 in
+           floating point: compare the exact fractional part instead */
+        snapped = floor(scaled);
+        if (scaled - snapped >= 0.5) {
+            snapped += 1.0;
+        }
         break;
     }
     if (snapped < 0.0 || snapped > (double)SR_GE_COORD_MAX) {
@@ -71,12 +76,16 @@ uint32_t sr_ge_snap_12_4(const SrGeRasterParams* params, double pixels, int32_t*
     return flags;
 }
 
-int64_t sr_ge_area2(const SrGeVertex* a, const SrGeVertex* b, const SrGeVertex* c) {
-    return (int64_t)(b->x - a->x) * (c->y - a->y) - (int64_t)(b->y - a->y) * (c->x - a->x);
-}
-
 static int coord_ok(int32_t v) {
     return v >= 0 && (uint32_t)v <= SR_GE_COORD_MAX;
+}
+
+int64_t sr_ge_area2(const SrGeVertex* a, const SrGeVertex* b, const SrGeVertex* c) {
+    if (!a || !b || !c || !coord_ok(a->x) || !coord_ok(a->y) || !coord_ok(b->x) || !coord_ok(b->y) ||
+        !coord_ok(c->x) || !coord_ok(c->y)) {
+        return 0;
+    }
+    return (int64_t)(b->x - a->x) * (c->y - a->y) - (int64_t)(b->y - a->y) * (c->x - a->x);
 }
 
 static int tri_ok(const SrGeVertex tri[3]) {
@@ -262,6 +271,12 @@ uint32_t sr_ge_plane_setup_anchored(const SrGeRasterParams* params, const SrGeSe
     uint32_t flags = 0;
     SrGePlane p;
 
+    if (out) {
+        /* every failure leaves a zeroed, recognisably empty plane */
+        out->ax = out->ay = 0;
+        out->start = out->dx = out->dy = 0;
+        out->frac_bits = 0;
+    }
     if (!sr_ge_raster_params_valid(params) || sr_ge_setup_table_check(params, table) || !tri || !attr || !out ||
         anchor < 0 || anchor > 2) {
         return SR_GE_RASTER_FLAG_INVALID;
@@ -294,7 +309,7 @@ uint32_t sr_ge_plane_setup_anchored(const SrGeRasterParams* params, const SrGeSe
             flags |= SR_GE_RASTER_FLAG_INEXACT;
         }
         if (rounded == 0) {
-            return flags | SR_GE_RASTER_FLAG_DEGENERATE;
+            return flags | SR_GE_RASTER_FLAG_NO_SETUP;
         }
         area_in = rounded;
     }

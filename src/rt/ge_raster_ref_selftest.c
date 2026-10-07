@@ -133,6 +133,12 @@ static void test_snap(void) {
     CHECK(v == 1, "half subpixel rounds to 1");
     sr_ge_snap_12_4(&n, 0.03, &v);
     CHECK(v == 0, "0.48 subpixel rounds to 0");
+    /* the largest double below one half subpixel: floor(x + 0.5) computed in
+       floating point would round this up to 1 */
+    sr_ge_snap_12_4(&n, nextafter(0.5, 0.0) / 16.0, &v);
+    CHECK(v == 0, "just below half a subpixel rounds to 0, got %d", v);
+    sr_ge_snap_12_4(&n, (10.0 * 16.0 + nextafter(0.5, 1.0)) / 16.0, &v);
+    CHECK(v == 161, "just above half rounds up, got %d", v);
     sr_ge_snap_12_4(&t, 10.99, &v);
     CHECK(v == 175, "10.99 px truncates to 175 subpixels, got %d", v);
     sr_ge_snap_12_4(&n, 10.99, &v);
@@ -347,9 +353,10 @@ static void test_tiling(void) {
    covered twice, and every sample strictly inside the shared segment is
    covered exactly once. */
 static void test_shared_edges(void) {
-    SrGeRasterParams p = params(0);
     int iter, twice = 0, on_edge_bad = 0, on_edge_seen = 0;
-    for (iter = 0; iter < 3000; ++iter) {
+    for (iter = 0; iter < 6000; ++iter) {
+        unsigned off = (iter & 1) ? 8u : 0u;
+        SrGeRasterParams p = params(off);
         enum { W = 32 };
         uint8_t m1[W * W], m2[W * W];
         SrGeVertex t1[3], t2[3];
@@ -377,7 +384,7 @@ static void test_shared_edges(void) {
         sr_ge_raster_coverage(&p, t2, m2, W, W);
         for (py = 0; py < W; ++py) {
             for (px = 0; px < W; ++px) {
-                SrGeVertex s = vtx(px * 16, py * 16);
+                SrGeVertex s = vtx(px * 16 + (int32_t)off, py * 16 + (int32_t)off);
                 k = py * W + px;
                 if (m1[k] && m2[k]) {
                     ++twice;
@@ -392,7 +399,7 @@ static void test_shared_edges(void) {
         }
     }
     CHECK(twice == 0, "%d samples covered by both triangles of a shared edge", twice);
-    CHECK(on_edge_seen > 1000, "only %d on-edge samples exercised", on_edge_seen);
+    CHECK(on_edge_seen > 2000, "only %d on-edge samples exercised", on_edge_seen);
     CHECK(on_edge_bad == 0, "%d on-edge samples covered zero or two times", on_edge_bad);
 }
 
@@ -452,6 +459,8 @@ static void test_winding_and_degenerate(void) {
         area_t[2] = vtx(0, 16);
         CHECK(sr_ge_area2(&area_t[0], &area_t[1], &area_t[2]) == 256, "clockwise on screen is positive");
         CHECK(sr_ge_area2(&area_t[0], &area_t[2], &area_t[1]) == -256, "counter-clockwise is negative");
+        area_t[1] = vtx(INT32_MAX, 0);
+        CHECK(sr_ge_area2(&area_t[0], &area_t[1], &area_t[2]) == 0, "out-of-range coordinates yield 0, not overflow");
     }
 }
 
@@ -503,7 +512,11 @@ static void test_setup_table(void) {
     CHECK(sr_ge_setup_segment(&t, 3, &tt) == 128 && tt == 0, "area 3 = 2 * 1.5");
     CHECK(sr_ge_setup_segment(&t, (1u << 20) + (1u << 12), &tt) == 1 && tt == 0, "first position of segment 1");
     CHECK(sr_ge_setup_segment(&t, (1u << 21) - 1u, &tt) == 255 && tt == 4095, "last position");
-    CHECK(sr_ge_setup_segment(&t, UINT64_C(1) << 33, &tt) == 0 && tt == 0, "largest area power of two");
+    CHECK(sr_ge_setup_segment(&t, UINT64_C(1) << 32, &tt) == 0 && tt == 0, "large power-of-two area");
+    CHECK(sr_ge_setup_segment(&t, (UINT64_C(1) << 32) + (UINT64_C(0xAB) << 24) + (UINT64_C(0x123) << 12), &tt) ==
+                  0xABu &&
+              tt == 0x123u,
+          "right-shift path with fraction bits");
     for (f = 0; f < (1u << 20); ++f) {
         unsigned idx = sr_ge_setup_segment(&t, (1u << 20) + f, &tt);
         if (idx != (f >> 12) || tt != (f & 0xFFFu)) {
@@ -574,12 +587,15 @@ static void test_planes(void) {
         CHECK(sr_ge_plane_anchor_leftmost(&first, tri) == 1, "FIRST tie picks the lower index");
     }
 
-    /* Every vertex order gives the same plane under the TOPMOST reading. */
-    for (i = 0; i < 2000; ++i) {
+    /* Every vertex order gives the same plane under the TOPMOST reading, for
+       both gradient-rounding readings (reversed orders have negative area). */
+    for (i = 0; i < 4000; ++i) {
+        SrGeRasterParams pr = p;
         static const int perm[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
         SrGeVertex base_t[3];
         int32_t base_a[3];
         int j, k;
+        pr.grad_round = (i & 1) ? SR_GE_GRAD_FLOOR : SR_GE_GRAD_TOWARD_ZERO;
         for (k = 0; k < 3; ++k) {
             base_t[k] = vtx(rnd_range(0, 2000), rnd_range(0, 2000));
             base_a[k] = rnd_range(-100000, 100000);
@@ -587,7 +603,7 @@ static void test_planes(void) {
         if (i % 3 == 0) {
             base_t[1].x = base_t[0].x; /* force a leftmost tie now and then */
         }
-        if (sr_ge_plane_setup(&p, &t, base_t, base_a, &pl) & SR_GE_RASTER_FLAG_DEGENERATE) {
+        if (sr_ge_plane_setup(&pr, &t, base_t, base_a, &pl) & SR_GE_RASTER_FLAG_DEGENERATE) {
             continue;
         }
         for (j = 1; j < 6; ++j) {
@@ -597,7 +613,7 @@ static void test_planes(void) {
                 pt[k] = base_t[perm[j][k]];
                 pa[k] = base_a[perm[j][k]];
             }
-            sr_ge_plane_setup(&p, &t, pt, pa, &pl2);
+            sr_ge_plane_setup(&pr, &t, pt, pa, &pl2);
             if (!same_plane(&pl, &pl2)) {
                 ++bad;
             }
@@ -608,6 +624,8 @@ static void test_planes(void) {
     /* Arbitrary areas through the synthetic table stay within the error the
        table and the gradient truncation can introduce. */
     bad = 0;
+    {
+    int executed = 0;
     for (i = 0; i < 20000; ++i) {
         int k;
         double ex_dx, ex_dy, area;
@@ -615,9 +633,15 @@ static void test_planes(void) {
             tri[k] = vtx(rnd_range(0, 4000), rnd_range(0, 4000));
             attr[k] = rnd_range(SR_GE_ATTR_MIN, SR_GE_ATTR_MAX);
         }
-        if (sr_ge_plane_setup(&p, &t, tri, attr, &pl) & ~SR_GE_RASTER_FLAG_INEXACT) {
-            continue; /* degenerate */
+        fl = sr_ge_plane_setup(&p, &t, tri, attr, &pl);
+        if (fl == SR_GE_RASTER_FLAG_DEGENERATE) {
+            continue;
         }
+        if (fl & ~SR_GE_RASTER_FLAG_INEXACT) {
+            ++bad; /* random in-range input must set up */
+            continue;
+        }
+        ++executed;
         area = (double)sr_ge_area2(&tri[0], &tri[1], &tri[2]);
         ex_dx = ((double)(attr[1] - attr[0]) * (tri[2].y - tri[0].y) -
                  (double)(attr[2] - attr[0]) * (tri[1].y - tri[0].y)) /
@@ -633,9 +657,10 @@ static void test_planes(void) {
             }
             err = fabs((double)v - (double)attr[k] * 256.0);
             /* relative reciprocal error < 2^-14 (bases floored by up to
-               16/2^19, chord error 2^-19, the area significand cut to 20 bits
-               and the truncated interpolation each <= 2^-20), plus one
-               truncated gradient unit per subpixel moved */
+               16/2^19 = 2^-15, chord error h^2 * max|f''| / 8 = 2^-18, the
+               area significand cut to 20 bits and the truncated interpolation
+               each <= 2^-20), plus one truncated gradient unit per subpixel
+               moved */
             bound = ldexp(1.0, -14) * (fabs(ex_dx * ddx) + fabs(ex_dy * ddy)) + fabs(ddx) + fabs(ddy) + 1.0;
             if (err > bound) {
                 ++bad;
@@ -643,6 +668,8 @@ static void test_planes(void) {
         }
     }
     CHECK(bad == 0, "%d plane vertices outside the table error bound", bad);
+    CHECK(executed > 19000, "only %d random planes were checked", executed);
+    }
 
     /* invalid inputs */
     attr[0] = SR_GE_ATTR_MAX + 1;
@@ -690,10 +717,15 @@ static void test_start16_and_rounding(void) {
     CHECK(pl.dx == 15 || pl.dx == 16, "TABLE_BASES gradient %lld", (long long)pl.dx);
     tri[1] = vtx(3, 0);
     tri[2] = vtx(0, 3); /* doubled area 9 rounds to 0 */
-    CHECK(sr_ge_plane_setup(&ri, &t, tri, attr, &pl) ==
-              (SR_GE_RASTER_FLAG_INEXACT | SR_GE_RASTER_FLAG_DEGENERATE),
-          "area below 16 is degenerate under RECIP_INPUT");
-    CHECK(sr_ge_plane_setup(&tb, &t, tri, attr, &pl) != SR_GE_RASTER_FLAG_DEGENERATE, "but not otherwise");
+    pl.dx = pl.dy = pl.start = 12345;
+    CHECK(sr_ge_plane_setup(&ri, &t, tri, attr, &pl) == (SR_GE_RASTER_FLAG_INEXACT | SR_GE_RASTER_FLAG_NO_SETUP),
+          "area below 16 has no plane under RECIP_INPUT");
+    CHECK(pl.dx == 0 && pl.dy == 0 && pl.start == 0, "a failed setup leaves a zeroed plane");
+    {
+        uint8_t m[4];
+        CHECK(sr_ge_raster_coverage(&ri, tri, m, 2, 2) == 0 && m[0] == 1, "the same triangle still has coverage");
+    }
+    CHECK((sr_ge_plane_setup(&tb, &t, tri, attr, &pl) & ~SR_GE_RASTER_FLAG_INEXACT) == 0, "other readings set it up");
 
     /* PLANE_START: with 0 fraction bits the anchor value itself is floored
        to a multiple of 16. */
@@ -718,7 +750,8 @@ static void test_start16_and_rounding(void) {
     attr[0] = 0;
     attr[1] = -100; /* -100/48 = -2.083 per subpixel */
     attr[2] = 0;
-    sr_ge_plane_setup(&tb, &t, tri, attr, &pl);
+    f = sr_ge_plane_setup(&tb, &t, tri, attr, &pl);
+    CHECK(f == SR_GE_RASTER_FLAG_INEXACT, "an inexact gradient reports INEXACT, flags %#x", f);
     {
         int64_t toward_zero = pl.dx;
         sr_ge_plane_setup(&fl, &t, tri, attr, &pl);
@@ -728,6 +761,16 @@ static void test_start16_and_rounding(void) {
     attr[1] = 100;
     sr_ge_plane_setup(&fl, &t, tri, attr, &pl);
     CHECK(pl.dx == 2, "positive gradients truncate under both readings");
+    /* the floor reading applies to dy as well */
+    attr[1] = 0;
+    attr[2] = -100;
+    sr_ge_plane_setup(&tb, &t, tri, attr, &pl);
+    {
+        int64_t toward_zero = pl.dy;
+        sr_ge_plane_setup(&fl, &t, tri, attr, &pl);
+        CHECK(toward_zero == -2 && pl.dy == -3 && pl.dx == 0, "dy readings %lld / %lld", (long long)toward_zero,
+              (long long)pl.dy);
+    }
 
     /* overflow is visible, not wrapped */
     pl.dx = INT64_C(1) << 61;
@@ -740,6 +783,17 @@ static void test_start16_and_rounding(void) {
         CHECK(sr_ge_plane_eval(&pl, 3, 0, &v) == 0 && v == 3 * (INT64_C(1) << 61), "in-range product");
         CHECK(sr_ge_plane_eval(&pl, -4, 0, &v) == 0 && v == INT64_MIN, "INT64_MIN is representable");
         CHECK(sr_ge_plane_eval(&pl, -5, 0, &v) == SR_GE_RASTER_FLAG_OVERFLOW, "below INT64_MIN");
+        pl.dx = 1;
+        pl.start = INT64_MAX - 4;
+        CHECK(sr_ge_plane_eval(&pl, 4, 0, &v) == 0 && v == INT64_MAX, "start + dx term reaches INT64_MAX");
+        CHECK(sr_ge_plane_eval(&pl, 5, 0, &v) == SR_GE_RASTER_FLAG_OVERFLOW, "start + dx term overflows");
+        pl.dx = 0;
+        pl.dy = -1;
+        pl.start = INT64_MIN + 2;
+        CHECK(sr_ge_plane_eval(&pl, 0, 3, &v) == SR_GE_RASTER_FLAG_OVERFLOW, "dy term underflows");
+        pl.start = 0;
+        pl.dy = INT64_C(1) << 61;
+        CHECK(sr_ge_plane_eval(&pl, 0, 4, &v) == SR_GE_RASTER_FLAG_OVERFLOW, "dy product overflows");
     }
 }
 
