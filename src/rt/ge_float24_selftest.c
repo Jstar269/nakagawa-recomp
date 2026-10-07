@@ -6,7 +6,9 @@
 //
 // Expected values come from the #695 behavioural contract and first-principles
 // arithmetic, never from another renderer.  Three kinds of evidence:
-//   1. exhaustive format checks over every 24-bit pattern;
+//   1. format checks over every normal 24-bit pattern (exponent fields 1..254,
+//      plus 255 under the finite reading); zero, denormal and special patterns
+//      are covered by targeted vectors;
 //   2. hand-derived vectors whose expected words are constants chosen so that
 //      truncation, guard-bit-less alignment and row-sum evaluation each give a
 //      different answer from the obvious alternative rule;
@@ -518,6 +520,7 @@ static void test_rowsum_model(void) {
         const SrGeF24 zero_one[2] = {0, SR_GE_F24_ONE};
         const SrGeF24 big[2] = {0x7F0000u, 0x7F0000u}; /* 2^127 */
         const SrGeF24 big126[2] = {0x7E8000u, 0x7E8000u};
+        const SrGeF24 big_pm[2] = {0x7F0000u, 0xFF0000u}; /* 2^127, -2^127 */
         const SrGeF24 two[2] = {0x400000u, 0x400000u};
         const SrGeF24 negz[2] = {0x800000u, 0x800000u};
         SrGeF24 eight_a[8], eight_b[8];
@@ -536,12 +539,21 @@ static void test_rowsum_model(void) {
         CHECK(r.value == 0x417FFFu && r.flags == 0, "8-term row sum -> %#x flags %#x", r.value, r.flags);
         r = sr_gef24_rowsum(&ex, eight_a, eight_b, 8);
         CHECK(r.value == 0x417FFFu && r.flags == 0, "8-term exact row sum -> %#x", r.value);
-        /* exact products 2^128 + 2^128 overflow only at the end; truncated
-           products overflow per term */
+        /* each product is 2^128: both readings overflow (exact products in the
+           2^129 sum, truncated products per term) */
         r = sr_gef24_rowsum(&ex, big, two, 2);
         CHECK(r.value == 0x7F8000u && (r.flags & SR_GE_F24_FLAG_OVERFLOW), "exact-product overflow -> Inf");
         r = sr_gef24_rowsum(&tr, big, two, 2);
         CHECK(r.value == 0x7F8000u && (r.flags & SR_GE_F24_FLAG_OVERFLOW), "truncated-product overflow -> Inf");
+        /* separating vector: 2^128 - 2^128.  Exact products cancel to +0
+           before any range check; truncated products are +Inf and -Inf per
+           term, whose sum is NaN (A11). */
+        r = sr_gef24_rowsum(&ex, big_pm, two, 2);
+        CHECK(r.value == 0 && r.flags == SR_GE_F24_FLAG_CANCELLED, "exact products cancel -> %#x flags %#x", r.value,
+              r.flags);
+        r = sr_gef24_rowsum(&tr, big_pm, two, 2);
+        CHECK(r.value == SR_GE_F24_CANONICAL_NAN && (r.flags & SR_GE_F24_FLAG_OVERFLOW),
+              "truncated products overflow per term -> %#x", r.value);
         r = sr_gef24_rowsum(&fin, big126, two, 2);
         CHECK(r.value == 0x7F8000u && r.flags == 0, "2^128 is finite under the finite reading, got %#x", r.value);
         r = sr_gef24_rowsum(&ex, big126, two, 2);

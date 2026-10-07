@@ -14,10 +14,11 @@
 // readings are implementable, otherwise as a fixed, named project reading.  No
 // result of this module is a hardware-accuracy claim.
 //
-// Format: the contract fixes 1 sign, 8 exponent and 15 fraction bits with a
-// 16-bit significand when normalised.  An SrGeF24 holds those 24 bits in its
-// low bits — sign [23], biased exponent [22:15], fraction [14:0] — and bits
-// [31:24] must be zero (every entry point masks them off).
+// Format (SPEC_ASSUMPTION (#343 oracle pending)): the contract fixes 1 sign, 8
+// exponent and 15 fraction bits with a 16-bit significand when normalised.  An
+// SrGeF24 holds those 24 bits in its low bits; the placement of the fields —
+// sign [23], biased exponent [22:15], fraction [14:0] — is project reading A1.
+// Bits [31:24] must be zero (every entry point masks them off).
 //
 // Rules stated by the contract (all SPEC_ASSUMPTION (#343 oracle pending)):
 //   A2  finite conversion and arithmetic truncate toward zero to the 16-bit
@@ -26,11 +27,11 @@
 //   A4  addition aligns both operands to the larger exponent, truncates each
 //       aligned operand to the 16-bit significand grid at that exponent, and
 //       sums with no guard precision; the sum is then normalised, truncating a
-//       carry-out bit toward zero (rule A2);
-//   A5  a matrix row is evaluated as one multi-operand row sum: every term is
-//       aligned to the largest term exponent and truncated to the term grid
-//       there, the aligned terms are summed exactly, and the sum is truncated
-//       once — not as a chain of independently rounded scalar additions;
+//       carry-out bit toward zero (the carry-out rule is inferred from A2 and
+//       probed by oracle cell O4);
+//   A5  a matrix row is evaluated as one multi-operand row sum, not as a chain
+//       of independently rounded scalar additions (the row sum's internals are
+//       project reading A10);
 //   A6  World, View and Projection are composed into one matrix before any
 //       vertex is transformed;
 //   A7  the perspective reciprocal is a 128-segment piecewise-linear lookup.
@@ -40,12 +41,23 @@
 //   A1  bit layout and bias: a normal value is
 //       (-1)^sign * 1.fraction * 2^(exponent - 127), i.e. the word is read as
 //       the upper 24 bits of an IEEE-754 binary32 pattern, and exponent field 0
-//       is the zero/denormal class;
+//       is the zero/denormal class; the binary32 source format accepted by
+//       sr_gef24_from_binary32() is likewise a project interface choice;
 //   A8  the 128 segments partition the significand interval [1, 2) uniformly
 //       by the top 7 fraction bits, leaving 8 bits of in-segment position t;
 //   A9  in-segment interpolation is y = base - ((slope * t) >> slope_shift)
 //       with the product truncated, y read as a fixed-point 1/significand
-//       (the widths are caller-supplied table fields).
+//       (the widths are caller-supplied table fields);
+//   A10 row-sum internals: every term is aligned to the largest term exponent
+//       and truncated toward zero to the term grid there (16 bits for
+//       truncated products, 32 bits for exact products, see SrGeF24Product),
+//       the aligned terms are summed exactly, and the sum is truncated once.
+//       The contract states this alignment only for the two-operand adder
+//       (A4); extending it to n terms is a project reading (cells O5, O6);
+//   A11 special-value arithmetic under SR_GE_F24_EXP255_SPECIAL follows
+//       IEEE-like rules: Inf - Inf and Inf * 0 give NaN, NaN propagates, and
+//       Inf plus or times a finite value stays Inf (cells O8, O9).  The
+//       contract leaves special values unspecified.
 //
 // Configurable readings (SPEC_AMBIGUITY, see SrGeF24Policy):
 //   exponent-255 patterns (IEEE-like Inf/NaN vs. an ordinary finite exponent),
@@ -114,7 +126,7 @@ typedef uint32_t SrGeF24;
 #define SR_GE_F24_FRAC_MASK 0x00007FFFu
 #define SR_GE_F24_EXP_SHIFT 15
 #define SR_GE_F24_EXP_BIAS 127 /* SPEC_AMBIGUITY project reading A1 (#343 oracle pending) */
-#define SR_GE_F24_SIG_BITS 16  /* hidden bit + 15 fraction bits */
+#define SR_GE_F24_SIG_BITS 16  /* SPEC_ASSUMPTION (#343 oracle pending): hidden bit + 15 fraction bits */
 #define SR_GE_F24_CANONICAL_NAN 0x007FC000u
 #define SR_GE_F24_ONE 0x003F8000u
 
@@ -177,7 +189,8 @@ typedef struct SrGeF24Mat4 {
     SrGeF24 m[4][4];
 } SrGeF24Mat4;
 
-/* Largest term count accepted by sr_gef24_rowsum(). */
+/* Largest term count accepted by sr_gef24_rowsum(): an API limit chosen for
+   4x4 matrices with headroom, not a PSP fact. */
 #define SR_GE_F24_ROWSUM_MAX 8
 
 /* Returns 1 when every field holds a known enumerator and the combination is
