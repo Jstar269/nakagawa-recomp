@@ -2457,15 +2457,24 @@ static int module_path_is(const char *path, const char *name) {
     return 0;
 }
 
+typedef enum {
+    MODULE_STATE_UNUSED = 0,
+    MODULE_STATE_LOADED,
+    MODULE_STATE_STARTING,
+    MODULE_STATE_STARTED,
+    MODULE_STATE_STOPPING,
+    MODULE_STATE_STOPPED,
+    MODULE_STATE_UNLOADED
+} LoadedModuleState;
+
 typedef struct {
     uint32_t uid;
     char path[256];
     uint32_t module_start;
     uint32_t module_stop;
     uint32_t image_base;
-    int started;
-    int stopped;
-    int unloaded;
+    int start_entry_ran;
+    LoadedModuleState state;
     int in_use;
 } LoadedModule;
 
@@ -2474,7 +2483,8 @@ static int s_nloaded_modules = 0;
 
 static LoadedModule *find_loaded_module(uint32_t uid) {
     for (int i = 0; i < s_nloaded_modules; i++) {
-        if (s_loaded_modules[i].in_use && s_loaded_modules[i].uid == uid) {
+        if (s_loaded_modules[i].in_use && s_loaded_modules[i].uid == uid &&
+            s_loaded_modules[i].state != MODULE_STATE_UNLOADED) {
             return &s_loaded_modules[i];
         }
     }
@@ -2872,15 +2882,38 @@ enum {
 #define SCE_ERROR_MODULE_BAD_ID             0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED     0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED         0x80111103u
-/* SCE_KERNEL_ERROR_ALREADY_STARTED (0x80020133) follows the public PSP kernel
- * error table at https://github.com/pspdev/prxtool/blob/master/pspkerror.C.
- * This runtime path is source-backed but has not been measured on hardware. */
+/* Module-state errors are defined in the public PSPSDK pspkerror.h header. The
+ * lifecycle mapping below is source-backed and remains unmeasured on hardware. */
 #define SCE_KERNEL_ERROR_ALREADY_STARTED    0x80020133u
+#define SCE_KERNEL_ERROR_NOT_STARTED        0x80020134u
+#define SCE_KERNEL_ERROR_ALREADY_STOPPED    0x80020135u
+#define SCE_KERNEL_ERROR_CAN_NOT_STOP       0x80020136u
+#define SCE_KERNEL_ERROR_ALREADY_STOPPING   0x8002013fu
+#define SCE_KERNEL_ERROR_MODULE_MGR_BUSY    0x80020143u
 #define SCE_ERROR_AV_MODULE_BAD_ID         0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED     0x80110f03u
 #define SCE_ERROR_AV_LIBRARY_NOT_FOUND      0x8002013cu
 static unsigned s_utility_av_loaded;
+
+static const char *module_state_name(LoadedModuleState state) {
+    switch (state) {
+    case MODULE_STATE_LOADED: return "loaded";
+    case MODULE_STATE_STARTING: return "starting";
+    case MODULE_STATE_STARTED: return "started";
+    case MODULE_STATE_STOPPING: return "stopping";
+    case MODULE_STATE_STOPPED: return "stopped";
+    case MODULE_STATE_UNLOADED: return "unloaded";
+    default: return "invalid";
+    }
+}
+
+static uint32_t reject_module_transition(const char *operation, uint32_t uid,
+                                         const LoadedModule *mod, uint32_t error) {
+    fprintf(stderr, "PRX_MODULE_INVALID_TRANSITION: %s uid=0x%x state=%s error=0x%08x\n",
+            operation, uid, module_state_name(mod->state), error);
+    return error;
+}
 
 static int utility_av_index(uint32_t module) {
     return module >= PSP_AV_MODULE_AVCODEC && module <= PSP_AV_MODULE_MP4
@@ -3746,7 +3779,11 @@ extern int sr_callback_find_in_table(uint32_t uid);
 static uint32_t h_GetModuleId(CpuState *s) { (void)s; return 0x112; }   /* main module's id (stable) */
 
 static uint32_t h_StopModule_Trace(CpuState *s) {
-    if (!real_module_start_enabled()) {
+    uint32_t modid = A0;
+    LoadedModule *mod = find_loaded_module(modid);
+    if (!real_module_start_enabled() &&
+        (!mod || (mod->state == MODULE_STATE_STARTED && mod->start_entry_ran &&
+                  mod->module_stop != 0))) {
         uint32_t uid = sched_current_uid();
         fprintf(stderr, "TRACE_STOPMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
                 uid, s->pc, s->r[31], s->r[4]);
@@ -3754,32 +3791,64 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return 0;
     }
 
-    uint32_t modid = A0;
     uint32_t arglen = A1;
     uint32_t argp = A2;
     uint32_t status_ptr = A3;
     fprintf(stderr, "sceKernelStopModule(modid=0x%x, arglen=%u, argp=0x%x)\n", modid, arglen, argp);
 
-    LoadedModule *mod = find_loaded_module(modid);
-    if (!mod || mod->unloaded) {
+    if (!mod) {
         return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
     }
-
-    if (mod->module_stop != 0 && sr_lookup(mod->module_stop) != NULL) {
-        fprintf(stderr, "sceKernelStopModule(uid=0x%x, path='%s', stop=0x%08x): executing module_stop\n",
-                modid, mod->path, mod->module_stop);
-        uint32_t rv = ge_call_guest_rv(s, mod->module_stop, arglen, argp, 0);
-        if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
-            MEM_W32(status_ptr, rv);
-        }
-    } else {
-        static int s_logged_stop_untranslated = 0;
-        if (!s_logged_stop_untranslated) {
-            s_logged_stop_untranslated = 1;
-            fprintf(stderr, "sceKernelStopModule(uid=0x%x) -> entry untranslated or unknown, skipping entry\n", modid);
-        }
+    switch (mod->state) {
+    case MODULE_STATE_STARTED:
+        break;
+    case MODULE_STATE_LOADED:
+        return reject_module_transition("sceKernelStopModule", modid, mod,
+                                        SCE_KERNEL_ERROR_NOT_STARTED);
+    case MODULE_STATE_STOPPED:
+        return reject_module_transition("sceKernelStopModule", modid, mod,
+                                        SCE_KERNEL_ERROR_ALREADY_STOPPED);
+    case MODULE_STATE_STOPPING:
+        return reject_module_transition("sceKernelStopModule", modid, mod,
+                                        SCE_KERNEL_ERROR_ALREADY_STOPPING);
+    case MODULE_STATE_STARTING:
+        return reject_module_transition("sceKernelStopModule", modid, mod,
+                                        SCE_KERNEL_ERROR_MODULE_MGR_BUSY);
+    default:
+        return SCE_ERROR_MODULE_BAD_ID;
     }
-    mod->stopped = 1;
+
+    if (!mod->start_entry_ran) {
+        fprintf(stderr, "PRX_MODULE_HOST_SKIPPED_STOP: sceKernelStopModule uid=0x%x "
+                        "start entry was host-skipped; stop entry not called (#280)\n",
+                modid);
+        mod->state = MODULE_STATE_STOPPED;
+        return 0;
+    }
+    if (mod->module_stop == 0) {
+        /* A missing module_stop entry is not the module attribute that forbids stopping.
+         * Main returned success here; treating it as a no-op is an inference and remains
+         * unmeasured on physical PSP hardware. */
+        fprintf(stderr, "PRX_MODULE_STOP_NO_ENTRY: sceKernelStopModule uid=0x%x "
+                        "has no declared module_stop entry; treating as success "
+                        "(inference, hardware-unmeasured)\n", modid);
+        mod->state = MODULE_STATE_STOPPED;
+        return 0;
+    }
+    if (sr_lookup(mod->module_stop) == NULL) {
+        fprintf(stderr, "PRX_MODULE_STOP_UNAVAILABLE: sceKernelStopModule uid=0x%x "
+                        "module_stop=0x%08x is untranslated; in the works (#280)\n",
+                modid, mod->module_stop);
+        return SCE_KERNEL_ERROR_CAN_NOT_STOP;
+    }
+    mod->state = MODULE_STATE_STOPPING;
+    fprintf(stderr, "sceKernelStopModule(uid=0x%x, path='%s', stop=0x%08x): executing module_stop\n",
+            modid, mod->path, mod->module_stop);
+    uint32_t rv = ge_call_guest_rv(s, mod->module_stop, arglen, argp, 0);
+    if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
+        MEM_W32(status_ptr, rv);
+    }
+    mod->state = MODULE_STATE_STOPPED;
     return 0;
 }
 
@@ -3791,14 +3860,16 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
 static int another_record_references_image(const LoadedModule *mod) {
     for (int i = 0; i < s_nloaded_modules; i++) {
         const LoadedModule *other = &s_loaded_modules[i];
-        if (other == mod || !other->in_use || other->unloaded) continue;
+        if (other == mod || !other->in_use || other->state == MODULE_STATE_UNLOADED) continue;
         if (other->image_base == mod->image_base) return 1;
     }
     return 0;
 }
 
 static uint32_t h_UnloadModule_Trace(CpuState *s) {
-    if (!real_module_start_enabled()) {
+    uint32_t modid = A0;
+    LoadedModule *mod = find_loaded_module(modid);
+    if (!real_module_start_enabled() && !mod) {
         uint32_t uid = sched_current_uid();
         fprintf(stderr, "TRACE_UNLOADMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
                 uid, s->pc, s->r[31], s->r[4]);
@@ -3806,18 +3877,30 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
         return 0;
     }
 
-    uint32_t modid = A0;
     fprintf(stderr, "sceKernelUnloadModule(modid=0x%x)\n", modid);
 
-    LoadedModule *mod = find_loaded_module(modid);
-    if (!mod || mod->unloaded) {
+    if (!mod) {
         return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
     }
-    /* Unload requires the stop the lifecycle contract establishes: a module that is
-     * still running keeps its image and its exports, exactly as today (unmeasured). */
-    if (mod->started && !mod->stopped) {
-        return SCE_ERROR_MODULE_ALREADY_LOADED; /* unmeasured */
+    /* The public module manager contract unloads stopped modules. A loaded module
+     * that has never started has no running guest state, so it can be released too. */
+    switch (mod->state) {
+    case MODULE_STATE_LOADED:
+    case MODULE_STATE_STOPPED:
+        break;
+    case MODULE_STATE_STARTED:
+        return reject_module_transition("sceKernelUnloadModule", modid, mod,
+                                        SCE_ERROR_MODULE_ALREADY_LOADED);
+    case MODULE_STATE_STARTING:
+        return reject_module_transition("sceKernelUnloadModule", modid, mod,
+                                        SCE_KERNEL_ERROR_MODULE_MGR_BUSY);
+    case MODULE_STATE_STOPPING:
+        return reject_module_transition("sceKernelUnloadModule", modid, mod,
+                                        SCE_KERNEL_ERROR_ALREADY_STOPPING);
+    default:
+        return SCE_ERROR_MODULE_BAD_ID;
     }
+    mod->state = MODULE_STATE_UNLOADED;
     /* The kernel unlinks a module's exports and releases its memory here, and this is
      * the only point at which a stopped module's export authority is retired. Stop
      * deliberately leaves the image resident: a stopped module is still loaded and can
@@ -8233,7 +8316,10 @@ static uint32_t h_LoadModule(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (!mod) return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
     if (populate_known_module(path) < 0) {
+        retire_loaded_module(mod);
         fprintf(stderr,
                 "sceKernelLoadModule(\"%s\") failed closed at its manifest address\n",
                 path);
@@ -8241,17 +8327,12 @@ static uint32_t h_LoadModule(CpuState *s) {
     }
     uint32_t uid = sr_alloc_uid();
     fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
-    LoadedModule *mod = alloc_loaded_module_slot();
-    if (mod) {
-        mod->uid = uid;
-        snprintf(mod->path, sizeof(mod->path), "%s", path);
-        mod->module_start = s_last_prx_entry;
-        mod->module_stop = s_last_prx_stop;
-        mod->image_base = s_last_prx_base;
-        mod->started = 0;
-        mod->stopped = 0;
-        mod->unloaded = 0;
-    }
+    mod->uid = uid;
+    snprintf(mod->path, sizeof(mod->path), "%s", path);
+    mod->module_start = s_last_prx_entry;
+    mod->module_stop = s_last_prx_stop;
+    mod->image_base = s_last_prx_base;
+    mod->state = MODULE_STATE_LOADED;
     return uid;
 }
 
@@ -8279,13 +8360,30 @@ static uint32_t h_StartModule(CpuState *s) {
     uint32_t status_ptr = A3;
     fprintf(stderr, "sceKernelStartModule(uid=0x%x, arglen=%u, argp=0x%x)\n", uid, arglen, argp);
 
-    const char *path = NULL;
-    for (int i = 0; i < s_nloaded_modules; i++) {
-        if (s_loaded_modules[i].uid == uid) {
-            path = s_loaded_modules[i].path;
-            break;
-        }
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod) {
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or unloaded module\n", uid);
+        return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
     }
+    const char *path = mod->path;
+    switch (mod->state) {
+    case MODULE_STATE_LOADED:
+    case MODULE_STATE_STOPPED:
+        break;
+    case MODULE_STATE_STARTED:
+        return reject_module_transition("sceKernelStartModule", uid, mod,
+                                        SCE_KERNEL_ERROR_ALREADY_STARTED);
+    case MODULE_STATE_STARTING:
+        return reject_module_transition("sceKernelStartModule", uid, mod,
+                                        SCE_KERNEL_ERROR_MODULE_MGR_BUSY);
+    case MODULE_STATE_STOPPING:
+        return reject_module_transition("sceKernelStartModule", uid, mod,
+                                        SCE_KERNEL_ERROR_ALREADY_STOPPING);
+    default:
+        return SCE_ERROR_MODULE_BAD_ID;
+    }
+    mod->start_entry_ran = 0;
+
     int is_libfont = module_path_is(path, "libfont.prx");
     ModuleStartPolicy policy = module_start_policy();
     int allow_entry = policy == MODULE_START_ALLOW_ALL ||
@@ -8318,25 +8416,12 @@ static uint32_t h_StartModule(CpuState *s) {
         } else {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
         }
+        mod->state = MODULE_STATE_STARTED;
         return 0;
     }
 
-    LoadedModule *mod = find_loaded_module(uid);
-    if (!mod || mod->unloaded) {
-        fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or unloaded module\n", uid);
-        return SCE_ERROR_MODULE_BAD_ID; /* unmeasured */
-    }
-
-    /* One module_start per live module record: a repeated StartModule would re-run the
-     * guest entry (and its one-shot init side effects) over an already-initialised module.
-     * Inference, not hardware-measured: a stopped module is restartable. */
-    if (mod->started && !mod->stopped) {
-        fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> already started, "
-                        "refusing re-entry\n", uid, mod->path);
-        return SCE_KERNEL_ERROR_ALREADY_STARTED;
-    }
-
     if (allow_entry && mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
+        mod->state = MODULE_STATE_STARTING;
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s', entry=0x%08x): executing module_start\n",
                 uid, mod->path, mod->module_start);
         uint32_t rv = ge_call_guest_rv(s, mod->module_start, arglen, argp, 0);
@@ -8344,8 +8429,8 @@ static uint32_t h_StartModule(CpuState *s) {
         if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
             MEM_W32(status_ptr, rv);
         }
-        mod->started = 1;
-        mod->stopped = 0;
+        mod->start_entry_ran = 1;
+        mod->state = MODULE_STATE_STARTED;
         return 0;
     }
 
@@ -8391,6 +8476,7 @@ static uint32_t h_StartModule(CpuState *s) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or untranslated entry, skipping\n", uid);
         }
     }
+    mod->state = MODULE_STATE_STARTED;
     return 0;
 }
 
@@ -8410,9 +8496,7 @@ uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, ui
     mod->module_start = module_start;
     mod->module_stop = module_stop;
     mod->image_base = 0;
-    mod->started = 0;
-    mod->stopped = 0;
-    mod->unloaded = 0;
+    mod->state = MODULE_STATE_LOADED;
     return uid;
 }
 
@@ -8445,15 +8529,18 @@ uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
     s_last_prx_base = 0;
-    if (!load_prx_image(host_path, base, "lifecycle")) return 0;
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (!mod) return 0;
+    if (!load_prx_image(host_path, base, "lifecycle")) {
+        retire_loaded_module(mod);
+        return 0;
+    }
     (void)register_prx_exports(host_path, base);
     /* The fixture leaves its module-info export span empty (the two production readers
      * of that span disagree on its base, so no single value satisfies both), so the
      * dynamic export under test is published through the same late-import registry
      * register_prx_exports() writes into, at the guest address the caller names. */
     sr_hle_register_late_import(patch_nid, base + patch_off);
-    LoadedModule *mod = alloc_loaded_module_slot();
-    if (!mod) return 0;
     uint32_t uid = sr_alloc_uid();
     memset(mod, 0, sizeof(*mod));
     mod->in_use = 1;
@@ -8462,6 +8549,7 @@ uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
     mod->module_start = base + 0x70;   /* module_start address the fixture declares */
     mod->module_stop = base + 0x78;    /* module_stop address the fixture declares */
     mod->image_base = s_last_prx_base;
+    mod->state = MODULE_STATE_LOADED;
     return uid;
 }
 #endif
