@@ -24,8 +24,10 @@ from nk_core.iso_inspect import (
     _classify_decrypted_elf_file,
     decrypt_needed_modules,
     decrypted_module_dir,
+    IsoInspectionError,
     inspect_compatibility_preflight,
     inspect_iso,
+    list_disc_module_candidates,
     plan_provisional_module_bindings,
     write_experimental_profile,
 )
@@ -256,6 +258,120 @@ def create_test_iso_with_modules(
     path.write_bytes(data)
 
 
+def create_test_iso_with_module_tree(path: Path, modules: dict[str, bytes]) -> None:
+    """Build a source-owned ISO carrying modules at arbitrary PSP_GAME paths."""
+    sector_size = 2048
+    sfo = build_param_sfo("TEST00001", "Synthetic Module Tree")
+    directories: set[tuple[str, ...]] = {
+        (), ("PSP_GAME",), ("PSP_GAME", "SYSDIR"), ("PSP_GAME", "USRDIR"),
+    }
+    files: dict[tuple[str, ...], bytes] = {
+        ("PSP_GAME", "PARAM.SFO"): sfo,
+    }
+    for member, contents in modules.items():
+        parts = tuple(member.split("/"))
+        if len(parts) < 3 or parts[:2] not in {
+            ("PSP_GAME", "SYSDIR"), ("PSP_GAME", "USRDIR"),
+        }:
+            raise ValueError(f"module fixture path is outside SYSDIR/USRDIR: {member}")
+        for end in range(1, len(parts)):
+            directories.add(parts[:end])
+        if parts in files or parts in directories:
+            raise ValueError(f"duplicate module fixture path: {member}")
+        files[parts] = contents
+
+    def pack_records(records: list[bytes]) -> bytes:
+        output = bytearray()
+        for record in records:
+            sector_offset = len(output) % sector_size
+            if sector_offset + len(record) > sector_size:
+                output.extend(bytes(sector_size - sector_offset))
+            output.extend(record)
+        output.extend(bytes((-len(output)) % sector_size))
+        if not output:
+            output.extend(bytes(sector_size))
+        return bytes(output)
+
+    directory_children: dict[tuple[str, ...], list[tuple[str, tuple[str, ...], bool]]] = {
+        directory: [] for directory in directories
+    }
+    for directory in directories:
+        if directory:
+            directory_children[directory[:-1]].append((directory[-1], directory, True))
+    for file_path in files:
+        if file_path == ("PSP_GAME", "PARAM.SFO"):
+            continue
+        directory_children[file_path[:-1]].append((file_path[-1], file_path, False))
+
+    directory_sizes: dict[tuple[str, ...], int] = {}
+    for directory, children in directory_children.items():
+        placeholder = [
+            _dir_record(bytes([0]), 1, sector_size, True),
+            _dir_record(bytes([1]), 1, sector_size, True),
+        ]
+        for name, _child_path, is_directory in sorted(
+            children, key=lambda child: child[0].casefold()
+        ):
+            encoded = name.encode("ascii") if is_directory else name.encode("ascii") + b";1"
+            placeholder.append(_dir_record(encoded, 1, sector_size, is_directory))
+        directory_sizes[directory] = len(pack_records(placeholder))
+
+    directory_lbas = {(): 33, ("PSP_GAME",): 34}
+    next_lba = 35
+    for directory in sorted(
+        (item for item in directories if item not in directory_lbas),
+        key=lambda item: (len(item), item),
+    ):
+        directory_lbas[directory] = next_lba
+        next_lba += directory_sizes[directory] // sector_size
+
+    file_lbas = {("PSP_GAME", "PARAM.SFO"): 32}
+    file_sizes = {("PSP_GAME", "PARAM.SFO"): len(sfo)}
+    for file_path, contents in sorted(files.items()):
+        if file_path == ("PSP_GAME", "PARAM.SFO"):
+            continue
+        file_lbas[file_path] = next_lba
+        file_sizes[file_path] = len(contents)
+        next_lba += max(1, (len(contents) + sector_size - 1) // sector_size)
+
+    directory_payloads: dict[tuple[str, ...], bytes] = {}
+    for directory, children in directory_children.items():
+        parent = directory[:-1] if directory else ()
+        records = [
+            _dir_record(bytes([0]), directory_lbas[directory], directory_sizes[directory], True),
+            _dir_record(bytes([1]), directory_lbas[parent], directory_sizes[parent], True),
+        ]
+        for name, child_path, is_directory in sorted(
+            children, key=lambda child: child[0].casefold()
+        ):
+            encoded = name.encode("ascii") if is_directory else name.encode("ascii") + b";1"
+            records.append(_dir_record(
+                encoded,
+                directory_lbas[child_path] if is_directory else file_lbas[child_path],
+                directory_sizes[child_path] if is_directory else file_sizes[child_path],
+                is_directory,
+            ))
+        directory_payloads[directory] = pack_records(records)
+
+    data = bytearray(max(1024, next_lba) * sector_size)
+    pvd_offset = 16 * sector_size
+    data[pvd_offset] = 0x01
+    data[pvd_offset + 1:pvd_offset + 6] = b"CD001"
+    data[pvd_offset + 6] = 0x01
+    volume_id = b"MODULE_TREE"
+    data[pvd_offset + 40:pvd_offset + 40 + len(volume_id)] = volume_id
+    data[pvd_offset + 156:pvd_offset + 190] = _dir_record(
+        bytes([0]), 33, directory_sizes[()], True
+    )[:34]
+    for directory, payload in directory_payloads.items():
+        start = directory_lbas[directory] * sector_size
+        data[start:start + len(payload)] = payload
+    for file_path, contents in files.items():
+        start = file_lbas[file_path] * sector_size
+        data[start:start + len(contents)] = contents
+    path.write_bytes(data)
+
+
 def build_plain_mips_elf(
     e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4,
     entry: int | None = None, p_type: int = 1, p_flags: int = 5, filesz: int = 4,
@@ -345,9 +461,34 @@ class IsoParityTests(unittest.TestCase):
 #include "nk_launch.h"
 #endif
 
+static bool print_module_path(const char *path, const NkIsoDirEntry *entry,
+                              void *userdata) {{
+    (void)userdata;
+    size_t length = strlen(entry->name);
+    if (length >= 4 &&
+        (strcmp(entry->name + length - 4, ".prx") == 0 ||
+         strcmp(entry->name + length - 4, ".PRX") == 0 ||
+         strcmp(entry->name + length - 4, ".elf") == 0 ||
+         strcmp(entry->name + length - 4, ".ELF") == 0)) {{
+        printf("MODULE_PATH:%s\\n", path);
+    }}
+    return true;
+}}
+
 int main(int argc, char **argv) {{
     if (argc < 2) return 1;
     const char *mode = argv[1];
+
+    if (strcmp(mode, "module_walk") == 0) {{
+        if (argc < 3) return 1;
+        NkIsoReader *reader = nk_iso_reader_open(argv[2]);
+        if (!reader) return 2;
+        NkIsoModuleWalkStatus status = nk_iso_reader_walk_module_tree(
+            reader, print_module_path, NULL);
+        printf("MODULE_WALK_STATUS:%d\\n", (int)status);
+        nk_iso_reader_close(reader);
+        return 0;
+    }}
 
     if (strcmp(mode, "inspect") == 0) {{
         if (argc < 3) return 1;
@@ -638,6 +779,182 @@ int main(int argc, char **argv) {{
                 k, v = l.split(":", 1)
                 out[k] = v
         return out
+
+    def _run_native_module_walk(self, iso_path: Path) -> tuple[int, list[str]]:
+        result = subprocess.run(
+            [str(self.exe_path), "module_walk", str(iso_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="strict",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = None
+        paths = []
+        for line in result.stdout.splitlines():
+            if line.startswith("MODULE_WALK_STATUS:"):
+                status = int(line.split(":", 1)[1])
+            elif line.startswith("MODULE_PATH:"):
+                paths.append(line.split(":", 1)[1])
+        self.assertIsNotNone(status, result.stdout)
+        return status, paths
+
+    def test_module_discovery_covers_usrdir_module_and_nested_paths(self) -> None:
+        iso_file = self.temp_dir / "module-tree.iso"
+        paths = {
+            "PSP_GAME/USRDIR/module/sdk.prx": build_plain_mips_elf(0xFFA0),
+            "PSP_GAME/USRDIR/DATA/MODULE/MODULE/nested.prx": build_psp_container(),
+        }
+        create_test_iso_with_module_tree(iso_file, paths)
+        candidates = list_disc_module_candidates(iso_file)
+        members = {candidate["members"][0] for candidate in candidates}
+        self.assertEqual(members, {tuple(path.split("/")) for path in paths})
+        package_candidates = nk_cli._discover_iso_module_candidates(
+            iso_file, "EBOOT.BIN"
+        )
+        package_members = {
+            tuple(candidate["directory"]) + (candidate["entry"].name,)
+            for candidate in package_candidates
+        }
+        self.assertEqual(package_members, members)
+        copied_modules = nk_cli._copy_optional_modules(
+            iso_file,
+            {"modules": [{
+                "name": "manifest-sdk.prx",
+                "guest_path": "disc0:/PSP_GAME/USRDIR/module/sdk.prx",
+                "role": "guest-prx", "required": True,
+            }]},
+            self.temp_dir / "manifest-package", None,
+        )
+        self.assertIsNotNone(copied_modules)
+        self.assertEqual(
+            (copied_modules / "manifest-sdk.prx").read_bytes(), paths[
+                "PSP_GAME/USRDIR/module/sdk.prx"
+            ],
+        )
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 0)
+        self.assertEqual(set(native_paths), set(paths))
+
+    def test_usrdir_prx_discovery_checklist_and_extraction_share_module_rule(self) -> None:
+        iso_file = self.temp_dir / "usrdir-plain-prx.iso"
+        member = "PSP_GAME/USRDIR/module/libfont.prx"
+        prx = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        create_test_iso_with_module_tree(iso_file, {member: prx})
+
+        candidates = list_disc_module_candidates(iso_file)
+        self.assertEqual([candidate["members"][0] for candidate in candidates], [
+            tuple(member.split("/")),
+        ])
+        package_candidates = nk_cli._discover_iso_module_candidates(
+            iso_file, "EBOOT.BIN"
+        )
+        self.assertEqual([candidate["kind"] for candidate in package_candidates], [
+            "plain-elf",
+        ])
+
+        preflight = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=self.temp_dir,
+        )
+        module_check = next(
+            check for check in preflight["checks"] if check["code"] == "GUEST_MODULES"
+        )
+        self.assertEqual(module_check["status"], "OK", module_check["message"])
+        self.assertIn("Guest modules: 1 of 1 ready.", module_check["message"])
+
+        copied_modules = nk_cli._copy_optional_modules(
+            iso_file,
+            {"modules": [{
+                "name": "manifest-libfont.prx",
+                "guest_path": f"disc0:/{member}",
+                "role": "guest-prx", "required": True,
+            }]},
+            self.temp_dir / "usrdir-prx-package", None,
+        )
+        self.assertIsNotNone(copied_modules)
+        self.assertEqual((copied_modules / "manifest-libfont.prx").read_bytes(), prx)
+
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 0)
+        self.assertEqual(native_paths, [member])
+
+    def test_module_discovery_rejects_duplicate_basenames_with_both_paths(self) -> None:
+        iso_file = self.temp_dir / "duplicate-module-name.iso"
+        first = "PSP_GAME/USRDIR/module/shared.prx"
+        second = "PSP_GAME/USRDIR/BIN/SHARED.PRX"
+        create_test_iso_with_module_tree(iso_file, {
+            first: build_psp_container(), second: build_psp_container(),
+        })
+        with self.assertRaisesRegex(
+            IsoInspectionError,
+            "DUPLICATE_DISC_MODULE_BASENAME.*shared.prx.*SHARED.PRX",
+        ):
+            list_disc_module_candidates(iso_file)
+        with self.assertRaisesRegex(
+            nk_cli.PackageBuildError,
+            "DUPLICATE_DISC_MODULE_BASENAME.*shared.prx.*SHARED.PRX",
+        ):
+            nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=self.temp_dir,
+        )
+        module_check = next(
+            check for check in report["checks"] if check["code"] == "GUEST_MODULES"
+        )
+        self.assertEqual(module_check["status"], "UNSUPPORTED")
+        self.assertIn(first, module_check["message"])
+        self.assertIn(second, module_check["message"])
+        self.assertEqual(module_check["issues"], [726])
+
+    def test_module_discovery_accepts_more_than_32_candidates(self) -> None:
+        iso_file = self.temp_dir / "module-candidate-many.iso"
+        modules = {
+            f"PSP_GAME/USRDIR/MODULES/module-{index:02}.prx": build_psp_container()
+            for index in range(40)
+        }
+        create_test_iso_with_module_tree(iso_file, modules)
+        self.assertEqual(len(list_disc_module_candidates(iso_file)), 40)
+        self.assertEqual(
+            len(nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")), 40
+        )
+
+    def test_module_discovery_fails_closed_above_documented_candidate_cap(self) -> None:
+        iso_file = self.temp_dir / "module-candidate-cap.iso"
+        modules = {
+            f"PSP_GAME/USRDIR/module-{index:03}.prx": build_psp_container()
+            for index in range(257)
+        }
+        create_test_iso_with_module_tree(iso_file, modules)
+        with self.assertRaisesRegex(
+            IsoInspectionError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+        ):
+            list_disc_module_candidates(iso_file)
+        with self.assertRaisesRegex(
+            nk_cli.PackageBuildError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+        ):
+            nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+
+    def test_module_discovery_excludes_kmodule_but_keeps_usrdir_module(self) -> None:
+        iso_file = self.temp_dir / "kernel-module-exclusion.iso"
+        user_module = "PSP_GAME/USRDIR/module/user.prx"
+        kernel_module = "PSP_GAME/USRDIR/KMODULE/kernel.prx"
+        create_test_iso_with_module_tree(iso_file, {
+            user_module: build_psp_container(),
+            kernel_module: build_psp_container(),
+        })
+        candidates = list_disc_module_candidates(iso_file)
+        self.assertEqual(
+            {candidate["members"][0] for candidate in candidates},
+            {tuple(user_module.split("/"))},
+        )
+        package_candidates = nk_cli._discover_iso_module_candidates(
+            iso_file, "EBOOT.BIN"
+        )
+        self.assertEqual(
+            {candidate["directory"] + (candidate["entry"].name,)
+             for candidate in package_candidates},
+            {tuple(user_module.split("/"))},
+        )
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 0)
+        self.assertEqual(native_paths, [user_module])
 
     def test_synthetic_iso_parity(self) -> None:
         """Verify Python and Native C inspector match on synthetic title."""

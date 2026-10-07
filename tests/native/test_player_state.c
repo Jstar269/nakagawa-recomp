@@ -561,11 +561,11 @@ static size_t iso_dir_record(uint8_t *record, const uint8_t *name, size_t name_l
     return rec_len;
 }
 
-/* A minimal ISO whose PSP_GAME/SYSDIR holds one guest module: PVD at sector
- * 16, root 17, PSP_GAME 18, SYSDIR 19, module data from sector 20. */
+/* A minimal ISO whose PSP_GAME/USRDIR/module holds one guest module: PVD at
+ * 16, root 17, PSP_GAME 18, USRDIR 19, module directory 20, data 21. */
 static void write_guest_module_iso(const char *path, const char *name,
                                    const unsigned char *module, size_t module_size) {
-    enum { SECTOR = 2048, DATA_LBA = 20 };
+    enum { SECTOR = 2048, DATA_LBA = 21 };
     static const uint8_t dot[1] = { 0 };
     static const uint8_t dotdot[1] = { 1 };
     size_t data_sectors = (module_size + SECTOR - 1) / SECTOR;
@@ -586,12 +586,17 @@ static void write_guest_module_iso(const char *path, const char *name,
     off = 0;
     off += iso_dir_record(game + off, dot, 1, 18, SECTOR, true);
     off += iso_dir_record(game + off, dotdot, 1, 17, SECTOR, true);
-    off += iso_dir_record(game + off, (const uint8_t *)"SYSDIR", 6, 19, SECTOR, true);
-    uint8_t *sysdir = image + 19 * SECTOR;
+    off += iso_dir_record(game + off, (const uint8_t *)"USRDIR", 6, 19, SECTOR, true);
+    uint8_t *usrdir = image + 19 * SECTOR;
     off = 0;
-    off += iso_dir_record(sysdir + off, dot, 1, 19, SECTOR, true);
-    off += iso_dir_record(sysdir + off, dotdot, 1, 18, SECTOR, true);
-    iso_dir_record(sysdir + off, (const uint8_t *)name, strlen(name), DATA_LBA,
+    off += iso_dir_record(usrdir + off, dot, 1, 19, SECTOR, true);
+    off += iso_dir_record(usrdir + off, dotdot, 1, 18, SECTOR, true);
+    iso_dir_record(usrdir + off, (const uint8_t *)"module", 6, 20, SECTOR, true);
+    uint8_t *module_dir = image + 20 * SECTOR;
+    off = 0;
+    off += iso_dir_record(module_dir + off, dot, 1, 20, SECTOR, true);
+    off += iso_dir_record(module_dir + off, dotdot, 1, 19, SECTOR, true);
+    iso_dir_record(module_dir + off, (const uint8_t *)name, strlen(name), DATA_LBA,
                    (uint32_t)module_size, false);
     memcpy(image + (size_t)DATA_LBA * SECTOR, module, module_size);
     FILE *file = fopen(path, "wb");
@@ -1767,9 +1772,16 @@ int main(int argc, char **argv) {
            fallback and every current pre-launch boundary without touching a
            real title or runtime package. */
         char preflight_root[640], font_dir[720], font_path[800];
+        unsigned long preflight_run_id;
+#if defined(_WIN32) || defined(_WIN64)
+        preflight_run_id = (unsigned long)_getpid();
+#else
+        preflight_run_id = (unsigned long)getpid();
+#endif
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
-        snprintf(preflight_root, sizeof(preflight_root), "%s%cplayer-preflight-synthetic",
-                 cache_dir, nk_platform_path_separator());
+        snprintf(preflight_root, sizeof(preflight_root),
+                 "%s%cplayer-preflight-synthetic-%lu", cache_dir,
+                 nk_platform_path_separator(), preflight_run_id);
         assert(nk_platform_mkdir_p(preflight_root));
         snprintf(font_dir, sizeof(font_dir), "%s%cfont", preflight_root,
                  nk_platform_path_separator());
@@ -1814,6 +1826,7 @@ int main(int argc, char **argv) {
                  "%s", synthetic_disc_id);
         snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
                  "synthetic-allegrex-v1");
+        wiz->inspecting_game.iso_path[0] = '\0';
         NkIsoExecutableReport executable_report;
         memset(&executable_report, 0, sizeof(executable_report));
         executable_report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;

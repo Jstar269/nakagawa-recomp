@@ -221,6 +221,8 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_RTC_GET_TICK 0x6ff40accu
 #define NID_SCE_RTC_SET_TICK 0x7ed29e40u
 #define NID_SCE_RTC_GET_WIN32_FILETIME 0xcf561893u
+#define NID_SCE_RTC_CONVERT_UTC_TO_LOCAL 0x34885e0du
+#define NID_SCE_RTC_CONVERT_LOCAL_TO_UTC 0x779242a2u
 #define NID_SCE_KERNEL_DELAY_THREAD 0xceadeb47u
 #define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD 0xbd123d9eu
 #define NID_SCE_KERNEL_DELAY_SYSCLOCK_THREAD_CB 0x1181e963u
@@ -3556,6 +3558,299 @@ static void test_rtc_conversion_errors_and_full_range(void) {
     cpu.r[5] = (uint32_t)(int32_t)-600000;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
            "GetCurrentClock returns success for -600000 minutes (rtc.expected)");
+}
+
+/* sceRtc pointer/span validation and the firmware-measured conversion values,
+ * pinned to PSPAutotests tests/rtc (convert.expected, rtc.expected) and the
+ * public PSPSDK declarations in psprtc.h.  This covers the edges the older RTC
+ * regression does not: the two Convert NIDs, NULL/unspanned pointer rejection
+ * across the family, the exact measured GetTick/SetTick ticks, and the
+ * GetWin32FileTime component bounds.  PSPAutotests records firmware crashing
+ * on several NULL arguments (rtc.c/convert.c "Crash." comments), so those
+ * edges have no firmware return code to match: this runtime fails closed with
+ * SCE_KERNEL_ERROR_ILLEGAL_ADDR instead of crashing -- a named product
+ * boundary, not a claimed firmware equivalence. */
+static void test_rtc_pointer_validation_and_measured_conversions(void) {
+    enum {
+        DATE_A = 0x00200400u,
+        DATE_B = 0x00200420u,
+        TICK_A = 0x00200440u,
+        TICK_B = 0x00200448u,
+        FT_OUT = 0x00200450u,
+        BAD_DATE = 0x0bfffff4u, /* 16-byte datetime span crosses the arena end */
+        BAD_U64 = 0x0bfffffcu,  /* 8-byte tick span crosses the arena end */
+    };
+    const uint64_t tick_2012 = 63483721935000500ull; /* 2012-09-20 07:12:15.500 */
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    /* ---- sceRtcGetTick: exact ticks measured in convert.expected ---- */
+    MEM_W16(DATE_A + 0u, 10u); MEM_W16(DATE_A + 2u, 1u); MEM_W16(DATE_A + 4u, 1u);
+    MEM_W16(DATE_A + 6u, 0u); MEM_W16(DATE_A + 8u, 0u); MEM_W16(DATE_A + 10u, 0u);
+    MEM_W32(DATE_A + 12u, 0u);
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "GetTick accepts year 10 (convert.expected Normal prints 00000000)");
+    expect(selftest_guest_u64(TICK_A) == 283996800000000ull,
+           "GetTick year 10-01-01 matches the measured 283996800000000 tick");
+
+    MEM_W16(DATE_A + 0u, 9998u);
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "GetTick accepts year 9998 (convert.expected 'Bad date' prints 00000000)");
+    expect(selftest_guest_u64(TICK_A) == 315474825600000000ull,
+           "GetTick year 9998-01-01 matches the measured 315474825600000000 tick");
+
+    MEM_W16(DATE_A + 0u, 9999u);
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "GetTick accepts year 9999 (convert.expected Max year prints 00000000)");
+    expect(selftest_guest_u64(TICK_A) == 315506361600000000ull,
+           "GetTick year 9999-01-01 matches the measured 315506361600000000 tick");
+
+    /* ---- sceRtcGetTick: component ranges and pointer validation ---- */
+    /* psprtc.h pspRtcCheckValidErrors declares the component ranges
+     * (PSP_TIME_INVALID_MONTH, PSP_TIME_INVALID_HOUR); convert.expected pins
+     * this family's invalid-date report to 0x800001fe with the output left
+     * untouched ("Min year: 800001fe", "Year overflow: 800001fe"). */
+    MEM_W16(DATE_A + 0u, 2012u); MEM_W16(DATE_A + 2u, 0u); MEM_W16(DATE_A + 4u, 15u);
+    MEM_W16(DATE_A + 6u, 0u); MEM_W16(DATE_A + 8u, 0u); MEM_W16(DATE_A + 10u, 0u);
+    MEM_W32(DATE_A + 12u, 0u);
+    MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0x800001feu,
+           "GetTick rejects month 0 as INVALID_VALUE (psprtc.h PSP_TIME_INVALID_MONTH)");
+    expect(selftest_guest_u64(TICK_A) == 0xDEADBEEFDEADBEEFull,
+           "GetTick month failure leaves the output tick untouched");
+
+    MEM_W16(DATE_A + 2u, 6u); MEM_W16(DATE_A + 6u, 24u);
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0x800001feu,
+           "GetTick rejects hour 24 as INVALID_VALUE (psprtc.h PSP_TIME_INVALID_HOUR)");
+
+    MEM_W16(DATE_A + 0u, 0u); /* year 0: invalid (convert.expected Min year) */
+    cpu.r[4] = DATE_A; cpu.r[5] = BAD_U64;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0x800001feu,
+           "GetTick validates the date before the output span (handler-declared precedence)");
+
+    cpu.r[4] = 0u; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetTick rejects a NULL date pointer fail-closed");
+    expect(selftest_guest_u64(TICK_A) == 0xDEADBEEFDEADBEEFull,
+           "GetTick NULL failure leaves the output tick untouched");
+    MEM_W16(DATE_A + 0u, 2012u); MEM_W16(DATE_A + 2u, 9u); MEM_W16(DATE_A + 4u, 20u);
+    MEM_W16(DATE_A + 6u, 7u); MEM_W16(DATE_A + 8u, 12u); MEM_W16(DATE_A + 10u, 15u);
+    MEM_W32(DATE_A + 12u, 500u);
+    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetTick rejects a NULL output tick pointer fail-closed");
+    cpu.r[4] = DATE_A; cpu.r[5] = BAD_U64;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetTick rejects an output tick span that crosses the arena end");
+    cpu.r[4] = BAD_DATE; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetTick rejects an unreadable datetime span before conversion");
+
+    /* ---- sceRtcSetTick: measured checkSetTick values and pointer edges ---- */
+    MEM_W32(TICK_B, 835072u); MEM_W32(TICK_B + 4u, 0u);
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == 0u,
+           "SetTick accepts the measured small tick (convert.expected checkSetTick)");
+    expect(MEM_R16(DATE_A + 0u) == 1u && MEM_R16(DATE_A + 2u) == 1u &&
+           MEM_R16(DATE_A + 4u) == 1u && MEM_R16(DATE_A + 6u) == 0u &&
+           MEM_R16(DATE_A + 8u) == 0u && MEM_R16(DATE_A + 10u) == 0u &&
+           MEM_R32(DATE_A + 12u) == 835072u,
+           "SetTick 835072 converts to 0001-01-01 00:00:00.835072 (convert.expected)");
+
+    MEM_W32(TICK_B, (uint32_t)62135596800000000ull);
+    MEM_W32(TICK_B + 4u, (uint32_t)(62135596800000000ull >> 32));
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == 0u,
+           "SetTick accepts the Unix epoch tick (convert.expected rtcMagicOffset)");
+    expect(MEM_R16(DATE_A + 0u) == 1970u && MEM_R16(DATE_A + 2u) == 1u &&
+           MEM_R16(DATE_A + 4u) == 1u && MEM_R16(DATE_A + 6u) == 0u &&
+           MEM_R16(DATE_A + 8u) == 0u && MEM_R16(DATE_A + 10u) == 0u &&
+           MEM_R32(DATE_A + 12u) == 0u,
+           "SetTick 62135596800000000 converts to 1970-01-01 00:00:00 (convert.expected)");
+
+    cpu.r[4] = 0u; cpu.r[5] = TICK_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "SetTick rejects a NULL date pointer fail-closed");
+    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "SetTick rejects a NULL tick pointer fail-closed");
+    cpu.r[4] = DATE_A; cpu.r[5] = BAD_U64;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "SetTick rejects an unreadable tick span fail-closed");
+    cpu.r[4] = BAD_DATE; cpu.r[5] = TICK_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_SET_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "SetTick rejects an unwritable datetime span fail-closed");
+    expect(MEM_R16(BAD_DATE + 0u) == 0u,
+           "SetTick span failure leaves the datetime bytes untouched");
+    /* ---- sceRtcGetWin32FileTime: measured outputs (convert.expected) ---- */
+    /* Zeroed time: year 0 -> 0x800001fe with the output written 0. */
+    MEM_W16(DATE_A + 0u, 0u); MEM_W16(DATE_A + 2u, 0u); MEM_W16(DATE_A + 4u, 0u);
+    MEM_W16(DATE_A + 6u, 0u); MEM_W16(DATE_A + 8u, 0u); MEM_W16(DATE_A + 10u, 0u);
+    MEM_W32(DATE_A + 12u, 0u);
+    MEM_W32(FT_OUT, 0xDEADBEEFu); MEM_W32(FT_OUT + 4u, 0xDEADBEEFu);
+    cpu.r[4] = DATE_A; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime rejects the zeroed time with INVALID_VALUE");
+    expect(selftest_guest_u64(FT_OUT) == 0ull,
+           "GetWin32FileTime writes 0 to the output on a date failure");
+
+    /* 1601 January 01 maps to FILETIME 0. */
+    MEM_W16(DATE_A + 0u, 1601u); MEM_W16(DATE_A + 2u, 1u); MEM_W16(DATE_A + 4u, 1u);
+    MEM_W16(DATE_A + 6u, 0u); MEM_W16(DATE_A + 8u, 0u); MEM_W16(DATE_A + 10u, 0u);
+    MEM_W32(DATE_A + 12u, 0u);
+    MEM_W32(FT_OUT, 0xDEADBEEFu); MEM_W32(FT_OUT + 4u, 0xDEADBEEFu);
+    cpu.r[4] = DATE_A; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0u,
+           "GetWin32FileTime accepts 1601-01-01 (convert.expected)");
+    expect(selftest_guest_u64(FT_OUT) == 0ull,
+           "GetWin32FileTime maps 1601-01-01 to FILETIME 0 (convert.expected)");
+
+    /* NULL out pointer -> 0x800001fe (convert.expected "NULL filetime:
+     * -1337 (800001fe)"); NULL in and bad spans fail closed with the same
+     * measured class, and a pointer-class failure never rewrites the output. */
+    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime rejects a NULL output pointer with INVALID_VALUE");
+    cpu.r[4] = 0u; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime rejects a NULL date pointer fail-closed");
+    MEM_W32(FT_OUT, 0xDEADBEEFu); MEM_W32(FT_OUT + 4u, 0xDEADBEEFu);
+    cpu.r[4] = BAD_DATE; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime rejects an unreadable date span fail-closed");
+    expect(selftest_guest_u64(FT_OUT) == 0xDEADBEEFDEADBEEFull,
+           "GetWin32FileTime pointer failure leaves the output untouched");
+
+    /* Component lower bounds are rejected fail-closed: month 0/13 used to
+     * convert through an empty or full month sum and could return a
+     * fabricated success, and day 0 underflows `day - 1` in
+     * rtc_datetime_to_tick().  psprtc.h pspRtcCheckValidErrors declares the
+     * component ranges; convert.expected pins this function's invalid-input
+     * reports to 0x800001fe with the output written 0.  The day-in-month
+     * UPPER bound stays unchecked: 2005-11-31 is measured-accepted
+     * (test_rtc_conversion_errors_and_full_range). */
+    MEM_W16(DATE_A + 0u, 1601u); MEM_W16(DATE_A + 2u, 0u); MEM_W16(DATE_A + 4u, 1u);
+    MEM_W32(FT_OUT, 0xDEADBEEFu); MEM_W32(FT_OUT + 4u, 0xDEADBEEFu);
+    cpu.r[4] = DATE_A; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime rejects month 0 fail-closed (PSP_TIME_INVALID_MONTH)");
+    expect(selftest_guest_u64(FT_OUT) == 0ull,
+           "GetWin32FileTime month failure writes 0 to the output");
+
+    MEM_W16(DATE_A + 2u, 13u);
+    cpu.r[4] = DATE_A; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime rejects month 13 fail-closed (PSP_TIME_INVALID_MONTH)");
+
+    MEM_W16(DATE_A + 2u, 6u); MEM_W16(DATE_A + 4u, 0u);
+    cpu.r[4] = DATE_A; cpu.r[5] = FT_OUT;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_WIN32_FILETIME) == 0x800001feu,
+           "GetWin32FileTime rejects day 0 fail-closed (PSP_TIME_INVALID_DAY)");
+    /* ---- sceRtcGetCurrentClock: tz semantics measured in rtc.expected ---- */
+    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
+           "GetCurrentClock succeeds for the 0-minute UTC baseline (rtc.expected)");
+    cpu.r[4] = DATE_B; cpu.r[5] = (uint32_t)(int32_t)-60;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
+           "GetCurrentClock returns success for -60 minutes (rtc.expected)");
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "the tz=0 clock output is a valid datetime");
+    cpu.r[4] = DATE_B; cpu.r[5] = TICK_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "the tz=-60 clock output is a valid datetime");
+    expect(selftest_guest_u64(TICK_A) - selftest_guest_u64(TICK_B) == 3600000000ull,
+           "GetCurrentClock applies tz minutes from UTC (rtc.expected: -60 TZ one hour earlier)");
+
+    cpu.r[4] = 0u; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetCurrentClock rejects a NULL datetime pointer fail-closed");
+    cpu.r[4] = BAD_DATE; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetCurrentClock rejects an unwritable datetime span");
+
+    /* sceRtcGetCurrentClockLocalTime runs on the fixed UTC console profile
+     * until #77; the local output must equal the explicit tz=0 baseline. */
+    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
+           "refreshes the explicit UTC baseline for the LocalTime comparison");
+    cpu.r[4] = DATE_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u,
+           "GetCurrentClockLocalTime succeeds on the pinned UTC profile");
+    cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "the refreshed UTC baseline is a valid datetime");
+    cpu.r[4] = DATE_B; cpu.r[5] = TICK_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
+           "the LocalTime output is a valid datetime");
+    expect(selftest_guest_u64(TICK_A) == selftest_guest_u64(TICK_B),
+           "LocalTime equals the UTC baseline while the console profile is pinned to UTC (#77)");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetCurrentClockLocalTime rejects a NULL datetime pointer fail-closed");
+    cpu.r[4] = BAD_DATE;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetCurrentClockLocalTime rejects an unwritable datetime span");
+
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_TICK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "GetCurrentTick rejects a NULL output pointer fail-closed");
+    /* ---- sceRtcConvertUtcToLocalTime / sceRtcConvertLocalTimeToUTC ---- */
+    /* psprtc.h declares both directions (UTC<->local tick pointers, 0 on
+     * success, <0 on error).  With the console timezone pinned to UTC (#77)
+     * the conversion is the identity; the pointer edges fail closed and never
+     * touch the output. */
+    MEM_W32(TICK_B, (uint32_t)tick_2012);
+    MEM_W32(TICK_B + 4u, (uint32_t)(tick_2012 >> 32));
+    MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
+    cpu.r[4] = TICK_B; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u,
+           "ConvertUtcToLocalTime succeeds on the pinned UTC profile");
+    expect(selftest_guest_u64(TICK_A) == tick_2012,
+           "ConvertUtcToLocalTime is the identity while the console timezone is UTC (#77)");
+    cpu.r[4] = TICK_A; cpu.r[5] = TICK_B;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u,
+           "ConvertLocalTimeToUTC succeeds on the pinned UTC profile");
+    expect(selftest_guest_u64(TICK_B) == tick_2012,
+           "ConvertLocalTimeToUTC inverts the identity on the pinned UTC profile");
+
+    MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
+    cpu.r[4] = 0u; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertUtcToLocalTime rejects a NULL input pointer fail-closed");
+    expect(selftest_guest_u64(TICK_A) == 0xDEADBEEFDEADBEEFull,
+           "ConvertUtcToLocalTime NULL failure leaves the output untouched");
+    cpu.r[4] = TICK_B; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertUtcToLocalTime rejects a NULL output pointer fail-closed");
+    cpu.r[4] = BAD_U64; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertUtcToLocalTime rejects an unreadable input span fail-closed");
+    cpu.r[4] = TICK_B; cpu.r[5] = BAD_U64;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertUtcToLocalTime rejects an unwritable output span fail-closed");
+
+    cpu.r[4] = 0u; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertLocalTimeToUTC rejects a NULL input pointer fail-closed");
+    cpu.r[4] = TICK_B; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertLocalTimeToUTC rejects a NULL output pointer fail-closed");
+    cpu.r[4] = BAD_U64; cpu.r[5] = TICK_A;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertLocalTimeToUTC rejects an unreadable input span fail-closed");
+    cpu.r[4] = TICK_B; cpu.r[5] = BAD_U64;
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ConvertLocalTimeToUTC rejects an unwritable output span fail-closed");
 }
 
 static void test_unix_time_to_filetime_ticks(void) {
@@ -21184,6 +21479,7 @@ int main(int argc, char **argv) {
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
+    test_rtc_pointer_validation_and_measured_conversions();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
