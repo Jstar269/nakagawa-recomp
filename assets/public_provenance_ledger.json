@@ -6258,7 +6258,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d39716a418e60ebbddcbbee4b467e5490dc87d911831013f98b1d92d50761dd8"
+      "sha256": "6061c8e0a3112830e63a549f423e4dbea865d9d7cc4a6d850609e35837df9dc9"
     },
     {
       "path": "tools/lint_docs.py",
@@ -6380,7 +6380,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "67fb336c2e66e471a10d18235b76543e5a55c2addffbdf6c0b5de1bed56f45ae"
+      "sha256": "3f712612f869878f20e3dbf600112a10070dc826760e2274f85b0de43c3b9bf4"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8137,7 +8137,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb1ecd339a59ecbcd188b272ba26c2b61bd3390e8aa7a2101fce7a576ce8b104"
+      "sha256": "76f2c2c782613a6c6f12d041af668cb8d26cc0ddb1290bf90d6d6b4d34756c94"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -8329,7 +8329,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d902234743cc36cc8da0fccf19c18191a4b67cdb60e605301c70347ce1f86490"
+      "sha256": "27ec8ead7b1063a5e282c04a03c65117b3a6b58d00f9ce1db4944fac844ffd01"
     },
     {
       "path": "tools/test_nk_core.py",
