@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "71e0499ebd3f14669512c6df9b174f09e7fd308185c9cc43e74799106ac609f4"
+      "sha256": "2cdca90a518e6aeeada214c59a51befdd659e803ae520d815c191b5914c828b8"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "05f1ca163a7202a4f61dc43e10b31f8c0ea41ac4ab1700a6c91943e66444d87b"
+      "sha256": "6f7d87f13bb7c911ee7e154a863b16e753f745cd6719a35ae191d9adc319fee9"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1057,7 +1057,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6c742ce50478b2dedcd0dad3cbb56d0b677a2cd7c589c527ee6f9898c82791ee"
+      "sha256": "a24e140daea48011c7b4bf9bf940b643dfd62c8a095153ee72c4e82e7649c426"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5519,7 +5519,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3bb5b3c5e006800d7663c90ea97c9d4f887fe4946b2bd305e135879542caf8db"
+      "sha256": "b7a2df468059094aa4d115a3e0126cbab7e230be5d57240204207153e8f0fea9"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5641,7 +5641,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5454093a7071cc8d78d1306a695e94e235b88dfe26cb371f6438c7a0c33e8213"
+      "sha256": "31a167705cd0f0a48863e0cb399f6a334a74b205125b82942b44f2eff4983003"
     },
     {
       "path": "tools/ci_required.py",
@@ -5654,6 +5654,30 @@
         "upstream_attribution": null
       },
       "sha256": "46fabe0989cd2b6b5504d6f0ce5726675b1130fada286dcc5e1bdc719ce9ae79"
+    },
+    {
+      "path": "tools/ci_test_shards.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ci-test-shards-693",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "01578f2640934bbc6ab5166c1e0b12a731ca7bddae05441612591aefb9f239ca"
+    },
+    {
+      "path": "tools/ci_test_weights.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ci-test-shards-693",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "e8aa164908ba166ec9d3429c672170002fafe793da535237ff0a00a9feca24eb"
     },
     {
       "path": "tools/codegen.py",
@@ -7175,7 +7199,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be4c05d3b2926a72a9f2c28acc65ede23fc7ccdac1f643212f80f80a761c60bc"
+      "sha256": "cf1fb39d3fc81a7858f3345a5f1279d3bc3e93ac6d4e337964fafce9e6676b9c"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -7188,6 +7212,18 @@
         "upstream_attribution": null
       },
       "sha256": "4453f823cda5b16da8847cf4401bd969f694b56de9faf271a3c8248c9fa32871"
+    },
+    {
+      "path": "tools/test_ci_test_shards.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ci-test-shards-693",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "8f9fdd5b0d462dba9fe0d85edc8a61dd15950aa758d4a66f82250fb6d86fd54d"
     },
     {
       "path": "tools/test_codegen_continuations.py",
@@ -8689,7 +8725,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4676ce595f8f0ca764e90b64892de98fa336898d038cb5b8bfef50e26dc4862"
+      "sha256": "71b3d96203e54148dc3bbc1535528a388484437463afbb09a95f6c3d832f9326"
     },
     {
       "path": "tools/test_public_export.py",
