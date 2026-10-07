@@ -45,31 +45,32 @@
     }
   },
   "distribution": {
-    "archive_sha256": "cac06732ba81efcc6a9e5b6196e60a5c373b0a87f28518a188b7c99b70ccb012",
-    "commit": "cc874700eaef9e00c8ec63e0d116926e1048b656",
-    "container_digest": "sha256:184eb28094f907493928f556df68f5d3e71bcf340259c5c6b78b1d9ac28b6c7d",
+    "archive_asset": "pspdev-ubuntu-latest-x86_64.tar.gz",
+    "archive_sha256": "e43f678219879b340892bab17c5d2a516d5363dda26a1ddea0e12834a44c1bdd",
+    "commit": "681088f7a4eaae47da5a4b277c12f27de3e9afbc",
+    "container_digest": "sha256:3349a5ecf311cd081b9214a9aeb04bac5d38f6ec2a8d80cd5d364edc25dc388b",
     "license_expression": "MIT",
-    "release": "v20260501",
+    "release": "v20260601",
     "repository": "https://github.com/pspdev/pspdev"
   },
   "local_verification": {
-    "host_platform": "Docker Desktop 29.6.2 on Windows x86_64; linux/amd64 container",
-    "installation_method": "Official Docker Hub pspdev/pspdev:v20260501 image pinned by digest; official GitHub Debian release archive independently downloaded and hashed",
+    "host_platform": "WSL2 Ubuntu (linux/amd64 toolchain binaries) on a Windows x86_64 host",
+    "installation_method": "Official GitHub v20260601 release asset pspdev-ubuntu-latest-x86_64.tar.gz independently downloaded, SHA-256-verified, and installed at /usr/local/pspdev in WSL Ubuntu; every pinned tool binary was byte-compared (size and SHA-256) against the same path in that release archive, and the release's Docker Hub tag was pulled by immutable digest",
     "status": "complete",
     "tool_versions": {
-      "mksfoex": "v20260501 image; size=31640; sha256=d9dc7b6d04aa4110a90cc5ebdd83f831b92c2f246817f93a027f6a57337d917e",
-      "pack-pbp": "v20260501 image; size=23368; sha256=e6a0664c8839c92d4062043f0bcd1cda19ad4145ed50e8ceb212bdd214c7848b",
-      "psp-build-exports": "v20260501 image; size=86256; sha256=33499cee370935bb4c564e062f8820c4baabb1399ff03b0a8fce13fd5d10c9d7",
-      "psp-config": "v20260501 image; size=40384; sha256=8c0b64a9a45f2344454d53d6d8a7c570e4de99eae48d8ab8d2e44f43b45c2fa8",
-      "psp-fixup-imports": "v20260501 image; size=74008; sha256=35d3b1b7b00b2e72a67d343946d4e6f7037e9e70c52550178e8955f99a62e29a",
-      "psp-gcc": "GCC 15.1.1 20250425; size=2114416; sha256=eec2d72c2e6c5dd8edf9e9939e1962f3592cb0c3fd0a58684891f202b323fb8d",
-      "psp-ld": "GNU Binutils 2.44; size=1952152; sha256=8087fea32a8ac4c2fa4990c27d8bfd2f82a8fe0c4f645f18245099544a3fc7c1",
-      "psp-nm": "GNU Binutils 2.44; size=1313056; sha256=fa42644356248bdd4111d229cd9260c272af9d0434746d32536dab03abc28fe8",
-      "psp-objdump": "GNU Binutils 2.44; size=2646816; sha256=af70b390bcb7146fdd9b2b444e5ae0941d6ba9a8a70e1b37310c657fc30b4d08",
-      "psp-prxgen": "v20260501 image; size=59632; sha256=bbd6cf9e7872999d9ec12978111ed4b79fc790aa2e8ce21b598ed6802639238f",
-      "psp-readelf": "GNU Binutils 2.44; size=1100336; sha256=d90b3c25a5fb68bf13632858c91e39027b9cb7b3a38733d05998f42b072a4ce5",
-      "pspsh": "v20260501 image; size=177720; sha256=e5b02a5511f103171ba1c52763c4ce5428fec7e7d10c6b9fdaeb30b1c4f2206a",
-      "usbhostfs_pc": "USBHostFS TyRaNiD 2k6; size=156424; sha256=cb64d685f079c5e5d20f4d0f1e782fb2054d6452eace1c7c546f1c618bc604be"
+      "mksfoex": "v20260601 ubuntu-latest release asset; size=30600; sha256=41c7eab1ba30cab5fb53bdef219a865049b5d3947d2b29b43519b62bf34bb3d2",
+      "pack-pbp": "v20260601 ubuntu-latest release asset; size=23712; sha256=6d5a0148409b305a31ca478bf40660264a9093a58053ac75488be0187f3cbe68",
+      "psp-build-exports": "v20260601 ubuntu-latest release asset; size=95776; sha256=daf925e290e06f84bdcfb80293369ff8a04e01a9e1ae49c352b2ae80f1413342",
+      "psp-config": "v20260601 ubuntu-latest release asset; size=42096; sha256=fd4ba82db35bbe498b3a0c3eec4209f84bba6b53d132c8bbdfcff7980ccd77ee",
+      "psp-fixup-imports": "v20260601 ubuntu-latest release asset; size=79096; sha256=dd9ef65b179f9585f6d1790e2e69a63a93693a9f0de4d3e12c84e874d8e83f06",
+      "psp-gcc": "GCC 15.2.0; v20260601 ubuntu-latest release asset; size=2054992; sha256=6032f8cfbf0f68dfaa244146460d8a2a8c2ca9982aef18cd87126d82d76211ea",
+      "psp-ld": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=1915600; sha256=d119ef5866b70ce46293b4ee7bb5ac356d44f93d802ca25580d3ad682b95937b",
+      "psp-nm": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=1276544; sha256=3853942e455cb3773ac2b289be2a9cc92cbb7ba0902df942bd7038dd8684047c",
+      "psp-objdump": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=2618464; sha256=bb9cfc15da96a8a2dfd4b6c0903e6b15bc746320f6bf4c7694489470f1bd161b",
+      "psp-prxgen": "v20260601 ubuntu-latest release asset; size=67352; sha256=39f3b7a84fe19276c21734b28bf1f4e5cece8396063ed6b1df7fb9fc3ba3e08c",
+      "psp-readelf": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=1108840; sha256=2ec8654fde583954481a749f4d9fb15242175a0196b71a31c500e629cb470c70",
+      "pspsh": "v20260601 ubuntu-latest release asset; size=176168; sha256=fec6edd51c580cdf99f68555b7d9b0cf49f4a477d6711490c91a05cb7bc7f1a7",
+      "usbhostfs_pc": "v20260601 ubuntu-latest release asset; size=175848; sha256=bd5e8e09c246cec00c4a4e1fdad264c0c14ac472073f4ff1a33e436438cdf93b"
     }
   },
   "policy": {
@@ -80,8 +81,8 @@
     "network_access_from_normal_build": false,
     "tracked_generated_binaries_require_manifest": true
   },
-  "reviewed_at": "2026-07-31T01:36:27Z",
-  "schema": 1,
+  "reviewed_at": "2026-10-07T04:32:14Z",
+  "schema": 2,
   "snapshot": {
     "kind": "source-review",
     "relationship_to_distribution": "The PSPDEV release tag and component source commits are independently pinned. This lock does not assert that the component commits are the exact sources used to build the release artifacts."

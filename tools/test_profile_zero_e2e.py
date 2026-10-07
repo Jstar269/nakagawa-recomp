@@ -45,10 +45,16 @@ VBLANK_SCRIPT = "12 4000 4\n240 0008 4\n"
 # Committed PSPDEV build output of fixtures/profile_zero/{main.c,Makefile}.
 # The route consumes these bytes on hosts without PSPDEV/PSPSDK (hosted CI);
 # where the toolchain exists, the same build is reproduced and compared.
+# The bytes are reproducible only with the distribution pinned by
+# assets/upstream/pspdev.lock.json (#708).
 PREBUILT_DIR = ROOT / "fixtures" / "profile_zero" / "prebuilt"
 PREBUILT_SUMS = PREBUILT_DIR / "SHA256SUMS"
 PREBUILT_EBOOT = PREBUILT_DIR / "EBOOT.PBP"
 PREBUILT_GUEST = PREBUILT_DIR / "profile_zero_guest.prx"
+PSPDEV_LOCK_PATH = ROOT / "assets" / "upstream" / "pspdev.lock.json"
+PSPDEV_EVIDENCE_PATH = ROOT / "assets" / "upstream" / "pspdev.evidence.json"
+PSPDEV_README_PATH = ROOT / "fixtures" / "profile_zero" / "README.md"
+PSPDEV_REQUIRED_TOOLS = ("psp-config", "psp-gcc", "psp-prxgen", "pack-pbp")
 
 
 def _manifest(path: Path) -> dict:
@@ -260,6 +266,109 @@ def _verify_rebuild_matches_committed(manifest: dict, output_dir: Path, guest: P
                 "Regenerate and explain fixtures/profile_zero/prebuilt (see "
                 "fixtures/profile_zero/README.md); drift must never be tolerated silently."
             )
+
+
+def _pspdev_authority() -> dict:
+    """Fail closed unless the lock pins the exact distribution and tool bytes."""
+    try:
+        lock = json.loads(PSPDEV_LOCK_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssertionError(
+            f"cannot read the PSPDEV lock {PSPDEV_LOCK_PATH}: {exc}"
+        ) from exc
+    distribution = lock.get("distribution")
+    if not isinstance(distribution, dict):
+        raise AssertionError(f"{PSPDEV_LOCK_PATH} has no distribution block")
+    release = distribution.get("release")
+    asset = distribution.get("archive_asset")
+    if not release or not asset:
+        raise AssertionError(
+            f"{PSPDEV_LOCK_PATH} must pin an exact distribution release and "
+            "archive_asset; the profile-zero rebuild contract is authoritative "
+            "only for the distribution the lock names"
+        )
+    tool_versions = (lock.get("local_verification") or {}).get("tool_versions")
+    if not isinstance(tool_versions, dict):
+        raise AssertionError(f"{PSPDEV_LOCK_PATH} records no local tool evidence")
+    tools: dict[str, tuple[int, str]] = {}
+    for name in PSPDEV_REQUIRED_TOOLS:
+        record = tool_versions.get(name)
+        if not isinstance(record, str):
+            raise AssertionError(
+                f"{PSPDEV_LOCK_PATH} records no {name} identity in "
+                "local_verification.tool_versions"
+            )
+        size = re.search(r"size=(\d+)", record)
+        digest = re.search(r"sha256=([0-9a-f]{64})", record)
+        if size is None or digest is None:
+            raise AssertionError(
+                f"{PSPDEV_LOCK_PATH} tool_versions.{name} must record size and sha256"
+            )
+        tools[name] = (int(size.group(1)), digest.group(1))
+    return {"release": release, "asset": asset, "tools": tools}
+
+
+def _wsl_tool_identity(wsl: str, tool: str) -> tuple[int, str]:
+    probe = subprocess.run(
+        [
+            wsl,
+            "-d",
+            "Ubuntu",
+            "--",
+            "bash",
+            "-c",
+            f"stat -c %s /usr/local/pspdev/bin/{tool}; "
+            f"sha256sum /usr/local/pspdev/bin/{tool}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    lines = [line for line in probe.stdout.splitlines() if line.strip()]
+    if probe.returncode or len(lines) < 2:
+        raise AssertionError(
+            f"cannot identify the WSL PSPDEV tool {tool} against the pinned "
+            f"distribution: {probe.stderr.strip()}"
+        )
+    return int(lines[0]), lines[1].split()[0]
+
+
+def _verify_backend_matches_authority(backend: tuple[str, str | None]) -> None:
+    """Fail closed when the installed PSPDEV is not the distribution the lock pins.
+
+    The committed fixture bytes are reproducible only from the pinned release
+    asset. Debian-archive or other-release installations ship different tool
+    binaries and must be rejected with an explicit identity mismatch instead of
+    a confusing byte-drift error (#708).
+    """
+    authority = _pspdev_authority()
+    mismatches = []
+    for name in PSPDEV_REQUIRED_TOOLS:
+        expected_size, expected_sha = authority["tools"][name]
+        if backend[0] == "wsl":
+            assert backend[1] is not None
+            actual_size, actual_sha = _wsl_tool_identity(backend[1], name)
+        else:
+            located = shutil.which(name)
+            if not located:
+                raise AssertionError(f"PSPDEV tool {name} disappeared from PATH")
+            resolved = Path(located)
+            actual_size = resolved.stat().st_size
+            actual_sha = _sha256(resolved)
+        if (actual_size, actual_sha) != (expected_size, expected_sha):
+            mismatches.append(
+                f"{name}: found size={actual_size} sha256={actual_sha}, "
+                f"lock records size={expected_size} sha256={expected_sha}"
+            )
+    if mismatches:
+        raise AssertionError(
+            "the installed PSPDEV is not the distribution pinned by "
+            f"{PSPDEV_LOCK_PATH} ({authority['release']}, {authority['asset']}); "
+            "the committed profile-zero fixture is reproducible only from that "
+            "exact release asset, so the rebuild-and-compare refuses to run "
+            "(see fixtures/profile_zero/README.md):\n" + "\n".join(mismatches)
+        )
 
 
 def _runtime_build_environment() -> tuple[dict[str, str], str]:
@@ -582,6 +691,18 @@ class ProfileZeroManifestTests(unittest.TestCase):
                         "manifest entry must match the committed PSPDEV guest module",
                     )
 
+    def test_lock_evidence_and_readme_name_one_authoritative_distribution(self) -> None:
+        """The lock, its evidence, and the fixture README pin the same asset (#708)."""
+        authority = _pspdev_authority()
+        evidence = json.loads(PSPDEV_EVIDENCE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["release"], authority["release"])
+        self.assertEqual(evidence["archive"]["asset_name"], authority["asset"])
+        self.assertIn(authority["asset"], evidence["archive"]["download_url"])
+        self.assertTrue(evidence["archive"]["verified"])
+        readme = PSPDEV_README_PATH.read_text(encoding="utf-8")
+        self.assertIn(authority["release"], readme)
+        self.assertIn(authority["asset"], readme)
+
     def test_package_and_runtime_route_assert_all_profile_zero_cases(self) -> None:
         backend = _pspdev_backend()
         if backend is None:
@@ -593,11 +714,14 @@ class ProfileZeroManifestTests(unittest.TestCase):
             )
         else:
             print(
-                "profile-zero-e2e: PSPDEV/PSPSDK is present; rebuilding the fixture "
-                "and checking it byte-for-byte against the committed fixture",
+                "profile-zero-e2e: PSPDEV/PSPSDK is present; verifying it matches the "
+                "distribution pinned by assets/upstream/pspdev.lock.json, then "
+                "rebuilding the fixture and checking it byte-for-byte against the "
+                "committed fixture",
                 file=sys.stderr,
                 flush=True,
             )
+            _verify_backend_matches_authority(backend)
         build_environment, make = _runtime_build_environment()
         with tempfile.TemporaryDirectory(prefix="nk-profile-zero-e2e-") as temporary:
             root = Path(temporary)
