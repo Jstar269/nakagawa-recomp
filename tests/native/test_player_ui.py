@@ -1560,5 +1560,105 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertTrue(frame["font_reason"])
 
 
+def library_disc_ids(scratch: Path) -> list[str]:
+    """Disc IDs in every library.json this run wrote below its isolated LOCALAPPDATA."""
+    ids: list[str] = []
+    for path in scratch.rglob("library.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ids.extend(entry["disc_id"] for entry in data.get("games", []))
+    return ids
+
+
+class FirstRunRouteTests(unittest.TestCase):
+    """First-run routes: --iso= persistence and --launch-index on an empty library.
+
+    An inspected disc is stored only when the user chooses ADD TO LIBRARY, as the
+    file picker and setup wizard already do; --launch-now is the exception, since it
+    must launch and a launch needs a library record. --launch-index names a library
+    entry, so an empty library is an error and bundled demo entries are named SAMPLE.
+    """
+
+    def scratch_env(self, scratch: Path) -> dict[str, str]:
+        profile = scratch / "profile"
+        for name in ("appdata", "localappdata", "profile"):
+            (scratch / name).mkdir(exist_ok=True)
+        env = os.environ.copy()
+        env.update(
+            {
+                "SDL_VIDEODRIVER": "dummy",
+                "SDL_RENDER_DRIVER": "software",
+                "SDL_AUDIODRIVER": "dummy",
+                "APPDATA": str(scratch / "appdata"),
+                "LOCALAPPDATA": str(scratch / "localappdata"),
+                "USERPROFILE": str(profile),
+                "HOME": str(profile),
+                "XDG_CONFIG_HOME": str(profile / "config"),
+                "XDG_DATA_HOME": str(profile / "data"),
+                "XDG_CACHE_HOME": str(profile / "cache"),
+            }
+        )
+        return env
+
+    def run_route(self, scratch: Path, args: Sequence[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(PLAYER_EXE), *args, f"--runtime-root={scratch / 'runtime'}"],
+            cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+            timeout=120, check=False,
+        )
+
+    def test_iso_route_stores_nothing_until_add_to_library(self) -> None:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import create_test_iso
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-iso-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "supported.iso"
+            create_test_iso(iso, disc_id="TEST00002", title="Café® ™",
+                            volume_id="TEST00001")
+            completed = self.run_route(scratch, [
+                f"--iso={iso}",
+                "--ui-test-events=WAIT_VIEW=supported,10000;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            views = [frame["view"] for frame in parse_frames(completed.stdout)]
+            self.assertIn("supported", views, completed.stdout)
+            self.assertEqual(library_disc_ids(scratch), [],
+                             "the card still offers ADD TO LIBRARY, so nothing may be stored yet")
+
+    def test_add_to_library_on_the_iso_card_stores_the_disc(self) -> None:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import create_test_iso
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-add-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "supported.iso"
+            create_test_iso(iso, disc_id="TEST00002", title="Café® ™",
+                            volume_id="TEST00001")
+            completed = self.run_route(scratch, [
+                f"--iso={iso}",
+                "--ui-test-events=WAIT_VIEW=supported,10000;KEY_RETURN;WAIT_VIEW=library,10000;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual(library_disc_ids(scratch), ["TEST00002"])
+
+    def test_launch_index_on_an_empty_library_fails_with_a_clear_message(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".first-run-empty-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            completed = self.run_route(scratch, ["--launch-index=0", "--headless-launch"])
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("library is empty", completed.stderr)
+        self.assertNotIn("has no prepared runtime", completed.stderr)
+
+    def test_demo_launch_index_names_its_bundled_entry_as_a_sample(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".first-run-demo-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            completed = self.run_route(scratch, ["--demo", "--launch-index=0", "--headless-launch"])
+        # No runtime is built in the scratch root, so the bounded launch refuses.
+        self.assertEqual(completed.returncode, 3, completed.stdout + completed.stderr)
+        self.assertIn("SAMPLE", completed.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

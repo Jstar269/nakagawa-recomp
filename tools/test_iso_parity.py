@@ -1727,5 +1727,54 @@ int main(int argc, char **argv) {{
         self.assertIn("READER:OPEN_FAILED", res.stdout)
 
 
+
+# nk_cli.py writes titles as UTF-8 whatever the host pipe encoding is (#732). On Windows a
+# redirected Python stdout uses the ANSI code page (cp1252), so trademark and registered
+# signs became single bytes and a UTF-8 reader saw U+FFFD. The child is forced to a cp1252
+# pipe so the failure reproduces on any host.
+CONSOLE_ENCODING_TITLE = "Café® ™"
+
+
+class NkCliConsoleEncodingTests(unittest.TestCase):
+    def run_inspect(self, iso: Path, pipe_encoding: str) -> bytes:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = pipe_encoding
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect", str(iso)],
+            cwd=str(ROOT), env=env, capture_output=True, timeout=120,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
+        return completed.stdout
+
+    def test_piped_title_with_trademark_and_registered_signs_is_utf8(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nk_cli_encoding_") as temp:
+            iso = Path(temp) / "sign-title.iso"
+            create_test_iso(iso, disc_id="TEST00002", title=CONSOLE_ENCODING_TITLE, volume_id="TEST00001")
+            # A legacy ANSI pipe is what a Windows parent process gets by default.
+            raw = self.run_inspect(iso, "cp1252")
+
+        text = raw.decode("utf-8")  # strict: a stray cp1252 byte must fail here
+        self.assertNotIn("�", text)
+        title_line = next(line for line in text.splitlines() if line.startswith("Title:"))
+        self.assertEqual(title_line, "Title:      " + CONSOLE_ENCODING_TITLE)
+
+    def test_output_written_to_a_file_is_utf8_too(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nk_cli_encoding_file_") as temp:
+            temp_root = Path(temp)
+            iso = temp_root / "sign-title.iso"
+            create_test_iso(iso, disc_id="TEST00002", title=CONSOLE_ENCODING_TITLE, volume_id="TEST00001")
+            out_path = temp_root / "inspect.txt"
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "cp1252"
+            with out_path.open("wb") as out:
+                completed = subprocess.run(
+                    [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect", str(iso)],
+                    cwd=str(ROOT), env=env, stdout=out, stderr=subprocess.PIPE, timeout=120,
+                )
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
+            text = out_path.read_bytes().decode("utf-8")
+        self.assertIn("Title:      " + CONSOLE_ENCODING_TITLE, text)
+
+
 if __name__ == "__main__":
     unittest.main()

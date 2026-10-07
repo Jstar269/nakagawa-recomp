@@ -1304,7 +1304,20 @@ def check_private_inputs(
     if context.requires_game_elf:
         elf_candidates = context.game_elf_candidates or (root / "eboot.elf",)
         elf_path = next((path for path in elf_candidates if path.is_file()), elf_candidates[0])
-        elf_meta = _check_elf_file(report, "INPUT_EBOOT_ELF", elf_path, "decrypted title EBOOT ELF")
+        default_fixture_dirs = (root / "build" / "fixtures", root / "fixtures")
+        if (report.scope == "build" and context.kind == "synthetic" and not elf_path.is_file()
+                and elf_path.parent in default_fixture_dirs):
+            # The synthetic title's default ELF fixture is not a build input: no
+            # build target in this checkout writes it. A declared executable, the
+            # inputs scope, and a retail or homebrew title's missing ELF all stay FAILs.
+            report.info(
+                "INPUT_EBOOT_ELF",
+                "Synthetic title ELF is not present; --scope build does not require it "
+                "(--scope inputs still checks it)",
+                path=elf_path,
+            )
+        else:
+            elf_meta = _check_elf_file(report, "INPUT_EBOOT_ELF", elf_path, "decrypted title EBOOT ELF")
 
     psp_meta: dict[str, object] | None = None
     if context.requires_psp_header:
