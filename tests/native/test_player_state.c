@@ -1671,9 +1671,16 @@ int main(int argc, char **argv) {
            fallback and every current pre-launch boundary without touching a
            real title or runtime package. */
         char preflight_root[640], font_dir[720], font_path[800];
+        unsigned long preflight_run_id;
+#if defined(_WIN32) || defined(_WIN64)
+        preflight_run_id = (unsigned long)_getpid();
+#else
+        preflight_run_id = (unsigned long)getpid();
+#endif
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
-        snprintf(preflight_root, sizeof(preflight_root), "%s%cplayer-preflight-synthetic",
-                 cache_dir, nk_platform_path_separator());
+        snprintf(preflight_root, sizeof(preflight_root),
+                 "%s%cplayer-preflight-synthetic-%lu", cache_dir,
+                 nk_platform_path_separator(), preflight_run_id);
         assert(nk_platform_mkdir_p(preflight_root));
         snprintf(font_dir, sizeof(font_dir), "%s%cfont", preflight_root,
                  nk_platform_path_separator());
@@ -1718,6 +1725,7 @@ int main(int argc, char **argv) {
                  "%s", synthetic_disc_id);
         snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
                  "synthetic-allegrex-v1");
+        wiz->inspecting_game.iso_path[0] = '\0';
         NkIsoExecutableReport executable_report;
         memset(&executable_report, 0, sizeof(executable_report));
         executable_report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;

@@ -53,6 +53,7 @@ from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root  # noqa: E402
 from nk_core.iso_inspect import (  # noqa: E402
     MAX_EXECUTABLE_BYTES,
+    MAX_MODULE_CANDIDATES,
     IsoInspectionError,
     IsoDirectoryEntry,
     _elf32_mips_usable,
@@ -62,8 +63,8 @@ from nk_core.iso_inspect import (  # noqa: E402
     _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
     inspect_compatibility_preflight,
-    list_iso_directory,
     plan_provisional_module_bindings,
+    walk_disc_module_entries,
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
@@ -72,7 +73,7 @@ import stage_runtime_dlls as _runtime_dlls  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_CACHE_MARKER = ".nk-aot-package-cache-v1"
-MAX_GUEST_MODULES = 32
+MAX_GUEST_MODULES = MAX_MODULE_CANDIDATES
 MAX_GUEST_MODULE_BYTES = 256 * 1024 * 1024
 MAX_GUEST_MODULE_SET_BYTES = 512 * 1024 * 1024
 _VRAM_BASE = 0x04000000
@@ -385,71 +386,72 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
 
 
 def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
-    """Find bounded ELF/PRX candidates in the title's own SYSDIR and USRDIR."""
+    """Find bounded ELF/PRX candidates below the title's module roots."""
     file_size = iso_path.stat().st_size
     candidates: list[dict] = []
     selected_name = Path(selected).name.casefold()
-    module_directories = (
-        ("PSP_GAME", "SYSDIR"),
-        ("PSP_GAME", "SYSDIR", "PRX"),
-        ("PSP_GAME", "USRDIR"),
-        ("PSP_GAME", "USRDIR", "PRX"),
-    )
-    for directory in module_directories:
-        entries = list_iso_directory(iso_path, directory) or []
-        for entry in entries:
-            if entry.is_directory or Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
-                continue
-            if entry.name.casefold() in {selected_name, "boot.bin"}:
-                continue
-            if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
-                    entry.name.endswith(".") or \
-                    entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
-                kind = "unsupported"
-            elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
-                kind = "unsupported"
-            else:
-                header_size = min(entry.size, 0x64)
-                with iso_path.open("rb") as stream:
-                    header = _read_iso_extent(
-                        stream, file_size, entry.lba, entry.size, 0, header_size
-                    )
-                    if header.startswith(b"\x7fELF"):
-                        if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
-                            kind = "unsupported"
-                        else:
-                            module_bytes = _read_iso_extent(
-                                stream, file_size, entry.lba, entry.size, 0, entry.size
-                            )
-                            if len(module_bytes) != entry.size:
-                                kind = "unsupported"
-                            elif _has_cfw_or_kernel_only_imports(module_bytes):
-                                continue
-                            else:
-                                kind = "plain-elf"
-                    elif header.startswith(b"~SCE"):
-                        kind = "encrypted-prx"
-                    elif header.startswith(b"~PSP"):
-                        kind = "encrypted-prx" if _encrypted_prx_header_supported(
-                            header
-                        ) else "unsupported"
-                    else:
+    for directory, entry in walk_disc_module_entries(iso_path):
+        if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
+            continue
+        if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
+            continue
+        if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
+                entry.name.endswith(".") or \
+                entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+            kind = "unsupported"
+        elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
+            kind = "unsupported"
+        else:
+            header_size = min(entry.size, 0x64)
+            with iso_path.open("rb") as stream:
+                header = _read_iso_extent(
+                    stream, file_size, entry.lba, entry.size, 0, header_size
+                )
+                if header.startswith(b"\x7fELF"):
+                    if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
                         kind = "unsupported"
-            candidates.append({
-                "name": entry.name,
-                "directory": directory,
-                "entry": entry,
-                "kind": kind,
-            })
-            if len(candidates) > MAX_GUEST_MODULES:
-                raise PackageBuildError("The ISO contains more than 32 guest-module candidates (#296).")
+                    else:
+                        module_bytes = _read_iso_extent(
+                            stream, file_size, entry.lba, entry.size, 0, entry.size
+                        )
+                        if len(module_bytes) != entry.size:
+                            kind = "unsupported"
+                        elif _has_cfw_or_kernel_only_imports(module_bytes):
+                            continue
+                        else:
+                            kind = "plain-elf"
+                elif header.startswith(b"~SCE"):
+                    kind = "encrypted-prx"
+                elif header.startswith(b"~PSP"):
+                    kind = "encrypted-prx" if _encrypted_prx_header_supported(
+                        header
+                    ) else "unsupported"
+                else:
+                    kind = "unsupported"
+        candidates.append({
+            "name": entry.name,
+            "directory": directory,
+            "entry": entry,
+            "kind": kind,
+        })
+        if len(candidates) > MAX_GUEST_MODULES:
+            raise PackageBuildError(
+                f"DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
+                f"{MAX_GUEST_MODULES} guest-module candidates; larger "
+                "module sets are in the works (#726)."
+            )
 
-    names: set[str] = set()
+    names: dict[str, str] = {}
     for candidate in candidates:
         folded = candidate["name"].casefold()
+        member_path = "/".join(candidate["directory"] + (candidate["name"],))
         if folded in names:
-            raise PackageBuildError("Guest-module filenames collide across ISO directories (#308).")
-        names.add(folded)
+            raise PackageBuildError(
+                "DUPLICATE_DISC_MODULE_BASENAME: module filename "
+                f"{candidate['name']!r} occurs at {names[folded]} and "
+                f"{member_path}; automatic intake is in the works (#726)."
+            )
+        names[folded] = member_path
     staged_size = sum(
         candidate["entry"].size for candidate in candidates
         if candidate["kind"] == "plain-elf"
@@ -733,12 +735,23 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             if device.casefold() in {"disc0", "umd0"} and \
                     guest_components[:1] and guest_components[0].casefold() == "psp_game":
                 members.append(guest_components)
-        members.extend((
-            ("PSP_GAME", "SYSDIR", name),
-            ("PSP_GAME", "SYSDIR", "PRX", name),
-            ("PSP_GAME", "USRDIR", name),
-            ("PSP_GAME", "USRDIR", "PRX", name),
-        ))
+        if not members:
+            disc_spellings = {name.casefold()}
+            if disc_name:
+                disc_spellings.add(disc_name.casefold())
+            matches = [
+                (directory + (entry.name,))
+                for directory, entry in walk_disc_module_entries(iso_path)
+                if entry.name.casefold() in disc_spellings
+            ]
+            if len(matches) > 1:
+                first, second = ("/".join(member) for member in matches[:2])
+                raise PackageBuildError(
+                    "DUPLICATE_DISC_MODULE_BASENAME: required guest module "
+                    f"{disc_name or name!r} occurs at {first} and {second}; "
+                    "automatic intake is in the works (#726)."
+                )
+            members.extend(matches)
         for member in dict.fromkeys(members):
             try:
                 file_size = iso_path.stat().st_size
@@ -1841,7 +1854,7 @@ def _new_bringup_report() -> dict:
 
 
 def _update_issues(report: dict, values) -> None:
-    allowed = {118, 280, 285, 295, 296, 297, 298, 300, 308}
+    allowed = {118, 280, 285, 295, 296, 297, 298, 300, 308, 726}
     report["issue_numbers"] = sorted(
         set(report["issue_numbers"]) | {value for value in values if value in allowed}
     )
@@ -2431,11 +2444,14 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 module_candidates = _discover_iso_module_candidates(
                     iso_path, str(selected).upper()
                 )
-            except (OSError, IsoInspectionError, PackageBuildError):
+            except (OSError, IsoInspectionError, PackageBuildError) as exc:
                 _fail_bringup(
                     report, "prepare_import", "GUEST_MODULE_DISCOVERY_FAILED",
-                    [296], int((time.perf_counter() - started) * 1000),
+                    [726], int((time.perf_counter() - started) * 1000),
                 )
+                detail = str(exc)
+                if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
+                    print(detail)
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
                 return 1

@@ -481,6 +481,7 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
             out_entry->lba = ext_lba_le;
             out_entry->is_directory = (buf[pos + 25] & 0x02u) != 0;
             out_entry->size = out_entry->is_directory ? 0 : ext_sz_le;
+            out_entry->multi_extent = (buf[pos + 25] & 0x80u) != 0;
             found = true;
             break;
         }
@@ -491,6 +492,97 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
 
     free(buf);
     return found ? 1 : 0;
+}
+
+typedef struct {
+    NkIsoReader *reader;
+    NkIsoModuleWalkCallback callback;
+    void *userdata;
+    size_t directories_visited;
+} NkIsoModuleWalkContext;
+
+static bool nk_iso_module_name_equals(const char *left, const char *right) {
+    while (*left && *right) {
+        if (tolower((unsigned char)*left) != tolower((unsigned char)*right)) {
+            return false;
+        }
+        left++;
+        right++;
+    }
+    return *left == *right;
+}
+
+static NkIsoModuleWalkStatus nk_iso_walk_module_directory(
+    NkIsoModuleWalkContext *context, const char *directory, unsigned depth) {
+    for (uint32_t index = 0;; index++) {
+        NkIsoDirEntry entry;
+        int listed = nk_iso_reader_list(context->reader, directory, index, &entry);
+        if (listed == 0) return NK_ISO_MODULE_WALK_OK;
+        if (listed < 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        if (index == UINT32_MAX) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        if (entry.is_directory) {
+            if (nk_iso_module_name_equals(entry.name, "KMODULE")) continue;
+            if (depth < NK_ISO_MODULE_TREE_MAX_DEPTH) {
+                char child_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];
+                int written;
+                NkIsoModuleWalkStatus status;
+                context->directories_visited++;
+                if (context->directories_visited >
+                    NK_ISO_MODULE_TREE_MAX_DIRECTORIES) {
+                    return NK_ISO_MODULE_WALK_DIRECTORY_LIMIT;
+                }
+                written = snprintf(child_path, sizeof(child_path), "%s/%s",
+                                   directory, entry.name);
+                if (written < 0 || (size_t)written >= sizeof(child_path)) {
+                    return NK_ISO_MODULE_WALK_PATH_LIMIT;
+                }
+                status = nk_iso_walk_module_directory(context, child_path,
+                                                       depth + 1u);
+                if (status != NK_ISO_MODULE_WALK_OK) return status;
+            }
+            continue;
+        }
+        {
+            char member_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];
+            int written = snprintf(member_path, sizeof(member_path), "%s/%s",
+                                   directory, entry.name);
+            if (written < 0 || (size_t)written >= sizeof(member_path)) {
+                return NK_ISO_MODULE_WALK_PATH_LIMIT;
+            }
+            if (!context->callback(member_path, &entry, context->userdata)) {
+                return NK_ISO_MODULE_WALK_CALLBACK_STOPPED;
+            }
+        }
+    }
+}
+
+NkIsoModuleWalkStatus nk_iso_reader_walk_module_tree(
+    NkIsoReader *reader, NkIsoModuleWalkCallback callback, void *userdata) {
+    static const char *const roots[] = {
+        "PSP_GAME/SYSDIR", "PSP_GAME/USRDIR"
+    };
+    NkIsoModuleWalkContext context;
+    if (!reader || !callback) return NK_ISO_MODULE_WALK_INVALID_ARGUMENT;
+    memset(&context, 0, sizeof(context));
+    context.reader = reader;
+    context.callback = callback;
+    context.userdata = userdata;
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        uint32_t lba = 0, size = 0;
+        bool is_directory = false;
+        if (nk_iso_reader_lookup(reader, roots[i], &lba, &size, &is_directory) != 0) {
+            continue;
+        }
+        if (!is_directory || size == 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        context.directories_visited++;
+        if (context.directories_visited > NK_ISO_MODULE_TREE_MAX_DIRECTORIES) {
+            return NK_ISO_MODULE_WALK_DIRECTORY_LIMIT;
+        }
+        NkIsoModuleWalkStatus status = nk_iso_walk_module_directory(
+            &context, roots[i], 0);
+        if (status != NK_ISO_MODULE_WALK_OK) return status;
+    }
+    return NK_ISO_MODULE_WALK_OK;
 }
 
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
