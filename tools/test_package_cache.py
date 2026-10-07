@@ -251,6 +251,53 @@ class PackageCacheTests(unittest.TestCase):
         self.assertTrue(compatible.generated_c_reusable)
         self.assertIn("aot:runtime_abi_epoch", compatible.reasons)
 
+    def test_title_input_identity_binds_source_media_revisions(self) -> None:
+        source_media = {
+            "executable": {
+                "path": "PSP_GAME/SYSDIR/EBOOT.BIN",
+                "sha256": "6" * 64,
+            },
+            "modules": [{
+                "name": "fixture.prx",
+                "path": "PSP_GAME/USRDIR/fixture.prx",
+                "sha256": "7" * 64,
+            }],
+        }
+        original = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[{"name": "fixture.prx", "sha256": "3" * 64}],
+            source_media=source_media,
+        )
+        self.assertEqual(package_cache.validate_title_input_identity(original), original)
+        changed_source = dict(source_media)
+        changed_source["executable"] = {
+            "path": "PSP_GAME/SYSDIR/EBOOT.BIN",
+            "sha256": "8" * 64,
+        }
+        changed = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[{"name": "fixture.prx", "sha256": "3" * 64}],
+            source_media=changed_source,
+        )
+        self.assertIn(
+            "source executable changed",
+            package_cache.title_input_identity_changes(original, changed),
+        )
+        invalid = dict(original)
+        invalid["source_media"] = {
+            "executable": {
+                "path": "PSP_GAME/SYSDIR/../EBOOT.BIN",
+                "sha256": "6" * 64,
+            },
+            "modules": [],
+        }
+        with self.assertRaisesRegex(package_cache.PackageCacheError, "source executable path"):
+            package_cache.validate_title_input_identity(invalid)
+
     def test_cache_key_differs_by_public_safe_mode(self) -> None:
         key_public = self.key(compile_flags=package_cache.native_compile_flags(public_safe=True))
         key_private = self.key(compile_flags=package_cache.native_compile_flags(public_safe=False))
@@ -572,6 +619,7 @@ class PackageCacheTests(unittest.TestCase):
             executable_sha256=executable_hash,
             modules=[],
         )
+        self.assertEqual(package_cache.validate_title_input_identity(identity), identity)
         environment = dict(os.environ)
         for mode in (None, True, False):
             with mock.patch.object(

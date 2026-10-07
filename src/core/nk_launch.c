@@ -822,7 +822,7 @@ NkRuntimePackageStatus nk_launch_validate_runtime_package(
     }
     return nk_title_manifest_validate_aot_package(
         user_data_root, game->disc_id, game->title_id, game->is_experimental,
-        game->selected_executable, game->disc_version,
+        game->selected_executable, game->disc_version, game->iso_path,
         SR_CPUSTATE_ABI_VERSION, out_info,
         reason, reason_size);
 }
@@ -838,7 +838,7 @@ bool nk_launch_runtime_package_cache_identity(
     }
     return nk_title_manifest_aot_package_cache_identity(
         user_data_root, game->disc_id, game->title_id, game->is_experimental,
-        game->selected_executable, game->disc_version,
+        game->selected_executable, game->disc_version, game->iso_path,
         SR_CPUSTATE_ABI_VERSION, out_identity);
 }
 
@@ -1201,8 +1201,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         }
     }
 
-    /* Revalidate the v1 package immediately before spawn so a replaced
-       manifest, executable, image, or title identity fails closed. */
+    /* Revalidate the package and current source media immediately before spawn
+       so changed executable/module revisions fail closed. */
     if (session->package_launch) {
         NkGameEntry identity;
         NkRuntimePackageInfo current;
@@ -1212,6 +1212,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         snprintf(identity.title_id, sizeof(identity.title_id), "%s", session->title_id);
         snprintf(identity.selected_executable, sizeof(identity.selected_executable), "%s",
                  session->selected_executable);
+        snprintf(identity.iso_path, sizeof(identity.iso_path), "%s",
+                 session->iso_path);
         identity.is_experimental = session->experimental_package;
         NkRuntimePackageStatus status = nk_launch_validate_runtime_package(
             session->user_data_root, &identity, &current, gate_error,

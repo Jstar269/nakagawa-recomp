@@ -1337,19 +1337,10 @@ void player_app_populate_sample_games(PlayerApp *app) {
         player_app_sync_library(app);
     }
 
-    /* The display fixture is the only public title whose runtime is BUILT under
-       the layout nk_launch.c resolves (build/<title_id>/<title_id>), so it is the
-       one demo entry whose PLAY NOW can actually start a runtime -- after
-       `mingw32-make display-smoke`. Without it the demo library shows only titles
-       that cannot launch, which is what made the launch path look implemented
-       when it had never once been reached.
-
-       is_prepared is PROBED rather than asserted. Claiming prepared when the
-       runtime has not been built would put PLAY NOW in front of a launch that
-       cannot work; claiming unprepared when it HAS been built sends the user to
-       the preparation view, which in this build only says no pipeline is
-       connected. The probe uses the launcher's own candidate search, so the card
-       and the launch cannot disagree. */
+    /* The display fixture's generator is not source media. Even when its
+       runtime artifacts exist, the package cannot be reported ready without
+       the exact ISO revision required by launch validation. Keep the demo card
+       truthful until the fixture has a source ISO and matching private identity. */
     GameRecord disp;
     memset(&disp, 0, sizeof(disp));
     snprintf(disp.disc_id, sizeof(disp.disc_id), "TEST00006");

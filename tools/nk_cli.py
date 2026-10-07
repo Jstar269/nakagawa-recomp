@@ -384,6 +384,82 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
         raise PackageBuildError(f"Could not extract the selected executable to the private cache: {exc}") from exc
 
 
+def _hash_iso_member(iso_path: Path, member: tuple[str, ...]) -> str | None:
+    """Hash one bounded ISO member without copying its contents into memory."""
+    try:
+        file_size = iso_path.stat().st_size
+        with iso_path.open("rb") as source:
+            extent = _lookup_iso_file(source, file_size, member)
+            if extent is None:
+                return None
+            lba, size = extent
+            if size <= 0 or size > MAX_EXECUTABLE_BYTES:
+                raise PackageBuildError("A source-media identity member exceeds the supported size bound.")
+            digest = hashlib.sha256()
+            offset = 0
+            while offset < size:
+                count = min(64 * 1024, size - offset)
+                block = _read_iso_extent(source, file_size, lba, size, offset, count)
+                if len(block) != count:
+                    raise PackageBuildError("A source-media identity member could not be read completely.")
+                digest.update(block)
+                offset += count
+            return digest.hexdigest()
+    except IsoInspectionError as exc:
+        raise PackageBuildError(f"Source-media identity member could not be read: {exc}") from exc
+    except OSError as exc:
+        raise PackageBuildError(f"Could not read the source media for title identity: {exc}") from exc
+
+
+def _source_media_identity(iso_path: Path, selected: str,
+                           manifest: dict) -> dict:
+    executable_path = f"PSP_GAME/SYSDIR/{selected}"
+    executable_hash = _hash_iso_member(
+        iso_path, ("PSP_GAME", "SYSDIR", selected)
+    )
+    if executable_hash is None:
+        raise PackageBuildError(
+            f"Selected executable {selected} is not reachable in the source ISO."
+        )
+
+    source_modules = []
+    for module in sorted(
+        (item for item in manifest.get("modules", [])
+         if item.get("role") == "guest-prx" and item.get("required", False)),
+        key=lambda item: item["name"],
+    ):
+        members = []
+        guest_path = module.get("guest_path")
+        if isinstance(guest_path, str) and ":" in guest_path:
+            device, relative = guest_path.split(":", 1)
+            guest_components = tuple(component for component in relative.split("/") if component)
+            if device.casefold() in {"disc0", "umd0"} and \
+                    guest_components[:1] and guest_components[0].casefold() == "psp_game":
+                members.append(guest_components)
+        name = module["name"]
+        members.extend((
+            ("PSP_GAME", "SYSDIR", name),
+            ("PSP_GAME", "SYSDIR", "PRX", name),
+            ("PSP_GAME", "USRDIR", name),
+            ("PSP_GAME", "USRDIR", "PRX", name),
+        ))
+        for member in dict.fromkeys(members):
+            digest = _hash_iso_member(iso_path, member)
+            if digest is None:
+                continue
+            source_modules.append({
+                "name": name,
+                "path": "/".join(member),
+                "sha256": digest,
+            })
+            break
+
+    return {
+        "executable": {"path": executable_path, "sha256": executable_hash},
+        "modules": source_modules,
+    }
+
+
 def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
     """Find bounded ELF/PRX candidates in the title's own SYSDIR and USRDIR."""
     file_size = iso_path.stat().st_size
@@ -1342,6 +1418,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             disc_version=metadata.version,
             param_sfo=dict(metadata.param_sfo_facts),
             container=dict(metadata.container_metadata),
+            source_media=_source_media_identity(iso_path, manifest_selected, manifest),
         )
         if requires_local_identity and recorded_identity is not None and not register_local_identity:
             identity_changes = package_cache.title_input_identity_changes(

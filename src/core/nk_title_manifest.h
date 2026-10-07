@@ -138,6 +138,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     bool is_experimental,
     const char *selected_executable,
     const char *current_disc_version,
+    const char *source_iso_path,
     uint32_t player_abi_version,
     NkRuntimePackageInfo *out_info,
     char *reason,
@@ -155,6 +156,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     bool is_experimental,
     const char *selected_executable,
     const char *current_disc_version,
+    const char *source_iso_path,
     uint32_t player_abi_version,
     char out_identity[65]
 );

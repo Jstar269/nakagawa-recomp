@@ -212,7 +212,8 @@ def synthetic_ready_package(runtime_root: Path) -> None:
         "modules": [],
         "param_sfo": None,
         "psp_header": None,
-        "schema_version": 1,
+        "schema_version": 2,
+        "source_media": None,
     }
     identity_text = json.dumps(identity, separators=(",", ":")) + "\n"
     identity_digest = canonical_hash(identity)

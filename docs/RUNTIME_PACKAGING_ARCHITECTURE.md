@@ -138,7 +138,7 @@ an unsupported path is rejected as `PACKAGE_UNSUPPORTED_PATH` (#296).
 | `format`, `schema_version` | `nakagawa-aot-package`, version `2`. |
 | `title` | Manifest `id`, display name, kind, raw manifest SHA-256, and protected-semantics digest. |
 | `inputs` | SHA-256 for the manifest, executable ELF, selected PRXs with load addresses, and optional PSP header. Absolute input paths are omitted. |
-| `title_input_identity` | Versioned exact local inputs: manifest/profile and schema, DISC_ID/region/DISC_VERSION, selected PARAM.SFO facts, ISO container facts, decrypted main executable name/hash, required guest PRX names/hashes, and optional PSP-header hash/magic. Retail hashes remain only in per-user package data. |
+| `title_input_identity` | Versioned exact local inputs: manifest/profile and schema, DISC_ID/region/DISC_VERSION, selected PARAM.SFO facts, ISO container facts, decrypted main executable name/hash, required guest PRX names/hashes, raw selected executable and required module hashes from their ISO members, and optional PSP-header hash/magic. Retail hashes remain only in per-user package data. |
 | `runtime` | `CpuState` ABI version and header hash, resolved guest run entry, runtime contract, bindings, and required bindings. |
 | `executable` | Relative native executable path and hash plus the guest ELF entry address. |
 | `generated_objects` | Sorted relative object paths and SHA-256 hashes. |
@@ -153,8 +153,11 @@ completion marker. Native package validation compares the package against that
 current per-user record and the selected library entry's SFO revision before
 launch. It reports changed classes such as `main executable`, a named guest
 module, `SFO revision`, or `manifest/profile`; it never prints input hashes.
-Revision qualification that needs a title-specific compatibility decision is
-an explicit boundary and remains in the works under [issue #315](https://github.com/Jstar269/nakagawa-recomp/issues/315).
+When a library entry names a source ISO, validation also hashes the selected
+executable and each recorded required module directly from that ISO before a
+cached result can be reused. This rejects changed source bytes even when
+`DISC_ID` and `DISC_VERSION` remain the same, and launch repeats the check
+against the selected ISO before starting the runtime ([issue #315](https://github.com/Jstar269/nakagawa-recomp/issues/315)).
 
 Validation is memoized for the life of a process, so the memo is keyed on a
 status identity that covers every input it must not go stale against: the
