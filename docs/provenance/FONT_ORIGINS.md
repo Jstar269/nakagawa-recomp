@@ -109,7 +109,7 @@ From nassau-tk's notes in PPSSPP #13718 (2020-11-26) and #13589:
 Tool licence status: pgftool carries **no licence file** (single-merge repo,
 HEAD `a9b3114`; verified by clone 2026-09-17), so its terms are UNKNOWN —
 all-rights-reserved by default. Tool licensing does not automatically
-encumber output files, but thisproject must not adopt pgftool code. The project-owned converter is
+encumber output files, but this project must not adopt pgftool code. The project-owned converter is
 specified in `docs/cleanroom/PGF_CONVERTER_SPEC.md` and implemented in
 `tools/pgf_writer.py` and `tools/ttf2pgf.py` (#313): written from a behaviour
 specification, not from any emulator or tool source. `ttf2pgfj.exe`

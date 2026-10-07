@@ -111,7 +111,11 @@ manifest in memory first and writes only after every stage succeeds.
 2. **Curve flattening.** Quadratic contours are expanded with implied
    on-curve midpoints, then subdivided by exact rational de Casteljau halving
    until the second-difference manhattan norm is at most 2 (26.6 units), or a
-   hard depth of 24. No floating point participates anywhere.
+   hard depth of 24. No floating point participates anywhere. Each flattened
+   vertex is then rounded once to an integer 26.6 coordinate by
+   `floor(v + 1/2)`, ties toward positive infinity, the same rule as scaling.
+   Contour `endPtsOfContours` indices must strictly increase; a violation is
+   refused as `malformed-glyph`.
 3. **Bounding box.** `left = floor(min_x / 64)`, `right = ceil(max_x / 64)`
    (likewise vertically) over the flattened, rounded outline. Flattening plus
    final rounding stays within `2/8 + 1/2` = 0.75 units of the true curve,

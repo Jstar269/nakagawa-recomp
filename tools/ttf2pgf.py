@@ -663,6 +663,7 @@ def _parse_cmap4(cmap: bytes, rel: int) -> dict[int, int]:
         start, end = starts[index], ends[index]
         if start > end:
             continue
+        # U+FFFF is a noncharacter and the format 4 terminator segment ends there, so it is never mapped.
         for code in range(start, min(end, MAX_CODE - 1) + 1):
             if ranges[index] == 0:
                 glyph = (code + deltas[index]) & 0xFFFF
@@ -712,6 +713,15 @@ def _parse_simple_glyph(glyf: bytes, start: int, end: int, contours: int, gid: i
         raise _refuse("malformed-glyph", f"simple glyph {gid} is truncated in its contour ends")
     ends = struct.unpack_from(f">{contours}H", glyf, pos)
     pos += 2 * contours
+    # Every TrueType contour holds at least one point, so end indices strictly increase.
+    previous = -1
+    for last in ends:
+        if last <= previous:
+            raise _refuse(
+                "malformed-glyph",
+                f"simple glyph {gid} endPts are not strictly increasing ({previous} then {last})",
+            )
+        previous = last
     point_total = ends[-1] + 1
     instructions = _u16(glyf, pos, "glyf")
     pos += 2 + instructions
@@ -778,10 +788,12 @@ def _parse_simple_glyph(glyf: bytes, start: int, end: int, contours: int, gid: i
     for last in ends:
         if last >= len(points):
             raise _refuse("malformed-glyph", f"simple glyph {gid} endPts entry {last} exceeds the point count")
-        contour = points[first : last + 1]
-        if contour:
-            out.append(contour)
+        out.append(points[first : last + 1])
         first = last + 1
+    # The final end index must name the final point.  The flag loop already sizes
+    # points to ends[-1] + 1, so this is a fail-closed invariant, not a new input rule.
+    if first != len(points):
+        raise _refuse("malformed-glyph", f"simple glyph {gid} contours cover {first} of {len(points)} points")
     return out
 
 
@@ -800,9 +812,21 @@ def _to26_6(value: int | Fraction, ppem: int, units_per_em: int) -> int:
     return math.floor(rational * ppem * 64 / units_per_em + Fraction(1, 2))
 
 
+def _midpoint(a: tuple, b: tuple) -> tuple[Fraction, Fraction]:
+    """Exact midpoint of two points: ints or Fractions in, Fractions out, never floats."""
+    return Fraction(a[0] + b[0], 2), Fraction(a[1] + b[1], 2)
+
+
 def _round26_6(value: int | Fraction) -> int:
+    """Round one exact 26.6 coordinate to an integer: floor(value + 1/2), ties toward +infinity.
+
+    Applied once to each flattened vertex, after all rational arithmetic.  A float
+    here is a programming error, so it is rejected rather than rounded.
+    """
     if isinstance(value, int):
         return value
+    if not isinstance(value, Fraction):
+        raise TypeError(f"26.6 coordinate must be an int or Fraction, not {type(value).__name__}")
     return math.floor(value + Fraction(1, 2))
 
 
@@ -822,7 +846,7 @@ def _expand_contour(points: list[tuple]) -> list[tuple]:
         points = points[pivot:] + points[:pivot]
     else:
         first, last = points[0], points[-1]
-        mid = ((first[0] + last[0]) / 2, (first[1] + last[1]) / 2)
+        mid = _midpoint(first, last)
         points = [(mid[0], mid[1], True), *points]
 
     segments: list[tuple] = []
@@ -841,7 +865,7 @@ def _expand_contour(points: list[tuple]) -> list[tuple]:
         else:
             control = (x, y)
             if pending is not None:
-                implied = ((pending[0] + control[0]) / 2, (pending[1] + control[1]) / 2)
+                implied = _midpoint(pending, control)
                 segments.append(("Q", cursor, pending, implied))
                 cursor = implied
             pending = control
@@ -864,9 +888,9 @@ def _flatten_quad(a: tuple, control: tuple, b: tuple, depth: int, out: list[tupl
     if depth >= MAX_CURVE_DEPTH or abs(second_x) + abs(second_y) <= FLATNESS:
         out.append(b)
         return
-    left_control = ((a[0] + control[0]) / 2, (a[1] + control[1]) / 2)
-    right_control = ((control[0] + b[0]) / 2, (control[1] + b[1]) / 2)
-    middle = ((left_control[0] + right_control[0]) / 2, (left_control[1] + right_control[1]) / 2)
+    left_control = _midpoint(a, control)
+    right_control = _midpoint(control, b)
+    middle = _midpoint(left_control, right_control)
     _flatten_quad(a, left_control, middle, depth + 1, out)
     _flatten_quad(middle, right_control, b, depth + 1, out)
 
@@ -896,6 +920,8 @@ _EMPTY_RASTER = _Raster(edges=(), left=0, bottom=0, right=0, top=0)
 def _plan_raster(contours: list[list[tuple]], ppem: int, units_per_em: int) -> _Raster:
     """Scale, flatten, and bound one outline at the given size.
 
+    Scaling and flattening stay exact; each flattened vertex is then rounded once
+    by ``_round26_6`` (floor(v + 1/2), ties toward +infinity) before edges form.
     The bounding box uses the flattened-and-rounded outline, which stays within
     ``FLATNESS/8 + 1/2`` 26.6 units of the true curve -- far below the 4-unit
     offset of the first sub-sample centre -- so the grid can never clip a
@@ -997,8 +1023,8 @@ def _rasterize(raster: _Raster) -> tuple[int, int, tuple[int, ...]]:
                 nxt = crossings[index + 1][0]
                 # Sub-column centres are 8*j + 4 (local 26.6); keep strictly
                 # inside the active span so shared edges never double-count.
-                j_min = math.floor((position - (SUB_PIXEL // 2)) / SUB_PIXEL) + 1
-                j_max = math.ceil((nxt - (SUB_PIXEL // 2)) / SUB_PIXEL) - 1
+                j_min = (position - (SUB_PIXEL // 2)) // SUB_PIXEL + 1
+                j_max = -((SUB_PIXEL // 2 - nxt) // SUB_PIXEL) - 1
                 if j_max < j_min:
                     continue
                 j_min = max(j_min, 0)

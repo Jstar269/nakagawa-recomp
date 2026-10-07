@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from fractions import Fraction
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -478,6 +479,102 @@ class CompositeRefusalTests(unittest.TestCase):
         with self.assertRaises(TtfConvertError) as caught:
             convert(data, input_path="crafted.ttf", output_path="out.pgf", codes=(code, code))
         self.assertEqual(caught.exception.reason, "composite-too-deep")
+
+
+class MalformedGlyphTests(unittest.TestCase):
+    """Crafted endPtsOfContours values in the pinned glyf table are refused by name."""
+
+    def setUp(self) -> None:
+        self.data = FONT.read_bytes()
+        self.font = ttf2pgf._Ttf(self.data)
+
+    def _with_end_points(self, code: int, ends: tuple[int, ...]) -> bytes:
+        gid = self.font.glyph_id(code)
+        assert gid is not None
+        start = self.font.loca[gid]
+        self.assertEqual(struct.unpack_from(">h", self.font.glyf, start)[0], len(ends), "fixture assumption")
+        glyf_offset = struct.unpack_from(">I", self.data, _directory(self.data)["glyf"] + 8)[0]
+        return _patch(self.data, glyf_offset + start + 10, struct.pack(f">{len(ends)}H", *ends))
+
+    def _assert_glyph_refused(self, code: int, ends: tuple[int, ...]) -> None:
+        data = self._with_end_points(code, ends)
+        with self.assertRaises(TtfConvertError) as caught:
+            convert(data, input_path="crafted.ttf", output_path="out.pgf", codes=(code, code))
+        self.assertEqual(caught.exception.reason, "malformed-glyph")
+
+    def test_duplicate_end_point_index_is_refused(self) -> None:
+        # 'O' has endPts (10, 21); a repeated index would silently drop the second contour.
+        self._assert_glyph_refused(0x4F, (10, 10))
+
+    def test_decreasing_middle_end_point_index_is_refused(self) -> None:
+        # 'B' has endPts (14, 22, 30); a decreasing middle index would overlap contours.
+        self._assert_glyph_refused(0x42, (14, 10, 30))
+
+    def test_last_end_point_beyond_the_glyph_data_is_refused(self) -> None:
+        # The last index implies 41 points, but 'O' carries only 22.
+        self._assert_glyph_refused(0x4F, (10, 40))
+
+
+class ExactArithmeticTests(unittest.TestCase):
+    """Implied midpoints and de Casteljau halvings are exact rationals; no float reaches the rasterizer."""
+
+    def test_implied_midpoint_of_large_odd_coordinates_is_exact(self) -> None:
+        # 2**60 + 1 is not representable as a float; a float midpoint would round it to 2**59.
+        big = 2**60 + 1
+        segments = ttf2pgf._expand_contour([(big, 0, False), (0, 0, False)])
+        implied_x = segments[0][3][0]
+        self.assertEqual(implied_x, Fraction(big, 2))
+        self.assertIsInstance(implied_x, Fraction)
+
+    def test_expanded_contour_contains_no_float(self) -> None:
+        segments = ttf2pgf._expand_contour([(0, 0, False), (3, 0, False), (3, 3, False), (0, 3, False)])
+        self.assertTrue(segments)
+        for segment in segments:
+            for point in segment[1:]:
+                for coordinate in point:
+                    self.assertNotIsInstance(coordinate, float)
+
+    def test_flattened_quadratic_contains_only_exact_coordinates(self) -> None:
+        out: list[tuple] = []
+        ttf2pgf._flatten_quad((0, 0), (1, 2), (2, 0), 0, out)
+        self.assertGreater(len(out), 1, "the curve must subdivide for this check to mean anything")
+        for point in out:
+            for coordinate in point:
+                self.assertIsInstance(coordinate, (int, Fraction))
+                self.assertNotIsInstance(coordinate, float)
+
+    def test_flattened_vertices_round_half_toward_positive_infinity(self) -> None:
+        self.assertEqual(ttf2pgf._round26_6(Fraction(5, 2)), 3)
+        self.assertEqual(ttf2pgf._round26_6(Fraction(-5, 2)), -2)
+        self.assertEqual(ttf2pgf._round26_6(7), 7)
+
+    def test_float_coordinates_are_rejected_not_rounded(self) -> None:
+        with self.assertRaises(TypeError):
+            ttf2pgf._round26_6(2.5)
+
+
+def _format4_subtable(segments: list[tuple[int, int, int]]) -> bytes:
+    """A format 4 cmap subtable of (start, end, idDelta) segments with no glyphIdArray."""
+    count = len(segments)
+    header = struct.pack(">HHHHHHH", 4, 16 + 8 * count, 0, 2 * count, 0, 0, 0)
+    ends = struct.pack(f">{count}H", *(end for _, end, _ in segments))
+    starts = struct.pack(f">{count}H", *(start for start, _, _ in segments))
+    deltas = struct.pack(f">{count}h", *(delta for _, _, delta in segments))
+    return header + ends + struct.pack(">H", 0) + starts + deltas + struct.pack(f">{count}H", *([0] * count))
+
+
+class CmapTerminatorTests(unittest.TestCase):
+    """U+FFFF is a noncharacter; the format 4 terminator segment must never map it."""
+
+    def test_terminator_segment_does_not_map_u_ffff(self) -> None:
+        # If the terminator were mapped, idDelta 5 would send U+FFFF to glyph 4.
+        subtable = _format4_subtable([(0x41, 0x43, 0), (0xFFFF, 0xFFFF, 5)])
+        self.assertEqual(ttf2pgf._parse_cmap4(subtable, 0), {0x41: 0x41, 0x42: 0x42, 0x43: 0x43})
+
+    def test_range_ending_at_u_ffff_stops_before_u_ffff(self) -> None:
+        mapping = ttf2pgf._parse_cmap4(_format4_subtable([(0xFFF0, 0xFFFF, 0)]), 0)
+        self.assertEqual(sorted(mapping), list(range(0xFFF0, 0xFFFF)))
+        self.assertNotIn(0xFFFF, mapping)
 
 
 class MetricTargetTests(unittest.TestCase):
