@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -77,6 +78,19 @@ class PackageCacheTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_native_build_report_byte_ceiling_matches_python(self) -> None:
+        header = (ROOT / "src/core/nk_title_manifest.h").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"(?m)^#define NK_BUILD_REPORT_MAX_BYTES \((\d+) \* 1024 \* 1024\)$",
+            header,
+        )
+        self.assertIsNotNone(match)
+        assert match is not None
+        native_limit = int(match.group(1)) * 1024 * 1024
+        self.assertEqual(native_limit, package_cache.MAX_BUILD_REPORT_JSON_BYTES)
 
     def key(self, **overrides):
         values = {
