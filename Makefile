@@ -855,9 +855,9 @@ PUBLIC_TARGETS := \
 	memory-watch-selftest \
 	asset-index-selftest \
 	fp-convert-selftest \
-	ge-raster-ref-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
+	ge-raster-ref-selftest \
 	vfpu-interp-selftest \
 	atrac3p-selftest \
 	atrac3p-bridge-selftest \
@@ -967,9 +967,9 @@ HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation s
 HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
-HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
+HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
 HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
 HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
@@ -1942,6 +1942,15 @@ fp-convert-selftest:
 		src/rt/fp_convert_selftest.c -lm
 	$(BUILD_DIR)/fp_convert_selftest.exe
 
+# Production-backend regression for the historical repeated-adoption RAM runaway.
+# This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
+# the ordinary coroutine implementation itself keeps one stable main identity.
+coro-selftest:
+	$(CC) $(CFLAGS) -o $(BUILD_DIR)/coro_selftest.exe \
+		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
+		$(if $(filter Windows_NT,$(OS)),-lpsapi,)
+	$(BUILD_DIR)/coro_selftest.exe
+
 # ge-raster-ref-selftest — project-authored GE triangle setup and rasterization
 # reference model (issue #696): 12.4 snapping, top-left coverage with a tiling
 # oracle, leftmost-anchored affine planes over the 256-segment setup reciprocal
@@ -1953,15 +1962,6 @@ ge-raster-ref-selftest:
 	$(BUILD_DIR)/ge_raster_ref_selftest.exe
 
 native-core-tests: ge-raster-ref-selftest
-
-# Production-backend regression for the historical repeated-adoption RAM runaway.
-# This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
-# the ordinary coroutine implementation itself keeps one stable main identity.
-coro-selftest:
-	$(CC) $(CFLAGS) -o $(BUILD_DIR)/coro_selftest.exe \
-		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
-		$(if $(filter Windows_NT,$(OS)),-lpsapi,)
-	$(BUILD_DIR)/coro_selftest.exe
 
 # hle-thread-selftest — executable production-HLE ThreadMan/IoFileMgr regression suite.
 # Links real hle.c, includes real sched.c for a controlled synthetic scheduler
