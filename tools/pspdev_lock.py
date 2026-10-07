@@ -23,7 +23,7 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOCK = ROOT / "assets" / "upstream" / "pspdev.lock.json"
 
-SCHEMA = 1
+SCHEMA = 2
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 RELEASE_RE = re.compile(r"^v20[0-9]{6}$")
@@ -196,6 +196,7 @@ def validate_lock(data: dict[str, Any], *, require_local: bool = False) -> list[
             "release",
             "commit",
             "license_expression",
+            "archive_asset",
             "archive_sha256",
             "container_digest",
         },
@@ -209,6 +210,11 @@ def validate_lock(data: dict[str, Any], *, require_local: bool = False) -> list[
     release = _expect_string(distribution["release"], "distribution.release")
     if not RELEASE_RE.fullmatch(release):
         raise LockError("distribution.release must have the form vYYYYMMDD")
+    # The archive asset name makes the distribution asset class (Debian vs
+    # Ubuntu vs container packaging) explicit instead of implicit (#708).
+    _expect_string(
+        distribution["archive_asset"], "distribution.archive_asset"
+    )
     _validate_commit(distribution["commit"], "distribution.commit")
     _expect_string(
         distribution["license_expression"], "distribution.license_expression"
@@ -378,7 +384,8 @@ def render_report(data: dict[str, Any], pending: list[str]) -> str:
         f"- Schema: `{data['schema']}`",
         f"- Reviewed: `{data['reviewed_at']}`",
         f"- Distribution: `{data['distribution']['release']}` at "
-        f"`{data['distribution']['commit']}`",
+        f"`{data['distribution']['commit']}` "
+        f"(asset `{data['distribution']['archive_asset']}`)",
         f"- Snapshot kind: `{data['snapshot']['kind']}`",
         f"- Local verification: `{data['local_verification']['status']}`",
         "",
