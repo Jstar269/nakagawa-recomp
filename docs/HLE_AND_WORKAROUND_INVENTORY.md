@@ -144,7 +144,7 @@ Semantic handler census: **379** handlers across **21** API families, covering *
   - Evidence: fixtures/display_smoke/generate.py:flight_smoke
   - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
-  - Limitation: Memory Stick devctl callback events unmodeled (#281, #341)
+  - Limitation: Memory Stick devctl callback events unmodeled (#341)
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)
@@ -160,7 +160,7 @@ Semantic handler census: **379** handlers across **21** API families, covering *
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
 - **`h_ReferThreadStatus`** (`sceKernel`): `sceKernelReferThreadStatus` (0x17c1684e)
-  - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#309)
+  - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
@@ -195,7 +195,7 @@ Semantic handler census: **379** handlers across **21** API families, covering *
 #### Compatibility Handlers (Named Limitations)
 
 - **`h_UmdGetErrorStat`** (`sceUmd`): `sceUmdGetErrorStat` (0x20628e6f)
-  - Limitation: returns no error under virtual ISO drive; other drive-error states unmodeled (#281, #341)
+  - Limitation: returns no error under virtual ISO drive; other drive-error states unmodeled (#341)
 
 #### Controlled Unsupported Dedicated Handlers
 

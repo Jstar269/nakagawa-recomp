@@ -3636,7 +3636,7 @@ static void render_prerequisite_consent(SDL_Renderer *ren, PlayerApp *app,
     for (size_t i = 0; i < count; i++) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (#304 license review in the works)" : item->license;
+            ? "NOASSERTION (license review in the works; #342)" : item->license;
         char row[640];
         snprintf(row, sizeof(row), "%s %s | %s | %llu bytes | %s",
                  item->name, item->version, item->host,
@@ -3739,7 +3739,7 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         if (!item->installed) continue;
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (#304 license review in the works)" : item->license;
+            ? "NOASSERTION (license review in the works; #342)" : item->license;
         char row[384];
         snprintf(row, sizeof(row), "%s %s | %s", item->name,
                  item->version, license);

@@ -1099,7 +1099,7 @@ def encode_loose_content_roots(
     Rows end in LF. An empty declaration produces an empty
     value, matching the native launcher's explicit inherited-value mask.
     """
-    boundary = "Loose-content root binding #289 (in the works)"
+    boundary = "Loose-content root binding (in the works; #308)"
     if not isinstance(validated_manifest, dict):
         raise TitleManifestError(f"{boundary}: validated manifest must be an object")
     filesystem = validated_manifest.get("filesystem")

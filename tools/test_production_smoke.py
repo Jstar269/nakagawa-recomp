@@ -1674,7 +1674,7 @@ class TestSanitizedBringup(unittest.TestCase):
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("before its first PSP kernel import", summary)
         self.assertIn("in the works (", summary)
-        self.assertIn("#285", summary)
+        self.assertIn("#308", summary)
         self.assertIn("#308", summary)
         nk_cli.validate_bringup_report(report)
 
@@ -1703,7 +1703,7 @@ class TestSanitizedBringup(unittest.TestCase):
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("before PSP display framebuffer setup", summary)
         self.assertIn("in the works (", summary)
-        self.assertIn("#285", summary)
+        self.assertIn("#308", summary)
         self.assertIn("#308", summary)
         nk_cli.validate_bringup_report(report)
 

@@ -2854,7 +2854,7 @@ void player_app_build_compatibility_preflight(
     if (app->inspecting_game.is_experimental) {
         static const unsigned int issues[] = { 285, 308 };
         player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
-                             "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
+                             "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#308); generic title intake is in the works (#308).",
                              issues, 2);
     }
 

@@ -1500,7 +1500,7 @@ def inspect_compatibility_preflight(
     experimental_check = {
         "code": "EXPERIMENTAL",
         "status": "IN_PROGRESS",
-        "message": "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
+        "message": "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#308); generic title intake is in the works (#308).",
         "issues": [285, 308],
     } if is_experimental else None
 

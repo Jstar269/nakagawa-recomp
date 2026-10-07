@@ -15,7 +15,7 @@ Live join of every exact `sce*` / `__sce*` API named in
 | disposition | meaning | default owner |
 | --- | --- | --- |
 | `missing` | no static HLE registration | #339 (object-model gap) |
-| `registered` | registered only as fake success | #281 |
+| `registered` | registered only as fake success | #363 |
 | `implemented` | dedicated handler; `status` is the semantic maturity | #341 when `unreviewed`, else - |
 | `controlled-unsupported` | deliberate refusal with a documented PSP error | - |
 

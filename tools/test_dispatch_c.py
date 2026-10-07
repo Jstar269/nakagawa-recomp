@@ -186,7 +186,7 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertIn("test_historical_target_shapes_fail_closed", isolation)
 
     def test_rejections_name_the_semantic_boundary_and_tracker(self):
-        self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #285", RECOMP_C)
+        self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #308", RECOMP_C)
         self.assertIn('return "target-not-executable";', RECOMP_C)
 
     def test_broad_swallow_mutation_is_detected(self):

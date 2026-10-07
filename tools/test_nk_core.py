@@ -1010,7 +1010,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
             os.environ,
             {"SR_DATAROOT": "inherited-data-root", "SR_LOOSE_CONTENT_ROOTS": "inherited-root"},
         ):
-            with self.assertRaisesRegex(RuntimeLaunchError, "Loose-content root binding #289"):
+            with self.assertRaisesRegex(RuntimeLaunchError, r"Loose-content root binding \(in the works; #308\)"):
                 RuntimeLauncher(repo_root=self.temp_dir, registry=registry).build_launch_plan(game_dir)
 
     # Hostile 7: a session whose disc and title identities disagree is rejected

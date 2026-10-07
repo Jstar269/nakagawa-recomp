@@ -1071,7 +1071,7 @@ NkResult nk_launch_prepare_session(
                                             session->loose_content_roots,
                                             sizeof(session->loose_content_roots))) {
         snprintf(session->last_error, sizeof(session->last_error),
-                 "Loose-content root binding #289 (in the works) could not be resolved.");
+                 "Loose-content root binding (in the works; #308) could not be resolved.");
         nk_title_catalog_snapshot_release(&title_snapshot);
         return NK_ERROR_FILE_NOT_FOUND;
     }

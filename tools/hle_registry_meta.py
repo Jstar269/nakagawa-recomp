@@ -215,13 +215,13 @@ HANDLER_METADATA = {
     # outside the modeled contract.
     "h_UmdGetErrorStat": {
         "status": "compatibility",
-        "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#281, #341)",
+        "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#341)",
     },
     # Common Memory Stick devctls have explicit outputs; unsupported devices or
     # command pairs remain visible per pair and are summarized under issue #281.
     "h_IoDevctl": {
         "status": "partial",
-        "limitation": "Memory Stick devctl callback events unmodeled (#281, #341)",
+        "limitation": "Memory Stick devctl callback events unmodeled (#341)",
     },
     "h_IoMkdir": {
         "status": "complete",
@@ -257,7 +257,7 @@ HANDLER_METADATA = {
     },
     "h_ReferThreadStatus": {
         "status": "partial",
-        "limitation": "run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#309)",
+        "limitation": "run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)",
     },
     # Mailboxes (issue #339). Measured contracts live in docs/HARDWARE_ORACLE.md
     # (campaign psp-hw-20260917): unknown id 0x8002019B, timeout 0x800201A8 with
