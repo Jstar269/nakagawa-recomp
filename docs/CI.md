@@ -466,14 +466,14 @@ developer runs locally, without private inputs:
 - `windows_runtime` links the native player (`mingw32-make player`), runs
   `player-ui-tests`, executes headless native player UI regressions
   (`mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions`,
-  main part only; the harness forces SDL's dummy video and software render drivers),
+  `smoke` part only; the harness forces SDL's dummy video and software render drivers),
   runs the complete platform ladder
   (`mingw32-make --no-print-directory platform-ladder`), and runs
   `profile-zero-e2e` for the two profile-zero manifests. That gate
   validates the guest ProgramImage, generates a public AOT package, launches it
   through the headless production runtime, and checks all seven named
-  guest-service cases for each manifest. It runs in the existing 25-minute
-  `windows_runtime` job and took about 123 seconds locally for both package
+  guest-service cases for each manifest. It runs in the `routes` part of the
+  25-minute `windows_runtime` job and took about 123 seconds locally for both package
   builds and runtime launches. The guest bytes are the committed
   `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
   fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),

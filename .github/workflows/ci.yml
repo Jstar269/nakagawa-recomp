@@ -578,13 +578,22 @@ jobs:
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
-    # The synthetic VFPU fuzzer build is ~5.5 of the job's ~11 minutes, so it runs
-    # as its own matrix part in parallel with the other steps. Both parts repeat the
-    # cheap setup/compile steps; needs.windows_runtime.result aggregates both.
+    # The gates are split into parallel matrix parts of comparable length (#694),
+    # measured on hosted runners: the serial job took ~16 minutes, of which ~1.5
+    # is shared setup. Every part repeats the cheap setup and the runtime-object
+    # compile gate; each other step runs in exactly one part, and steps that
+    # depend on one another (the staged smoke on the production smoke) share it.
+    # tools/test_public_ci_wiring.py pins that every gate the serial job ran still
+    # runs in exactly one part. needs.windows_runtime.result aggregates all parts.
+    #   smoke:     production pipeline, AOT-gap, staged smoke, player, UI, display
+    #   ladder:    full platform ladder
+    #   routes:    profile-zero production routes, native core tests
+    #   selftests: cosimulation + mutants, scheduler, dispatch, FP, strbuf, HLE thread
+    #   fuzz:      synthetic VFPU fuzzer build
     strategy:
       fail-fast: false
       matrix:
-        part: [main, fuzz]
+        part: [smoke, ladder, routes, selftests, fuzz]
     timeout-minutes: 25
     # This job's MSYS2 shell has no git on PATH, so the Makefile cannot resolve a
     # revision here; it used to log a raw `process_begin: CreateProcess(NULL, git
@@ -666,11 +675,13 @@ jobs:
           grep -Fx 'CC=clang' <<<"$override_info"
           grep -Fx 'CC_ORIGIN=command line' <<<"$override_info"
 
+      # -j2 uses both vCPUs of the hosted runner for these independent object
+      # compiles (#694); the gate is the same target and the same objects.
       - name: Compile Windows runtime objects through the default compiler path
         shell: msys2 {0}
         run: |
           unset CC
-          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+          mingw32-make -j2 GAME_NAME=ci BUILD_DIR=build/windows-runtime \
             VULKAN_SDK=/ucrt64 runtime-objects
 
       # This is the executable production-path gate. It generates a public
@@ -678,7 +689,7 @@ jobs:
       # links every production runtime object with the real driver, and reaches
       # a real HLE NID through the scheduler before checking the guest sentinel.
       - name: Build and run full production pipeline smoke
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         # The ordinary compile target invokes the repository's PowerShell 7.4
         # asset-copy script after linking. Keep the broader Windows PATH scoped
@@ -697,7 +708,7 @@ jobs:
       # ownership gates interpretation, and the run must hand off to registered
       # AOT region B before the final production-driver assertion can pass.
       - name: Build and run AOT-gap dispatch-seam smoke
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -707,7 +718,7 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
       - name: Run native core test suite on Windows
-        if: matrix.part == 'main'
+        if: matrix.part == 'routes'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -716,7 +727,7 @@ jobs:
       # Hosted build/link gate for the public player/launcher (#294). Link-only
       # proof: the player's GUI smoke remains a developer/display gate.
       - name: Build and link the native player
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -727,7 +738,7 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-tests
 
       - name: Run native player UI regressions headlessly on Windows
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -741,7 +752,7 @@ jobs:
       # build-tree spelling. Depends on the production-smoke step above; the
       # rebuild underneath is incremental, so this re-runs only generate/verify/run.
       - name: Stage and run production smoke outside its build directory
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -754,7 +765,7 @@ jobs:
       # ladder-fs-only step: zero/reloc/gap/sched/fpu/fs/fs-negative/title2/
       # title2-negative.
       - name: Build and run the full platform ladder
-        if: matrix.part == 'main'
+        if: matrix.part == 'ladder'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -771,7 +782,7 @@ jobs:
       # SKIP is a missing host multimedia dependency (Vulkan SDK / SDL3), printed
       # with the reason.
       - name: Build and run profile-zero production routes
-        if: matrix.part == 'main'
+        if: matrix.part == 'routes'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -789,7 +800,7 @@ jobs:
       # SR_VIDEO=offscreen: the assertions are the guest-visible framebuffer
       # word and accepted offscreen-present ordering, so no display is required.
       - name: Build and run display presentation smoke
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -805,7 +816,7 @@ jobs:
       # Without this in CI, the only thing standing between a codegen semantic
       # regression and a title run is a developer remembering to run it.
       - name: Build and run AOT/interpreter cosimulation gate
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -816,14 +827,14 @@ jobs:
       # the gate must fail for every one, and a mutant that only breaks the build
       # is rejected as INVALID rather than counted as a kill.
       - name: Prove the cosimulation comparator is load-bearing
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: |
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-mutants
 
       - name: Build and run scheduler selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -835,21 +846,21 @@ jobs:
       # rather than the scheduler. Without it in CI, the isolation claim rests
       # on a gate that only ever ran on a developer's machine.
       - name: Build and run dispatch isolation selftest matrix
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest
 
       - name: Build and run portable FPU/VFPU conversion selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest
 
       - name: Build and run strbuf checked-append formatting selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -861,7 +872,7 @@ jobs:
       # #315 added the ATRAC3+ bridge; that failure then hid #326 breaking the
       # same target again. Building it in CI is what stops the third recurrence.
       - name: Build and run HLE thread selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
