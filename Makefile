@@ -855,11 +855,14 @@ PUBLIC_TARGETS := \
 	memory-watch-selftest \
 	asset-index-selftest \
 	fp-convert-selftest \
+	ge-float24-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
+	ge-raster-ref-selftest \
 	vfpu-interp-selftest \
 	atrac3p-selftest \
 	atrac3p-bridge-selftest \
+	ge-texture-ref-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
@@ -966,11 +969,14 @@ HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation s
 HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
+HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
+HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
 HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
 HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
+HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
@@ -1870,6 +1876,17 @@ watchpoints-file-selftest:
 		src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c $(LIBS)
 	$(BUILD_DIR)/watchpoints_file_selftest.exe
 
+# ge-texture-ref-selftest — project-authored GE texture sampling reference model
+# (issue #703): 5650/5551/4444 unpacking, CLUT shift/mask, power-of-two wrap and
+# clamp, and 4-bit bilinear filtering under every SPEC_AMBIGUITY reading.
+# Strict C99; not wired into the renderer.  No game inputs.
+ge-texture-ref-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/ge_texture_ref_selftest.exe src/rt/ge_texture_ref_selftest.c src/rt/ge_texture_ref.c -lm
+	$(BUILD_DIR)/ge_texture_ref_selftest.exe
+
+native-core-tests: ge-texture-ref-selftest
+
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
 # src/rt/atrac3p/). Public checks are source-owned (create validation, NULL/
 # oversized/garbage rejection with the nb_samples=0 contract, a deterministic
@@ -1940,6 +1957,17 @@ fp-convert-selftest:
 		src/rt/fp_convert_selftest.c -lm
 	$(BUILD_DIR)/fp_convert_selftest.exe
 
+# ge-float24-selftest — project-authored GE float24, row-sum transform and
+# reciprocal-framework reference model (issue #695): exhaustive format checks,
+# contract vectors and a differential against a second, host-double model of the
+# same rules under every SPEC_AMBIGUITY policy reading.  Strict C99; not wired into the renderer.
+ge-float24-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/ge_float24_selftest.exe src/rt/ge_float24_selftest.c src/rt/ge_float24.c -lm
+	$(BUILD_DIR)/ge_float24_selftest.exe
+
+native-core-tests: ge-float24-selftest
+
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
 # the ordinary coroutine implementation itself keeps one stable main identity.
@@ -1948,6 +1976,18 @@ coro-selftest:
 		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
 		$(if $(filter Windows_NT,$(OS)),-lpsapi,)
 	$(BUILD_DIR)/coro_selftest.exe
+
+# ge-raster-ref-selftest — project-authored GE triangle setup and rasterization
+# reference model (issue #696): 12.4 snapping, top-left coverage with a tiling
+# oracle, leftmost-anchored affine planes over the 256-segment setup reciprocal
+# framework, and the integer colour-factor product, under every SPEC_AMBIGUITY
+# reading.  Strict C99; not wired into the renderer.  No game inputs.
+ge-raster-ref-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/ge_raster_ref_selftest.exe src/rt/ge_raster_ref_selftest.c src/rt/ge_raster_ref.c -lm
+	$(BUILD_DIR)/ge_raster_ref_selftest.exe
+
+native-core-tests: ge-raster-ref-selftest
 
 # hle-thread-selftest — executable production-HLE ThreadMan/IoFileMgr regression suite.
 # Links real hle.c, includes real sched.c for a controlled synthetic scheduler

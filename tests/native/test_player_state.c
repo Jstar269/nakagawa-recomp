@@ -46,6 +46,7 @@
 #define nk_ps_getcwd _getcwd
 #else
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define test_rmdir rmdir
@@ -896,11 +897,59 @@ static void repeat_launch_and_settle(PlayerApp *app, int game_index,
 static uint64_t s_epoch_publication_before = 0;
 static uint64_t s_epoch_publication_after = 0;
 
-static void force_catalog_reload_at_publication(void *ctx) {
-    (void)ctx;
-    s_epoch_publication_before = nk_title_catalog_epoch();
+typedef struct {
+    const char *overlay_path;
+    uint64_t epoch_before;
+    uint64_t epoch_after;
+    bool loaded;
+    char error[512];
+} CatalogReloadAtPublication;
+
+static void reload_catalog_overlay(CatalogReloadAtPublication *reload) {
+    reload->epoch_before = nk_title_catalog_epoch();
     nk_title_catalog_clear_overlay();
-    s_epoch_publication_after = nk_title_catalog_epoch();
+    reload->loaded = nk_title_manifest_load_overlay(
+        reload->overlay_path, reload->error, sizeof(reload->error));
+    reload->epoch_after = nk_title_catalog_epoch();
+}
+
+#if defined(_WIN32) || defined(_WIN64)
+static unsigned __stdcall reload_catalog_overlay_thread(void *ctx) {
+    reload_catalog_overlay((CatalogReloadAtPublication *)ctx);
+    return 0;
+}
+#else
+static void *reload_catalog_overlay_thread(void *ctx) {
+    reload_catalog_overlay((CatalogReloadAtPublication *)ctx);
+    return NULL;
+}
+#endif
+
+static void force_catalog_reload_at_publication(void *ctx) {
+    CatalogReloadAtPublication *reload = (CatalogReloadAtPublication *)ctx;
+    assert(reload != NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    uintptr_t thread = _beginthreadex(NULL, 0,
+                                      reload_catalog_overlay_thread, reload,
+                                      0, NULL);
+    if (!thread) abort();
+    HANDLE handle = (HANDLE)thread;
+    if (WaitForSingleObject(handle, INFINITE) != WAIT_OBJECT_0) abort();
+    CloseHandle(handle);
+#else
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, reload_catalog_overlay_thread, reload) != 0) {
+        abort();
+    }
+    if (pthread_join(thread, NULL) != 0) abort();
+#endif
+    if (!reload->loaded) {
+        fprintf(stderr, "[PLAYER_STATE_TEST] catalog reload failed: %s\n",
+                reload->error);
+    }
+    assert(reload->loaded);
+    s_epoch_publication_before = reload->epoch_before;
+    s_epoch_publication_after = reload->epoch_after;
 }
 #endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
@@ -1805,6 +1854,90 @@ int main(int argc, char **argv) {
         write_experimental_profile_fixture(preflight_root, "ULUS99998",
                                            "experimental-ulus99998", "EBOOT.BIN",
                                            FIXTURE_SHA256);
+
+        /* #670: reading an experimental profile validates its embedded
+         * manifest; it registers nothing. It therefore must not take a parser
+         * overlay slot or publish a catalog generation. Before the fix it
+         * validated through the storing parser, so every experimental package
+         * validation advanced the catalog epoch (invalidating every cached
+         * package status) and, with every overlay slot in use, overwrote the
+         * last slot, which backs a registered overlay: that title vanished from
+         * the catalog and the experimental entry took its place. */
+        nk_title_catalog_clear_overlay();
+        for (int slot = 0; slot < 8; slot++) {
+            char slot_path[1100];
+            char slot_json[1536];
+            snprintf(slot_path, sizeof(slot_path), "%s%cslot-guard-%d.json",
+                     preflight_root, nk_platform_path_separator(), slot);
+            int slot_length = snprintf(slot_json, sizeof(slot_json),
+                "{\"schema_version\":1,\"id\":\"slot-guard-%d\","
+                "\"display_name\":\"Slot Guard %d\",\"kind\":\"retail\","
+                "\"disc\":{\"id\":\"ULUS9973%d\",\"region\":\"NA\","
+                "\"revision_policy\":\"exact-disc-id\"},"
+                "\"executable\":{\"base\":0,\"entry\":0,\"bss_metadata_source\":\"none\","
+                "\"extra_executable_spans\":[]},\"modules\":[],"
+                "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"savedata\","
+                "\"device_prefixes\":[\"disc0:\",\"ms0:\"]},\"hle_profile\":\"generic\","
+                "\"feature_requirements\":[],\"verification_profile\":\"smoke\"}\n",
+                slot, slot, slot);
+            assert(slot_length > 0 && (size_t)slot_length < sizeof(slot_json));
+            write_text_file(slot_path, slot_json);
+            char slot_error[512] = "";
+            if (!nk_title_manifest_load_overlay(slot_path, slot_error, sizeof(slot_error))) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] slot overlay %d: %s\n", slot, slot_error);
+                assert(false);
+            }
+            remove(slot_path);
+        }
+        uint64_t epoch_before_profile_read = nk_title_catalog_epoch();
+        NkTitleEntrySnapshot guard_profile = {0};
+        char guard_hash[65] = "";
+        char guard_error[512] = "";
+        assert(nk_title_manifest_read_experimental_profile(
+            preflight_root, "ULUS99998", "experimental-ulus99998", "EBOOT.BIN",
+            &guard_profile, guard_hash, guard_error, sizeof(guard_error)));
+        assert(strcmp(guard_profile.entry.id, "experimental-ulus99998") == 0);
+        nk_title_catalog_snapshot_release(&guard_profile);
+        assert(nk_title_catalog_epoch() == epoch_before_profile_read);
+        for (int slot = 0; slot < 8; slot++) {
+            char slot_id[32];
+            char slot_disc[16];
+            snprintf(slot_id, sizeof(slot_id), "slot-guard-%d", slot);
+            snprintf(slot_disc, sizeof(slot_disc), "ULUS9973%d", slot);
+            NkTitleEntrySnapshot slot_entry = {0};
+            assert(nk_title_catalog_find_by_id(slot_id, &slot_entry));
+            assert(strcmp(slot_entry.entry.primary_disc_id, slot_disc) == 0);
+            nk_title_catalog_snapshot_release(&slot_entry);
+            assert(nk_title_catalog_find_by_disc_id(slot_disc, &slot_entry));
+            assert(strcmp(slot_entry.entry.id, slot_id) == 0);
+            nk_title_catalog_snapshot_release(&slot_entry);
+        }
+        NkTitleEntrySnapshot leaked_profile = {0};
+        assert(!nk_title_catalog_find_by_id("experimental-ulus99998", &leaked_profile));
+
+        /* Writing a profile validates the same way and must not either. With
+           no executable selected the writer reads nothing from the disc path. */
+        char written_profile_id[64] = "";
+        char write_error[512] = "";
+        if (!nk_title_manifest_write_experimental_profile(
+                "unread.iso", true, "ULUS99997", "Writer Guard", NULL, preflight_root,
+                written_profile_id, sizeof(written_profile_id), write_error,
+                sizeof(write_error))) {
+            fprintf(stderr, "[PLAYER_STATE_TEST] experimental write: %s\n", write_error);
+            assert(false);
+        }
+        assert(strcmp(written_profile_id, "experimental-ulus99997") == 0);
+        assert(nk_title_catalog_epoch() == epoch_before_profile_read);
+        for (int slot = 0; slot < 8; slot++) {
+            char slot_id[32];
+            snprintf(slot_id, sizeof(slot_id), "slot-guard-%d", slot);
+            NkTitleEntrySnapshot slot_entry = {0};
+            assert(nk_title_catalog_find_by_id(slot_id, &slot_entry));
+            nk_title_catalog_snapshot_release(&slot_entry);
+        }
+        assert(!nk_title_catalog_find_by_id("experimental-ulus99997", &leaked_profile));
+        nk_title_catalog_clear_overlay();
+
         NkTitleEntrySnapshot profile_snapshot = {0};
         char profile_hash[65] = "";
         char profile_error[512] = "";
@@ -2728,29 +2861,33 @@ int main(int argc, char **argv) {
         /* 19b. One catalog epoch across package validation and its cache
          * identity (#670).
          *
-         * This is a deterministic interposition test, NOT a concurrency stress
-         * test. The defect it pins is a sequence defect, not a race in the
+         * This is deterministic cross-thread interposition at the publication
+         * checkpoint, NOT a concurrency stress test: the validator blocks
+         * while a second thread clears and reparses a registered overlay, then
+         * joins it before cache insertion, so the two never run at the same
+         * time. Running the reload on another thread proves the catalog lock
+         * and epoch do not depend on the validator's thread identity.
+         * The defect it pins is a sequence defect, not a race in the
          * memory-model sense: validate_aot_package() reads the catalog epoch
          * once for the lookup and then read it a second time when it published,
          * so a reload interleaved anywhere between those two reads produced an
          * entry stamped with one epoch whose status identity digest belonged to
-         * another. A real concurrent reload can only land somewhere in that
-         * window; the seam puts it at the exact publication point, which is the
-         * strongest placement, and does so on every run.
+         * another. The checkpoint puts the clear/reparse exactly between the
+         * snapshot and publication on every run.
          *
          * That is why the assertions below are sufficient and provable rather
          * than probabilistic: the epoch provably advanced between the snapshot
          * and the publication, the digest provably is epoch-sensitive, and the
          * published entry therefore either carries the snapshot epoch with its
-         * own epoch's digest (correct) or mixes the two (the defect). No
-         * scheduling, sleep, or repetition is involved, and the test cannot
-         * pass by luck.
+         * own epoch's digest (correct) or mixes the two (the defect). The
+         * second thread is joined at the checkpoint, so no sleep or scheduler
+         * timing determines where the reload lands.
          *
-         * Concurrent clear/reparse coverage lives separately in the SDL3-gated
+         * Truly concurrent clear/reparse coverage lives in the SDL3-gated
          * player UI regression
          * (test_player_ui.py::test_package_status_worker_and_catalog_reload_do_not_deadlock_or_corrupt_status,
-         * 128 reloads against the status worker); it is not duplicated here. */
-        printf("[PLAYER_STATE_TEST] Subtest 19b: single catalog epoch across validation and cache publication\n");
+         * 128 reloads against the status worker). */
+        printf("[PLAYER_STATE_TEST] Subtest 19b: cross-thread clear/reparse across validation and cache publication\n");
         fflush(stdout);
 
         char epoch_root[640];
@@ -2824,10 +2961,13 @@ int main(int argc, char **argv) {
         assert(nk_launch_runtime_package_cache_identity(
             epoch_root, &epoch_game, identity_at_snapshot));
 
+        CatalogReloadAtPublication reload;
+        memset(&reload, 0, sizeof(reload));
+        reload.overlay_path = epoch_overlay_path;
         s_epoch_publication_before = 0;
         s_epoch_publication_after = 0;
         nk_title_manifest_test_set_validation_checkpoint(
-            force_catalog_reload_at_publication, NULL);
+            force_catalog_reload_at_publication, &reload);
         NkRuntimePackageInfo epoch_info;
         NkRuntimePackageStatus epoch_status = nk_launch_validate_runtime_package(
             epoch_root, &epoch_game, &epoch_info, epoch_reason,
@@ -2842,11 +2982,14 @@ int main(int argc, char **argv) {
         assert(s_epoch_publication_before == epoch_at_snapshot);
         assert(s_epoch_publication_after > s_epoch_publication_before);
 
-        /* The clear that advanced the epoch removed a registered overlay, so
-           the epoch change under test is the one a real reload publishes. */
-        NkTitleEntrySnapshot epoch_cleared = {0};
-        assert(!nk_title_catalog_find_by_id("epoch-coherence-overlay",
-                                            &epoch_cleared));
+        /* The second thread completed a real clear/reparse, leaving the
+           replacement overlay visible through an owned catalog snapshot. */
+        NkTitleEntrySnapshot epoch_reloaded = {0};
+        assert(nk_title_catalog_find_by_id("epoch-coherence-overlay",
+                                           &epoch_reloaded));
+        assert(strcmp(epoch_reloaded.entry.display_name,
+                      "Epoch Coherence Overlay") == 0);
+        nk_title_catalog_snapshot_release(&epoch_reloaded);
 
         char identity_after_reload[65];
         assert(nk_launch_runtime_package_cache_identity(
