@@ -519,6 +519,102 @@ def _psmf_media_filtered_out(makefile: str) -> str:
     return match.group(1)
 
 
+HLE_C = "src/rt/hle.c"
+H264_BACKENDS = ("src/rt/h264_mf.c", "src/rt/h264_null.c")
+H264_BACKEND_OBJECTS = ("h264_mf.o", "h264_null.o")
+HLE_RUNTIME_BUNDLES = ("$(RT_SRCS)", "$(RT_OBJS)", "$(PSMF_MEDIA_RUNTIME_OBJS)")
+
+
+def _rt_runtime_sources(makefile: str) -> set[str]:
+    """Return the source tokens in RT_SRCS, stopping before its derived object set."""
+    match = re.search(r"(?ms)^RT_SRCS\s*:=\s*(.*?)^RT_OBJS\s*:=", makefile)
+    assert match is not None, "RT_SRCS must remain the source of the runtime object set"
+    return set(match.group(1).replace("\\\n", " ").split())
+
+
+def _hle_link_supplies_h264_backends(link: str, makefile: str) -> bool:
+    """Check direct sources or a runtime object bundle that retains both backends."""
+    direct_sources = all(source in link for source in H264_BACKENDS)
+    if direct_sources:
+        return True
+
+    bundles = [bundle for bundle in HLE_RUNTIME_BUNDLES if bundle in link]
+    if not bundles:
+        return False
+
+    runtime_sources = _rt_runtime_sources(makefile)
+    if not all(source in runtime_sources for source in H264_BACKENDS):
+        return False
+
+    if "$(PSMF_MEDIA_RUNTIME_OBJS)" in bundles:
+        filtered_out = _psmf_media_filtered_out(makefile)
+        if any(obj in filtered_out for obj in H264_BACKEND_OBJECTS):
+            return False
+    return True
+
+
+def _hle_link_h264_offenders(makefile: str) -> list[str]:
+    """Find Makefile link commands that compile HLE without its PSMF backends."""
+    logical = _logical_lines(makefile)
+    hle_links = [
+        (number, text)
+        for number, text in logical
+        if _is_link_statement(text) and HLE_C in text
+    ]
+    if not hle_links:
+        return [f"Makefile has no link command containing {HLE_C}"]
+    return [
+        f"Makefile:{number}: {text.strip()}"
+        for number, text in hle_links
+        if not _hle_link_supplies_h264_backends(text, makefile)
+    ]
+
+
+class HlePsmfPlayerBackendLinkDependencyTests(unittest.TestCase):
+    """HLE's registered PSMF player path calls the H.264 backend API."""
+
+    def setUp(self) -> None:
+        self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    def test_runtime_sources_keep_both_h264_backends(self) -> None:
+        sources = _rt_runtime_sources(self.makefile)
+        self.assertIn(HLE_C, sources)
+        for backend in H264_BACKENDS:
+            self.assertIn(backend, sources)
+
+    def test_every_hle_link_supplies_both_h264_backends(self) -> None:
+        hle = (ROOT / HLE_C).read_text(encoding="utf-8")
+        self.assertIn("hle_register_psmf_player_handlers", hle)
+        self.assertRegex(hle, r"\bsr_h264_create\s*\(")
+
+        offenders = _hle_link_h264_offenders(self.makefile)
+        self.assertEqual(
+            offenders,
+            [],
+            "these Makefile link statements include the registered HLE player path "
+            "without both H.264 backend sources (or a runtime bundle retaining them):\n"
+            + "\n".join(offenders),
+        )
+
+    def test_guard_rejects_direct_and_filtered_out_backend_regressions(self) -> None:
+        """The source guard catches both selftest link shapes that #616 repaired."""
+        direct_pattern = "src/rt/h264_mf.c src/rt/h264_null.c"
+        self.assertEqual(self.makefile.count(direct_pattern), 3)
+        direct_regression = self.makefile.replace(direct_pattern, "")
+        direct_offenders = _hle_link_h264_offenders(direct_regression)
+        self.assertEqual(len(direct_offenders), 3, "all three direct HLE links must be guarded")
+
+        filter_pattern = "$(BUILD_DIR)/psmf_producer.o,$(RT_OBJS)"
+        self.assertEqual(self.makefile.count(filter_pattern), 1)
+        filtered_regression = self.makefile.replace(
+            filter_pattern,
+            "$(BUILD_DIR)/psmf_producer.o $(BUILD_DIR)/h264_mf.o "
+            "$(BUILD_DIR)/h264_null.o,$(RT_OBJS)",
+        )
+        filtered_offenders = _hle_link_h264_offenders(filtered_regression)
+        self.assertEqual(len(filtered_offenders), 2, "both PSMF media links must be guarded")
+
+
 NESTED_FRAMES_C = "src/rt/nested_frames.c"
 # Anything that already carries nested_frames.c: naming one of these is as good
 # as naming the file, and a recipe should prefer them.
