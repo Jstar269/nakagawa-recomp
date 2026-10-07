@@ -23,6 +23,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security, Markdown, CI required | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
+| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over two shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
 | Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
@@ -333,6 +334,20 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   may therefore skip the Python suite only because the audit still runs here.
   `PublicationCoverageInvariantTests` pins both halves so this cannot regress
   into a path-gated audit.
+- **Only a structurally proven recipe-only `Makefile` edit narrows the build
+  route.** `makefile_recipe_only_targets` parses the base and head `Makefile` and
+  accepts the change only when every changed line is a comment, a blank line, or a
+  recipe line of an explicit rule whose targets are all literal `.PHONY` names, and
+  every unchanged line keeps its kind and owning targets. A variable, flag,
+  prerequisite, rule header, pattern rule, file-producing recipe, conditional,
+  include or `.PHONY` edit keeps `build_system`, as does a `Makefile` that either
+  revision cannot provide. A recipe-only edit still runs the native and Windows
+  gates, which execute recipes. Python runs only the modules whose transitive tool
+  closure reads the `Makefile` or runs `make` (`ci_test_shards.py --select
+  makefile`), on two shards; any other Python-routing change in the same diff
+  restores the full four-shard suite. That closure covers most of the suite's
+  weight, because most heavy modules build through `make`, so the saving is the
+  unrelated modules and two runners rather than the Python job as a whole.
 - **The published surface is derived, not listed.** `_is_public_surface` asks the
   publication policy instead of maintaining a second list that can drift; it
   fails closed to "published" when the policy cannot be read. The `public_surface`

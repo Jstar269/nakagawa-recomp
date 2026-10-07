@@ -40,10 +40,12 @@ can never mistake a failure for an empty shard.
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+import re
 import sys
 from typing import Iterable, Mapping, Sequence
 
@@ -53,6 +55,7 @@ TOOLS_DIR = ROOT / "tools"
 DEFAULT_WEIGHTS = TOOLS_DIR / "ci_test_weights.json"
 DEFAULT_NUM_SHARDS = 4
 TEST_GLOB = "test_*.py"
+SELECTIONS = ("all", "makefile")
 
 
 class ShardDataError(ValueError):
@@ -232,6 +235,106 @@ def check_plan(
     return errors
 
 
+# ---- Makefile-coupled selection (#702) ---------------------------------------------
+#
+# A recipe-only Makefile change (tools/ci_paths.py proves that property) can only
+# change the outcome of a Python test that reads the Makefile or runs make, directly
+# or through a tools module it imports or launches.  ``makefile_coupled_modules``
+# computes that set statically and errs toward inclusion:
+#
+# * a module's dependencies are its local imports (``import x``, ``from tools import
+#   x``, ``from psp_oracle import y``) *and* every local tool whose file name appears
+#   in one of its string literals, which is how a test launches a tool as a
+#   subprocess (``[sys.executable, "tools/codegen.py", ...]``);
+# * the closure is transitive, and a package dependency pulls in every file in it;
+# * a file that cannot be read or parsed counts as coupled.
+#
+# The selection is therefore a superset of the modules a recipe edit can affect,
+# never a guess at a subset.
+
+MAKEFILE_COUPLING = re.compile(r"\bMakefile\b|\bmingw32-make\b|\bgmake\b|[\"']make[\"']|\.mk\b")
+_PY_FILE_LITERAL = re.compile(r"(?:^|[/\\])([A-Za-z_][A-Za-z0-9_]*)\.py\b")
+
+
+def _local_units(tools_dir: Path) -> dict[str, list[Path]]:
+    units: dict[str, list[Path]] = {path.stem: [path] for path in tools_dir.glob("*.py") if path.is_file()}
+    for package in tools_dir.iterdir():
+        if package.is_dir() and not package.name.startswith((".", "__")):
+            files = sorted(package.rglob("*.py"))
+            if files:
+                units.setdefault(package.name, []).extend(files)
+    return units
+
+
+def _unit_edges(path: Path, local: frozenset[str]) -> tuple[set[str], bool]:
+    """Return the local units ``path`` depends on, and whether it is unparseable."""
+
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        return set(), True
+    edges: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                edges.add(parts[1] if parts[0] == "tools" and len(parts) > 1 else parts[0])
+        elif isinstance(node, ast.ImportFrom):
+            parts = (node.module or "").split(".")
+            if node.level or parts == ["tools"] or not node.module:
+                edges.update(alias.name for alias in node.names)
+                if node.level:
+                    # A relative import inside a package depends on that package.
+                    edges.add(path.parent.name)
+            edges.add(parts[1] if parts[0] == "tools" and len(parts) > 1 else parts[0])
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            edges.update(_PY_FILE_LITERAL.findall(node.value))
+    return edges & local, False
+
+
+def makefile_coupled_modules(modules: Iterable[str], tools_dir: Path = TOOLS_DIR) -> list[str]:
+    """Return the test modules whose transitive tool closure can observe the Makefile."""
+
+    units = _local_units(tools_dir)
+    local = frozenset(units)
+    edges: dict[str, set[str]] = {}
+    coupled_unit: dict[str, bool] = {}
+    for name, files in units.items():
+        deps: set[str] = set()
+        coupled = False
+        for file in files:
+            file_edges, unparseable = _unit_edges(file, local)
+            deps |= file_edges
+            try:
+                text = file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                coupled = True
+                continue
+            coupled = coupled or unparseable or bool(MAKEFILE_COUPLING.search(text))
+        deps.discard(name)
+        edges[name] = deps
+        coupled_unit[name] = coupled
+
+    selected: list[str] = []
+    for module in modules:
+        if module not in units:
+            selected.append(module)  # cannot be inspected, so it cannot be excluded
+            continue
+        seen = {module}
+        stack = [module]
+        hit = False
+        while stack and not hit:
+            current = stack.pop()
+            hit = coupled_unit.get(current, True)
+            for dep in edges.get(current, ()):
+                if dep not in seen:
+                    seen.add(dep)
+                    stack.append(dep)
+        if hit:
+            selected.append(module)
+    return sorted(selected)
+
+
 def _plan_summary(plan: ShardPlan) -> dict[str, object]:
     return {
         "num_shards": len(plan.shards),
@@ -250,6 +353,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode.add_argument("--plan", action="store_true", help="print the whole plan as JSON")
     mode.add_argument("--check", action="store_true", help="validate the weight data and the plan")
     parser.add_argument("--num-shards", type=int, default=DEFAULT_NUM_SHARDS)
+    parser.add_argument(
+        "--select",
+        choices=SELECTIONS,
+        default="all",
+        help="'all' plans every module; 'makefile' plans only the Makefile-coupled ones (#702)",
+    )
     parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     parser.add_argument("--tools-dir", type=Path, default=TOOLS_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -259,6 +368,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         modules = tracked = discover_modules(args.tools_dir)
         if not modules:
             raise ShardDataError(f"no {TEST_GLOB} modules found under {args.tools_dir}")
+        if args.select == "makefile":
+            modules = makefile_coupled_modules(modules, args.tools_dir)
+            if not modules:
+                raise ShardDataError("the Makefile-coupled selection is empty")
         plan = plan_shards(modules, data, args.num_shards)
     except ShardDataError as exc:
         print(f"ci_test_shards: {exc}", file=sys.stderr)
@@ -282,7 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         shard = plan.shards[args.shard]
         print(
-            f"ci_test_shards: shard {args.shard} of {args.num_shards}: {len(shard)} modules, "
+            f"ci_test_shards: shard {args.shard} of {args.num_shards} ({args.select}): {len(shard)} modules, "
             f"estimated {plan.loads[args.shard]:.1f}s "
             f"(shard estimates: {', '.join(f'{load:.1f}s' for load in plan.loads)})",
             file=sys.stderr,

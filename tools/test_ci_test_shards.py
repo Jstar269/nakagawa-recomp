@@ -7,15 +7,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
 try:
+    import ci_paths
     import ci_test_shards
 except ModuleNotFoundError:  # Running as ``python -m unittest tools.test_ci_test_shards``.
+    import tools.ci_paths as ci_paths
     import tools.ci_test_shards as ci_test_shards
 
 
@@ -50,30 +51,34 @@ class LiveRepositoryPlanTests(unittest.TestCase):
         cls.data = ci_test_shards.load_weight_data()
         workflow = WORKFLOW.read_text(encoding="utf-8")
         cls.python_job = workflow.split("\n  python_tools:", 1)[1].split("\n  native_tools:", 1)[0]
-        matrix = re.search(r"(?m)^\s+shard:\s*\[([0-9,\s]+)\]\s*$", cls.python_job)
-        if matrix is None:
-            raise AssertionError("python_tools must declare an explicit shard matrix")
-        cls.matrix = [int(value) for value in matrix.group(1).split(",")]
-        num = re.search(r"ci_test_shards\.py --shard \"\$SHARD\" --num-shards (\d+)", cls.python_job)
-        if num is None:
-            raise AssertionError("python_tools must run tools/ci_test_shards.py with an explicit --num-shards")
-        cls.num_shards = int(num.group(1))
+        cls.num_shards = ci_paths.PYTHON_SHARDS_FULL
 
-    def test_every_test_module_runs_exactly_once_across_the_cli_shards(self) -> None:
-        self.assertEqual(self.matrix, list(range(self.num_shards)),
-                         "the workflow matrix and --num-shards must describe the same shards")
+    def run_shards(self, num_shards: int, select: str) -> list[str]:
         scheduled: list[str] = []
-        for shard in self.matrix:
-            with self.subTest(shard=shard):
-                result = _run_cli("--shard", str(shard), "--num-shards", str(self.num_shards))
+        for shard in range(num_shards):
+            with self.subTest(shard=shard, select=select):
+                result = _run_cli("--shard", str(shard), "--num-shards", str(num_shards), "--select", select)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 names = result.stdout.splitlines()
                 self.assertTrue(names, f"shard {shard} is empty")
                 scheduled.extend(names)
         self.assertEqual(len(scheduled), len(set(scheduled)), "a module is scheduled on two shards")
+        return scheduled
+
+    def test_every_test_module_runs_exactly_once_across_the_cli_shards(self) -> None:
+        scheduled = self.run_shards(self.num_shards, "all")
         expected = sorted(path.stem for path in (ROOT / "tools").glob("test_*.py"))
         self.assertEqual(sorted(scheduled), expected)
         self.assertIn("test_ci_test_shards", scheduled)
+
+    def test_makefile_selection_runs_each_coupled_module_exactly_once(self) -> None:
+        scheduled = self.run_shards(ci_paths.PYTHON_SHARDS_MAKEFILE, "makefile")
+        coupled = ci_test_shards.makefile_coupled_modules(self.modules)
+        self.assertEqual(sorted(scheduled), coupled)
+        # Modules that read the Makefile text or build through make must be in it.
+        for module in ("test_title_runtime_config", "test_build_truth", "test_public_ci_wiring",
+                       "test_ci_paths", "test_production_smoke"):
+            self.assertIn(module, coupled)
 
     def test_mutating_modules_are_declared_separate_and_never_share_a_shard(self) -> None:
         self.assertIn(MUTATING_PAIR, [group & MUTATING_PAIR for group in self.data.separate],
@@ -102,12 +107,36 @@ class LiveRepositoryPlanTests(unittest.TestCase):
         bound = sum(plan.loads) / self.num_shards + max(cost(name) for name in self.modules)
         self.assertLessEqual(max(plan.loads), bound + 1e-6)
 
-    def test_workflow_captures_the_listing_so_a_planner_failure_stops_the_step(self) -> None:
+    def test_workflow_takes_its_shards_from_the_classifier_and_fails_closed(self) -> None:
         self.assertNotIn("(NR-1)%4", self.python_job, "the alphabetical round-robin must be gone")
+        self.assertIn(
+            "shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}", self.python_job
+        )
+        self.assertEqual(json.loads("[0, 1, 2, 3]"), list(range(ci_paths.PYTHON_SHARDS_FULL)))
+        self.assertIn("NUM_SHARDS: ${{ needs.classify.outputs.python_num_shards }}", self.python_job)
+        self.assertIn("PYTHON_SCOPE: ${{ needs.classify.outputs.python_scope }}", self.python_job)
         self.assertNotIn("< <(python tools/ci_test_shards.py", self.python_job,
                          "process substitution hides the planner's exit status")
         self.assertIn("set -euo pipefail", self.python_job)
-        self.assertIn('listing="$(python tools/ci_test_shards.py --shard "$SHARD"', self.python_job)
+        self.assertIn(
+            'listing="$(python tools/ci_test_shards.py --shard "$SHARD" --num-shards "$NUM_SHARDS" '
+            '--select "$PYTHON_SCOPE")"',
+            self.python_job,
+        )
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        classify_outputs = workflow.split("\n  classify:", 1)[1].split("\n    steps:", 1)[0]
+        for output in ("python_scope", "python_num_shards", "python_shards"):
+            self.assertIn(f"{output}: ${{{{ steps.paths.outputs.{output} }}}}", classify_outputs)
+
+    def test_classifier_shard_outputs_match_the_planner_choices(self) -> None:
+        for paths, scope in ((["tools/codegen.py"], "all"), (["Makefile"], "makefile")):
+            with self.subTest(scope=scope):
+                change = ("player-ui-regressions",) if scope == "makefile" else None
+                result = ci_paths.classify(paths, makefile_change=change)
+                self.assertEqual(result["python_scope"], scope)
+                self.assertIn(result["python_scope"], ci_test_shards.SELECTIONS)
+                self.assertEqual(json.loads(result["python_shards"]),
+                                 list(range(int(result["python_num_shards"]))))
 
 
 class PlannerTests(unittest.TestCase):
@@ -173,6 +202,46 @@ class PlannerTests(unittest.TestCase):
                 ci_test_shards.plan_shards(["test_a"], data, shards)  # type: ignore[arg-type]
         with self.assertRaises(ci_test_shards.ShardDataError):
             ci_test_shards.plan_shards(["test_a", "test_a"], data, 2)
+
+
+class MakefileCouplingTests(unittest.TestCase):
+    """--select makefile must be a superset of the modules a recipe edit can affect."""
+
+    def test_selection_follows_imports_launches_and_unparseable_files(self) -> None:
+        files = {
+            "helper.py": "MAKEFILE = 'Makefile'\n",
+            "middle.py": "import helper\n",
+            "runner.py": "import subprocess\nsubprocess.run(['make', 'all'])\n",
+            "plain.py": "VALUE = 1\n",
+            "pkg/__init__.py": "",
+            "pkg/inner.py": "from . import deep\n",
+            "pkg/deep.py": "GOAL = 'gmake'\n",
+            "test_direct.py": "TEXT = open('Makefile').read()\n",
+            "test_import.py": "import helper\n",
+            "test_transitive.py": "from tools import middle\n",
+            "test_launch.py": "import subprocess, sys\nsubprocess.run([sys.executable, 'tools/runner.py'])\n",
+            "test_package.py": "from pkg import inner\n",
+            "test_broken.py": "def broken(:\n",
+            "test_plain.py": "import plain\nimport json\n",
+            "test_named_only.py": "NOTE = 'see plain.py for details'\n",
+        }
+        with tempfile.TemporaryDirectory() as scratch:
+            tools_dir = Path(scratch)
+            for name, text in files.items():
+                (tools_dir / name).parent.mkdir(parents=True, exist_ok=True)
+                (tools_dir / name).write_text(text, encoding="utf-8")
+            modules = ci_test_shards.discover_modules(tools_dir)
+            selected = ci_test_shards.makefile_coupled_modules(modules, tools_dir)
+        self.assertEqual(
+            selected,
+            ["test_broken", "test_direct", "test_import", "test_launch", "test_package", "test_transitive"],
+        )
+
+    def test_unknown_module_names_are_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            self.assertEqual(
+                ci_test_shards.makefile_coupled_modules(["test_missing"], Path(scratch)), ["test_missing"]
+            )
 
 
 class CheckPlanTests(unittest.TestCase):
