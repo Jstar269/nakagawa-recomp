@@ -2006,6 +2006,12 @@ PSMF_MEDIA_LIBS :=
 endif
 
 PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/driver.o $(BUILD_DIR)/hle.o $(BUILD_DIR)/mpeg.o $(BUILD_DIR)/psmf_producer.o,$(RT_OBJS))
+# iso_public.o is filtered out with the rest of the production-only objects: the fixture
+# serves its synthetic PSMF through its own memory-backed iso_lookup/iso_read (the same
+# pattern the executable HLE harness uses), so the player's source boundary stays testable
+# without mounting an image.  Kept as a second pass rather than folded into the list above
+# so the canonical filter-out tail stays byte-identical for tools/test_build_truth.py.
+PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/iso_public.o $(BUILD_DIR)/iso_unavailable.o,$(PSMF_MEDIA_RUNTIME_OBJS))
 
 psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o

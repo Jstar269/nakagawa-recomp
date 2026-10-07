@@ -3087,14 +3087,9 @@ static uint32_t h_ModuleStreamWrite(CpuState *s) {
 #define PSMF_ERR_INVALID_POINTER 0x80000103u
 #define PSMF_ERR_INVALID_VALUE 0x800001feu
 #define PSMF_ERR_PRIV_REQUIRED 0x80000023u
-/* Frame steps of the two PSP movie codecs (90000/29.97 and 90000*2048/44100). Used to
- * extrapolate an access unit whose PES packet carried no presentation time. */
-#define PSMF_VIDEO_PTS_STEP 3003
-#define PSMF_AUDIO_PTS_STEP 4180
 #define PSMF_AUDIO_SAMPLES 2048
 #define PSMF_AUDIO_BYTES (PSMF_AUDIO_SAMPLES * 4)   /* stereo s16, the size GetAudioData fills */
 #define PSMF_AUDIO_MAX_CHANNELS 8
-#define PSMF_OUT_PTS_RING 8
 #define PSMF_Q_DEPTH 4
 /* scePsmfPlayerStart playMode values (PSMF_PLAYER_MODE_*). */
 #define PSMF_PLAY_MODE_PAUSE 3u
@@ -3128,6 +3123,9 @@ typedef struct {
     int64_t auPts[PSMF_OUT_PTS_RING];          /* one entry per submitted picture */
     int auPtsHead, auPtsCount; uint64_t auPtsLost;
     int64_t displayPts;                        /* last displaypts handed to the guest */
+    int displayPtsValid;                       /* a picture has actually reached the guest */
+    int64_t audioDisplayPts;                   /* last audio-block pts handed to the guest */
+    int audioDisplayPtsValid;
     Atrac3pBridge *atrac; int atracChannels, atracAlign;
     int16_t *audioPcm; int audioPcmSampleCount, audioPcmValid;
     int64_t audioPcmPts; int audioPcmPtsValid;
@@ -3184,6 +3182,95 @@ static int64_t psmf_be_timestamp(const uint8_t *p) {
 }
 static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEGLOG") ? 1 : 0; return v; }
 
+#ifdef SR_MPEG_MEDIA_SELFTEST
+/* Issue #279: the media fixture asserts the exact published counter line -- the same bytes
+ * a run writes on stderr -- without scraping a shared stream.  psmf_log_summary() records
+ * the last line it printed here and counts them, so a test can tell a fresh line from a
+ * stale one.  Test-only; the production build carries neither the buffer nor the count. */
+static char s_psmf_last_summary[2048];
+static uint32_t s_psmf_summary_count;
+const char *sr_hle_test_psmf_last_summary(void) { return s_psmf_last_summary; }
+uint32_t sr_hle_test_psmf_summary_count(void) { return s_psmf_summary_count; }
+#endif
+
+/* The bounded SR_MPEGLOG counter line, printed as one summary.  Every clock on the line
+ * names the stage it is measured at: vpts/apts are pipeline clocks -- the last picture
+ * submitted to the decoder and the last audio block staged for delivery -- while vts/ats
+ * are the two presentation points a guest actually receives (the displaypts written into
+ * the getter's video struct, and the pts of the audio block copied to the guest).  avgap
+ * is therefore the A/V separation measured at comparable presentation points, and vlead
+ * the video pipeline lead (submitted minus delivered, in ticks) -- both on the same
+ * 90 kHz timeline, which is what separates queue/interleave distance from synchronization
+ * error in a run.  -1 means the pair has not been measured yet.  vlost is the number of
+ * presentation times the ring was forced to discard; the submit gate in psmf_video_pump()
+ * keeps it at zero, so vlost > 0 on a run means that rule was violated. */
+static void psmf_log_summary(SrPsmfPlayer *p) {
+    if (!p || !psmf_log_on()) return;
+    extern uint32_t sr_audio_vbl(void);   /* defined later in this file; same local extern audio.c uses */
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+    int64_t avgap = (p->displayPtsValid && p->audioDisplayPtsValid)
+                        ? p->displayPts - p->audioDisplayPts : -1;
+    int64_t vlead = (p->videoClockValid && p->displayPtsValid)
+                        ? p->videoClock - p->displayPts : -1;
+    char line[2048];
+    snprintf(line, sizeof(line), "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
+                    " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
+                    " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
+                    " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
+                    " arejf=%u aupm=%u"
+                    " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
+                    " vpts=%lld apts=%lld vts=%lld ats=%lld avgap=%lld vlead=%lld vclk=%d drained=%d vlost=%llu\n",
+                    (unsigned)sr_audio_vbl(),
+                    (unsigned long long)st.bytes_read, (unsigned long long)st.packs,
+                    (unsigned long long)st.pes_packets, (unsigned long long)st.video_pes,
+                    (unsigned long long)st.audio_pes, (unsigned long long)st.video_aus,
+                    (unsigned long long)st.audio_aus, (unsigned long long)st.aus_without_pts,
+                    (unsigned long long)st.pes_with_dts,
+                    (unsigned long long)st.audio_resync_bytes,
+                    p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
+                    p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
+                    (unsigned long long)st.video_submitted,
+                    (unsigned long long)st.video_decoded,
+                    (unsigned long long)st.video_delivered,
+                    (unsigned long long)st.video_warmup_held,
+                    (unsigned long long)st.video_eos_drained,
+                    (unsigned long long)st.video_rejected,
+                    (unsigned long long)st.audio_submitted,
+                    (unsigned long long)st.audio_decoded,
+                    (unsigned long long)st.audio_delivered,
+                    (unsigned long long)st.audio_warmup_held,
+                    (unsigned long long)st.audio_eos_drained,
+                    (unsigned long long)st.audio_rejected,
+                    p->audioFormatRejects, p->audioUpmixBlocks,
+                    (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
+                    p->videoErrors, p->audioErrors,
+                    (long long)p->videoClock, (long long)p->audioClock,
+                    (long long)p->displayPts, (long long)p->audioDisplayPts,
+                    (long long)avgap, (long long)vlead,
+                    p->videoClockValid, p->videoDrained,
+                    (unsigned long long)p->auPtsLost);
+    fputs(line, stderr);
+#ifdef SR_MPEG_MEDIA_SELFTEST
+    snprintf(s_psmf_last_summary, sizeof(s_psmf_last_summary), "%s", line);
+    s_psmf_summary_count++;
+#endif
+}
+
+/* Sampling for the counter line: the first few produce calls, then a regular interval,
+ * plus one line per 16 delivered audio blocks so the presentation-boundary gap is
+ * observable *through* a run instead of only at its start. */
+static void psmf_log_tick(SrPsmfPlayer *p) {
+    if (!p || !psmf_log_on()) return;
+    static int n = 0;
+    static uint32_t logged_blocks = 0;
+    int due = n++ < 8 || (n & 0xff) == 0;
+    if (p->audioBlocksOut / 16u != logged_blocks / 16u) {
+        logged_blocks = p->audioBlocksOut;
+        due = 1;
+    }
+    if (due) psmf_log_summary(p);
+}
+
 /* A rejected stream is a product boundary, not a debug event.  The producer fails closed
  * and never reaches EOF, so without a named boundary the consumer only sees the picture
  * freeze with nothing in the log: the one thing this runtime must not do.  The message is
@@ -3229,48 +3316,7 @@ static void psmf_produce(SrPsmfPlayer *p) {
             sr_psmf_au_release(&au);
         }
     }
-    if (psmf_log_on()) {
-        extern uint32_t sr_audio_vbl(void);   /* defined later in this file; same local extern audio.c uses */
-        SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
-        static int n = 0;
-        if (n++ < 8 || (n & 0xff) == 0)
-            /* vpts/apts are the two presentation clocks the guest is handed (video: one entry
-             * per submitted picture, audio: one per decoded block).  Both are 90 kHz, so the
-             * difference between their advances over a window is exactly the A/V drift the
-             * player sees -- publishing them is what makes synchronization measurable from a
-             * run instead of guessed from it.  vpts is the last displaypts delivered. */
-            fprintf(stderr, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
-                    " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
-                    " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
-                    " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
-                    " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
-                    " vpts=%lld apts=%lld vts=%lld vclk=%d drained=%d\n",
-                    (unsigned)sr_audio_vbl(),
-                    (unsigned long long)st.bytes_read, (unsigned long long)st.packs,
-                    (unsigned long long)st.pes_packets, (unsigned long long)st.video_pes,
-                    (unsigned long long)st.audio_pes, (unsigned long long)st.video_aus,
-                    (unsigned long long)st.audio_aus, (unsigned long long)st.aus_without_pts,
-                    (unsigned long long)st.pes_with_dts,
-                    (unsigned long long)st.audio_resync_bytes,
-                    p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
-                    p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
-                    (unsigned long long)st.video_submitted,
-                    (unsigned long long)st.video_decoded,
-                    (unsigned long long)st.video_delivered,
-                    (unsigned long long)st.video_warmup_held,
-                    (unsigned long long)st.video_eos_drained,
-                    (unsigned long long)st.video_rejected,
-                    (unsigned long long)st.audio_submitted,
-                    (unsigned long long)st.audio_decoded,
-                    (unsigned long long)st.audio_delivered,
-                    (unsigned long long)st.audio_warmup_held,
-                    (unsigned long long)st.audio_eos_drained,
-                    (unsigned long long)st.audio_rejected,
-                    (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
-                    p->videoErrors, p->audioErrors,
-                    (long long)p->videoClock, (long long)p->audioClock,
-                    (long long)p->displayPts, p->videoClockValid, p->videoDrained);
-    }
+    psmf_log_tick(p);
 }
 
 /* ---- decoder integration ------------------------------------------------------------ */
@@ -3293,10 +3339,11 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
     p->audioPcm = NULL;
     p->audioPcmSampleCount = p->audioPcmValid = 0;
     p->audioPcmPts = 0; p->audioPcmPtsValid = 0;
+    p->audioDisplayPts = 0; p->audioDisplayPtsValid = 0;
     p->videoClock = p->audioClock = 0;
     p->videoClockValid = p->audioClockValid = 0;
     p->auPtsHead = p->auPtsCount = 0; p->auPtsLost = 0;
-    p->displayPts = 0; p->videoDrained = 0;
+    p->displayPts = 0; p->displayPtsValid = 0; p->videoDrained = 0;
     p->videoFramesOut = p->audioBlocksOut = p->videoErrors = p->audioErrors = 0;
     p->audioUpmixBlocks = p->audioFormatRejects = 0;
     /* Every caller resets or replaces the producer in the same breath, so the named
@@ -3308,9 +3355,8 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
  * a packet that did not advances it by exactly one frame, and until the first PTS arrives the
  * picture's time stays unknown (-1) rather than invented. */
 static void psmf_video_clock_push(SrPsmfPlayer *p, int has_pts, int64_t pts) {
-    if (has_pts) { p->videoClock = pts; p->videoClockValid = 1; }
-    else if (p->videoClockValid) p->videoClock += PSMF_VIDEO_PTS_STEP;
-    int64_t value = p->videoClockValid ? p->videoClock : -1;
+    int64_t value = sr_psmf_pts_advance(&p->videoClock, &p->videoClockValid,
+                                        has_pts, pts, PSMF_VIDEO_PTS_STEP);
     if (p->auPtsCount < PSMF_OUT_PTS_RING) {
         p->auPts[(p->auPtsHead + p->auPtsCount) % PSMF_OUT_PTS_RING] = value;
         p->auPtsCount++;
@@ -3321,11 +3367,19 @@ static void psmf_video_clock_push(SrPsmfPlayer *p, int has_pts, int64_t pts) {
     }
 }
 
-/* Feed every queued compressed video access unit into the H.264 backend. */
+/* Feed queued compressed video access units into the H.264 backend, bounded by the
+ * presentation ring: a picture may only be submitted while the ring still has a slot for
+ * its presentation time.  Without that bound the submit path (up to PSMF_Q_DEPTH pictures
+ * per getter call) outruns the getter (one picture per call), the oldest pending entries
+ * are overwritten, and the displaypts handed to the guest skips ahead of the picture
+ * actually displayed -- a vpts/vts divergence with no stream-side explanation (#279).
+ * With it, submitted-minus-delivered is bounded by PSMF_OUT_PTS_RING, every submitted
+ * picture's time survives to its own getter call, and a guest that stops pulling
+ * throttles the demux instead of buffering the rest of the stream. */
 static void psmf_video_pump(SrPsmfPlayer *p) {
     if (!p) return;
     SrPsmfQueue *q = &p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU];
-    while (q->count) {
+    while (q->count && p->auPtsCount < PSMF_OUT_PTS_RING) {
         SrPsmfQueueSlot *slot = &q->slot[q->head];
         if (p->h264 < 0 && !p->h264Unavailable) {
             p->h264 = sr_h264_create();
@@ -3390,6 +3444,7 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
     }
     if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
     p->displayPts = value;
+    p->displayPtsValid = 1;
     *pts_out = value;
     sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
                                  eos ? SR_PSMF_MEDIA_EOS_DRAINED :
@@ -3462,8 +3517,9 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
                                                              SR_PSMF_MEDIA_REJECTED);
                             }
                             if (p->audioPcmSampleCount == PSMF_AUDIO_SAMPLES) {
-                                if (slot->flags & 1u) { p->audioClock = slot->pts; p->audioClockValid = 1; }
-                                else if (p->audioClockValid) p->audioClock += PSMF_AUDIO_PTS_STEP;
+                                sr_psmf_pts_advance(&p->audioClock, &p->audioClockValid,
+                                                    (slot->flags & 1u) != 0, slot->pts,
+                                                    PSMF_AUDIO_PTS_STEP);
                                 p->audioPcmPtsValid = p->audioClockValid;
                                 p->audioPcmPts = p->audioClock;
                                 p->audioPcmValid = 1;
@@ -3551,7 +3607,7 @@ static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p-
 static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
 static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);return 0;}
 static uint32_t h_PsmfStatus(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);return p?p->status:PSMF_ERR_STATUS;}
-static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;psmf_produce(p);psmf_video_pump(p);if(p->status==PSMF_STATUS_PLAYING&&psmf_reached_end(p)){if(p->loopStatus==0u){psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);}else{p->status=PSMF_STATUS_FINISHED;}}return 0;}
+static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;psmf_produce(p);psmf_video_pump(p);if(p->status==PSMF_STATUS_PLAYING&&psmf_reached_end(p)){if(p->loopStatus==0u){psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);}else{p->status=PSMF_STATUS_FINISHED;psmf_log_summary(p);}}return 0;}
 /* scePsmfPlayerGetVideoData(player, ScePsmfPlayerVideoData *d): d->frameWidth is the
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
  * guest buffer the decoded picture is written into; the call fills d->displaypts and returns
@@ -3573,6 +3629,7 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     for(uint32_t i=0;i<PSMF_AUDIO_BYTES;i++)MEM_W8(A1+i,src[i]);
     sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_AUDIO,
                                  SR_PSMF_MEDIA_DELIVERED);
+    p->audioDisplayPts=p->audioPcmPts; p->audioDisplayPtsValid=p->audioPcmPtsValid;
     p->audioPcmValid=0;p->audioPcmSampleCount=0;p->audioBlocksOut++;
     sched_delay_current(30000);
     return 0;}
@@ -18688,6 +18745,10 @@ void sr_hle_init(void) {
     }
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
+    /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
+     * so the guest getter and the A/V presentation boundaries are reachable from a
+     * production-path test (issue #279). */
+    hle_register_psmf_player_handlers();
 #else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;

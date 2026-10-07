@@ -16,6 +16,20 @@
 #define SR_PSMF_MAX_AU_BYTES  (4u * 1024u * 1024u)
 #define SR_PSMF_QUEUE_DEPTH   8u
 
+/* Presentation pacing, owned here so the player (src/rt/hle.c) and every source-owned
+ * test advance the same clocks with the same numbers.  Both are 90 kHz presentation
+ * ticks: 3003 is one 29.97 fps coded picture, 4180 is the integer step for one
+ * 2048-sample ATRAC3+ block at 44.1 kHz (2048 * 90000 / 44100 = 4180.95...).  The
+ * truncation is why a clock may only extrapolate between anchors: see
+ * sr_psmf_pts_advance(). */
+#define PSMF_VIDEO_PTS_STEP 3003
+#define PSMF_AUDIO_PTS_STEP 4180
+
+/* How many submitted pictures' presentation times the player (src/rt/hle.c) can hold ahead * of the getter.  Published here because it is the bound that makes the measured pipeline
+ * lead meaningful: submitted-minus-delivered can never exceed it, so a vpts-vts separation
+ * inside this bound is queue distance by construction, not synchronization error. */
+#define PSMF_OUT_PTS_RING 8
+
 typedef int (*SrPsmfReadFn)(void *opaque, uint64_t offset, void *dst,
                             uint32_t capacity, uint32_t *got);
 
@@ -133,6 +147,19 @@ void sr_psmf_producer_media_stage(SrPsmfProducer *producer, SrPsmfAuKind kind,
 int sr_psmf_producer_resolve_warmup_hold(SrPsmfProducer *producer,
                                          SrPsmfAuKind kind,
                                          SrPsmfMediaStage disposition);
+
+/* One presentation clock, advanced the way both A/V tracks of the player advance:
+ * an access unit that carries a PES timestamp ANCHORS the clock to the stream's own
+ * timeline; a unit without one extrapolates by `step` while an anchor already exists;
+ * before the first anchor the clock stays unknown (-1) instead of inventing a time.
+ *
+ * This is the generic rule that makes a measured video/audio PTS separation mean
+ * pipeline distance rather than rate error: every anchor re-syncs the clock to the
+ * authored timeline, so between two anchors the worst deviation is one step and a
+ * truncating step (e.g. PSMF_AUDIO_PTS_STEP = 4180 for 4180.95) cannot accumulate
+ * across anchors.  Returns the clock's new value, or -1 while it is still unknown. */
+int64_t sr_psmf_pts_advance(int64_t *clock, int *valid, int has_pts,
+                            int64_t pts, int64_t step);
 
 #define SR_PSMF_STREAM_NONE ((uint32_t)-1)
 
