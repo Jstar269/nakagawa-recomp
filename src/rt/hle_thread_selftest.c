@@ -296,6 +296,9 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
 #define SCE_KERNEL_ERROR_ALREADY_STARTED 0x80020133u
+#define SCE_KERNEL_ERROR_NOT_STARTED 0x80020134u
+#define SCE_KERNEL_ERROR_ALREADY_STOPPED 0x80020135u
+#define SCE_KERNEL_ERROR_CAN_NOT_STOP 0x80020136u
 #define SCE_ERROR_AV_MODULE_BAD_ID 0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED 0x80110f03u
@@ -19486,6 +19489,11 @@ static void test_real_module_start_lifecycle(void) {
     uint32_t uid_off = sr_hle_test_register_module("gate_off.prx", SYNTH_MOD_START, SYNTH_MOD_STOP);
     expect(uid_off != 0, "registered synthetic module for gate-off test");
 
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x9999u;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == SCE_ERROR_MODULE_BAD_ID,
+           "gate off: start of an unknown module id fails closed");
+
     MEM_W32(SYNTH_MOD_STATUS_ADDR, 0xdeadbeefu);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_off;
@@ -19548,6 +19556,13 @@ static void test_real_module_start_lifecycle(void) {
     expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0x42u,
            "gate on: module_start return status written to status pointer");
 
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_on;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == SCE_KERNEL_ERROR_ALREADY_STARTED,
+           "gate on: double start returns SCE_KERNEL_ERROR_ALREADY_STARTED");
+    expect(s_synth_start_calls == 1u,
+           "gate on: double start does not execute module_start again");
+
     /* Attempt unload while still running */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_on;
@@ -19600,7 +19615,86 @@ static void test_real_module_start_lifecycle(void) {
     expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0x12345678u,
            "gate on: untranslated entry does not write status pointer");
 
+    uint32_t uid_no_stop = sr_hle_test_register_module(
+        "missing_stop.prx", SYNTH_MOD_START, SYNTH_MOD_STOP + 0x40u);
+    expect(uid_no_stop != 0, "registered module with untranslated module_stop entry");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_no_stop;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0,
+           "gate on: translated module_start still runs with an untranslated stop entry");
+    expect(s_synth_start_calls == 2u,
+           "gate on: translated module_start ran for the module with missing stop");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_no_stop;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_KERNEL_ERROR_CAN_NOT_STOP,
+           "gate on: missing module_stop returns SCE_KERNEL_ERROR_CAN_NOT_STOP");
+    expect(s_synth_stop_calls == 1u,
+           "gate on: missing module_stop is not reported as executed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_no_stop;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_ALREADY_LOADED,
+           "gate on: a module that could not stop cannot be unloaded");
+
     /* Clean up */
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
+static void test_prx_stop_entry_boundaries(void) {
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=1");
+    sr_test_register_guest_fn(SYNTH_MOD_START, synth_module_start_fn);
+    sr_test_register_guest_fn(SYNTH_MOD_STOP, synth_module_stop_fn);
+    s_synth_start_calls = 0;
+    s_synth_stop_calls = 0;
+
+    uint32_t uid_without_stop = sr_hle_test_register_module(
+        "no_stop_entry.prx", SYNTH_MOD_START, 0);
+    expect(uid_without_stop != 0, "registered module with no module_stop entry");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_without_stop;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0,
+           "no-stop: translated module_start returns success");
+    expect(s_synth_start_calls == 1u,
+           "no-stop: translated module_start ran");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_without_stop;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0,
+           "no-stop: undeclared module_stop succeeds without a guest call");
+    expect(s_synth_stop_calls == 0u,
+           "no-stop: module_stop is not called when no entry was declared");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_without_stop;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "no-stop: successfully stopped module unloads");
+
+    uint32_t uid_untranslated_stop = sr_hle_test_register_module(
+        "untranslated_stop_entry.prx", SYNTH_MOD_START, SYNTH_MOD_STOP + 0x40u);
+    expect(uid_untranslated_stop != 0,
+           "registered module with untranslated non-zero module_stop entry");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_untranslated_stop;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0,
+           "untranslated-stop: translated module_start returns success");
+    expect(s_synth_start_calls == 2u,
+           "untranslated-stop: translated module_start ran");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_untranslated_stop;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_KERNEL_ERROR_CAN_NOT_STOP,
+           "untranslated-stop: non-zero untranslated module_stop fails closed");
+    expect(s_synth_stop_calls == 0u,
+           "untranslated-stop: untranslated module_stop is not called");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_untranslated_stop;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == SCE_ERROR_MODULE_ALREADY_LOADED,
+           "untranslated-stop: module remains started after stop refusal");
+
     _putenv("SR_REAL_MODULE_START=0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
@@ -19790,6 +19884,17 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 
     expect(sr_hle_test_module_count() == 2u, "lifecycle: both module records are live");
 
+    /* A loaded module is not running yet. StopModule must refuse the transition and
+     * must not invoke module_stop before the module_start contract has run. The base
+     * implementation incorrectly executes module_stop and reports success here. */
+    s_lifecycle_stop_calls = 0;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_KERNEL_ERROR_NOT_STARTED,
+           "lifecycle: stop before start returns SCE_KERNEL_ERROR_NOT_STARTED");
+    expect(s_lifecycle_stop_calls == 0u,
+           "lifecycle: stop before start does not execute module_stop");
+
     /* ---- start both ---- */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_a;
@@ -19838,6 +19943,12 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module A returns 0");
     expect(s_lifecycle_stop_calls == 1u, "lifecycle: module A's module_stop ran once");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_KERNEL_ERROR_ALREADY_STOPPED,
+           "lifecycle: double stop returns SCE_KERNEL_ERROR_ALREADY_STOPPED");
+    expect(s_lifecycle_stop_calls == 1u,
+           "lifecycle: double stop does not execute module_stop again");
 
     /* A stopped module is still loaded: its export stays authorized, which is what
      * makes the unload boundary (not the stop boundary) the export-retirement point. */
@@ -19964,6 +20075,12 @@ static void test_late_prx_unload_reload_lifecycle(void) {
      * More cycles than the 16-entry tables hold: a module or image record that is
      * never reclaimed shows up here as a failed load or a stale authorized export. */
     sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_START_OFF,
+                              lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_STOP_OFF,
+                              lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_a1_fn);
     int cycles_ok = 1;
     for (unsigned i = 0; i < 24u; i++) {
         const uint32_t marker = 0x3000u + i;
@@ -19993,6 +20110,77 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 
     remove(path_a);
     remove(path_b);
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
+static void test_host_skipped_start_stop_unload_reload(void) {
+    const char *path = "hle_lifecycle_host_skipped.prx";
+    CpuState cpu;
+    uint32_t uid;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=");
+    s_lifecycle_start_calls = 0;
+    s_lifecycle_stop_calls = 0;
+    expect(write_lifecycle_prx(path, 0x4444dddd),
+           "host-skip: synthetic PRX image written");
+    uid = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                     LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid != 0, "host-skip: synthetic PRX image loads");
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_START_OFF,
+                              lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_A_BASE + LIFECYCLE_STOP_OFF,
+                              lifecycle_stop_fn);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0,
+           "host-skip: policy-skipped StartModule returns success");
+    expect(s_lifecycle_start_calls == 0u,
+           "host-skip: policy-skipped module_start does not run");
+
+    /* Keep the policy unset through stop and unload: both operations must honor the
+     * tracked host-skipped lifecycle without turning the guest entries on. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0,
+           "host-skip: StopModule succeeds after a policy-skipped start");
+    expect(s_lifecycle_stop_calls == 0u,
+           "host-skip: StopModule does not run module_stop");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "host-skip: stopped module unloads");
+    expect(sr_hle_test_module_count() == 0u && sr_hle_test_image_count() == 0u,
+           "host-skip: unload retires the stopped module and image");
+
+    uid = sr_hle_test_load_prx_image(path, LIFECYCLE_MOD_A_BASE, LIFECYCLE_EXPORT_A,
+                                     LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid != 0, "host-skip: PRX reloads at its released address");
+    _putenv("SR_REAL_MODULE_START=1");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0,
+           "host-skip: reloaded PRX starts with guest module_start enabled");
+    expect(s_lifecycle_start_calls == 1u,
+           "host-skip: reloaded module_start runs exactly once");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, 0xd1ff982au) == 0,
+           "host-skip: reloaded module stops through its guest entry");
+    expect(s_lifecycle_stop_calls == 1u,
+           "host-skip: module_stop runs only for the reloaded started module");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "host-skip: reloaded module unloads");
+
+    remove(path);
     _putenv("SR_REAL_MODULE_START=0");
     sr_test_guest_fn_reset();
     sr_hle_test_module_reset();
@@ -20244,6 +20432,7 @@ static void test_flight_recorder_trace(void) {
     SrFlightEvent flight_event;
     TCB *first;
     uint32_t module_uid;
+    uint32_t second_module_uid;
     size_t bundle_size;
 
     remove(output);
@@ -20268,8 +20457,9 @@ static void test_flight_recorder_trace(void) {
     s_cur = -1;
     expect(pick_next() >= 0, "recorder fixture emits a second scheduler pick");
 
+    second_module_uid = sr_hle_test_register_module("recorder_second.prx", 0u, 0u);
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = module_uid;
+    cpu.r[4] = second_module_uid;
     expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u, "recorder fixture emits a second HLE module start");
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0x1234u, 0x5678u, 0u);
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0x1235u, 0x5679u, 0u);
@@ -20289,7 +20479,7 @@ static void test_flight_recorder_trace(void) {
     expect(sr_flight_event_at(1, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE,
            "recorder retains the HLE event after the scheduler event");
     expect(flight_event.has_return != 0u && flight_event.return_value == 0u &&
-               flight_event.arguments[0] == module_uid,
+               flight_event.arguments[0] == second_module_uid,
            "recorder attaches HLE arguments and return value to the import event");
     expect(sr_flight_event_at(2, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_PRX,
            "recorder retains the PRX event after the HLE event");
@@ -21069,7 +21259,9 @@ int main(int argc, char **argv) {
     test_kernel_nested_join();
     test_kernel_nested_mutex();
     test_real_module_start_lifecycle();
+    test_prx_stop_entry_boundaries();
     test_late_prx_unload_reload_lifecycle();
+    test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_psmf_rejected_stream_names_the_boundary();
     test_flight_recorder_trace();
