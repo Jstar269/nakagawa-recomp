@@ -352,6 +352,11 @@ static void test_dummy_mixer_handoff(void) {
     assert(rc == 0);
     assert(s_audio_state == AUDIO_STATE_ACTIVE);
 
+    /* The dummy driver drains bound streams in real time on its own thread, so exact
+     * queue depths are only observable while the device is paused; otherwise a loaded
+     * host can consume frames between a push and the assertion that counts them. */
+    assert(SDL_PauseAudioDevice(s_device_id));
+
     /* Initial state: 0 frames queued on all channels */
     for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
         assert(sr_audio_queued(i) == 0);
@@ -375,6 +380,8 @@ static void test_dummy_mixer_handoff(void) {
     sr_audio_push(8, tone, 256, 0x4000, 0x8000);
     assert(sr_audio_queued(8) == 256);
     assert(sr_audio_queued(0) == 512);
+
+    assert(SDL_ResumeAudioDevice(s_device_id));
 
     /* The dummy driver consumes queued data in real time. Poll against a
      * generous deadline rather than a fixed sleep so a loaded CI host
