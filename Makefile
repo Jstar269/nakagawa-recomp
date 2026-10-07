@@ -1655,6 +1655,14 @@ player-ui-regressions: $(PLAYER_UI_TEST_EXE)
 	$(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
+# The title link passes its objects through a GCC response file. A package build
+# under the player's user-data folder has long object paths, and the expanded list
+# overran the Windows command-line limit: the command was cut mid-path and ld
+# reported a missing ".../atrac3p" input. GCC reads backslashes in a response file
+# as escapes, so the paths are written with forward slashes; BUILD_DIR is already
+# refused when it contains whitespace, so each object stays one argument.
+LINK_OBJECTS = $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
+LINK_OBJECTS_RSP = $(BUILD_DIR)/link-objects.rsp
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
 
 # ---- AOT <-> interpreter cosimulation gate ---------------------------------------
@@ -1748,13 +1756,9 @@ endif
 -include $(DEP_FILES)
 
 compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
+	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
-		$(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(CHUNK_OBJS) \
-		$(RT_GE_O) \
-		$(RT_OBJS) \
-		$(ATRAC3P_OBJS) \
-		$(BUILD_DIR)/atrac3p_bridge.o \
+		@$(LINK_OBJECTS_RSP) \
 		$(LIBS)
 	$(ASSET_COPY_STEP)
 	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT)')"
