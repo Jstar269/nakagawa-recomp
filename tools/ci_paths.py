@@ -67,6 +67,8 @@ def _is_workflow_ci(path: str) -> bool:
             "tools/test_ci_paths.py",
             "tools/ci_required.py",
             "tools/test_ci_required.py",
+            "tools/ci_test_shards.py",
+            "tools/test_ci_test_shards.py",
         }
     )
 

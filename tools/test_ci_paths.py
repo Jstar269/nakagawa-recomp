@@ -276,7 +276,8 @@ class CiPathAdversarialTests(unittest.TestCase):
                 self.assertEqual(result["docs_only"], "false")
 
     def test_workflow_and_classifier_changes_force_full_validation(self) -> None:
-        for path in (".github/workflows/ci.yml", "tools/ci_paths.py", "tools/test_ci_paths.py"):
+        for path in (".github/workflows/ci.yml", "tools/ci_paths.py", "tools/test_ci_paths.py",
+                     "tools/ci_test_shards.py", "tools/test_ci_test_shards.py"):
             with self.subTest(path=path):
                 result = classify([path])
                 self.assertEqual(result["workflow_ci"], "true")

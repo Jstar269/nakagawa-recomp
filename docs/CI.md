@@ -276,6 +276,29 @@ The invariant, stated once: **the same logical generated text must produce the
 same bytes and the same SHA-256 whether it came from PowerShell, Windows Python,
 Bash, or WSL.**
 
+## Python test sharding
+
+`python_tools` runs `tools/test_*.py` on parallel runners. The module lists come
+from [`tools/ci_test_shards.py`](../tools/ci_test_shards.py), not from the file
+names: it packs modules longest-first onto the least-loaded shard (ties broken by
+name and then shard index) using the measured per-module seconds in
+[`tools/ci_test_weights.json`](../tools/ci_test_weights.json). A module without a
+measurement uses the file's `default_seconds`, so a new test needs no data edit to
+run. Modules in one `separate` group never share a shard; `test_title_catalog` and
+`test_publication_policy_gate` deliberately mutate tracked repository state and
+form such a group. The plan depends only on the tracked module names and the data
+file, so every runner computes the same partition independently.
+
+`tools/test_ci_test_shards.py` runs the planner exactly as the workflow does and
+proves that every `tools/test_*.py` module is scheduled on exactly one shard, that
+the separated modules stay apart, and that the workflow captures the planner's
+output before using it (a failing planner must stop the step instead of handing
+`unittest` an empty module list, which would fall back to discovery). Refresh the
+weights when the suite's cost moves materially: run each module once, serially,
+and record its wall-clock seconds; `python tools/ci_test_shards.py --check` rejects
+weights for modules that no longer exist, and `--plan` prints the resulting
+partition with per-shard estimates.
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a
