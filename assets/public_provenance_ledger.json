@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e920eca03a2ad54f1236a2baadd72d97c5126556ba2edc52f295a11c5217ef09"
+      "sha256": "f865ac4a6aa6b046be3b033065e5146abfdf0fc21fee60dc961fba2e97a621b0"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9e296ba9e78a2ff5a1f331842a428fd29f7719ad05b0576572da2c58d39c5d45"
+      "sha256": "e7e78e18dadab4612c936e897b742ef5d54d732961890a563e557fdb4b964ec6"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -4266,6 +4266,42 @@
         "upstream_attribution": null
       },
       "sha256": "3adba3f9e7c67cebcb7bc9c34d132308c9f6271133a287e85affa638bd8b9322"
+    },
+    {
+      "path": "src/rt/ge_raster_ref.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-raster-ref-696",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "cecac124ded5f8a80d1f8d9f3544e4243dc25438319ba7fe57270c18369b0251"
+    },
+    {
+      "path": "src/rt/ge_raster_ref.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-raster-ref-696",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "18fc9e6e284f34f51ac5154699be19fa055c000f72c3b3eb82ddd1cd5e09c960"
+    },
+    {
+      "path": "src/rt/ge_raster_ref_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-raster-ref-696",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "4b293d55477a9afb2abc8b266c8771a232c368f28ebc3ab26cb3a640ad31f261"
     },
     {
       "path": "src/rt/ge_replay.c",
