@@ -562,7 +562,7 @@
     "classification": "dedicated",
     "handler": "h_RtcConvertUtcToLocal",
     "name": "sceRtcConvertUtcToLocalTime",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x349d6d6c": {
     "classification": "dedicated",
@@ -724,7 +724,7 @@
     "classification": "dedicated",
     "handler": "h_RtcGetCurrentTick",
     "name": "sceRtcGetCurrentTick",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0x402fcf22": {
     "classification": "dedicated",
@@ -856,7 +856,7 @@
     "classification": "dedicated",
     "handler": "h_RtcGetCurrentClock",
     "name": "sceRtcGetCurrentClock",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0x4d4e10ec": {
     "classification": "dedicated",
@@ -1188,7 +1188,7 @@
     "classification": "dedicated",
     "handler": "h_RtcGetTick",
     "name": "sceRtcGetTick",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0x707b7629": {
     "classification": "dedicated",
@@ -1244,6 +1244,12 @@
     "name": "sceMpegAvcDecodeStop",
     "status": "unreviewed"
   },
+  "0x74829b76": {
+    "classification": "dedicated",
+    "handler": "h_ReceiveMsgPipe",
+    "name": "sceKernelReceiveMsgPipe",
+    "status": "unreviewed"
+  },
   "0x7497ea85": {
     "classification": "controlled_unsupported",
     "handler": "h_SasUnsupportedVoice",
@@ -1254,12 +1260,6 @@
     "classification": "dedicated",
     "handler": "h_SasGetEnvelopeHeight",
     "name": "__sceSasGetEnvelopeHeight",
-    "status": "unreviewed"
-  },
-  "0x74829b76": {
-    "classification": "dedicated",
-    "handler": "h_ReceiveMsgPipe",
-    "name": "sceKernelReceiveMsgPipe",
     "status": "unreviewed"
   },
   "0x7591c7db": {
@@ -1296,7 +1296,7 @@
     "classification": "dedicated",
     "handler": "h_RtcConvertLocalToUtc",
     "name": "sceRtcConvertLocalTimeToUTC",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x780f88d1": {
     "classification": "dedicated",
@@ -1356,7 +1356,7 @@
     "classification": "dedicated",
     "handler": "h_RtcSetTick",
     "name": "sceRtcSetTick",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0x800c44df": {
     "classification": "dedicated",
@@ -2113,7 +2113,7 @@
     "classification": "dedicated",
     "handler": "h_RtcGetWin32FileTime",
     "name": "sceRtcGetWin32FileTime",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xd1e0a01e": {
     "classification": "dedicated",
@@ -2349,7 +2349,7 @@
     "classification": "dedicated",
     "handler": "h_RtcGetCurrentClockLocal",
     "name": "sceRtcGetCurrentClockLocalTime",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe81caf8f": {
     "classification": "dedicated",
