@@ -7,10 +7,12 @@
 // Expected values come from the #703 behavioural contract and first-principles
 // arithmetic, never from another renderer: exhaustive channel widening with
 // pinned values that separate the stated formulas from bit replication,
-// hand-built texels for every format and channel/byte-order reading, CLUT
-// shift/mask boundaries under both orders, wrap/clamp edges, and bilinear
-// blends checked exhaustively against floor(weighted sum / 256 + 1/2) with
-// vectors that separate the +128 bias from plain truncation.
+// hand-built texels for each direct format under both channel orders and both
+// byte orders, CLUT shift/mask boundaries under both orders (directly and
+// through lookups and fetches of every index width), wrap/clamp edges on both
+// axes, and bilinear blends checked on every channel for all 256 weight pairs
+// against floor(weighted sum / 256 [+ 1/2]), with vectors that separate the
+// +128 bias from plain truncation.
 // None of this is PSP-hardware evidence (SPEC_ASSUMPTION (#343 oracle pending)).
 
 #include "ge_texture_ref.h"
@@ -76,6 +78,18 @@ static void test_params(void) {
     p = params();
     p.centre_offset = 4;
     CHECK(!sr_ge_tex_params_valid(&p), "centre offset 4");
+    p = params();
+    p.channels = (SrGeChannelOrder)2;
+    CHECK(!sr_ge_tex_params_valid(&p), "channel order 2");
+    p = params();
+    p.endian = (SrGeEndian)2;
+    CHECK(!sr_ge_tex_params_valid(&p), "endian 2");
+    p = params();
+    p.clut_order = (SrGeClutOrder)2;
+    CHECK(!sr_ge_tex_params_valid(&p), "CLUT order 2");
+    p = params();
+    p.nibbles = (SrGeNibbleOrder)2;
+    CHECK(!sr_ge_tex_params_valid(&p), "nibble order 2");
     CHECK(!sr_ge_tex_params_valid(NULL), "NULL");
 }
 
@@ -159,8 +173,29 @@ static void test_unpack(void) {
     CHECK(rgba_eq(c, 0x40, 0x20, 0x10, 0x80), "8888 B_LOW");
 
     /* byte order */
-    CHECK(sr_ge_tex_load16(&p, bytes) == 0x1234u, "little endian");
-    CHECK(sr_ge_tex_load16(&be, bytes) == 0x3412u, "big endian");
+    {
+        uint16_t w = 0xBEEFu;
+        SrGeTexParams bad = params();
+        CHECK(sr_ge_tex_load16(&p, bytes, &w) == 0 && w == 0x1234u, "little endian");
+        CHECK(sr_ge_tex_load16(&be, bytes, &w) == 0 && w == 0x3412u, "big endian");
+        bad.endian = (SrGeEndian)7;
+        CHECK(sr_ge_tex_load16(&bad, bytes, &w) == SR_GE_TEX_FLAG_INVALID && w == 0, "invalid params fail closed");
+        CHECK(sr_ge_tex_load16(NULL, bytes, &w) == SR_GE_TEX_FLAG_INVALID && w == 0, "NULL params fail closed");
+    }
+    /* distinct 5551 channels: r=1 g=2 b=3 a=1 */
+    sr_ge_tex_unpack(&p, SR_GE_TEX_5551, 0x8C41u, &c);
+    CHECK(rgba_eq(c, 8, 16, 24, 255), "5551 distinct channels R_LOW");
+    sr_ge_tex_unpack(&b, SR_GE_TEX_5551, 0x8C41u, &c);
+    CHECK(rgba_eq(c, 24, 16, 8, 255), "5551 distinct channels B_LOW");
+    sr_ge_tex_unpack(&b, SR_GE_TEX_5551, 0x8000u, &c);
+    CHECK(rgba_eq(c, 0, 0, 0, 255), "5551 alpha stays in bit 15 under B_LOW");
+    sr_ge_tex_unpack(&p, SR_GE_TEX_5650, 0xF800u, &c);
+    CHECK(rgba_eq(c, 0, 0, 255, 255), "5650 high field is blue (R_LOW)");
+    sr_ge_tex_unpack(&b, SR_GE_TEX_5650, 0xF800u, &c);
+    CHECK(rgba_eq(c, 255, 0, 0, 255), "5650 high field is red (B_LOW)");
+    c = rgba(9, 9, 9, 9);
+    CHECK(sr_ge_tex_unpack(&p, SR_GE_TEX_INDEX4, 0, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "failed unpack zeroes its output");
 
     CHECK(sr_ge_tex_unpack(&p, SR_GE_TEX_INDEX8, 0, &c) == SR_GE_TEX_FLAG_INVALID, "index format is not direct");
     CHECK(sr_ge_tex_unpack(&p, SR_GE_TEX_5650, 0, NULL) == SR_GE_TEX_FLAG_INVALID, "NULL out");
@@ -197,7 +232,8 @@ static void test_clut(void) {
     CHECK(idx == 1u, "shift 31");
     sr_ge_clut_index(&sm, 0xFFFFFFFFu, 3, 0u, &idx);
     CHECK(idx == 0u, "empty mask");
-    CHECK(sr_ge_clut_index(&sm, 1, 32, 1, &idx) == SR_GE_TEX_FLAG_INVALID, "shift 32 rejected");
+    idx = 99;
+    CHECK(sr_ge_clut_index(&sm, 1, 32, 1, &idx) == SR_GE_TEX_FLAG_INVALID && idx == 0, "shift 32 rejected, index 0");
 
     for (i = 0; i < 16; ++i) {
         entries[i] = (i << 12) | (i << 8) | (i << 4) | i; /* 4444 grey ramp */
@@ -212,6 +248,14 @@ static void test_clut(void) {
           "index past the CLUT fails closed");
     clut.mask = 0x0Fu;
     CHECK(sr_ge_clut_lookup(&sm, &clut, 0x1Fu, &c) == 0 && c.r == 255, "mask keeps the index in range");
+    /* the CLUT's own shift and both orders take part in a lookup */
+    clut.shift = 4;
+    clut.mask = 0x0Fu;
+    CHECK(sr_ge_clut_lookup(&sm, &clut, 0xA3u, &c) == 0 && c.r == 170, "lookup shift-then-mask -> entry 10");
+    clut.mask = 0xF0u;
+    CHECK(sr_ge_clut_lookup(&ms, &clut, 0xA3u, &c) == 0 && c.r == 170, "lookup mask-then-shift -> entry 10");
+    clut.mask = 0x0Fu;
+    CHECK(sr_ge_clut_lookup(&ms, &clut, 0xA3u, &c) == 0 && c.r == 0, "lookup mask-then-shift -> entry 0");
     clut.format = SR_GE_TEX_INDEX8;
     CHECK(sr_ge_clut_lookup(&sm, &clut, 1, &c) == SR_GE_TEX_FLAG_INVALID, "CLUT entries must be direct colour");
 }
@@ -236,7 +280,9 @@ static void test_address(void) {
     CHECK(out == 0, "INT32_MIN wraps to 0");
     sr_ge_tex_address(SR_GE_ADDRESS_CLAMP, 7, 3, &out);
     CHECK(out == 2, "clamp works for non-power-of-two dimensions");
-    CHECK(sr_ge_tex_address(SR_GE_ADDRESS_WRAP, 1, 3, &out) == SR_GE_TEX_FLAG_INVALID, "non-power-of-two wrap");
+    out = 7;
+    CHECK(sr_ge_tex_address(SR_GE_ADDRESS_WRAP, 1, 3, &out) == SR_GE_TEX_FLAG_INVALID && out == 0,
+          "non-power-of-two wrap fails closed with 0");
     CHECK(sr_ge_tex_address(SR_GE_ADDRESS_CLAMP, 1, 0, &out) == SR_GE_TEX_FLAG_INVALID, "zero dimension");
     CHECK(sr_ge_tex_address(SR_GE_ADDRESS_CLAMP, 1, 8192, &out) == SR_GE_TEX_FLAG_INVALID, "dimension too large");
 }
@@ -277,10 +323,16 @@ static void test_bilinear(void) {
                 SrGeRgba8 o2;
                 double w00 = (16.0 - u) * (16.0 - v), w01 = u * (16.0 - v), w10 = (16.0 - u) * v, w11 = (double)u * v;
                 double exact = (c[0].g * w00 + c[1].g * w01 + c[2].g * w10 + c[3].g * w11) / 256.0;
+                double er = (c[0].r * w00 + c[1].r * w01 + c[2].r * w10 + c[3].r * w11) / 256.0;
+                double eb = (c[0].b * w00 + c[1].b * w01 + c[2].b * w10 + c[3].b * w11) / 256.0;
+                double ea = (c[0].a * w00 + c[1].a * w01 + c[2].a * w10 + c[3].a * w11) / 256.0;
                 unsigned lo = c[0].g, hi = c[0].g;
                 sr_ge_bilinear(&p, c, u, v, &out);
                 sr_ge_bilinear(&t, c, u, v, &o2);
-                if (out.g != (unsigned)floor(exact + 0.5) || o2.g != (unsigned)floor(exact)) {
+                if (out.g != (unsigned)floor(exact + 0.5) || o2.g != (unsigned)floor(exact) ||
+                    out.r != (unsigned)floor(er + 0.5) || o2.r != (unsigned)floor(er) ||
+                    out.b != (unsigned)floor(eb + 0.5) || o2.b != (unsigned)floor(eb) ||
+                    out.a != (unsigned)floor(ea + 0.5) || o2.a != (unsigned)floor(ea)) {
                     ++bad;
                 }
                 for (k = 1; k < 4; ++k) {
@@ -299,6 +351,16 @@ static void test_bilinear(void) {
     CHECK(bad == 0, "%d blends disagree with floor(sum/256 [+ 1/2])", bad);
     CHECK(bounds == 0, "%d blends left the corner range", bounds);
     CHECK(bias_differs, "the bias reading never mattered: no teeth");
+    /* out may alias an input */
+    c[0] = rgba(0, 0, 0, 0);
+    c[1] = rgba(160, 160, 160, 160);
+    c[2] = rgba(0, 0, 0, 0);
+    c[3] = rgba(160, 160, 160, 160);
+    sr_ge_bilinear(&p, c, 8, 8, &c[0]);
+    CHECK(rgba_eq(c[0], 80, 80, 80, 80), "aliased output");
+    out = rgba(1, 2, 3, 4);
+    CHECK(sr_ge_bilinear(&p, NULL, 0, 0, &out) == SR_GE_TEX_FLAG_INVALID && rgba_eq(out, 0, 0, 0, 0),
+          "failed blend zeroes its output");
 }
 
 static void test_textures(void) {
@@ -395,6 +457,126 @@ static void test_textures(void) {
           "a failed fetch fails the whole sample");
 }
 
+/* 4x4 4444 texture: red level 4x+3, green level 4y+3, blue 0, alpha 15. */
+static void build_grid(uint8_t* bytes) {
+    int x, y;
+    for (y = 0; y < 4; ++y) {
+        for (x = 0; x < 4; ++x) {
+            unsigned t16 = (15u << 12) | ((unsigned)(4 * y + 3) << 4) | (unsigned)(4 * x + 3);
+            bytes[(y * 4 + x) * 2] = (uint8_t)(t16 & 0xFFu);
+            bytes[(y * 4 + x) * 2 + 1] = (uint8_t)(t16 >> 8);
+        }
+    }
+}
+
+static void test_textures_2d(void) {
+    SrGeTexParams p = params(), centre = params(), be = params(), hi = params(), ms = params();
+    uint8_t grid[32];
+    uint8_t idx4[4] = {0x21u, 0x43u, 0x65u, 0x87u};
+    uint8_t idx16[2] = {0x34u, 0x12u};
+    uint8_t idx32[4] = {0x00u, 0x00u, 0x05u, 0x00u};
+    uint8_t px32[4] = {0x10u, 0x20u, 0x40u, 0x80u};
+    uint32_t entries[16];
+    SrGeClut clut;
+    SrGeTexture tex;
+    SrGeRgba8 c;
+    int i;
+    centre.centre_offset = 8;
+    be.endian = SR_GE_BIG_ENDIAN;
+    hi.nibbles = SR_GE_NIBBLE_HIGH_FIRST;
+    ms.clut_order = SR_GE_CLUT_MASK_THEN_SHIFT;
+    build_grid(grid);
+    memset(&tex, 0, sizeof tex);
+    tex.data = grid;
+    tex.size = sizeof grid;
+    tex.width = tex.height = tex.stride = 4;
+    tex.format = SR_GE_TEX_4444;
+    tex.address_u = tex.address_v = SR_GE_ADDRESS_WRAP;
+
+    /* v axis: rows 1 and 2 (green 119 and 187) at v = 1.5, column 1 exact */
+    sr_ge_tex_sample_bilinear(&p, &tex, 16, 24, &c);
+    CHECK(rgba_eq(c, 119, 153, 0, 255), "v blend (%u,%u,%u,%u)", c.r, c.g, c.b, c.a);
+    sr_ge_tex_sample_bilinear(&centre, &tex, 24, 32, &c);
+    CHECK(rgba_eq(c, 119, 153, 0, 255), "v blend with the centre offset on both axes");
+    /* both fractions non-zero, corners all distinct: catches swapped corners */
+    sr_ge_tex_sample_bilinear(&p, &tex, 4, 4, &c);
+    CHECK(rgba_eq(c, 68, 68, 0, 255), "u = v = 4/16 blend (%u,%u)", c.r, c.g);
+    /* negative coordinates floor: -16 is exactly texel -1, -17 is texel -2 at 15/16 */
+    sr_ge_tex_sample_bilinear(&p, &tex, -16, 0, &c);
+    CHECK(c.r == 255 && c.g == 51, "u = -16 is texel 3 exactly, got %u", c.r);
+    sr_ge_tex_sample_bilinear(&p, &tex, -17, 0, &c);
+    CHECK(c.r == 251, "u = -17 blends texels 2 and 3 at 15/16, got %u", c.r);
+    /* each axis uses its own address mode */
+    tex.address_u = SR_GE_ADDRESS_CLAMP;
+    tex.address_v = SR_GE_ADDRESS_WRAP;
+    CHECK(sr_ge_tex_fetch(&p, &tex, -1, -1, &c) == 0 && c.r == 51 && c.g == 255, "u clamps while v wraps");
+    tex.address_u = SR_GE_ADDRESS_WRAP;
+    tex.address_v = SR_GE_ADDRESS_CLAMP;
+    CHECK(sr_ge_tex_fetch(&p, &tex, -1, -1, &c) == 0 && c.r == 255 && c.g == 51, "u wraps while v clamps");
+    /* exact big-endian reading of texel (0,0) = 0xF033 stored as 33 F0 -> 0x33F0 */
+    tex.address_v = SR_GE_ADDRESS_WRAP;
+    CHECK(sr_ge_tex_fetch(&be, &tex, 0, 0, &c) == 0 && rgba_eq(c, 0, 255, 51, 51), "big-endian fetch");
+    /* stride wider than the width */
+    tex.width = 2;
+    CHECK(sr_ge_tex_fetch(&p, &tex, 1, 2, &c) == 0 && c.r == 119 && c.g == 187, "row 2 uses the stride");
+    c = rgba(1, 1, 1, 1);
+    tex.stride = 1;
+    CHECK(sr_ge_tex_fetch(&p, &tex, 0, 0, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "stride below width fails closed with a zeroed output");
+    tex.stride = 4;
+    tex.width = 4;
+    c = rgba(1, 1, 1, 1);
+    tex.size = 4;
+    CHECK(sr_ge_tex_sample_bilinear(&p, &tex, 40, 40, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "failed sample zeroes its output");
+
+    /* direct 8888 under both byte orders */
+    memset(&tex, 0, sizeof tex);
+    tex.data = px32;
+    tex.size = sizeof px32;
+    tex.width = tex.height = tex.stride = 1;
+    tex.format = SR_GE_TEX_8888;
+    CHECK(sr_ge_tex_fetch(&p, &tex, 0, 0, &c) == 0 && rgba_eq(c, 0x10, 0x20, 0x40, 0x80), "8888 little endian");
+    CHECK(sr_ge_tex_fetch(&be, &tex, 0, 0, &c) == 0 && rgba_eq(c, 0x80, 0x40, 0x20, 0x10), "8888 big endian");
+
+    for (i = 0; i < 16; ++i) {
+        entries[i] = (15u << 12) | ((unsigned)i << 8) | ((unsigned)i << 4) | (unsigned)i;
+    }
+    clut.entries = entries;
+    clut.count = 16;
+    clut.format = SR_GE_TEX_4444;
+    /* 16-bit indices: raw 0x1234 */
+    clut.shift = 8;
+    clut.mask = 0x0Fu;
+    tex.clut = &clut;
+    tex.data = idx16;
+    tex.size = sizeof idx16;
+    tex.format = SR_GE_TEX_INDEX16;
+    CHECK(sr_ge_tex_fetch(&p, &tex, 0, 0, &c) == 0 && c.r == 34, "16-bit index (0x1234 >> 8) & 0xF = 2");
+    clut.mask = 0x0F00u;
+    CHECK(sr_ge_tex_fetch(&ms, &tex, 0, 0, &c) == 0 && c.r == 34, "16-bit index (0x1234 & 0xF00) >> 8 = 2");
+    /* 32-bit indices: raw 0x00050000 */
+    clut.shift = 16;
+    clut.mask = 0x0Fu;
+    tex.data = idx32;
+    tex.size = sizeof idx32;
+    tex.format = SR_GE_TEX_INDEX32;
+    CHECK(sr_ge_tex_fetch(&p, &tex, 0, 0, &c) == 0 && c.r == 85, "32-bit index 5");
+    /* 4-bit indices over two rows (B9: continuous packing) */
+    clut.shift = 0;
+    clut.mask = 0xFFu;
+    tex.data = idx4;
+    tex.size = sizeof idx4;
+    tex.width = 4;
+    tex.height = 2;
+    tex.stride = 4;
+    tex.format = SR_GE_TEX_INDEX4;
+    CHECK(sr_ge_tex_fetch(&p, &tex, 1, 1, &c) == 0 && c.r == 102, "4-bit (1,1) low-nibble-first is index 6");
+    CHECK(sr_ge_tex_fetch(&hi, &tex, 1, 1, &c) == 0 && c.r == 85, "4-bit (1,1) high-nibble-first is index 5");
+    CHECK(sr_ge_tex_fetch(&hi, &tex, 1, 0, &c) == 0 && c.r == 17, "4-bit texel 1 high-nibble-first is index 1");
+    CHECK(sr_ge_tex_fetch(&p, &tex, 2, 1, &c) == 0 && c.r == 119, "4-bit (2,1) is index 7");
+}
+
 int main(void) {
     test_params();
     test_expand();
@@ -403,6 +585,7 @@ int main(void) {
     test_address();
     test_bilinear();
     test_textures();
+    test_textures_2d();
     if (g_failures) {
         printf("GE_TEXTURE_REF_SELFTEST FAIL failures=%d checks=%d\n", g_failures, g_checks);
         return 1;

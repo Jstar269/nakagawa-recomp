@@ -37,7 +37,18 @@
 //       splits into a texel index and a 4-bit fraction (0 or 8 sixteenths);
 //   B7  wrapping a non-power-of-two dimension is unspecified and fails closed
 //       with SR_GE_TEX_FLAG_INVALID; an index past the end of a CLUT fails
-//       closed the same way.
+//       closed the same way.  Clamp is modelled for any dimension (a project
+//       reading: clamping needs no power of two);
+//   B8  boundary weights: the 4-bit weights stop at 15, so a sample exactly on
+//       a texel boundary is modelled as the next texel with weight 0 rather
+//       than the previous texel with weight 16 (the two agree in exact
+//       arithmetic; hardware may differ in rounding).  The per-channel
+//       intermediate is modelled as an exact unsigned value of at most
+//       255*256 + 128 — the hardware width is SPEC_ASSUMPTION (#343 oracle
+//       pending);
+//   B9  4-bit indexed rows are modelled as packed continuously: texel
+//       y*stride + x selects the nibble, so with an odd stride a row starts
+//       mid-byte.  Whether rows are byte-aligned is unspecified.
 //   The 32-bit 8888 layout is included for CLUT entries and direct texels; its
 //   field order follows B1 and it needs no widening.
 //
@@ -126,8 +137,9 @@ uint8_t sr_ge_expand6(uint32_t v);
 uint8_t sr_ge_expand4(uint32_t v);
 uint8_t sr_ge_expand1(uint32_t v);
 
-/* Assemble a 16-bit texel from two bytes in memory order (B2). */
-uint16_t sr_ge_tex_load16(const SrGeTexParams* params, const uint8_t bytes[2]);
+/* Assemble a 16-bit texel from two bytes in memory order (B2).  Invalid
+   params or a NULL argument fail closed with *out = 0. */
+uint32_t sr_ge_tex_load16(const SrGeTexParams* params, const uint8_t bytes[2], uint16_t* out);
 
 /* Unpack a direct-colour texel.  16-bit formats use the low 16 bits of
    `texel`; 8888 uses all 32 (byte order already resolved by the caller). */
@@ -159,7 +171,7 @@ typedef struct SrGeTexture {
     const uint8_t* data;
     size_t size;            /* bytes available at data */
     uint32_t width, height; /* texels, 1..4096 */
-    uint32_t stride;        /* texels per row, >= width */
+    uint32_t stride;        /* texels per row, width..8192 */
     SrGeTexFormat format;
     const SrGeClut* clut;   /* required for the INDEX formats */
     SrGeAddressMode address_u, address_v;

@@ -48,11 +48,22 @@ uint8_t sr_ge_expand1(uint32_t v) {
     return (v & 1u) ? 255u : 0u;
 }
 
-uint16_t sr_ge_tex_load16(const SrGeTexParams* params, const uint8_t bytes[2]) {
-    if (params && params->endian == SR_GE_BIG_ENDIAN) {
+static uint16_t load16(const SrGeTexParams* params, const uint8_t* bytes) {
+    if (params->endian == SR_GE_BIG_ENDIAN) {
         return (uint16_t)(((unsigned)bytes[0] << 8) | bytes[1]);
     }
     return (uint16_t)(((unsigned)bytes[1] << 8) | bytes[0]);
+}
+
+uint32_t sr_ge_tex_load16(const SrGeTexParams* params, const uint8_t bytes[2], uint16_t* out) {
+    if (out) {
+        *out = 0;
+    }
+    if (!sr_ge_tex_params_valid(params) || !bytes || !out) {
+        return SR_GE_TEX_FLAG_INVALID;
+    }
+    *out = load16(params, bytes);
+    return 0;
 }
 
 static uint32_t load32(const SrGeTexParams* params, const uint8_t* b) {
@@ -168,22 +179,25 @@ uint32_t sr_ge_tex_address(SrGeAddressMode mode, int32_t coord, uint32_t dim, ui
 
 static uint8_t blend_channel(unsigned c00, unsigned c01, unsigned c10, unsigned c11, unsigned u, unsigned v,
                              unsigned bias) {
-    /* at most 255*256 + 128, well inside 32 bits */
+    /* exact: at most 255*256 + 128 (B8 models no narrower hardware width) */
     unsigned sum = (c00 * (16u - u) + c01 * u) * (16u - v) + (c10 * (16u - u) + c11 * u) * v + bias;
     return (uint8_t)(sum >> 8);
 }
 
 uint32_t sr_ge_bilinear(const SrGeTexParams* params, const SrGeRgba8 c[4], unsigned u, unsigned v, SrGeRgba8* out) {
-    if (out) {
-        out->r = out->g = out->b = out->a = 0;
-    }
+    SrGeRgba8 r;
     if (!sr_ge_tex_params_valid(params) || !c || !out || u > 15u || v > 15u) {
+        if (out) {
+            out->r = out->g = out->b = out->a = 0;
+        }
         return SR_GE_TEX_FLAG_INVALID;
     }
-    out->r = blend_channel(c[0].r, c[1].r, c[2].r, c[3].r, u, v, params->bilinear_bias);
-    out->g = blend_channel(c[0].g, c[1].g, c[2].g, c[3].g, u, v, params->bilinear_bias);
-    out->b = blend_channel(c[0].b, c[1].b, c[2].b, c[3].b, u, v, params->bilinear_bias);
-    out->a = blend_channel(c[0].a, c[1].a, c[2].a, c[3].a, u, v, params->bilinear_bias);
+    /* computed into a local first so out may alias c */
+    r.r = blend_channel(c[0].r, c[1].r, c[2].r, c[3].r, u, v, params->bilinear_bias);
+    r.g = blend_channel(c[0].g, c[1].g, c[2].g, c[3].g, u, v, params->bilinear_bias);
+    r.b = blend_channel(c[0].b, c[1].b, c[2].b, c[3].b, u, v, params->bilinear_bias);
+    r.a = blend_channel(c[0].a, c[1].a, c[2].a, c[3].a, u, v, params->bilinear_bias);
+    *out = r;
     return 0;
 }
 
@@ -242,7 +256,7 @@ uint32_t sr_ge_tex_fetch(const SrGeTexParams* params, const SrGeTexture* tex, in
         raw = tex->data[byte];
         break;
     case 16:
-        raw = sr_ge_tex_load16(params, tex->data + byte);
+        raw = load16(params, tex->data + byte);
         break;
     default:
         raw = load32(params, tex->data + byte);
