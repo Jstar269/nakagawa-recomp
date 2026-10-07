@@ -1854,6 +1854,68 @@ int main(int argc, char **argv) {
         write_experimental_profile_fixture(preflight_root, "ULUS99998",
                                            "experimental-ulus99998", "EBOOT.BIN",
                                            FIXTURE_SHA256);
+
+        /* #670: reading an experimental profile validates its embedded
+         * manifest; it registers nothing. It therefore must not take a parser
+         * overlay slot or publish a catalog generation. Before the fix it
+         * validated through the storing parser, so every experimental package
+         * validation advanced the catalog epoch (invalidating every cached
+         * package status) and, with every overlay slot in use, overwrote the
+         * last slot, which backs a registered overlay: that title vanished from
+         * the catalog and the experimental entry took its place. */
+        nk_title_catalog_clear_overlay();
+        for (int slot = 0; slot < 8; slot++) {
+            char slot_path[1100];
+            char slot_json[1536];
+            snprintf(slot_path, sizeof(slot_path), "%s%cslot-guard-%d.json",
+                     preflight_root, nk_platform_path_separator(), slot);
+            int slot_length = snprintf(slot_json, sizeof(slot_json),
+                "{\"schema_version\":1,\"id\":\"slot-guard-%d\","
+                "\"display_name\":\"Slot Guard %d\",\"kind\":\"retail\","
+                "\"disc\":{\"id\":\"ULUS9973%d\",\"region\":\"NA\","
+                "\"revision_policy\":\"exact-disc-id\"},"
+                "\"executable\":{\"base\":0,\"entry\":0,\"bss_metadata_source\":\"none\","
+                "\"extra_executable_spans\":[]},\"modules\":[],"
+                "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"savedata\","
+                "\"device_prefixes\":[\"disc0:\",\"ms0:\"]},\"hle_profile\":\"generic\","
+                "\"feature_requirements\":[],\"verification_profile\":\"smoke\"}\n",
+                slot, slot, slot);
+            assert(slot_length > 0 && (size_t)slot_length < sizeof(slot_json));
+            write_text_file(slot_path, slot_json);
+            char slot_error[512] = "";
+            if (!nk_title_manifest_load_overlay(slot_path, slot_error, sizeof(slot_error))) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] slot overlay %d: %s\n", slot, slot_error);
+                assert(false);
+            }
+            remove(slot_path);
+        }
+        uint64_t epoch_before_profile_read = nk_title_catalog_epoch();
+        NkTitleEntrySnapshot guard_profile = {0};
+        char guard_hash[65] = "";
+        char guard_error[512] = "";
+        assert(nk_title_manifest_read_experimental_profile(
+            preflight_root, "ULUS99998", "experimental-ulus99998", "EBOOT.BIN",
+            &guard_profile, guard_hash, guard_error, sizeof(guard_error)));
+        assert(strcmp(guard_profile.entry.id, "experimental-ulus99998") == 0);
+        nk_title_catalog_snapshot_release(&guard_profile);
+        assert(nk_title_catalog_epoch() == epoch_before_profile_read);
+        for (int slot = 0; slot < 8; slot++) {
+            char slot_id[32];
+            char slot_disc[16];
+            snprintf(slot_id, sizeof(slot_id), "slot-guard-%d", slot);
+            snprintf(slot_disc, sizeof(slot_disc), "ULUS9973%d", slot);
+            NkTitleEntrySnapshot slot_entry = {0};
+            assert(nk_title_catalog_find_by_id(slot_id, &slot_entry));
+            assert(strcmp(slot_entry.entry.primary_disc_id, slot_disc) == 0);
+            nk_title_catalog_snapshot_release(&slot_entry);
+            assert(nk_title_catalog_find_by_disc_id(slot_disc, &slot_entry));
+            assert(strcmp(slot_entry.entry.id, slot_id) == 0);
+            nk_title_catalog_snapshot_release(&slot_entry);
+        }
+        NkTitleEntrySnapshot leaked_profile = {0};
+        assert(!nk_title_catalog_find_by_id("experimental-ulus99998", &leaked_profile));
+        nk_title_catalog_clear_overlay();
+
         NkTitleEntrySnapshot profile_snapshot = {0};
         char profile_hash[65] = "";
         char profile_error[512] = "";
