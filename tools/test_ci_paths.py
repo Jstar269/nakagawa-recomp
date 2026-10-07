@@ -669,6 +669,16 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         nested = "define A\ndefine B\nx\nendef\n.PHONY: t\nt:\n\ta\nendef\n"
         self.assertIsNone(self.analyse(nested, nested.replace("\ta\n", "\tb\n")))
 
+    def test_define_directive_is_recognised_by_words_not_spaces(self) -> None:
+        # A tab-separated prefix still opens a define block, so a rule-shaped body
+        # line is define text, not a recipe that could narrow routing.
+        tabbed = ".PHONY: t\noverride\tdefine BODY\nt:\n\techo a\nendef\n"
+        self.assertEqual(ci_paths_module._makefile_line_kinds(tabbed)[0][3], ("other", "define"))
+        self.assertIsNone(self.analyse(tabbed, tabbed.replace("echo a", "echo b")))
+        # A body line that merely contains the word is not a nested define.
+        worded = "define BODY\nfoo define bar\nendef\n.PHONY: t\nt:\n\techo a\n"
+        self.assertEqual(self.analyse(worded, worded.replace("echo a", "echo b")), ("t",))
+
     def test_static_pattern_rules_are_conservatively_shared(self) -> None:
         base = _SYNTHETIC_MAKEFILE + ".PHONY: check-a check-b\ncheck-a check-b: check-%:\n\techo $*\n"
         self.assertEqual(ci_paths_module._makefile_line_kinds(base)[1] >= {"check-a", "check-b"}, True)

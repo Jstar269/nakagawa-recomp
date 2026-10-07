@@ -243,17 +243,48 @@ def check_plan(
 # computes that set statically and errs toward inclusion:
 #
 # * a module's dependencies are its local imports (``import x``, ``from tools import
-#   x``, ``from psp_oracle import y``) *and* every local tool whose file name appears
-#   in one of its string literals, which is how a test launches a tool as a
-#   subprocess (``[sys.executable, "tools/codegen.py", ...]``);
+#   x``, ``from psp_oracle import y``) *and* every local tool or package its string
+#   literals name, which is how a test launches a tool as a subprocess:
+#   ``"tools/codegen.py"``, ``"tools/psp_oracle/run_nakagawa.py"`` (the package),
+#   ``"-m", "enhancement_package"`` or ``"psp_oracle.run_nakagawa"``;
+# * a module couples to make when its text names the Makefile, a ``.mk`` file,
+#   ``$(MAKE)``, ``gmake``/``mingw32-make``, or a string literal that starts with the
+#   ``make`` or ``MAKE`` command word (``"make"``, ``f"make {goal}"``, ``"MAKE"``);
 # * the closure is transitive, and a package dependency pulls in every file in it;
 # * a file that cannot be read or parsed counts as coupled.
 #
 # The selection is therefore a superset of the modules a recipe edit can affect,
 # never a guess at a subset.
 
-MAKEFILE_COUPLING = re.compile(r"\bMakefile\b|\bmingw32-make\b|\bgmake\b|[\"']make[\"']|\.mk\b")
-_PY_FILE_LITERAL = re.compile(r"(?:^|[/\\])([A-Za-z_][A-Za-z0-9_]*)\.py\b")
+MAKEFILE_COUPLING = re.compile(
+    r"\bMakefile\b|\bmingw32-make\b|\bgmake\b|\$\(MAKE\)|\.mk\b"
+    r"|[\"'](?:make|MAKE)(?:\.exe)?(?:[\"'\s]|$)"
+)
+_LITERAL_SEPARATORS = re.compile(r"[\s/\\]+")
+_DOTTED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _literal_names(value: str) -> set[str]:
+    """Return every candidate local unit name a string literal can refer to.
+
+    Each whitespace- or slash-separated token contributes its own name with a
+    ``.py`` suffix removed, and, when it is a dotted name, its first component (the
+    second after a leading ``tools``).  The caller intersects the result with the
+    local units, so an unrelated word costs nothing and a near miss errs toward
+    inclusion.
+    """
+
+    names: set[str] = set()
+    for token in _LITERAL_SEPARATORS.split(value):
+        token = token.strip("\"'`,.;:()[]{}")
+        if token.endswith(".py"):
+            token = token[:-3]
+        if not _DOTTED_NAME.fullmatch(token):
+            continue
+        names.add(token)
+        parts = token.split(".")
+        names.add(parts[1] if parts[0] == "tools" and len(parts) > 1 else parts[0])
+    return names
 
 
 def _local_units(tools_dir: Path) -> dict[str, list[Path]]:
@@ -288,7 +319,7 @@ def _unit_edges(path: Path, local: frozenset[str]) -> tuple[set[str], bool]:
                     edges.add(path.parent.name)
             edges.add(parts[1] if parts[0] == "tools" and len(parts) > 1 else parts[0])
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            edges.update(_PY_FILE_LITERAL.findall(node.value))
+            edges.update(_literal_names(node.value))
     return edges & local, False
 
 

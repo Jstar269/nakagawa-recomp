@@ -280,6 +280,22 @@ def _continues(line: str) -> bool:
     return (len(line) - len(line.rstrip("\\"))) % 2 == 1
 
 
+_DEFINE_PREFIXES = frozenset({"override", "export", "private"})
+
+
+def _opens_define(words: Sequence[str]) -> bool:
+    """Return whether whitespace-split ``words`` open a ``define`` block.
+
+    The directive may follow any run of ``override``/``export``/``private``
+    prefixes; splitting on whitespace accepts tab separators as GNU make does.
+    """
+
+    index = 0
+    while index < len(words) and words[index] in _DEFINE_PREFIXES:
+        index += 1
+    return index < len(words) and words[index] == "define"
+
+
 def _makefile_line_kinds(text: str) -> tuple[list[tuple[object, ...]], frozenset[str]]:
     """Return one kind tuple per physical line, and the literal ``.PHONY`` names.
 
@@ -312,7 +328,7 @@ def _makefile_line_kinds(text: str) -> tuple[list[tuple[object, ...]], frozenset
             words = logical.strip().split()
             if words[:1] == ["endef"]:
                 in_define = False
-            elif "define" in words[:3]:
+            elif _opens_define(words):
                 # GNU make nests define blocks; the first endef would close only
                 # the inner one. Not modelled, so refuse to narrow.
                 raise _MakefileUnsupported(f"line {start + 1}: nested define")
@@ -341,7 +357,7 @@ def _makefile_line_kinds(text: str) -> tuple[list[tuple[object, ...]], frozenset
                 depth -= 1
             kinds.extend([("other", "conditional")] * span)
             continue
-        if first == "define" or (first in {"override", "export", "private"} and " define " in f" {code} "):
+        if _opens_define(code.split()):
             in_define = True
             kinds.extend([("other", "define")] * span)
             if code.split()[-1:] == ["endef"]:

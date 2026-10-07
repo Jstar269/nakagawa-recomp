@@ -267,6 +267,15 @@ class MakefileCouplingTests(unittest.TestCase):
             "test_broken.py": "def broken(:\n",
             "test_plain.py": "import plain\nimport json\n",
             "test_named_only.py": "NOTE = 'see plain.py for details'\n",
+            "shell_runner.py": "import subprocess\nsubprocess.run(f\"make {'all'}\", shell=True)\n",
+            "env_runner.py": "import os\nos.environ.get(\"MAKE\")\n",
+            "oracle/__init__.py": "",
+            "oracle/launch.py": "GOAL = '$(MAKE) smoke'\n",
+            "test_shell.py": "import subprocess\nsubprocess.run(['python', 'tools/shell_runner.py'])\n",
+            "test_env.py": "import subprocess, sys\nsubprocess.run([sys.executable, '-m', 'env_runner'])\n",
+            "test_nested_path.py": "SCRIPT = 'tools/oracle/launch.py'\n",
+            "test_dotted.py": "MODULE = 'oracle.launch'\n",
+            "test_prose.py": "NOTE = 'we make no claims about plain'\n",
         }
         with tempfile.TemporaryDirectory() as scratch:
             tools_dir = Path(scratch)
@@ -277,7 +286,18 @@ class MakefileCouplingTests(unittest.TestCase):
             selected = ci_test_shards.makefile_coupled_modules(modules, tools_dir)
         self.assertEqual(
             selected,
-            ["test_broken", "test_direct", "test_import", "test_launch", "test_package", "test_transitive"],
+            [
+                "test_broken",
+                "test_direct",
+                "test_dotted",
+                "test_env",
+                "test_import",
+                "test_launch",
+                "test_nested_path",
+                "test_package",
+                "test_shell",
+                "test_transitive",
+            ],
         )
 
     def test_unknown_module_names_are_kept(self) -> None:
