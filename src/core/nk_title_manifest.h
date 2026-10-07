@@ -98,6 +98,8 @@ bool nk_title_manifest_load_overlay_ext(
  * disc. The profile is written below <user_data_root>/experimental/<DISC_ID>,
  * its embedded canonical manifest is validated by the native manifest parser,
  * and executable hashes are retained only in that user data directory.
+ * Validation registers nothing: it takes no parser overlay slot and publishes
+ * no catalog epoch change (#670).
  */
 bool nk_title_manifest_write_experimental_profile(
     const char *iso_path,
@@ -115,7 +117,10 @@ bool nk_title_manifest_write_experimental_profile(
 /* Read the private experimental profile for one library identity. The embedded
  * manifest is fully validated and, when requested, returned as an owned title
  * snapshot that survives subsequent overlay reloads. Release the snapshot with
- * nk_title_catalog_snapshot_release(). */
+ * nk_title_catalog_snapshot_release(). Like the writer, the reader only
+ * validates: registered overlays, parser overlay storage and the catalog epoch
+ * are unchanged, so package validation of an experimental title cannot evict a
+ * registered overlay or invalidate other cached package statuses (#670). */
 bool nk_title_manifest_read_experimental_profile(
     const char *user_data_root,
     const char *disc_id,
