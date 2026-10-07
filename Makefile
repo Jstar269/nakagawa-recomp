@@ -858,6 +858,7 @@ PUBLIC_TARGETS := \
 	ge-float24-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
+	ge-raster-ref-selftest \
 	vfpu-interp-selftest \
 	atrac3p-selftest \
 	atrac3p-bridge-selftest \
@@ -970,6 +971,7 @@ HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
+HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
 HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
 HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
@@ -1961,6 +1963,18 @@ coro-selftest:
 		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
 		$(if $(filter Windows_NT,$(OS)),-lpsapi,)
 	$(BUILD_DIR)/coro_selftest.exe
+
+# ge-raster-ref-selftest — project-authored GE triangle setup and rasterization
+# reference model (issue #696): 12.4 snapping, top-left coverage with a tiling
+# oracle, leftmost-anchored affine planes over the 256-segment setup reciprocal
+# framework, and the integer colour-factor product, under every SPEC_AMBIGUITY
+# reading.  Strict C99; not wired into the renderer.  No game inputs.
+ge-raster-ref-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/ge_raster_ref_selftest.exe src/rt/ge_raster_ref_selftest.c src/rt/ge_raster_ref.c -lm
+	$(BUILD_DIR)/ge_raster_ref_selftest.exe
+
+native-core-tests: ge-raster-ref-selftest
 
 # hle-thread-selftest — executable production-HLE ThreadMan/IoFileMgr regression suite.
 # Links real hle.c, includes real sched.c for a controlled synthetic scheduler
