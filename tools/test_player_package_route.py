@@ -51,9 +51,11 @@ if str(TOOLS) not in sys.path:
 
 import nk_cli  # noqa: E402
 from nk_core import package_cache  # noqa: E402
+from import_fixtures import BASE_VADDR, _elf  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_psp_container,
     create_test_iso_with_executables,
+    create_test_iso_with_modules,
 )
 
 SHOWCASE_FIXTURE_DIR = ROOT / "fixtures" / "showcase"
@@ -131,6 +133,19 @@ def native_legacy_experimental_manifest() -> dict:
         "feature_requirements": [],
         "verification_profile": "experimental-unverified",
     }
+
+
+def synthetic_required_module() -> bytes:
+    """Build a tiny project-owned PRX ELF with a bounded module-info section."""
+    segment = bytearray(128)
+    segment[4:11] = b"fixture"
+    struct.pack_into("<I", segment, 32, BASE_VADDR + 64)
+    struct.pack_into("<2I", segment, 64, 0x03E00008, 0)  # jr $ra; nop
+    return _elf(
+        bytes(segment),
+        BASE_VADDR,
+        extra_sections=[(b".text", BASE_VADDR + 64, 8)],
+    )
 
 
 class TestPackageRuntimeDependencies(unittest.TestCase):
@@ -343,6 +358,32 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("consent-based installation is still in the works", smoke.lower())
 
 
+class TestSourceMediaIdentity(unittest.TestCase):
+    def test_required_module_without_name_has_named_package_error(self):
+        manifest = {"modules": [{"role": "guest-prx", "required": True}]}
+        with patch.object(nk_cli, "_hash_iso_member", return_value="1" * 64):
+            with self.assertRaisesRegex(
+                nk_cli.PackageBuildError,
+                "required guest-prx manifest record is missing its name",
+            ):
+                nk_cli._source_media_identity(Path("synthetic.iso"), "EBOOT.BIN", manifest)
+
+    def test_required_guest_path_rejects_empty_components(self):
+        manifest = {"modules": [{
+            "name": "fixture.prx",
+            "role": "guest-prx",
+            "required": True,
+            "guest_path": "disc0:/PSP_GAME//USRDIR/fixture.prx",
+        }]}
+        with patch.object(nk_cli, "_hash_iso_member", return_value="1" * 64):
+            with self.assertRaisesRegex(
+                nk_cli.PackageBuildError, "Guest module path contains an empty component"
+            ):
+                nk_cli._source_media_identity(
+                    Path("synthetic.iso"), "EBOOT.BIN", manifest
+                )
+
+
 class TestPlayerPackageRoute(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-player-route-")
@@ -385,13 +426,28 @@ class TestPlayerPackageRoute(unittest.TestCase):
         # program headers change on the way into the disc image.
         executable_bytes = align_executable(bytes(executable))
         self.executable_bytes = executable_bytes
+        self.module_bytes = synthetic_required_module()
+        manifest = synthetic_manifest()
+        manifest["modules"] = [{
+            "name": "fixture.prx",
+            "load_address": 0x08A00000,
+            "required": True,
+            "role": "guest-prx",
+            "guest_path": "disc0:/PSP_GAME/USRDIR/fixture.prx",
+        }]
 
         iso_path = self.root / "synthetic.iso"
-        create_test_iso_with_executables(iso_path, executable_bytes, disc_id=DISC_ID)
+        self.iso_path = iso_path
+        create_test_iso_with_modules(
+            iso_path,
+            executable_bytes,
+            sysdir_modules={},
+            usrdir_modules={"fixture.prx": self.module_bytes},
+            disc_id=DISC_ID,
+        )
         digest = hashlib.sha256(executable_bytes).hexdigest()
         self.executable_sha256 = digest
 
-        manifest = synthetic_manifest()
         self.stage_library(self.user_root, manifest, iso_path, executable_bytes)
         return manifest
 
@@ -889,6 +945,68 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertEqual(self.player_boot_event_files(), second_boot_events,
                          "a same-DISC_ID executable mismatch must stop before guest execution")
         package_cache.write_local_title_input_identity(self.user_root, original_identity)
+
+        # The library and local identity still describe the original input.
+        # Replacing the selected executable in the source ISO without changing
+        # DISC_ID or DISC_VERSION must still stop the package before guest boot.
+        changed_iso_executable = bytearray(self.executable_bytes)
+        changed_iso_executable[-1] ^= 1
+        create_test_iso_with_modules(
+            self.iso_path,
+            bytes(changed_iso_executable),
+            sysdir_modules={},
+            usrdir_modules={"fixture.prx": self.module_bytes},
+            disc_id=DISC_ID,
+        )
+        changed_iso_boot_log = self.sandbox / "changed-iso-boot-events.log"
+        changed_iso_launch = self.run_launch(
+            changed_iso_boot_log, self.sandbox / "changed-iso-perf.csv"
+        )
+        self.assertNotEqual(changed_iso_launch.returncode, 0,
+                            changed_iso_launch.stdout + changed_iso_launch.stderr)
+        self.assertFalse(
+            changed_iso_boot_log.exists(),
+            "a same-ID, same-version source ISO with changed executable bytes must stop before guest execution",
+        )
+        create_test_iso_with_modules(
+            self.iso_path,
+            self.executable_bytes,
+            sysdir_modules={},
+            usrdir_modules={"fixture.prx": self.module_bytes},
+            disc_id=DISC_ID,
+        )
+
+        changed_iso_module = bytearray(self.module_bytes)
+        changed_iso_module[-1] ^= 1
+        create_test_iso_with_modules(
+            self.iso_path,
+            self.executable_bytes,
+            sysdir_modules={},
+            usrdir_modules={"fixture.prx": bytes(changed_iso_module)},
+            disc_id=DISC_ID,
+        )
+        changed_iso_module_boot_log = self.sandbox / "changed-iso-module-boot-events.log"
+        changed_iso_module_launch = self.run_launch(
+            changed_iso_module_boot_log,
+            self.sandbox / "changed-iso-module-perf.csv",
+        )
+        self.assertNotEqual(changed_iso_module_launch.returncode, 0,
+                            changed_iso_module_launch.stdout + changed_iso_module_launch.stderr)
+        self.assertFalse(
+            changed_iso_module_boot_log.exists(),
+            "a same-ID, same-version source ISO with changed required module bytes must stop before guest execution",
+        )
+        create_test_iso_with_modules(
+            self.iso_path,
+            self.executable_bytes,
+            sysdir_modules={},
+            usrdir_modules={"fixture.prx": self.module_bytes},
+            disc_id=DISC_ID,
+        )
+        restored_validator = self.run_validator()
+        self.assertEqual(restored_validator.returncode, 0,
+                         restored_validator.stdout + restored_validator.stderr)
+        self.assertIn("PACKAGE_STATUS=OK", restored_validator.stdout)
 
         # 3. PLAY, headless, through the player's own launch session. The player
         #    reads its library from its own per-user data directory, so the
