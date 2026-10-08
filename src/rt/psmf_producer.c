@@ -804,6 +804,14 @@ void sr_psmf_producer_media_stage(SrPsmfProducer *p, SrPsmfAuKind kind,
     if (counter) (*counter)++;
 }
 
+int64_t sr_psmf_pts_advance(int64_t *clock, int *valid, int has_pts,
+                            int64_t pts, int64_t step) {
+    if (!clock || !valid) return -1;
+    if (has_pts) { *clock = pts; *valid = 1; }
+    else if (*valid) *clock += step;
+    return *valid ? *clock : -1;
+}
+
 int sr_psmf_producer_resolve_warmup_hold(SrPsmfProducer *p,
                                          SrPsmfAuKind kind,
                                          SrPsmfMediaStage disposition) {

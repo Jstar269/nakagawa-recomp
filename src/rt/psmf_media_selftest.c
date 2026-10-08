@@ -1,3 +1,8 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE 1
+#endif
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
@@ -31,6 +36,7 @@
 #include "sr_h264.h"
 #include "flight_recorder.h"
 #include "perf.h"
+#include "iso.h"
 #include "mpeg.c"
 #include <stdint.h>
 #include <stdio.h>
@@ -39,6 +45,15 @@
 
 static int checks, failures;
 #define CHECK(x, text) do { checks++; if (!(x)) { failures++; fprintf(stderr, "FAIL: %s\n", text); } } while (0)
+
+/* Published counter-line seam of the SR_MPEG_MEDIA_SELFTEST build of hle.c: the fixture
+ * reads the exact summary bytes a run prints on stderr, plus a count so it can tell a
+ * fresh line from a stale one. */
+const char *sr_hle_test_psmf_last_summary(void);
+uint32_t sr_hle_test_psmf_summary_count(void);
+int sr_hle_test_psmf_summary_rejects_truncation(void);
+void sr_hle_test_psmf_log_tick(uint32_t guest);
+void sr_hle_test_psmf_log_release(uint32_t guest);
 
 static void check_media_conservation(const char *track, uint64_t decoded,
                                     uint64_t delivered, uint64_t held,
@@ -1605,6 +1620,545 @@ static void test_mpeg_ycbcr_guest_contract(void) {
           "MPEG teardown frees guest YCbCr state");
 }
 
+/* ---- scePsmfPlayer: A/V presentation timing at the guest boundaries (issue #279) -------- */
+
+/* Latch SR_MPEGLOG before the player's first produce call: hle.c caches the flag the first
+ * time it is consulted.  The feature-test macro above exposes the platform putenv prototype
+ * on POSIX; the Windows CRT name (_putenv) comes from <stdlib.h>. */
+static char s_av_mpeglog_env[] = "SR_MPEGLOG=1";
+static void av_latch_mpeglog(void) {
+#ifdef _WIN32
+    _putenv(s_av_mpeglog_env);
+#else
+    putenv(s_av_mpeglog_env);
+#endif
+}
+
+static void test_psmf_log_tick_instance_isolation(void) {
+    const uint32_t first_guest = 0x085f0000u;
+    const uint32_t second_guest = 0x085f0004u;
+    av_latch_mpeglog();
+    CHECK(sr_hle_test_psmf_summary_rejects_truncation(),
+          "psmf counters detect a summary that cannot fit its destination");
+    uint32_t before = sr_hle_test_psmf_summary_count();
+    for (int i = 0; i < 8; i++) sr_hle_test_psmf_log_tick(first_guest);
+    CHECK(sr_hle_test_psmf_summary_count() == before + 8u,
+          "each player's first eight counter ticks are published");
+    sr_hle_test_psmf_log_tick(first_guest);
+    CHECK(sr_hle_test_psmf_summary_count() == before + 8u,
+          "the periodic counter interval is per player");
+    sr_hle_test_psmf_log_tick(second_guest);
+    CHECK(sr_hle_test_psmf_summary_count() == before + 9u,
+          "a second player starts with its own counter sampling interval");
+    sr_hle_test_psmf_log_release(first_guest);
+    sr_hle_test_psmf_log_release(second_guest);
+}
+
+/* The player's only source boundary is iso_lookup/iso_read.  While the player test runs,
+ * this fixture serves its container straight out of memory -- the same pattern the
+ * executable HLE harness uses -- so the production player path runs without mounting an
+ * image.  iso_list/iso_physical_lba are linked from hle.c and stay deliberate dead ends. */
+static const uint8_t *s_player_image;
+static uint32_t s_player_image_size;
+static const char s_player_path[] = "disc0:/media/av_timing.psmf";
+
+int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
+    if (s_player_image && guest_path && strcmp(guest_path, s_player_path) == 0) {
+        if (out_lba) *out_lba = 0u;
+        if (out_size) *out_size = s_player_image_size;
+        return 0;
+    }
+    (void)guest_path; (void)out_lba; (void)out_size;
+    return -1;
+}
+
+int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
+    if (s_player_image && lba == 0u && dst && offset < s_player_image_size) {
+        uint32_t n = s_player_image_size - offset;
+        if (n > bytes) n = bytes;
+        memcpy(dst, s_player_image + offset, n);
+        return (int)n;
+    }
+    (void)lba; (void)offset; (void)dst; (void)bytes;
+    return -1;
+}
+
+int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
+    (void)guest_path; (void)index; (void)out;
+    return -1;
+}
+
+uint32_t iso_physical_lba(uint32_t lba_or_token) { return lba_or_token; }
+
+/* scePsmfPlayer NIDs and results (public PSP NIDs; same values the executable HLE harness
+ * enters). */
+#define AV_NID_CREATE      0x235d8787u
+#define AV_NID_SET_PSMF    0x58b83577u
+#define AV_NID_START       0x95a84ee5u
+#define AV_NID_UPDATE      0xa0b8ca55u
+#define AV_NID_GET_VIDEO   0x46f61f8bu
+#define AV_NID_GET_AUDIO   0xb9848a74u
+#define AV_NID_GET_STATUS  0xf8ef08a6u
+#define AV_NID_DELETE      0x9b71a274u
+#define AV_STATUS_PLAYING  0x00000004u
+#define AV_STATUS_FINISHED 0x00000200u
+#define AV_ERR_NO_DATA     0x8061600cu
+
+/* Guest addresses for this test; well above the FC_/TD_ blocks and GUEST_BUF. */
+#define AV_PLAYER 0x08600000u   /* player uid, also the uid's out-pointer */
+#define AV_CREATE 0x08601000u   /* ScePsmfPlayerCreateParams */
+#define AV_PATH   0x08602000u   /* source path string */
+#define AV_CONFIG 0x08603000u   /* ScePsmfPlayerConfigData */
+#define AV_VIDEO  0x08604000u   /* ScePsmfPlayerVideoData: frameWidth, displaybuf, displaypts */
+#define AV_AUDIO  0x08605000u   /* one 8192-byte PCM sink */
+
+/* The authored timelines.  Video spacing *is* PSMF_VIDEO_PTS_STEP: 90000 * 1001 / 30000 = 3003
+ * ticks exactly at 29.97 fps (30000/1001), so video PTS drift is identically 0.
+ *
+ * Audio presentation timing in 90 kHz ticks:
+ *   2048 samples * 90000 / 44100 = 204800 / 49 = 4179 + 29/49 = 4179.5918367... ticks.
+ * The player advances unanchored audio access units by integer PSMF_AUDIO_PTS_STEP = 4180 ticks,
+ * over-advancing by +20/49 (~0.40816) ticks per block.
+ *
+ * PES packets carry PTS anchors every AV_AUDIO_ANCHOR = 8 blocks, resetting the clock to the
+ * authored timeline.  Between anchors, at most AV_AUDIO_ANCHOR - 1 = 7 blocks are extrapolated,
+ * accumulating at most 7 * (20/49) = 140/49 = 20/7 ≈ 2.857 ticks of step error.
+ * With integer rounding of anchor timestamps (+-0.5 tick), the worst-case deviation between
+ * the player's clock and the authored timeline is ceil(20/7 + 0.5) = 3 ticks.
+ *
+ * Because video PTS drift is 0, the A/V gap drift (avgap - authored) equals the audio PTS
+ * drift exactly (|avgap - authored| <= 3 ticks).
+ *
+ * AV_AUDIO_PTS_DRIFT_TICKS = 7LL is therefore provably conservative: the theoretical maximum
+ * drift is 3 ticks (AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT), leaving 4 ticks of safety margin. */
+#define AV_PICTURES      90                 /* ~3.0 s of 29.97 fps pictures */
+#define AV_AUDIO_BLOCKS  65                 /* ~3.0 s of 2048-sample blocks at 44.1 kHz */
+#define AV_VIDEO_ANCHOR  4                  /* pictures whose PES packet carries a PTS */
+#define AV_AUDIO_ANCHOR  8                  /* audio blocks whose PES packet carries a PTS */
+#define AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT 3LL /* first-principles maximum audio / gap drift */
+#define AV_AUDIO_PTS_DRIFT_TICKS 7LL        /* conservative tolerance bound (4-tick margin) */
+
+static int64_t av_video_pts(int picture) { return (int64_t)picture * PSMF_VIDEO_PTS_STEP; }
+static int64_t av_audio_pts(int block) {
+    return (int64_t)(((uint64_t)block * 2048ull * 90000ull + 22050ull) / 44100ull);
+}
+
+/* Assemble the A/V timing container: a player-valid PSMF header (presentation base and
+ * stream table included -- scePsmfPlayer refuses anything else), the authored I_PCM
+ * pictures cut across two PES packets each, and decodable ATRAC3+ frames interleaved with
+ * PTS anchors on both tracks. */
+static uint8_t *build_psmf_av(uint32_t *size_out) {
+    static uint8_t es[1024u * 1024u];
+    uint32_t au_off[AV_PICTURES], au_len[AV_PICTURES];
+    ByteOut o;
+    o.d = es; o.cap = sizeof(es); o.n = 0; o.overflow = 0;
+    for (int k = 0; k < AV_PICTURES; k++) {
+        au_off[k] = o.n;
+        build_au_ex(k, FIX_W_MBS, FIX_H_MBS,
+                    k_y[k % FIX_PICTURES], k_cb[k % FIX_PICTURES], k_cr[k % FIX_PICTURES], &o);
+        au_len[k] = o.n - au_off[k];
+    }
+    CHECK(!o.overflow, "A/V timing elementary stream fits its buffer");
+    if (o.overflow) return NULL;
+
+    Buf b;
+    b.cap = 2048u + o.n * 2u + 16384u;
+    b.d = (uint8_t *)calloc(1, b.cap);
+    b.at = 2048u;
+    b.overflow = 0;
+    if (!b.d) return NULL;
+    b.d[0] = 'P'; b.d[1] = 'S'; b.d[2] = 'M'; b.d[3] = 'F';
+    be32_at(b.d + 8, 2048u);
+    /* presentation base and duration, so the producer normalizes against the header the way * scePsmfPlayer does instead of against a test-side constant. */
+    b.d[0x54] = 0; b.d[0x55] = 0; b.d[0x56] = 0;
+    b.d[0x57] = (uint8_t)(FIX_BASE >> 16);
+    b.d[0x58] = (uint8_t)(FIX_BASE >> 8);
+    b.d[0x59] = (uint8_t)FIX_BASE;
+    be32_at(b.d + 0x5a, (uint32_t)av_audio_pts(AV_AUDIO_BLOCKS - 1));
+    /* Stream table: one video entry (non-zero version fields keep playerVersion 0) and one
+     * audio entry whose byte 14 declares the ATRAC3+ channel count. */
+    b.d[0x80] = 0; b.d[0x81] = 2;
+    b.d[0x82] = 0xe0u;
+    be32_at(b.d + 0x86, 1u);
+    be32_at(b.d + 0x8a, 1u);
+    b.d[0x8e] = (uint8_t)FIX_W_MBS;        /* width in 16-pixel units */
+    b.d[0x8f] = (uint8_t)FIX_H_MBS;        /* height */
+    b.d[0x92] = 0xbdu;
+    b.d[0x93] = 0x00u;                     /* sub-stream id 0x00 */
+    /* Entry 14 of this entry (0x92 + 14 = 0xa0) is the ATRAC3+ channel count the
+     * player copies into audioChannels; writing it anywhere else leaves the count zero
+     * and every decoded-looking frame is rejected for an implausible channel count. */
+    b.d[0x92 + 14] = 2u;                   /* stereo */
+    for (int i = 0; i < AV_PICTURES; i++) mp4_picture_marks(es + au_off[i], au_len[i], i);
+
+    uint8_t frame[64];
+    int audio_next = 0;
+    for (int k = 0; k < AV_PICTURES; k++) {
+        uint32_t half = au_len[k] / 2u;
+        add_video_pes(&b, (k % AV_VIDEO_ANCHOR) == 0,
+                      FIX_BASE + av_video_pts(k), es + au_off[k], half);
+        add_video_pes(&b, 0, 0, es + au_off[k] + half, au_len[k] - half);
+        int upto = (k + 1) * AV_AUDIO_BLOCKS / AV_PICTURES;
+        while (audio_next < upto) {
+            int j = audio_next++;
+            uint32_t n = make_audio_frame(frame, sizeof(frame), 0x00, 0x00, 0x00);
+            frame[8] = 0x60u;      /* terminator-first ATRAC unit: a frame the project's own
+                                    * ATRAC3+ bridge really decodes (2048 samples, stereo) */
+            add_audio_pes_sub(&b, 0x00u, (j % AV_AUDIO_ANCHOR) == 0,
+                              FIX_BASE + av_audio_pts(j), frame, n);
+        }
+    }
+    CHECK(audio_next == AV_AUDIO_BLOCKS, "every authored audio block is written");
+    be32_at(b.d + 12, b.at - 2048u);
+    CHECK(!b.overflow, "A/V timing container fits its buffer");
+    CHECK(pes_count(b.d, b.at) >= (uint32_t)(AV_PICTURES * 2 + AV_AUDIO_BLOCKS),
+          "the A/V container holds every packet the builder wrote");
+    *size_out = b.at;
+    return b.d;
+}
+
+static void av_write_cstr(uint32_t addr, const char *s) {
+    memcpy(SR_HOST(addr), s, strlen(s) + 1u);
+}
+
+/* One "key=value" number from a published counter line. */
+static int av_log_field(const char *line, const char *key, long long *out) {
+    const char *p = (line && *line) ? strstr(line, key) : NULL;
+    if (!p) return 0;
+    *out = strtoll(p + strlen(key), NULL, 10);
+    return 1;
+}
+
+/* Sampler state for the published counter line, reset by each test run. */
+static long long s_av_ckpt_aout[96], s_av_ckpt_ats[96];
+static int s_av_ckpt_n;
+static int s_av_eof_seen;
+static uint32_t s_av_seen_summaries;
+
+/* Read every counter line published since the previous sample and run the issue #279
+ * acceptance checks on it: conservation of both disposition censuses at a production
+ * snapshot, the ring-loss invariant, and both presentation clocks against the authored
+ * timelines at the guest-getter boundary. */
+static void av_sample_summaries(void) {
+    uint32_t count = sr_hle_test_psmf_summary_count();
+    if (count == s_av_seen_summaries) return;
+    s_av_seen_summaries = count;
+    const char *line = sr_hle_test_psmf_last_summary();
+    long long vsub = 0, vdec = 0, vout = 0, vhold = 0, veos = 0, vrej = 0;
+    long long asub = 0, adec = 0, aout = 0, ahold = 0, aeos = 0, arej = 0;
+    long long frames = 0, eof = 0, failed = 0, vts = 0, ats = 0;
+    long long avgap = 0, vlead = 0, vlost = 0;
+    int have =
+        av_log_field(line, " vsub=", &vsub) && av_log_field(line, " vdec=", &vdec) &&
+        av_log_field(line, " vout=", &vout) && av_log_field(line, " vhold=", &vhold) &&
+        av_log_field(line, " veos=", &veos) && av_log_field(line, " vrej=", &vrej) &&
+        av_log_field(line, " asub=", &asub) && av_log_field(line, " adec=", &adec) &&
+        av_log_field(line, " aout=", &aout) && av_log_field(line, " ahold=", &ahold) &&
+        av_log_field(line, " aeos=", &aeos) && av_log_field(line, " arej=", &arej) &&
+        av_log_field(line, " frames=", &frames) && av_log_field(line, " eof=", &eof) &&
+        av_log_field(line, " failed=", &failed) && av_log_field(line, " vts=", &vts) &&
+        av_log_field(line, " ats=", &ats) && av_log_field(line, " avgap=", &avgap) &&
+        av_log_field(line, " vlead=", &vlead) && av_log_field(line, " vlost=", &vlost);
+    if (!have) {
+        CHECK(0, "published counter line carries every media field");
+        return;
+    }
+    (void)asub; (void)adec;
+    check_media_conservation("published video", (uint64_t)vdec, (uint64_t)vout,
+                             (uint64_t)vhold, (uint64_t)veos, (uint64_t)vrej);
+    check_media_conservation("published audio", (uint64_t)adec, (uint64_t)aout,
+                             (uint64_t)ahold, (uint64_t)aeos, (uint64_t)arej);
+    CHECK(vlost == 0, "the presentation ring never displaces a submitted picture's time");
+    CHECK(failed == 0, "the acceptance route never trips a demuxer failure");
+    if (eof) s_av_eof_seen = 1;
+    if (frames > 0) {
+        CHECK(vts == av_video_pts((int)frames - 1),
+              "published displaypts equals the authored picture time at the getter");
+        CHECK(vlead >= 0 && vlead <= (long long)PSMF_OUT_PTS_RING * PSMF_VIDEO_PTS_STEP,
+              "submitted-minus-delivered stays inside the presentation ring: pipeline distance");
+    }
+    if (aout > 0 && ats >= 0) {
+        CHECK(llabs(ats - av_audio_pts((int)aout - 1)) <= AV_AUDIO_PTS_DRIFT_TICKS,
+              "published audio pts stays within the 90 kHz anchor-drift bound");
+        CHECK(llabs(ats - av_audio_pts((int)aout - 1)) <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "published audio pts stays within the theoretical 3-tick drift bound");
+        /* One checkpoint per delivered block: two samples taken between two deliveries
+         * repeat the same presentation point, and comparing a point with itself would
+         * claim the series stopped advancing when nothing was delivered yet. */
+        if (s_av_ckpt_n == 0 || aout != s_av_ckpt_aout[s_av_ckpt_n - 1]) {
+            if (s_av_ckpt_n < (int)(sizeof(s_av_ckpt_aout) / sizeof(s_av_ckpt_aout[0]))) {
+                s_av_ckpt_aout[s_av_ckpt_n] = aout;
+                s_av_ckpt_ats[s_av_ckpt_n] = ats;
+                s_av_ckpt_n++;
+            }
+        }
+    }
+    if (frames > 0 && aout > 0) {
+        int64_t authored = av_video_pts((int)frames - 1) - av_audio_pts((int)aout - 1);
+        CHECK(llabs(avgap - authored) <= AV_AUDIO_PTS_DRIFT_TICKS,
+              "the published A/V gap equals the two authored positions at comparable points");
+        CHECK(llabs(avgap - authored) <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "the published A/V gap stays within theoretical 3-tick drift bound");
+        CHECK(llabs(avgap) <= PSMF_AUDIO_PTS_STEP + 3 * PSMF_VIDEO_PTS_STEP,
+              "the presentation-boundary A/V gap stays within a block plus a picture of slack");
+    }
+}
+
+/* First-principles verification of the audio clock, video clock, and A/V gap drift bounds.
+ * Demonstrates mathematically and empirically that:
+ * 1. Video presentation step is exact (3003 ticks per frame at 29.97 fps, zero drift).
+ * 2. Integer PSMF_AUDIO_PTS_STEP (4180) over-advances by 20/49 (~0.40816) ticks per block
+ *    relative to exact 44.1 kHz mapping (4179 + 29/49 ticks).
+ * 3. Over at most 7 unanchored blocks between 8-block PES anchors, accumulated drift is
+ *    7 * (20/49) = 2.857 ticks, which with +-0.5 tick anchor rounding never exceeds 3 ticks.
+ * 4. The terminal audio block (block 64) carries an anchor, so terminal drift is 0 ticks.
+ * 5. Because video drift is 0, the A/V gap drift equals audio drift (<= 3 ticks).
+ * 6. The 7-tick AV_AUDIO_PTS_DRIFT_TICKS bound has a comfortable 4-tick margin above the
+ *    3-tick theoretical maximum drift. */
+static void test_psmf_av_timing_first_principles(void) {
+    /* 1. Video step is exact in 90 kHz ticks: 29.97 fps is 30000 / 1001 fps. */
+    CHECK((int64_t)PSMF_VIDEO_PTS_STEP * 30000LL == 90000LL * 1001LL,
+          "psmf first-principles: video PTS step 3003 is exact with zero drift");
+
+    /* 2. Audio exact step: 2048 * 90000 / 44100 = 204800 / 49 = 4179 + 29/49 ticks.
+     * The player integer step 4180 over-advances by 20/49 (~0.40816) ticks per block. */
+    const uint64_t num = 2048ull * 90000ull;
+    const uint64_t den = 44100ull;
+    CHECK(num / den == 4179ull && num % den == 26100ull,
+          "psmf first-principles: exact audio step quotient is 4179 ticks (remainder 26100)");
+    CHECK((uint64_t)PSMF_AUDIO_PTS_STEP * den - num == 18000ull,
+          "psmf first-principles: integer step 4180 exceeds exact step by 18000/44100 (20/49)");
+
+    /* 3. Simulate audio clock across all blocks of the test stream. */
+    int64_t clock = 0;
+    int valid = 0;
+    int64_t max_audio_drift = 0;
+    for (int j = 0; j < AV_AUDIO_BLOCKS; j++) {
+        int has_pts = (j % AV_AUDIO_ANCHOR) == 0;
+        int64_t authored = av_audio_pts(j);
+        if (has_pts) {
+            clock = authored;
+            valid = 1;
+        } else if (valid) {
+            clock += PSMF_AUDIO_PTS_STEP;
+        }
+        int64_t drift = llabs(clock - authored);
+        if (drift > max_audio_drift) max_audio_drift = drift;
+        CHECK(drift <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "psmf first-principles: simulated audio drift stays <= theoretical max (3 ticks)");
+        CHECK(drift <= AV_AUDIO_PTS_DRIFT_TICKS,
+              "psmf first-principles: simulated audio drift stays <= tolerance (7 ticks)");
+    }
+    CHECK(max_audio_drift == AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+          "psmf first-principles: maximum audio drift across the authored stream is exactly 3 ticks");
+
+    /* 4. Terminal audio block (block 64) is an anchor: drift is identically zero. */
+    CHECK((AV_AUDIO_BLOCKS - 1) % AV_AUDIO_ANCHOR == 0,
+          "psmf first-principles: terminal audio block is a PTS anchor");
+    CHECK(clock == av_audio_pts(AV_AUDIO_BLOCKS - 1),
+          "psmf first-principles: terminal audio block has zero drift");
+
+    /* 5. Exhaustive check across 10000 arbitrary anchor points and unanchored offsets. */
+    int64_t worst_offset_drift = 0;
+    for (int j0 = 0; j0 < 10000; j0++) {
+        int64_t anchor_pts = av_audio_pts(j0);
+        for (int k = 0; k < AV_AUDIO_ANCHOR; k++) {
+            int64_t sim = anchor_pts + (int64_t)k * PSMF_AUDIO_PTS_STEP;
+            int64_t target = av_audio_pts(j0 + k);
+            int64_t d = llabs(sim - target);
+            if (d > worst_offset_drift) worst_offset_drift = d;
+        }
+    }
+    CHECK(worst_offset_drift <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+          "psmf first-principles: worst-case drift across 10000 anchor spans never exceeds 3 ticks");
+}
+
+/* Drive the production scePsmfPlayer end to end over the source-owned A/V stream and
+ * assert where each issue #279 acceptance item is actually observable: every decoded
+ * picture and audio block classified in every published snapshot, both presentation clocks
+ * tracking the authored timeline at the guest getter boundaries, and the A/V separation at
+ * those comparable points bounded for the whole run. */
+static void test_player_av_presentation_timing(void) {
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size);
+    if (!image) { CHECK(0, "A/V timing container builds"); return; }
+    av_latch_mpeglog();
+    s_player_image = image;
+    s_player_image_size = size;
+    s_av_ckpt_n = 0; s_av_eof_seen = 0;
+    s_av_seen_summaries = sr_hle_test_psmf_summary_count();
+
+    MEM_W32(AV_CREATE + 0, 0x08700000u);      /* player read buffer (never dereferenced here) */
+    MEM_W32(AV_CREATE + 4, 0x00285800u);      /* the size scePsmfPlayerCreate requires */
+    MEM_W32(AV_CREATE + 8, 0x30u);            /* priority inside the accepted range */
+    av_write_cstr(AV_PATH, s_player_path);
+    MEM_W32(AV_CONFIG + 0, 0x0eu);            /* H.264 video */
+    MEM_W32(AV_CONFIG + 4, 0u);               /* video stream 0 */
+    MEM_W32(AV_CONFIG + 8, 0x0fu);            /* ATRAC3+ audio */
+    MEM_W32(AV_CONFIG + 12, 0u);              /* audio stream 0 */
+    MEM_W32(AV_CONFIG + 16, 0u);              /* play mode: play */
+    MEM_W32(AV_CONFIG + 20, 0u);              /* play speed */
+    MEM_W32(AV_VIDEO + 0, 64u);               /* frameWidth: the stream's own width */
+    MEM_W32(AV_VIDEO + 4, GUEST_BUF);
+
+    CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+          "psmf-av: the player is created");
+    CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0,
+          "psmf-av: the source-owned A/V stream is opened");
+    CHECK(guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
+          "psmf-av: playback starts");
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER, 0, 0, 0, 0) == AV_STATUS_PLAYING,
+          "psmf-av: the guest sees a playing player");
+
+    /* Warm-up: the reference player reports "not yet" for its first pictures, and the
+     * audio getter is gated by the same counter -- nothing is decoded, hence nothing can be
+     * delivered, before it expires (the first published line must still conserve). */
+    for (int i = 0; i < 2; i++) {
+        CHECK(guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0) == AV_ERR_NO_DATA,
+              "psmf-av: warm-up pictures report NO_DATA");
+        CHECK(guest_mpeg_import(AV_NID_GET_AUDIO, AV_PLAYER, AV_AUDIO, 0, 0, 0) == AV_ERR_NO_DATA,
+              "psmf-av: audio stays silent while the player warms up");
+    }
+    CHECK(guest_mpeg_import(AV_NID_GET_AUDIO, AV_PLAYER, AV_AUDIO, 0, 0, 0) == AV_ERR_NO_DATA,
+          "psmf-av: audio is held until the third picture completes warm-up");
+    CHECK(guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0) == AV_ERR_NO_DATA,
+          "psmf-av: the third warm-up picture still reports NO_DATA");
+    av_sample_summaries();
+
+    /* Run: consume media in its own proportion -- one audio block per iteration and
+     * pictures at 90/65 per block, which is what keeps the two presentation clocks at
+     * comparable media positions instead of drifting apart by getter cadence. */
+    int video_out = 0, audio_out = 0, guard;
+    for (guard = 0; guard < 4096; guard++) {
+        int target = (guard + 1) * AV_PICTURES / AV_AUDIO_BLOCKS -
+                     guard * AV_PICTURES / AV_AUDIO_BLOCKS;
+        for (int k = 0; k < target; k++) {
+            uint32_t v = guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0);
+            if (v == 0) {
+                CHECK(video_out < AV_PICTURES, "psmf-av: no more pictures than were authored");
+                if (video_out < AV_PICTURES) {
+                    CHECK((int64_t)MEM_R32(AV_VIDEO + 8) == av_video_pts(video_out),
+                          "psmf-av: guest displaypts equals the authored picture time");
+                    video_out++;
+                }
+            } else {
+                CHECK(v == AV_ERR_NO_DATA,
+                      "psmf-av: the video getter reports NO_DATA or success, nothing else");
+            }
+        }
+        uint32_t a = guest_mpeg_import(AV_NID_GET_AUDIO, AV_PLAYER, AV_AUDIO, 0, 0, 0);
+        if (a == 0) {
+            audio_out++;
+        } else {
+            CHECK(a == AV_ERR_NO_DATA,
+                  "psmf-av: the audio getter reports NO_DATA or success, nothing else");
+        }
+        CHECK(guest_mpeg_import(AV_NID_UPDATE, AV_PLAYER, 0, 0, 0, 0) == 0,
+              "psmf-av: updating a playing stream keeps succeeding");
+        av_sample_summaries();
+        if (audio_out >= AV_AUDIO_BLOCKS && s_av_eof_seen) break;
+    }
+    CHECK(audio_out == AV_AUDIO_BLOCKS,
+          "psmf-av: the guest received every authored audio block exactly once");
+    CHECK(guard < 4096, "psmf-av: the run terminates at end of stream, not at a guard limit");
+
+    /* End of stream: drain whatever the decoder still holds, then the player reports its
+     * end and publishes the terminal counter line. */
+    for (int i = 0; i < 64; i++) {
+        if (guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER, 0, 0, 0, 0) == AV_STATUS_FINISHED)
+            break;
+        uint32_t v = guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0);
+        if (v == 0 && video_out < AV_PICTURES) {
+            CHECK((int64_t)MEM_R32(AV_VIDEO + 8) == av_video_pts(video_out),
+                  "psmf-av: drained pictures also carry their authored displaypts");
+            video_out++;
+        }
+        CHECK(guest_mpeg_import(AV_NID_GET_AUDIO, AV_PLAYER, AV_AUDIO, 0, 0, 0) == AV_ERR_NO_DATA,
+              "psmf-av: no audio block appears after the authored stream ended");
+        CHECK(guest_mpeg_import(AV_NID_UPDATE, AV_PLAYER, 0, 0, 0, 0) == 0,
+              "psmf-av: the final updates keep succeeding");
+        av_sample_summaries();
+    }
+    CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER, 0, 0, 0, 0) == AV_STATUS_FINISHED,
+          "psmf-av: the player reports its end after the stream is consumed");
+    av_sample_summaries();
+
+    /* Terminal snapshot: the last published line is the FINISHED summary. */
+    const char *last = sr_hle_test_psmf_last_summary();
+    long long asub = 0, adec = 0, aout = 0, ahold = 0, aeos = 0, arej = 0;
+    long long vsub = 0, vdec = 0, vout = 0, veos = 0, vrej = 0, vhold = 0;
+    long long frames = 0, blocks = 0, eof = 0, failed = 0, vts = 0, ats = 0;
+    long long avgap = 0, vlost = 0;
+    int have =
+        av_log_field(last, " asub=", &asub) && av_log_field(last, " adec=", &adec) &&
+        av_log_field(last, " aout=", &aout) && av_log_field(last, " ahold=", &ahold) &&
+        av_log_field(last, " aeos=", &aeos) && av_log_field(last, " arej=", &arej) &&
+        av_log_field(last, " vsub=", &vsub) && av_log_field(last, " vdec=", &vdec) &&
+        av_log_field(last, " vout=", &vout) && av_log_field(last, " vhold=", &vhold) &&
+        av_log_field(last, " veos=", &veos) && av_log_field(last, " vrej=", &vrej) &&
+        av_log_field(last, " frames=", &frames) &&
+        av_log_field(last, " audio_blocks=", &blocks) &&
+        av_log_field(last, " eof=", &eof) && av_log_field(last, " failed=", &failed) &&
+        av_log_field(last, " vts=", &vts) && av_log_field(last, " ats=", &ats) &&
+        av_log_field(last, " avgap=", &avgap) && av_log_field(last, " vlost=", &vlost);
+    CHECK(have, "psmf-av: the terminal counter line carries every media field");
+    CHECK(sr_hle_test_psmf_summary_count() > 0,
+          "psmf-av: SR_MPEGLOG published counter lines during the run");
+    if (!have) goto cleanup;
+
+    /* Audio accounting at the terminal production snapshot (#279: audio blocks have
+     * equivalent accounting, and the getter's successes are the published counter). */
+    CHECK(asub == AV_AUDIO_BLOCKS && adec == AV_AUDIO_BLOCKS,
+          "psmf-av: every authored audio block was submitted and decoded exactly once");
+    CHECK(aout == AV_AUDIO_BLOCKS && ahold == 0 && aeos == 0 && arej == 0,
+          "psmf-av: every decoded audio block was delivered to the guest");
+    CHECK((long long)audio_out == aout && (long long)blocks == aout,
+          "psmf-av: the published delivery count equals the guest's getter successes");
+    CHECK(eof == 1 && failed == 0 && vlost == 0,
+          "psmf-av: a clean end of stream with no demuxer failure and no displaced time");
+    CHECK(s_av_ckpt_n >= 2, "psmf-av: the run published presentation-boundary samples");
+    /* The delivered audio series is bounded at every checkpoint: anchors re-sync the clock,
+     * so the integer audio step cannot accumulate across the run. */
+    for (int i = 1; i < s_av_ckpt_n; i++) {
+        CHECK(s_av_ckpt_ats[i] > s_av_ckpt_ats[i - 1],
+              "psmf-av: the published audio presentation series advances monotonically");
+    }
+
+    if (sr_h264_backend_available()) {
+        CHECK(video_out == AV_PICTURES && (long long)frames == AV_PICTURES,
+              "psmf-av: every authored picture reached the guest display buffer");
+        CHECK(vsub == AV_PICTURES && vdec == AV_PICTURES,
+              "psmf-av: every submitted picture was decoded");
+        CHECK(vout + veos + vrej == vdec && vhold == 0,
+              "psmf-av: every decoded picture is delivered, drained, or rejected -- never lost");
+        CHECK(vts == av_video_pts(AV_PICTURES - 1),
+              "psmf-av: the terminal displaypts is the last authored picture time");
+        CHECK(llabs(avgap - (av_video_pts(AV_PICTURES - 1) - av_audio_pts(AV_AUDIO_BLOCKS - 1))) <=
+                  AV_AUDIO_PTS_DRIFT_TICKS,
+              "psmf-av: the terminal A/V gap equals the authored interleave of the two tracks");
+        CHECK(llabs(avgap - (av_video_pts(AV_PICTURES - 1) - av_audio_pts(AV_AUDIO_BLOCKS - 1))) <=
+                  AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "psmf-av: terminal A/V gap stays within theoretical 3-tick bound");
+    } else {
+        fprintf(stderr, "SKIP: guest video presentation assertions need an H.264 backend\n");
+        CHECK(vsub == 0 && (long long)frames == 0 && vts == 0,
+              "psmf-av: without a backend no picture is submitted, delivered, or timed");
+        CHECK(ats == av_audio_pts(AV_AUDIO_BLOCKS - 1) ||
+                  llabs(ats - av_audio_pts(AV_AUDIO_BLOCKS - 1)) <= AV_AUDIO_PTS_DRIFT_TICKS,
+              "psmf-av: the terminal audio presentation pts is the last authored block time");
+        CHECK(ats == av_audio_pts(AV_AUDIO_BLOCKS - 1) ||
+                  llabs(ats - av_audio_pts(AV_AUDIO_BLOCKS - 1)) <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "psmf-av: terminal audio pts stays within theoretical 3-tick bound");
+    }
+
+cleanup:
+    CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+          "psmf-av: the player is deleted");
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     sr_flight_init();
@@ -1636,6 +2190,9 @@ int main(int argc, char **argv) {
     test_backend_malformed_input();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
+    test_psmf_log_tick_instance_isolation();
+    test_psmf_av_timing_first_principles();
+    test_player_av_presentation_timing();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 
     if (failures) {
