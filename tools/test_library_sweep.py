@@ -290,6 +290,92 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertNotIn("DIAGNOSTIC_PRIVATE_SENTINEL", public_text)
         self.assertNotIn(str(work_dir), public_text)
 
+    def test_analysis_failure_keeps_first_diagnostic_only_in_private_report(self) -> None:
+        work_dir = self.private_dir / "analysis-failure-work"
+        work_dir.mkdir(parents=True)
+        iso = _write_iso(
+            self.iso_dir, "analysis-failure.iso", "TEST00002", "Analyzer Diagnostic Fixture"
+        )
+        diagnostic = "ValueError: SYNTHETIC_ANALYZER_FAILURE"
+
+        class FailedAnalyze:
+            pid = 9004
+            returncode = 1
+
+            def __init__(self, command, **_kwargs):
+                self.command = command
+
+            def communicate(self, timeout=None):
+                report_path = Path(self.command[self.command.index("--report") + 1])
+                report_path.write_text(json.dumps({
+                    **_bringup_report(failure="ANALYSIS_FAILED"),
+                    "stages": {
+                        **_bringup_report()["stages"],
+                        "analyze": {"status": "FAIL", "duration_ms": 25},
+                        "codegen": {"status": "NOT_RUN", "duration_ms": 0},
+                        "compile": {"status": "NOT_RUN", "duration_ms": 0},
+                        "build_package": {"status": "NOT_RUN", "duration_ms": 0},
+                        "launch": {"status": "NOT_RUN", "duration_ms": 0},
+                    },
+                }), encoding="utf-8")
+                sidecar = Path(
+                    self.command[self.command.index("--private-sweep-import-report") + 1]
+                )
+                sidecar.write_text(json.dumps({
+                    "schema_version": 1,
+                    "unsupported_imports": [],
+                    "analyzer_diagnostic": diagnostic,
+                }), encoding="utf-8")
+                return "", ""
+
+        with (
+            mock.patch.object(library_sweep.subprocess, "Popen", FailedAnalyze),
+            mock.patch.object(library_sweep, "_route_environment", return_value={}),
+        ):
+            outcome = library_sweep._run_bringup(
+                iso,
+                work_dir,
+                work_dir / "bringup.json",
+                work_dir / "sweep-imports.json",
+                7,
+            )
+
+        self.assertEqual(outcome.report["failure_class"], "ANALYSIS_FAILED")
+        self.assertEqual(outcome.analyzer_diagnostic, diagnostic)
+
+        with mock.patch.object(library_sweep, "_run_bringup", return_value=outcome):
+            library_sweep.run_sweep(
+                self.iso_dir, self.private_dir / "analysis-failure", self.public_output,
+                **self._run_kwargs(),
+            )
+        private = json.loads(
+            (self.private_dir / "analysis-failure" / "library-sweep.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        public_text = self.public_output.read_text(encoding="utf-8")
+        self.assertEqual(private["rows"][0]["analyzer_diagnostic"], diagnostic)
+        self.assertEqual(private["rows"][0]["stopped_at_stage"], "analyze")
+        self.assertNotIn("SYNTHETIC_ANALYZER_FAILURE", public_text)
+
+    def test_private_sweep_sidecar_bounds_analyzer_diagnostic(self) -> None:
+        work_dir = self.private_dir / "sidecar-work"
+        work_dir.mkdir(parents=True)
+        sidecar = work_dir / "sweep-imports.json"
+
+        nk_cli._write_private_sweep_import_report(
+            sidecar,
+            work_dir,
+            [],
+            analyzer_diagnostic="  ValueError:\nSYNTHETIC_ANALYZER_FAILURE  ",
+        )
+
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        self.assertEqual(
+            payload["analyzer_diagnostic"],
+            "ValueError: SYNTHETIC_ANALYZER_FAILURE",
+        )
+
     def test_legacy_schema_baseline_is_compared_without_exporting_old_family_names(self) -> None:
         previous = library_sweep._public_aggregate(
             [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1

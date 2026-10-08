@@ -2343,8 +2343,14 @@ def _write_bringup_report(report: dict, path: Path) -> bool:
     return True
 
 
-def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list[dict]) -> None:
-    """Write raw unsupported import NIDs for the private compatibility sweep only."""
+def _write_private_sweep_import_report(
+    path: Path,
+    work_dir: Path,
+    imports: list[dict],
+    *,
+    analyzer_diagnostic: str | None = None,
+) -> None:
+    """Write private sweep import evidence and an optional analyzer diagnostic."""
     resolved_work_dir = work_dir.resolve(strict=False)
     resolved_path = path.expanduser().resolve(strict=False)
     if not resolved_path.is_relative_to(resolved_work_dir):
@@ -2369,6 +2375,8 @@ def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list
             "nid_name": item.get("name"),
         })
     payload = {"schema_version": 1, "unsupported_imports": rows}
+    if analyzer_diagnostic:
+        payload["analyzer_diagnostic"] = " ".join(analyzer_diagnostic.split())[:300]
     _write_private_file(
         resolved_path,
         (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8"),
@@ -3117,7 +3125,19 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 # that its NID detail was unavailable without changing the
                 # production bring-up result.
                 pass
-    except Exception:
+    except Exception as exc:
+        if private_sweep_import_report is not None:
+            try:
+                _write_private_sweep_import_report(
+                    private_sweep_import_report,
+                    work_dir,
+                    [],
+                    analyzer_diagnostic=f"{type(exc).__name__}: {exc}",
+                )
+            except (OSError, ValueError):
+                # Private analyzer telemetry is optional and cannot change the
+                # fail-closed bring-up result.
+                pass
         fail_stage(report, "analyze", "ANALYSIS_FAILED", [296],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
