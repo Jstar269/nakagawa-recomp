@@ -7575,6 +7575,23 @@ static uint32_t rss_refer(uint32_t uid, uint32_t info) {
     return sr_syscall(&cpu, NID_RSS_REFER_SEMA);
 }
 
+/* name[32] at RSS_INFO+4 holds `want` followed by NUL bytes out to 32. */
+static int rss_name_is(const char *want) {
+    size_t n = strlen(want);
+    for (uint32_t i = 0; i < 32u; i++) {
+        uint8_t expected = i < n ? (uint8_t)want[i] : 0u;
+        if (MEM_R8(RSS_INFO + 4u + i) != expected) return 0;
+    }
+    return 1;
+}
+
+/* 1 when every byte in [from, to) of the RSS_INFO span equals value. */
+static int rss_bytes_are(uint32_t from, uint32_t to, uint8_t value) {
+    for (uint32_t i = from; i < to; i++)
+        if (MEM_R8(RSS_INFO + i) != value) return 0;
+    return 1;
+}
+
 static void test_sema_refer_status(void) {
     static const char rss_name[] = "rss-sema";
     TCB *main_t = wsv_begin();
@@ -7586,22 +7603,43 @@ static void test_sema_refer_status(void) {
     uint32_t sema = sr_syscall(&cpu, NID_CNW_CREATE_SEMA);
     expect((int32_t)sema > 0, "ReferSemaStatus: test semaphore created (init 1, max 3, attr 0x100)");
 
-    /* Live semaphore, no waiter. The sentinel fill proves every field is written. */
+    /* Full-size caller (56): every byte of the struct is written. The sentinel fill
+     * proves each field is stored, not left behind. */
     MEM_W32(RSS_INFO, 56u);
     for (uint32_t i = 4u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0xa5u);
     expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds on a live semaphore");
-    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus leaves the caller's size word as written");
-    int name_ok = 1;
-    for (uint32_t i = 0; i < 32u; i++) {
-        uint8_t want = i < sizeof(rss_name) ? (uint8_t)rss_name[i] : 0u;
-        if (MEM_R8(RSS_INFO + 4u + i) != want) name_ok = 0;
-    }
-    expect(name_ok, "ReferSemaStatus copies the create-time name and zero-fills the rest of name[32]");
+    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus writes the struct size (56) into the size word");
+    expect(rss_name_is(rss_name), "ReferSemaStatus copies the create-time name and zero-fills the rest of name[32]");
     expect(MEM_R32(RSS_INFO + 36u) == 0x100u, "ReferSemaStatus reports the create-time attr");
     expect(MEM_R32(RSS_INFO + 40u) == 1u, "ReferSemaStatus reports the create-time initCount");
     expect(MEM_R32(RSS_INFO + 44u) == 1u, "ReferSemaStatus reports the current count");
     expect(MEM_R32(RSS_INFO + 48u) == 3u, "ReferSemaStatus reports the maxCount");
     expect(MEM_R32(RSS_INFO + 52u) == 0u, "ReferSemaStatus reports zero waiting threads with no waiter");
+
+    /* Caller size 40: bytes 0..39 are written; bytes 40..55 keep the sentinel. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0xa5u);
+    MEM_W32(RSS_INFO, 40u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with caller size 40");
+    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus with caller size 40 writes the struct size word");
+    expect(rss_name_is(rss_name), "ReferSemaStatus with caller size 40 writes the name");
+    expect(MEM_R32(RSS_INFO + 36u) == 0x100u, "ReferSemaStatus with caller size 40 writes attr (bytes 36..39)");
+    expect(rss_bytes_are(40u, 56u, 0xa5u),
+           "ReferSemaStatus with caller size 40 leaves bytes 40..55 untouched");
+
+    /* Caller size 0: nothing is written and the call succeeds. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0x5au);
+    MEM_W32(RSS_INFO, 0u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus with caller size 0 returns 0");
+    expect(MEM_R32(RSS_INFO) == 0u && rss_bytes_are(4u, 56u, 0x5au),
+           "ReferSemaStatus with caller size 0 writes nothing");
+
+    /* Caller size 8: only the size word and the first 4 bytes of name are written. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0xa5u);
+    MEM_W32(RSS_INFO, 8u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with caller size 8");
+    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus with caller size 8 writes the struct size word");
+    expect(rss_bytes_are(8u, 56u, 0xa5u),
+           "ReferSemaStatus with caller size 8 leaves bytes 8..55 untouched");
 
     /* Signal to count 2, then block a real waiter that needs 3. */
     memset(&cpu, 0, sizeof cpu);
@@ -7621,6 +7659,7 @@ static void test_sema_refer_status(void) {
                "ReferSemaStatus: waiter blocked on the semaphore (need 3, count 2)");
 
         s_cur = (int)(main_t - s_tcb);
+        MEM_W32(RSS_INFO, 56u);
         expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with a blocked waiter");
         expect(MEM_R32(RSS_INFO + 44u) == 2u, "ReferSemaStatus reports count 2 while the waiter is blocked");
         expect(MEM_R32(RSS_INFO + 52u) == 1u, "ReferSemaStatus reports one waiting thread");
@@ -7636,23 +7675,21 @@ static void test_sema_refer_status(void) {
                "ReferSemaStatus: the blocked waiter resumed and succeeded after the signal");
 
         s_cur = (int)(main_t - s_tcb);
+        MEM_W32(RSS_INFO, 56u);
         expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds after the waiter resumed");
         expect(MEM_R32(RSS_INFO + 44u) == 0u, "ReferSemaStatus reports count 0 after the waiter consumed 3");
         expect(MEM_R32(RSS_INFO + 52u) == 0u, "ReferSemaStatus reports zero waiting threads after the wake");
         sr_coro_destroy(waiter->coro); waiter->coro = NULL;
     }
 
-    /* Unknown UID, NULL and unmapped output spans, and a small caller size word. */
+    /* Error codes: unknown UID, NULL and unmapped output spans. */
+    MEM_W32(RSS_INFO, 56u);
     expect(rss_refer(RSS_UNKNOWN_UID, RSS_INFO) == WSV_UNKNOWN_SEMID,
            "ReferSemaStatus unknown UID returns UNKNOWN_SEMID 0x80020199");
     expect(rss_refer(sema, 0u) == RSS_ILLEGAL_ADDR,
            "ReferSemaStatus NULL info returns ILLEGAL_ADDR 0x80000103");
     expect(rss_refer(sema, RSS_BAD_PTR) == RSS_ILLEGAL_ADDR,
            "ReferSemaStatus unmapped info span returns ILLEGAL_ADDR 0x80000103");
-    MEM_W32(RSS_INFO, 8u);
-    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with a small caller size word");
-    expect(MEM_R32(RSS_INFO) == 8u, "ReferSemaStatus leaves a small caller size word as written");
-    expect(MEM_R32(RSS_INFO + 48u) == 3u, "ReferSemaStatus still writes maxCount under a small size word");
 
     wsv_delete(sema);
     s_cur = -1;

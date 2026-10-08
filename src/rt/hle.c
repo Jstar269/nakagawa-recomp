@@ -17883,20 +17883,45 @@ static uint32_t h_PollSema(CpuState *s) {
     m->count -= need;
     return 0;
 }
-/* sceKernelReferSemaStatus(semaid, SceKernelSemaInfo *info): the struct is 56 bytes --
+/* sceKernelReferSemaStatus(semaid, SceKernelSemaInfo *info). The 56-byte struct is
  * size(0), name[32](4), attr(36), initCount(40), currentCount(44), maxCount(48),
- * numWaitThreads(52). Mirrors h_ReferEventFlagStatus: the caller's size word is left as
- * written, and the full 56-byte span is checked writable before any store. */
+ * numWaitThreads(52). Follows h_ReferMutexStatus: the caller's size word at info+0 bounds
+ * the write. Size 0 writes nothing and succeeds; otherwise only min(size, 56) bytes reach
+ * guest memory, copied from a locally built struct whose size field is 56. */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  initCount;
+    int32_t  currentCount;
+    int32_t  maxCount;
+    int32_t  numWaitThreads;
+} SceKernelSemaInfo;
+
 static uint32_t h_ReferSemaStatus(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
-    uint32_t info = A1;
-    if (!info || !sr_guest_span_writable(info, 56u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    for (uint32_t i = 0; i < 32u; i++) MEM_W8(info + 4u + i, (uint8_t)m->name[i]);
-    MEM_W32(info + 36u, (uint32_t)m->attr);
-    MEM_W32(info + 40u, (uint32_t)m->initc);
-    MEM_W32(info + 44u, (uint32_t)m->count);
-    MEM_W32(info + 48u, (uint32_t)m->maxc);
-    MEM_W32(info + 52u, (uint32_t)sched_count_waiters(A0));
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    Sync *m = sync_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelSemaInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelSemaInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SceKernelSemaInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelSemaInfo);
+    memcpy(info.name, m->name, sizeof(info.name));
+    info.attr = m->attr;
+    info.initCount = m->initc;
+    info.currentCount = m->count;
+    info.maxCount = m->maxc;
+    info.numWaitThreads = sched_count_waiters(uid);
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
     return 0;
 }
 
