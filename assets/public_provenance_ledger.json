@@ -2921,7 +2921,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1429fe3c8ad16d634d18d93042df7d3c2da77d18da6c0463de5340bdfd7c0d95"
+      "sha256": "638cf4bcd7c1247f15543fbd161d0fe715fb282c85711464f24781e82ac1e969"
     },
     {
       "path": "src/player/player_state.h",
@@ -5535,7 +5535,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b46e867758628ddee73060061472ea08e32fc0d53c33b04624ca5547ebf74b6"
+      "sha256": "fa7ce9b244d26670c1c1330ace5d886e94eb1c8cd3cd556651dc8d0f4429fc15"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -6449,7 +6449,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd91c80aee08bd52303e226af50ea560f3956aa305d131a3e7e779af31cacc8e"
+      "sha256": "a28ab6ddd1b8244c19440233c5d493c43d29d74c1866aca1123975c82aa3b7c7"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6521,7 +6521,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2d92ef1cc9cc704ca2e1ee0b3967e68d9db036247917a9e049c59e00e41e91f"
+      "sha256": "d615a5d72fa186660c614b7fe92ad1c48c3796372d2d17a8f18f7225d66a31eb"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -8194,7 +8194,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12594b61369cf109f40914a8e3342f1f86a256e4fc649d8c704163854391c3de"
+      "sha256": "49e7818d7a2729f8208195fdbc9411fdc554ee35d35e870f7e5ee979e239fa3b"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -8746,7 +8746,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb01cec40dc6c78b085aad0d08c68bfbdbfae6e18083f4e9089d6ca223bd4246"
+      "sha256": "d3d753bbc58fd84e7f30a903f0c83dc6a9b5d9bfb2f2183fe6ded93b9f0e7059"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",
