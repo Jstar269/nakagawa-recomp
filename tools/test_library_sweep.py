@@ -365,6 +365,176 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertEqual(aggregate["stage_duration_ms"]["analyze"]["count"], 2)
         self.assertNotIn("PRIVATE TITLE", self.public_output.read_text(encoding="utf-8"))
 
+    def _write_shard(self, name: str, *, stage: str = "analyze") -> Path:
+        private_dir = self.root / name
+        library_sweep._write_outputs(
+            private_dir / "library-sweep.json",
+            self.root / f"{name}-public.json",
+            SOURCE_COMMIT,
+            SOURCE_FINGERPRINT,
+            900,
+            [dict(_sweep_row(stage), source_key=f"{name}/{stage}.iso")],
+            total_isos=1,
+            ran_this_invocation=1,
+            resumed_this_invocation=0,
+        )
+        return private_dir
+
+    def test_merge_private_reports_accepts_shard_private_directories(self) -> None:
+        shard_a = self._write_shard("shard-a")
+        shard_b = self._write_shard("shard-b")
+
+        result = library_sweep.merge_private_reports(
+            [shard_a, shard_b], self.root / "merged-private", self.public_output
+        )
+        merged = json.loads(
+            (self.root / "merged-private" / "library-sweep.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(result["iso_count"], 2)
+        self.assertEqual(len(merged["rows"]), 2)
+        self.assertEqual(
+            {row["source_key"] for row in merged["rows"]},
+            {"shard-a/analyze.iso", "shard-b/analyze.iso"},
+        )
+
+    def test_merge_private_reports_mixes_directories_and_report_files(self) -> None:
+        shard_a = self._write_shard("shard-a")
+        shard_b = self._write_shard("shard-b")
+        shard_c = self._write_shard("shard-c")
+
+        result = library_sweep.merge_private_reports(
+            [shard_a, shard_b / "library-sweep.json", shard_c],
+            self.root / "merged-private",
+            self.public_output,
+        )
+        aggregate = json.loads(self.public_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["iso_count"], 3)
+        self.assertEqual(aggregate["coverage"]["recorded_routes"], 3)
+
+    def test_merge_private_reports_directory_without_report_names_path(self) -> None:
+        empty_dir = self.root / "shard-empty"
+        empty_dir.mkdir()
+
+        with self.assertRaises(ValueError) as caught:
+            library_sweep.merge_private_reports(
+                [empty_dir], self.root / "merged-private", self.public_output
+            )
+
+        message = str(caught.exception)
+        self.assertIn(str(empty_dir), message)
+        self.assertIn("library-sweep.json", message)
+        self.assertIn("is a directory without", message)
+
+    def test_merge_private_reports_missing_report_names_path_and_reason(self) -> None:
+        missing = self.root / "shard-gone" / "library-sweep.json"
+
+        with self.assertRaises(ValueError) as caught:
+            library_sweep.merge_private_reports(
+                [missing], self.root / "merged-private", self.public_output
+            )
+
+        message = str(caught.exception)
+        self.assertIn(str(missing), message)
+        self.assertIn("does not exist", message)
+
+    def test_merge_private_reports_not_json_names_path_without_file_contents(self) -> None:
+        shard_dir = self.root / "shard-malformed"
+        shard_dir.mkdir()
+        report = shard_dir / "library-sweep.json"
+        report.write_text(
+            '{"schema_version": 2, "title_name": "PRIVATE_TITLE_SENTINEL"',
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(ValueError) as caught:
+            library_sweep.merge_private_reports(
+                [shard_dir], self.root / "merged-private", self.public_output
+            )
+
+        message = str(caught.exception)
+        self.assertIn(str(report), message)
+        self.assertIn("not valid JSON", message)
+        self.assertNotIn("PRIVATE_TITLE_SENTINEL", message)
+
+    def _merge_failure_message(self, shard_dir) -> str:
+        with self.assertRaises(ValueError) as caught:
+            library_sweep.merge_private_reports(
+                [shard_dir], self.root / "merged-private", self.public_output
+            )
+        return str(caught.exception)
+
+    def test_merge_private_reports_names_each_bounded_reader_reason(self) -> None:
+        from unittest import mock
+
+        cases = {
+            "too-large": (b'{"schema_version": 2, "pad": "' + b"x" * 64 + b'"}',
+                          {"_SWEEP_RESUME_JSON_MAX_BYTES": 32}, "JSON artifact limit"),
+            "not-utf8": (b'{"schema_version": 2, "title": "' + bytes([0xFF, 0xFE]) + b'"}',
+                         {}, "UTF-8"),
+            "too-deep": (b'{"a": ' * 8 + b"1" + b"}" * 8,
+                         {"_SWEEP_RESUME_JSON_MAX_DEPTH": 4}, "nesting"),
+        }
+        for name, (payload, limits, reason) in cases.items():
+            with self.subTest(name=name):
+                shard_dir = self.root / f"shard-{name}"
+                shard_dir.mkdir()
+                report = shard_dir / "library-sweep.json"
+                report.write_bytes(payload)
+                with mock.patch.multiple(library_sweep, **limits) if limits else mock.patch.object(
+                    library_sweep, "_SWEEP_RESUME_JSON_MAX_BYTES",
+                    library_sweep._SWEEP_RESUME_JSON_MAX_BYTES,
+                ):
+                    message = self._merge_failure_message(shard_dir)
+                self.assertIn(str(report), message)
+                self.assertIn("not a usable shard report", message)
+                self.assertIn(reason, message)
+
+    def test_merge_private_reports_report_path_that_is_a_directory(self) -> None:
+        shard_dir = self.root / "shard-dir-report"
+        (shard_dir / "library-sweep.json").mkdir(parents=True)
+        message = self._merge_failure_message(shard_dir / "library-sweep.json")
+        self.assertIn("library-sweep.json", message)
+
+    def test_merge_private_reports_unsupported_schema_names_path(self) -> None:
+        shard_dir = self.root / "shard-schema"
+        shard_dir.mkdir()
+        report = shard_dir / "library-sweep.json"
+        report.write_text('{"schema_version": 999}', encoding="utf-8")
+
+        with self.assertRaises(ValueError) as caught:
+            library_sweep.merge_private_reports(
+                [shard_dir], self.root / "merged-private", self.public_output
+            )
+
+        message = str(caught.exception)
+        self.assertIn(str(report), message)
+        self.assertIn("unsupported schema", message)
+
+    def test_cli_merge_private_directory_reports_path_and_reason(self) -> None:
+        empty_dir = self.root / "shard-empty"
+        empty_dir.mkdir()
+        stderr = io.StringIO()
+
+        with mock.patch.object(sys, "stderr", stderr):
+            status = library_sweep.main(
+                [
+                    "--private-dir",
+                    str(self.root / "merged-private"),
+                    "--public-output",
+                    str(self.public_output),
+                    "--merge-private-reports",
+                    str(empty_dir),
+                ]
+            )
+
+        message = stderr.getvalue()
+        self.assertEqual(status, 2)
+        self.assertIn("library sweep failed", message)
+        self.assertIn(str(empty_dir), message)
+        self.assertIn("library-sweep.json", message)
+
     def test_public_aggregate_contains_only_aggregated_title_neutral_data(self) -> None:
         _write_iso(
             self.iso_dir,
