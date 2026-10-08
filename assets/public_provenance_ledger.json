@@ -5698,7 +5698,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1191b57c3b0a8490ce07eb50c728b45c96fcdfde3d2e86d8b01fccc2c07d9940"
+      "sha256": "48f1c7931cc3cf8c30ac7970bf9d5790161119deb7c4c9b9c8373f402aef6308"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5843,7 +5843,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "17b9e5673a722bddc186b5900780d794c22e44b2ff63f651318233869dedccd7"
+      "sha256": "0d11f71e0844ee7f63f788e1528522d8acd3aac1d29b575ab6fc618d4276ec97"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7256,7 +7256,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "64f29f11e4ae6cfaa2cbdb5beb747de9ab719c3b140b05880f150a1f34d20bef"
+      "sha256": "bd54225235ad32308edcd14e6c9411692aa4c92a63319455bcce9d1b0f199640"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -7388,7 +7388,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd7140a110ffd02edb00a3f449dbaef3c43153276dea57f8b9bcaaa81efa452f"
+      "sha256": "a72e7a55b9b467c6e910c6b53a08853691b530206d1dcbad79a3ac9408d456c1"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
@@ -9191,7 +9191,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "331260f07db6ee11d22dfd7c1e6099569e495c48fdead284438b0ea75b74738b"
+      "sha256": "a2a874640ba0c923a2d19cf80885c6313ee4ebf8367cd10e050fc6feb3d02ab5"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -9599,7 +9599,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7ce6413f1ab77c891c212744e043d953fab6b2403fc9ce75d5d54bdaa5f5d65f"
+      "sha256": "86b69960e0e4080324a1671b53ea8b60152720d5825d3562c72035a597e6d11b"
     },
     {
       "path": "tools/title_manager_plan.ps1",
