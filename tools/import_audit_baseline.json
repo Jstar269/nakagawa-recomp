@@ -111,6 +111,13 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0x0bf608fb": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceGeRestoreContext",
+    "refusal_error": "0x80020002",
+    "status": "controlled_unsupported"
+  },
   "0x0c116e1b": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -868,6 +875,13 @@
     "handler": "h_AudioOutput2Release",
     "name": "sceAudioOutput2Release",
     "status": "unreviewed"
+  },
+  "0x438a385a": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceGeSaveContext",
+    "refusal_error": "0x80020002",
+    "status": "controlled_unsupported"
   },
   "0x440ca7d8": {
     "classification": "dedicated",
@@ -2234,6 +2248,12 @@
     "handler": "h_FontOpenUserMemory",
     "name": "sceFontOpenUserMemory",
     "status": "unreviewed"
+  },
+  "0xbc6febc5": {
+    "classification": "dedicated",
+    "handler": "h_ReferSemaStatus",
+    "name": "sceKernelReferSemaStatus",
+    "status": "partial"
   },
   "0xbd11b7c2": {
     "classification": "dedicated",

@@ -17729,6 +17729,11 @@ static uint32_t h_CreateSema(CpuState *s) {
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
     m->initc = (int)A2;
+    /* Create-time name and attr for ReferSemaStatus. sync_new does not clear
+     * these fields, so both are written on every create (an unreadable name
+     * pointer yields an empty name, never a failed create). */
+    m->attr = A1;
+    guest_cstr(A0, m->name, sizeof(m->name));
     if (hle_log_on())
         fprintf(stderr, "HLE: CreateSema uid=0x%x init=%d max=%d (from uid=0x%x)\n", m->uid, (int)A2, (int)A3, sched_current_uid());
     return m->uid;
@@ -18035,6 +18040,47 @@ static uint32_t h_PollSema(CpuState *s) {
     if (need <= 0 || need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (m->count < need) return 0x800201adu;   /* SCE_KERNEL_ERROR_SEMA_ZERO */
     m->count -= need;
+    return 0;
+}
+/* sceKernelReferSemaStatus(semaid, SceKernelSemaInfo *info). The 56-byte struct is
+ * size(0), name[32](4), attr(36), initCount(40), currentCount(44), maxCount(48),
+ * numWaitThreads(52). Follows h_ReferMutexStatus: the caller's size word at info+0 bounds
+ * the write. Size 0 writes nothing and succeeds; otherwise only min(size, 56) bytes reach
+ * guest memory, copied from a locally built struct whose size field is 56. */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  initCount;
+    int32_t  currentCount;
+    int32_t  maxCount;
+    int32_t  numWaitThreads;
+} SceKernelSemaInfo;
+
+static uint32_t h_ReferSemaStatus(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    Sync *m = sync_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelSemaInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelSemaInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SceKernelSemaInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelSemaInfo);
+    memcpy(info.name, m->name, sizeof(info.name));
+    info.attr = m->attr;
+    info.initCount = m->initc;
+    info.currentCount = m->count;
+    info.maxCount = m->maxc;
+    info.numWaitThreads = sched_count_waiters(uid);
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
     return 0;
 }
 
@@ -19232,6 +19278,7 @@ static void hle_register_selftest_oracle_handlers(void) {
     sr_hle_register(0x28b6489c, "sceKernelDeleteSema", h_DeleteSema);
     sr_hle_register(0x3f53e640, "sceKernelSignalSema", h_SignalSema);
     sr_hle_register(0x58b1f937, "sceKernelPollSema", h_PollSema);
+    sr_hle_register(0xbc6febc5, "sceKernelReferSemaStatus", h_ReferSemaStatus);
 }
 
 /* Registry scope for the issue #88 wait/blocking-context conformance matrix
@@ -19681,6 +19728,14 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
+    /* sceGeSaveContext / sceGeRestoreContext are refused, not faked. The modeled GE state
+     * (GeState in ge_shared.h, 3364 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
+     * and derived fields, so it cannot fit a 2048-byte PspGeContext, and the 256-entry
+     * command register file alone does not capture matrices or CLUT contents. A restore
+     * therefore cannot reinstate what a save would need, so both refuse with the GE
+     * controlled-refusal code and write nothing to the guest buffer. */
+    sr_hle_register_unsupported(0x438a385au, "sceGeSaveContext", 0x80020002u);
+    sr_hle_register_unsupported(0x0bf608fbu, "sceGeRestoreContext", 0x80020002u);
     sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
     sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);

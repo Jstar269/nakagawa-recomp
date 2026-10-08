@@ -412,8 +412,11 @@ class LiveManifestTests(unittest.TestCase):
             0x40F1469C: ("sceDisplayWaitVblankStartMulti", "h_DisplayWaitVblankStartMulti", "dedicated"),
             0x0CAE832B: ("sceRegCloseCategory", "h_ControlledUnsupported", "controlled_unsupported"),
             0x1D8A762E: ("sceRegOpenCategory", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xBC6FEBC5: ("sceKernelReferSemaStatus", "h_ReferSemaStatus", "dedicated"),
+            0x438A385A: ("sceGeSaveContext", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x0BF608FB: ("sceGeRestoreContext", "h_ControlledUnsupported", "controlled_unsupported"),
         }
-        self.assertEqual(len(expected), 20)
+        self.assertEqual(len(expected), 23)
         for nid, (name, handler, classification) in expected.items():
             with self.subTest(nid=f"0x{nid:08x}"):
                 if nid not in self.regs:
@@ -635,6 +638,8 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
+                "0x438a385a": ("sceGeSaveContext", "0x80020002"),
+                "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
                 "0x6652b8ca": ("sceKernelSetAlarm", "0x80020002"),
                 "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
