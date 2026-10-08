@@ -32,6 +32,7 @@ sys.path.insert(0, str(TOOLS))
 
 import analyze  # noqa: E402
 import codegen  # noqa: E402
+from nk_core import package_cache  # noqa: E402
 
 # A wholly synthetic span standing in for "some other title's configuration". It is
 # deliberately NOT any real title's address range: these tests prove isolation and
@@ -522,6 +523,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
 
     def test_cfg_report_preserves_continuation_and_call_ownership(self) -> None:
         target = PRIMARY_BASE + 0x10
+        tail_source = PRIMARY_BASE + 0x20
         words = [
             0x0C000000 | ((target >> 2) & 0x03FFFFFF),  # jal target
             0x00000000,                                  # delay slot
@@ -531,6 +533,8 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             0x00000000,
             0x03E00008,                                  # called entry
             0x00000000,                                  # delay slot
+            0x08000000 | ((target >> 2) & 0x03FFFFFF),   # direct tail-call to target
+            0x00000000,                                  # delay slot
         ]
         elf_path = self.root / "cfg-owned.elf"
         write_elf(elf_path, words=words)
@@ -538,10 +542,31 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         report = analyze.canonical_cfg_report(
             image,
             ranges=[(PRIMARY_BASE, PRIMARY_BASE + len(words) * 4)],
-            entries=[PRIMARY_BASE, PRIMARY_BASE + 8, target],
+            entries=[PRIMARY_BASE, PRIMARY_BASE + 8, target, tail_source],
         )
 
         self.assertEqual(analyze.canonical_cfg_gate(report), [])
+        classified = {
+            (row["source"], row["target"], row["kind"]): row["classification"]
+            for row in report["successor_classifications"]
+        }
+        self.assertEqual(len(classified), len(report["edges"]))
+        self.assertEqual(
+            classified[(PRIMARY_BASE, PRIMARY_BASE + 4, "delay-slot")],
+            "same-region",
+        )
+        self.assertEqual(
+            classified[(PRIMARY_BASE, PRIMARY_BASE + 8, "fallthrough")],
+            "continuation-resume-entry",
+        )
+        self.assertEqual(
+            classified[(PRIMARY_BASE, target, "call")],
+            "inter-function-handoff-dispatch",
+        )
+        self.assertEqual(
+            classified[(tail_source, target, "tail-call")],
+            "inter-function-handoff-dispatch",
+        )
         by_address = {row["address"]: row for row in report["instructions"]}
         self.assertEqual(by_address[PRIMARY_BASE + 8]["classification"], "interior-entry")
         self.assertTrue(
@@ -558,6 +583,20 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
                 and edge["kind"] == "call"
                 for edge in report["call_edges"]
             )
+        )
+
+    def test_cfg_gate_rejects_a_missing_successor_classification(self) -> None:
+        image = analyze.Elf(str(self.elf), base=0)
+        report = analyze.canonical_cfg_report(
+            image,
+            ranges=[(PRIMARY_BASE, PRIMARY_BASE + 8)],
+            entries=[PRIMARY_BASE],
+        )
+        report["successor_classifications"].pop()
+        findings = analyze.canonical_cfg_gate(report)
+        self.assertIn(
+            "successor-classification-coverage",
+            {finding["code"] for finding in findings},
         )
 
     def test_cfg_gate_records_unreached_executable_word(self) -> None:
@@ -636,6 +675,74 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn("CFG_GATE ownership-gap", stderr.getvalue())
         self.assertIn("0x00001010", stderr.getvalue())
         self.assertFalse(out_c.exists(), "ownership-gap failure must precede C emission")
+
+    def test_cfg_gate_kills_generated_sequential_fallthrough_gap_mutation(self) -> None:
+        # A mutant that stops ownership at sequential fallthrough silently
+        # leaves the next emitted word outside its callable region. The CFG
+        # gate must reject that edge before codegen writes C.
+        elf_path = self.root / "cfg-mutant-fallthrough.elf"
+        write_elf(elf_path, words=(0x24020001, 0x03E00008, 0x00000000))
+
+        mutant_tools = self.root / "fallthrough_mutant_tools"
+        mutant_tools.mkdir()
+        analyzer_source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
+        mutation_anchor = (
+            '                if kind_id in {\n'
+            '                    _CFG_KIND_IDS["call"], _CFG_KIND_IDS["tail-call"],\n'
+            '                    _CFG_KIND_IDS["unresolved-indirect"],\n'
+            '                }:\n'
+        )
+        self.assertEqual(analyzer_source.count(mutation_anchor), 1)
+        mutant_analyzer = analyzer_source.replace(
+            mutation_anchor,
+            mutation_anchor.replace(
+                '_CFG_KIND_IDS["unresolved-indirect"],',
+                '_CFG_KIND_IDS["unresolved-indirect"],\n'
+                '                    _CFG_KIND_IDS["fallthrough"],',
+            ),
+            1,
+        )
+        (mutant_tools / "analyze.py").write_text(
+            mutant_analyzer,
+            encoding="utf-8",
+            newline="\n",
+        )
+        (mutant_tools / "codegen.py").write_text(
+            (TOOLS / "codegen.py").read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+        out_dir = self.root / "fallthrough_mutant_output"
+        out_dir.mkdir()
+        output_c = out_dir / "mutant.c"
+        report_path = out_dir / "mutant-cfg.json"
+        env = self._clean_env(
+            PYTHONPATH=os.pathsep.join((str(mutant_tools), str(TOOLS)))
+        )
+        result = subprocess.run(
+            [
+                sys.executable, str(mutant_tools / "codegen.py"),
+                str(elf_path), str(output_c), "--base=0", "--profile=none",
+                "--funcs-per-chunk=2000", "--cfg-gate",
+                f"--cfg-report={report_path}",
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("CFG_GATE ownership-gap", result.stderr)
+        self.assertIn("0x00001004", result.stderr)
+        self.assertFalse(output_c.exists())
+        report = package_cache.read_bounded_json(report_path)
+        gap = next(
+            row for row in report["successor_classifications"]
+            if row["source"] == PRIMARY_BASE and row["target"] == PRIMARY_BASE + 4
+        )
+        self.assertEqual(gap["kind"], "fallthrough")
+        self.assertEqual(gap["classification"], "invalid-unowned")
 
     def test_post_jump_word_is_not_promoted_from_file_adjacency(self) -> None:
         # This mirrors the cosim `jump` cell: the direct jump's delay slot is
@@ -717,11 +824,13 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertTrue(out_c.is_file(), generated.stdout + generated.stderr)
 
         gated_out = out_dir / "gated.c"
+        mutant_report_path = out_dir / "mutant-cfg.json"
         gated = subprocess.run(
             [
                 sys.executable, str(mutant_tools / "codegen.py"),
                 str(elf_path), str(gated_out), "--base=0", "--profile=none",
                 "--funcs-per-chunk=2000", "--cfg-gate",
+                f"--cfg-report={mutant_report_path}",
             ],
             cwd=ROOT,
             env=env,
@@ -733,6 +842,12 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn("CFG_GATE ownership-gap", gated.stderr)
         self.assertIn("0x00001010", gated.stderr)
         self.assertFalse(gated_out.exists())
+        mutant_report = package_cache.read_bounded_json(mutant_report_path)
+        gap = next(
+            row for row in mutant_report["successor_classifications"]
+            if row["source"] == PRIMARY_BASE and row["target"] == target
+        )
+        self.assertEqual(gap["classification"], "invalid-unowned")
 
         config = subprocess.run(
             [
@@ -818,6 +933,16 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             {"source": PRIMARY_BASE, "target": None, "kind": "unresolved-indirect",
              "detail": "computed-tail-transfer"},
             report["edges"],
+        )
+        self.assertIn(
+            {
+                "source": PRIMARY_BASE,
+                "target": None,
+                "kind": "unresolved-indirect",
+                "classification": "interpreter-fail-closed-boundary",
+                "detail": "computed-tail-transfer",
+            },
+            report["successor_classifications"],
         )
         self.assertFalse(
             any(
@@ -918,9 +1043,18 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
 
         self.assertEqual(report_only, default)
         self.assertNotEqual(gated, default, "fixture must distinguish the gate lane")
-        # The report-only lane still describes gate-mode analysis.
+        # Both reports share the gate-mode CFG; their codegen ownership maps
+        # intentionally describe the different entry inventories actually emitted.
+        report_only_document = package_cache.read_bounded_json(report_path)
+        gated_document = package_cache.read_bounded_json(gated_path)
+        report_only_map = report_only_document.pop("emitted_ownership_map")
+        gated_map = gated_document.pop("emitted_ownership_map")
+        self.assertEqual(report_only_document, gated_document)
         self.assertEqual(
-            report_path.read_bytes(), gated_path.read_bytes(),
+            report_only_map["source_cfg_schema_version"], analyze.CFG_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            gated_map["source_cfg_schema_version"], analyze.CFG_SCHEMA_VERSION,
         )
 
     def test_codegen_cfg_gate_records_unreached_extra_elf_word(self) -> None:
@@ -998,6 +1132,69 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         report = json.loads(report_path.read_text(encoding="ascii"))
         self.assertEqual(analyze.canonical_cfg_gate(report), [])
         self.assertIn("CFG_GATE PASS", proc.stdout)
+        bounded_report = package_cache.read_bounded_json(report_path)
+        emitted_map = bounded_report["emitted_ownership_map"]
+        self.assertEqual(emitted_map["schema_version"], codegen.EMITTED_OWNERSHIP_SCHEMA_VERSION)
+        regions = {row["start"]: row for row in emitted_map["regions"]}
+        self.assertEqual(regions[PRIMARY_BASE]["classification"], "callable")
+        self.assertTrue(regions[PRIMARY_BASE]["emitted"])
+        self.assertEqual(regions[PRIMARY_BASE + 4]["classification"], "interior")
+
+    def test_emitted_ownership_map_preserves_resume_owner(self) -> None:
+        report = {
+            "schema_version": analyze.CFG_SCHEMA_VERSION,
+            "ownership_map": [
+                {"address": PRIMARY_BASE, "classification": "owned", "owners": [PRIMARY_BASE]},
+                {"address": PRIMARY_BASE + 4, "classification": "owned", "owners": [PRIMARY_BASE]},
+                {"address": PRIMARY_BASE + 8, "classification": "interior-entry", "owners": [PRIMARY_BASE + 8]},
+            ],
+            "byte_classification": [
+                {"start": PRIMARY_BASE, "end": PRIMARY_BASE + 4, "classification": "owned"},
+                {"start": PRIMARY_BASE + 4, "end": PRIMARY_BASE + 8, "classification": "owned"},
+                {"start": PRIMARY_BASE + 8, "end": PRIMARY_BASE + 12, "classification": "interior-entry"},
+            ],
+        }
+        catalog = {
+            PRIMARY_BASE: codegen.EntryInfo(PRIMARY_BASE, True, False, None, frozenset()),
+            PRIMARY_BASE + 8: codegen.EntryInfo(
+                PRIMARY_BASE + 8, False, True, PRIMARY_BASE, frozenset(),
+            ),
+        }
+        emitted_map = codegen.build_emitted_ownership_map(
+            report, catalog, [PRIMARY_BASE, PRIMARY_BASE + 8],
+        )
+        regions = {row["start"]: row for row in emitted_map["regions"]}
+        self.assertEqual(regions[PRIMARY_BASE]["classification"], "callable")
+        self.assertEqual(regions[PRIMARY_BASE + 4]["classification"], "interior")
+        self.assertEqual(regions[PRIMARY_BASE + 8]["classification"], "resume")
+        self.assertEqual(regions[PRIMARY_BASE + 8]["owners"], [PRIMARY_BASE])
+        self.assertEqual(regions[PRIMARY_BASE + 8]["symbol"], "r_00001008")
+
+    def test_emitted_ownership_map_keeps_callable_conflicts_ambiguous(self) -> None:
+        report = {
+            "schema_version": analyze.CFG_SCHEMA_VERSION,
+            "ownership_map": [{
+                "address": PRIMARY_BASE,
+                "classification": "owner-conflict",
+                "owners": [PRIMARY_BASE, PRIMARY_BASE + 4],
+            }],
+            "byte_classification": [{
+                "start": PRIMARY_BASE,
+                "end": PRIMARY_BASE + 4,
+                "classification": "owner-conflict",
+            }],
+        }
+        catalog = {
+            PRIMARY_BASE: codegen.EntryInfo(
+                PRIMARY_BASE, True, False, None, frozenset(),
+            ),
+        }
+        emitted_map = codegen.build_emitted_ownership_map(
+            report, catalog, [PRIMARY_BASE],
+        )
+        region = emitted_map["regions"][0]
+        self.assertEqual(region["classification"], "ambiguous")
+        self.assertEqual(region["owners"], [PRIMARY_BASE, PRIMARY_BASE + 4])
 
     def test_cfg_report_verifier_kills_missing_projection(self) -> None:
         image = analyze.Elf(str(self.elf), base=0)

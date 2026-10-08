@@ -695,7 +695,14 @@ def direct_branch_edges(elf, ranges, targets=None):
     return {target: tuple(sorted(srcs)) for target, srcs in edges.items()}
 
 
-CFG_SCHEMA_VERSION = 1
+CFG_SCHEMA_VERSION = 2
+CFG_SUCCESSOR_CLASSIFICATIONS = frozenset({
+    "same-region",
+    "continuation-resume-entry",
+    "inter-function-handoff-dispatch",
+    "interpreter-fail-closed-boundary",
+    "invalid-unowned",
+})
 
 
 def _cfg_field(value, name, default=None):
@@ -1053,7 +1060,7 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
     unowned_executable = sorted(
         address for address, node in nodes.items() if node["classification"] == "unowned-executable"
     )
-    return {
+    report = {
         "schema_version": CFG_SCHEMA_VERSION,
         "executable_intervals": [
             {"start": lo, "end": hi} for lo, hi in effective_ranges
@@ -1090,6 +1097,8 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
             jump_table_ownership, key=lambda item: (item["address"], item["target"], item["section"])
         ),
     }
+    report["successor_classifications"] = _cfg_successor_classifications(report)
+    return report
 
 
 _CFG_NONE = 0x100000000
@@ -1123,6 +1132,84 @@ _CFG_DETAIL_NAMES = (
 _CFG_DETAIL_IDS = {name: index for index, name in enumerate(_CFG_DETAIL_NAMES)}
 _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
 _CFG_REASON_BITS = {name: 1 << index for index, name in enumerate(_CFG_REASON_NAMES)}
+
+
+def _cfg_successor_classifications(report):
+    """Classify every CFG edge using only the serialized ownership model."""
+    nodes = {
+        row.get("address"): row
+        for row in report.get("instructions", ())
+        if isinstance(row, dict) and type(row.get("address")) is int
+    }
+    entries = {
+        entry for entry in report.get("entries", ())
+        if type(entry) is int
+    }
+    interior = set()
+    for row in report.get("interior_entries", ()):
+        if not isinstance(row, dict):
+            continue
+        source, target, kind = row.get("source"), row.get("address"), row.get("reason")
+        if type(source) is int and type(target) is int and isinstance(kind, str):
+            interior.add((source, target, kind))
+
+    classifications = []
+    external_transfer_kinds = {"call", "direct-jump", "direct-branch", "branch", "tail-call"}
+    for edge in report.get("edges", ()):
+        if not isinstance(edge, dict):
+            continue
+        source, target, kind = edge.get("source"), edge.get("target"), edge.get("kind")
+        source_node = nodes.get(source) if type(source) is int else None
+        target_node = nodes.get(target) if type(target) is int else None
+        source_owner_values = source_node.get("owners", ()) if source_node else ()
+        target_owner_values = target_node.get("owners", ()) if target_node else ()
+        source_owners = {
+            owner for owner in source_owner_values
+            if type(owner) is int
+        } if isinstance(source_owner_values, list) else set()
+        target_owners = {
+            owner for owner in target_owner_values
+            if type(owner) is int
+        } if isinstance(target_owner_values, list) else set()
+
+        if kind == "unresolved-indirect":
+            classification = "interpreter-fail-closed-boundary"
+        elif isinstance(kind, str) and kind in ("call", "tail-call"):
+            classification = (
+                "inter-function-handoff-dispatch"
+                if target_node is None or target_owners
+                else "invalid-unowned"
+            )
+        elif target is None:
+            classification = "invalid-unowned"
+        elif target_node is None:
+            classification = (
+                "inter-function-handoff-dispatch"
+                if isinstance(kind, str) and kind in external_transfer_kinds
+                else "invalid-unowned"
+            )
+        elif (source, target, kind) in interior:
+            classification = "continuation-resume-entry"
+        elif source_owners.intersection(target_owners):
+            classification = "same-region"
+        elif (
+            target in entries and isinstance(kind, str)
+            and kind in external_transfer_kinds
+        ):
+            classification = "inter-function-handoff-dispatch"
+        else:
+            classification = "invalid-unowned"
+
+        row = {
+            "source": source,
+            "target": target,
+            "kind": kind,
+            "classification": classification,
+        }
+        if "detail" in edge:
+            row["detail"] = edge["detail"]
+        classifications.append(row)
+    return classifications
 
 
 class CanonicalCfgState:
@@ -1344,7 +1431,7 @@ class CanonicalCfgState:
             }
             for index in sorted(self.multi_owner_masks, key=lambda item: self.addresses[item])
         ]
-        return {
+        report = {
             "schema_version": self.schema_version,
             "executable_intervals": [
                 {"start": start, "end": end} for start, end in self.executable_intervals
@@ -1403,6 +1490,8 @@ class CanonicalCfgState:
                 for address, section, target, owners in sorted(self.jump_table_ownership)
             ],
         }
+        report["successor_classifications"] = _cfg_successor_classifications(report)
+        return report
 
 
 def canonical_cfg_state(image, ranges=None, entries=None):
@@ -1841,6 +1930,19 @@ def verify_canonical_cfg_report(report):
             "message": "instruction edge rows and top-level edge rows differ",
         })
 
+    successor_rows = list_field("successor_classifications")
+    for successor in successor_rows:
+        if not isinstance(successor, dict):
+            finding("successor-classification-invalid", successor)
+            continue
+        if successor.get("classification") not in CFG_SUCCESSOR_CLASSIFICATIONS:
+            finding("successor-classification-invalid", successor)
+    if successor_rows != _cfg_successor_classifications(report):
+        finding(
+            "successor-classification-coverage",
+            "successor classifications do not cover the canonical edge set",
+        )
+
     def edge_projection(name):
         """Normalize one duplicated edge projection without trusting its shape."""
         rows = list_field(name)
@@ -2056,12 +2158,13 @@ def canonical_cfg_gate(report):
     """Return fail-closed ownership-gate findings for a CFG report.
 
     ``verify_canonical_cfg_report`` checks that the serialized projections agree
-    with one another. This gate requires every known in-range successor of an
-    owned instruction to have an owner, and keeps ambiguous ownership or
-    unmapped entries fail-closed. Non-padding words that are not reached from
-    the supplied entries remain explicitly classified as unowned; that is not
-    proof that no dynamic entry exists, but file adjacency alone is not a
-    control-flow edge. Continuation/interior entries are valid classifications.
+    with one another and that every CFG edge has exactly one successor class.
+    This gate requires every known in-range successor of an owned instruction to
+    have an owner, and keeps ambiguous ownership or unmapped entries fail-closed.
+    Non-padding words that are not reached from the supplied entries remain
+    explicitly classified as unowned; that is not proof that no dynamic entry
+    exists, but file adjacency alone is not a control-flow edge.
+    Continuation/interior entries are valid classifications.
     """
     findings = verify_canonical_cfg_report(report)
     if findings:
