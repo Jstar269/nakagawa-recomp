@@ -25,6 +25,8 @@ extern "C" {
  * JSON parsing attacks.
  */
 #define NK_MANIFEST_MAX_BYTES (256 * 1024)
+/* Keep equal to tools/nk_core/package_cache.py:MAX_BUILD_REPORT_JSON_BYTES. */
+#define NK_BUILD_REPORT_MAX_BYTES (4 * 1024 * 1024)
 #define NK_MANIFEST_LIMIT_CLASS "PRODUCT_SECURITY_POLICY"
 #define NK_MANIFEST_MAX_JSON_DEPTH 16
 #define NK_AOT_PACKAGE_SCHEMA_VERSION 2
