@@ -1917,7 +1917,7 @@ class MachinePortabilityTests(unittest.TestCase):
         sdl3_cflags_pos = cflags.index("$(SDL3_INC_FLAGS)")
         # CFLAGS carries the Vulkan include flags through VULKAN_INC_FLAGS, whose
         # Windows definition derives from $(VULKAN_SDK); the path stays quoted so
-        # a spaced SDK root remains a single shell word (#667).
+        # a spaced SDK root remains a single shell word (#368).
         self.assertRegex(
             makefile_text, r'VULKAN_INC_FLAGS\s*:=\s*-I"\$\(VULKAN_SDK\)/Include'
         )
@@ -2247,7 +2247,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         self.assertEqual(values["SDL3_LDFLAGS"], '-L"C:/msys64/ucrt64/lib"')
 
     def test_a_spaced_toolchain_root_stays_a_single_shell_word(self) -> None:
-        """#667 A4: an unquoted spaced -I/-L splits into phantom compiler arguments."""
+        """Spaced paths (#368): an unquoted spaced -I/-L splits into phantom compiler arguments."""
         values = self._fragment(self._provider(
             "msys2_ucrt64", "C:/Program Files/SDL3/include",
             "C:/Program Files/SDL3/lib/libSDL3.dll.a"))
@@ -2287,7 +2287,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
 
 
 class ProfileEntriesEnvTransportTests(unittest.TestCase):
-    """Runtime profile entries with quotes/spaces travel through the environment (#667 A4).
+    """Runtime profile entries with quotes/spaces travel through the environment (#368).
 
     A flag list such as CFLAGS now carries quoted -I/-L paths; handing that text
     to `build_profile hash --entry` on a command line would let cmd.exe/sh split

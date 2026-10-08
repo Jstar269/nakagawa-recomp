@@ -64,6 +64,7 @@ PACKAGE_SCHEMA_VERSION = 2
 BUILD_REPORT_SCHEMA_VERSION = 1
 PACKAGE_FORMAT = "nakagawa-aot-package"
 BUILD_REPORT_FORMAT = "nakagawa-build-report"
+PACKAGE_BUILD_JOBS = 2
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Manifest fields that carry no operational meaning and are therefore excluded
@@ -81,6 +82,12 @@ class PackageRouteError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def _make_build_command(make_executable: str, *, native_only: bool) -> list[str]:
+    """Bound package builds to two jobs for independent runtime and AOT objects."""
+    target = "compile" if native_only else "all"
+    return [make_executable, "--no-print-directory", f"-j{PACKAGE_BUILD_JOBS}", target]
 
 
 def compute_protected_digest(manifest: dict[str, Any]) -> str:
@@ -1340,7 +1347,7 @@ def build_package(
         })
         try:
             built = subprocess.run(
-                [make_executable, "--no-print-directory", "compile" if native_only else "all"],
+                _make_build_command(make_executable, native_only=native_only),
                 cwd=ROOT,
                 env=build_environment,
                 check=False,

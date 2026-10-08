@@ -777,7 +777,7 @@ class PackageCacheTests(unittest.TestCase):
         self.assertTrue(findings)
         self.assertTrue(any(finding.code in {"UNRESOLVED_PUBLIC", "POLICY_UNCLASSIFIED"} for finding in findings))
 class BoundedJsonArtifactTests(unittest.TestCase):
-    """#319: externally supplied package/cache JSON must fail closed and bounded.
+    """Externally supplied package/cache JSON must fail closed and bounded.
 
     Every malformed case targets a production entry point and expects the
     named controlled error (BoundedJsonError, or the entry point's own named
@@ -985,7 +985,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             self.assertIn("unreadable", reason)
 
     def test_duplicate_key_diagnosis_does_not_echo_attacker_bulk(self) -> None:
-        """#319: rejection stays named, but a hostile key is not quoted back.
+        """Rejection stays named, but a hostile key is not quoted back.
 
         Bounding the artifact does not bound the message it produces. A
         duplicate key under the byte ceiling is attacker-chosen text that would
@@ -1010,7 +1010,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             self.assertNotIn(bulk, message)
 
     def test_node_counter_never_undercounts_any_scalar_or_trailing_string(self) -> None:
-        """#319: the structural node count is a true lower bound, not a leaky one.
+        """The structural node count is a true lower bound, not a leaky one.
 
         Two ways the counter used to lose a node: a document whose final node
         was a string closer finished past the ceiling, because the in-string
@@ -1046,7 +1046,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
         )
 
     def test_read_loop_is_bounded_even_if_a_read_returns_more_than_requested(self) -> None:
-        """#319: the reader must terminate and fail closed, not loop.
+        """The reader must terminate and fail closed, not loop.
 
         A real read never returns more than it was asked for, but the loop
         condition is written so that an over-long read short-circuits instead
@@ -1066,7 +1066,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             self.assertIn("grew past", str(caught.exception))
 
     def test_bounded_echo_truncates_strings_and_bounds_field_samples(self) -> None:
-        """#319: untrusted text is quoted as a prefix, untrusted lists as a sample."""
+        """Untrusted text is quoted as a prefix, untrusted lists as a sample."""
         self.assertEqual(package_cache.bounded_echo("short"), "short")
         self.assertEqual(
             package_cache.bounded_echo("A" * 200),

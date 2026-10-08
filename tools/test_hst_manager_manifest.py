@@ -52,14 +52,14 @@ class HstManagerManifestTests(unittest.TestCase):
         (private / "EXTRACTED" / "PSP_GAME" / "SYSDIR" / "EBOOT.BIN").write_text(
             "synthetic\n", encoding="ascii"
         )
-        # Issue #196 Phase 4: synthetic/generic manifests no longer discover the
+        # Synthetic/generic manifests no longer discover the
         # legacy retail layout. The synthetic route discovers its ELF from the
         # generic fixtures/ candidates instead.
         fixtures = self.root / "fixtures"
         fixtures.mkdir(exist_ok=True)
         (fixtures / "synthetic.elf").write_text("synthetic private binding\n", encoding="ascii")
         # The manager now anchors every managed path to its own script location and fails
-        # closed when the workspace identity anchors are missing (#183), so the harness
+        # closed when the workspace identity anchors are missing, so the harness
         # stages a complete fake workspace: the manager itself, its dot-sourced helpers
         # and the repository identity files.
         self.manager_copy = self.root / MANAGER.name
@@ -327,7 +327,7 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertEqual(self.records(), [])
 
     def require_hst_manifest(self) -> None:
-        # Opt-in by *tracked bytes*, never by directory presence (#335): an
+        # Opt-in by *tracked bytes*, never by directory presence: an
         # ignored developer lookalike must not silently stand in for the
         # private fixture.
         if not test_public_title_isolation.private_title_tests_enabled("assets/titles/hst-ucus98701.json"):

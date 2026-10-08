@@ -544,7 +544,7 @@ class TestProductionSmoke(unittest.TestCase):
 
 
 class TestStagedRunFailClosed(unittest.TestCase):
-    """A broken staging path must fail closed with a named error (#294)."""
+    """A broken staging path must fail closed with a named error."""
 
     STAGING_ERROR = "PRODUCTION_SMOKE_STAGING_FAILED"
 
