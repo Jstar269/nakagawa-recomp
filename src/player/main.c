@@ -2640,7 +2640,16 @@ int main(int argc, char *argv[]) {
                                      !app.inspecting_game.is_experimental;
             bool stored = add_before_launch && player_app_add_game(&app, &app.inspecting_game);
 
-            if (add_before_launch && !stored) {
+            if (launch_now && app.inspecting_game.is_experimental) {
+                const char *message =
+                    "Launch now is unavailable for experimental titles. Generic ISO-to-Play "
+                    "support is in the works (#308). This title was not added; review its "
+                    "compatibility checks before adding it to the library.";
+                fprintf(stderr, "[PLAYER] EXPERIMENTAL_LAUNCH_UNAVAILABLE: %s\n", message);
+                player_app_set_error(&app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
+                                     "Experimental Title Cannot Launch Yet", message,
+                                     "Review Compatibility", VIEW_EXPERIMENTAL_TITLE);
+            } else if (add_before_launch && !stored) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
                         app.inspecting_game.disc_id);
                 player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",

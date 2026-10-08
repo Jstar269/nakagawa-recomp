@@ -430,7 +430,29 @@ class BuildScopeGameElfTests(unittest.TestCase):
             result = self.eboot_result(Path(tmp), "build", self.synthetic_manifest())
         self.assertEqual(result.status, "INFO", result)
         self.assertIn("does not require it", result.summary)
+        self.assertIn("No additional title-specific files are required", result.summary)
         self.assertNotIn("will be generated", result.summary)
+
+    def test_build_scope_elf_summary_names_other_required_title_inputs(self) -> None:
+        manifest = self.synthetic_manifest()
+        manifest["executable"] = {"bss_metadata_source": "psp-header"}
+        manifest["modules"] = [
+            {"role": "guest-prx", "name": "libsample.prx", "required": True}
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.eboot_result(Path(tmp), "build", manifest)
+        self.assertEqual(result.status, "INFO", result)
+        self.assertIn("EBOOT.BIN", result.summary)
+        self.assertIn("libsample.prx", result.summary)
+        self.assertIn("--scope inputs", result.summary)
+
+    def test_declared_synthetic_fixture_path_still_fails_at_build_scope(self) -> None:
+        for path in ("build/fixtures/alternate.elf", "fixtures/alternate.elf"):
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as tmp:
+                manifest = self.synthetic_manifest()
+                manifest["executable"] = {"path": path, "bss_metadata_source": "none"}
+                result = self.eboot_result(Path(tmp), "build", manifest)
+            self.assertEqual(result.status, "FAIL", result)
 
     def test_declared_synthetic_executable_still_fails_at_build_scope(self) -> None:
         manifest = self.synthetic_manifest()

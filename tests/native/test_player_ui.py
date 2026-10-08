@@ -1643,6 +1643,32 @@ class FirstRunRouteTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             self.assertEqual(library_disc_ids(scratch), ["TEST00002"])
 
+    def test_launch_now_on_experimental_iso_reports_the_unavailable_boundary(self) -> None:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-experimental-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "experimental.iso"
+            executable = build_plain_mips_elf() + bytes(i % 251 for i in range(70000))
+            create_test_iso_with_executables(
+                iso, executable, disc_id="ULUS99998", title="Experimental Fixture"
+            )
+            completed = self.run_route(scratch, [
+                f"--iso={iso}",
+                "--launch-now",
+                "--ui-test-events=WAIT_MS=100;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        frames = parse_frames(completed.stdout)
+        self.assertTrue(frames, completed.stdout)
+        self.assertEqual(frames[0]["view"], "error")
+        self.assertEqual(frames[0]["error"], "EXPERIMENTAL_LAUNCH_UNAVAILABLE")
+        self.assertIn("in the works (#308)", completed.stderr)
+        self.assertEqual(library_disc_ids(scratch), [])
+
     def test_launch_index_on_an_empty_library_fails_with_a_clear_message(self) -> None:
         with tempfile.TemporaryDirectory(prefix=".first-run-empty-", dir=ROOT) as tmp:
             scratch = Path(tmp)
