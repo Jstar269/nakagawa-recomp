@@ -2418,7 +2418,20 @@ static bool player_decrypted_eboot_paths(const char *runtime_root,
     return written >= 0 && (size_t)written < elf_path_size;
 }
 
-static bool player_is_usable_mips_elf32(const char *path) {
+/* The ELF32/MIPS usability decision after the header and program-header
+ * walks (issue #729).  Mirrors _elf32_mips_usable in tools/nk_core/iso_inspect.py:
+ * an executable (or any non-PRX) image needs e_entry inside an executable
+ * PT_LOAD, while a guest module that is a PSP PRX (e_type 0xFFA0) needs an
+ * executable PT_LOAD with code bytes, because its e_entry is not its start
+ * routine (module_start comes from the module info, commonly 0xFFFFFFFF). */
+static bool player_elf32_usable_decision(uint16_t e_type, bool module,
+                                         bool have_load, bool entry_executable,
+                                         bool code_segment) {
+    if (module && e_type == 0xffa0) return have_load && code_segment;
+    return have_load && entry_executable;
+}
+
+static bool player_is_usable_mips_elf32(const char *path, bool module) {
     unsigned char header[52];
     FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return false;
@@ -2460,6 +2473,7 @@ static bool player_is_usable_mips_elf32(const char *path) {
 
     bool have_load = false;
     bool entry_executable = false;
+    bool code_segment = false;
     for (uint16_t i = 0; valid && i < phnum; i++) {
         unsigned char ph[32];
         uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
@@ -2491,9 +2505,13 @@ static bool player_is_usable_mips_elf32(const char *path) {
         if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
             entry_executable = true;
         }
+        if ((flags & 1u) != 0 && filesz > 0) {
+            code_segment = true;
+        }
     }
     fclose(file);
-    return valid && have_load && entry_executable;
+    return valid && player_elf32_usable_decision(e_type, module, have_load,
+                                                 entry_executable, code_segment);
 }
 
 static PlayerDecryptedEbootState player_find_decrypted_eboot(
@@ -2506,7 +2524,7 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
     FILE *file = nk_fopen_utf8(elf_path, "rb");
     if (!file) return PLAYER_DECRYPTED_EBOOT_MISSING;
     fclose(file);
-    return player_is_usable_mips_elf32(elf_path)
+    return player_is_usable_mips_elf32(elf_path, false)
         ? PLAYER_DECRYPTED_EBOOT_VALID : PLAYER_DECRYPTED_EBOOT_INVALID;
 }
 
@@ -2524,7 +2542,7 @@ typedef enum {
 static PlayerBoundaryStatus player_try_builtin_decrypt_member(
     const char *runtime_root, const char *iso_path, const char *disc_rel_path,
     const char *decrypt_dir, const char *out_name, const char *out_path,
-    char *detail, size_t detail_size) {
+    char *detail, size_t detail_size, bool module) {
     char key_path[NK_MAX_PATH + 64];
     char stage_dir[NK_MAX_PATH + 32];
     char stage_in[NK_MAX_PATH + 320];
@@ -2638,7 +2656,7 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
         snprintf(detail, detail_size, "the decrypted image could not be moved into place");
         return PLAYER_BOUNDARY_FAILED;
     }
-    if (!player_is_usable_mips_elf32(out_path)) {
+    if (!player_is_usable_mips_elf32(out_path, module)) {
         nk_remove_utf8(out_path);
         snprintf(detail, detail_size, "the decrypted image is not a usable MIPS ELF32");
         return PLAYER_BOUNDARY_FAILED;
@@ -2743,7 +2761,7 @@ static bool player_prx_header_supported(const unsigned char *header,
 
 /* The bounded MIPS ELF32 envelope check for a module still inside the ISO. */
 static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
-                                         uint32_t size) {
+                                         uint32_t size, bool module) {
     unsigned char header[52];
     unsigned char ph[32];
     if (size < sizeof(header) ||
@@ -2779,6 +2797,7 @@ static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
     }
     bool have_load = false;
     bool entry_executable = false;
+    bool code_segment = false;
     for (uint16_t i = 0; valid && i < phnum; i++) {
         uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
         if (nk_iso_reader_read(reader, lba, offset, ph, sizeof(ph)) !=
@@ -2809,8 +2828,12 @@ static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
         if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
             entry_executable = true;
         }
+        if ((flags & 1u) != 0 && filesz > 0) {
+            code_segment = true;
+        }
     }
-    return valid && have_load && entry_executable;
+    return valid && player_elf32_usable_decision(e_type, module, have_load,
+                                                 entry_executable, code_segment);
 }
 
 typedef struct {
@@ -2846,7 +2869,7 @@ static bool player_scan_module_entry(const char *member_path,
     }
     if (memcmp(header, "\x7f" "ELF", 4) == 0) {
         if (!player_iso_elf32_mips_usable(context->reader, entry->lba,
-                                         entry->size)) {
+                                         entry->size, true)) {
             return true;
         }
     } else if (memcmp(header, "~PSP", 4) == 0) {
@@ -3055,7 +3078,7 @@ static void player_check_guest_modules(PlayerApp *app,
         existing = nk_fopen_utf8(module_path, "rb");
         if (existing != NULL) {
             fclose(existing);
-            if (player_is_usable_mips_elf32(module_path)) {
+            if (player_is_usable_mips_elf32(module_path, true)) {
                 ready++;
                 continue;
             }
@@ -3074,7 +3097,8 @@ static void player_check_guest_modules(PlayerApp *app,
         detail[0] = '\0';
         status = player_try_builtin_decrypt_member(
             runtime_root, app->inspecting_game.iso_path, module->rel_path,
-            decrypted_dir, module->name, module_path, detail, sizeof(detail));
+            decrypted_dir, module->name, module_path, detail, sizeof(detail),
+            true);
         if (status == PLAYER_BOUNDARY_OK) {
             ready++;
             continue;
@@ -3207,7 +3231,7 @@ void player_app_build_compatibility_preflight(
             PlayerBoundaryStatus boundary = player_try_builtin_decrypt_member(
                 runtime_root, app->inspecting_game.iso_path,
                 "PSP_GAME/SYSDIR/EBOOT.BIN", decrypted_dir, "EBOOT.elf",
-                decrypted_elf, boundary_detail, sizeof(boundary_detail));
+                decrypted_elf, boundary_detail, sizeof(boundary_detail), false);
             if (env_override != NULL && env_override[0] != '\0') {
                 snprintf(key_path, sizeof(key_path), "%s", env_override);
             } else {
