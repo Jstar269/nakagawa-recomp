@@ -2470,7 +2470,7 @@ class TestBringupReportOpcodeNames(unittest.TestCase):
         report = nk_cli._new_bringup_report()
         report["counts"]["functions"] = 4
         report["counts"]["unsupported_opcodes"] = {"REGIMM-OTHER": 1}
-        nk_cli._fail_bringup(report, "codegen", "CODEGEN_FAILED", [296], 12)
+        nk_cli._fail_bringup(report, "codegen", "CODEGEN_FAILED", [308], 12)
         report_path = self.root / "schema-invalid.json"
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -2485,7 +2485,7 @@ class TestBringupReportOpcodeNames(unittest.TestCase):
         self.assertEqual(payload["reached_stage"], "codegen")
         self.assertEqual(payload["stages"]["codegen"], {"status": "FAIL", "duration_ms": 12})
         self.assertEqual(payload["failure_class"], "CODEGEN_FAILED")
-        self.assertEqual(payload["issue_numbers"], [296])
+        self.assertEqual(payload["issue_numbers"], [308])
 
     def test_unknown_failure_class_is_named_and_replaced_by_a_stage_class(self):
         report = nk_cli._new_bringup_report()
