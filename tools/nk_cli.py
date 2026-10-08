@@ -3214,7 +3214,8 @@ def main() -> int:
     p_launch = subparsers.add_parser("launch", help="Plan launch arguments for a prepared game")
     p_launch.add_argument("game_dir", help="Path to prepared game directory (containing manifest.json)")
     p_launch.add_argument("--profile", default="Standard", choices=["Standard", "Performance", "Benchmark", "Diagnostics"])
-    p_launch.add_argument("--fps-cap", type=int, default=30)
+    p_launch.add_argument("--fps-cap", type=int, default=-1,
+                          help="Host presentation cap (-1 uses PSP scanout pacing)")
     p_launch.add_argument("--software", action="store_true", help="Use software GE rasterizer")
     p_launch.set_defaults(func=cmd_launch)
 

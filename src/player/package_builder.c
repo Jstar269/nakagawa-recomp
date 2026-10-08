@@ -20,6 +20,11 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <bcrypt.h>
+#else
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 static uint64_t s_package_build_session_generation;
@@ -891,6 +896,38 @@ finished:
     InterlockedExchange((volatile LONG *)&session->done, 1);
     return 0;
 }
+#else
+static bool bootstrap_remove_tree(const char *path) {
+    /* Act first, then classify the failure: no stat precedes the removal.
+     * unlink() removes a file or symlink as itself and fails on a directory
+     * (EISDIR on Linux, EPERM on BSD/macOS). */
+    if (unlink(path) == 0 || errno == ENOENT) return true;
+    if (errno != EISDIR && errno != EPERM) return false;
+    /* O_NOFOLLOW refuses a symlink swapped in for the directory. */
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (fd < 0) return errno == ENOENT;
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        close(fd);
+        return false;
+    }
+    struct dirent *ent;
+    bool ok = true;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        char child[NK_MAX_PATH];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child) || !bootstrap_remove_tree(child)) {
+            ok = false;
+            break;
+        }
+    }
+    closedir(dir);
+    if (!ok) return false;
+    return rmdir(path) == 0 || errno == ENOENT;
+}
 #endif
 
 bool package_builder_remove_downloaded_tools(const char *data_root,
@@ -898,7 +935,6 @@ bool package_builder_remove_downloaded_tools(const char *data_root,
                                             char *error_message, size_t error_message_size) {
     if (error_code && error_code_size) error_code[0] = '\0';
     if (error_message && error_message_size) error_message[0] = '\0';
-#if defined(_WIN32) || defined(_WIN64)
     if (!data_root || !data_root[0]) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "DATA_DIR_UNAVAILABLE");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
@@ -906,7 +942,8 @@ bool package_builder_remove_downloaded_tools(const char *data_root,
         return false;
     }
     char path[NK_MAX_PATH];
-    int n = snprintf(path, sizeof(path), "%s\\prerequisites", data_root);
+    char sep = nk_platform_path_separator();
+    int n = snprintf(path, sizeof(path), "%s%cprerequisites", data_root, sep);
     if (n < 0 || (size_t)n >= sizeof(path)) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "PATH_TOO_LONG");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
@@ -920,13 +957,6 @@ bool package_builder_remove_downloaded_tools(const char *data_root,
         return false;
     }
     return true;
-#else
-    (void)data_root;
-    if (error_code && error_code_size) snprintf(error_code, error_code_size, "PLATFORM_UNSUPPORTED");
-    if (error_message && error_message_size) snprintf(error_message, error_message_size,
-        "Removing downloaded build tools is currently supported on Windows only.");
-    return false;
-#endif
 }
 
 bool package_builder_bootstrap_python_start(
