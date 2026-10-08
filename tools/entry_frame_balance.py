@@ -48,6 +48,7 @@ from analyze import (
     is_hard_terminator,
     trace_function,
 )
+from imports import ImportTableError, format_boundary
 
 SP = 29
 RA = 31
@@ -1092,12 +1093,9 @@ def main(argv):  # pragma: no cover - operator entry point
     elf = Elf(args.elf, base=args.base)
     try:
         starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
-    except Exception as exc:
-        boundary_code = getattr(exc, "code", None)
-        if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
-            sys.stderr.write(f"{boundary_code}: {exc}\n")
-            return 1
-        raise
+    except ImportTableError as exc:
+        sys.stderr.write(f"{format_boundary(exc)}\n")
+        return 1
     print(f"analyzer starts: {len(starts)}")
 
     for addr in args.addr:

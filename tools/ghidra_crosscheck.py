@@ -34,6 +34,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import analyze  # noqa: E402  (repo tool, needs ROOT/tools on sys.path)
+from imports import ImportTableError, format_boundary  # noqa: E402
 
 DEFAULT_CSV = os.path.join(ROOT, "third_party", "ghidra", "exports", "functions.csv")
 DEFAULT_ELF = os.path.join(ROOT, "place_game_here", "EBOOT.elf")
@@ -88,12 +89,9 @@ def main(argv):
     elf = analyze.Elf(ns.elf)
     try:
         starts, ranges = analyze.analyze(elf, extra_spans=analyze.analyzer_span_from_env())
-    except Exception as exc:
-        boundary_code = getattr(exc, "code", None)
-        if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
-            sys.stderr.write(f"{boundary_code}: {exc}\n")
-            return 1
-        raise
+    except ImportTableError as exc:
+        sys.stderr.write(f"{format_boundary(exc)}\n")
+        return 1
 
     # Ghidra entries, normalized to base 0, restricted to real code:
     # executable blocks, non-thunk (thunks model imports/PLT stubs).

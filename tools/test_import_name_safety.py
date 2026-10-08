@@ -343,6 +343,66 @@ class TestImportNameSafety(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", stderr.getvalue())
 
+    def test_codegen_extra_module_named_analyzer_import_boundary_names_failing_module(self):
+        import codegen
+        base = 0x08804000
+        extra_bad_base = 0x08900000
+        extra_good_base = 0x08a00000
+        main_blob, _ = build_synthetic_import_prx(b"sceSynthetic", base)
+        bad_blob, _ = build_synthetic_import_prx(b"sceSynthetic", extra_bad_base)
+        good_blob, _ = build_synthetic_import_prx(b"sceSynthetic", extra_good_base)
+
+        elf = imports_tool.Elf(bytes(bad_blob), base=extra_bad_base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(bad_blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="codegen-extra-boundary-") as temp:
+            main_path = Path(temp) / "main.elf"
+            main_path.write_bytes(main_blob)
+            extra_bad = Path(temp) / "extra_failing.elf"
+            extra_bad.write_bytes(malformed)
+            extra_good = Path(temp) / "extra_valid.elf"
+            extra_good.write_bytes(good_blob)
+
+            out_c = Path(temp) / "out.c"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = codegen.main([
+                    "codegen.py",
+                    os.fspath(main_path),
+                    os.fspath(out_c),
+                    f"--base={base:08x}",
+                    f"--extra-elf={os.fspath(extra_bad)}@{extra_bad_base:08x}",
+                    f"--extra-elf={os.fspath(extra_good)}@{extra_good_base:08x}",
+                ])
+
+        self.assertEqual(status, 1)
+        err = stderr.getvalue()
+        self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", err)
+        self.assertIn(os.fspath(extra_bad), err)
+        self.assertNotIn(os.fspath(extra_good), err)
+
+    def test_import_table_error_format_boundary(self):
+        err = imports_tool.ImportTableError("ANALYZER_TEST_CODE", "test error message")
+        self.assertEqual(
+            err.format_boundary(),
+            "ANALYZER_TEST_CODE: test error message",
+        )
+        self.assertEqual(
+            err.format_boundary("module.prx"),
+            "ANALYZER_TEST_CODE: module.prx: test error message",
+        )
+        self.assertEqual(
+            imports_tool.format_boundary(err),
+            "ANALYZER_TEST_CODE: test error message",
+        )
+        self.assertEqual(
+            imports_tool.format_boundary(err, "extra.elf"),
+            "ANALYZER_TEST_CODE: extra.elf: test error message",
+        )
+
     def test_decompme_export_traps_named_analyzer_import_boundary(self):
         import decompme_export
         base = 0x08804000

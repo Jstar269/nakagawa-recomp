@@ -64,6 +64,21 @@ class ImportTableError(ValueError):
         super().__init__(message)
         self.code = code
 
+    def format_boundary(self, subject=None):
+        if subject is not None:
+            return f"{self.code}: {subject}: {self}"
+        return f"{self.code}: {self}"
+
+
+def format_boundary(exc, subject=None):
+    """Format an ImportTableError (or boundary exception) with optional subject."""
+    if hasattr(exc, "format_boundary"):
+        return exc.format_boundary(subject=subject)
+    code = getattr(exc, "code", "IMPORT_ERROR")
+    if subject is not None:
+        return f"{code}: {subject}: {exc}"
+    return f"{code}: {exc}"
+
 
 # Marker for stub slots that no library window claims (interleaved stub tables). Kept
 # out of the guest-name alphabet (percent-encoding turns any guest byte into %XX) so it
