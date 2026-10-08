@@ -2267,7 +2267,10 @@ class PsplinkCampaignRunner:
 
 
 CAMPAIGN_RESET_ESTIMATE_SECONDS = 45
-HARDWARE_LOCK_PATH = Path(r"C:\nk\HARDWARE_LOCK.json")
+HARDWARE_LOCK_ROOT = (
+    ROOT.parent.parent if ROOT.parent.name.casefold() == "worktrees" else ROOT.parent
+)
+HARDWARE_LOCK_PATH = HARDWARE_LOCK_ROOT / "HARDWARE_LOCK.json"
 
 
 def _read_campaign_plan(path: Path) -> dict[str, object]:

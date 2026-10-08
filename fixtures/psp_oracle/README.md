@@ -489,8 +489,8 @@ Validate the private queue offline before a hardware session:
 python tools/psp_oracle/run_psplink.py --campaign-plan <private-campaign-plan.json> --dry-run
 ```
 
-The actual campaign refuses to start unless `C:\nk\HARDWARE_LOCK.json` is
-`HELD`, confirms a power cycle, and names the same session as the private plan.
+The actual campaign refuses to start unless the hardware lock is `HELD`,
+confirms a power cycle, and names the same session as the private plan.
 After an interrupted case, the maintainer power-cycles the PSP and resumes with
 `--confirm-power-cycle`; the failed case is retained as incomplete and the next
 case starts on the new boot. No automatic retry or semantic result is inferred
