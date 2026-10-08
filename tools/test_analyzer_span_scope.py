@@ -71,6 +71,35 @@ def write_elf(path: Path, *, load_addr: int = PRIMARY_BASE, words=(0x03E00008, 0
     path.write_bytes(blob)
 
 
+def write_direct_call_chain_elf(path: Path, function_count: int) -> None:
+    """Fabricate a source-owned ELF whose functions form one direct-call chain."""
+    base = PRIMARY_BASE
+    words = []
+    for index in range(function_count):
+        target = base + ((index + 1) % function_count) * 20
+        words.extend((
+            0x27BDFFF0,  # addiu $sp, $sp, -16
+            0x0C000000 | ((target >> 2) & 0x03FFFFFF),  # jal next function
+            0x00000000,  # delay slot
+            0x03E00008,  # jr $ra
+            0x00000000,  # delay slot
+        ))
+    payload = struct.pack(f"<{len(words)}I", *words)
+    payload_off = 52 + 32
+    blob = bytearray(payload_off + len(payload))
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, base, 52, 0, 0, 52, 32, 1, 0, 0, 0,
+    )
+    struct.pack_into(
+        "<8I", blob, 52,
+        1, payload_off, base, base, len(payload), len(payload), 5, 4,
+    )
+    blob[payload_off:] = payload
+    path.write_bytes(blob)
+
+
 def write_elf_with_called_code_outside_text(path: Path) -> int:
     """Fabricate executable bytes beyond a deliberately narrow named .text section."""
     base = 0x1000
@@ -323,6 +352,44 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         starts, ranges = analyze.analyze(loaded)
         self.assertEqual(ranges, [(PRIMARY_BASE, PRIMARY_BASE + 8)])
         self.assertIn(PRIMARY_BASE, starts)
+
+    def test_direct_call_frontier_does_not_rescan_prior_targets(self) -> None:
+        function_count = 128
+        chain_elf = self.root / "direct-call-chain.elf"
+        write_direct_call_chain_elf(chain_elf, function_count)
+        image = analyze.Elf(str(chain_elf), base=0)
+
+        builtin_set = set
+        tracked_calls = [None]
+        scanned_entries = 0
+
+        class CountingSet(builtin_set):
+            def __iter__(self):
+                nonlocal scanned_entries
+                if self is tracked_calls[0]:
+                    scanned_entries += len(self)
+                return super().__iter__()
+
+        def counted_set(*args):
+            return CountingSet(*args)
+
+        original_trace = analyze.trace_function
+
+        def trace_and_record_calls(elf, start, ranges, covered, calls, hc):
+            if tracked_calls[0] is None:
+                tracked_calls[0] = calls
+            return original_trace(elf, start, ranges, covered, calls, hc)
+
+        with redirect_stderr(io.StringIO()), \
+             mock.patch.object(analyze, "set", counted_set, create=True), \
+             mock.patch.object(analyze, "trace_function", trace_and_record_calls):
+            starts, _ranges = analyze.analyze(image)
+
+        self.assertEqual(len(starts), function_count)
+        self.assertLessEqual(
+            scanned_entries, function_count * 2,
+            "call discovery must process newly found targets without rescanning the full set",
+        )
 
     def test_direct_call_owns_only_reachable_code_outside_named_text(self) -> None:
         called_elf = self.root / "called-outside-text.elf"
@@ -786,7 +853,12 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         mutant_tools = self.root / "mutant_tools"
         mutant_tools.mkdir()
         analyzer_source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
-        mutation_anchor = "                    calls.add(target)\n                covered.add(pc + 4)"
+        mutation_anchor = (
+            "                    if target not in calls:\n"
+            "                        calls.add(target)\n"
+            "                        new_calls.append(target)\n"
+            "                covered.add(pc + 4)"
+        )
         self.assertEqual(analyzer_source.count(mutation_anchor), 1)
         (mutant_tools / "analyze.py").write_text(
             analyzer_source.replace(
