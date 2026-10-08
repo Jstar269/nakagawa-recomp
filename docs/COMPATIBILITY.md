@@ -25,6 +25,16 @@ numbers, other unrecognized or title-specific fields before comparing it. Issue 
 come from the checked-in schema allowlist also used by the public `nk_cli.py` report
 generator; no network lookup is involved.
 
+Parallel shard runs are combined with `--merge-private-reports PATH [PATH ...]`. Each
+argument may be either the shard's `library-sweep.json` file or the shard's private
+directory (the `--private-dir` the shard was run with), and the two forms may be mixed in
+one command. The merge validates every shard report the same way a single run does and
+writes one private report plus one title-free aggregate into `--private-dir` and
+`--public-output`. A directory without `library-sweep.json`, a missing file, an
+over-limit or malformed report, or a report with an unsupported schema fails closed with
+a message that names the path and the reason in plain words; file contents are never
+echoed.
+
 The sweep reads externally supplied JSON through the bounded parser. Per-title bring-up
 reports and import sidecars allow 32 MiB, 32 levels, 262,144 object members and
 comma-separated items, and 1,048,576 structural nodes because their import inventories
