@@ -2011,12 +2011,85 @@ def _sanitized_checks(preflight: dict) -> list[dict]:
     return checks
 
 
-def _write_bringup_report(report: dict, path: Path) -> None:
-    validate_bringup_report(report)
+#: Failure class recorded when a report carries a class the schema does not know.
+#: The stage reached still names where the run stopped; the report itself cannot
+#: repeat a class outside its closed vocabulary, so REPORT_SCHEMA_INVALID names the
+#: discrepancy in this run's output instead.
+_STAGE_FAILURE_CLASS = {
+    "inspect": "INVALID_ISO",
+    "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
+    "analyze": "ANALYSIS_FAILED",
+    "codegen": "CODEGEN_FAILED",
+    "compile": "COMPILE_FAILED",
+    "build_package": "BUILD_PACKAGE_FAILED",
+    "launch": "LAUNCH_FAILED",
+}
+
+
+def _minimal_valid_bringup_report(report: dict) -> dict:
+    """Return a schema-valid report carrying every field of ``report`` that validates.
+
+    A schema violation must not erase the evidence the run did collect: the stage
+    reached, its status and its failure class survive whenever they are legal, and
+    so do the other valid fields.  A class the schema does not know is replaced by
+    the stage's failure class so the report never claims success for a failed run.
+    """
+    minimal = _new_bringup_report()
+    schema = json.loads(BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
+    properties = schema.get("properties", {})
+    for key, value in report.items():
+        property_schema = properties.get(key)
+        if property_schema is None:
+            continue
+        try:
+            _validate_schema_value(value, property_schema, schema, f"report.{key}")
+        except ValueError:
+            continue
+        minimal[key] = value
+    original_class = report.get("failure_class")
+    if (
+        isinstance(original_class, str)
+        and original_class != "NONE"
+        and minimal["failure_class"] == "NONE"
+    ):
+        stage = minimal["reached_stage"]
+        minimal["failure_class"] = _STAGE_FAILURE_CLASS.get(stage, "INVALID_ISO")
+        if stage in minimal["stages"] and minimal["stages"][stage]["status"] != "FAIL":
+            minimal["stages"][stage] = {"status": "FAIL", "duration_ms": 0}
+    return minimal
+
+
+def _write_bringup_file(report: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _write_bringup_report(report: dict, path: Path) -> bool:
+    """Write ``report``, degrading to a minimal valid report when validation fails.
+
+    Returns True only when the complete report was written.  A schema violation is
+    reported under the REPORT_SCHEMA_INVALID boundary together with its validation
+    error and never escapes as a traceback that would leave the run with no report.
+    """
+    try:
+        validate_bringup_report(report)
+    except ValueError as exc:
+        minimal = _minimal_valid_bringup_report(report)
+        _write_bringup_file(minimal, path)
+        detail = str(exc)
+        original_class = report.get("failure_class")
+        if isinstance(original_class, str) and original_class != minimal["failure_class"]:
+            detail = f"{detail}; failure class {original_class} is not in the report schema"
+        print(
+            "REPORT_SCHEMA_INVALID: the bring-up report failed schema validation "
+            f"({detail}); a minimal report naming the stage reached was written "
+            "instead, so the full result for this run is not available."
+        )
+        return False
+    _write_bringup_file(report, path)
+    return True
 
 
 def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list[dict]) -> None:
@@ -2445,6 +2518,21 @@ def _count_instructions(sources: list[dict]) -> int:
                for start, end in source.get("ranges", []))
 
 
+def _opcode_identity_report_name(mnemonic) -> str:
+    """Project an analyzer opcode identity onto the report schema's key pattern.
+
+    ``assets/bringup_report.schema.json`` allows only ``^[A-Z][A-Z0-9_.]*$`` as a
+    ``counts.unsupported_opcodes`` key, while analyzer identities carry separators
+    (``regimm-other``).  The projection is deterministic: upper-case, then every
+    character outside ``[A-Z0-9_.]`` becomes ``_``, so the same identity always
+    reports the same name.
+    """
+    token = re.sub(r"[^A-Z0-9_.]", "_", str(mnemonic).upper())
+    if not token or not ("A" <= token[0] <= "Z"):
+        token = f"OP_{token}"
+    return token
+
+
 def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dict[str, int]:
     import analyze
     import title_codegen_plan
@@ -2457,7 +2545,7 @@ def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dic
         if row.get("word") is None:
             continue
         word = int(row["word"], 16)
-        mnemonic = analyze._cfg_opcode_identity(word)["mnemonic"].upper()
+        mnemonic = _opcode_identity_report_name(analyze._cfg_opcode_identity(word)["mnemonic"])
         counts[mnemonic] += 1
     return dict(sorted(counts.items()))
 
@@ -3028,8 +3116,10 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         fail_stage(report, "launch", "LAUNCH_FAILED", [297],
                       int((time.perf_counter() - started) * 1000))
 
-    _write_bringup_report(report, report_path)
+    report_written = _write_bringup_report(report, report_path)
     print(_bringup_human_summary(report))
+    if not report_written:
+        return 1
     return 0 if report["failure_class"] == "NONE" else 1
 
 
