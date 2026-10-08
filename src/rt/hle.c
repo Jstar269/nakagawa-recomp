@@ -2445,6 +2445,26 @@ static uint32_t h_ChangeCurrentThreadAttr(CpuState *s) {
     return sched_change_current_thread_attr(A0, A1);
 }
 
+/* sceKernelSuspendThread(thid) / sceKernelResumeThread(thid) /
+ * sceKernelRotateThreadReadyQueue(priority).  Public PSPSDK pspthreadman.h prototypes;
+ * semantics and error codes are documented at the sched_*_thread functions in sched.c.
+ * Resume applies strict-priority preemption once the thread is runnable again, like
+ * WakeupThread. */
+static uint32_t h_SuspendThread(CpuState *s) {
+    (void)s;
+    return sched_suspend_thread(A0);
+}
+static uint32_t h_ResumeThread(CpuState *s) {
+    (void)s;
+    uint32_t result = sched_resume_thread(A0);
+    if (result == 0) sched_preempt();
+    return result;
+}
+static uint32_t h_RotateThreadReadyQueue(CpuState *s) {
+    (void)s;
+    return sched_rotate_thread_ready_queue((int)A0);
+}
+
 static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
@@ -17920,6 +17940,11 @@ static uint32_t h_CreateSema(CpuState *s) {
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
     m->initc = (int)A2;
+    /* Create-time name and attr for ReferSemaStatus. sync_new does not clear
+     * these fields, so both are written on every create (an unreadable name
+     * pointer yields an empty name, never a failed create). */
+    m->attr = A1;
+    guest_cstr(A0, m->name, sizeof(m->name));
     if (hle_log_on())
         fprintf(stderr, "HLE: CreateSema uid=0x%x init=%d max=%d (from uid=0x%x)\n", m->uid, (int)A2, (int)A3, sched_current_uid());
     return m->uid;
@@ -18113,12 +18138,30 @@ static uint32_t h_WaitSema(CpuState *s) {
     if (err) return err;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitSema uid=0x%x count=%d need=%d (from 0x%x)\n", uid, m->count, need, sched_current_uid());
+    /* The deadline is fixed by the first block; a wake that finds the count taken
+     * by another thread re-waits only for what is left, and a released waiter that
+     * resumes after the deadline times out instead of starting a fresh full wait. */
+    uint64_t wait_end = 0;
+    int wait_end_set = 0;
     while (m->count < need) {
         /* PSP-B3-01 (psp-hw-20260917): ReferThreadStatus reports sema waits as
          * waitType 3 with waitId = the semaphore UID. */
         sched_set_current_wait_kind(3);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
+            if (!wait_end_set) {
+                sched_vtime_refresh();
+                wait_end = sched_vtime_deadline_after((uint64_t)usec);
+                wait_end_set = 1;
+            } else {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                usec = now >= wait_end ? 0u : (uint32_t)(wait_end - now);
+                if (usec == 0u) {
+                    MEM_W32(toptr, 0u);
+                    return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+                }
+            }
             if (sched_block_on_timeout(uid, usec)) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired timed wait writes the
                  * remaining time (0 at the deadline) to *timeout and answers
@@ -18226,6 +18269,47 @@ static uint32_t h_PollSema(CpuState *s) {
     if (need <= 0 || need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (m->count < need) return 0x800201adu;   /* SCE_KERNEL_ERROR_SEMA_ZERO */
     m->count -= need;
+    return 0;
+}
+/* sceKernelReferSemaStatus(semaid, SceKernelSemaInfo *info). The 56-byte struct is
+ * size(0), name[32](4), attr(36), initCount(40), currentCount(44), maxCount(48),
+ * numWaitThreads(52). Follows h_ReferMutexStatus: the caller's size word at info+0 bounds
+ * the write. Size 0 writes nothing and succeeds; otherwise only min(size, 56) bytes reach
+ * guest memory, copied from a locally built struct whose size field is 56. */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  initCount;
+    int32_t  currentCount;
+    int32_t  maxCount;
+    int32_t  numWaitThreads;
+} SceKernelSemaInfo;
+
+static uint32_t h_ReferSemaStatus(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    Sync *m = sync_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelSemaInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelSemaInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SceKernelSemaInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelSemaInfo);
+    memcpy(info.name, m->name, sizeof(info.name));
+    info.attr = m->attr;
+    info.initCount = m->initc;
+    info.currentCount = m->count;
+    info.maxCount = m->maxc;
+    info.numWaitThreads = sched_count_waiters(uid);
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
     return 0;
 }
 
@@ -19258,11 +19342,27 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
     if (!sr_evf_matches(m->pattern, bits, mode) && !(m->attr & 0x200u) &&
         sched_count_waiters(uid) > 0)
         return 0x800201b0u;
+    uint64_t wait_end = 0;      /* fixed by the first block; see h_WaitSema */
+    int wait_end_set = 0;
     while (!sr_evf_matches(m->pattern, bits, mode)) {
         /* PSP-B3-01 (psp-hw-20260917): evf waits report waitType 4. */
         sched_set_current_wait_kind(4);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
+            if (!wait_end_set) {
+                sched_vtime_refresh();
+                wait_end = sched_vtime_deadline_after((uint64_t)usec);
+                wait_end_set = 1;
+            } else {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                usec = now >= wait_end ? 0u : (uint32_t)(wait_end - now);
+                if (usec == 0u) {
+                    MEM_W32(toptr, 0u);
+                    if (outp) MEM_W32(outp, m->pattern);
+                    return 0x800201A8;
+                }
+            }
             if (sched_block_on_timeout(uid, usec)) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired wait writes the
                  * remaining timeout (0) and reports the current pattern. */
@@ -19423,6 +19523,7 @@ static void hle_register_selftest_oracle_handlers(void) {
     sr_hle_register(0x28b6489c, "sceKernelDeleteSema", h_DeleteSema);
     sr_hle_register(0x3f53e640, "sceKernelSignalSema", h_SignalSema);
     sr_hle_register(0x58b1f937, "sceKernelPollSema", h_PollSema);
+    sr_hle_register(0xbc6febc5, "sceKernelReferSemaStatus", h_ReferSemaStatus);
 }
 
 /* Registry scope for the issue #88 wait/blocking-context conformance matrix
@@ -19871,9 +19972,9 @@ static void hle_register_sysreg_handlers(void) {
  * facilities with missing lifecycle state are registered as explicit refusals. */
 static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xea748e31, "sceKernelChangeCurrentThreadAttr", h_ChangeCurrentThreadAttr);
-    sr_hle_register_unsupported(0x912354a7, "sceKernelRotateThreadReadyQueue", 0x80020002u);
-    sr_hle_register_unsupported(0x75156e8f, "sceKernelResumeThread", 0x80020002u);
-    sr_hle_register_unsupported(0x9944f31f, "sceKernelSuspendThread", 0x80020002u);
+    sr_hle_register(0x912354a7, "sceKernelRotateThreadReadyQueue", h_RotateThreadReadyQueue);
+    sr_hle_register(0x75156e8f, "sceKernelResumeThread", h_ResumeThread);
+    sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
     sr_hle_register_unsupported(0x6652b8ca, "sceKernelSetAlarm", 0x80020002u);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register_unsupported(0x7e65b999, "sceKernelCancelAlarm", 0x80020002u);
@@ -19885,6 +19986,14 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
+    /* sceGeSaveContext / sceGeRestoreContext are refused, not faked. The modeled GE state
+     * (GeState in ge_shared.h, 3364 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
+     * and derived fields, so it cannot fit a 2048-byte PspGeContext, and the 256-entry
+     * command register file alone does not capture matrices or CLUT contents. A restore
+     * therefore cannot reinstate what a save would need, so both refuse with the GE
+     * controlled-refusal code and write nothing to the guest buffer. */
+    sr_hle_register_unsupported(0x438a385au, "sceGeSaveContext", 0x80020002u);
+    sr_hle_register_unsupported(0x0bf608fbu, "sceGeRestoreContext", 0x80020002u);
     sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
     sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);

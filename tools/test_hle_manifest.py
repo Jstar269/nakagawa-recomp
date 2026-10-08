@@ -393,9 +393,9 @@ class LiveManifestTests(unittest.TestCase):
     def test_kernel_import_sweep_names_and_routes_every_target(self) -> None:
         expected = {
             0xEA748E31: ("sceKernelChangeCurrentThreadAttr", "h_ChangeCurrentThreadAttr", "dedicated"),
-            0x912354A7: ("sceKernelRotateThreadReadyQueue", "h_ControlledUnsupported", "controlled_unsupported"),
-            0x75156E8F: ("sceKernelResumeThread", "h_ControlledUnsupported", "controlled_unsupported"),
-            0x9944F31F: ("sceKernelSuspendThread", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x912354A7: ("sceKernelRotateThreadReadyQueue", "h_RotateThreadReadyQueue", "dedicated"),
+            0x75156E8F: ("sceKernelResumeThread", "h_ResumeThread", "dedicated"),
+            0x9944F31F: ("sceKernelSuspendThread", "h_SuspendThread", "dedicated"),
             0x6652B8CA: ("sceKernelSetAlarm", "h_ControlledUnsupported", "controlled_unsupported"),
             0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
             0x7E65B999: ("sceKernelCancelAlarm", "h_ControlledUnsupported", "controlled_unsupported"),
@@ -410,10 +410,13 @@ class LiveManifestTests(unittest.TestCase):
             0xBD2F1094: ("sceKernelLoadExec", "h_ControlledUnsupported", "controlled_unsupported"),
             0xD675EBB8: ("sceKernelSelfStopUnloadModule", "h_ControlledUnsupported", "controlled_unsupported"),
             0x40F1469C: ("sceDisplayWaitVblankStartMulti", "h_DisplayWaitVblankStartMulti", "dedicated"),
+            0xBC6FEBC5: ("sceKernelReferSemaStatus", "h_ReferSemaStatus", "dedicated"),
+            0x438A385A: ("sceGeSaveContext", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x0BF608FB: ("sceGeRestoreContext", "h_ControlledUnsupported", "controlled_unsupported"),
             0x0CAE832B: ("sceRegCloseCategory", "h_RegCloseCategory", "dedicated"),
             0x1D8A762E: ("sceRegOpenCategory", "h_RegOpenCategory", "dedicated"),
         }
-        self.assertEqual(len(expected), 20)
+        self.assertEqual(len(expected), 23)
         for nid, (name, handler, classification) in expected.items():
             with self.subTest(nid=f"0x{nid:08x}"):
                 if nid not in self.regs:
@@ -632,18 +635,17 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
+                "0x438a385a": ("sceGeSaveContext", "0x80020002"),
+                "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
                 "0x6652b8ca": ("sceKernelSetAlarm", "0x80020002"),
                 "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
                 "0x70a703f8": ("sceAudiocodecDecode", "0x80010086"),
                 "0x72189c48": ("sceImposeSetUMDPopup", "0x80010086"),
-                "0x75156e8f": ("sceKernelResumeThread", "0x80020002"),
                 "0x77ed8b3a": ("sceDisplayWaitVblankStartMultiCB", "0x80020002"),
                 "0x7e65b999": ("sceKernelCancelAlarm", "0x80020002"),
                 "0x7ed59bc4": ("sceDisplaySetHoldMode", "0x80020002"),
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
-                "0x912354a7": ("sceKernelRotateThreadReadyQueue", "0x80020002"),
-                "0x9944f31f": ("sceKernelSuspendThread", "0x80020002"),
                 "0xab1abe07": ("sceHttpInit", "0x80010086"),
                 "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
                 "0xc68d9437": ("sceKernelStartVTimer", "0x80020002"),

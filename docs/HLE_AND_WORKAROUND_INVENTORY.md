@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **488** (dedicated **442**, fake_success **5**, controlled_unsupported **41**).
-Semantic handler census: **407** handlers across **22** API families, covering **448** handler-associated NID registrations.
+Registered NIDs: **491** (dedicated **446**, fake_success **5**, controlled_unsupported **40**).
+Semantic handler census: **411** handlers across **22** API families, covering **452** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 62 | 62 |
+| `partial` | 66 | 66 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 332 | 361 |
@@ -61,7 +61,7 @@ Semantic handler census: **407** handlers across **22** API families, covering *
 | `sceGe` | 0 | 4 | 0 | 0 | 8 | 12 | 12 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 14 | 0 | 0 | 134 | 150 | 174 |
+| `sceKernel` | 2 | 18 | 0 | 0 | 134 | 154 | 178 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
@@ -72,7 +72,7 @@ Semantic handler census: **407** handlers across **22** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **62** | **1** | **2** | **332** | **407** | **448** |
+| **Total** | **10** | **66** | **1** | **2** | **332** | **411** | **452** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -228,10 +228,26 @@ Semantic handler census: **407** handlers across **22** API families, covering *
   - Limitation: callback-dispatch interleaving during a mailbox wait unmeasured; ILLEGAL_CONTEXT precedence unmeasured (#339, #341)
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
+- **`h_ReferSemaStatus`** (`sceKernel`): `sceKernelReferSemaStatus` (0xbc6febc5)
+  - Limitation: reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only
 - **`h_ReferThreadStatus`** (`sceKernel`): `sceKernelReferThreadStatus` (0x17c1684e)
   - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
+- **`h_ResumeThread`** (`sceKernel`): `sceKernelResumeThread` (0x75156e8f)
+  - Limitation: resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
+  - Evidence: src/rt/sched_selftest.c:test_suspend_resume_error_codes
+- **`h_RotateThreadReadyQueue`** (`sceKernel`): `sceKernelRotateThreadReadyQueue` (0x912354a7)
+  - Limitation: rotates the cyclic slot-order ready queue of one priority (0 selects the caller's priority) and yields when the caller leads that queue; no range-error code is returned for an out-of-range priority because none is sourced, and ordering relative to threads that become ready after the rotation is not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_rotate_ready_queue_selection_order
+  - Evidence: src/rt/hle_thread_selftest.c:test_rotate_equal_priority_yields_to_peers
+  - Evidence: src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
+- **`h_SuspendThread`** (`sceKernel`): `sceKernelSuspendThread` (0x9944f31f)
+  - Limitation: suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
+  - Evidence: src/rt/hle_thread_selftest.c:test_suspended_waiter_keeps_wait_semantics
+  - Evidence: src/rt/sched_selftest.c:test_suspended_wait_still_completes
 - **`h_SysClock2USec`** (`sceKernel`): `sceKernelSysClock2USec` (0xba6b92e2)
   - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
 - **`h_SysClock2USecWide`** (`sceKernel`): `sceKernelSysClock2USecWide` (0xe1619d7c)
