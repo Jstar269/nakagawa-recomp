@@ -45,8 +45,8 @@ static void draw_rect_outline(SDL_Renderer *ren, float x, float y, float w, floa
 
 /* --- Runtime typography layer ---
  *
- * Fully legal by construction: no font is bundled, vendored, or
- * redistributed. At startup the renderer tries to load the platform's
+ * No font is bundled, vendored, or redistributed by this project.
+ * At startup the renderer tries to load the platform's
  * SDL3_ttf shared library (if the user happens to have it) and open a
  * system UI font already licensed on the user's own machine. If the
  * library, every symbol, or every font file is missing, the classic
@@ -2311,7 +2311,7 @@ static void render_inspecting(SDL_Renderer *ren, PlayerApp *app, const UiInput *
     } else {
         draw_text(ren, card_x + 32.0f, card_y + 120.0f, "No disc image selected.", 1.2f, COLOR_TEXT_MUTED);
         draw_text_wrapped(ren, card_x + 32.0f, card_y + 144.0f, card_w - 64.0f,
-                          "Select a lawfully obtained PSP game ISO to inspect it.", 1.0f, COLOR_TEXT_DIM, 2);
+                          "Select a PSP game ISO you own to inspect it.", 1.0f, COLOR_TEXT_DIM, 2);
     }
 
     bool focused = (app->focus_index == 0);
@@ -3966,7 +3966,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               "This wizard inspects a PSP disc image and stages title data. Launch is available "
                               "only for catalogued titles with a generated runtime package.\n\n"
                               "What you will need:\n"
-                              " • Lawfully obtained PSP game ISO\n"
+                              " • A PSP game ISO you own\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
                               "This build decrypts encrypted executables with a local key file (#295). It builds runtime "
@@ -3988,7 +3988,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
         case WIZARD_STEP_SELECT_GAME: {
             draw_text(ren, card_x + 32.0f, content_y, "Select Game Disc Image", 2.0f, COLOR_TEXT_WHITE);
             draw_text_wrapped(ren, card_x + 32.0f, content_y + 36.0f, card_w - 64.0f,
-                              "Select your lawfully obtained PSP game disc image (*.iso).\n"
+                              "Select your PSP game disc image (*.iso) of a game you own.\n"
                               "Nakagawa Recomp will inspect the ISO filesystem, volume descriptors, and PARAM.SFO.",
                               1.1f, COLOR_TEXT_MUTED, 3);
 

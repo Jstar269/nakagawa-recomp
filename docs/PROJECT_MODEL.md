@@ -130,18 +130,15 @@ A public source candidate should include only material that has passed all appli
 9. no claim of legal clearance, correctness, security, reproducibility, or compatibility beyond the
    evidence actually completed.
 
-## Legal posture
+## What the project ships and does not ship
 
-The project's intended posture is interoperability research and independent compatibility
-engineering by users who lawfully possess their own copy. In the United States, [17 U.S.C. § 1201(f)](https://www.copyright.gov/title17/92chap12.html)
-contains a limited reverse-engineering interoperability exception, and
-[17 U.S.C. § 117](https://www.law.cornell.edu/uscode/text/17/117) addresses certain owner-made
-copies/adaptations. These provisions are fact-specific, do not erase other
-copyright, anti-trafficking, contract, trademark, or jurisdictional rules, and are not a blanket
-approval of this project or any distribution. Repository documents must remain descriptive and
-conservative rather than presenting legal conclusions.
+The repository ships source code, documentation and the notices listed in
+[`NOTICE.md`](../NOTICE.md). It does not ship game executables, game assets,
+firmware files, decryption keys or private traces. The user supplies the game
+files and any key file that the decryption boundary reads. This section is not
+legal advice. Check the rules where you live.
 
-The recurring operational rules are therefore:
+The project's operational rules are:
 
 - do not ship or solicit game content;
 - do not ship keys or secret values;
