@@ -1478,6 +1478,7 @@ static void test_io_async_and_path_imports(void) {
         PAYLOAD_ADDR = 0x09011000u,
         RESULT_ADDR = 0x09012000u,
         IOCTL_OUT_ADDR = 0x09012200u,
+        PRIORITY_RESULT_ADDR = 0x09012300u,
         STAT_ADDR = 0x09012100u,
         STACK_ADDR = 0x09013000u,
         CALLBACK_NAME_ADDR = 0x09014000u,
@@ -1486,6 +1487,7 @@ static void test_io_async_and_path_imports(void) {
         IO_ERROR_DIRECTORY_NOT_EMPTY = 0x8001005au,
     };
     static const char async_guest[] = "ms0:/NAKAGAWA_IO_ASYNC.TXT";
+    static const char priority_guest[] = "ms0:/NAKAGAWA_IO_ASYNC_PRIORITY.TXT";
     static const char directory_guest[] = "ms0:/NAKAGAWA_IO_ASYNC_DIR";
     static const char relative_file[] = "RELATIVE.TXT";
     static const uint8_t old_bytes[] = "old";
@@ -1672,6 +1674,76 @@ static void test_io_async_and_path_imports(void) {
     cpu.r[6] = RESULT_ADDR;
     expect(sr_hle_test_io_get_async_stat(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 0u,
            "sceIoGetAsyncStat returns a completed request without waiting");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 10u;
+    expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+           "sceIoChangeAsyncPriority updates the first descriptor priority");
+    fd_set_path(&cpu, PATH_ADDR, priority_guest);
+    cpu.r[5] = 0x602u; /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */
+    cpu.r[6] = 0777u;
+    uint32_t priority_fd = sr_hle_test_io_open(&cpu);
+    expect(priority_fd == 4u, "priority fixture allocates an independent descriptor");
+    if (priority_fd < 64u) {
+        fd_guest_copy(PAYLOAD_ADDR, old_bytes, sizeof(old_bytes) - 1u);
+        fd_set_write(&cpu, priority_fd, PAYLOAD_ADDR,
+                     (uint32_t)(sizeof(old_bytes) - 1u));
+        expect(sr_hle_test_io_write(&cpu) == sizeof(old_bytes) - 1u,
+               "priority fixture has a contained seekable file");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = priority_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u,
+               "priority fixture seed handle closes");
+        fd_set_path(&cpu, PATH_ADDR, priority_guest);
+        cpu.r[5] = 3u; /* O_RDWR */
+        priority_fd = sr_hle_test_io_open(&cpu);
+        expect(priority_fd == 4u, "priority fixture reopens read/write");
+        if (priority_fd < 64u) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = (uint32_t)-10;
+            expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+                   "sceIoChangeAsyncPriority stores a higher synthetic queue priority");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 1u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+                   "older lower-priority seek queues first");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = 2u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+                   "newer higher-priority seek queues in the same import epoch");
+            sr_hle_test_io_async_import_boundary();
+            sr_hle_test_io_async_import_boundary();
+            MEM_W32(PRIORITY_RESULT_ADDR, 0xfeedfaceu);
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = PRIORITY_RESULT_ADDR;
+            expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+                       MEM_R32(PRIORITY_RESULT_ADDR) == 0xfeedfaceu,
+                   "higher numeric priority leaves the older seek pending");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = PRIORITY_RESULT_ADDR;
+            expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+                       MEM_R32(PRIORITY_RESULT_ADDR) == 2u,
+                   "lower numeric priority completes before FIFO order");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = RESULT_ADDR;
+            expect(sr_hle_test_io_wait_async(&cpu) == 0u &&
+                       MEM_R32(RESULT_ADDR) == 1u,
+                   "wait completes the remaining lower-priority request");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            expect(sr_hle_test_io_close(&cpu) == 0u,
+                   "priority fixture descriptor closes cleanly");
+        }
+    }
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd;

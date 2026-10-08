@@ -22,15 +22,15 @@ Live join of every exact `sce*` / `__sce*` API named in
 ## Summary
 
 - total exact APIs: **72**
-- missing: **7**
+- missing: **6**
 - registered (fake success): **0**
-- implemented: **65**
+- implemented: **66**
 - controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #339: 7
-- #341: 55
+- #339: 6
+- #341: 53
 
 ## Census
 
@@ -51,11 +51,11 @@ Open-owner counts:
 | `sceGeDrawSync` | implemented | #341 | dedicated | unreviewed | `h_GeDrawSync` | `0xb287bd61` |
 | `sceGeListDeQueue` | missing | #339 | missing | - | - | - |
 | `sceGeListSync` | implemented | #341 | dedicated | unreviewed | `h_GeListSync` | `0x03444eb4` |
-| `sceIoGetAsyncStat` | missing | #339 | missing | - | - | - |
+| `sceIoGetAsyncStat` | implemented | - | dedicated | partial | `h_IoGetAsyncStat` | `0xcb05f8d6` |
 | `sceIoRead` | implemented | #341 | dedicated | unreviewed | `h_IoRead` | `0x6a638d83` |
 | `sceIoRemove` | implemented | - | dedicated | complete | `h_IoRemove` | `0xf27a9c51` |
-| `sceIoWaitAsync` | implemented | #341 | dedicated | unreviewed | `h_IoWaitAsync` | `0xe23eec33` |
-| `sceIoWaitAsyncCB` | implemented | #341 | dedicated | unreviewed | `h_IoWaitAsyncCB` | `0x35dbd746` |
+| `sceIoWaitAsync` | implemented | - | dedicated | partial | `h_IoWaitAsync` | `0xe23eec33` |
+| `sceIoWaitAsyncCB` | implemented | - | dedicated | partial | `h_IoWaitAsyncCB` | `0x35dbd746` |
 | `sceIoWrite` | implemented | #341 | dedicated | unreviewed | `h_IoWrite` | `0x42ec03ac` |
 | `sceKernelAllocateFpl` | implemented | #341 | dedicated | unreviewed | `h_AllocateFpl` | `0xd979e9bf` |
 | `sceKernelAllocateFplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateFplCB` | `0xe7282cb6` |
