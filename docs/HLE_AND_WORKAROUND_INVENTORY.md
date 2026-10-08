@@ -141,7 +141,7 @@ Semantic handler census: **385** handlers across **21** API families, covering *
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
-  - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, head-versus-tail ordering with a stalled list, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route
+  - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:flight_smoke
   - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
@@ -348,9 +348,9 @@ reproduced here.
 
 ---
 
-### 3.3 Controlled Refusals and Compatibility Exceptions
+### 3.3 Remaining Fake-Success Registrations and #281 Dispositions
 
-The current registration classes and semantic statuses are in the generated census above. Static refusal entries carry a literal PSP-visible error in `sr_hle_register_unsupported`; `sr_syscall` logs each function/NID once and emits one summary line per called function at process exit. Runtime diagnostics use named semantic boundaries and say when behavior is not supported yet. Unregistered NIDs still use the fatal unknown-import path.
+The current registration classes and semantic statuses are in the generated census above. At the time of the #281 migration, the then-18 fake-success registrations were reclassified as 13 controlled refusals, one bounded UMD compatibility implementation, one partial `sceIoDevctl` implementation, and three named compatibility exceptions; those are historical migration counts, not the current census. Static refusal entries carry a literal PSP-visible error in `sr_hle_register_unsupported`; `sr_syscall` logs each function/NID once and emits one summary line per called function at process exit. These APIs are marked “in the works” under issue #281. Unregistered NIDs still use the fatal unknown-import path.
 
 | API family | Registration(s) | Disposition |
 | :--- | :--- | :--- |
@@ -359,38 +359,11 @@ The current registration classes and semantic statuses are in the generated cens
 | `sceReg` | `sceRegCloseCategory` (`0x0cae832b`), `sceRegOpenCategory` (`0x1d8a762e`), `sceRegGetKeyValue` (`0x28a8e98a`), `sceRegOpenRegistry` (`0x92e41280`), `sceRegGetKeyInfo` (`0xd4475aa8`), and `sceRegCloseRegistry` (`0xfa8a5739`) | Controlled refusal: `0x80010086` (function not supported). The registry object model remains unimplemented. |
 | `sceUtility` | `sceUtilityLoadNetModule` (`0x1579a159`) and `sceUtilityUnloadNetModule` (`0x64d50c56`) | Controlled refusal: `0x80110001` (`SCE_ERROR_UTILITY_INVALID_STATUS`). |
 | `sceUmdUser` | `sceUmdCancelWaitDriveStat` (`0x6af9b50a`) | Controlled refusal: `0x80010086` (function not supported). Drive-wait cancellation is not modeled. |
-| `sceUmdUser` | `sceUmdGetErrorStat` (`0x20628e6f`) | Compatibility implementation: returns no error while the virtual ISO drive reports its modeled PRESENT/READY/READABLE state; other drive-error states are not modeled. |
-| `IoFileMgrForUser` | `sceIoDevctl` (`0x54f5fb11`) | Partial Memory Stick support for `ms0:` and `fatms0:`: capacity/free-cluster geometry comes from the unified Memory Stick root shared with ordinary `sceIo*` and savedata (`SR_MEMSTICK`, default `memstick/`); inserted and ready queries write 1 and 4; insert/eject callback commands store or clear a UID but never dispatch callbacks. Other device/command pairs return `0x80010086` and log once per pair. Callback delivery is not supported yet. |
-| `sceAtrac3plus` | `sceAtracGetOutputChannel` (`0xb3b5d042`) | Compatibility exception: existing acceptance is retained while output-channel mapping remains unmodeled. |
-| `sceKernelVolatileMemUnlock` | `sceKernelVolatileMemUnlock` (`0xa569e425`) | Compatibility exception: the documented asset-loading route uses this call around the shared volatile-memory scratch buffer; lock ownership semantics remain unmodeled. |
-| `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Compatibility exception: the current route collects text and advances the OSK state from `sceUtilityOskGetStatus`; update keeps its no-op success while the dialog contract is unfinished. |
-
-### 3.4 Kernel Imports Added for the Launch Sweep
-
-The import names below come from `tools/nid_corpus.json` unless a public binding source is named in the row. Public API contracts are from the linked PSPSDK documentation. Source-owned cases are exercised by `src/rt/hle_thread_selftest.c`; they establish local synthetic behavior only, not PSP hardware equivalence or title acceptance.
-
-| NID | Function name | Name and contract source | Runtime behavior and open question |
-| :--- | :--- | :--- | :--- |
-| `0xea748e31` | `sceKernelChangeCurrentThreadAttr` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Controlled refusal `0x80020002`; per-thread attribute mutation is not supported yet because the scheduler does not retain the full PSP attribute contract. |
-| `0x912354a7` | `sceKernelRotateThreadReadyQueue` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Controlled refusal `0x80020002`; priority ready-queue rotation is not supported yet. |
-| `0x75156e8f` | `sceKernelResumeThread` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Controlled refusal `0x80020002`; resumable thread-suspension state is not supported yet. |
-| `0x9944f31f` | `sceKernelSuspendThread` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Controlled refusal `0x80020002`; resumable thread-suspension state is not supported yet. |
-| `0x6652b8ca` | `sceKernelSetAlarm` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Controlled refusal `0x80020002`; guest alarm callback scheduling is not supported yet. |
-| `0xba6b92e2` | `sceKernelSysClock2USec` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Converts the modeled 64-bit microsecond clock pair into low/high output words after validating both spans. Hardware clock conversion and error precedence remain unmeasured. |
-| `0x7e65b999` | `sceKernelCancelAlarm` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Controlled refusal `0x80020002`; guest alarm callback state is not supported yet. |
-| `0x034a921f` | `sceKernelGetVTimerTime` | Project NID corpus; [PSPSDK ThreadMan API](https://pspdev.github.io/pspsdk/pspthreadman_8h.html) | Controlled refusal `0x80020002`; virtual timer objects are not supported yet. |
-| `0x50f61d8a` | `sceKernelFreeMemoryBlock` | Public [PSPSDK Rust binding](https://docs.rs/pspsdk/latest/pspsdk/sys/mem/fn.sceKernelFreeMemoryBlock.html) confirms the name and NID; the project corpus entry is `unresolved`. | Frees a memory-block UID created by the modeled Low allocation path; unknown UIDs return kernel `UNKNOWN_UID` (`0x800200cb`). PSP invalid-UID precedence remains unmeasured. |
-| `0xdb83a952` | `sceKernelGetMemoryBlockAddr` | Public [PSPSDK Rust binding](https://docs.rs/pspsdk/latest/pspsdk/sys/mem/fn.sceKernelGetMemoryBlockAddr.html) confirms the name and NID; the project corpus entry is `unresolved`. | Writes the address for a modeled memory-block UID after output-span validation; unknown UIDs return kernel `UNKNOWN_UID` (`0x800200cb`). PSP error precedence remains unmeasured. |
-| `0xfe707fdf` | `sceKernelAllocMemoryBlock` | Public [PSPSDK Rust binding](https://docs.rs/pspsdk/latest/pspsdk/sys/mem/fn.sceKernelAllocMemoryBlock.html) confirms the name and NID; the project corpus entry is `unresolved`. | Models Low allocation from the main user partition with the four-byte options header. Valid High, Addr, LowAligned, and HighAligned placements and extended options return `0x80020002`; invalid block types return `0x800200d8`, and exhausted partition space returns `0x800200d9`. Fragmentation and error precedence remain unmeasured. |
-| `0x342061e5` | `sceKernelSetCompiledSdkVersion370` | Project NID corpus alias; `src/rt/sdkver.h` state contract | Routes to the existing retained SDK-version setter; the selftest checks that the supplied version remains observable. |
-| `0x1c0d95a6` | `sceGeListEnQueueHead` | Project NID corpus; [PSPSDK GE API](https://pspdev.github.io/pspsdk/pspge_8h.html) | Uses the shared enqueue path when no list is pending. With a stalled list, head ordering returns `0x80020002` because queue insertion order is not modeled. |
-| `0x4c06e472` | `sceGeContinue` | Project NID corpus; [PSPSDK GE API](https://pspdev.github.io/pspsdk/pspge_8h.html) | Controlled refusal `0x80020002`; paused-list continuation is not supported yet. |
-| `0xb448ec0d` | `sceGeBreak` | Project NID corpus; [PSPSDK GE API](https://pspdev.github.io/pspsdk/pspge_8h.html) | Controlled refusal `0x80020002`; list break and break-parameter state are not supported yet. |
-| `0xbd2f1094` | `sceKernelLoadExec` | Project NID corpus; [PSPSDK LoadExec API](https://pspdev.github.io/pspsdk/psploadexec_8h.html) | Controlled refusal `0x80020002`; replacing the running executable and process state is not supported yet. |
-| `0xd675ebb8` | `sceKernelSelfStopUnloadModule` | Project NID corpus; [PSPSDK ModuleMgr API](https://pspdev.github.io/pspsdk/pspmodulemgr_8h.html) | Controlled refusal `0x80020002`; self-stop and module-unload lifecycle is not supported yet. |
-| `0x40f1469c` | `sceDisplayWaitVblankStartMulti` | Project hash-verified NID corpus; public [PSPSDK binding](https://docs.rs/pspsdk/latest/pspsdk/sys/display/fn.sceDisplayWaitVblankStartMulti.html) | Waits a positive requested number of scheduler VBLANK periods; zero-count behavior returns kernel `NOTIMP` (`0x80020002`) until the PSP result is measured. Callback/context precedence and hardware timing remain unmeasured. |
-| `0x0cae832b` | `sceRegCloseCategory` | Project NID corpus; [PSPSDK Registry API](https://pspdev.github.io/pspsdk/pspreg_8h.html) | Controlled refusal `0x80010086`; registry category objects are not supported yet. |
-| `0x1d8a762e` | `sceRegOpenCategory` | Project NID corpus; [PSPSDK Registry API](https://pspdev.github.io/pspsdk/pspreg_8h.html) | Controlled refusal `0x80010086`; registry category objects are not supported yet. |
+| `sceUmdUser` | `sceUmdGetErrorStat` (`0x20628e6f`) | Compatibility implementation: returns no error while the virtual ISO drive reports its modeled PRESENT/READY/READABLE state; other drive-error states are not modeled (#281). |
+| `IoFileMgrForUser` | `sceIoDevctl` (`0x54f5fb11`) | Partial Memory Stick support for `ms0:` and `fatms0:`: capacity/free-cluster geometry comes from the unified Memory Stick root shared with ordinary `sceIo*` and savedata (`SR_MEMSTICK`, default `memstick/`); inserted and ready queries write 1 and 4; insert/eject callback commands store or clear a UID but never dispatch callbacks. Other device/command pairs return `0x80010086`, log once per pair, and appear in the #281 exit summary. The callback event model is in the works (#281). |
+| `sceAtrac3plus` | `sceAtracGetOutputChannel` (`0xb3b5d042`) | Compatibility exception: existing acceptance is retained while output-channel mapping is tracked by #286. |
+| `sceKernelVolatileMemUnlock` | `sceKernelVolatileMemUnlock` (`0xa569e425`) | Compatibility exception: the documented asset-loading route uses this call around the shared volatile-memory scratch buffer; its lock ownership semantics remain unmodeled (#281). |
+| `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Compatibility exception: the current route collects text and advances the OSK state from `sceUtilityOskGetStatus`; update keeps its no-op success while that dialog contract is unfinished (#281). |
 
 ---
 
