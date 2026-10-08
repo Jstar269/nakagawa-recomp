@@ -885,6 +885,8 @@ uint32_t sched_terminate_thread(uint32_t uid);      /* sceKernelTerminateThread 
 uint32_t sched_suspend_thread(uint32_t uid);        /* sceKernelSuspendThread */
 uint32_t sched_resume_thread(uint32_t uid);         /* sceKernelResumeThread */
 uint32_t sched_rotate_thread_ready_queue(int priority); /* sceKernelRotateThreadReadyQueue; 0 = caller's priority */
+uint32_t sched_alarm_set(uint32_t clock_us, uint32_t handler, uint32_t common); /* sceKernelSetAlarm: UID, or an error >= 0x80000000 */
+uint32_t sched_alarm_cancel(uint32_t uid);          /* sceKernelCancelAlarm; 0 or UNKNOWN_ALMID */
 uint32_t sched_delete_thread(uint32_t uid);          /* sceKernelDeleteThread object removal */
 int      sched_thread_cancel_wakeup(uint32_t uid);  /* sceKernelCancelWakeupThread; uid 0=current */
 /* Thread role identity.
