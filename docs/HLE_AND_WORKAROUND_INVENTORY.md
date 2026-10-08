@@ -42,11 +42,11 @@ Semantic handler census: **379** handlers across **21** API families, covering *
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
-| `complete` | 6 | 13 |
-| `partial` | 25 | 25 |
+| `complete` | 10 | 17 |
+| `partial` | 29 | 29 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 345 | 375 |
+| `unreviewed` | 337 | 367 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -66,12 +66,12 @@ Semantic handler census: **379** handlers across **21** API families, covering *
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
-| `sceRtc` | 0 | 0 | 0 | 0 | 8 | 8 | 8 |
+| `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **6** | **25** | **1** | **2** | **345** | **379** | **420** |
+| **Total** | **10** | **29** | **1** | **2** | **337** | **379** | **420** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -97,6 +97,30 @@ Semantic handler census: **379** handlers across **21** API families, covering *
   - Evidence: src/rt/sdkver_selftest.c
   - Evidence: tools/test_sdkver_c.py
   - Evidence: public ABI (PSPSDK sdkver.h: sceKernelSetCompiledSdkVersion)
+- **`h_RtcGetCurrentClock`** (`sceRtc`): `sceRtcGetCurrentClock` (0x4cfa57b0)
+  - Evidence: src/rt/hle_thread_selftest.c:test_time_domains_are_coherent
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: src/rt/hle.c:h_RtcGetCurrentClock
+  - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetCurrentClock, tz is minutes from UTC)
+  - Evidence: PSPAutotests tests/rtc/rtc.expected (0/+13/+60/-60/-600000/INT_MAX/-INT_MAX all return 0; -60 is one hour before the UTC baseline)
+- **`h_RtcGetCurrentTick`** (`sceRtc`): `sceRtcGetCurrentTick` (0x3f7ad767)
+  - Evidence: src/rt/hle_thread_selftest.c:test_time_domains_are_coherent
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: src/rt/hle.c:h_RtcGetCurrentTick
+  - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetCurrentTick, 0 on success, <0 on error)
+  - Evidence: PSPAutotests tests/rtc/rtc.expected (tick advances across a 2 ms delay)
+- **`h_RtcGetTick`** (`sceRtc`): `sceRtcGetTick` (0x6ff40acc)
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: src/rt/hle.c:h_RtcGetTick
+  - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetTick, pspRtcCheckValidErrors component ranges)
+  - Evidence: PSPAutotests tests/rtc/convert.expected (year 0/10000 -> 0x800001fe with output untouched; year 10/9998/9999 exact ticks)
+- **`h_RtcSetTick`** (`sceRtc`): `sceRtcSetTick` (0x7ed29e40)
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: src/rt/hle.c:h_RtcSetTick
+  - Evidence: public PSPSDK contract (psprtc.h: sceRtcSetTick, 0 on success, <0 on error)
+  - Evidence: PSPAutotests tests/rtc/convert.expected (checkSetTick: 835072 -> 0001-01-01, 62135596800000000 -> 1970-01-01)
 
 #### Partial Handlers (Named Limitations)
 
@@ -159,6 +183,14 @@ Semantic handler census: **379** handlers across **21** API families, covering *
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
   - Limitation: host HLE player; requires host codec backend; no hardware comparison tier measured (#341)
+- **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
+  - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
+- **`h_RtcConvertUtcToLocal`** (`sceRtc`): `sceRtcConvertUtcToLocalTime` (0x34885e0d)
+  - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
+- **`h_RtcGetCurrentClockLocal`** (`sceRtc`): `sceRtcGetCurrentClockLocalTime` (0xe7c27d1b)
+  - Limitation: timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)
+- **`h_RtcGetWin32FileTime`** (`sceRtc`): `sceRtcGetWin32FileTime` (0xcf561893)
+  - Limitation: cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)
 
 #### Compatibility Handlers (Named Limitations)
 

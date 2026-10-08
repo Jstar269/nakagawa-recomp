@@ -10,6 +10,9 @@ MemoryDebugger.  No test attaches to, reads, writes, or suspends a real
 process: live-process access is never exercised here.
 """
 
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -570,6 +573,67 @@ class ExeOptionAndDefaultRejectionTest(unittest.TestCase):
         """Passing an explicit exe sets expected_exe and expected_exe_name rather than assuming hst.exe."""
         dbg = md.MemoryDebugger(simulate=True, exe=r"build\custom_title\custom_title.exe")
         self.assertEqual(dbg.expected_exe_name, "custom_title.exe")
+
+
+class TargetDispositionTest(unittest.TestCase):
+    """Issue #368 item 2: ``--exe`` is the explicit disposition.
+
+    The HST default is a named, documented fallback only, and a
+    target that does not exist on disk is a clear error.  Every
+    path here is a synthetic temp-dir path; no real build output
+    is read or written."""
+
+    def test_missing_exe_target_fails_clearly(self):
+        with tempfile.TemporaryDirectory(prefix="mem_debug_target_") as tmp_dir:
+            missing = os.path.join(tmp_dir, "no_such_title", "no_such_title.exe")
+            with self.assertRaises(ValueError) as ctx:
+                md.MemoryDebugger(simulate=False, exe=missing)
+            self.assertIn("does not exist", str(ctx.exception))
+            self.assertIn(missing, str(ctx.exception))
+
+    def test_directory_or_empty_exe_target_fails_clearly(self):
+        # A directory exists but is not an executable target.
+        with tempfile.TemporaryDirectory(prefix="mem_debug_target_") as tmp_dir:
+            with self.assertRaises(ValueError) as ctx:
+                md.MemoryDebugger(simulate=False, exe=tmp_dir)
+            self.assertIn("does not exist", str(ctx.exception))
+        # An empty --exe would resolve to the repository root; it is refused as
+        # "no target" before any path is resolved.
+        with self.assertRaises(ValueError) as ctx:
+            md.MemoryDebugger(simulate=False, exe="")
+        self.assertIn("--exe", str(ctx.exception))
+
+    def test_cli_reports_missing_target_clearly(self):
+        with tempfile.TemporaryDirectory(prefix="mem_debug_target_") as tmp_dir:
+            missing = os.path.join(tmp_dir, "missing_title.exe")
+            argv = ["mem_debug.py", "--exe", missing, "status"]
+            out = io.StringIO()
+            with mock.patch.object(sys, "argv", argv):
+                with contextlib.redirect_stdout(out):
+                    with self.assertRaises(SystemExit) as ctx:
+                        md.main()
+            self.assertEqual(ctx.exception.code, 1)
+            payload = json.loads(out.getvalue())
+            self.assertIn("does not exist", payload["error"])
+            self.assertIn(missing, payload["error"])
+
+    def test_existing_synthetic_exe_proceeds_to_offline(self):
+        # An existing target passes the existence gate and reports
+        # offline (no live process); the HST default is not involved.
+        with tempfile.TemporaryDirectory(prefix="mem_debug_target_") as tmp_dir:
+            exe = os.path.join(tmp_dir, "synthetic_title.exe")
+            Path(exe).write_bytes(b"MZ-stub")
+            dbg = md.MemoryDebugger(simulate=False, exe=exe)
+            self.assertTrue(dbg.is_offline)
+            self.assertEqual(dbg.expected_exe_name, "synthetic_title.exe")
+
+    def test_hst_default_is_a_named_fallback(self):
+        # The remaining HST default is a single named constant used
+        # only for the simulation mock state, never an attach target.
+        self.assertEqual(md.HST_DEFAULT_BUILD_DIR, os.path.join("build", "hst"))
+        self.assertTrue(
+            md.get_mock_state_path().endswith(
+                os.path.join("build", "hst", "mock_debug_state.json")))
 
 
 if __name__ == "__main__":
