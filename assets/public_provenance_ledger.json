@@ -225,7 +225,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "898c24088b73e5dad3aa22eb5aa8cd4328bfbec33aa8d358749e3739c07ba980"
+      "sha256": "a7b65f4736b81ac91c2308c48d781ac62f86ae8b8fa4a9fb597a3847972d93c8"
     },
     {
       "path": "CLAUDE.md",
@@ -264,7 +264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f22f3325e674ed20552993a202dab0dbbdb43c8c3290b9975ae1ba3649dfc81b"
+      "sha256": "338b7cc8ddeb49ce0b00267d23841c576a0f574238b30dbf3b3a763ecce0048a"
     },
     {
       "path": "CREDITS.md",
@@ -1021,7 +1021,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "28e8acc587cfd9ece5d420b4ef3d9dfbb9ea3400c4219d7ab27b456ee0ceb2c7"
+      "sha256": "685466bd07179610878a007c4d06ac7fa39a4a6a912041e8e11ba6ce0bc64cf8"
     },
     {
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
@@ -1066,7 +1066,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "078bf828b92ffa7cf00b66ab9a97bea282bc4dd9056701bf5165c8d3a651b33c"
+      "sha256": "9d3d1e1d0fcb217b311f644977e4e91f23edfd8419f258398897b87ed2b99c69"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0d003045ba65cb2594439b37f5f30e9dadf36723ee398a7b9987287972195a44"
+      "sha256": "87100be9de1e35b995b05d2a3e76dcfbb65e01cf74d43a8b7b97164cae073d72"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1273,7 +1273,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9a55656b1e27270eca85465e4b3fb2e1c17e8864252c46ae7198864ddac5e31a"
+      "sha256": "33271dd55df9e310a5db310d9071c7b5d96c71dcfe94ac17ecb7a08593f05191"
     },
     {
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
@@ -4684,7 +4684,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f6cc86572d191b33ef29558d732c1b67d327d62d15c1ecac29dc7e2fab75e4c9"
+      "sha256": "2bff968c6d8b93366b414cf0cb20e84f6c802e5cd9495cf7ed830a42feb5717e"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4722,7 +4722,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2504d2a22a97e577bdeeb491aa132247664db910e31ea549746e2eade8619c1c"
+      "sha256": "4471f8d346f52429c4190e7ae03751afd24c480cf905a9d5101cb64396106984"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6230,7 +6230,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d21cd90e2dadc2fd821c8405dc82ab76654386caa43b434433cdd885a61dfd3"
+      "sha256": "25d9dfe9677d7857f9f0875f957100fc708c9301534f5c2ecb667a49b9798088"
     },
     {
       "path": "tools/host_stubs.py",
@@ -6278,7 +6278,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fc9165b98df279627a5edeb62f7c6a02cfdb284aded89e1a1c98e41f87dd73da"
+      "sha256": "427e12e865b8577e62de4bce3217ef6bb2a80d1fa5bd64df16f3896cf87adc86"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8038,7 +8038,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "67201489f9943ff39a821c3cc2b440e5b1536114f9d8e4993c1f5583299854f8"
+      "sha256": "9e5f7f08b39b20122d1c75dcea098d7cc33b164221d09e699819834b47982ef5"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
