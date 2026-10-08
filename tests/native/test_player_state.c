@@ -1300,6 +1300,30 @@ static void assert_cache_root_isolated(void) {
     }
 }
 
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+static void test_source_iso_member_path_validation(void) {
+    assert(nk_title_manifest_test_source_iso_path_valid(
+        "PSP_GAME/SYSDIR/EBOOT.BIN"));
+    assert(nk_title_manifest_test_source_iso_path_valid(
+        "PSP_GAME/USRDIR/module/fixture.prx"));
+    assert(!nk_title_manifest_test_source_iso_path_valid(
+        "PSP_GAME/USRDIR/../SYSDIR/EBOOT.BIN"));
+    assert(!nk_title_manifest_test_source_iso_path_valid(
+        "C:/PSP_GAME/USRDIR/fixture.prx"));
+    assert(!nk_title_manifest_test_source_iso_path_valid(
+        "/PSP_GAME/USRDIR/fixture.prx"));
+    assert(!nk_title_manifest_test_source_iso_path_valid(
+        "PSP_GAME/USRDIR/fixture?.prx"));
+    char too_long[600];
+    const char prefix[] = "PSP_GAME/USRDIR/";
+    size_t prefix_length = sizeof(prefix) - 1u;
+    memcpy(too_long, prefix, prefix_length);
+    memset(too_long + prefix_length, 'a', 513u);
+    too_long[prefix_length + 513u] = '\0';
+    assert(!nk_title_manifest_test_source_iso_path_valid(too_long));
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -1326,6 +1350,10 @@ int main(int argc, char **argv) {
         free(probe);
         return 0;
     }
+
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+    test_source_iso_member_path_validation();
+#endif
 
     /* Per-run cache isolation (#735 item 8): every fixture below resolves its
      * cache, save and boot-event paths inside a temporary root, never inside

@@ -423,11 +423,20 @@ def _source_media_identity(iso_path: Path, selected: str,
         )
 
     source_modules = []
-    for module in sorted(
-        (item for item in manifest.get("modules", [])
-         if item.get("role") == "guest-prx" and item.get("required", False)),
-        key=lambda item: item["name"],
-    ):
+    required_modules = []
+    for module in manifest.get("modules", []):
+        if not isinstance(module, dict):
+            raise PackageBuildError("A guest-prx manifest record is invalid (#315).")
+        if module.get("role") != "guest-prx" or not module.get("required", False):
+            continue
+        name = module.get("name")
+        if not isinstance(name, str) or not name:
+            raise PackageBuildError(
+                "A required guest-prx manifest record is missing its name (#315)."
+            )
+        required_modules.append((name, module))
+
+    for name, module in sorted(required_modules, key=lambda item: item[0]):
         members = []
         guest_path = module.get("guest_path")
         if isinstance(guest_path, str) and ":" in guest_path:
@@ -436,7 +445,6 @@ def _source_media_identity(iso_path: Path, selected: str,
             if device.casefold() in {"disc0", "umd0"} and \
                     guest_components[:1] and guest_components[0].casefold() == "psp_game":
                 members.append(guest_components)
-        name = module["name"]
         members.extend((
             ("PSP_GAME", "SYSDIR", name),
             ("PSP_GAME", "SYSDIR", "PRX", name),

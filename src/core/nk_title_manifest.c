@@ -3311,7 +3311,8 @@ static bool package_source_iso_path_valid(const char *path) {
     for (const unsigned char *cursor = (const unsigned char *)path; ; cursor++) {
         unsigned char ch = *cursor;
         if (ch != '\0' && ch != '/') {
-            if (ch < 0x20 || ch == 0x7f) return false;
+            if (ch < 0x20 || ch > 0x7e || ch == '?' || ch == '*' || ch == '"' ||
+                ch == '<' || ch == '>' || ch == '|') return false;
             continue;
         }
         size_t length = (const char *)cursor - part;
@@ -3331,6 +3332,12 @@ static bool package_source_iso_path_valid(const char *path) {
     }
     return components >= 3;
 }
+
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+bool nk_title_manifest_test_source_iso_path_valid(const char *path) {
+    return package_source_iso_path_valid(path);
+}
+#endif
 
 static bool package_validate_title_input_identity(const JsonNode *identity,
                                                   char *error,
@@ -3599,6 +3606,7 @@ static bool package_validate_live_source_media(const char *source_iso_path,
         const char *module_path = NULL;
         const char *module_hash = NULL;
         if (!package_string(obj_get(source_module, "path"), &module_path) ||
+            !package_source_iso_path_valid(module_path) ||
             !package_sha256(obj_get(source_module, "sha256"), &module_hash) ||
             !nk_manifest_hash_iso_member_reader(reader, module_path, live_hash)) {
             snprintf(error, error_size,
@@ -4650,12 +4658,17 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         }
         char *identity_text = NULL;
         size_t identity_length = 0;
+        bool identity_exceeds_limit = false;
         char identity_error[320] = "";
         if (!package_read_json(current_identity_path, NK_MANIFEST_MAX_BYTES,
-                               &identity_text, &identity_length,
+                               &identity_exceeds_limit, &identity_text,
+                               &identity_length,
                                identity_error, sizeof(identity_error))) {
             package_rebuild_reason(reason, reason_size,
-                "Title input identity record is unreadable; source media cannot be qualified.",
+                identity_exceeds_limit
+                    ? "Title input identity record exceeds the supported JSON size limit; "
+                      "source media cannot be qualified."
+                    : "Title input identity record is unreadable; source media cannot be qualified.",
                 user_data_root, normalized);
             return NK_RUNTIME_PACKAGE_STALE;
         }

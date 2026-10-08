@@ -182,6 +182,7 @@ void nk_title_manifest_test_set_validation_checkpoint(
     NkPackageValidationCheckpointFn checkpoint, void *ctx);
 bool nk_title_manifest_test_package_cache_entry(uint64_t *out_catalog_epoch,
                                                 char out_status_identity[65]);
+bool nk_title_manifest_test_source_iso_path_valid(const char *path);
 #endif
 
 #ifdef __cplusplus

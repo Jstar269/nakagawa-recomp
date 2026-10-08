@@ -331,6 +331,17 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("consent-based installation is still in the works", smoke.lower())
 
 
+class TestSourceMediaIdentity(unittest.TestCase):
+    def test_required_module_without_name_has_named_package_error(self):
+        manifest = {"modules": [{"role": "guest-prx", "required": True}]}
+        with patch.object(nk_cli, "_hash_iso_member", return_value="1" * 64):
+            with self.assertRaisesRegex(
+                nk_cli.PackageBuildError,
+                "required guest-prx manifest record is missing its name",
+            ):
+                nk_cli._source_media_identity(Path("synthetic.iso"), "EBOOT.BIN", manifest)
+
+
 class TestPlayerPackageRoute(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-player-route-")
