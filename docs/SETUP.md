@@ -342,7 +342,7 @@ To verify that system fonts are correctly installed:
 
 - **Automated in-player font provisioning:** Providing a direct in-app font import wizard in the player so command-line execution is not required.
 - **#313 (Clean-room open-font to PGF converter):** Designing and implementing an independent, deterministic converter from permissively licensed open fonts (SIL OFL) to PSP PGF format, providing an authentic-proportioned public font route that eliminates the proprietary firmware dependency for public builds.
-- **#299 (Guest libfont module startup):** Translated `libfont.prx` startup runs through the guest entry, and readiness is bound to that startup rather than to `sceKernelLoadModule`. When startup is unavailable (an untranslated entry, no recorded entry, or `SR_REAL_MODULE_START=0`), `LIBFONT_STARTUP_UNAVAILABLE` names the boundary and a configured ready-flag fallback may apply; completing and retiring that fallback remains in the works.
+- **#299 (Guest libfont module startup):** Translated `libfont.prx` startup runs through the guest entry, and readiness belongs to guest code. If startup is unavailable (an untranslated entry, no recorded entry, or `SR_REAL_MODULE_START=0`), `LIBFONT_STARTUP_UNAVAILABLE` names the boundary, `sceKernelStartModule` fails closed, and the runtime leaves guest readiness unchanged. Manifests that still set `libfont_ready_flag_addr` fail with `LIBFONT_READY_FLAG_RETIRED`; remove the field. Real-title readiness and its thread, callback, heap and font-file dependencies still need private-route validation.
 
 ## 3. Build
 

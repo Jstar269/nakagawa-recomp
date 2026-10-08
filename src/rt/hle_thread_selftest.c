@@ -344,6 +344,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_BAD_ID 0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
+#define SCE_KERNEL_ERROR_NOT_IMPLEMENTED 0x80020002u
 #define SCE_KERNEL_ERROR_ALREADY_STARTED 0x80020133u
 #define SCE_KERNEL_ERROR_NOT_STARTED 0x80020134u
 #define SCE_KERNEL_ERROR_ALREADY_STOPPED 0x80020135u
@@ -829,9 +830,8 @@ static void test_title_config_hle_bindings(void) {
     int has_bringup = sr_title_config_display_bringup(&bringup);
     int has_sync = sr_title_config_runtime_sync(&sync_base, &sync_name,
                                                 &wrappers, &wrapper_count);
-    uint32_t libfont_flag = 0, frame_latch = 0;
+    uint32_t frame_latch = 0;
     uint32_t libfont_uid = 0;
-    int has_libfont = sr_title_config_libfont_ready_flag_addr(&libfont_flag);
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
     SrTitleReentBindings reent;
     int has_reent = sr_title_config_reent_bindings(&reent);
@@ -848,8 +848,8 @@ static void test_title_config_hle_bindings(void) {
                "title diagnostic profile matches the explicit selftest expectation");
     }
 
-    expect((has_bringup && has_sync && has_libfont && has_latch) ||
-           (!has_bringup && !has_sync && !has_libfont && !has_latch),
+    expect((has_bringup && has_sync && has_latch) ||
+           (!has_bringup && !has_sync && !has_latch),
            "migrated HLE groups are all configured together or all absent");
     expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
            "HST reent compatibility is selected only by the validated HST title config");
@@ -871,7 +871,7 @@ static void test_title_config_hle_bindings(void) {
                "generic DisplaySetMode keeps its PSP success result");
         expect(s_title_hle_guest_calls == 0u,
                "generic DisplaySetMode dispatches no title guest body");
-        expect(!has_sync && !has_libfont && !has_latch,
+        expect(!has_sync && !has_latch,
                "generic HLE probe has no migrated address bindings");
 
         title_hle_write_cstr(0x08906000u, "libfont.prx");
@@ -890,8 +890,8 @@ static void test_title_config_hle_bindings(void) {
     } else {
         expect(has_sync && wrappers != NULL && wrapper_count >= 2u,
                "configured display bringup has mode-keyed runtime sync wrappers");
-        expect(has_libfont && has_latch,
-               "configured display bringup has libfont and frame-latch bindings");
+        expect(has_latch,
+               "configured display bringup has a frame-latch binding");
 
         title_hle_write_cstr(sync_name, "synthetic-sync");
         MEM_W32(sync_base + 0x30u, 99u);
@@ -924,18 +924,18 @@ static void test_title_config_hle_bindings(void) {
         title_hle_write_cstr(0x08906000u, "libfont.prx");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0x08906000u;
-        MEM_W32(libfont_flag, 0u);
+        MEM_W32(0x08906010u, 0u);
         libfont_uid = sr_hle_test_load_module(&cpu);
         expect(libfont_uid != 0u,
                "configured LoadModule returns a module uid");
-        expect(MEM_R32(libfont_flag) == 0u,
-               "configured LoadModule defers the libfont-ready fallback until startup is unavailable");
+        expect(MEM_R32(0x08906010u) == 0u,
+               "configured LoadModule leaves readiness to guest startup");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = libfont_uid;
-        expect(sr_hle_test_start_module(&cpu) == 0u,
-               "configured StartModule keeps the missing libfont entry boundary nonfatal");
-        expect(MEM_R32(libfont_flag) == 1u,
-               "configured ready-flag fallback applies only after unavailable libfont startup");
+        expect(sr_hle_test_start_module(&cpu) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+               "configured StartModule refuses unavailable libfont startup");
+        expect(MEM_R32(0x08906010u) == 0u,
+               "configured StartModule never synthesizes libfont readiness");
 
         MEM_W32(frame_latch, 5u);
         ge_finish_latch_assist();
@@ -1185,7 +1185,6 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     const char *root = getenv("SR_MODULE_DIR");
     char path[1024];
     int written;
-    uint32_t configured_flag = 0;
     CpuState cpu;
 
     expect(strcmp(name, "libfont.prx") == 0,
@@ -1194,8 +1193,6 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "libfont startup uses the manifest guest path");
     expect(base == SYNTH_LIBFONT_BASE && required == 1,
            "libfont startup uses its required synthetic manifest base");
-    expect(!sr_title_config_libfont_ready_flag_addr(&configured_flag),
-           "libfont startup fixture disables manifest ready-flag injection");
     if (base != SYNTH_LIBFONT_BASE || !guest_path || !name) return;
 
     written = snprintf(path, sizeof(path), "%s/%s", root ? root : "", name);
@@ -1267,9 +1264,8 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "SR_REAL_MODULE_START=1 runs the translated libfont module_start");
 
     /* Phase 4: SR_REAL_MODULE_START=0 is the environmental kill switch. It has to cover
-     * libfont too: no entry runs, the call stays nonfatal, and the unconfigured fallback
-     * writes nothing. Phase 5 repeats the unavailable start, so both phases share one
-     * capture window that also proves the boundary line is latched once. */
+     * libfont too: no entry runs, the call fails closed, and readiness remains guest-owned.
+     * Phase 5 repeats unavailable startup so the diagnostic latch is observed. */
     _putenv("SR_REAL_MODULE_START=0");
     sr_hle_test_module_reset();
     uint32_t uid_off = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/libfont.prx",
@@ -1282,31 +1278,38 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     int capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
     expect(capturing, "libfont gate: stderr capture for the unavailable-start boundary");
     expect(uid_off != 0u, "libfont gate: a third libfont handle is registered");
-    expect(libfont_start_call(&cpu, uid_off) == 0u,
-           "SR_REAL_MODULE_START=0 keeps StartModule nonfatal for libfont");
+    expect(libfont_start_call(&cpu, uid_off) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+           "SR_REAL_MODULE_START=0 refuses unavailable libfont startup");
     expect(s_synth_libfont_start_calls == starts_before,
            "SR_REAL_MODULE_START=0 does not execute translated module_start");
     expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0u,
-           "SR_REAL_MODULE_START=0 writes no host readiness fallback when unconfigured");
+           "SR_REAL_MODULE_START=0 never synthesizes host readiness");
     expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
            "the kill switch leaves libfont exports unauthorized");
-    expect(libfont_start_call(&cpu, uid_off) == 0u,
-           "a repeated kill-switched libfont StartModule stays nonfatal");
+    expect(libfont_start_call(&cpu, uid_off) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+           "a repeated kill-switched libfont StartModule keeps failing closed");
 
-    /* Phase 5: an untranslated libfont entry takes the same named fallback. */
+    _putenv("SR_REAL_MODULE_START=1");
+    expect(libfont_start_call(&cpu, uid_off) == 0u &&
+               s_synth_libfont_start_calls == starts_before + 1u &&
+               MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u,
+           "translated startup can establish readiness after a refused attempt");
+
+    /* Phase 5: an untranslated libfont entry takes the same named refusal. */
     _putenv("SR_REAL_MODULE_START=");
     sr_hle_test_module_reset();
     uint32_t uid_untranslated = sr_hle_test_register_module("disc0:/PSP_GAME/SYSDIR/libfont.prx",
                                                             0x089b0000u, 0u);
     expect(uid_untranslated != 0u,
            "libfont gate: a handle with an untranslated entry is registered");
-    expect(libfont_start_call(&cpu, uid_untranslated) == 0u &&
-               libfont_start_call(&cpu, uid_untranslated) == 0u,
-           "repeated untranslated libfont starts stay nonfatal");
+    expect(libfont_start_call(&cpu, uid_untranslated) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               libfont_start_call(&cpu, uid_untranslated) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+           "repeated untranslated libfont starts fail closed");
 
     /* Phase 6: the gate matches a whole path element, not a substring of a longer name. */
     _putenv("SR_REAL_MODULE_START=0");
     sr_hle_test_module_reset();
+    starts_before = s_synth_libfont_start_calls;
     uint32_t uid_lookalike = sr_hle_test_register_module("mylibfont.prx.bak",
                                                          base + 0x70u, 0u);
     expect(uid_lookalike != 0u, "libfont gate: a look-alike module name is registered");
