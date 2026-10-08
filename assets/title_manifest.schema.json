@@ -78,7 +78,7 @@
     },
     "required_runtime_bindings": {
       "type": "array",
-      "maxItems": 10,
+      "maxItems": 9,
       "uniqueItems": true,
       "items": {
         "enum": [
@@ -89,7 +89,6 @@
           "fallback_entry",
           "frame_ready_latch_addr",
           "launcher_thread_entry",
-          "libfont_ready_flag_addr",
           "runtime_sync",
           "worker_thread_entry"
         ]
@@ -491,10 +490,6 @@
         "fallback_entry": {"$ref": "#/$defs/guestAddress"},
         "worker_thread_entry": {"$ref": "#/$defs/guestAddress"},
         "launcher_thread_entry": {"$ref": "#/$defs/guestAddress"},
-        "libfont_ready_flag_addr": {
-          "$ref": "#/$defs/guestAddress",
-          "description": "Fallback readiness word written only when libfont.prx is absent or its module_start entry is untranslated."
-        },
         "frame_ready_latch_addr": {"$ref": "#/$defs/guestAddress"},
         "expected_data_file_count": {
           "type": "integer",

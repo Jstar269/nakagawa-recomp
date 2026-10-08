@@ -1281,9 +1281,17 @@ static bool nk_manifest_parse_locked(
             json_free(root);
             return false;
         }
+        JsonNode *retired_libfont = obj_get(rb_node, "libfont_ready_flag_addr");
+        if (retired_libfont) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.runtime_bindings.libfont_ready_flag_addr: LIBFONT_READY_FLAG_RETIRED: "
+                "host readiness injection is not supported yet; remove this field and "
+                "provide translated guest libfont startup");
+            json_free(root);
+            return false;
+        }
         static const char * const allowed_rb_keys[] = {
             "schema_version", "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "libfont_ready_flag_addr",
             "frame_ready_latch_addr", "expected_data_file_count", "dispatch_aliases",
             "callback_terminators", "display_bringup", "runtime_sync", NULL
         };
@@ -1307,7 +1315,7 @@ static bool nk_manifest_parse_locked(
         /* Validate scalar addresses in runtime_bindings */
         static const char * const scalar_binding_fields[] = {
             "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "libfont_ready_flag_addr", "frame_ready_latch_addr", NULL
+            "frame_ready_latch_addr", NULL
         };
         for (int s = 0; scalar_binding_fields[s]; s++) {
             JsonNode *s_node = obj_get(rb_node, scalar_binding_fields[s]);
