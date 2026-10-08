@@ -126,6 +126,10 @@ typedef struct {
     char matched_title_id[65];
     NkGameSupportStatus status;
     char error_message[256];
+    /* Named format boundary (for example "PBP_PACKAGE_UNSUPPORTED") set beside
+       error_message when the input was identified as a file kind Nakagawa
+       cannot use. Empty for ordinary ISO errors, where the text is the result. */
+    char boundary_code[48];
 } NkIsoMetadata;
 
 /* Inspect a raw PSP ISO9660 disc image directly.

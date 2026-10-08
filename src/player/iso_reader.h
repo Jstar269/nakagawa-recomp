@@ -14,6 +14,7 @@ typedef struct {
     char title_name[MAX_TITLE_LEN];
     char disc_version[16];
     char error_message[256];
+    char boundary_code[48];
     uint64_t file_size;
     bool is_supported;
     bool param_sfo_parsed;

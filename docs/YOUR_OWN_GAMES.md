@@ -139,6 +139,12 @@ crashes.
   title intake is in the works
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that
   are not PSP game discs are refused.
+- **PlayStation Store package:** a file whose first bytes are the `PBP` package
+  magic (a store download renamed to `.iso`, for example) is not a disc image,
+  however it is named. It is refused before any disc reading with the boundary
+  `PBP_PACKAGE_UNSUPPORTED` and a sentence naming the title and disc ID the
+  package carries. Only the package's own `PARAM.SFO` entry is read to form that
+  sentence; no other package section is opened, installed, or executed.
 - **Encrypted executable:** with a matching local key file, the built-in boundary
   decrypts supported encrypted executables and selected/required PRX modules into the
   per-title folder ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The

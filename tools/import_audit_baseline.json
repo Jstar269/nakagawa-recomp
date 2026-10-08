@@ -152,6 +152,12 @@
     "name": "sceKernelDeleteNotifyCallback",
     "status": "unreviewed"
   },
+  "0x0facab19": {
+    "classification": "dedicated",
+    "handler": "h_IoWriteAsync",
+    "name": "sceIoWriteAsync",
+    "status": "partial"
+  },
   "0x0fae370e": {
     "classification": "dedicated",
     "handler": "h_AtracSetDataAndGetID",
@@ -175,6 +181,12 @@
     "handler": "h_Memset",
     "name": "memset",
     "status": "complete"
+  },
+  "0x1117c65f": {
+    "classification": "dedicated",
+    "handler": "h_IoRmdir",
+    "name": "sceIoRmdir",
+    "status": "partial"
   },
   "0x1181e963": {
     "classification": "dedicated",
@@ -273,6 +285,12 @@
     "handler": "h_CreateLwMutex",
     "name": "sceKernelCreateLwMutex",
     "status": "unreviewed"
+  },
+  "0x1b385d8f": {
+    "classification": "dedicated",
+    "handler": "h_IoLseek32Async",
+    "name": "sceIoLseek32Async",
+    "status": "partial"
   },
   "0x1b4217bc": {
     "classification": "dedicated",
@@ -543,9 +561,9 @@
   },
   "0x3251ea56": {
     "classification": "dedicated",
-    "handler": "h_IoWaitAsync",
+    "handler": "h_IoPollAsync",
     "name": "sceIoPollAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x328c546a": {
     "classification": "dedicated",
@@ -611,7 +629,7 @@
     "classification": "dedicated",
     "handler": "h_IoWaitAsyncCB",
     "name": "sceIoWaitAsyncCB",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x369ed59d": {
     "classification": "dedicated",
@@ -956,6 +974,12 @@
     "name": "sceKernelCreateEventFlag",
     "status": "unreviewed"
   },
+  "0x55f4717d": {
+    "classification": "dedicated",
+    "handler": "h_IoChdir",
+    "name": "sceIoChdir",
+    "status": "partial"
+  },
   "0x56202973": {
     "classification": "dedicated",
     "handler": "h_UmdWaitDriveStatWithTimer",
@@ -1251,7 +1275,7 @@
     "classification": "dedicated",
     "handler": "h_IoLseekAsync",
     "name": "sceIoLseekAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x71bc9871": {
     "classification": "dedicated",
@@ -1535,7 +1559,7 @@
     "classification": "dedicated",
     "handler": "h_IoOpenAsync",
     "name": "sceIoOpenAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x89b3d48c": {
     "classification": "dedicated",
@@ -1772,7 +1796,7 @@
     "classification": "dedicated",
     "handler": "h_IoReadAsync",
     "name": "sceIoReadAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa0b8ca55": {
     "classification": "dedicated",
@@ -1791,6 +1815,12 @@
     "handler": "h_MpegAvcDecodeMode",
     "name": "sceMpegAvcDecodeMode",
     "status": "unreviewed"
+  },
+  "0xa12a0514": {
+    "classification": "dedicated",
+    "handler": "h_IoSetAsyncCallback",
+    "name": "sceIoSetAsyncCallback",
+    "status": "partial"
   },
   "0xa14f40b2": {
     "classification": "dedicated",
@@ -1900,6 +1930,12 @@
     "name": "sceGeListEnQueue",
     "status": "partial"
   },
+  "0xab96437f": {
+    "classification": "dedicated",
+    "handler": "h_IoSync",
+    "name": "sceIoSync",
+    "status": "partial"
+  },
   "0xace946e8": {
     "classification": "dedicated",
     "handler": "h_IoGetstat",
@@ -1947,6 +1983,12 @@
     "handler": "h_GeDrawSync",
     "name": "sceGeDrawSync",
     "status": "unreviewed"
+  },
+  "0xb293727f": {
+    "classification": "dedicated",
+    "handler": "h_IoChangeAsyncPriority",
+    "name": "sceIoChangeAsyncPriority",
+    "status": "partial"
   },
   "0xb29ddf9c": {
     "classification": "dedicated",
@@ -2026,6 +2068,12 @@
     "handler": "h_LoadModuleByID",
     "name": "sceKernelLoadModuleByID",
     "status": "unreviewed"
+  },
+  "0xb8a740f4": {
+    "classification": "dedicated",
+    "handler": "h_IoChstat",
+    "name": "sceIoChstat",
+    "status": "partial"
   },
   "0xb9848a74": {
     "classification": "dedicated",
@@ -2171,6 +2219,12 @@
     "handler": "h_KernelPrintf",
     "name": "printf",
     "status": "unreviewed"
+  },
+  "0xcb05f8d6": {
+    "classification": "dedicated",
+    "handler": "h_IoGetAsyncStat",
+    "name": "sceIoGetAsyncStat",
+    "status": "partial"
   },
   "0xcb2e439e": {
     "classification": "dedicated",
@@ -2413,7 +2467,7 @@
     "classification": "dedicated",
     "handler": "h_IoWaitAsync",
     "name": "sceIoWaitAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe2d56b2d": {
     "classification": "dedicated",
@@ -2474,6 +2528,12 @@
     "handler": "h_AtracGetInternalErrorInfo",
     "name": "sceAtracGetInternalErrorInfo",
     "status": "unreviewed"
+  },
+  "0xe95a012b": {
+    "classification": "dedicated",
+    "handler": "h_IoIoctlAsync",
+    "name": "sceIoIoctlAsync",
+    "status": "partial"
   },
   "0xe9b3061e": {
     "classification": "dedicated",
@@ -2738,7 +2798,7 @@
     "classification": "dedicated",
     "handler": "h_IoCloseAsync",
     "name": "sceIoCloseAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xffc36a14": {
     "classification": "dedicated",
