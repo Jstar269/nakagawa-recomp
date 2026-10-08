@@ -71,13 +71,8 @@ class ImportTableError(ValueError):
 
 
 def format_boundary(exc, subject=None):
-    """Format an ImportTableError (or boundary exception) with optional subject."""
-    if hasattr(exc, "format_boundary"):
-        return exc.format_boundary(subject=subject)
-    code = getattr(exc, "code", "IMPORT_ERROR")
-    if subject is not None:
-        return f"{code}: {subject}: {exc}"
-    return f"{code}: {exc}"
+    """Format a named ImportTableError boundary, optionally naming the module."""
+    return exc.format_boundary(subject=subject)
 
 
 # Marker for stub slots that no library window claims (interleaved stub tables). Kept
