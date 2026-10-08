@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
+from collections import deque
 import hashlib
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 import struct
-from typing import Dict, Optional, Sequence
+from typing import Dict, Iterator, Optional, Sequence
 
 import title_manifest
 from .decrypt_boundary import BoundaryOutcome, decrypt_bytes_to, key_file_path
@@ -654,11 +655,12 @@ def _read_iso_directory_entries(
 
 
 def list_iso_directory(
-    iso_path: Path | str, path: tuple[str, ...]
+    iso_path: Path | str, path: tuple[str, ...], *, require_final_directory: bool = False
 ) -> list[IsoDirectoryEntry] | None:
     """List one fixed ISO directory after validating every record and extent.
 
-    ``None`` means the requested directory is absent or is not a directory. Caller
+    ``None`` means the requested directory is absent or is not a directory, unless
+    ``require_final_directory`` is set and the final component names a file. Caller
     supplied components are single names; traversal syntax and nested separators
     are refused.
     """
@@ -682,14 +684,21 @@ def list_iso_directory(
             lba, size, is_directory = _extent_from_record(pvd[156:190], file_size)
             if not is_directory or size == 0 or size > MAX_DIRECTORY_BYTES:
                 raise IsoInspectionError("root directory is not a bounded directory extent")
-            for component in path:
+            for index, component in enumerate(path):
                 entries = _read_iso_directory_entries(stream, file_size, lba, size)
                 found = next(
                     (entry for entry in entries
                      if entry.name.casefold() == component.casefold()),
                     None,
                 )
-                if found is None or not found.is_directory:
+                if found is None:
+                    return None
+                if not found.is_directory:
+                    if require_final_directory and index == len(path) - 1:
+                        raise IsoInspectionError(
+                            "DISC_MODULE_TREE_INVALID: module root "
+                            f"{'/'.join(path)} is not a directory (#726)."
+                        )
                     return None
                 lba, size = found.lba, found.size
             if not is_directory and not path:
@@ -796,15 +805,93 @@ def _elf32_mips_usable(
 # as the executable, one module at a time and fail closed per module.
 # ---------------------------------------------------------------------------
 
-MODULE_DIRECTORIES = (
+MODULE_ROOTS = (
     ("PSP_GAME", "SYSDIR"),
-    ("PSP_GAME", "SYSDIR", "PRX"),
     ("PSP_GAME", "USRDIR"),
-    ("PSP_GAME", "USRDIR", "PRX"),
 )
-MAX_MODULE_CANDIDATES = 32
+# Depth is measured below SYSDIR/USRDIR: the issue's deepest observed layout,
+# USRDIR/DATA/MODULE/MODULE, is depth 3. The extra level leaves room for common
+# packaging variations while bounding traversal work.
+MAX_MODULE_DIRECTORY_DEPTH = 4
+MAX_MODULE_DIRECTORIES = 1024
+# The issue's largest reported folder contained 35+ PRXs; 256 exceeds the
+# aggregate known folder counts without turning malformed images into an
+# unbounded intake route (#726).
+MAX_MODULE_CANDIDATES = 256
 _MODULE_SUFFIXES = {".prx", ".elf"}
 _EXECUTABLE_FILENAMES = {"eboot.bin", "boot.bin", "eboot.old"}
+
+
+def walk_disc_module_entries(
+    iso_path: Path | str,
+) -> Iterator[tuple[tuple[str, ...], IsoDirectoryEntry]]:
+    """Yield files under SYSDIR/USRDIR with shared bounded module policy.
+
+    The walk descends at most four directory levels below either root, visits
+    at most 1024 directories, and excludes every subtree named ``KMODULE``.
+    Returned paths are ISO member components; callers apply their own format
+    and executable checks to the files.
+    """
+    directories = deque()
+    visited = 0
+    discovered = 0
+
+    def read_module_directory(
+        directory: tuple[str, ...], *, module_root: bool = False
+    ) -> list[IsoDirectoryEntry] | None:
+        try:
+            entries = list_iso_directory(
+                iso_path, directory, require_final_directory=module_root
+            )
+        except IsoInspectionError as exc:
+            if str(exc).startswith("DISC_MODULE_TREE_INVALID:"):
+                raise
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: module directory "
+                f"{'/'.join(directory)} could not be listed safely (#726): {exc}"
+            ) from exc
+        if entries is None and not module_root:
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: listed module directory could not "
+                "be reopened safely (#726)."
+            )
+        return entries
+
+    for root in MODULE_ROOTS:
+        entries = read_module_directory(root, module_root=True)
+        if entries is not None:
+            discovered += 1
+            directories.append((root, 0))
+    while directories:
+        directory, depth = directories.popleft()
+        visited += 1
+        if visited > MAX_MODULE_DIRECTORIES:
+            raise IsoInspectionError(
+                "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
+                f"{MAX_MODULE_DIRECTORIES} directories; broader discovery is "
+                "in the works (#726)."
+            )
+        entries = read_module_directory(directory)
+        if entries is None:
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: listed module directory could not "
+                "be reopened safely (#726)."
+            )
+        for entry in entries:
+            if entry.is_directory:
+                if entry.name.casefold() == "kmodule":
+                    continue
+                if depth < MAX_MODULE_DIRECTORY_DEPTH:
+                    discovered += 1
+                    if discovered > MAX_MODULE_DIRECTORIES:
+                        raise IsoInspectionError(
+                            "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery "
+                            f"exceeds {MAX_MODULE_DIRECTORIES} directories; "
+                            "broader discovery is in the works (#726)."
+                        )
+                    directories.append((directory + (entry.name,), depth + 1))
+                continue
+            yield directory, entry
 
 
 def _prx_container_header_supported(header: bytes) -> bool:
@@ -819,7 +906,7 @@ def _prx_container_header_supported(header: bytes) -> bool:
 def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
     """The disc's own viable guest-module candidates.
 
-    Bounded ``.prx``/``.elf`` files below the title's module directories, minus
+    Bounded ``.prx``/``.elf`` files below the title's module roots, minus
     the executables, CFW patch modules, and any file the intake route refuses
     by name or extent (those keep their own named failure).  Each candidate
     records its member path and whether it is already plain or an encrypted
@@ -828,53 +915,64 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
     path = Path(iso_path)
     file_size = path.stat().st_size
     candidates: list[dict] = []
+    seen_names: dict[str, str] = {}
     with path.open("rb") as stream:
-        for directory in MODULE_DIRECTORIES:
-            for entry in list_iso_directory(path, directory) or []:
-                if entry.is_directory:
+        for directory, entry in walk_disc_module_entries(path):
+            name = entry.name
+            if Path(name).suffix.casefold() not in _MODULE_SUFFIXES or \
+                    name.casefold() in _EXECUTABLE_FILENAMES:
+                continue
+            if not title_manifest.FILENAME_RE.fullmatch(name) or \
+                    name.endswith(".") or \
+                    name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+                continue
+            if entry.multi_extent or entry.size <= 0 or \
+                    entry.size > MAX_EXECUTABLE_BYTES:
+                continue
+            header = _read_iso_extent(
+                stream, file_size, entry.lba, entry.size, 0, min(entry.size, 0x64)
+            )
+            if header.startswith(b"\x7fELF"):
+                if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
                     continue
-                name = entry.name
-                if Path(name).suffix.casefold() not in _MODULE_SUFFIXES or \
-                        name.casefold() in _EXECUTABLE_FILENAMES:
-                    continue
-                if not title_manifest.FILENAME_RE.fullmatch(name) or \
-                        name.endswith(".") or \
-                        name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
-                    continue
-                if entry.multi_extent or entry.size <= 0 or \
-                        entry.size > MAX_EXECUTABLE_BYTES:
-                    continue
-                header = _read_iso_extent(
-                    stream, file_size, entry.lba, entry.size, 0, min(entry.size, 0x64)
+                blob = _read_iso_extent(
+                    stream, file_size, entry.lba, entry.size, 0, entry.size
                 )
-                if header.startswith(b"\x7fELF"):
-                    if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
-                        continue
-                    blob = _read_iso_extent(
-                        stream, file_size, entry.lba, entry.size, 0, entry.size
-                    )
-                    if len(blob) != entry.size or _has_cfw_or_kernel_only_imports(blob):
-                        continue  # patch modules are excluded from every route
-                    kind = "plain"
-                elif header.startswith(b"~PSP"):
-                    if not _prx_container_header_supported(header):
-                        continue
-                    kind = "encrypted"
-                elif header.startswith(b"~SCE"):
-                    kind = "encrypted"
-                else:
+                if len(blob) != entry.size or _has_cfw_or_kernel_only_imports(blob):
+                    continue  # patch modules are excluded from every route
+                kind = "plain"
+            elif header.startswith(b"~PSP"):
+                if not _prx_container_header_supported(header):
                     continue
-                candidates.append({
-                    "name": name,
-                    "names": (name,),
-                    "members": (directory + (name,),),
-                    "directory": directory,
-                    "kind": kind,
-                })
-                if len(candidates) > MAX_MODULE_CANDIDATES:
-                    raise IsoInspectionError(
-                        "The ISO contains more than 32 guest-module candidates (#296)."
-                    )
+                kind = "encrypted"
+            elif header.startswith(b"~SCE"):
+                kind = "encrypted"
+            else:
+                continue
+            member_path = "/".join(directory + (name,))
+            folded_name = name.casefold()
+            prior_path = seen_names.get(folded_name)
+            if prior_path is not None:
+                raise IsoInspectionError(
+                    "DUPLICATE_DISC_MODULE_BASENAME: module filename "
+                    f"{name!r} occurs at {prior_path} and {member_path}; "
+                    "the decrypted module folder is keyed by filename; "
+                    "path-aware duplicate handling is in the works (#726)."
+                )
+            seen_names[folded_name] = member_path
+            candidates.append({
+                "name": name,
+                "names": (name,),
+                "members": (directory + (name,),),
+                "directory": directory,
+                "kind": kind,
+            })
+            if len(candidates) > MAX_MODULE_CANDIDATES:
+                raise IsoInspectionError(
+                    "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
+                    f"{MAX_MODULE_CANDIDATES} guest-module candidates; larger "
+                    "module sets are in the works (#726)."
+                )
     return candidates
 
 
@@ -1046,6 +1144,13 @@ def decrypt_needed_modules(
 
 def _guest_modules_check(report: dict, key_hint: Path) -> dict:
     """The compatibility check line for the module boundary (no tool names)."""
+    discovery_error = report.get("error")
+    if isinstance(discovery_error, str) and discovery_error:
+        return {
+            "code": "GUEST_MODULES", "status": "UNSUPPORTED",
+            "message": f"Guest module discovery stopped: {discovery_error}",
+            "issues": [726],
+        }
     ready = report["ready"]
     total = report["total"]
     module_dir = report.get("module_dir") or "the per-title decrypted folder"
@@ -1358,7 +1463,7 @@ def inspect_compatibility_preflight(
             }
     modules_check = (
         _guest_modules_check(module_report, key_hint)
-        if module_report["total"]
+        if module_report["total"] or module_report.get("error")
         else None
     )
     if directory_error:

@@ -2592,12 +2592,8 @@ int main(int argc, char *argv[]) {
     if (force_empty) {
         populate_sample = false;
     }
-    if (launch_index_requested && !force_empty) {
-        /* The one-shot driver is a deliberate demo/test entry point. It still
-           uses the normal library loader first, so an existing user library is
-           never overwritten by the fixture population. */
-        populate_sample = true;
-    }
+    /* --launch-index names a library entry. It does not switch on the demo
+       fixtures: an empty library is refused below unless --demo asks for them. */
     if (runtime_root_path) {
         player_app_set_runtime_root(&app, runtime_root_path);
     }
@@ -2687,22 +2683,37 @@ int main(int argc, char *argv[]) {
                          "Extracting game assets into local application data...");
             } else {
             /* Catalogued titles and structurally identified experimental discs
-               are useful library entries. Images without parsed PARAM.SFO
-               remain refused on the unsupported view. */
+               are offered on their card. The card's ADD TO LIBRARY stores them,
+               as the file picker and the setup wizard already do. --launch-now
+               is the one exception: it must launch, a launch needs a library
+               record, and the wizard's LAUNCH GAME NOW likewise adds before it
+               launches. Images without parsed PARAM.SFO remain refused on the
+               unsupported view. */
             bool should_store = res.is_supported || app.inspecting_game.is_experimental;
-            bool stored = should_store && player_app_add_game(&app, &app.inspecting_game);
+            bool add_before_launch = should_store && launch_now &&
+                                     !app.inspecting_game.is_experimental;
+            bool stored = add_before_launch && player_app_add_game(&app, &app.inspecting_game);
 
-            if (should_store && !stored) {
+            if (launch_now && app.inspecting_game.is_experimental) {
+                const char *message =
+                    "Launch now is unavailable for experimental titles. Generic ISO-to-Play "
+                    "support is in the works (#308). This title was not added; review its "
+                    "compatibility checks before adding it to the library.";
+                fprintf(stderr, "[PLAYER] EXPERIMENTAL_LAUNCH_UNAVAILABLE: %s\n", message);
+                player_app_set_error(&app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
+                                     "Experimental Title Cannot Launch Yet", message,
+                                     "Review Compatibility", VIEW_EXPERIMENTAL_TITLE);
+            } else if (add_before_launch && !stored) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
                         app.inspecting_game.disc_id);
                 player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
                                      "The title could not be stored. The library may be full, "
                                      "or the user data directory is not writable.",
                                      "Return to Library", VIEW_LIBRARY);
-            } else if (stored) {
+            } else if (should_store) {
                 player_app_set_view(&app, app.inspecting_game.is_experimental
                     ? VIEW_EXPERIMENTAL_TITLE : VIEW_SUPPORTED_TITLE);
-                if (launch_now && !app.inspecting_game.is_experimental) {
+                if (stored) {
                     printf("[PLAYER] Launching supported title now...\n");
                     const char *target_root = app.runtime_root[0] ? app.runtime_root : NULL;
                     /* nk_library_add_or_update updates an existing record in
@@ -2736,6 +2747,10 @@ int main(int argc, char *argv[]) {
                             printf("[PLAYER] Child process started! PID: %d\n", app.launch_session.process.process_id);
                             app.is_game_running = true;
                             app.launch_time_ms = SDL_GetTicks();
+                            /* The disc is in the library now, so the card's
+                               ADD TO LIBRARY would be stale: show the library,
+                               as the wizard's LAUNCH GAME NOW does. */
+                            player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
                             fprintf(stderr, "[PLAYER] Failed to start runtime: %s\n", app.launch_session.last_error);
                             player_app_set_error(&app, "PROCESS_SPAWN_FAILED", "Failed to Spawn Process",
@@ -2770,6 +2785,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* Entries at or after this index were not loaded from library.json: they are
+       the bundled demo samples (or prepared showcase demos) added below. */
+    int user_library_count = app.library.count;
     if (populate_sample) {
         player_app_populate_sample_games(&app);
     }
@@ -2968,6 +2986,12 @@ int main(int argc, char *argv[]) {
        while the parent waits for its real exit status. A test can set
        SR_BOOT_EVENT_FILE to receive the child's window/first-frame milestones. */
     if (launch_index_requested) {
+        if (app.library.count == 0 && !populate_sample) {
+            fprintf(stderr, "[PLAYER] --launch-index=%d: your library is empty, so there is "
+                    "nothing to launch. Add a game first, or pass --demo to launch the "
+                    "bundled SAMPLE demo entries.\n", launch_index);
+            return 2;
+        }
         if (launch_index < 0 || launch_index >= app.game_count) {
             fprintf(stderr, "[PLAYER] Invalid --launch-index=%d for library count %d.\n",
                     launch_index, app.game_count);
@@ -2975,6 +2999,8 @@ int main(int argc, char *argv[]) {
         }
         app.selected_game_index = launch_index;
         const GameRecord *launch_game = &app.games[launch_index];
+        /* Bundled demo entries are not loaded from library.json. */
+        bool sample_entry = launch_index >= user_library_count;
         NkRuntimePackageStatus launch_status =
             player_app_validate_runtime_package(
                 &app, launch_game, NULL, NULL, 0);
@@ -2985,13 +3011,26 @@ int main(int argc, char *argv[]) {
                  app.runtime_root[0] ? app.runtime_root : NULL,
                  launch_game->title_id));
         if (!launch_available) {
-            fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
-                    launch_index);
+            if (sample_entry) {
+                fprintf(stderr, "[PLAYER] Launch index %d is a bundled SAMPLE demo, not in "
+                        "library.json, and has no prepared runtime; PLAY NOW is unavailable.\n",
+                        launch_index);
+            } else {
+                fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
+                        launch_index);
+            }
             return 3;
         }
-        printf("[PLAYER] Launch index %d: PLAY NOW available for %s (%s).\n",
-               launch_index, app.games[launch_index].disc_id,
-               app.games[launch_index].title_name);
+        if (sample_entry) {
+            printf("[PLAYER] Launch index %d is a bundled SAMPLE demo, not in library.json: "
+                   "PLAY NOW available for %s (%s).\n",
+                   launch_index, app.games[launch_index].disc_id,
+                   app.games[launch_index].title_name);
+        } else {
+            printf("[PLAYER] Launch index %d: PLAY NOW available for %s (%s).\n",
+                   launch_index, app.games[launch_index].disc_id,
+                   app.games[launch_index].title_name);
+        }
         if (!player_app_launch_game(&app, launch_index)) {
             fprintf(stderr, "[PLAYER] --launch-index failed: %s\n",
                     app.launch_session.last_error);

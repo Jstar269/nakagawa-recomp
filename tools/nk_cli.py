@@ -53,6 +53,7 @@ from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root  # noqa: E402
 from nk_core.iso_inspect import (  # noqa: E402
     MAX_EXECUTABLE_BYTES,
+    MAX_MODULE_CANDIDATES,
     IsoInspectionError,
     IsoDirectoryEntry,
     _elf32_mips_usable,
@@ -62,8 +63,8 @@ from nk_core.iso_inspect import (  # noqa: E402
     _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
     inspect_compatibility_preflight,
-    list_iso_directory,
     plan_provisional_module_bindings,
+    walk_disc_module_entries,
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
@@ -72,7 +73,7 @@ import stage_runtime_dlls as _runtime_dlls  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_CACHE_MARKER = ".nk-aot-package-cache-v1"
-MAX_GUEST_MODULES = 32
+MAX_GUEST_MODULES = MAX_MODULE_CANDIDATES
 MAX_GUEST_MODULE_BYTES = 256 * 1024 * 1024
 MAX_GUEST_MODULE_SET_BYTES = 512 * 1024 * 1024
 _VRAM_BASE = 0x04000000
@@ -385,71 +386,72 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
 
 
 def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
-    """Find bounded ELF/PRX candidates in the title's own SYSDIR and USRDIR."""
+    """Find bounded ELF/PRX candidates below the title's module roots."""
     file_size = iso_path.stat().st_size
     candidates: list[dict] = []
     selected_name = Path(selected).name.casefold()
-    module_directories = (
-        ("PSP_GAME", "SYSDIR"),
-        ("PSP_GAME", "SYSDIR", "PRX"),
-        ("PSP_GAME", "USRDIR"),
-        ("PSP_GAME", "USRDIR", "PRX"),
-    )
-    for directory in module_directories:
-        entries = list_iso_directory(iso_path, directory) or []
-        for entry in entries:
-            if entry.is_directory or Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
-                continue
-            if entry.name.casefold() in {selected_name, "boot.bin"}:
-                continue
-            if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
-                    entry.name.endswith(".") or \
-                    entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
-                kind = "unsupported"
-            elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
-                kind = "unsupported"
-            else:
-                header_size = min(entry.size, 0x64)
-                with iso_path.open("rb") as stream:
-                    header = _read_iso_extent(
-                        stream, file_size, entry.lba, entry.size, 0, header_size
-                    )
-                    if header.startswith(b"\x7fELF"):
-                        if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
-                            kind = "unsupported"
-                        else:
-                            module_bytes = _read_iso_extent(
-                                stream, file_size, entry.lba, entry.size, 0, entry.size
-                            )
-                            if len(module_bytes) != entry.size:
-                                kind = "unsupported"
-                            elif _has_cfw_or_kernel_only_imports(module_bytes):
-                                continue
-                            else:
-                                kind = "plain-elf"
-                    elif header.startswith(b"~SCE"):
-                        kind = "encrypted-prx"
-                    elif header.startswith(b"~PSP"):
-                        kind = "encrypted-prx" if _encrypted_prx_header_supported(
-                            header
-                        ) else "unsupported"
-                    else:
+    for directory, entry in walk_disc_module_entries(iso_path):
+        if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
+            continue
+        if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
+            continue
+        if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
+                entry.name.endswith(".") or \
+                entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+            kind = "unsupported"
+        elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
+            kind = "unsupported"
+        else:
+            header_size = min(entry.size, 0x64)
+            with iso_path.open("rb") as stream:
+                header = _read_iso_extent(
+                    stream, file_size, entry.lba, entry.size, 0, header_size
+                )
+                if header.startswith(b"\x7fELF"):
+                    if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
                         kind = "unsupported"
-            candidates.append({
-                "name": entry.name,
-                "directory": directory,
-                "entry": entry,
-                "kind": kind,
-            })
-            if len(candidates) > MAX_GUEST_MODULES:
-                raise PackageBuildError("The ISO contains more than 32 guest-module candidates (#296).")
+                    else:
+                        module_bytes = _read_iso_extent(
+                            stream, file_size, entry.lba, entry.size, 0, entry.size
+                        )
+                        if len(module_bytes) != entry.size:
+                            kind = "unsupported"
+                        elif _has_cfw_or_kernel_only_imports(module_bytes):
+                            continue
+                        else:
+                            kind = "plain-elf"
+                elif header.startswith(b"~SCE"):
+                    kind = "encrypted-prx"
+                elif header.startswith(b"~PSP"):
+                    kind = "encrypted-prx" if _encrypted_prx_header_supported(
+                        header
+                    ) else "unsupported"
+                else:
+                    kind = "unsupported"
+        candidates.append({
+            "name": entry.name,
+            "directory": directory,
+            "entry": entry,
+            "kind": kind,
+        })
+        if len(candidates) > MAX_GUEST_MODULES:
+            raise PackageBuildError(
+                f"DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
+                f"{MAX_GUEST_MODULES} guest-module candidates; larger "
+                "module sets are in the works (#726)."
+            )
 
-    names: set[str] = set()
+    names: dict[str, str] = {}
     for candidate in candidates:
         folded = candidate["name"].casefold()
+        member_path = "/".join(candidate["directory"] + (candidate["name"],))
         if folded in names:
-            raise PackageBuildError("Guest-module filenames collide across ISO directories (#308).")
-        names.add(folded)
+            raise PackageBuildError(
+                "DUPLICATE_DISC_MODULE_BASENAME: module filename "
+                f"{candidate['name']!r} occurs at {names[folded]} and "
+                f"{member_path}; automatic intake is in the works (#726)."
+            )
+        names[folded] = member_path
     staged_size = sum(
         candidate["entry"].size for candidate in candidates
         if candidate["kind"] == "plain-elf"
@@ -733,12 +735,28 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             if device.casefold() in {"disc0", "umd0"} and \
                     guest_components[:1] and guest_components[0].casefold() == "psp_game":
                 members.append(guest_components)
-        members.extend((
-            ("PSP_GAME", "SYSDIR", name),
-            ("PSP_GAME", "SYSDIR", "PRX", name),
-            ("PSP_GAME", "USRDIR", name),
-            ("PSP_GAME", "USRDIR", "PRX", name),
-        ))
+        if members:
+            file_size = iso_path.stat().st_size
+            with iso_path.open("rb") as stream:
+                if _lookup_iso_file(stream, file_size, members[0]) is None:
+                    members.clear()
+        if not members:
+            disc_spellings = {name.casefold()}
+            if disc_name:
+                disc_spellings.add(disc_name.casefold())
+            matches = [
+                (directory + (entry.name,))
+                for directory, entry in walk_disc_module_entries(iso_path)
+                if entry.name.casefold() in disc_spellings
+            ]
+            if len(matches) > 1:
+                first, second = ("/".join(member) for member in matches[:2])
+                raise PackageBuildError(
+                    "DUPLICATE_DISC_MODULE_BASENAME: required guest module "
+                    f"{disc_name or name!r} occurs at {first} and {second}; "
+                    "automatic intake is in the works (#726)."
+                )
+            members.extend(matches)
         for member in dict.fromkeys(members):
             try:
                 file_size = iso_path.stat().st_size
@@ -1468,6 +1486,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
             shutil.rmtree(build_dir)
         reporter.report("compile", "START", "Compiling package with AOT codegen...")
+        if stage_observer is not None:
+            stage_observer("compile", "START", 0)
         command = [
             sys.executable,
             str(ROOT / "tools" / "title_codegen_plan.py"),
@@ -1565,6 +1585,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             )
         reporter.report("compile", "PASS", "Compilation completed successfully")
         reporter.report("package", "START", "Staging runtime assets and validating package...")
+        if stage_observer is not None:
+            stage_observer("build_package", "START", 0)
         package_started = time.perf_counter()
         _stage_runtime_assets(build_dir)
         if module_dir is not None:
@@ -1883,24 +1905,103 @@ def _new_bringup_report() -> dict:
 
 
 def _update_issues(report: dict, values) -> None:
-    allowed = {118, 280, 285, 295, 296, 297, 298, 300, 308}
+    allowed = {118, 280, 285, 295, 296, 297, 298, 300, 308, 726}
     report["issue_numbers"] = sorted(
         set(report["issue_numbers"]) | {value for value in values if value in allowed}
     )
 
 
-def _set_bringup_stage(report: dict, stage: str, status: str, duration_ms: int) -> None:
+class _BringupProgressWriter:
+    """Persist private sweep stage transitions so a parent can classify a kill."""
+
+    def __init__(self, path: Path | None):
+        self.path = path
+        self.stages: dict[str, dict] = {}
+
+    @staticmethod
+    def _now_ms() -> int:
+        return time.time_ns() // 1_000_000
+
+    def _write(self) -> None:
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(self.path.name + ".tmp")
+        temporary.write_text(
+            json.dumps({"schema_version": 1, "stages": self.stages}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, self.path)
+
+    def start(self, stage: str) -> None:
+        self.stages[stage] = {
+            "status": "RUNNING",
+            "started_at_unix_ms": self._now_ms(),
+            "finished_at_unix_ms": None,
+            "duration_ms": 0,
+        }
+        self._write()
+
+    def finish(self, stage: str, status: str, duration_ms: int) -> None:
+        now_ms = self._now_ms()
+        previous = self.stages.get(stage)
+        started_at = (
+            previous["started_at_unix_ms"]
+            if previous is not None
+            else max(0, now_ms - max(0, int(duration_ms)))
+        )
+        measured_duration = max(0, now_ms - started_at)
+        self.stages[stage] = {
+            "status": status,
+            "started_at_unix_ms": started_at,
+            "finished_at_unix_ms": now_ms,
+            "duration_ms": max(measured_duration, max(0, int(duration_ms))),
+        }
+        self._write()
+
+
+def _set_bringup_stage(
+    report: dict,
+    stage: str,
+    status: str,
+    duration_ms: int,
+    progress: _BringupProgressWriter | None = None,
+) -> None:
     report["reached_stage"] = stage
     report["stages"][stage] = {
         "status": status,
         "duration_ms": max(0, int(duration_ms)),
     }
+    if progress is not None:
+        progress.finish(stage, status, duration_ms)
 
 
-def _fail_bringup(report: dict, stage: str, failure_class: str, issues=(), duration_ms=0) -> None:
-    _set_bringup_stage(report, stage, "FAIL", duration_ms)
+def _fail_bringup(
+    report: dict,
+    stage: str,
+    failure_class: str,
+    issues=(),
+    duration_ms=0,
+    progress: _BringupProgressWriter | None = None,
+) -> None:
+    _set_bringup_stage(report, stage, "FAIL", duration_ms, progress)
     report["failure_class"] = failure_class
     _update_issues(report, issues)
+
+
+def _bringup_import_failure(exc: Exception, checks: dict) -> tuple[str, list[int], str | None]:
+    detail = str(exc)
+    if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
+        return "GUEST_MODULE_DISCOVERY_FAILED", [726], detail
+
+    failure = "EXPERIMENTAL_IMPORT_FAILED"
+    issues = [308]
+    if isinstance(exc, IsoInspectionError) and "load binding" in detail:
+        failure = "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED"
+    if checks.get("EXECUTABLE", {}).get("issue_numbers") and \
+            failure == "EXPERIMENTAL_IMPORT_FAILED":
+        issues = checks["EXECUTABLE"]["issue_numbers"]
+    return failure, issues, None
 
 
 def _sanitized_checks(preflight: dict) -> list[dict]:
@@ -2377,9 +2478,34 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     report = _new_bringup_report()
     report_path = Path(args.report).expanduser().resolve(strict=False)
     private_sweep_import_report: Path | None = None
+    progress: _BringupProgressWriter | None = None
+
+    def fail_stage(report_value, stage, failure_class, issues=(), duration_ms=0):
+        _fail_bringup(
+            report_value, stage, failure_class, issues, duration_ms
+        )
+        if progress is not None:
+            progress_stage = "compile" if stage in {"compile", "build_package"} else stage
+            progress.finish(progress_stage, "FAIL", duration_ms)
+
+    def set_stage(report_value, stage, status, duration_ms):
+        _set_bringup_stage(report_value, stage, status, duration_ms)
+        if progress is not None and not (stage == "compile" and status == "PASS"):
+            progress_stage = "compile" if stage in {"compile", "build_package"} else stage
+            progress.finish(progress_stage, status, duration_ms)
+
     try:
         work_dir = _user_data_root(Path(args.work_dir))
         work_dir.mkdir(parents=True, exist_ok=True)
+        requested_progress = getattr(args, "sweep_progress_report", None)
+        if requested_progress is not None:
+            progress_path = Path(requested_progress).expanduser().resolve(strict=False)
+            if not progress_path.is_relative_to(work_dir):
+                raise PackageBuildError(
+                    "Private sweep progress report must stay under the bring-up work directory."
+                )
+            progress = _BringupProgressWriter(progress_path)
+            progress.start("inspect")
         requested_private_report = getattr(args, "private_sweep_import_report", None)
         if requested_private_report is not None:
             private_sweep_import_report = Path(requested_private_report).expanduser().resolve(strict=False)
@@ -2391,7 +2517,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         user_root.mkdir(parents=True, exist_ok=True)
         iso_path = Path(args.iso).expanduser().resolve(strict=True)
     except (PackageBuildError, OSError, ValueError):
-        _fail_bringup(report, "inspect", "INVALID_ISO")
+        fail_stage(report, "inspect", "INVALID_ISO")
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
@@ -2405,7 +2531,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
     except Exception:
         elapsed = int((time.perf_counter() - started) * 1000)
-        _fail_bringup(report, "inspect", "INVALID_ISO", duration_ms=elapsed)
+        fail_stage(report, "inspect", "INVALID_ISO", duration_ms=elapsed)
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
@@ -2415,14 +2541,14 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     executable_ok = checks.get("EXECUTABLE", {}).get("status") == "OK"
     selected = preflight.get("selected_executable")
     if not disc_ok:
-        _fail_bringup(report, "inspect", "INVALID_ISO",
+        fail_stage(report, "inspect", "INVALID_ISO",
                       checks.get("DISC_SFO", {}).get("issue_numbers", []),
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
     if preflight.get("modified_dump_cfw_loader") and selected != "EBOOT.elf":
-        _fail_bringup(report, "inspect", "MODIFIED_DUMP_CFW_LOADER", [308],
+        fail_stage(report, "inspect", "MODIFIED_DUMP_CFW_LOADER", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -2430,20 +2556,22 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     if not executable_ok or selected not in {"EBOOT.BIN", "BOOT.BIN", "EBOOT.elf"}:
         exec_issues = checks.get("EXECUTABLE", {}).get("issue_numbers", [])
         failure = "EXECUTABLE_UNSUPPORTED" if exec_issues else "INVALID_ISO"
-        _fail_bringup(report, "inspect", failure, exec_issues,
+        fail_stage(report, "inspect", failure, exec_issues,
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
     boot_path = _psp_boot_path(preflight.get("selected_executable_source"))
     if boot_path is None:
-        _fail_bringup(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
+        fail_stage(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
-    _set_bringup_stage(report, "inspect", "PASS", int((time.perf_counter() - started) * 1000))
+    set_stage(report, "inspect", "PASS", int((time.perf_counter() - started) * 1000))
 
+    if progress is not None:
+        progress.start("prepare_import")
     started = time.perf_counter()
     try:
         profile_path: Path | None = None
@@ -2473,11 +2601,14 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 module_candidates = _discover_iso_module_candidates(
                     iso_path, str(selected).upper()
                 )
-            except (OSError, IsoInspectionError, PackageBuildError):
-                _fail_bringup(
+            except (OSError, IsoInspectionError, PackageBuildError) as exc:
+                fail_stage(
                     report, "prepare_import", "GUEST_MODULE_DISCOVERY_FAILED",
-                    [296], int((time.perf_counter() - started) * 1000),
+                    [726], int((time.perf_counter() - started) * 1000),
                 )
+                detail = str(exc)
+                if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
+                    print(detail)
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
                 return 1
@@ -2528,7 +2659,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         "the module is still encrypted",
                     )
                     print(f"MODULE {candidate['name']}: not ready ({detail})")
-                _fail_bringup(
+                fail_stage(
                     report, "prepare_import", "GUEST_MODULE_DECRYPTION_REQUIRED",
                     [295], int((time.perf_counter() - started) * 1000),
                 )
@@ -2536,7 +2667,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 print(_bringup_human_summary(report))
                 return 1
             if unready:
-                _fail_bringup(
+                fail_stage(
                     report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
                     [295, 308], int((time.perf_counter() - started) * 1000),
                 )
@@ -2553,7 +2684,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         iso_path, user_root, metadata.disc_id, plain_modules
                     )
                 except (OSError, IsoInspectionError, PackageBuildError):
-                    _fail_bringup(
+                    fail_stage(
                         report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
                         [296], int((time.perf_counter() - started) * 1000),
                     )
@@ -2578,7 +2709,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         selected_elf, module_inputs
                     )
                 except (IsoInspectionError, OSError):
-                    _fail_bringup(
+                    fail_stage(
                         report, "prepare_import", "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
                         [308], int((time.perf_counter() - started) * 1000),
                     )
@@ -2592,7 +2723,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         profile_path, profile, module_bindings
                     )
                 except (OSError, KeyError, ValueError):
-                    _fail_bringup(
+                    fail_stage(
                         report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
                         [296], int((time.perf_counter() - started) * 1000),
                     )
@@ -2614,22 +2745,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             is_experimental, str(preflight["selected_executable_source"]),
         )
     except Exception as exc:
-        failure = "EXPERIMENTAL_IMPORT_FAILED"
-        issues = [308]
-        if isinstance(exc, IsoInspectionError) and "load binding" in str(exc):
-            failure = "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED"
-        if checks.get("EXECUTABLE", {}).get("issue_numbers"):
-            if failure == "EXPERIMENTAL_IMPORT_FAILED":
-                issues = checks["EXECUTABLE"]["issue_numbers"]
-        _fail_bringup(report, "prepare_import", failure, issues,
+        failure, issues, module_detail = _bringup_import_failure(exc, checks)
+        if module_detail is not None:
+            print(module_detail)
+        fail_stage(report, "prepare_import", failure, issues,
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
-    _set_bringup_stage(report, "prepare_import", "PASS", int((time.perf_counter() - started) * 1000))
+    set_stage(report, "prepare_import", "PASS", int((time.perf_counter() - started) * 1000))
     if not metadata.matched_profile:
         _update_issues(report, [285, 308])
 
+    if progress is not None:
+        progress.start("analyze")
     started = time.perf_counter()
     try:
         import title_codegen_plan
@@ -2652,14 +2781,16 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 # production bring-up result.
                 pass
     except Exception:
-        _fail_bringup(report, "analyze", "ANALYSIS_FAILED", [296],
+        fail_stage(report, "analyze", "ANALYSIS_FAILED", [296],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
-    _set_bringup_stage(report, "analyze", "PASS", int((time.perf_counter() - started) * 1000))
+    set_stage(report, "analyze", "PASS", int((time.perf_counter() - started) * 1000))
     _update_issues(report, [308] if report["unsupported_imports"] else [])
 
+    if progress is not None:
+        progress.start("codegen")
     started = time.perf_counter()
     codegen_dir = work_dir / "codegen-stage"
     try:
@@ -2689,23 +2820,24 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             codegen_dir / f"{manifest['game_name']}_recomp_stubs.txt", sources
         )
         if completed.returncode != 0:
-            _fail_bringup(report, "codegen", "CODEGEN_FAILED", [296],
+            fail_stage(report, "codegen", "CODEGEN_FAILED", [296],
                           int((time.perf_counter() - started) * 1000))
             _write_bringup_report(report, report_path)
             print(_bringup_human_summary(report))
             return 1
     except Exception:
-        _fail_bringup(report, "codegen", "CODEGEN_FAILED", [296],
+        fail_stage(report, "codegen", "CODEGEN_FAILED", [296],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
-    _set_bringup_stage(report, "codegen", "PASS", int((time.perf_counter() - started) * 1000))
+    set_stage(report, "codegen", "PASS", int((time.perf_counter() - started) * 1000))
 
     observer_events = {}
     def observe_package_stage(stage, status, duration_ms):
         observer_events[stage] = (status, duration_ms)
-        _set_bringup_stage(report, stage, status, duration_ms)
+        if status != "START":
+            set_stage(report, stage, status, duration_ms)
 
     build_args = argparse.Namespace(
         disc_id=metadata.disc_id,
@@ -2713,9 +2845,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         module_dir=module_dir,
         psp_header=None,
         instruction_trace=bool(getattr(args, "instruction_trace", False)),
+        log_file=work_dir / "bringup-build.log",
     )
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
+    if progress is not None:
+        progress.start("compile")
     with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
         build_status = cmd_build_package(build_args, stage_observer=observe_package_stage)
     if build_status != 0:
@@ -2727,7 +2862,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         else:
             failure, stage, issues = "BUILD_PACKAGE_FAILED", "build_package", [296, 297]
         if report["stages"][stage]["status"] == "NOT_RUN":
-            _fail_bringup(report, stage, failure, issues, 0)
+            fail_stage(report, stage, failure, issues, 0)
         else:
             report["failure_class"] = failure
             _update_issues(report, issues)
@@ -2735,10 +2870,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         print(_bringup_human_summary(report))
         return 1
     if report["stages"]["compile"]["status"] == "NOT_RUN":
-        _set_bringup_stage(report, "compile", "PASS", 0)
+        set_stage(report, "compile", "PASS", 0)
     if report["stages"]["build_package"]["status"] == "NOT_RUN":
-        _set_bringup_stage(report, "build_package", "PASS", 0)
+        set_stage(report, "build_package", "PASS", 0)
 
+    if progress is not None:
+        progress.start("launch")
     started = time.perf_counter()
     package_dir = user_root / "packages" / metadata.disc_id.upper()
     try:
@@ -2753,7 +2890,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         try:
             loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)
         except (OSError, ValueError) as exc:
-            _fail_bringup(
+            fail_stage(
                 report, "launch", "LOOSE_CONTENT_ROOTS_UNAVAILABLE", [289],
                 int((time.perf_counter() - started) * 1000),
             )
@@ -2829,12 +2966,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             if process.returncode == 0:
                 hle_observed = _flight_has_hle_import(flight_output)
                 if hle_observed is False:
-                    _fail_bringup(
+                    fail_stage(
                         report, "launch", "EXITED_ZERO_BEFORE_HLE", [285, 308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 elif hle_observed is None:
-                    _fail_bringup(
+                    fail_stage(
                         report, "launch", "GUEST_ACTIVITY_UNVERIFIED", [285, 308],
                         int((time.perf_counter() - started) * 1000),
                     )
@@ -2845,21 +2982,21 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                             failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 285, 308]
                         else:
                             failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [285, 308]
-                        _fail_bringup(report, "launch", failure, issues,
+                        fail_stage(report, "launch", failure, issues,
                                       int((time.perf_counter() - started) * 1000))
                     elif framebuffer_observed is None:
-                        _fail_bringup(
+                        fail_stage(
                             report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [285, 308],
                             int((time.perf_counter() - started) * 1000),
                         )
                     else:
                         if not presentation_evidence_ok:
-                            _fail_bringup(
+                            fail_stage(
                                 report, "launch", "NO_FRAME_SUBMISSIONS", [297, 308],
                                 int((time.perf_counter() - started) * 1000),
                             )
                         else:
-                            _set_bringup_stage(report, "launch", "PASS",
+                            set_stage(report, "launch", "PASS",
                                                int((time.perf_counter() - started) * 1000))
             else:
                 folded = launch_output.casefold()
@@ -2888,18 +3025,18 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     report["exit_classification"] = "HEADLESS_UNAVAILABLE"
                 else:
                     failure, issues = "LAUNCH_FAILED", [297]
-                _fail_bringup(report, "launch", failure, issues,
+                fail_stage(report, "launch", failure, issues,
                               int((time.perf_counter() - started) * 1000))
         except subprocess.TimeoutExpired:
             process.kill()
             launch_output, _ = process.communicate()
             _set_bringup_presentation(report, launch_output)
             report["exit_classification"] = "TIMED_OUT"
-            _fail_bringup(report, "launch", "LAUNCH_TIMEOUT", [297],
+            fail_stage(report, "launch", "LAUNCH_TIMEOUT", [297],
                           int((time.perf_counter() - started) * 1000))
     except OSError:
         report["exit_classification"] = "EXITED_NONZERO"
-        _fail_bringup(report, "launch", "LAUNCH_FAILED", [297],
+        fail_stage(report, "launch", "LAUNCH_FAILED", [297],
                       int((time.perf_counter() - started) * 1000))
 
     _write_bringup_report(report, report_path)
@@ -2907,7 +3044,26 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     return 0 if report["failure_class"] == "NONE" else 1
 
 
+def _use_utf8_standard_streams() -> None:
+    """Write UTF-8 to stdout and stderr whether they are a console, a pipe or a file.
+
+    Titles are UTF-8 (PARAM.SFO TITLE is validated as UTF-8). A redirected Windows
+    stream defaults to the ANSI code page, which wrote a title's trademark and
+    registered signs as single bytes 0x99 and 0xAE; a UTF-8 reader then saw
+    U+FFFD. The same mapping nk_doctor.py applies, so every tool agrees.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main() -> int:
+    _use_utf8_standard_streams()
     parser = argparse.ArgumentParser(description="Nakagawa Recomp Headless CLI")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -2972,6 +3128,8 @@ def main() -> int:
     p_bringup.add_argument("--instruction-trace", action="store_true",
                            help="Write guest instruction trace under --work-dir")
     p_bringup.add_argument("--private-sweep-import-report", type=Path, default=None,
+                           help=argparse.SUPPRESS)
+    p_bringup.add_argument("--sweep-progress-report", type=Path, default=None,
                            help=argparse.SUPPRESS)
     p_bringup.set_defaults(func=cmd_bringup)
 
