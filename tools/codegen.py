@@ -592,7 +592,7 @@ def vreg_indices(reg, size):
     # 14 selected wide encodings, including the two that discriminate between
     # candidate rules: triple width selects its row from bit 6 alone, and
     # transpose wraps as (row + lane) & 3 rather than saturating. See
-    # fixtures/vfpu_addressing/hardware_vfpu_addr_001.json and issue #296.
+    # fixtures/vfpu_addressing/hardware_vfpu_addr_001.json.
     #
     # Boundary: 14 of 512 wide encodings were observed. The rest are covered
     # only by the derived cross-implementation tests in
@@ -1151,7 +1151,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             return (f"{{ uint32_t _a = {base}; {guard}if((_a&15u)==0 && sr_guest_span_writable(_a,16u)){{ {parts} }}else{{"
                     f"{_vfpu_interp_stmt(addr, w)} }} }}"), base, 16  # sv.q
         if op == 0x36:  # lv.q
-            # #184: the whole 16-byte span must be readable before any destination
+            # The whole 16-byte span must be readable before any destination
             # lane commits. A straddling/wrapped aligned span falls back to the
             # authoritative interpreter, which rejects it all-or-nothing.
             parts = " ".join(f"s->vi[{idx[i]}] = MEM_R32(_a + {i*4});" for i in range(4))

@@ -27,7 +27,7 @@ import mem_debug as md
 
 
 class ExecutablePathResolutionTest(unittest.TestCase):
-    """The attached executable is resolved before any tool is spawned (#294)."""
+    """The attached executable is resolved before any tool is spawned."""
 
     def test_nm_receives_an_absolute_executable_path(self):
         with tempfile.TemporaryDirectory(prefix="mem_debug_exe_") as tmp_dir:

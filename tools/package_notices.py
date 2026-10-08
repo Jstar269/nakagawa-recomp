@@ -195,7 +195,7 @@ def is_system_dll(name: str) -> bool:
 
 
 def _prerequisite_toolchain_root() -> Path | None:
-    """The pinned-prerequisite installer's UCRT64 root, when installed (#296/#547).
+    """The pinned-prerequisite installer's UCRT64 root, when installed.
 
     the installer extracts each MSYS2 package under ``<data root>/prerequisites/msys64``,
     so its toolchain root is ``<data root>/prerequisites/msys64/ucrt64`` with
@@ -380,10 +380,10 @@ def _git_text(repo_root: Path, *args: str) -> str | None:
 
 
 def source_reference(repo_root: Path = ROOT) -> dict[str, Any]:
-    """The exact source a package was built from (#421).
+    """The exact source a package was built from.
 
     The whole program is GPL-3.0-or-later and the FFmpeg ATRAC3+ subset is
-    LGPL-2.1-or-later, statically linked. The maintainer's decision for #421 is
+    LGPL-2.1-or-later, statically linked. The maintainer's decision is
     that the complete corresponding source is the relink mechanism, so every
     package names the repository, commit and (when built from one) tag it came
     from, and says so plainly when the working tree carried local changes.
@@ -667,7 +667,7 @@ def generate_package_notices(
         dest_file.write_text(text + "\n", encoding="utf-8", newline="\n")
         copied_texts[display_name] = text
 
-    # Emit SOURCE.txt: the exact source of this build (#421 decision).
+    # Emit SOURCE.txt: the exact source of this build.
     reference = source_reference(repo_root)
     source_content = render_source_notice(reference)
     (package_dir / "SOURCE.txt").write_text(source_content, encoding="utf-8", newline="\n")

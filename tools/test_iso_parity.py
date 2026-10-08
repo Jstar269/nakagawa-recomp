@@ -1033,7 +1033,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(module_check["status"], "UNSUPPORTED")
         self.assertIn(first, module_check["message"])
         self.assertIn(second, module_check["message"])
-        self.assertEqual(module_check["issues"], [726])
+        self.assertEqual(module_check["issues"], [308])
 
     def test_nonexperimental_bringup_keeps_module_boundary_detail_and_issue(self) -> None:
         failure, issues, detail = nk_cli._bringup_import_failure(
@@ -1043,7 +1043,7 @@ int main(int argc, char **argv) {{
             {"EXECUTABLE": {"issue_numbers": [308]}},
         )
         self.assertEqual(failure, "GUEST_MODULE_DISCOVERY_FAILED")
-        self.assertEqual(issues, [726])
+        self.assertEqual(issues, [308])
         self.assertEqual(
             detail, "DUPLICATE_DISC_MODULE_BASENAME: shared.prx occurs twice"
         )
@@ -1068,11 +1068,13 @@ int main(int argc, char **argv) {{
         }
         create_test_iso_with_module_tree(iso_file, modules)
         with self.assertRaisesRegex(
-            IsoInspectionError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+            IsoInspectionError,
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
         ):
             list_disc_module_candidates(iso_file)
         with self.assertRaisesRegex(
-            nk_cli.PackageBuildError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+            nk_cli.PackageBuildError,
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
         ):
             nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
 
@@ -1408,7 +1410,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(executable["status"], "UNSUPPORTED")
         self.assertIn(f"supply decrypted modules at {decrypted_dir}".lower(),
                       executable["message"].lower())
-        self.assertIn("#295", executable["message"])
+        self.assertNotRegex(executable["message"], r"#[0-9]+")
         cli = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
              str(iso_file), "--json", "--root", str(user_root)],
@@ -1421,7 +1423,7 @@ int main(int argc, char **argv) {{
         self.assertIn(str(decrypted_dir), cli_executable["message"])
         self.assertIn("matching local key file", cli_executable["message"])
         self.assertNotIn("automatic decryption is in the works", cli_executable["message"].lower())
-        self.assertIn("#295", cli_executable["message"])
+        self.assertNotRegex(cli_executable["message"], r"#[0-9]+")
 
         decrypted_dir.mkdir(parents=True)
         eboot = decrypted_dir / "EBOOT.elf"
@@ -1660,8 +1662,8 @@ int main(int argc, char **argv) {{
                     "cache": {"format": "nakagawa-aot-cache", "schema_version": 1, "key": {}, "codegen_options": {}, "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True}},
                     "backends": "public" if public else "private",
                     "limits": [
-                        "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                        "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
                     ] if public else [],
                 }),
                 encoding="utf-8",
@@ -1687,14 +1689,14 @@ int main(int argc, char **argv) {{
             report = json.loads((user_root / "packages" / disc_id / "build-report.json").read_text(encoding="utf-8"))
             self.assertEqual(report.get("backends"), "public")
             self.assertEqual(report.get("limits"), [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ])
             completion = json.loads((user_root / "packages" / disc_id / "completion-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(completion.get("backends"), "public")
             self.assertEqual(completion.get("limits"), [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ])
 
         # Test private mode when private backends are present
@@ -1787,10 +1789,10 @@ int main(int argc, char **argv) {{
         )
         self.assertTrue(preflight["is_experimental"])
         by_code = {check["code"]: check for check in preflight["checks"]}
-        self.assertEqual(by_code["EXPERIMENTAL"]["issues"], [285, 308])
+        self.assertEqual(by_code["EXPERIMENTAL"]["issues"], [308])
         self.assertIn("Compatibility is unknown", by_code["EXPERIMENTAL"]["message"])
         self.assertEqual(by_code["RUNTIME_PACKAGE"]["status"], "MISSING")
-        self.assertEqual(by_code["RUNTIME_PACKAGE"]["issues"], [296, 297])
+        self.assertEqual(by_code["RUNTIME_PACKAGE"]["issues"], [308])
 
         python_root = self.temp_dir / "python-user-data"
         python_profile_path = write_experimental_profile(
@@ -2087,7 +2089,7 @@ int main(int argc, char **argv) {{
     def test_native_launch_plan(self) -> None:
         """Native launch resolution is identity-bound to the selected title.
 
-        #366 failing-before contract: this fixture used to PROVE the defect --
+        Failing-before contract: this fixture used to PROVE the defect --
         a stale build/<retail>/<retail> runtime satisfied an unrelated
         selected title (display-smoke-v1) and the session paired that binary
         with another title's session data. The stale artifact now must be

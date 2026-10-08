@@ -179,9 +179,9 @@ static atomic_uint s_hle_devctl_refusal_log_count;
 
 static const char *hle_success_exception_issue(uint32_t nid) {
     switch (nid) {
-    case 0xb3b5d042u: return "#281, #286"; /* sceAtracGetOutputChannel */
-    case 0xa569e425u: return "#281";       /* sceKernelVolatileMemUnlock */
-    case 0x4b85c861u: return "#281";       /* sceUtilityOskUpdate */
+    case 0xb3b5d042u: return "#363, #286"; /* sceAtracGetOutputChannel */
+    case 0xa569e425u: return "#363";       /* sceKernelVolatileMemUnlock */
+    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate */
     default: return NULL;
     }
 }
@@ -202,7 +202,7 @@ static void hle_unsupported_summary(void) {
         uint32_t unsupported_error = atomic_load_explicit(&e->unimplemented_error,
                                                           memory_order_acquire);
         if (unsupported_error) {
-            fprintf(stderr, "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)\n",
+            fprintf(stderr, "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#341)\n",
                     e->name, e->nid, unsupported_error);
         } else {
             const char *issue = hle_success_exception_issue(e->nid);
@@ -217,7 +217,7 @@ static void hle_note_unsupported(HleEntry *e) {
     if (atomic_exchange_explicit(&e->unsupported_state, 1u, memory_order_acq_rel))
         return;
     hle_register_unsupported_summary();
-    fprintf(stderr, "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)\n",
+    fprintf(stderr, "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)\n",
             e->name, e->nid, e->unsupported_error);
 }
 
@@ -419,7 +419,7 @@ static void hle_note_devctl_refusal(const char *device, uint32_t command,
                                    uint32_t error) {
     if (hle_devctl_refusal_first(device, command)) {
         fprintf(stderr,
-                "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)\n",
+                "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#341)\n",
                 device, command, error);
 #ifdef SR_HLE_THREAD_SELFTEST
         atomic_fetch_add_explicit(&s_hle_devctl_refusal_log_count, 1u,
@@ -3475,7 +3475,7 @@ static void psmf_name_rejection(SrPsmfPlayer *p) {
     SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
     fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
             "at source offset %llu; no further access unit is decoded and the player keeps "
-            "its current status; in the works (#288)\n",
+            "its current status; in the works (#286)\n",
             reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
                            (uint32_t)st.fail_offset,
@@ -9201,7 +9201,7 @@ static int data_loose_root_parse(const wchar_t *primary_root) {
     }
     size_t serialized_len = wcslen(serialized);
     if (serialized_len > 32767u || !primary_root) {
-        fprintf(stderr, "host_data: loose-content binding #289 (in the works) exceeds its limit\n");
+        fprintf(stderr, "host_data: loose-content binding (in the works; #308) exceeds its limit\n");
         free(serialized);
         return 0;
     }
@@ -9326,7 +9326,7 @@ static int data_loose_root_parse(const wchar_t *primary_root) {
             free(host_utf8);
         }
         if (!ok) {
-            fprintf(stderr, "host_data: loose-content binding #289 (in the works) is malformed, overlapping, or unavailable\n");
+            fprintf(stderr, "host_data: loose-content binding (in the works; #308) is malformed, overlapping, or unavailable\n");
             break;
         }
         cursor = (saved_end == L'\n') ? line_end + 1 : serialized_end;

@@ -1266,7 +1266,7 @@ static void assert_module_scan_boundary(PlayerApp *app, const char *iso_path,
                 message_fragment, check->message);
     }
     assert(strstr(check->message, message_fragment) != NULL);
-    assert(check->issue_count == 1 && check->issue_numbers[0] == 726);
+    assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
 }
 
 /* The package-status identity the validator itself computes for *user_root*
@@ -2671,7 +2671,7 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
         assert(strstr(check->message, "Encrypted executable: supply decrypted modules at ") != NULL);
         assert(strstr(check->message, decrypted_dir) != NULL);
-        assert(check->issue_count == 1 && check->issue_numbers[0] == 295);
+        assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
 
         write_synthetic_mips_elf(decrypted_elf);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -2787,12 +2787,10 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_IN_PROGRESS);
         assert(strstr(check->message,
                       "Experimental: this game has not been verified. Compatibility is unknown.") != NULL);
-        assert(check->issue_count == 2 && check->issue_numbers[0] == 285 &&
-               check->issue_numbers[1] == 308);
+        assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_MISSING);
-        assert(check->issue_count == 2 && check->issue_numbers[0] == 296 &&
-               check->issue_numbers[1] == 297);
+        assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
 
         /* Native v1 package checks bind the profile executable hash, the
            player ABI, and a package-contained executable path. */
@@ -2931,7 +2929,8 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_STALE);
-        assert(strstr(check->message, "#308") != NULL);
+        assert(strstr(check->message, "build it from the library") != NULL);
+        assert(strstr(check->message, "#") == NULL);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
@@ -2979,7 +2978,9 @@ int main(int argc, char **argv) {
         assert(!player_app_launch_game(wiz, 0));
         assert(strcmp(wiz->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
         assert(strstr(wiz->last_error.message, "isn't ready") != NULL);
-        assert(strstr(wiz->last_error.boundary_text, "build-package") != NULL);
+        assert(strstr(wiz->last_error.boundary_text, "from the library") != NULL);
+        assert(strchr(wiz->last_error.boundary_text, '#') == NULL);
+        assert(strstr(wiz->last_error.message, "#") == NULL);
         player_app_set_view(wiz, VIEW_EXPERIMENTAL_TITLE);
         assert(player_app_focus_count(wiz) == 2);
 
@@ -3103,7 +3104,7 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_INVALID);
-        assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 300);
+        assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
 
         /* Clean up */
         free(font_app);
@@ -3539,12 +3540,12 @@ int main(int argc, char **argv) {
 
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
-                                   "Encrypted executable: supply decrypted modules (#295).",
+                                   "Encrypted executable: supply decrypted modules.",
                                    "C:/logs/build_ULUS10041.log");
         assert(bapp->active_view == VIEW_ERROR);
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
-        assert(strstr(bapp->last_error.boundary_text, "#295") != NULL);
+        assert(strstr(bapp->last_error.boundary_text, "supply decrypted modules") != NULL);
         assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_ULUS10041.log") == 0);
 
         /* Cancellation transitions session */
@@ -4526,9 +4527,10 @@ int main(int argc, char **argv) {
         assert(capp->active_view == VIEW_LIBRARY);
 #else
         /* Automatic installation is Windows x64 only for now: other hosts are
-           refused with the tracking issue, and nothing is downloaded. */
+           refused with a clear message, and nothing is downloaded. */
         assert(!player_app_start_package_build(capp, 0));
-        assert(strstr(capp->last_error.message, "#306") != NULL);
+        assert(strstr(capp->last_error.message, "in the works") != NULL);
+        assert(strstr(capp->last_error.message, "#") == NULL);
         assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
 #endif
         assert(capp->build_session.is_building == false);
