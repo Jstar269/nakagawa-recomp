@@ -124,49 +124,49 @@ def inspect_font_cache(
             cand_fallback = fallback_root / "font" / "jpn0.pgf"
             if cand_fallback.is_file():
                 return "OK", "User-supplied PSP system font jpn0.pgf is available."
-        return "MISSING", "PSP font jpn0.pgf missing; run fonts import <folder> (#300)."
+        return "MISSING", "PSP font jpn0.pgf missing; run fonts import <folder>."
 
     try:
         text = manifest_path.read_text(encoding="utf-8")
         manifest = json.loads(text)
     except (OSError, json.JSONDecodeError) as exc:
-        return "INVALID", f"PSP font cache manifest is unreadable or malformed ({exc}); run fonts import <folder> (#300)."
+        return "INVALID", f"PSP font cache manifest is unreadable or malformed ({exc}); run fonts import <folder>."
 
     if not isinstance(manifest, dict):
-        return "INVALID", "PSP font cache manifest must be a JSON object; run fonts import <folder> (#300)."
+        return "INVALID", "PSP font cache manifest must be a JSON object; run fonts import <folder>."
 
     schema_version = manifest.get("schema_version")
     if schema_version != MANIFEST_SCHEMA_VERSION:
-        return "INVALID", f"PSP font cache schema version mismatch ({schema_version}); run fonts import <folder> (#300)."
+        return "INVALID", f"PSP font cache schema version mismatch ({schema_version}); run fonts import <folder>."
 
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
-        return "INVALID", "PSP font cache manifest missing 'files' dictionary; run fonts import <folder> (#300)."
+        return "INVALID", "PSP font cache manifest missing 'files' dictionary; run fonts import <folder>."
 
     if "jpn0.pgf" not in files:
-        return "INVALID", "PSP font cache manifest does not declare required font jpn0.pgf; run fonts import <folder> (#300)."
+        return "INVALID", "PSP font cache manifest does not declare required font jpn0.pgf; run fonts import <folder>."
 
     # Verify each declared file on disk
     for name, entry in files.items():
         if not isinstance(name, str) or not isinstance(entry, dict):
-            return "INVALID", "PSP font cache manifest contains invalid entry; run fonts import <folder> (#300)."
+            return "INVALID", "PSP font cache manifest contains invalid entry; run fonts import <folder>."
         font_path = cdir / name
         if not font_path.is_file():
-            return "INVALID", f"PSP font file '{name}' declared in manifest is missing from cache; run fonts import <folder> (#300)."
+            return "INVALID", f"PSP font file '{name}' declared in manifest is missing from cache; run fonts import <folder>."
         expected_size = entry.get("size")
         expected_sha = entry.get("sha256")
         if not isinstance(expected_size, int) or not isinstance(expected_sha, str):
-            return "INVALID", f"PSP font manifest entry '{name}' has invalid size/sha256; run fonts import <folder> (#300)."
+            return "INVALID", f"PSP font manifest entry '{name}' has invalid size/sha256; run fonts import <folder>."
 
         try:
             validated = validate_pgf_file(font_path)
         except FontValidationError as exc:
-            return "INVALID", f"PSP font file '{name}' in cache failed validation: {exc}; run fonts import <folder> (#300)."
+            return "INVALID", f"PSP font file '{name}' in cache failed validation: {exc}; run fonts import <folder>."
 
         if validated["size"] != expected_size:
-            return "INVALID", f"PSP font file '{name}' size mismatch in cache (got {validated['size']}, expected {expected_size}); run fonts import <folder> (#300)."
+            return "INVALID", f"PSP font file '{name}' size mismatch in cache (got {validated['size']}, expected {expected_size}); run fonts import <folder>."
         if validated["sha256"].lower() != expected_sha.lower():
-            return "INVALID", f"PSP font file '{name}' SHA-256 mismatch in cache; run fonts import <folder> (#300)."
+            return "INVALID", f"PSP font file '{name}' SHA-256 mismatch in cache; run fonts import <folder>."
 
     return "OK", "User-supplied PSP system font jpn0.pgf is available."
 

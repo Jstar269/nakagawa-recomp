@@ -148,6 +148,21 @@ extern uint32_t sr_hle_test_io_devctl_refusal_log_count(void);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
 extern uint32_t sr_hle_test_io_close_async(CpuState *s);
+extern uint32_t sr_hle_test_io_write_async(CpuState *s);
+extern uint32_t sr_hle_test_io_read_async(CpuState *s);
+extern uint32_t sr_hle_test_io_lseek_async(CpuState *s);
+extern uint32_t sr_hle_test_io_lseek32_async(CpuState *s);
+extern uint32_t sr_hle_test_io_ioctl_async(CpuState *s);
+extern uint32_t sr_hle_test_io_wait_async(CpuState *s);
+extern uint32_t sr_hle_test_io_poll_async(CpuState *s);
+extern uint32_t sr_hle_test_io_get_async_stat(CpuState *s);
+extern void sr_hle_test_io_async_import_boundary(void);
+extern uint32_t sr_hle_test_io_chdir(CpuState *s);
+extern uint32_t sr_hle_test_io_rmdir(CpuState *s);
+extern uint32_t sr_hle_test_io_chstat(CpuState *s);
+extern uint32_t sr_hle_test_io_sync(CpuState *s);
+extern uint32_t sr_hle_test_io_change_async_priority(CpuState *s);
+extern uint32_t sr_hle_test_io_set_async_callback(CpuState *s);
 extern uint32_t sr_hle_test_io_rename(CpuState *s);
 extern uint32_t sr_hle_test_io_mkdir(CpuState *s);
 extern uint32_t sr_hle_test_io_remove(CpuState *s);
@@ -155,6 +170,9 @@ extern uint32_t sr_hle_test_io_getstat(CpuState *s);
 extern uint32_t sr_hle_test_ms0_legacy_import_count(void);
 extern int sr_hle_test_fd_kind(uint32_t fd);
 extern int sr_callback_is_valid(uint32_t uid);
+extern uint32_t sr_callback_table_register(uint32_t name_addr, uint32_t entry,
+                                           uint32_t arg, uint32_t *error_out);
+extern int sr_callback_table_unregister(uint32_t uid);
 
 /* Extracted-data census preparation contract hooks (defined in hle.c,
  * selftest-only): preparation state machine, walk/build counters, a guest-start
@@ -1476,6 +1494,371 @@ static void fd_set_write(CpuState *cpu, uint32_t fd, uint32_t source, uint32_t c
     cpu->r[6] = count;
 }
 
+static void test_io_async_and_path_imports(void) {
+    enum {
+        PATH_ADDR = 0x09010000u,
+        PAYLOAD_ADDR = 0x09011000u,
+        RESULT_ADDR = 0x09012000u,
+        IOCTL_OUT_ADDR = 0x09012200u,
+        PRIORITY_RESULT_ADDR = 0x09012300u,
+        STAT_ADDR = 0x09012100u,
+        STACK_ADDR = 0x09013000u,
+        CALLBACK_NAME_ADDR = 0x09014000u,
+        SCE_KERNEL_ERROR_ASYNC_BUSY = 0x80020329u,
+        IO_ERROR_FUNCTION_NOT_SUPPORTED = 0x80010086u,
+        IO_ERROR_DIRECTORY_NOT_EMPTY = 0x8001005au,
+    };
+    static const char async_guest[] = "ms0:/NAKAGAWA_IO_ASYNC.TXT";
+    static const char priority_guest[] = "ms0:/NAKAGAWA_IO_ASYNC_PRIORITY.TXT";
+    static const char directory_guest[] = "ms0:/NAKAGAWA_IO_ASYNC_DIR";
+    static const char relative_file[] = "RELATIVE.TXT";
+    static const uint8_t old_bytes[] = "old";
+    static const uint8_t new_bytes[] = "new";
+    char async_host[256], relative_host[256];
+    CpuState cpu;
+    uint32_t callback_error = 0u;
+    static const char callback_name[] = "io-async-test";
+    fd_guest_copy(CALLBACK_NAME_ADDR, callback_name, sizeof(callback_name));
+    uint32_t callback_uid = sr_callback_table_register(CALLBACK_NAME_ADDR, 0u, 0u,
+                                                        &callback_error);
+    expect(callback_uid != 0u && callback_error == 0u,
+           "synthetic file-I/O callback registers for the async completion test");
+
+    fd_host_path(async_host, sizeof(async_host), async_guest);
+    DeleteFileA(async_host);
+    fd_set_path(&cpu, PATH_ADDR, async_guest);
+    uint32_t fd = sr_hle_test_io_open(&cpu);
+    expect(fd == 3u, "async fixture opens under the synthetic Memory Stick root");
+    if (fd >= 64u) return;
+    fd_guest_copy(PAYLOAD_ADDR, old_bytes, sizeof(old_bytes) - 1u);
+    fd_set_write(&cpu, fd, PAYLOAD_ADDR, (uint32_t)(sizeof(old_bytes) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(old_bytes) - 1u,
+           "async fixture receives its initial bytes");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "async fixture initial handle closes");
+
+    fd_set_path(&cpu, PATH_ADDR, async_guest);
+    cpu.r[5] = 3u; /* O_RDWR */
+    fd = sr_hle_test_io_open(&cpu);
+    expect(fd == 3u, "async fixture reopens read/write");
+    if (fd >= 64u) return;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = callback_uid;
+    cpu.r[6] = 0x12345678u;
+    expect(sr_hle_test_io_set_async_callback(&cpu) == 0u,
+           "sceIoSetAsyncCallback stores a validated callback and argument");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = (uint32_t)-10;
+    expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+           "sceIoChangeAsyncPriority stores the per-descriptor priority");
+
+    fd_guest_copy(PAYLOAD_ADDR, new_bytes, sizeof(new_bytes) - 1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = PAYLOAD_ADDR;
+    cpu.r[6] = (uint32_t)(sizeof(new_bytes) - 1u);
+    expect(sr_hle_test_io_write_async(&cpu) == 0u,
+           "sceIoWriteAsync accepts a valid request and returns before it writes");
+    expect(fd_host_bytes_equal(async_host, old_bytes, sizeof(old_bytes) - 1u),
+           "sceIoWriteAsync leaves host bytes unchanged before completion");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = PAYLOAD_ADDR;
+    cpu.r[6] = (uint32_t)(sizeof(new_bytes) - 1u);
+    expect(sr_hle_test_io_write_async(&cpu) == SCE_KERNEL_ERROR_ASYNC_BUSY,
+           "a second asynchronous request on the same fd reports ASYNC_BUSY");
+
+    MEM_W32(RESULT_ADDR, 0xfeedfaceu);
+    MEM_W32(RESULT_ADDR + 4u, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    sr_hle_test_io_async_import_boundary();
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+               MEM_R32(RESULT_ADDR) == 0xfeedfaceu &&
+               fd_host_bytes_equal(async_host, old_bytes, sizeof(old_bytes) - 1u),
+           "first sceIoPollAsync reports pending without touching the result or file");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == sizeof(new_bytes) - 1u &&
+               fd_host_bytes_equal(async_host, new_bytes, sizeof(new_bytes) - 1u),
+           "second import boundary completes the write and reports its byte count");
+    expect(sr_thread_has_pending_callbacks(sched_current_uid()),
+           "async completion queues its per-fd callback for the owning thread");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 0u, "async fixture seeks to its beginning");
+    fd_guest_copy(PAYLOAD_ADDR + 16u, "???", 3u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = PAYLOAD_ADDR + 16u;
+    cpu.r[6] = 3u;
+    expect(sr_hle_test_io_read_async(&cpu) == 0u &&
+               MEM_R8(PAYLOAD_ADDR + 16u) == (uint8_t)'?',
+           "sceIoReadAsync defers guest-buffer writes until completion");
+    sr_hle_test_io_async_import_boundary();
+    MEM_W32(RESULT_ADDR, 0xfeedfaceu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+               MEM_R8(PAYLOAD_ADDR + 16u) == (uint8_t)'?',
+           "pending sceIoReadAsync keeps its destination unchanged during polling");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == 3u &&
+               MEM_R8(PAYLOAD_ADDR + 16u) == (uint8_t)'n' &&
+               MEM_R8(PAYLOAD_ADDR + 17u) == (uint8_t)'e' &&
+               MEM_R8(PAYLOAD_ADDR + 18u) == (uint8_t)'w',
+           "sceIoWaitAsync completes the read and writes the 64-bit result");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 1u;
+    cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+           "sceIoLseek32Async queues a 32-bit seek");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u,
+           "sceIoLseek32Async remains pending at its first poll");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 1u,
+           "sceIoLseek32Async returns the resulting file position");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0xfeedfaceu; /* alignment slot before the 64-bit SceOff */
+    cpu.r[6] = 2u;
+    cpu.r[7] = 0u;
+    cpu.r[8] = 0u; /* SEEK_SET */
+    expect(sr_hle_test_io_lseek_async(&cpu) == 0u,
+           "sceIoLseekAsync queues its aligned 64-bit offset and register whence");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u,
+           "sceIoLseekAsync remains pending before the completion boundary");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 2u,
+           "sceIoLseekAsync returns its resulting position through the async result");
+
+    MEM_W32(IOCTL_OUT_ADDR, 0xaaaaaaaau);
+    MEM_W32(RESULT_ADDR, 0xfeedfaceu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0x01020004u; /* get current byte offset */
+    cpu.r[29] = STACK_ADDR;
+    cpu.r[8] = IOCTL_OUT_ADDR;
+    cpu.r[9] = 4u;
+    expect(sr_hle_test_io_ioctl_async(&cpu) == 0u &&
+               MEM_R32(IOCTL_OUT_ADDR) == 0xaaaaaaaau,
+           "sceIoIoctlAsync defers ioctl output until request completion");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+               MEM_R32(IOCTL_OUT_ADDR) == 0xaaaaaaaau &&
+               MEM_R32(RESULT_ADDR) == 0xfeedfaceu,
+           "pending sceIoIoctlAsync leaves the output span unchanged");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == 0u && MEM_R32(IOCTL_OUT_ADDR) == 2u,
+           "sceIoIoctlAsync stores both its result and get-offset output");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 1u;
+    cpu.r[6] = RESULT_ADDR;
+    expect(sr_hle_test_io_get_async_stat(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 0u,
+           "sceIoGetAsyncStat returns a completed request without waiting");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 10u;
+    expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+           "sceIoChangeAsyncPriority updates the first descriptor priority");
+    fd_set_path(&cpu, PATH_ADDR, priority_guest);
+    cpu.r[5] = 0x602u; /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */
+    cpu.r[6] = 0777u;
+    uint32_t priority_fd = sr_hle_test_io_open(&cpu);
+    expect(priority_fd == 4u, "priority fixture allocates an independent descriptor");
+    if (priority_fd < 64u) {
+        fd_guest_copy(PAYLOAD_ADDR, old_bytes, sizeof(old_bytes) - 1u);
+        fd_set_write(&cpu, priority_fd, PAYLOAD_ADDR,
+                     (uint32_t)(sizeof(old_bytes) - 1u));
+        expect(sr_hle_test_io_write(&cpu) == sizeof(old_bytes) - 1u,
+               "priority fixture has a contained seekable file");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = priority_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u,
+               "priority fixture seed handle closes");
+        fd_set_path(&cpu, PATH_ADDR, priority_guest);
+        cpu.r[5] = 3u; /* O_RDWR */
+        priority_fd = sr_hle_test_io_open(&cpu);
+        expect(priority_fd == 4u, "priority fixture reopens read/write");
+        if (priority_fd < 64u) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = (uint32_t)-10;
+            expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+                   "sceIoChangeAsyncPriority stores a higher synthetic queue priority");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 1u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+                   "older lower-priority seek queues first");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = 2u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+                   "newer higher-priority seek queues in the same import epoch");
+            sr_hle_test_io_async_import_boundary();
+            sr_hle_test_io_async_import_boundary();
+            MEM_W32(PRIORITY_RESULT_ADDR, 0xfeedfaceu);
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = PRIORITY_RESULT_ADDR;
+            expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+                       MEM_R32(PRIORITY_RESULT_ADDR) == 0xfeedfaceu,
+                   "higher numeric priority leaves the older seek pending");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = PRIORITY_RESULT_ADDR;
+            expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+                       MEM_R32(PRIORITY_RESULT_ADDR) == 2u,
+                   "lower numeric priority completes before FIFO order");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = RESULT_ADDR;
+            expect(sr_hle_test_io_wait_async(&cpu) == 0u &&
+                       MEM_R32(RESULT_ADDR) == 1u,
+                   "wait completes the remaining lower-priority request");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            expect(sr_hle_test_io_close(&cpu) == 0u,
+                   "priority fixture descriptor closes cleanly");
+        }
+    }
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close_async(&cpu) == 0u,
+           "sceIoCloseAsync queues descriptor teardown");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u,
+           "sceIoCloseAsync retains the descriptor while the request is pending");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_wait_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 0u &&
+               sr_hle_test_fd_kind(fd) == 0,
+           "sceIoWaitAsync returns close success after releasing the descriptor");
+    if (callback_uid != 0u) (void)sr_callback_table_unregister(callback_uid);
+
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0u, "sceIoMkdir creates the CWD fixture");
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    expect(sr_hle_test_io_chdir(&(CpuState){.r = {[4] = PATH_ADDR}}) == 0u,
+           "sceIoChdir accepts an existing absolute Memory Stick directory");
+    fd_set_path(&cpu, PATH_ADDR, relative_file);
+    uint32_t relative_fd = sr_hle_test_io_open(&cpu);
+    expect(relative_fd < 64u, "sceIoOpen resolves a relative path against sceIoChdir");
+    if (relative_fd < 64u) {
+        fd_guest_copy(PAYLOAD_ADDR, "mode", 4u);
+        fd_set_write(&cpu, relative_fd, PAYLOAD_ADDR, 4u);
+        expect(sr_hle_test_io_write(&cpu) == 4u,
+               "relative file path writes through the unified Memory Stick VFS");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = relative_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u, "relative file handle closes");
+    }
+    fd_host_path(relative_host, sizeof(relative_host), "ms0:/NAKAGAWA_IO_ASYNC_DIR/RELATIVE.TXT");
+    expect(fd_host_bytes_equal(relative_host, (const uint8_t *)"mode", 4u),
+           "relative-path file bytes remain inside the selected CWD");
+    MEM_W32(STAT_ADDR, 0x2000u | 0600u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    cpu.r[6] = 1u;
+    fd_guest_copy(PATH_ADDR, relative_file, sizeof(relative_file));
+    expect(sr_hle_test_io_chstat(&cpu) == 0u,
+           "sceIoChstat applies the supported mode bit to a contained file");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) == 0u &&
+               (MEM_R32(STAT_ADDR) & 0xf000u) == 0x2000u &&
+               MEM_R32(STAT_ADDR + 8u) == 4u,
+           "relative sceIoGetstat reports the updated file type and size");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    cpu.r[6] = 2u;
+    expect(sr_hle_test_io_chstat(&cpu) == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+           "sceIoChstat refuses unsupported attribute fields with its semantic-boundary error");
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_rmdir(&cpu) == IO_ERROR_DIRECTORY_NOT_EMPTY,
+           "sceIoRmdir refuses to delete a directory that still contains a file");
+    fd_set_path(&cpu, PATH_ADDR, relative_file);
+    expect(sr_hle_test_io_remove(&cpu) == 0u, "sceIoRemove resolves the relative CWD path");
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_rmdir(&cpu) == 0u, "sceIoRmdir removes an empty contained directory");
+    fd_guest_copy(PATH_ADDR, "ms0:/", sizeof("ms0:/"));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_chdir(&cpu) == 0u, "sceIoChdir restores the Memory Stick root");
+    fd_guest_copy(PATH_ADDR, "ms0:", sizeof("ms0:"));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_sync(&cpu) == 0u, "sceIoSync accepts the Memory Stick device");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = 1u;
+    expect(sr_hle_test_io_sync(&cpu) == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+           "sceIoSync refuses unknown nonzero arguments with its named boundary");
+    fd_guest_copy(PATH_ADDR, "disc0:", sizeof("disc0:"));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_sync(&cpu) == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+           "sceIoSync names unsupported device semantics with a real error");
+}
+
 static void test_fd_namespace(void) {
     enum {
         FD_KIND_STD = 1,
@@ -1810,6 +2193,10 @@ static void test_fd_namespace(void) {
     cpu.r[4] = async_fd;
     expect(sr_hle_test_io_close_async(&cpu) == 0u,
            "async close releases the ordinary descriptor through shared teardown");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = async_fd;
+    expect(sr_hle_test_io_wait_async(&cpu) == 0u,
+           "async close completes before descriptor reuse");
     fd_set_path(&cpu, path_addr, result_guest);
     expect(sr_hle_test_io_open(&cpu) == 3u,
            "a descriptor released by async close is available for reuse");
@@ -1817,6 +2204,8 @@ static void test_fd_namespace(void) {
     cpu.r[4] = 3u;
     expect(sr_hle_test_io_close(&cpu) == 0u,
            "the descriptor reused after async close closes cleanly");
+
+    test_io_async_and_path_imports();
 
     /* Fill every ordinary slot to cover the upper bound and prove std slots can
      * never be reached by allocation, even when the table is exhausted. */
@@ -21011,7 +21400,7 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
 
     expect(count_occurrences(captured, boundary) == 2,
            "psmf: every rejected stream names the demuxer refusal, the reason, and the offset");
-    expect(strstr(captured, "in the works (#288)") != NULL,
+    expect(strstr(captured, "in the works (#286)") != NULL,
            "psmf: the media boundary carries its tracking issue");
     expect(strstr(captured, "MPEG_CONTRACT") == NULL,
            "psmf: the rejection is not reported as some other media boundary");

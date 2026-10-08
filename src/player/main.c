@@ -141,16 +141,28 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
             player_app_set_view(app, VIEW_UNSUPPORTED_TITLE);
         }
     } else {
+        const bool named_boundary = res.boundary_code[0] != '\0';
+        const char *message = res.error_message[0]
+            ? res.error_message
+            : "The selected file is not a valid ISO9660 disc image.";
         if (app->active_view == VIEW_SETUP_WIZARD) {
             player_app_wizard_reset_extraction(app);
             app->wizard.iso_selected = false;
-            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                     "Selected file is not a valid PSP disc image: %.190s",
-                     res.error_message[0] ? res.error_message : "Not a valid ISO9660 image.");
+            if (named_boundary) {
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "%.48s: %.200s", res.boundary_code, message);
+            } else {
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "Selected file is not a valid PSP disc image: %.190s",
+                         res.error_message[0] ? res.error_message : "Not a valid ISO9660 image.");
+            }
         } else {
-            player_app_set_error(app, "ISO_CORRUPT", "Unreadable PSP Disc Image",
-                                 res.error_message[0] ? res.error_message : "The selected file is not a valid ISO9660 disc image.",
-                                 "Try Another File", VIEW_LIBRARY);
+            player_app_set_error(
+                app,
+                named_boundary ? res.boundary_code : "ISO_CORRUPT",
+                named_boundary ? "Not a Disc Image" : "Unreadable PSP Disc Image",
+                message,
+                "Try Another File", VIEW_LIBRARY);
         }
     }
 }
@@ -2704,7 +2716,7 @@ int main(int argc, char *argv[]) {
             if (launch_now && app.inspecting_game.is_experimental) {
                 const char *message =
                     "Launch now is unavailable for experimental titles. Generic ISO-to-Play "
-                    "support is in the works (#308). This title was not added; review its "
+                    "support is in the works. This title was not added; review its "
                     "compatibility checks before adding it to the library.";
                 fprintf(stderr, "[PLAYER] EXPERIMENTAL_LAUNCH_UNAVAILABLE: %s\n", message);
                 player_app_set_error(&app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",

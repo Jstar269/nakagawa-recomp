@@ -1039,7 +1039,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         # The refusal names the per-title folder for user-supplied decrypted inputs.
         self.assertIn("supply decrypted modules at", result.stderr)
         self.assertIn(str(Path("titles") / "ULUS99998" / "decrypted"), result.stderr)
-        self.assertIn("(#295)", result.stderr)
+        self.assertNotRegex(result.stderr, r"#[0-9]+")
         self.assertIn("matching local key file", result.stderr)
         self.assertNotIn("automatic decryption is in the works", result.stderr.lower())
         self.assertFalse((user_root / "cache").exists())
@@ -1522,7 +1522,7 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["reached_stage"], "inspect")
                 self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
                 self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
-                self.assertEqual(report["issue_numbers"], [285])
+                self.assertEqual(report["issue_numbers"], [308])
 
     def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
         output = (
@@ -1641,7 +1641,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["runtime_output_kind"], "UNSUPPORTED_INSTRUCTION")
         self.assertEqual(report["failure_class"], "UNSUPPORTED_INSTRUCTION")
         self.assertIn(118, report["issue_numbers"])
-        self.assertNotIn(297, report["issue_numbers"])
+        self.assertEqual(sorted(report["issue_numbers"]), [118, 308])
 
     def test_dummy_video_driver_message_remains_headless_fallback(self):
         output = "Vulkan support is not available in current SDL video driver (dummy)\n"
@@ -1679,13 +1679,11 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_HLE")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
         self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("before its first PSP kernel import", summary)
-        self.assertIn("in the works (", summary)
-        self.assertIn("#285", summary)
-        self.assertIn("#308", summary)
+        self.assertIn("related support is in the works", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_zero_exit_with_dropped_flight_events_is_unverified(self):
@@ -1694,7 +1692,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["failure_class"], "GUEST_ACTIVITY_UNVERIFIED")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
-        self.assertIn(285, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         self.assertIn("telemetry did not verify a PSP kernel import",
                       nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
@@ -1708,13 +1706,11 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
         self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("before PSP display framebuffer setup", summary)
-        self.assertIn("in the works (", summary)
-        self.assertIn("#285", summary)
-        self.assertIn("#308", summary)
+        self.assertIn("related support is in the works", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_zero_exit_after_self_unload_names_module_lifecycle_boundary(self):
@@ -1726,12 +1722,12 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
         self.assertIn(280, report["issue_numbers"])
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(sorted(report["issue_numbers"]), [280, 308])
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("unloaded itself before PSP display framebuffer setup", summary)
-        self.assertIn("in the works (", summary)
-        self.assertIn("#280", summary)
+        self.assertIn("related support is in the works", summary)
+        self.assertIn("still needs investigation", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_zero_exit_with_lost_framebuffer_evidence_is_display_unverified(self):
@@ -1743,8 +1739,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["failure_class"], "DISPLAY_PROGRESS_UNVERIFIED")
         self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         self.assertIn("did not verify PSP display framebuffer setup",
                       nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
@@ -2010,7 +2005,7 @@ class TestSanitizedBringup(unittest.TestCase):
             "Custom-firmware-patched dump: using the original executable",
             cfw_check["message"],
         )
-        self.assertIn("in the works (#308)", cfw_check["message"])
+        self.assertIn("in the works.", cfw_check["message"])
         selected_elf = work_root / "work" / "selected.elf"
         self.assertEqual(selected_elf.read_bytes(), decrypted_eboot)
         profile = json.loads(
@@ -2027,7 +2022,8 @@ class TestSanitizedBringup(unittest.TestCase):
             "Custom-firmware-patched dump: using the original executable",
             summary,
         )
-        self.assertIn("in the works (#308)", summary)
+        self.assertIn("Broader CFW dump support is in the works.", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         library = json.loads(
             (work_root / "work" / "user-data" / "library.json")
             .read_text(encoding="utf-8")
@@ -2106,7 +2102,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
         self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
-        self.assertEqual(report["issue_numbers"], [285, 295, 308])
+        self.assertEqual(report["issue_numbers"], [308])
         self.assertEqual(report["counts"]["modules"], 2)
         self.assertEqual(report["counts"]["encrypted_modules"], 1)
         nk_cli.validate_bringup_report(report)
@@ -2172,9 +2168,9 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
         # A still-encrypted "decrypted" copy is not a usable module: with no key
-        # file the module still needs the decryption boundary (#295).
+        # file the module still needs the decryption boundary (#308).
         self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
-        self.assertIn(295, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         nk_cli.validate_bringup_report(report)
 
     def test_catalog_bringup_stages_user_decrypted_prx(self):
@@ -2269,9 +2265,9 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertNotIn("08800000", json.dumps(report))
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("UNSUPPORTED_IMPORT (sceSynthetic, NID 0x12345678)", summary)
-        self.assertIn("in the works (", summary)
+        self.assertIn("related support is in the works", summary)
         self.assertIn(308, report["issue_numbers"])
-        self.assertIn("#308", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         self.assertNotIn("#71", summary)
         nk_cli.validate_bringup_report(report)
 
@@ -2290,8 +2286,8 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["process_exit_code"], 2)
         self.assertNotIn("08800000", json.dumps(report))
         summary = nk_cli._bringup_human_summary(report)
-        self.assertIn("in the works (", summary)
-        self.assertIn("#296", summary)
+        self.assertIn("related support is in the works", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_empty_runtime_exit_reports_process_status(self):
@@ -2312,7 +2308,9 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "RUNTIME_INPUT_UNAVAILABLE")
         self.assertEqual(report["runtime_output_kind"], "DRIVER_INPUT_READ_FAILURE")
         self.assertNotIn("synthetic/private-title", json.dumps(report))
-        self.assertIn("in the works (", nk_cli._bringup_human_summary(report))
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("related support is in the works", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_runtime_trace_failure_hides_the_path(self):
@@ -2325,7 +2323,9 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "RUNTIME_TRACE_UNAVAILABLE")
         self.assertEqual(report["runtime_output_kind"], "DRIVER_TRACE_INPUT_FAILURE")
         self.assertNotIn("reference.trace", json.dumps(report))
-        self.assertIn("#297", nk_cli._bringup_human_summary(report))
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("related support is in the works", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_runtime_unimplemented_instruction_hides_address_and_reason(self):
@@ -2342,7 +2342,9 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["runtime_output_kind"], "UNSUPPORTED_INSTRUCTION")
         self.assertNotIn("08800000", json.dumps(report))
         self.assertNotIn("private retail detail", json.dumps(report))
-        self.assertIn("#118", nk_cli._bringup_human_summary(report))
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("related support is in the works", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_runtime_dispatch_miss_is_named_without_guest_addresses(self):
@@ -2364,8 +2366,8 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertNotIn("08800000", json.dumps(report))
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("unresolved dispatch target", summary)
-        self.assertIn("in the works (", summary)
-        self.assertIn("#118", summary)
+        self.assertIn("related support is in the works", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
     def test_launch_timeout_is_a_bounded_reported_exit(self):
@@ -2468,7 +2470,7 @@ class TestBringupReportOpcodeNames(unittest.TestCase):
         report = nk_cli._new_bringup_report()
         report["counts"]["functions"] = 4
         report["counts"]["unsupported_opcodes"] = {"REGIMM-OTHER": 1}
-        nk_cli._fail_bringup(report, "codegen", "CODEGEN_FAILED", [296], 12)
+        nk_cli._fail_bringup(report, "codegen", "CODEGEN_FAILED", [308], 12)
         report_path = self.root / "schema-invalid.json"
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -2483,7 +2485,7 @@ class TestBringupReportOpcodeNames(unittest.TestCase):
         self.assertEqual(payload["reached_stage"], "codegen")
         self.assertEqual(payload["stages"]["codegen"], {"status": "FAIL", "duration_ms": 12})
         self.assertEqual(payload["failure_class"], "CODEGEN_FAILED")
-        self.assertEqual(payload["issue_numbers"], [296])
+        self.assertEqual(payload["issue_numbers"], [308])
 
     def test_unknown_failure_class_is_named_and_replaced_by_a_stage_class(self):
         report = nk_cli._new_bringup_report()
@@ -2511,7 +2513,7 @@ class TestProductStatusCopy(unittest.TestCase):
     checklist and completion-manifest text that still described those as
     missing was a false product claim. Boundaries that really are unavailable
     stay named with their tracking issue: PGD-protected data and no-keyfile
-    executable decryption (#295).
+    executable decryption (#308).
     """
 
     def _source(self, relative: str) -> str:
@@ -2519,26 +2521,38 @@ class TestProductStatusCopy(unittest.TestCase):
 
     def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
         ui = self._source("src/player/ui_renderer.c")
-        self.assertIn("decrypts encrypted executables with a local key file (#295). It builds runtime ", ui)
-        self.assertIn("packages from the library (#296/#297). Verify also lists font (#300)", ui)
+        self.assertIn("decrypts encrypted executables with a local key file. It builds runtime ", ui)
+        self.assertIn("packages from the library. Verify also lists font and audio status.", ui)
         self.assertNotIn("or create runtime packages", ui)
-        self.assertNotIn("Runtime package is missing (#296/#297)", ui)
-        self.assertEqual(ui.count("Build the runtime package from the library (#296/#297)"), 3)
+        self.assertNotIn("draw_issue_links", ui)
+        self.assertEqual(ui.count("Build the runtime package from the library."), 3)
 
     def test_library_checklist_points_at_the_library_package_builder(self):
         inspect = self._source("tools/nk_core/iso_inspect.py")
-        self.assertIn("build it from the library (#296/#297)", inspect)
-        self.assertNotIn("generation is in the works (#296/#297)", inspect)
+        self.assertIn("build it from the library.", inspect)
 
     def test_public_build_limits_report_the_font_reader_as_available(self):
-        for relative in ("tools/nk_cli.py", "tools/title_codegen_plan.py"):
-            with self.subTest(source=relative):
-                source = self._source(relative)
-                self.assertIn(
-                    "fonts: import your own PSP fonts; the public PGF reader is "
-                    "available for supported inputs (#474)", source)
-                self.assertIn("PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)", source)
-                self.assertNotIn("public font reader in the works (#349)", source)
+        cli_source = self._source("tools/nk_cli.py")
+        self.assertIn(
+            "Fonts: import your own PSP fonts; the public PGF reader is "
+            "available for supported inputs.",
+            cli_source,
+        )
+        self.assertIn(
+            "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
+            cli_source,
+        )
+        report_source = self._source("tools/title_codegen_plan.py")
+        self.assertIn(
+            "fonts: import your own PSP fonts; the public PGF reader is "
+            "available for supported inputs (#474)",
+            report_source,
+        )
+        self.assertIn(
+            "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+            report_source,
+        )
+        self.assertNotIn("public font reader in the works (#349)", report_source)
 
 
 if __name__ == "__main__":

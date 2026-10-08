@@ -888,17 +888,28 @@ static void case_posix_guest_file_operations(void) {
               "contained file reads the written bytes");
         fclose(stream);
     }
+    CHECK_ST(sr_cd_set_mode(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
+                            0x2000u | 0600u), SR_CD_OK);
+    CHECK_ST(sr_cd_set_mode(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
+                            0x1000u | 0755u), SR_CD_INVALID_PATH);
 
     CHECK_ST(sr_cd_rename_file(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
                                "PSP/SAVEDATA/NEW-DIR/RENAMED.BIN"), SR_CD_OK);
     fp(file_path, sizeof(file_path), "%s/PSP/SAVEDATA/NEW-DIR/DATA.BIN", root);
     fp(renamed_path, sizeof(renamed_path), "%s/PSP/SAVEDATA/NEW-DIR/RENAMED.BIN", root);
     CHECK(!exists(file_path) && exists(renamed_path), "rename moves only the in-root file");
+    CHECK_ST(sr_cd_remove_dir_empty(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_NOT_EMPTY);
+    CHECK(exists(renamed_path), "rmdir refuses a nonempty directory without deleting entries");
     CHECK_ST(sr_cd_delete_file(&r, "PSP/SAVEDATA/NEW-DIR/RENAMED.BIN"), SR_CD_OK);
     CHECK(!exists(renamed_path), "remove deletes the in-root regular file");
     CHECK_ST(sr_cd_delete_file(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_IS_DIRECTORY);
     CHECK(sr_cd_psp_error(SR_CD_IS_DIRECTORY) == 0x80010015u,
           "a directory named to remove maps to PSP EISDIR");
+    CHECK_ST(sr_cd_remove_dir_empty(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_OK);
+    CHECK(!is_dir(made_dir), "rmdir removes the empty directory");
+    CHECK(sr_cd_psp_error(SR_CD_NOT_EMPTY) == 0x8001005au,
+          "a nonempty directory maps to PSP ENOTEMPTY");
+    CHECK_ST(sr_cd_mkdir_leaf(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_OK);
 
     /* Every structural escape fails before a host operation and maps to the
      * PSP illegal-path error (EINVAL). */

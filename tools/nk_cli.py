@@ -227,7 +227,7 @@ def _cmd_vram_sidecar(sidecar_path: Path, output_dir: Path) -> None:
     ]
     for item in unavailable:
         print(f"VRAM_SURFACE_UNAVAILABLE name=texture_level_{item.get('level')} "
-              "reason=outside_snapshot issue=#314", file=sys.stderr)
+              "reason=outside_snapshot", file=sys.stderr)
     clut = sidecar.get("clut", {})
     clut_data = clut.get("loaded_data_hex", "")
     clut_path = None
@@ -285,7 +285,7 @@ def _cmd_vram_sidecar(sidecar_path: Path, output_dir: Path) -> None:
                 # framebuffer is the one these diagnostics exist for.
                 detail = " ".join(str(exc).split())[:160]
                 print(f"VRAM_SURFACE_UNAVAILABLE name={name} reason=decoder_rejected "
-                      f"detail={detail!r} issue=#314", file=sys.stderr)
+                      f"detail={detail!r}", file=sys.stderr)
                 failed.append(name)
                 continue
             exported += 1
@@ -358,7 +358,7 @@ def _write_private_file(path: Path, data: bytes) -> None:
 
 def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) -> str:
     if selected not in {"EBOOT.BIN", "BOOT.BIN"}:
-        raise PackageBuildError(f"Unsupported selected executable {selected!r}; broader ISO-to-Play support is in the works (#308).")
+        raise PackageBuildError(f"Unsupported selected executable {selected!r}; broader ISO-to-Play support is in the works.")
     member = ("PSP_GAME", "SYSDIR", selected)
     try:
         file_size = iso_path.stat().st_size
@@ -389,7 +389,7 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
             os.replace(temporary, destination)
             return digest.hexdigest()
     except IsoInspectionError as exc:
-        raise PackageBuildError(f"Selected executable could not be read as a supported plaintext ELF; broader ISO-to-Play support is in the works (#308): {exc}") from exc
+        raise PackageBuildError(f"Selected executable could not be read as a supported plaintext ELF; broader ISO-to-Play support is in the works: {exc}") from exc
     except OSError as exc:
         raise PackageBuildError(f"Could not extract the selected executable to the private cache: {exc}") from exc
 
@@ -546,7 +546,7 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
             raise PackageBuildError(
                 f"DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
                 f"{MAX_GUEST_MODULES} guest-module candidates; larger "
-                "module sets are in the works (#726)."
+                "module sets are in the works."
             )
 
     names: dict[str, str] = {}
@@ -557,7 +557,7 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
             raise PackageBuildError(
                 "DUPLICATE_DISC_MODULE_BASENAME: module filename "
                 f"{candidate['name']!r} occurs at {names[folded]} and "
-                f"{member_path}; automatic intake is in the works (#726)."
+                f"{member_path}; automatic intake is in the works."
             )
         names[folded] = member_path
     staged_size = sum(
@@ -565,7 +565,7 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
         if candidate["kind"] == "plain-elf"
     )
     if staged_size > MAX_GUEST_MODULE_SET_BYTES:
-        raise PackageBuildError("Guest-module inputs exceed the supported aggregate size (#296).")
+        raise PackageBuildError("Guest-module inputs exceed the supported aggregate size.")
     return candidates
 
 
@@ -620,7 +620,7 @@ def _copy_decrypted_elf(source: Path, destination: Path) -> str:
     try:
         size = source.stat().st_size
         if size <= 0 or size > MAX_EXECUTABLE_BYTES:
-            raise PackageBuildError("User-supplied decrypted EBOOT.elf exceeds the supported size bound (#295).")
+            raise PackageBuildError("User-supplied decrypted EBOOT.elf exceeds the supported size bound.")
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = destination.with_name(destination.name + ".tmp")
         digest = hashlib.sha256()
@@ -629,12 +629,12 @@ def _copy_decrypted_elf(source: Path, destination: Path) -> str:
             while copied < size:
                 block = input_stream.read(min(64 * 1024, size - copied))
                 if not block:
-                    raise PackageBuildError("User-supplied decrypted EBOOT.elf changed while being copied (#295).")
+                    raise PackageBuildError("User-supplied decrypted EBOOT.elf changed while being copied.")
                 output.write(block)
                 digest.update(block)
                 copied += len(block)
             if input_stream.read(1):
-                raise PackageBuildError("User-supplied decrypted EBOOT.elf changed while being copied (#295).")
+                raise PackageBuildError("User-supplied decrypted EBOOT.elf changed while being copied.")
             output.flush()
             os.fsync(output.fileno())
         if _classify_decrypted_elf_file(temporary) != "PLAIN_MIPS_ELF32":
@@ -672,7 +672,7 @@ def _find_public_manifest(title_id: str, user_root: Path | None = None) -> tuple
                 continue
             if manifest["id"] == title_id:
                 return path, manifest
-    raise PackageBuildError(f"No title manifest matches library identity {title_id!r} (#308).")
+    raise PackageBuildError(f"No title manifest matches library identity {title_id!r}.")
 
 
 def _read_library_json(path: Path):
@@ -711,9 +711,9 @@ def _load_library_entry(user_root: Path, disc_id: str) -> dict:
     entry = matches[0]
     for field in ("title_id", "iso_path"):
         if not isinstance(entry.get(field), str) or not entry[field]:
-            raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building (#297).")
+            raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building.")
     if not isinstance(entry.get("selected_executable", ""), str):
-        raise PackageBuildError(f"Library entry {disc_id} has an invalid selected_executable (#297).")
+        raise PackageBuildError(f"Library entry {disc_id} has an invalid selected_executable.")
     boot_executable = entry.get("boot_executable", "")
     if not isinstance(boot_executable, str) or (
         boot_executable and _psp_boot_path(boot_executable) is None
@@ -730,7 +730,7 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
     profile_path = user_root / "experimental" / disc_id / "profile.json"
     if entry.get("is_experimental"):
         if not profile_path.is_file():
-            raise PackageBuildError(f"Experimental profile for {disc_id} is missing; re-import the ISO before building (#297).")
+            raise PackageBuildError(f"Experimental profile for {disc_id} is missing; re-import the ISO before building.")
         try:
             # Bounded read (never a whole-file read) with duplicate-key and
             # depth/count ceilings; the stat pre-check stays as a fast path.
@@ -756,7 +756,7 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
             raise PackageBuildError(f"Experimental profile selected executable is stale for {disc_id}.")
         digest = identity.get("executable_sha256")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise PackageBuildError(f"Experimental profile has no plaintext executable SHA-256 for {disc_id} (#295).")
+            raise PackageBuildError(f"Experimental profile has no plaintext executable SHA-256 for {disc_id}.")
         manifest = title_manifest.validate_manifest(profile.get("manifest"))
         if manifest["id"] != title_id or manifest["disc"]["id"] != disc_id:
             raise PackageBuildError(f"Experimental profile title identity does not match {disc_id}.")
@@ -827,7 +827,7 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
         return
     path.unlink(missing_ok=True)
     raise PackageBuildError(
-        f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32 (#295); "
+        f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32; "
         "supply a valid decrypted module."
     )
 
@@ -838,7 +838,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            user_data_root: Path | None = None) -> Path | None:
     key_hint = (
         f" A local key file at {key_file_path(user_data_root)} enables the built-in "
-        "decryption boundary (#295)."
+        "decryption boundary."
         if user_data_root is not None
         else ""
     )
@@ -865,14 +865,14 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                 )
             except (OSError, ValueError) as exc:
                 raise PackageBuildError(
-                    f"Required guest PRX {name} escapes the per-title decrypted-module folder (#295)."
+                    f"Required guest PRX {name} escapes the per-title decrypted-module folder."
                 ) from exc
         destination = output / name
         if source_path is not None:
             if source_path.stat().st_size <= 0 or source_path.stat().st_size > MAX_EXECUTABLE_BYTES:
                 raise PackageBuildError(
-                    f"Required guest PRX {name} exceeds the supported input size (#295); "
-                    "broader module intake is in the works (#308)."
+                    f"Required guest PRX {name} exceeds the supported input size; "
+                    "broader module intake is in the works."
                 )
             try:
                 with source_path.open("rb") as module_stream:
@@ -893,7 +893,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                 suggested = module_dir_arg or default_module_dir
                 raise PackageBuildError(
                     f"Required guest PRX {_module_label(name, disc_name)} is not a decrypted ELF; "
-                    f"supply decrypted modules at {suggested} (#295). "
+                    f"supply decrypted modules at {suggested}. "
                     f"{boundary_detail or 'A plain module is required here.'}{key_hint}"
                 )
             if not copied_by_boundary:
@@ -924,7 +924,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                 raise PackageBuildError(
                     "DUPLICATE_DISC_MODULE_BASENAME: required guest module "
                     f"{disc_name or name!r} occurs at {first} and {second}; "
-                    "automatic intake is in the works (#726)."
+                    "automatic intake is in the works."
                 )
             members.extend(matches)
         for member in dict.fromkeys(members):
@@ -991,7 +991,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                         suggested = module_dir_arg or default_module_dir
                         raise PackageBuildError(
                             f"Required guest PRX {_module_label(name, disc_name)} is encrypted or not a "
-                            f"plain ELF; supply decrypted modules at {suggested} (#295). "
+                            f"plain ELF; supply decrypted modules at {suggested}. "
                             f"{boundary_detail or 'The disc copy is not a plain ELF.'}{key_hint}"
                         )
                     _require_plain_guest_module(temporary, name, disc_name)
@@ -1004,7 +1004,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             suggested = module_dir_arg or default_module_dir
             raise PackageBuildError(
                 f"Required guest PRX {_module_label(name, disc_name)} is unavailable; supply "
-                f"decrypted modules at {suggested} (#295)."
+                f"decrypted modules at {suggested}."
             )
     return output
 
@@ -1100,7 +1100,7 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         if found is None:
             raise PackageBuildError(
                 "SDL3.dll was not bundled in the package and could not be resolved from "
-                "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
+                "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites."
             )
         shutil.copyfile(found, package_dir / "SDL3.dll")
     if _windows_host() and not (package_dir / "libiconv-2.dll").is_file():
@@ -1108,7 +1108,7 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         if found is None:
             raise PackageBuildError(
                 "libiconv-2.dll, required by the packaged SDL3 runtime, could not be resolved from "
-                "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
+                "SDL3_DIR or the active UCRT64 toolchain PATH; retry the pinned prerequisites."
             )
         shutil.copyfile(found, package_dir / "libiconv-2.dll")
     if _windows_host() and not (package_dir / "vulkan-1.dll").is_file():
@@ -1116,19 +1116,19 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         if found is None:
             raise PackageBuildError(
                 "vulkan-1.dll was not bundled in the package and could not be resolved from "
-                "VULKAN_SDK, SDL3_DIR, or the active UCRT64 toolchain PATH; retry the pinned prerequisites (#296)."
+                "VULKAN_SDK, SDL3_DIR, or the active UCRT64 toolchain PATH; retry the pinned prerequisites."
             )
         shutil.copyfile(found, package_dir / "vulkan-1.dll")
     if _windows_host():
         # The SDL3_ttf readable-font closure (#421), through the same mechanical
         # step the Makefile's player target uses. The prerequisite installer
-        # (#296) does not provide it yet, so a package without it still builds:
+        # (#324) does not provide it yet, so a package without it still builds:
         # the player then draws with its bitmap fallback and logs why.
         try:
             _runtime_dlls.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
         except _runtime_dlls.StageError as exc:
             print(f"warning: the readable UI font runtime was not staged: {exc}. "
-                  "The player will use its bitmap fallback font (#421).", file=sys.stderr)
+                  "The player will use its bitmap fallback font.", file=sys.stderr)
 
 
 def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:
@@ -1419,16 +1419,16 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
                 "copy of your disc. The project does not provide decrypted executables. "
                 "This boundary is "
-                "in the works (#308)."
+                "in the works."
             )
         if selected_value is None or (uses_decrypted_eboot and not decrypted_eboot):
             module_dir = decrypted_module_dir(user_root, disc_id)
             folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
             raise PackageBuildError(
-                f"Encrypted executable: supply decrypted modules at {folder} (#295), or "
+                f"Encrypted executable: supply decrypted modules at {folder}, or "
                 f"a matching local key file at {key_file_path(user_root)} to enable the "
                 "built-in boundary for supported formats. The project ships no keys; "
-                "broader ISO-to-Play support is in the works (#308)."
+                "broader ISO-to-Play support is in the works."
             )
         selected = str(selected_value).upper()
         selected_from_library = entry.get("selected_executable", "")
@@ -1441,7 +1441,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 library_selected = "EBOOT.BIN"
             if library_selected not in {"EBOOT.BIN", "BOOT.BIN"}:
                 raise PackageBuildError(
-                    f"Library executable selection {library_selected!r} is invalid for a user-supplied EBOOT.elf (#297)."
+                    f"Library executable selection {library_selected!r} is invalid for a user-supplied EBOOT.elf."
                 )
             manifest_selected = library_selected
         else:
@@ -1449,7 +1449,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         if library_selected not in {"EBOOT.BIN", "BOOT.BIN"} or (
             not uses_decrypted_eboot and library_selected != selected
         ):
-            raise PackageBuildError(f"Selected executable changed from library entry {library_selected!r} to {selected!r}; re-import the ISO (#297).")
+            raise PackageBuildError(f"Selected executable changed from library entry {library_selected!r} to {selected!r}; re-import the ISO.")
 
         manifest_source, manifest, expected_hash = _load_entry_manifest(
             user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
@@ -1570,7 +1570,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 cached_header.unlink(missing_ok=True)
                 raise PackageBuildError(
                     "This manifest reads BSS metadata from the disc's ~PSP executable header, "
-                    f"but {manifest_selected} on this disc has no such header; provide --psp-header (#296)."
+                    f"but {manifest_selected} on this disc has no such header; provide --psp-header."
                 )
         module_dir = _copy_optional_modules(
             iso_path,
@@ -1780,7 +1780,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             ):
                 boundary_err = (
                     "This checkout lacks the production PGF/PGD runtime backends required "
-                    "for a private-backend build (#297)."
+                    "for a private-backend build."
                 )
                 reporter.report("compile", "FAIL", boundary_err)
                 reporter.close()
@@ -1795,7 +1795,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 if not path_err:
                     path_err = (
                         "A build path contains spaces and 8.3 short names are unavailable on this volume; "
-                        "set NK_BUILD_ROOT to a folder without spaces (#296)."
+                        "set NK_BUILD_ROOT to a folder without spaces."
                     )
                 reporter.report("compile", "FAIL", path_err)
                 reporter.close()
@@ -1833,8 +1833,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
         backends_mode = "public" if public_safe else "private"
         backend_limits = (
             [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ]
             if public_safe
             else []
@@ -1954,7 +1954,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             args.iso, metadata=meta, runtime_root=user_data_root
         )
     except Exception as exc:
-        sys.stderr.write(f"Error inspecting ISO: {exc}\n")
+        boundary = getattr(exc, "boundary_code", None)
+        sys.stderr.write(
+            f"Error inspecting ISO{' [' + boundary + ']' if boundary else ''}: {exc}\n"
+        )
         return 1
 
     payload = {
@@ -2142,7 +2145,7 @@ def _new_bringup_report() -> dict:
 
 
 def _update_issues(report: dict, values) -> None:
-    allowed = {118, 280, 285, 295, 296, 297, 298, 300, 308, 726}
+    allowed = {118, 280, 308, 313}
     report["issue_numbers"] = sorted(
         set(report["issue_numbers"]) | {value for value in values if value in allowed}
     )
@@ -2229,7 +2232,7 @@ def _fail_bringup(
 def _bringup_import_failure(exc: Exception, checks: dict) -> tuple[str, list[int], str | None]:
     detail = str(exc)
     if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
-        return "GUEST_MODULE_DISCOVERY_FAILED", [726], detail
+        return "GUEST_MODULE_DISCOVERY_FAILED", [308], detail
 
     failure = "EXPERIMENTAL_IMPORT_FAILED"
     issues = [308]
@@ -2381,7 +2384,7 @@ def _bringup_human_summary(report: dict) -> str:
     cfw_prefix = (
         "Custom-firmware-patched dump: using the original executable EBOOT.OLD "
         "through the supplied decrypted EBOOT.elf; the EBOOT.BIN loader and patch "
-        "modules are excluded. Broader CFW dump support is in the works (#308). "
+        "modules are excluded. Broader CFW dump support is in the works. "
         if uses_cfw_original else ""
     )
     if report["failure_class"] == "NONE":
@@ -2403,10 +2406,12 @@ def _bringup_human_summary(report: dict) -> str:
             "patch. The game executable is EBOOT.OLD (encrypted); supply its decrypted "
             "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
             "copy of your disc. The project does not provide decrypted executables. "
-            "This boundary is in the works (#308)."
+            "This boundary is in the works."
         )
-    issues = " ".join(f"#{number}" for number in report["issue_numbers"])
-    suffix = f"; in the works ({issues})" if issues else ""
+    suffix = (
+        "; related support is in the works"
+        if report["issue_numbers"] else ""
+    )
     detail = ""
     if report["failure_class"] == "UNSUPPORTED_IMPORT" and report.get("runtime_imports"):
         imported = report["runtime_imports"][0]
@@ -2432,7 +2437,7 @@ def _bringup_human_summary(report: dict) -> str:
     elif report["failure_class"] == "EXITED_ZERO_BEFORE_HLE":
         detail = " (the runtime exited zero before its first PSP kernel import)"
     elif report["failure_class"] == "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP":
-        detail = " (the guest module unloaded itself before PSP display framebuffer setup; why is not yet established, and the stop/unload lifecycle is tracked in #280)"
+        detail = " (the guest module unloaded itself before PSP display framebuffer setup; why is not yet established, and the stop/unload lifecycle still needs investigation)"
     elif report["failure_class"] == "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP":
         detail = " (the runtime exited zero before PSP display framebuffer setup)"
     elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
@@ -2441,6 +2446,12 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
+    elif report["failure_class"] == "PBP_PACKAGE_UNSUPPORTED":
+        detail = (" (the file is a PlayStation Store package (PBP), not a disc image, "
+                  "and Nakagawa Recomp cannot use it yet)")
+    elif str(report["failure_class"]).startswith("PBP_"):
+        detail = (" (the file is a PlayStation Store package (PBP) whose embedded title "
+                  "information could not be read)")
     elif report["failure_class"] == "LAUNCH_FAILED":
         kind = report.get("runtime_output_kind")
         if kind == "EMPTY":
@@ -2855,9 +2866,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         preflight = inspect_compatibility_preflight(
             iso_path, metadata=metadata, runtime_root=user_root
         )
-    except Exception:
+    except Exception as exc:
         elapsed = int((time.perf_counter() - started) * 1000)
-        fail_stage(report, "inspect", "INVALID_ISO", duration_ms=elapsed)
+        fail_stage(report, "inspect",
+                   getattr(exc, "boundary_code", None) or "INVALID_ISO",
+                   duration_ms=elapsed)
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
@@ -2889,7 +2902,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         return 1
     boot_path = _psp_boot_path(preflight.get("selected_executable_source"))
     if boot_path is None:
-        fail_stage(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
+        fail_stage(report, "inspect", "EXECUTABLE_UNSUPPORTED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -2918,7 +2931,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         if selected == "EBOOT.elf":
             decrypted_eboot = preflight.get("decrypted_executable")
             if not isinstance(decrypted_eboot, str):
-                raise PackageBuildError("User-supplied decrypted EBOOT.elf is unavailable (#295).")
+                raise PackageBuildError("User-supplied decrypted EBOOT.elf is unavailable.")
             _copy_decrypted_elf(Path(decrypted_eboot), selected_elf)
         else:
             _extract_iso_executable(iso_path, str(selected).upper(), selected_elf)
@@ -2930,7 +2943,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             except (OSError, IsoInspectionError, PackageBuildError) as exc:
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_DISCOVERY_FAILED",
-                    [726], int((time.perf_counter() - started) * 1000),
+                    [308], int((time.perf_counter() - started) * 1000),
                 )
                 detail = str(exc)
                 if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
@@ -2942,7 +2955,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             report["counts"]["encrypted_modules"] = sum(
                 candidate["kind"] == "encrypted-prx" for candidate in module_candidates
             )
-            _update_issues(report, [285, 308])
+            _update_issues(report, [308])
             # Every candidate must resolve to a plain module. A plain copy on
             # disc is staged from the image; an encrypted container (or any
             # candidate the intake cannot classify) is satisfied by a valid
@@ -2987,7 +3000,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     print(f"MODULE {candidate['name']}: not ready ({detail})")
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_DECRYPTION_REQUIRED",
-                    [295], int((time.perf_counter() - started) * 1000),
+                    [308], int((time.perf_counter() - started) * 1000),
                 )
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
@@ -2995,7 +3008,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             if unready:
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
-                    [295, 308], int((time.perf_counter() - started) * 1000),
+                    [308], int((time.perf_counter() - started) * 1000),
                 )
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
@@ -3012,7 +3025,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 except (OSError, IsoInspectionError, PackageBuildError):
                     fail_stage(
                         report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
-                        [296], int((time.perf_counter() - started) * 1000),
+                        [308], int((time.perf_counter() - started) * 1000),
                     )
                     _write_bringup_report(report, report_path)
                     print(_bringup_human_summary(report))
@@ -3051,7 +3064,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 except (OSError, KeyError, ValueError):
                     fail_stage(
                         report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
-                        [296], int((time.perf_counter() - started) * 1000),
+                        [308], int((time.perf_counter() - started) * 1000),
                     )
                     _write_bringup_report(report, report_path)
                     print(_bringup_human_summary(report))
@@ -3081,7 +3094,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         return 1
     set_stage(report, "prepare_import", "PASS", int((time.perf_counter() - started) * 1000))
     if not metadata.matched_profile:
-        _update_issues(report, [285, 308])
+        _update_issues(report, [308])
 
     if progress is not None:
         progress.start("analyze")
@@ -3107,7 +3120,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 # production bring-up result.
                 pass
     except Exception:
-        fail_stage(report, "analyze", "ANALYSIS_FAILED", [296],
+        fail_stage(report, "analyze", "ANALYSIS_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -3146,13 +3159,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             codegen_dir / f"{manifest['game_name']}_recomp_stubs.txt", sources
         )
         if completed.returncode != 0:
-            fail_stage(report, "codegen", "CODEGEN_FAILED", [296],
+            fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                           int((time.perf_counter() - started) * 1000))
             _write_bringup_report(report, report_path)
             print(_bringup_human_summary(report))
             return 1
     except Exception:
-        fail_stage(report, "codegen", "CODEGEN_FAILED", [296],
+        fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -3182,11 +3195,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     if build_status != 0:
         combined = (stdout_capture.getvalue() + stderr_capture.getvalue()).casefold()
         if "production pgf/pgd runtime backends" in combined:
-            failure, stage, issues = "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE", "compile", [297]
+            failure, stage, issues = "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE", "compile", [308]
         elif "package_build_failed" in combined or observer_events.get("compile", (None,))[0] == "FAIL":
-            failure, stage, issues = "COMPILE_FAILED", "compile", [296]
+            failure, stage, issues = "COMPILE_FAILED", "compile", [308]
         else:
-            failure, stage, issues = "BUILD_PACKAGE_FAILED", "build_package", [296, 297]
+            failure, stage, issues = "BUILD_PACKAGE_FAILED", "build_package", [308]
         if report["stages"][stage]["status"] == "NOT_RUN":
             fail_stage(report, stage, failure, issues, 0)
         else:
@@ -3217,7 +3230,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)
         except (OSError, ValueError) as exc:
             fail_stage(
-                report, "launch", "LOOSE_CONTENT_ROOTS_UNAVAILABLE", [289],
+                report, "launch", "LOOSE_CONTENT_ROOTS_UNAVAILABLE", [308],
                 int((time.perf_counter() - started) * 1000),
             )
             print(str(exc), file=sys.stderr)
@@ -3293,32 +3306,32 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 hle_observed = _flight_has_hle_import(flight_output)
                 if hle_observed is False:
                     fail_stage(
-                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [285, 308],
+                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 elif hle_observed is None:
                     fail_stage(
-                        report, "launch", "GUEST_ACTIVITY_UNVERIFIED", [285, 308],
+                        report, "launch", "GUEST_ACTIVITY_UNVERIFIED", [308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 else:
                     framebuffer_observed = _flight_has_display_framebuffer_setup(flight_output)
                     if framebuffer_observed is False:
                         if _flight_has_module_self_unload(flight_output) is True:
-                            failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 285, 308]
+                            failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 308]
                         else:
-                            failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [285, 308]
+                            failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [308]
                         fail_stage(report, "launch", failure, issues,
                                       int((time.perf_counter() - started) * 1000))
                     elif framebuffer_observed is None:
                         fail_stage(
-                            report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [285, 308],
+                            report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [308],
                             int((time.perf_counter() - started) * 1000),
                         )
                     else:
                         if not presentation_evidence_ok:
                             fail_stage(
-                                report, "launch", "NO_FRAME_SUBMISSIONS", [297, 308],
+                                report, "launch", "NO_FRAME_SUBMISSIONS", [308],
                                 int((time.perf_counter() - started) * 1000),
                             )
                         else:
@@ -3333,24 +3346,24 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                       or "unsupported instruction" in folded or "aot-gap" in folded):
                     failure, issues = "UNSUPPORTED_INSTRUCTION", [118]
                 elif report["runtime_output_kind"] == "ENTRY_NOT_COMPILED":
-                    failure, issues = "ENTRY_NOT_COMPILED", [296]
+                    failure, issues = "ENTRY_NOT_COMPILED", [308]
                 elif report["runtime_output_kind"] == "DRIVER_INPUT_READ_FAILURE":
-                    failure, issues = "RUNTIME_INPUT_UNAVAILABLE", [297]
+                    failure, issues = "RUNTIME_INPUT_UNAVAILABLE", [308]
                 elif report["runtime_output_kind"] == "DRIVER_ELF_REJECTION":
-                    failure, issues = "RUNTIME_ELF_REJECTED", [296]
+                    failure, issues = "RUNTIME_ELF_REJECTED", [308]
                 elif report["runtime_output_kind"] == "DRIVER_TRACE_INPUT_FAILURE":
-                    failure, issues = "RUNTIME_TRACE_UNAVAILABLE", [297]
+                    failure, issues = "RUNTIME_TRACE_UNAVAILABLE", [308]
                 elif report["runtime_output_kind"] == "DRIVER_ARGUMENT_FAILURE":
-                    failure, issues = "RUNTIME_ARGUMENT_FAILURE", [297]
+                    failure, issues = "RUNTIME_ARGUMENT_FAILURE", [308]
                 elif report["runtime_output_kind"] == "NATIVE_CRASH_REPORT":
-                    failure, issues = "NATIVE_RUNTIME_CRASH", [297]
+                    failure, issues = "NATIVE_RUNTIME_CRASH", [308]
                 elif report["runtime_output_kind"] == "DISPATCH_MISS":
                     failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
                 elif report["runtime_output_kind"] == "VIDEO_UNAVAILABLE":
-                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
+                    failure, issues = "HEADLESS_UNAVAILABLE", [308]
                     report["exit_classification"] = "HEADLESS_UNAVAILABLE"
                 else:
-                    failure, issues = "LAUNCH_FAILED", [297]
+                    failure, issues = "LAUNCH_FAILED", [308]
                 fail_stage(report, "launch", failure, issues,
                               int((time.perf_counter() - started) * 1000))
         except subprocess.TimeoutExpired:
@@ -3358,11 +3371,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             launch_output, _ = process.communicate()
             _set_bringup_presentation(report, launch_output)
             report["exit_classification"] = "TIMED_OUT"
-            fail_stage(report, "launch", "LAUNCH_TIMEOUT", [297],
+            fail_stage(report, "launch", "LAUNCH_TIMEOUT", [308],
                           int((time.perf_counter() - started) * 1000))
     except OSError:
         report["exit_classification"] = "EXITED_NONZERO"
-        fail_stage(report, "launch", "LAUNCH_FAILED", [297],
+        fail_stage(report, "launch", "LAUNCH_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
 
     report_written = _write_bringup_report(report, report_path)

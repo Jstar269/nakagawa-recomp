@@ -1719,7 +1719,7 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
     if (res != NK_OK) {
         snprintf(reason, sizeof(reason), "%.95s", diag);
         snprintf(app->input_profile_notice, sizeof(app->input_profile_notice),
-                 "Mapping for %s could not be handed to the game (%.48s); it starts on the global mapping (#520).",
+                 "Mapping for %s could not be handed to the game (%.48s); it starts on the global mapping.",
                  game->disc_id, reason[0] ? reason : "unknown reason");
         printf("[PLAYER] %s\n", app->input_profile_notice);
         return res;
@@ -1881,7 +1881,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 #if !defined(_WIN32) && !defined(_WIN64)
         player_app_set_error(app, "PREREQUISITE_PLATFORM_UNSUPPORTED",
                              "Build Tools Not Available on This Platform",
-                             "Automatic prerequisite installation currently supports Windows x64 with UCRT64. Linux build-tool installation is in the works (#306).",
+                             "Automatic prerequisite installation currently supports Windows x64 with UCRT64. Linux build-tool installation is in the works.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
 #else
@@ -2528,7 +2528,7 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
         ? PLAYER_DECRYPTED_EBOOT_VALID : PLAYER_DECRYPTED_EBOOT_INVALID;
 }
 
-/* Issue #295: built-in decryption boundary.  The player holds no key
+/* Issue #308: built-in decryption boundary.  The player holds no key
  * material: a local-only key file at <user data>/keys/psp-keyfile.json (or
  * $NAKAGAWA_PSP_KEY_FILE) unlocks the boundary, which unwraps the disc's
  * encrypted executable and encrypted PRX modules into the private per-title
@@ -2664,11 +2664,11 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
     return PLAYER_BOUNDARY_OK;
 }
 
-/* Issue #295 guest-module boundary: the disc's own PRX modules are resolved
+/* Issue #308 guest-module boundary: the disc's own PRX modules are resolved
    through the same per-title folder and built-in boundary as the executable,
    one module at a time and fail closed per module.  CFW patch-module exclusion
    stays the intake route's named job; this reports decryption readiness. */
-/* Issue #726 reports 35+ PRXs in one folder; 256 covers that count with a
+/* Disc surveys found 35+ PRXs in one folder; 256 covers that count with a
    fixed upper bound for malformed images. */
 #define PLAYER_MAX_GUEST_MODULES 256
 
@@ -2887,8 +2887,7 @@ static bool player_scan_module_entry(const char *member_path,
             context->status = PLAYER_MODULE_SCAN_DUPLICATE_NAME;
             snprintf(context->boundary_message, context->boundary_message_size,
                      "DUPLICATE_DISC_MODULE_BASENAME: %.128s occurs at %.900s "
-                     "and %.900s; automatic module intake is in the works "
-                     "(#726).",
+                     "and %.900s; automatic module intake is in the works.",
                      entry->name, context->modules[i].rel_path, member_path);
             return false;
         }
@@ -2897,8 +2896,7 @@ static bool player_scan_module_entry(const char *member_path,
         context->status = PLAYER_MODULE_SCAN_CANDIDATE_LIMIT;
         snprintf(context->boundary_message, context->boundary_message_size,
                  "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than %u "
-                 "guest-module candidates; larger module sets are in the "
-                 "works (#726).",
+                 "guest-module candidates; larger module sets are in the works.",
                  PLAYER_MAX_GUEST_MODULES);
         return false;
     }
@@ -2927,7 +2925,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     if (reader == NULL) {
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
-                     "DISC_MODULE_TREE_OPEN_FAILED: ISO could not be opened (#726).");
+                     "DISC_MODULE_TREE_OPEN_FAILED: ISO could not be opened.");
         }
         return PLAYER_MODULE_SCAN_OPEN_FAILED;
     }
@@ -2951,8 +2949,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
-                     "%u directories; broader discovery is in the works "
-                     "(#726).",
+                     "%u directories; broader discovery is in the works.",
                      NK_ISO_MODULE_TREE_MAX_DIRECTORIES);
         }
         return PLAYER_MODULE_SCAN_DIRECTORY_LIMIT;
@@ -2960,7 +2957,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_PATH_LIMIT: ISO member path exceeds %u bytes; "
-                     "broader path-aware intake is in the works (#726).",
+                     "broader path-aware intake is in the works.",
                      NK_ISO_MODULE_TREE_MAX_PATH_BYTES);
         }
         return PLAYER_MODULE_SCAN_PATH_LIMIT;
@@ -2968,28 +2965,28 @@ static PlayerModuleScanStatus player_scan_disc_modules(
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_TREE_INVALID: ISO module directories could "
-                     "not be listed safely (#726).");
+                     "not be listed safely.");
         }
         return PLAYER_MODULE_SCAN_INVALID_TREE;
     case NK_ISO_MODULE_WALK_INVALID_ARGUMENT:
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_SCAN_INVALID_ARGUMENT: ISO module scan "
-                     "received invalid reader state (#726).");
+                     "received invalid reader state.");
         }
         return PLAYER_MODULE_SCAN_INVALID_ARGUMENT;
     case NK_ISO_MODULE_WALK_CALLBACK_STOPPED:
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_SCAN_CALLBACK_STOPPED: ISO module scan "
-                     "stopped without a candidate boundary (#726).");
+                     "stopped without a candidate boundary.");
         }
         return PLAYER_MODULE_SCAN_CALLBACK_STOPPED;
     }
     if (boundary_message && boundary_message_size) {
         snprintf(boundary_message, boundary_message_size,
                  "DISC_MODULE_SCAN_STATUS_UNKNOWN: ISO module scan returned "
-                 "an unknown status (#726).");
+                 "an unknown status.");
     }
     return PLAYER_MODULE_SCAN_INVALID_TREE;
 }
@@ -3022,10 +3019,10 @@ static void player_check_guest_modules(PlayerApp *app,
     modules = (PlayerModuleCandidate *)calloc(PLAYER_MAX_GUEST_MODULES,
                                                sizeof(*modules));
     if (modules == NULL) {
-        static const unsigned int issues[] = { 726 };
+        static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                              "DISC_MODULE_SCAN_ALLOCATION_FAILED: module discovery "
-                             "could not allocate its bounded scan table (#726).",
+                             "could not allocate its bounded scan table.",
                              issues, 1);
         return;
     }
@@ -3034,11 +3031,11 @@ static void player_check_guest_modules(PlayerApp *app,
         modules, PLAYER_MAX_GUEST_MODULES, &total, discovery_message,
         sizeof(discovery_message));
     if (scan_status != PLAYER_MODULE_SCAN_OK) {
-        static const unsigned int issues[] = { 726 };
+        static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                              discovery_message[0] ? discovery_message :
                                  "DISC_MODULE_SCAN_FAILED: module discovery failed "
-                                 "closed (#726).",
+                                 "closed.",
                              issues, 1);
         free(modules);
         return;
@@ -3129,11 +3126,11 @@ static void player_check_guest_modules(PlayerApp *app,
                  (unsigned)(not_ready - 1));
     }
     {
-        static const unsigned int issues[] = { 295 };
+        static const unsigned int issues[] = { 308 };
         if (first_encrypted) {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is encrypted%s. "
-                     "Supply decrypted modules at %.220s (#295), or a local key "
+                     "Supply decrypted modules at %.220s, or a local key "
                      "file at %.170s to enable the built-in boundary.",
                      (unsigned)ready, (unsigned)total, first_name, more,
                      decrypted_dir, key_path);
@@ -3143,7 +3140,7 @@ static void player_check_guest_modules(PlayerApp *app,
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s could not be "
                      "decrypted (%.190s)%s. Supply decrypted modules at %.220s "
-                     "(#295), or add the missing entry to your local key file.",
+                     "or add the missing entry to your local key file.",
                      (unsigned)ready, (unsigned)total, first_name, first_detail,
                      more, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
@@ -3151,7 +3148,7 @@ static void player_check_guest_modules(PlayerApp *app,
         } else {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is not ready "
-                     "(%.190s)%s. Supply decrypted modules at %.220s (#295).",
+                     "(%.190s)%s. Supply decrypted modules at %.220s.",
                      (unsigned)ready, (unsigned)total, first_name, first_detail,
                      more, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
@@ -3176,10 +3173,10 @@ void player_app_build_compatibility_preflight(
     if (!runtime_root) runtime_root = ".";
 
     if (app->inspecting_game.is_experimental) {
-        static const unsigned int issues[] = { 285, 308 };
+        static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
-                             "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
-                             issues, 2);
+                             "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
+                             issues, 1);
     }
 
     if (!disc_readable) {
@@ -3206,7 +3203,7 @@ void player_app_build_compatibility_preflight(
                              "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.", NULL, 0);
     } else if (eboot == NK_ISO_EXEC_PSP_ENCRYPTED ||
                eboot == NK_ISO_EXEC_SCE_WRAPPER || eboot == NK_ISO_EXEC_PBP) {
-        static const unsigned int issues[] = { 295 };
+        static const unsigned int issues[] = { 308 };
         char decrypted_dir[NK_MAX_PATH * 2];
         char decrypted_elf[NK_MAX_PATH * 2];
         PlayerDecryptedEbootState decrypted_state = player_find_decrypted_eboot(
@@ -3246,14 +3243,14 @@ void player_app_build_compatibility_preflight(
                 char message[512];
                 snprintf(message, sizeof(message),
                     "Encrypted executable: the built-in decryption boundary failed "
-                    "(%.190s); supply decrypted modules at %.190s (#295).",
+                    "(%.190s); supply decrypted modules at %.190s.",
                     boundary_detail, decrypted_dir);
                 player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                      message, issues, 1);
             } else {
                 char message[512];
                 snprintf(message, sizeof(message),
-                    "Encrypted executable: supply decrypted modules at %.220s (#295), "
+                    "Encrypted executable: supply decrypted modules at %.220s, "
                     "or a local key file at %.170s to enable the built-in boundary.",
                     decrypted_dir, key_path);
                 player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
@@ -3265,7 +3262,7 @@ void player_app_build_compatibility_preflight(
             snprintf(message, sizeof(message),
                 "Encrypted executable: the per-title decrypted-data path could "
                 "not be resolved safely. Correct the user-data path and retry; "
-                "broader ISO-to-Play support is in the works (#308).");
+                "broader ISO-to-Play support is in the works.");
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, path_issues, 1);
         }
@@ -3275,7 +3272,7 @@ void player_app_build_compatibility_preflight(
     } else {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                             "Unknown/malformed executable boundary; broader title support is in the works (#308).",
+                             "Unknown/malformed executable boundary; broader title support is in the works.",
                              issues, 1);
     }
 
@@ -3286,14 +3283,14 @@ void player_app_build_compatibility_preflight(
     if (!app->inspecting_game.title_id[0]) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_UNSUPPORTED,
-                             "Title profile missing; generic title support is in the works (#308).",
+                             "Title profile missing; generic title support is in the works.",
                              issues, 1);
     } else {
         char package_reason[2048] = "";
         NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
             app, &app->inspecting_game, NULL, package_reason,
             sizeof(package_reason));
-        static const unsigned int issues[] = { 296, 297 };
+        static const unsigned int issues[] = { 308 };
         PlayerPreflightStatus status = PREFLIGHT_MISSING;
         if (package_status == NK_RUNTIME_PACKAGE_OK) status = PREFLIGHT_OK;
         else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) status = PREFLIGHT_INCOMPATIBLE;
@@ -3301,7 +3298,7 @@ void player_app_build_compatibility_preflight(
         player_preflight_add(preflight, "RUNTIME_PACKAGE", status,
             package_reason[0] ? package_reason : "Runtime package validation did not complete.",
             status == PREFLIGHT_OK ? NULL : issues,
-            status == PREFLIGHT_OK ? 0 : 2);
+            status == PREFLIGHT_OK ? 0 : 1);
     }
 
     if (app->inspecting_game.title_id[0]) {
@@ -3328,7 +3325,7 @@ void player_app_build_compatibility_preflight(
         }
     }
 
-    static const unsigned int font_issues[] = { 300 };
+    static const unsigned int font_issues[] = { 313 };
     char font_message[512] = "";
     NkFontStatus font_status = nk_font_check_cache(runtime_root, runtime_root,
                                                    font_message, sizeof(font_message));
@@ -3338,11 +3335,11 @@ void player_app_build_compatibility_preflight(
                              NULL, 0);
     } else if (font_status == NK_FONT_STATUS_INVALID) {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_INVALID,
-                             font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder> (#300).",
+                             font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder>.",
                              font_issues, 1);
     } else {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_MISSING,
-                             font_message[0] ? font_message : "PSP font jpn0.pgf missing; run fonts import <folder> (#300).",
+                             font_message[0] ? font_message : "PSP font jpn0.pgf missing; run fonts import <folder>.",
                              font_issues, 1);
     }
 
