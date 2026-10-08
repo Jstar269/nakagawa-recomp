@@ -649,7 +649,7 @@ int player_app_focus_count(const PlayerApp *app) {
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
-                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, the
+                 * (PLAY/STOP/BUILD/REBUILD or a pending package check), add, remove, the
                  * per-title controller mapping choice, then the paging stops
                  * when the library overflows. The unavailable pill is never a
                  * stop. */
@@ -672,7 +672,7 @@ int player_app_focus_count(const PlayerApp *app) {
                                  (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
                                   pkg_status == NK_RUNTIME_PACKAGE_STALE);
                 if (game && (game_ready || app->is_game_running || can_build ||
-                             check_failed)) count++;
+                             check_failed || checking)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
                 count += game ? 1 : 0; /* global / this-game controller mapping */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
@@ -1364,12 +1364,30 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     snprintf(app->last_error.error_code, sizeof(app->last_error.error_code), "%s", code ? code : "ERROR_UNKNOWN");
     snprintf(app->last_error.title, sizeof(app->last_error.title), "%s", title ? title : "Operation Failed");
     snprintf(app->last_error.message, sizeof(app->last_error.message), "%s", msg ? msg : "An unexpected error occurred.");
+    app->last_error.details[0] = '\0';
     snprintf(app->last_error.recovery_action_label, sizeof(app->last_error.recovery_action_label), "%s", recovery_label ? recovery_label : "Return to Library");
     app->last_error.return_view = return_view;
     app->last_error.failed_stage[0] = '\0';
     app->last_error.boundary_text[0] = '\0';
     app->last_error.log_file_path[0] = '\0';
     app->active_view = VIEW_ERROR;
+}
+
+void player_app_set_cli_not_found_error(PlayerApp *app,
+                                        const char *recovery_label,
+                                        PlayerView return_view) {
+    if (!app) return;
+    player_app_set_error(
+        app, "CLI_NOT_FOUND", "Build Tools Not Found",
+        "Nakagawa Recomp's build tools were not found next to the app. "
+        "Reinstall Nakagawa Recomp and keep its folder together.",
+        recovery_label, return_view);
+    /* After set_error, which resets last_error, so the details survive. */
+    package_builder_describe_cli_not_found(app->install_root,
+                                           app->last_error.details,
+                                           sizeof(app->last_error.details));
+    fprintf(stderr, "[PLAYER] CLI_NOT_FOUND details: %s\n",
+            app->last_error.details);
 }
 
 void player_app_populate_sample_games(PlayerApp *app) {
@@ -1845,12 +1863,8 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
-        char cli_guidance[512];
-        package_builder_describe_cli_not_found(app->install_root,
-                                               cli_guidance, sizeof(cli_guidance));
-        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
-                             cli_guidance,
-                             "Return to Library", VIEW_LIBRARY);
+        player_app_set_cli_not_found_error(app, "Return to Library",
+                                           VIEW_LIBRARY);
         return false;
     }
 
@@ -1999,10 +2013,15 @@ void player_app_prereq_fail(PlayerApp *app, const char *code,
              "%s", message && message[0] ? message :
              "The prerequisite could not be installed. Check the connection and free disk space, then retry.");
     app->prerequisites.phase = PLAYER_PREREQ_FAILED;
-    player_app_set_error(app, app->prerequisites.error_code,
-                         "Build Prerequisite Could Not Be Installed",
-                         app->prerequisites.error_message,
-                         "Retry Download", VIEW_PREREQ_CONSENT);
+    if (strcmp(app->prerequisites.error_code, "CLI_NOT_FOUND") == 0) {
+        player_app_set_cli_not_found_error(app, "Retry Download",
+                                           VIEW_PREREQ_CONSENT);
+    } else {
+        player_app_set_error(app, app->prerequisites.error_code,
+                             "Build Prerequisite Could Not Be Installed",
+                             app->prerequisites.error_message,
+                             "Retry Download", VIEW_PREREQ_CONSENT);
+    }
 }
 
 void player_app_prereq_retry(PlayerApp *app) {
@@ -2055,9 +2074,8 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
         return false;
     }
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
-        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
-                             "The packaged source/tools folder could not be located, so the prerequisite manifest is unavailable.",
-                             "Return to Settings", VIEW_SETTINGS);
+        player_app_set_cli_not_found_error(app, "Return to Settings",
+                                           VIEW_SETTINGS);
         return false;
     }
     if (!package_builder_load_prerequisites(cli_path, &list, error, sizeof(error))) {
