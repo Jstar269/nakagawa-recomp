@@ -655,11 +655,12 @@ def _read_iso_directory_entries(
 
 
 def list_iso_directory(
-    iso_path: Path | str, path: tuple[str, ...]
+    iso_path: Path | str, path: tuple[str, ...], *, require_final_directory: bool = False
 ) -> list[IsoDirectoryEntry] | None:
     """List one fixed ISO directory after validating every record and extent.
 
-    ``None`` means the requested directory is absent or is not a directory. Caller
+    ``None`` means the requested directory is absent or is not a directory, unless
+    ``require_final_directory`` is set and the final component names a file. Caller
     supplied components are single names; traversal syntax and nested separators
     are refused.
     """
@@ -683,14 +684,21 @@ def list_iso_directory(
             lba, size, is_directory = _extent_from_record(pvd[156:190], file_size)
             if not is_directory or size == 0 or size > MAX_DIRECTORY_BYTES:
                 raise IsoInspectionError("root directory is not a bounded directory extent")
-            for component in path:
+            for index, component in enumerate(path):
                 entries = _read_iso_directory_entries(stream, file_size, lba, size)
                 found = next(
                     (entry for entry in entries
                      if entry.name.casefold() == component.casefold()),
                     None,
                 )
-                if found is None or not found.is_directory:
+                if found is None:
+                    return None
+                if not found.is_directory:
+                    if require_final_directory and index == len(path) - 1:
+                        raise IsoInspectionError(
+                            "DISC_MODULE_TREE_INVALID: module root "
+                            f"{'/'.join(path)} is not a directory (#726)."
+                        )
                     return None
                 lba, size = found.lba, found.size
             if not is_directory and not path:
@@ -845,8 +853,30 @@ def walk_disc_module_entries(
     directories = deque()
     visited = 0
     discovered = 0
+
+    def read_module_directory(
+        directory: tuple[str, ...], *, module_root: bool = False
+    ) -> list[IsoDirectoryEntry] | None:
+        try:
+            entries = list_iso_directory(
+                iso_path, directory, require_final_directory=module_root
+            )
+        except IsoInspectionError as exc:
+            if str(exc).startswith("DISC_MODULE_TREE_INVALID:"):
+                raise
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: module directory "
+                f"{'/'.join(directory)} could not be listed safely (#726): {exc}"
+            ) from exc
+        if entries is None and not module_root:
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: listed module directory could not "
+                "be reopened safely (#726)."
+            )
+        return entries
+
     for root in MODULE_ROOTS:
-        entries = list_iso_directory(iso_path, root)
+        entries = read_module_directory(root, module_root=True)
         if entries is not None:
             discovered += 1
             directories.append((root, 0))
@@ -859,7 +889,7 @@ def walk_disc_module_entries(
                 f"{MAX_MODULE_DIRECTORIES} directories; broader discovery is "
                 "in the works (#726)."
             )
-        entries = list_iso_directory(iso_path, directory)
+        entries = read_module_directory(directory)
         if entries is None:
             raise IsoInspectionError(
                 "DISC_MODULE_TREE_INVALID: listed module directory could not "
