@@ -188,7 +188,7 @@ int main(void) {
     assert(boot_path != NULL && strcmp(boot_path,
            "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD") == 0);
     const char *fps = getenv("SR_FPS_CAP");
-    assert(fps != NULL && strcmp(fps, "60") == 0);
+    assert(fps != NULL && strcmp(fps, "native") == 0);
     /* No dispatch-control variable may reach the runtime: dispatch is
      * unconditionally fail-closed (src/rt/recomp.c). */
     const char *fatal = getenv("SR_DISPATCH_FATAL");
