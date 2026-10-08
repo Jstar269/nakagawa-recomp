@@ -5415,7 +5415,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "838807de612db78bb4b7ed62f356ba0940a32dfcbea8ef351dbc682b9ee07368"
+      "sha256": "7cd6ab090d96091b4d5b51f916aa094b1865cce8537f755e8bbd0c83ebad46a3"
     },
     {
       "path": "tests/native/native_test_isolation.h",
@@ -5427,7 +5427,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94c49614c760dc04aa35c0e33d3d1cef98a92017b44f55cccdca1ce04a2951b6"
+      "sha256": "98287508c8b3dab64ea1c09d7faca7a06206297c6f38d64b6f32dc4c6530c716"
     },
     {
       "path": "tests/native/test_core_catalog.c",
@@ -5475,7 +5475,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6470d30411edb7816a3950116db5635a45e7e4dcb839d3836b94eea3675de623"
+      "sha256": "c18aaef81b804445b2a6366f00f120679060c63dc469cfbedd5bd139669085ed"
     },
     {
       "path": "tests/native/test_launch_resolution.c",
@@ -5511,7 +5511,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "42945277726203e0559bb0f828545d3e6077f2bbf76dcec3343952e85a8133bf"
+      "sha256": "f6968ad32212e74dce04347f96c8caad95dc8b2875e1febd1098674b59f231d7"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
