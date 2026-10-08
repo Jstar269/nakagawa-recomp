@@ -433,6 +433,7 @@ class NativePlayerUiTests(unittest.TestCase):
         catalog_reload_count: int = 0,
         build_ready_test: bool = False,
         post_build_ready: bool = False,
+        downloaded_tool_payload: bool = False,
         data_root_present: bool = True,
         profile_refusal: bool = False,
         legacy_data: bool = False,
@@ -456,6 +457,11 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            tool_marker: Path | None = None
+            if downloaded_tool_payload:
+                tool_marker = runtime_root / "prerequisites" / "synthetic-tool" / "marker.txt"
+                tool_marker.parent.mkdir(parents=True)
+                tool_marker.write_text("synthetic downloaded tool", encoding="utf-8")
             if profile_refusal:
                 manifest_dir = runtime_root / "manifests"
                 manifest_dir.mkdir()
@@ -644,6 +650,15 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertTrue(screenshot.is_file())
             bmp = read_bmp(screenshot)
             self.assertEqual((bmp[0], bmp[1]), (width, height))
+            persisted_settings = None
+            for settings_path in scratch.rglob("settings.json"):
+                try:
+                    candidate = json.loads(settings_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(candidate, dict) and "fps_cap" in candidate:
+                    persisted_settings = candidate
+                    break
             return {
                 "frames": frames,
                 "bmp": bmp,
@@ -653,6 +668,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 "stderr": completed.stderr,
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
+                "settings": persisted_settings,
+                "downloaded_tool_marker_exists": (
+                    tool_marker.is_file() if tool_marker is not None else None
+                ),
             }
 
     def test_compute_effective_timeout(self) -> None:
@@ -712,6 +731,47 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["focus"], "1")
         self.assertEqual(frames[2]["view"], "library")
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
+
+    def test_settings_presentation_choice_saves_with_native_default_schema(self) -> None:
+        events = ("KEY_TAB",) * 4 + ("KEY_RETURN",) + ("KEY_TAB",) * 10 + ("KEY_RETURN",)
+        run = self.run_player("settings", events)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "15")
+        self.assertEqual(frames[4]["focus"], "4")
+        self.assertEqual(frames[5]["focus"], "4")
+        self.assertNotEqual(frames[4]["pixels"], frames[5]["pixels"])
+        self.assertEqual(frames[-1]["view"], "library")
+        settings = run["settings"]
+        self.assertIsInstance(settings, dict)
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("schema_version"), 2)
+        self.assertEqual(settings.get("fps_cap"), 0)
+        renderer_source = (ROOT / "src" / "player" / "ui_renderer.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('case -1: return "PSP TIMING";', renderer_source)
+        self.assertIn('case 0:  return "NO EXTRA CAP";', renderer_source)
+        self.assertNotIn("30 FPS CAP", renderer_source)
+        self.assertNotIn("60 FPS CAP", renderer_source)
+
+    def test_settings_about_opens_the_pinned_license_list(self) -> None:
+        run = self.run_player("settings", ("KEY_TAB",) * 12 + ("KEY_RETURN",))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "15")
+        self.assertEqual(frames[12]["focus"], "12")
+        self.assertEqual(frames[-1]["view"], "prereq_about")
+
+    def test_settings_removal_requires_confirmation_and_keeps_other_app_data(self) -> None:
+        events = ("KEY_TAB",) * 13 + ("KEY_RETURN", "KEY_RETURN")
+        run = self.run_player("settings", events, downloaded_tool_payload=True)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[13]["focus"], "13")
+        self.assertEqual(frames[14]["view"], "confirm_remove_tools")
+        self.assertEqual(frames[-1]["view"], "settings")
+        self.assertFalse(run["downloaded_tool_marker_exists"])
 
     def test_settings_layout_avoids_launcher_save_overlap_at_client_widths(self) -> None:
         cases = (
