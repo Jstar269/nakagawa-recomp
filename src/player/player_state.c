@@ -697,11 +697,11 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREPARING:
             return 1;
         case VIEW_SETTINGS:
-            /* Resolution (3) + frame cap (3) + game display toggles (3: vsync,
+            /* Resolution (3) + presentation pacing (2) + game display toggles (3: vsync,
              * fullscreen, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
              * controller settings (1) + notices and remove-tools controls (2) + close (1),
              * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
-            return 16;
+            return 15;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -769,7 +769,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->fullscreen = false;
     settings->launcher_fullscreen = false;
     settings->vsync = true;
-    settings->fps_cap = 60;
+    settings->fps_cap = -1;
     settings->master_volume = 80;
     settings->reduce_motion = false;
     settings->launcher_window_maximized = false;
@@ -790,7 +790,7 @@ static bool resolution_scale_valid(int scale) {
 }
 
 static bool fps_cap_valid(int cap) {
-    return cap == 30 || cap == 60 || cap == 0;
+    return cap == -1 || cap == 0;
 }
 
 NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
@@ -875,7 +875,8 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
 
     NkJsonNode *sv_node = nk_json_obj_get(root, "schema_version");
     int64_t sv = 0;
-    if (!sv_node || !nk_json_get_int64(sv_node, &sv) || sv != NK_PLAYER_SETTINGS_SCHEMA_VERSION) {
+    if (!sv_node || !nk_json_get_int64(sv_node, &sv) ||
+        (sv != 1 && sv != NK_PLAYER_SETTINGS_SCHEMA_VERSION)) {
         nk_json_free(root);
         player_app_settings_init_default(&app->settings);
         snprintf(app->settings_notice, sizeof(app->settings_notice),
@@ -894,8 +895,14 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
 
     NkJsonNode *fps_node = nk_json_obj_get(root, "fps_cap");
     int64_t fps_val = 0;
-    if (fps_node && nk_json_get_int64(fps_node, &fps_val) && fps_cap_valid((int)fps_val)) {
-        app->settings.fps_cap = (int)fps_val;
+    if (fps_node && nk_json_get_int64(fps_node, &fps_val)) {
+        if (sv == 1 && (fps_val == 30 || fps_val == 60)) {
+            /* Legacy values capped host presentation and could hide a game's
+             * native cadence. Migrate both to the authentic PSP scanout path. */
+            app->settings.fps_cap = -1;
+        } else if (fps_val == -1 || fps_val == 0) {
+            app->settings.fps_cap = (int)fps_val;
+        }
     }
 
     NkJsonNode *vsync_node = nk_json_obj_get(root, "vsync");
@@ -1121,21 +1128,8 @@ void player_app_set_fps_cap(PlayerApp *app, int cap) {
 
 void player_app_cycle_fps_cap(PlayerApp *app, int direction) {
     if (!app) return;
-    static const int kOrder[] = { 30, 60, 0 };
-    int current = app->settings.fps_cap;
-    int at = 1;
-    for (int i = 0; i < 3; i++) {
-        if (kOrder[i] == current) {
-            at = i;
-            break;
-        }
-    }
-    if (direction < 0) {
-        at = (at + 2) % 3;
-    } else {
-        at = (at + 1) % 3;
-    }
-    app->settings.fps_cap = kOrder[at];
+    (void)direction; /* With two choices, either direction selects the other. */
+    app->settings.fps_cap = app->settings.fps_cap == -1 ? 0 : -1;
     maybe_persist_settings(app);
 }
 
