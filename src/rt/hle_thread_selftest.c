@@ -2705,9 +2705,6 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0x80020002u, "sceKernelRotateThreadReadyQueue"},
-        {NID_SCE_KERNEL_RESUME_THREAD, 0x80020002u, "sceKernelResumeThread"},
-        {NID_SCE_KERNEL_SUSPEND_THREAD, 0x80020002u, "sceKernelSuspendThread"},
         {NID_SCE_KERNEL_SET_ALARM, 0x80020002u, "sceKernelSetAlarm"},
         {NID_SCE_KERNEL_CANCEL_ALARM, 0x80020002u, "sceKernelCancelAlarm"},
         {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
@@ -10030,6 +10027,449 @@ static void test_change_current_thread_attr(void) {
     s_cpu->r[5] = 0;
     ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
     expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects unknown clear bits");
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelSuspendThread / sceKernelResumeThread / sceKernelRotateThreadReadyQueue
+ * -------------------------------------------------------------------------
+ * Every case enters the production NIDs through sr_syscall, so the registration,
+ * the handler and the scheduler are all in the path.  Error codes: DORMANT,
+ * SUSPEND (double suspend) and NOT_SUSPEND (resume of a thread that is not
+ * suspended) are the measured cells in docs/HARDWARE_ORACLE.md; ILLEGAL_THID and
+ * UNKNOWN_THID are the project's existing thread-object codes.
+ * ------------------------------------------------------------------------- */
+#define SRT_ILLEGAL_THID  0x80020197u
+#define SRT_UNKNOWN_THID  0x80020198u
+#define SRT_DORMANT       0x800201a2u
+#define SRT_SUSPEND       0x800201a3u
+#define SRT_NOT_SUSPEND   0x800201a5u
+
+static uint32_t srt_call(uint32_t nid, uint32_t a0) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Only the thread that owns the CPU may be marked RUNNING. */
+static int srt_running_off_cpu(void) {
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].state == TH_RUNNING && i != s_cur) return 1;
+    return 0;
+}
+
+static void test_suspend_resume_errors_and_ready_thread(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x5a0u, TH_RUNNING, 32);
+    TCB *ready = fixture_thread(0x5a1u, TH_READY, 32);
+    TCB *stopped = fixture_thread(0x5a2u, TH_DORMANT, 32);
+    self->started = 1;
+    ready->started = 1;
+    s_cur = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SUSPEND_THREAD) &&
+           sr_hle_test_is_registered(NID_SCE_KERNEL_RESUME_THREAD) &&
+           sr_hle_test_is_registered(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE),
+           "suspend/resume/rotate have production registrations");
+
+    /* ---- every suspend error path, none of which may disturb a thread ------ */
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, 0x7fffffu) == SRT_UNKNOWN_THID,
+           "SuspendThread of an unknown UID returns UNKNOWN_THID");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, 0u) == SRT_ILLEGAL_THID,
+           "SuspendThread(0) returns ILLEGAL_THID");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, self->uid) == SRT_ILLEGAL_THID,
+           "SuspendThread of the calling thread returns ILLEGAL_THID");
+    expect(!self->suspended && self->state == TH_RUNNING,
+           "a refused self-suspend leaves the caller running");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, stopped->uid) == SRT_DORMANT,
+           "SuspendThread of a dormant thread returns DORMANT");
+    expect(!stopped->suspended, "a refused suspend of a dormant thread sets no flag");
+
+    /* ---- every resume error path ------------------------------------------ */
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, 0x7fffffu) == SRT_UNKNOWN_THID,
+           "ResumeThread of an unknown UID returns UNKNOWN_THID");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, stopped->uid) == SRT_DORMANT,
+           "ResumeThread of a dormant thread returns DORMANT");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, ready->uid) == SRT_NOT_SUSPEND,
+           "ResumeThread of a thread that is not suspended returns NOT_SUSPEND");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, self->uid) == SRT_NOT_SUSPEND,
+           "ResumeThread of the running caller returns NOT_SUSPEND");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, 0u) == SRT_NOT_SUSPEND,
+           "ResumeThread(0) names the running caller and returns NOT_SUSPEND");
+
+    /* ---- suspend a ready thread: it is never selected ---------------------- */
+    expect(pick_next() == ready_idx, "control: the ready thread is selectable before suspension");
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, ready->uid) == 0u,
+           "SuspendThread of a ready thread succeeds");
+    expect(ready->suspended && ready->state == TH_READY,
+           "suspension is recorded without changing the ready state");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, ready->uid) == SRT_SUSPEND,
+           "a second SuspendThread returns the measured double-suspend code");
+    SrThreadRunStatus status;
+    expect(sched_thread_run_status(ready->uid, &status) == 0 &&
+           status.status == (PSP_THREAD_READY | PSP_THREAD_SUSPEND),
+           "ReferThreadStatus reports READY plus the SUSPEND bit");
+    expect(pick_next() == -1, "a suspended ready thread is never selected");
+
+    /* ---- a stronger suspended thread does not preempt the runner ----------- */
+    ready->priority = 8;
+    sched_preempt();
+    expect(self->state == TH_RUNNING,
+           "a stronger but suspended thread does not take the CPU from the runner");
+
+    /* ---- resume makes it selectable and the stronger thread preempts ------- */
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, ready->uid) == 0u,
+           "ResumeThread of a suspended thread succeeds");
+    expect(!ready->suspended, "resume clears the suspension");
+    expect(self->state == TH_READY,
+           "resuming a stronger thread applies strict-priority preemption to the runner");
+    self->state = TH_RUNNING;
+    expect(pick_next() == ready_idx, "a resumed thread is selectable again");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, ready->uid) == SRT_NOT_SUSPEND,
+           "a second ResumeThread returns NOT_SUSPEND");
+    expect(sched_thread_run_status(ready->uid, &status) == 0 &&
+           status.status == PSP_THREAD_READY,
+           "ReferThreadStatus drops the SUSPEND bit after resume");
+
+    /* ---- terminating a suspended thread ends its suspension ---------------- */
+    ready->priority = 32;
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, ready->uid) == 0u, "suspend again");
+    expect(sched_terminate_thread(ready->uid) == 0u, "terminate the suspended thread");
+    expect(!ready->suspended && ready->state == TH_DORMANT,
+           "terminating a suspended thread clears the suspension");
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+/* A rotated queue is observed through the selection order, not the rotation flag:
+ * `order` runs the real pick_next() over three READY peers and records which slots
+ * it chooses, re-READYing each one the way a thread that yields would. */
+static void srt_pick_order(int n, int *out) {
+    for (int k = 0; k < n; k++) {
+        int idx = pick_next();
+        out[k] = idx;
+    }
+}
+
+static void test_rotate_ready_queue_selection_order(void) {
+    int order[3];
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5b0u, TH_RUNNING, 10);   /* strongest: holds the CPU */
+    TCB *a = fixture_thread(0x5b1u, TH_READY, 20);
+    TCB *b = fixture_thread(0x5b2u, TH_READY, 20);
+    TCB *c = fixture_thread(0x5b3u, TH_READY, 20);
+    runner->started = a->started = b->started = c->started = 1;
+    s_cur = (int)(runner - s_tcb);
+    const int ia = (int)(a - s_tcb), ib = (int)(b - s_tcb), ic = (int)(c - s_tcb);
+
+    /* Control: with no rotation the peers are chosen in slot order. */
+    s_last_pick = -1;
+    srt_pick_order(3, order);
+    expect(order[0] == ia && order[1] == ib && order[2] == ic,
+           "control: three equal-priority peers are selected in slot order");
+
+    /* Rotating priority 20 moves its head (A) behind B and C. */
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 20u) == 0u,
+           "RotateThreadReadyQueue(20) succeeds");
+    expect(runner->state == TH_RUNNING,
+           "rotating a weaker queue does not take the CPU from a stronger runner");
+    srt_pick_order(3, order);
+    expect(order[0] == ib && order[1] == ic && order[2] == ia,
+           "rotation moved the head thread behind its equal-priority peers");
+
+    /* The rotation is consumed once: the next lap starts where the cursor is. */
+    srt_pick_order(3, order);
+    expect(order[0] == ib && order[1] == ic && order[2] == ia,
+           "after the rotation was consumed selection continues round-robin");
+
+    /* Priority 0 means the CALLER's priority (10), not 20: the priority-20 queue
+     * is untouched, and with no peer at priority 10 the caller keeps the CPU. */
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0u) == 0u,
+           "RotateThreadReadyQueue(0) succeeds");
+    expect(runner->state == TH_RUNNING,
+           "rotating a queue with no peers does not yield");
+    srt_pick_order(3, order);
+    expect(order[0] == ia && order[1] == ib && order[2] == ic,
+           "priority 0 rotated the caller's queue, leaving the priority-20 queue alone");
+
+    /* A suspended head is not in the ready queue: the first READY thread is rotated. */
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, a->uid) == 0u, "suspend the queue head");
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 20u) == 0u,
+           "rotate a queue whose first slot is suspended");
+    int first = pick_next();
+    expect(first == ic, "the suspended thread was neither rotated nor selected; C follows the rotated B");
+    expect(first != ia, "a suspended thread is skipped by selection");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, a->uid) == 0u, "resume the queue head");
+
+    /* A priority with no ready thread is a successful no-op. */
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 99u) == 0u,
+           "rotating a priority with no ready thread succeeds");
+
+    /* Dispatch-disabled: the caller's queue rotates but the yield is deferred. */
+    b->priority = 10;
+    s_dispatch_enabled = 0;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0u) == 0u,
+           "rotate with dispatch disabled succeeds");
+    expect(runner->state == TH_RUNNING, "dispatch-disabled rotate does not yield");
+    s_dispatch_enabled = 1;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0u) == 0u,
+           "rotate with a ready equal-priority peer succeeds");
+    expect(runner->state == TH_READY,
+           "a caller with a ready equal-priority peer yields to the scheduler");
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+/* Three equal-priority threads on real coroutines, scheduled the way sched_run
+ * schedules them.  Each logs, rotates its own priority queue, logs again.  Without a
+ * working rotate the first thread would log both phases before the second ran. */
+static int s_srt_log[16];
+static int s_srt_log_n;
+
+static void srt_peer_body(void *arg) {
+    int me = (int)(intptr_t)arg;
+    s_srt_log[s_srt_log_n++] = me * 10 + 1;
+    /* thread 1 names its priority explicitly; the others use 0 for "mine". */
+    (void)srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, me == 1 ? 20u : 0u);
+    s_srt_log[s_srt_log_n++] = me * 10 + 2;
+    s_tcb[s_cur].state = TH_DORMANT;
+    selftest_park_on_scheduler();
+}
+
+static void test_rotate_equal_priority_yields_to_peers(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *peer[3];
+    for (int i = 0; i < 3; i++) {
+        peer[i] = fixture_thread(0x5c0u + (uint32_t)i, TH_READY, 20);
+        peer[i]->started = 1;
+        peer[i]->coro = sr_coro_create(srt_peer_body, (void *)(intptr_t)(i + 1), (size_t)4 << 20);
+        expect(peer[i]->coro != NULL, "rotation peer coroutine created");
+        if (!peer[i]->coro) { s_cur = -1; return; }
+    }
+    s_srt_log_n = 0;
+    s_last_pick = -1;
+    for (int guard = 0; guard < 32; guard++) {
+        int idx = pick_next();
+        if (idx < 0) break;
+        s_cur = idx;
+        s_tcb[idx].state = TH_RUNNING;
+        sr_coro_switch(s_tcb[idx].coro);
+        expect(!srt_running_off_cpu(), "no thread is RUNNING while off the CPU between switches");
+        s_cur = -1;
+    }
+    static const int want[] = {11, 21, 31, 12, 22, 32};
+    int ok = s_srt_log_n == 6;
+    for (int i = 0; ok && i < 6; i++) ok = s_srt_log[i] == want[i];
+    expect(ok, "each rotating thread went behind its two peers before running again");
+    for (int i = 0; i < 3; i++)
+        if (peer[i]->coro) { sr_coro_destroy(peer[i]->coro); peer[i]->coro = NULL; }
+}
+
+/* A WAITING thread that is suspended keeps its wait semantics.  Its timeout (or
+ * signal) completes while it is suspended and the outcome is recorded, but it
+ * cannot run until resumed, and then it observes that outcome. */
+static void srt_suspended_waiter_case(int signal_instead_of_timeout) {
+    char msg[200];
+    const char *how = signal_instead_of_timeout ? "signalled" : "timed-out";
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5d0u, TH_RUNNING, 40);
+    TCB *waiter = fixture_thread(0x5d1u, TH_READY, 16);
+    runner->started = waiter->started = 1;
+    const int waiter_idx = (int)(waiter - s_tcb);
+    uint32_t sema = wsv_create(0, 1);
+    MEM_W32(SLC_TIMEOUT_PTR, SLC_TIMEOUT_US);
+    s_slc_nid = NID_CNW_WAIT_SEMA; s_slc_sema = sema;
+    s_slc_ret = 0xFFFFFFFFu; s_slc_returned = 0;
+    waiter->coro = sr_coro_create(slc_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "suspended-waiter fixture: coroutine created");
+    if (!waiter->coro) { wsv_delete(sema); s_cur = -1; return; }
+
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s waiter blocked on the semaphore with its deadline", how);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == sema &&
+           waiter->wake == (uint64_t)SLC_TIMEOUT_US, msg);
+
+    s_cur = (int)(runner - s_tcb);
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, waiter->uid) == 0u,
+           "SuspendThread of a waiting thread succeeds");
+    expect(waiter->state == TH_WAIT_OBJ && waiter->suspended,
+           "suspension leaves the thread's wait in place");
+    SrThreadRunStatus status;
+    expect(sched_thread_run_status(waiter->uid, &status) == 0 &&
+           status.status == (PSP_THREAD_WAITING | PSP_THREAD_SUSPEND),
+           "ReferThreadStatus reports WAITING plus the SUSPEND bit");
+
+    if (signal_instead_of_timeout) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+               "the semaphore is signalled while the waiter is suspended");
+    } else {
+        s_vtime_us = SLC_TIMEOUT_US;     /* the deadline passes during the suspension */
+    }
+
+    expect(pick_next() == -1,
+           "a suspended waiter whose wait completed is not selected");
+    snprintf(msg, sizeof msg, "the %s suspended waiter's wait completed (now READY) but it is still suspended", how);
+    expect(waiter->state == TH_READY && waiter->suspended, msg);
+    expect(s_slc_returned == 0, "the suspended waiter has not run");
+    sched_preempt();
+    expect(runner->state == TH_RUNNING,
+           "a stronger completed-but-suspended waiter does not preempt the runner");
+    expect(!srt_running_off_cpu(), "no thread is RUNNING while off the CPU while suspended");
+
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, waiter->uid) == 0u,
+           "ResumeThread of the completed waiter succeeds");
+    expect(runner->state == TH_READY,
+           "resume lets the now-runnable stronger waiter preempt the runner");
+    runner->state = TH_RUNNING;
+    expect(pick_next() == waiter_idx, "the resumed waiter is selected");
+
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(s_slc_returned == 1, "the waiter returns from its wait only after resume");
+    if (signal_instead_of_timeout) {
+        expect(s_slc_ret == 0u && wsv_count(sema) == 0,
+               "the signal delivered during suspension satisfied the wait");
+    } else {
+        expect(s_slc_ret == SLC_WAIT_TIMEOUT && wsv_count(sema) == 0,
+               "the timeout recorded during suspension is what the resumed waiter sees");
+    }
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    wsv_delete(sema);
+    s_cur = -1;
+}
+
+static void test_suspended_waiter_keeps_wait_semantics(void) {
+    srt_suspended_waiter_case(0);
+    srt_suspended_waiter_case(1);
+}
+
+/* The outcome of a timed object wait is recorded when the wait is RELEASED.  A waiter
+ * that was signalled, cancelled or timed out reports exactly that, however late it
+ * resumes -- suspended, or simply behind a stronger thread past its deadline.  The
+ * semaphore wait uses a 1000 us timeout; every case resumes it well after that. */
+enum { RW_TIMEOUT = 0, RW_SIGNAL_SUSPENDED, RW_SIGNAL_DELAYED, RW_CANCEL_DELAYED, RW_TOKEN_STOLEN };
+
+static void srt_released_wait_case(int mode, const char *what, uint32_t want_ret) {
+    char msg[220];
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5f0u, TH_RUNNING, 40);
+    TCB *waiter = fixture_thread(0x5f1u, TH_READY, 16);
+    runner->started = waiter->started = 1;
+    const int waiter_idx = (int)(waiter - s_tcb);
+    uint32_t sema = wsv_create(0, 1);
+    MEM_W32(SLC_TIMEOUT_PTR, SLC_TIMEOUT_US);
+    s_slc_nid = NID_CNW_WAIT_SEMA; s_slc_sema = sema;
+    s_slc_ret = 0xFFFFFFFFu; s_slc_returned = 0;
+    waiter->coro = sr_coro_create(slc_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "released-wait fixture: coroutine created");
+    if (!waiter->coro) { wsv_delete(sema); s_cur = -1; return; }
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s: the waiter blocked with its deadline", what);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wake == (uint64_t)SLC_TIMEOUT_US, msg);
+
+    const uint64_t late = (uint64_t)SLC_TIMEOUT_US + 4000u;   /* well past the deadline */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    s_cur = (int)(runner - s_tcb);
+    switch (mode) {
+    case RW_TIMEOUT:
+        s_vtime_us = late;
+        break;
+    case RW_SIGNAL_SUSPENDED:
+        expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, waiter->uid) == 0u, "suspend the waiter");
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "signal inside the deadline");
+        s_vtime_us = late;
+        expect(pick_next() == -1, "the signalled suspended waiter stays off the CPU");
+        expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, waiter->uid) == 0u, "resume after the deadline");
+        break;
+    case RW_SIGNAL_DELAYED:
+    case RW_TOKEN_STOLEN:
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "signal inside the deadline");
+        if (mode == RW_TOKEN_STOLEN)
+            expect(wsv_wait(0x58b1f937u, sema, 1u, 0u) == 0u,
+                   "another thread takes the signalled count before the waiter runs");
+        s_vtime_us = late;               /* the waiter is READY but has not been dispatched */
+        break;
+    case RW_CANCEL_DELAYED:
+        MEM_W32(WCR_NUMWAIT, 0xFFFFFFFFu);
+        cpu.r[4] = sema; cpu.r[5] = 0xFFFFFFFFu; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        expect(sr_syscall(&cpu, NID_WCR_CANCEL_SEMA) == 0u, "cancel inside the deadline");
+        s_vtime_us = late;
+        break;
+    }
+    runner->state = TH_RUNNING;
+    expect(pick_next() == waiter_idx, "the released waiter is selected");
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s: the waiter returned", what);
+    expect(s_slc_returned == 1, msg);
+    snprintf(msg, sizeof msg, "%s: the wait reports its recorded outcome 0x%08x (got 0x%08x)",
+             what, want_ret, s_slc_ret);
+    expect(s_slc_ret == want_ret, msg);
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    wsv_delete(sema);
+    s_cur = -1;
+}
+
+static void test_released_timed_wait_reports_release_not_clock(void) {
+    srt_released_wait_case(RW_TIMEOUT, "genuine timeout", SLC_WAIT_TIMEOUT);
+    srt_released_wait_case(RW_SIGNAL_SUSPENDED, "signalled while suspended, resumed after the deadline", 0u);
+    srt_released_wait_case(RW_SIGNAL_DELAYED, "signalled, dispatched after the deadline", 0u);
+    srt_released_wait_case(RW_CANCEL_DELAYED, "cancelled, dispatched after the deadline", WCR_WAIT_CANCEL);
+    srt_released_wait_case(RW_TOKEN_STOLEN, "signalled but count taken, dispatched after the deadline",
+                           SLC_WAIT_TIMEOUT);
+}
+
+/* A suspended DelayThread sleeper likewise reaches READY at its deadline without
+ * running, and the idle classification still sees its deadline (not frozen). */
+static void test_suspended_delay_deadline_still_counts(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5e0u, TH_RUNNING, 40);
+    TCB *sleeper = fixture_thread(0x5e1u, TH_WAIT_DELAY, 16);
+    runner->started = sleeper->started = 1;
+    sleeper->wake = 500u;
+    s_cur = (int)(runner - s_tcb);
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, sleeper->uid) == 0u,
+           "SuspendThread of a delayed thread succeeds");
+    runner->state = TH_READY;      /* the runner blocks elsewhere; only the sleeper remains */
+    s_cur = -1;
+    SchedIdleState idle = sched_classify_idle();
+    expect(idle.soonest == 500u,
+           "idle classification still honours a suspended thread's delay deadline");
+    s_vtime_us = 500u;
+    expect(pick_next() == (int)(runner - s_tcb),
+           "the expired suspended sleeper is promoted but the runnable thread wins");
+    expect(sleeper->state == TH_READY && sleeper->suspended,
+           "the suspended sleeper completed its delay yet remains suspended");
+    runner->state = TH_WAIT_OBJ;
+    runner->wake = SCHED_WAIT_FOREVER;
+    expect(pick_next() == -1, "with only a suspended thread left nothing is selected");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, sleeper->uid) == 0u, "resume the sleeper");
+    expect(pick_next() == (int)(sleeper - s_tcb), "the resumed sleeper is selected");
 }
 
 static volatile uint32_t s_delay_zero_worker_runs;
@@ -18869,8 +19309,8 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
-        char msg[640];
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
@@ -18878,6 +19318,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
                  "+ 1 vblank multi waiter + 1 ReferSemaStatus waiter "
+                 "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -22715,6 +23156,12 @@ int main(int argc, char **argv) {
     test_sysclib_memory_imports();
     test_refer_thread_status();
     test_change_current_thread_attr();
+    test_suspend_resume_errors_and_ready_thread();
+    test_rotate_ready_queue_selection_order();
+    test_rotate_equal_priority_yields_to_peers();
+    test_suspended_waiter_keeps_wait_semantics();
+    test_released_timed_wait_reports_release_not_clock();
+    test_suspended_delay_deadline_still_counts();
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();

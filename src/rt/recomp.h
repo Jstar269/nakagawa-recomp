@@ -882,6 +882,9 @@ uint32_t sched_thread_wakeup(uint32_t uid);         /* sceKernelWakeupThread (ba
 uint32_t sched_set_priority(uint32_t uid, int priority);   /* sceKernelChangeThreadPriority */
 uint32_t sched_change_current_thread_attr(uint32_t clear_mask, uint32_t set_mask); /* sceKernelChangeCurrentThreadAttr */
 uint32_t sched_terminate_thread(uint32_t uid);      /* sceKernelTerminateThread */
+uint32_t sched_suspend_thread(uint32_t uid);        /* sceKernelSuspendThread */
+uint32_t sched_resume_thread(uint32_t uid);         /* sceKernelResumeThread */
+uint32_t sched_rotate_thread_ready_queue(int priority); /* sceKernelRotateThreadReadyQueue; 0 = caller's priority */
 uint32_t sched_delete_thread(uint32_t uid);          /* sceKernelDeleteThread object removal */
 int      sched_thread_cancel_wakeup(uint32_t uid);  /* sceKernelCancelWakeupThread; uid 0=current */
 /* Thread role identity.

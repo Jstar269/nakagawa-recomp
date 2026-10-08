@@ -388,6 +388,199 @@ static void test_three_equal_priority_rotation(void) {
            "three-peer rotation has period 3");
 }
 
+/* ---- suspend / resume / rotate (scheduler model) --------------------------------------
+ *
+ * A suspended thread keeps its READY/WAIT state but is never selected; its wait still
+ * completes on the shared clock.  Rotation moves the head of one priority's queue behind
+ * its peers; priority 0 means the caller's priority.  Error codes: DORMANT, SUSPEND and
+ * NOT_SUSPEND are the measured cells in docs/HARDWARE_ORACLE.md; ILLEGAL_THID and
+ * UNKNOWN_THID are the project's existing thread-object codes. */
+static void test_suspended_thread_is_never_selected(void) {
+    reset_sched();
+    int a = mk(0x300, TH_READY, 40);
+    int b = mk(0x301, TH_READY, 40);
+    int c = mk(0x302, TH_READY, 40);
+    expect(sched_suspend_thread(0x300) == 0u, "suspend of a ready thread succeeds");
+    expect(s_tcb[a].state == TH_READY && s_tcb[a].suspended,
+           "suspension is a flag on the ready thread, not a new scheduling state");
+    int picked_a = 0, picked_b = 0, picked_c = 0;
+    for (int i = 0; i < 12; i++) {
+        int got = pick_next();
+        if (got == a) picked_a++;
+        if (got == b) picked_b++;
+        if (got == c) picked_c++;
+    }
+    expect(picked_a == 0, "a suspended thread is never selected, even with the best priority");
+    expect(picked_b == 6 && picked_c == 6,
+           "the remaining peers keep strict round-robin while one is suspended");
+
+    s_tcb[a].priority = 10;   /* now strictly the best priority, still suspended */
+    expect(pick_next() != a, "a suspended best-priority thread does not win selection");
+
+    expect(sched_resume_thread(0x300) == 0u, "resume succeeds");
+    expect(pick_next() == a, "a resumed best-priority thread wins selection again");
+
+    expect(sched_suspend_thread(0x300) == 0u && sched_suspend_thread(0x301) == 0u &&
+           sched_suspend_thread(0x302) == 0u, "suspend every ready thread");
+    expect(pick_next() == -1, "when every ready thread is suspended nothing is selected");
+}
+
+static void test_suspend_resume_error_codes(void) {
+    reset_sched();
+    int cur = mk(0x310, TH_RUNNING, 40);
+    int ready = mk(0x311, TH_READY, 40);
+    int stopped = mk(0x312, TH_DORMANT, 40);
+    s_cur = cur;
+    expect(sched_suspend_thread(0xdead) == 0x80020198u, "suspend of an unknown UID is UNKNOWN_THID");
+    expect(sched_suspend_thread(0) == 0x80020197u, "suspend of UID 0 is ILLEGAL_THID");
+    expect(sched_suspend_thread(0x310) == 0x80020197u, "suspend of the calling thread is ILLEGAL_THID");
+    expect(!s_tcb[cur].suspended && s_tcb[cur].state == TH_RUNNING,
+           "a refused self-suspend changes nothing");
+    expect(sched_suspend_thread(0x312) == 0x800201a2u, "suspend of a dormant thread is DORMANT");
+    expect(!s_tcb[stopped].suspended, "a refused dormant suspend sets no flag");
+
+    expect(sched_resume_thread(0xdead) == 0x80020198u, "resume of an unknown UID is UNKNOWN_THID");
+    expect(sched_resume_thread(0x312) == 0x800201a2u, "resume of a dormant thread is DORMANT");
+    expect(sched_resume_thread(0x311) == 0x800201a5u,
+           "resume of a thread that is not suspended is NOT_SUSPEND");
+    expect(sched_resume_thread(0x310) == 0x800201a5u,
+           "resume of the running caller is NOT_SUSPEND");
+
+    expect(sched_suspend_thread(0x311) == 0u, "suspend");
+    expect(sched_suspend_thread(0x311) == 0x800201a3u, "double suspend is the measured SUSPEND code");
+    expect(s_tcb[ready].suspended, "a refused double suspend keeps the thread suspended");
+    expect(sched_resume_thread(0x311) == 0u, "resume");
+    expect(sched_resume_thread(0x311) == 0x800201a5u, "double resume is NOT_SUSPEND");
+
+    SrThreadRunStatus st;
+    expect(sched_suspend_thread(0x311) == 0u, "suspend for status");
+    expect(sched_thread_run_status(0x311, &st) == 0 && st.status == (PSP_THREAD_READY | PSP_THREAD_SUSPEND),
+           "status of a suspended ready thread has the SUSPEND bit");
+    expect(sched_resume_thread(0x311) == 0u, "resume after status");
+    expect(sched_thread_run_status(0x311, &st) == 0 && st.status == PSP_THREAD_READY,
+           "status loses the SUSPEND bit after resume");
+
+    /* Only the thread on the CPU is RUNNING. */
+    int running_off_cpu = 0;
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].state == TH_RUNNING && i != s_cur) running_off_cpu = 1;
+    expect(!running_off_cpu, "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+static void test_suspended_wait_still_completes(void) {
+    reset_sched();
+    int runner = mk(0x320, TH_READY, 40);
+    int sleeper = mk(0x321, TH_WAIT_DELAY, 16);
+    int waiter = mk(0x322, TH_WAIT_OBJ, 16);
+    s_tcb[sleeper].wake = 500u;
+    s_tcb[waiter].wait_obj = 0x7777u;
+    s_tcb[waiter].wake = (uint64_t)-1;
+    expect(sched_suspend_thread(0x321) == 0u && sched_suspend_thread(0x322) == 0u,
+           "suspend a delayed thread and a signal-waiter");
+    expect(s_tcb[sleeper].state == TH_WAIT_DELAY && s_tcb[waiter].state == TH_WAIT_OBJ,
+           "suspension leaves both waits in place");
+
+    /* The delay deadline is not frozen by the suspension. */
+    SchedIdleState idle = sched_classify_idle();
+    expect(idle.soonest == 500u, "idle classification still sees a suspended delay deadline");
+
+    s_vtime_us = 499u;
+    expect(pick_next() == runner && s_tcb[sleeper].state == TH_WAIT_DELAY,
+           "before its deadline a suspended delay is still waiting");
+    s_vtime_us = 500u;
+    expect(pick_next() == runner, "the weaker runnable thread wins over a suspended stronger one");
+    expect(s_tcb[sleeper].state == TH_READY && s_tcb[sleeper].suspended,
+           "the suspended delay completed at its deadline and stays suspended");
+
+    /* A signal still readies a suspended waiter, but it cannot run. */
+    sched_wake(0x7777u);
+    expect(s_tcb[waiter].state == TH_READY && s_tcb[waiter].suspended,
+           "a signal readies a suspended waiter without un-suspending it");
+    s_tcb[runner].state = TH_WAIT_OBJ;
+    s_tcb[runner].wake = (uint64_t)-1;
+    expect(pick_next() == -1, "completed-but-suspended waiters are not runnable");
+
+    expect(sched_resume_thread(0x321) == 0u, "resume the delayed thread");
+    expect(pick_next() == sleeper, "the resumed completed delay is selected");
+    s_tcb[sleeper].state = TH_WAIT_OBJ;       /* it blocks again, with no deadline */
+    s_tcb[sleeper].wake = (uint64_t)-1;
+    expect(pick_next() == -1, "the other completed waiter is still suspended");
+    expect(sched_resume_thread(0x322) == 0u, "resume the signalled waiter");
+    expect(pick_next() == waiter, "the resumed signalled waiter is selected");
+
+    /* A suspended thread whose wait is still pending keeps waiting after resume. */
+    reset_sched();
+    int pending = mk(0x323, TH_WAIT_DELAY, 16);
+    s_tcb[pending].wake = 900u;
+    expect(sched_suspend_thread(0x323) == 0u, "suspend a pending delay");
+    expect(sched_resume_thread(0x323) == 0u, "resume it before the deadline");
+    expect(s_tcb[pending].state == TH_WAIT_DELAY && !s_tcb[pending].suspended,
+           "resume does not cut a pending wait short");
+}
+
+static void test_termination_ends_a_suspension(void) {
+    reset_sched();
+    mk(0x330, TH_RUNNING, 40);
+    int victim = mk(0x331, TH_READY, 40);
+    s_cur = 0;
+    expect(sched_suspend_thread(0x331) == 0u, "suspend the victim");
+    expect(sched_terminate_thread(0x331) == 0u, "terminate the suspended victim");
+    expect(s_tcb[victim].state == TH_DORMANT && !s_tcb[victim].suspended,
+           "termination clears the suspension");
+    s_cur = -1;
+}
+
+static void test_rotate_ready_queue_moves_head_behind_peers(void) {
+    reset_sched();
+    int runner = mk(0x340, TH_RUNNING, 10);   /* strongest; holds the CPU */
+    int a = mk(0x341, TH_READY, 40);
+    int b = mk(0x342, TH_READY, 40);
+    int c = mk(0x343, TH_READY, 40);
+    s_cur = runner;
+
+    /* Control: slot order. */
+    expect(pick_next() == a && pick_next() == b && pick_next() == c,
+           "control: peers are selected in slot order");
+
+    s_last_pick = -1;
+    expect(sched_rotate_thread_ready_queue(40) == 0u, "rotate priority 40 succeeds");
+    expect(s_tcb[runner].state == TH_RUNNING, "rotating a weaker queue does not preempt the runner");
+    expect(pick_next() == b && pick_next() == c && pick_next() == a,
+           "the head of the rotated queue is selected last");
+
+    /* Rotating again moves the NEW head (B in a queue [B,C,A]) behind its peers. */
+    s_last_pick = -1;
+    expect(sched_rotate_thread_ready_queue(40) == 0u, "first rotation");
+    expect(sched_rotate_thread_ready_queue(40) == 0u, "second rotation");
+    expect(pick_next() == c && pick_next() == a && pick_next() == b,
+           "two rotations move two threads behind their peers");
+
+    /* Priority 0 is the caller's priority (10): the priority-40 queue is untouched. */
+    s_last_pick = -1;
+    expect(sched_rotate_thread_ready_queue(0) == 0u, "rotate priority 0 succeeds");
+    expect(s_tcb[runner].state == TH_RUNNING, "a caller alone at its priority keeps the CPU");
+    expect(pick_next() == a && pick_next() == b && pick_next() == c,
+           "priority 0 rotated the caller's own queue and left priority 40 alone");
+
+    /* A queue with no ready thread, and no caller at all, are successful no-ops. */
+    expect(sched_rotate_thread_ready_queue(99) == 0u, "rotating an empty priority succeeds");
+    s_cur = -1;
+    expect(sched_rotate_thread_ready_queue(0) == 0u, "priority 0 with no calling thread is a no-op");
+
+    /* A suspended thread is not in the ready queue, so it is never the one rotated. */
+    reset_sched();
+    runner = mk(0x344, TH_RUNNING, 10);
+    a = mk(0x345, TH_READY, 40);
+    b = mk(0x346, TH_READY, 40);
+    c = mk(0x347, TH_READY, 40);
+    s_cur = runner;
+    expect(sched_suspend_thread(0x345) == 0u, "suspend the first slot");
+    expect(sched_rotate_thread_ready_queue(40) == 0u, "rotate");
+    expect(pick_next() == c, "the first READY thread (B) was rotated; C follows");
+    s_cur = -1;
+}
+
 static void test_mixed_priorities(void) {
     reset_sched();
     int mid  = mk(0x200, TH_READY, 40);
@@ -2888,6 +3081,11 @@ int main(int argc, char **argv) {
     test_priority_wins_and_never_inverts();
     test_equal_priority_round_robin();
     test_three_equal_priority_rotation();
+    test_suspended_thread_is_never_selected();
+    test_suspend_resume_error_codes();
+    test_suspended_wait_still_completes();
+    test_termination_ends_a_suspension();
+    test_rotate_ready_queue_moves_head_behind_peers();
     test_mixed_priorities();
     test_sleeping_excluded();
     test_blocked_excluded_until_wake();

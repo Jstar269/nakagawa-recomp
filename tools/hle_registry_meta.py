@@ -92,6 +92,36 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
     },
+    # Suspend/Resume/Rotate are scheduler operations: suspension is a flag on a thread
+    # that keeps its wait semantics, rotation moves the head of one priority's ready
+    # queue behind its peers.  Measured cells are the DORMANT, double-suspend and
+    # resume-of-a-non-suspended-thread codes; the rest is project-defined.
+    "h_SuspendThread": {
+        "status": "partial",
+        "limitation": "suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread",
+            "src/rt/hle_thread_selftest.c:test_suspended_waiter_keeps_wait_semantics",
+            "src/rt/sched_selftest.c:test_suspended_wait_still_completes",
+        ],
+    },
+    "h_ResumeThread": {
+        "status": "partial",
+        "limitation": "resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread",
+            "src/rt/sched_selftest.c:test_suspend_resume_error_codes",
+        ],
+    },
+    "h_RotateThreadReadyQueue": {
+        "status": "partial",
+        "limitation": "rotates the cyclic slot-order ready queue of one priority (0 selects the caller's priority) and yields when the caller leads that queue; no range-error code is returned for an out-of-range priority because none is sourced, and ordering relative to threads that become ready after the rotation is not hardware measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rotate_ready_queue_selection_order",
+            "src/rt/hle_thread_selftest.c:test_rotate_equal_priority_yields_to_peers",
+            "src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers",
+        ],
+    },
     "h_SysClock2USecWide": {
         "status": "partial",
         "limitation": "takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured",
