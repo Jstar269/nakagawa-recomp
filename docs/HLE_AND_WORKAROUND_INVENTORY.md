@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **467** (dedicated **433**, fake_success **3**, controlled_unsupported **31**).
-Semantic handler census: **398** handlers across **21** API families, covering **439** handler-associated NID registrations.
+Registered NIDs: **491** (dedicated **437**, fake_success **5**, controlled_unsupported **49**).
+Semantic handler census: **402** handlers across **21** API families, covering **443** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 53 | 53 |
+| `partial` | 57 | 57 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 332 | 361 |
@@ -54,14 +54,14 @@ Semantic handler census: **398** handlers across **21** API families, covering *
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
 | `sceAudio` | 0 | 0 | 0 | 0 | 13 | 13 | 14 |
-| `sceCtrl` | 0 | 0 | 0 | 0 | 6 | 6 | 6 |
+| `sceCtrl` | 0 | 1 | 0 | 0 | 6 | 7 | 7 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 2 | 0 | 0 | 8 | 10 | 10 |
+| `sceGe` | 0 | 4 | 0 | 0 | 8 | 12 | 12 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 14 | 0 | 0 | 134 | 150 | 174 |
+| `sceKernel` | 2 | 15 | 0 | 0 | 134 | 151 | 175 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
@@ -71,7 +71,7 @@ Semantic handler census: **398** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **53** | **1** | **2** | **332** | **398** | **439** |
+| **Total** | **10** | **57** | **1** | **2** | **332** | **402** | **443** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -124,6 +124,8 @@ Semantic handler census: **398** handlers across **21** API families, covering *
 
 #### Partial Handlers (Named Limitations)
 
+- **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
+  - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -140,6 +142,12 @@ Semantic handler census: **398** handlers across **21** API families, covering *
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+- **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
+  - Limitation: models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+- **`h_GeContinue`** (`sceGe`): `sceGeContinue` (0x4c06e472)
+  - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
   - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -227,6 +235,8 @@ Semantic handler census: **398** handlers across **21** API families, covering *
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
 - **`h_SysClock2USec`** (`sceKernel`): `sceKernelSysClock2USec` (0xba6b92e2)
   - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
+- **`h_SysClock2USecWide`** (`sceKernel`): `sceKernelSysClock2USecWide` (0xe1619d7c)
+  - Limitation: takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
   - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)

@@ -92,6 +92,18 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
     },
+    "h_SysClock2USecWide": {
+        "status": "partial",
+        "limitation": "takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured",
+    },
+    "h_ReferProfilerNull": {
+        "status": "partial",
+        "limitation": "no profiler is modeled, so both sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler always report NULL, like firmware with profiling off; NULL-ness on retail firmware is not hardware-measured",
+    },
+    "h_CtrlGetSamplingMode": {
+        "status": "partial",
+        "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
+    },
     "h_AllocMemoryBlock": {
         "status": "partial",
         "limitation": "models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured",
@@ -157,6 +169,20 @@ HANDLER_METADATA = {
     "h_GeListEnQueueHead": {
         "status": "partial",
         "limitation": "idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled",
+    },
+    "h_GeBreak": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+        ],
+        "limitation": "models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured",
+    },
+    "h_GeContinue": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+        ],
+        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
