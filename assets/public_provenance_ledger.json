@@ -2398,7 +2398,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "039fd785d53344f8b756c32c2bce30fb7b65cd76befaac6fbe169bd9c4615934"
+      "sha256": "506f14ab8f9a83778b350e059d46bf015d2079130d42d0491909c8bc08637f37"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -2732,7 +2732,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8c6eef584da79580f9ace49c1372d8770800bd48293adfcba745b470b2b72a1"
+      "sha256": "034cdf2b1196c2f5429371c526134db876a6d378bd6de1d0510a4071830f75f3"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -2744,7 +2744,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a686a774f186543f4ae1eb3120e84c1964306598c50f5aca1ad63f0f0e6fa5be"
+      "sha256": "bca94c253205d3ded2c9f3d8f5c24aa9b512f868d2226c281e028fcada43a445"
     },
     {
       "path": "src/core/nk_types.h",
@@ -5418,7 +5418,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "22907c2afa24be341ba12419499ce921c437684c6ebf578317cbbd4f535b7c46"
+      "sha256": "9637dc313eac6db61ec4a86203884931ffc4e8a7df3d6d625ae322e5c96b8eec"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -5490,7 +5490,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48422fcf07386c6d6b7e510b5151e37e66ad2ed005742d527bd16bcfc345c155"
+      "sha256": "05d199cbd8fd4ec7067421b9f6816f4945228476c6c4e4a39fdd535f6653dcdc"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -8353,7 +8353,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d90879484fe62ac54b72d9c91d1cae282d13cc9a630b74454f72c75b89820b41"
+      "sha256": "91211cb6083a0180e985f9cf4685d44e4ff5cebbc3219b6dbcdcb545a4537d45"
     },
     {
       "path": "tools/test_package_notices.py",
