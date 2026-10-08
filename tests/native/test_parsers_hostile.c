@@ -664,6 +664,190 @@ static void build_executable_iso_test(const char *path,
     free(image);
 }
 
+/* Build a two-entry UTF-8 PARAM.SFO (DISC_ID then TITLE) the way the shared
+   parser reads it: header, entry table, key table, padded data table. */
+static size_t build_sfo_test(uint8_t *dst, size_t cap, const char *disc_id,
+                             const char *title) {
+    const size_t key_table_start = 52;
+    const size_t data_table_start = 68;
+    const size_t title_value_offset = 12;
+    size_t disc_len = strlen(disc_id);
+    size_t title_len = strlen(title);
+    size_t total = data_table_start + title_value_offset +
+                   ((title_len + 1u + 3u) & ~(size_t)3u);
+    if (total > cap) return 0;
+    memset(dst, 0, total);
+    dst[0] = 0x00; dst[1] = 'P'; dst[2] = 'S'; dst[3] = 'F';
+    dst[4] = 0x01; dst[5] = 0x01;
+    write_le32_test(dst + 8, (uint32_t)key_table_start);
+    write_le32_test(dst + 12, (uint32_t)data_table_start);
+    write_le32_test(dst + 16, 2);
+
+    write_le16_test(dst + 20, 0);
+    write_le16_test(dst + 22, 0x0204);
+    write_le32_test(dst + 24, (uint32_t)(disc_len + 1));
+    write_le32_test(dst + 28, (uint32_t)(disc_len + 1));
+    write_le32_test(dst + 32, 0);
+
+    write_le16_test(dst + 36, 8);
+    write_le16_test(dst + 38, 0x0204);
+    write_le32_test(dst + 40, (uint32_t)(title_len + 1));
+    write_le32_test(dst + 44, (uint32_t)(title_len + 1));
+    write_le32_test(dst + 48, (uint32_t)title_value_offset);
+
+    memcpy(dst + key_table_start, "DISC_ID\0", 8);
+    memcpy(dst + key_table_start + 8, "TITLE\0", 6);
+    memcpy(dst + data_table_start, disc_id, disc_len);
+    memcpy(dst + data_table_start + title_value_offset, title, title_len);
+    return total;
+}
+
+static void build_pbp_header_test(uint8_t header[40], const uint32_t *offsets) {
+    memset(header, 0, 40);
+    header[0] = 0x00; header[1] = 'P'; header[2] = 'B'; header[3] = 'P';
+    write_le32_test(header + 4, 0x00010000u);
+    for (uint32_t index = 0; index < 8; index++) {
+        write_le32_test(header + 8 + index * 4, offsets[index]);
+    }
+}
+
+static void write_pbp_test(const char *path, const uint8_t *header,
+                           size_t header_len, const uint8_t *body,
+                           size_t body_size) {
+    size_t total = header_len + body_size;
+    uint8_t *buffer = (uint8_t *)calloc(total + 1u, 1);
+    assert(buffer != NULL);
+    if (header_len) memcpy(buffer, header, header_len);
+    if (body_size) memcpy(buffer + header_len, body, body_size);
+    write_test_file(path, buffer, total);
+    free(buffer);
+}
+
+/* A PlayStation Store package must be refused at a named boundary with the
+   sentence it carries, instead of being reported as a disc with no volume
+   descriptor. Every hostile variant still has to fail closed. */
+static void test_hostile_pbp_package(const char *test_dir) {
+    char path[600];
+    uint8_t header[40];
+    uint8_t sfo[512];
+    uint32_t offsets[8];
+    NkIsoMetadata meta;
+    size_t sfo_size;
+    int index;
+
+    printf("[HOSTILE_TEST] Testing PBP package identification...\n"); fflush(stdout);
+
+    printf("[HOSTILE_TEST] PBP subtest 1: well-formed package names its title\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-package.iso", test_dir, nk_platform_path_separator());
+    sfo_size = build_sfo_test(sfo, sizeof(sfo), "TEST00424", "Hostile PBP Title");
+    assert(sfo_size > 0);
+    offsets[0] = 40;
+    for (index = 1; index < 8; index++) offsets[index] = (uint32_t)(40 + sfo_size);
+    build_pbp_header_test(header, offsets);
+    write_pbp_test(path, header, sizeof(header), sfo, sfo_size);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_PACKAGE_UNSUPPORTED") == 0);
+    assert(strstr(meta.error_message, "Hostile PBP Title") != NULL);
+    assert(strstr(meta.error_message, "TEST00424") != NULL);
+    assert(strstr(meta.error_message, "disc image") != NULL);
+    assert(strchr(meta.error_message, '#') == NULL);
+    assert(strcmp(meta.disc_id, "TEST00424") == 0);
+
+    printf("[HOSTILE_TEST] PBP subtest 2: package without a TITLE reports the ID only\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-no-title.iso", test_dir, nk_platform_path_separator());
+    sfo_size = build_sfo_test(sfo, sizeof(sfo), "TEST00424", "");
+    assert(sfo_size > 0);
+    offsets[0] = 40;
+    for (index = 1; index < 8; index++) offsets[index] = (uint32_t)(40 + sfo_size);
+    build_pbp_header_test(header, offsets);
+    write_pbp_test(path, header, sizeof(header), sfo, sfo_size);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_PACKAGE_UNSUPPORTED") == 0);
+    assert(strstr(meta.error_message, "ID: TEST00424") != NULL);
+    assert(strstr(meta.error_message, "Title:") == NULL);
+
+    printf("[HOSTILE_TEST] PBP subtest 3: header shorter than 40 bytes\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-short-header.iso", test_dir, nk_platform_path_separator());
+    {
+        static const uint8_t short_header[8] = { 0x00, 'P', 'B', 'P', 0x00, 0x00, 0x01, 0x00 };
+        write_pbp_test(path, short_header, sizeof(short_header), NULL, 0);
+    }
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_HEADER_TRUNCATED") == 0);
+
+    printf("[HOSTILE_TEST] PBP subtest 4: descending section offsets\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-descending.iso", test_dir, nk_platform_path_separator());
+    sfo_size = build_sfo_test(sfo, sizeof(sfo), "TEST00424", "Descending");
+    assert(sfo_size > 0);
+    offsets[0] = 40; offsets[1] = 16;
+    for (index = 2; index < 8; index++) offsets[index] = (uint32_t)(40 + sfo_size);
+    build_pbp_header_test(header, offsets);
+    write_pbp_test(path, header, sizeof(header), sfo, sfo_size);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_OFFSETS_INVALID") == 0);
+
+    printf("[HOSTILE_TEST] PBP subtest 5: section table pointing past the file\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-past-eof.iso", test_dir, nk_platform_path_separator());
+    sfo_size = build_sfo_test(sfo, sizeof(sfo), "TEST00424", "Past EOF");
+    assert(sfo_size > 0);
+    for (index = 0; index < 7; index++) {
+        offsets[index] = index == 0 ? 40u : (uint32_t)(40 + sfo_size);
+    }
+    offsets[7] = (uint32_t)(40 + sfo_size + 4096u);
+    build_pbp_header_test(header, offsets);
+    write_pbp_test(path, header, sizeof(header), sfo, sfo_size);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_OFFSETS_INVALID") == 0);
+
+    printf("[HOSTILE_TEST] PBP subtest 6: empty PARAM.SFO section\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-empty-sfo.iso", test_dir, nk_platform_path_separator());
+    for (index = 0; index < 8; index++) offsets[index] = 40;
+    build_pbp_header_test(header, offsets);
+    write_pbp_test(path, header, sizeof(header), NULL, 0);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_SFO_INVALID") == 0);
+
+    printf("[HOSTILE_TEST] PBP subtest 7: PARAM.SFO with the wrong magic\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-bad-magic.iso", test_dir, nk_platform_path_separator());
+    memset(sfo, 0, 32);
+    sfo[1] = 'X';
+    offsets[0] = 40;
+    for (index = 1; index < 8; index++) offsets[index] = 40 + 32;
+    build_pbp_header_test(header, offsets);
+    write_pbp_test(path, header, sizeof(header), sfo, 32);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_SFO_INVALID") == 0);
+
+    printf("[HOSTILE_TEST] PBP subtest 8: PARAM.SFO without a usable DISC_ID\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-no-disc-id.iso", test_dir, nk_platform_path_separator());
+    sfo_size = build_sfo_test(sfo, sizeof(sfo), "", "No Disc ID");
+    assert(sfo_size > 0);
+    offsets[0] = 40;
+    for (index = 1; index < 8; index++) offsets[index] = (uint32_t)(40 + sfo_size);
+    build_pbp_header_test(header, offsets);
+    write_pbp_test(path, header, sizeof(header), sfo, sfo_size);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(strcmp(meta.boundary_code, "PBP_SFO_INVALID") == 0);
+
+    printf("[HOSTILE_TEST] PBP subtest 9: a small non-PBP file keeps the ordinary error\n"); fflush(stdout);
+    snprintf(path, sizeof(path), "%s%cpbp-not-a-package.iso", test_dir, nk_platform_path_separator());
+    write_test_file(path, "short data", 10);
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(path, &meta) == NK_ERROR_INVALID_ISO);
+    assert(meta.boundary_code[0] == '\0');
+    assert(strstr(meta.error_message, "too small") != NULL);
+
+    printf("[HOSTILE_TEST] PBP package tests PASSED!\n");
+}
+
 static void make_plain_mips_elf_test(uint8_t elf[88]) {
     memset(elf, 0, 88);
     memcpy(elf, "\x7f" "ELF", 4);
@@ -1076,6 +1260,7 @@ int main(void) {
 
     test_hostile_library_json(hostile_dir);
     test_hostile_iso_parser(hostile_dir);
+    test_hostile_pbp_package(hostile_dir);
     test_iso_executable_classification(hostile_dir);
 #if defined(_WIN32) || defined(_WIN64)
     test_invalid_utf8_path_is_refused(hostile_dir);

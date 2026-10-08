@@ -431,7 +431,8 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertIsNone(hooks[0]["url"])
         self.assertIsNone(hooks[0]["sha256"])
         self.assertFalse(hooks[0]["download_in_tests"])
-        self.assertIn("decryption and your key file (#295)", hooks[0]["failure_message"])
+        self.assertIn("decryption and your key file", hooks[0]["failure_message"])
+        self.assertNotRegex(hooks[0]["failure_message"], r"#[0-9]+")
 
 
 if __name__ == "__main__":

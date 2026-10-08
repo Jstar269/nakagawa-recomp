@@ -108,6 +108,33 @@ def synthetic_manifest() -> dict:
     }
 
 
+def native_legacy_experimental_manifest() -> dict:
+    """The generic zero-layout profile shape emitted by the native importer."""
+    return {
+        "schema_version": 1,
+        "id": TITLE_ID,
+        "game_name": TITLE_ID,
+        "display_name": "Synthetic Experimental Disc",
+        "kind": "retail",
+        "disc": {"id": DISC_ID, "region": "NA", "revision_policy": "exact-disc-id"},
+        "executable": {
+            "base": 0,
+            "entry": 0,
+            "bss_metadata_source": "none",
+            "extra_executable_spans": [],
+        },
+        "modules": [],
+        "filesystem": {
+            "data_root": "data",
+            "memory_stick_root": "savedata",
+            "device_prefixes": ["disc0:", "ms0:"],
+        },
+        "hle_profile": "generic",
+        "feature_requirements": [],
+        "verification_profile": "experimental-unverified",
+    }
+
+
 def synthetic_required_module() -> bytes:
     """Build a tiny project-owned PRX ELF with a bounded module-info section."""
     segment = bytearray(128)
@@ -501,12 +528,12 @@ class TestPlayerPackageRoute(unittest.TestCase):
 
     # ---- the two halves ------------------------------------------------------
 
-    def run_build_action(self, user_root: Path) -> subprocess.CompletedProcess:
+    def run_build_action(self, user_root: Path, *, env=None) -> subprocess.CompletedProcess:
         """Press BUILD PACKAGE: the player's own session, start to finish."""
         return subprocess.run(
             [str(self.harness), "--build-package", str(ROOT), str(user_root), DISC_ID,
              str(user_root / "logs")],
-            cwd=ROOT, capture_output=True, text=True, timeout=1800,
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=1800,
         )
 
     def run_validator(self) -> subprocess.CompletedProcess:
@@ -583,6 +610,282 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("STAGING_RESULT status=PASS", completed.stdout)
         self.assertNotIn("STAGING_RESULT status=INCOMPLETE", completed.stdout)
 
+    def test_uncatalogued_player_route_builds_with_generic_profile(self):
+        """The package action upgrades the native profile through bring-up's writer."""
+        self.skip_if_toolchain_unavailable()
+        before = tracked_status()
+
+        elf_bytes = self.executable_bytes
+        iso_path = self.root / "uncatalogued-plain-elf.iso"
+        create_test_iso_with_executables(
+            iso_path, elf_bytes, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        user_root = self.root / "generic-user-data"
+        # This is the profile shape emitted by the native player's current
+        # experimental import path; it predates the shared Python writer's
+        # generic ELF layout and codegen_profile declaration.
+        self.stage_library(
+            user_root, native_legacy_experimental_manifest(), iso_path, elf_bytes
+        )
+        profile_path = user_root / "experimental" / DISC_ID / "profile.json"
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        self.assertNotIn("codegen_profile", profile["manifest"])
+
+        expected_root = self.root / "expected-generic-profile"
+        expected_profile_path = nk_cli.write_experimental_profile(iso_path, expected_root)
+        expected_profile = json.loads(expected_profile_path.read_text(encoding="utf-8"))
+
+        build_environment = os.environ.copy()
+        build_environment["SDL_VIDEODRIVER"] = "dummy"
+        build_environment["SDL_AUDIODRIVER"] = "dummy"
+        build_environment["NK_BUILD_ROOT"] = str(self.root / "b")
+        built = self.run_build_action(user_root, env=build_environment)
+        self.assertEqual(built.returncode, 0, built.stdout[-4000:] + built.stderr[-4000:])
+        self.assertIn("PACKAGE_BUILD_ROUTE status=PASS", built.stdout)
+        self.assertIn("complete=1", built.stdout)
+
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        self.assertEqual(profile, expected_profile)
+        manifest = nk_cli.title_manifest.validate_manifest(profile["manifest"])
+        self.assertEqual(manifest["id"], TITLE_ID)
+        self.assertEqual(manifest["hle_profile"], "generic")
+        self.assertEqual(manifest["codegen_profile"], "none")
+        self.assertEqual(manifest["executable"], expected_profile["manifest"]["executable"])
+        self.assertEqual(manifest["modules"], [])
+        self.assertNotIn("runtime_bindings", manifest)
+
+        identity = package_cache.read_local_title_input_identity(user_root, DISC_ID)
+        self.assertIsNotNone(identity)
+        self.assertEqual(identity["manifest"]["id"], TITLE_ID)
+        package_dir = user_root / "packages" / DISC_ID
+        self.assertTrue((package_dir / "package.json").is_file())
+        self.assertTrue((package_dir / "build-report.json").is_file())
+        validated = subprocess.run(
+            [str(self.validator), "--validate-package", str(user_root), DISC_ID,
+             TITLE_ID, "1", "EBOOT.BIN"],
+            cwd=ROOT, env=build_environment, capture_output=True, text=True,
+        )
+        self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+        self.assertIn("PACKAGE_STATUS=OK", validated.stdout)
+        self.assertEqual(tracked_status(), before)
+
+    def test_unsupported_generic_layout_shows_sentence_and_keeps_detail(self):
+        import argparse
+        import contextlib
+        import io
+
+        elf_bytes = self.executable_bytes
+        iso_path = self.root / "generic-profile-refusal.iso"
+        create_test_iso_with_executables(
+            iso_path, elf_bytes, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        user_root = self.root / "generic-profile-refusal-user-data"
+        self.stage_library(
+            user_root, native_legacy_experimental_manifest(), iso_path,
+            elf_bytes,
+        )
+        progress_path = user_root / "logs" / "profile-refusal.jsonl"
+        log_path = user_root / "logs" / "profile-refusal.log"
+        args = argparse.Namespace(
+            disc_id=DISC_ID,
+            user_data_root=user_root,
+            module_dir=None,
+            psp_header=None,
+            instruction_trace=False,
+            register_local_compatibility_record=False,
+            progress_json=progress_path,
+            log_file=log_path,
+        )
+        expected_message = (
+            "This executable needs a supported generic MIPS ELF layout; provide a "
+            "decrypted ELF with a documented load binding, then retry the build."
+        )
+        stderr = io.StringIO()
+        with patch.object(
+            nk_cli, "write_experimental_profile",
+            side_effect=nk_cli.IsoInspectionError("synthetic unsupported load layout"),
+        ), contextlib.redirect_stderr(stderr):
+            status = nk_cli.cmd_build_package(args)
+        self.assertNotEqual(status, 0)
+        events = [json.loads(line) for line in progress_path.read_text(encoding="utf-8").splitlines()]
+        failure = next(event for event in events if event["status"] == "FAIL")
+        self.assertEqual(failure["message"], expected_message)
+        self.assertIn(
+            "GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE (#308, in the works)",
+            failure["detail"],
+        )
+        self.assertIn("GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE (#308, in the works)",
+                      log_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stderr.getvalue(), f"Package build refused: {expected_message}\n"
+        )
+        self.assertNotIn("GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE", stderr.getvalue())
+        self.assertNotIn("synthetic unsupported load layout", stderr.getvalue())
+
+    def test_native_legacy_profile_matcher_rejects_added_optional_fields(self):
+        default = nk_cli.title_manifest.validate_manifest(
+            native_legacy_experimental_manifest()
+        )
+        self.assertTrue(
+            nk_cli._is_native_legacy_experimental_manifest(
+                default, DISC_ID, TITLE_ID,
+                "Synthetic Experimental Disc", "NA",
+            )
+        )
+
+        changes = (
+            ("notes", lambda value: value.update(notes="Preserve this user-authored note.")),
+            ("display_name", lambda value: value.update(display_name="User title")),
+            ("disc.region", lambda value: value["disc"].update(region="EU")),
+            ("disc.revision_policy", lambda value: value["disc"].update(
+                revision_policy="compatible-revisions"
+            )),
+            ("disc.compatible_revisions", lambda value: value["disc"].update(
+                compatible_revisions=[DISC_ID]
+            )),
+        )
+        for field, change in changes:
+            with self.subTest(field=field):
+                customized = json.loads(json.dumps(default))
+                change(customized)
+                self.assertFalse(
+                    nk_cli._is_native_legacy_experimental_manifest(
+                        customized, DISC_ID, TITLE_ID,
+                        "Synthetic Experimental Disc", "NA",
+                    )
+                )
+
+    def test_legacy_profile_upgrade_refuses_changed_executable_before_rewrite(self):
+        import argparse
+        import contextlib
+        import io
+
+        iso_path = self.root / "legacy-profile-drift.iso"
+        original_executable = self.executable_bytes
+        create_test_iso_with_executables(
+            iso_path, original_executable, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        user_root = self.root / "legacy-profile-drift-user-data"
+        self.stage_library(
+            user_root, native_legacy_experimental_manifest(), iso_path,
+            original_executable,
+        )
+        profile_path = user_root / "experimental" / DISC_ID / "profile.json"
+        original_profile = profile_path.read_bytes()
+
+        changed_executable = bytearray(original_executable)
+        changed_executable[-1] ^= 1
+        create_test_iso_with_executables(
+            iso_path, bytes(changed_executable), disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        args = argparse.Namespace(
+            disc_id=DISC_ID,
+            user_data_root=user_root,
+            module_dir=None,
+            psp_header=None,
+            instruction_trace=False,
+            register_local_compatibility_record=False,
+            progress_json=user_root / "logs" / "drift.jsonl",
+            log_file=user_root / "logs" / "drift.log",
+        )
+        stderr = io.StringIO()
+        with patch.object(
+            nk_cli, "_current_package_cache_key",
+            side_effect=AssertionError("build continued after an executable drift"),
+        ), patch.object(
+            nk_cli, "write_experimental_profile",
+            wraps=nk_cli.write_experimental_profile,
+        ) as profile_writer, contextlib.redirect_stderr(stderr):
+            status = nk_cli.cmd_build_package(args)
+
+        self.assertNotEqual(status, 0)
+        self.assertIn("Selected executable SHA-256 differs", stderr.getvalue())
+        profile_writer.assert_not_called()
+        self.assertEqual(profile_path.read_bytes(), original_profile)
+
+    def test_nondefault_legacy_profile_without_codegen_setting_refuses_with_detail(self):
+        import argparse
+        import contextlib
+        import io
+
+        iso_path = self.root / "legacy-profile-custom.iso"
+        executable = self.executable_bytes
+        create_test_iso_with_executables(
+            iso_path, executable, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        manifest = native_legacy_experimental_manifest()
+        manifest["notes"] = "Preserve this user-authored profile note."
+        user_root = self.root / "legacy-profile-custom-user-data"
+        self.stage_library(user_root, manifest, iso_path, executable)
+        profile_path = user_root / "experimental" / DISC_ID / "profile.json"
+        original_profile = profile_path.read_bytes()
+        progress_path = user_root / "logs" / "missing-codegen.jsonl"
+        log_path = user_root / "logs" / "missing-codegen.log"
+        args = argparse.Namespace(
+            disc_id=DISC_ID,
+            user_data_root=user_root,
+            module_dir=None,
+            psp_header=None,
+            instruction_trace=False,
+            register_local_compatibility_record=False,
+            progress_json=progress_path,
+            log_file=log_path,
+        )
+        expected_message = (
+            "This experimental profile is missing its generic build setting; "
+            "re-import the disc to rebuild the profile, then retry."
+        )
+        stderr = io.StringIO()
+        with patch.object(
+            nk_cli, "_current_package_cache_key",
+            side_effect=AssertionError("custom profile was incorrectly upgraded"),
+        ), patch.object(
+            nk_cli, "write_experimental_profile",
+            wraps=nk_cli.write_experimental_profile,
+        ) as profile_writer, contextlib.redirect_stderr(stderr):
+            status = nk_cli.cmd_build_package(args)
+
+        self.assertNotEqual(status, 0)
+        events = [
+            json.loads(line) for line in progress_path.read_text(encoding="utf-8").splitlines()
+        ]
+        failure = next(event for event in events if event["status"] == "FAIL")
+        self.assertEqual(failure["message"], expected_message)
+        self.assertEqual(
+            failure["detail"],
+            "EXPERIMENTAL_CODEGEN_PROFILE_MISSING (#730, in the works): "
+            "codegen_profile is absent from a non-default experimental profile",
+        )
+        self.assertIn(failure["detail"], log_path.read_text(encoding="utf-8"))
+        self.assertEqual(stderr.getvalue(), f"Package build refused: {expected_message}\n")
+        profile_writer.assert_not_called()
+        self.assertEqual(profile_path.read_bytes(), original_profile)
+
+    def test_catalogued_display_smoke_plan_matches_main_bytes(self):
+        """Keep the catalogued package plan byte-identical to the current-main baseline."""
+        import title_codegen_plan
+        import title_manifest
+
+        manifest = title_manifest.validate_manifest(
+            title_manifest.load_manifest(ROOT / "assets" / "titles" / "display-smoke.json")
+        )
+        plan = title_codegen_plan.build_plan(
+            manifest,
+            game_name="display-smoke-v1",
+            game_elf=Path("fixtures/display_smoke/guest.elf"),
+            build_dir=Path("build/display-smoke-v1"),
+        )
+        plan_bytes = title_codegen_plan.canonical_json(plan).encode("utf-8")
+        self.assertEqual(
+            hashlib.sha256(plan_bytes).hexdigest(),
+            "d91456c94956e805509f5e3118bf77fa96d14641c37ce50abce81f8a2f16f46b",
+        )
+
     def test_build_validates_and_launches_through_the_player(self):
         self.skip_if_toolchain_unavailable()
         before = tracked_status()
@@ -655,14 +958,12 @@ class TestPlayerPackageRoute(unittest.TestCase):
             usrdir_modules={"fixture.prx": self.module_bytes},
             disc_id=DISC_ID,
         )
-        changed_iso_boot_log = self.sandbox / "changed-iso-boot-events.log"
-        changed_iso_launch = self.run_launch(
-            changed_iso_boot_log, self.sandbox / "changed-iso-perf.csv"
-        )
+        boot_events_before_changed_iso = self.player_boot_event_files()
+        changed_iso_launch = self.run_launch(self.sandbox / "changed-iso-perf.csv")
         self.assertNotEqual(changed_iso_launch.returncode, 0,
                             changed_iso_launch.stdout + changed_iso_launch.stderr)
-        self.assertFalse(
-            changed_iso_boot_log.exists(),
+        self.assertEqual(
+            self.player_boot_event_files(), boot_events_before_changed_iso,
             "a same-ID, same-version source ISO with changed executable bytes must stop before guest execution",
         )
         create_test_iso_with_modules(
@@ -682,15 +983,14 @@ class TestPlayerPackageRoute(unittest.TestCase):
             usrdir_modules={"fixture.prx": bytes(changed_iso_module)},
             disc_id=DISC_ID,
         )
-        changed_iso_module_boot_log = self.sandbox / "changed-iso-module-boot-events.log"
+        boot_events_before_changed_module = self.player_boot_event_files()
         changed_iso_module_launch = self.run_launch(
-            changed_iso_module_boot_log,
-            self.sandbox / "changed-iso-module-perf.csv",
+            self.sandbox / "changed-iso-module-perf.csv"
         )
         self.assertNotEqual(changed_iso_module_launch.returncode, 0,
                             changed_iso_module_launch.stdout + changed_iso_module_launch.stderr)
-        self.assertFalse(
-            changed_iso_module_boot_log.exists(),
+        self.assertEqual(
+            self.player_boot_event_files(), boot_events_before_changed_module,
             "a same-ID, same-version source ISO with changed required module bytes must stop before guest execution",
         )
         create_test_iso_with_modules(
@@ -783,7 +1083,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("[preflight] FAIL: Encrypted executable", encrypted.stdout)
         self.assertIn("supply decrypted modules at", encrypted.stdout)
         self.assertIn("local key file", encrypted.stdout)
-        self.assertNotIn("decryption support is in the works (#295)", encrypted.stdout.lower())
+        self.assertNotRegex(encrypted.stdout, r"#[0-9]+")
         self.assertNotIn("automatic decryption is in the works", encrypted.stdout.lower())
         self.assertFalse((encrypted_root / "packages" / DISC_ID).exists())
 
@@ -805,7 +1105,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertNotEqual(header.returncode, 0)
         self.assertIn("PACKAGE_BUILD_ROUTE status=FAIL", header.stdout)
         self.assertIn("[extract] FAIL: This manifest reads BSS metadata", header.stdout)
-        self.assertIn("provide --psp-header (#296)", header.stdout)
+        self.assertIn("provide --psp-header", header.stdout)
         self.assertFalse((header_root / "packages" / DISC_ID).exists())
 
         self.assertEqual(tracked_status(), before)
