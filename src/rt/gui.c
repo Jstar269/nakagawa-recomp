@@ -116,11 +116,14 @@ static void sr_gui_boot_event(const char *format, ...) {
  * presenting more often than the display refresh wastes GPU/WSI work. The default
  * period uses the same 60000/1001 Hz scanout rate as the scheduler. */
 static int present_cap_from_value(const char *value) {
-    if (!value) return PRESENT_CAP_SCANOUT;
-    int cap = atoi(value);
-    if (cap < 0) return 0;
+    if (!value || !value[0] || strcmp(value, "native") == 0) {
+        return PRESENT_CAP_SCANOUT;
+    }
+    char *end = NULL;
+    long cap = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || cap < 0) return PRESENT_CAP_SCANOUT;
     if (cap > 240) return 240;
-    return cap;
+    return (int)cap;
 }
 
 static uint64_t present_period_for_cap(int cap) {
@@ -558,6 +561,9 @@ int main(void) {
     assert(PSP_SCANOUT_PERIOD_NS == 16683333ull);
     assert(present_period_ns() == PSP_SCANOUT_PERIOD_NS);
     assert(present_period_ns() != 1000000000ull / 30u);
+    assert(present_cap_from_value("native") == PRESENT_CAP_SCANOUT);
+    assert(present_cap_from_value("-1") == PRESENT_CAP_SCANOUT);
+    assert(present_cap_from_value("invalid") == PRESENT_CAP_SCANOUT);
     /* Through the slot logic: the first submission takes the slot, a second one in the
      * same scanout is dropped. */
     assert(present_slot_due());

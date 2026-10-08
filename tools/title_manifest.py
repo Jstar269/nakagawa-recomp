@@ -1008,8 +1008,10 @@ def validate_filesystem(value: Any, path: str) -> dict[str, Any]:
         if prefix in prefixes:
             fail(f"{path}.device_prefixes[{index}]", "duplicate device prefix")
         prefixes.add(prefix)
+    raw_data_root = text(value["data_root"], f"{path}.data_root", 240, 0)
     result = {
-        "data_root": portable_path(value["data_root"], f"{path}.data_root"),
+        "data_root": portable_path(raw_data_root, f"{path}.data_root")
+        if raw_data_root else "",
         "memory_stick_root": portable_path(value["memory_stick_root"], f"{path}.memory_stick_root"),
         "device_prefixes": sorted(prefixes),
         "loose_content_roots": validate_loose_content_roots(

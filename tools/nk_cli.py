@@ -1332,7 +1332,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 "This disc image was modified by a custom-firmware patch. The game "
                 "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
-                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
+                "copy of your disc. The project does not provide decrypted executables. "
                 "This boundary is "
                 "in the works (#308)."
             )
@@ -1800,7 +1801,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         user_data_root = _user_data_root(
             Path(args.root) if args.root is not None else None
         )
-        meta = inspect_iso(args.iso)
+        from nk_core.title_registry import TitleRegistry
+
+        registry = TitleRegistry(include_defaults=True)
+        registry.load_local_manifests(user_data_root / "manifests")
+        meta = inspect_iso(args.iso, registry=registry,
+                           user_data_root=user_data_root)
+        profile_validation = registry.profile_refusal_for_disc(meta.disc_id)
         preflight = inspect_compatibility_preflight(
             args.iso, metadata=meta, runtime_root=user_data_root
         )
@@ -1815,8 +1822,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "region": meta.region,
         "volume_id": meta.volume_id,
         "size_bytes": meta.size_bytes,
+        "catalogued": meta.matched_profile is not None,
         "supported": meta.is_supported,
         "matched_profile": meta.matched_profile.id if meta.matched_profile else None,
+        "profile_validation": profile_validation,
         "compatibility_preflight": preflight,
     }
     if args.json:
@@ -1825,9 +1834,12 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         print(f"Disc ID:    {meta.disc_id}")
         print(f"Title:      {meta.title}")
         print(f"Region:     {meta.region}")
-        print(f"Catalogued: {'YES' if meta.is_supported else 'NO'}")
+        print(f"Catalogued: {'YES' if meta.matched_profile else 'NO'}")
+        print(f"Supported:  {'YES' if meta.is_supported else 'NO'}")
         if meta.matched_profile:
             print(f"Profile:    {meta.matched_profile.name} ({meta.matched_profile.id})")
+        if profile_validation:
+            print(f"Profile validation: {profile_validation}")
         if preflight.get("modified_dump_cfw_loader"):
             print(f"Game executable: {preflight['selected_executable_source']}")
             print(f"Analysis input: {preflight['selected_executable'] or 'none'}")
@@ -2174,7 +2186,8 @@ def _bringup_human_summary(report: dict) -> str:
         return (
             "Bring-up stopped at inspect: this disc image was modified by a custom-firmware "
             "patch. The game executable is EBOOT.OLD (encrypted); supply its decrypted "
-            "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+            "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
+            "copy of your disc. The project does not provide decrypted executables. "
             "This boundary is in the works (#308)."
         )
     issues = " ".join(f"#{number}" for number in report["issue_numbers"])
@@ -3174,7 +3187,8 @@ def main() -> int:
     p_launch = subparsers.add_parser("launch", help="Plan launch arguments for a prepared game")
     p_launch.add_argument("game_dir", help="Path to prepared game directory (containing manifest.json)")
     p_launch.add_argument("--profile", default="Standard", choices=["Standard", "Performance", "Benchmark", "Diagnostics"])
-    p_launch.add_argument("--fps-cap", type=int, default=30)
+    p_launch.add_argument("--fps-cap", type=int, default=-1,
+                          help="Host presentation cap (-1 uses PSP scanout pacing)")
     p_launch.add_argument("--software", action="store_true", help="Use software GE rasterizer")
     p_launch.set_defaults(func=cmd_launch)
 

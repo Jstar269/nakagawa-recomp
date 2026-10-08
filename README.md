@@ -53,9 +53,9 @@ mingw32-make showcase-smoke          # run both demos headlessly with frame/inpu
 What you need:
 
 - **Windows 11 x64** with a Vulkan-capable graphics card and current GPU drivers.
-- **A lawfully owned PSP game disc image** in uncompressed standard `.iso` format. No game data is downloaded for you.
+- **A disc image of a game you own** in uncompressed standard `.iso` format. No game data is downloaded for you.
 - **A supported game executable**, for most commercial games — the built-in decryption boundary handles supported encrypted executables with your own matching local key file; otherwise provide your own plain files (see step 3). PGD-protected content is still unsupported and is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
-- **PSP system fonts (optional but recommended for text):** authentic in-game typography uses Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped from a real PSP console. They cannot legally be bundled and must be user-provided ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)).
+- **PSP system fonts (optional but recommended for text):** authentic in-game typography uses Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped from a real PSP console. The project does not include or distribute these files; you provide them from your own PSP ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)).
 
 Then, in the player:
 
@@ -94,10 +94,10 @@ The build system operates in two phases: host-side Python tools analyze the decr
 ## Legal and lineage summary
 
 - **Project license declaration:** the repository-level project declaration is **GPL-3.0-or-later** ([LICENSE](LICENSE)). Many source files and inherited components retain GPL-2.0-or-later or upstream-specific terms; this declaration does not establish that every combined distribution configuration is legally cleared.
-- **Open licensing questions:** inherited PGF/font and PGD/amctrl questions remain under explicit review; the affected components are excluded from the public source profile. See [NOTICE.md](NOTICE.md) and [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md).
+- **Open provenance questions:** inherited PGF/font code provenance and replacement-font redistribution terms remain open; the affected components are excluded from the public source profile. PGD/amctrl support is not in the public tree yet; it is published when it works. See [NOTICE.md](NOTICE.md) and [docs/PUBLICATION_READINESS.md](docs/PUBLICATION_READINESS.md).
 - **Lineage and upstreams:** the project began as a fork of [sal063's PSP Recompilation Project](https://github.com/sal063/PSP-recompilation-project) (GPL-2.0-or-later) and retains substantial modified code from that lineage. Portions of the HLE, GE, and VFPU subsystems adapt or derive from [PPSSPP](https://github.com/hrydgard/ppsspp) (GPL-2.0-or-later). See [CREDITS.md](CREDITS.md), [NOTICE.md](NOTICE.md), and [assets/public_provenance_ledger.json](assets/public_provenance_ledger.json).
 - **"Independent" disclaimer:** Nakagawa Recomp is an independent research and compatibility project. "Independent" describes its relationship to Sony Interactive Entertainment, Clap Hanz, and game rights-holders; it does not mean the recompiler codebase is clean-room or independently originated. Nakagawa Recomp is not affiliated with, authorized by, or endorsed by Sony Interactive Entertainment, Clap Hanz, PPSSPP, sal063, or other upstream authors.
-- **No proprietary content:** this repository does not distribute game executables, assets, firmware modules, decryption keys, or private oracle traces. Users must supply their own lawfully obtained game files.
+- **No proprietary content:** this repository does not distribute game executables, assets, firmware modules, decryption keys, or private oracle traces. Users must supply their own game files, for games they own.
 - **Publication controls:** `Jstar269/nakagawa-recomp` is the active sanitized public source repository. Its history begins with the sanitized restoration lineage; former development history is not ordinary `main` ancestry and must not be reconnected. Publication gates, source profiles ([`assets/public_source_profile.json`](assets/public_source_profile.json)), and provenance audits are engineering controls, not legal clearance.
 
 ## Contributing

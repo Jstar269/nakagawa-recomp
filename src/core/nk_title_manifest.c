@@ -934,8 +934,10 @@ static bool nk_manifest_parse_locked(
     }
     JsonNode *dr_node = obj_get(fs_node, "data_root");
     JsonNode *ms_node = obj_get(fs_node, "memory_stick_root");
-    if (!dr_node || dr_node->type != JSON_STRING || !is_valid_portable_path(dr_node->u.str_val)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.data_root: must be a portable relative POSIX-style path");
+    if (!dr_node || dr_node->type != JSON_STRING ||
+        (dr_node->u.str_val[0] && !is_valid_portable_path(dr_node->u.str_val))) {
+        if (error_buf) snprintf(error_buf, error_buf_len,
+            "$.filesystem.data_root: must be empty or a portable relative POSIX-style path");
         json_free(root);
         return false;
     }
@@ -1863,6 +1865,86 @@ static void overlay_report_line(char *report, size_t report_len, const char *lin
     snprintf(report + used, report_len - used, "%s\n", line);
 }
 
+static bool overlay_copy_disc_id(const JsonNode *node,
+                                 char out_disc_id[NK_MAX_DISC_ID_LEN]) {
+    if (!out_disc_id) return false;
+    out_disc_id[0] = '\0';
+    const char *value = node && node->type == JSON_STRING
+        ? node->u.str_val : NULL;
+    if (!value || strlen(value) != 9u) return false;
+    for (size_t i = 0; i < 9u; i++) {
+        unsigned char ch = (unsigned char)value[i];
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9'))) {
+            out_disc_id[0] = '\0';
+            return false;
+        }
+        out_disc_id[i] = (char)((ch >= 'a' && ch <= 'z')
+            ? ch - ('a' - 'A') : ch);
+    }
+    out_disc_id[9] = '\0';
+    return true;
+}
+
+static size_t overlay_declared_disc_ids(
+    const char *path,
+    char disc_ids[][NK_MAX_DISC_ID_LEN],
+    size_t max_disc_ids
+) {
+    if (!path || !disc_ids || max_disc_ids == 0) return 0;
+    FILE *file = manifest_fopen(path);
+    if (!file) return 0;
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return 0;
+    }
+    long file_size = ftell(file);
+    if (file_size < 0 || file_size > NK_MANIFEST_MAX_BYTES ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return 0;
+    }
+    char *text = (char *)malloc((size_t)file_size + 1u);
+    if (!text) {
+        fclose(file);
+        return 0;
+    }
+    size_t read_size = fread(text, 1, (size_t)file_size, file);
+    fclose(file);
+    if (read_size != (size_t)file_size) {
+        free(text);
+        return 0;
+    }
+    text[read_size] = '\0';
+    JsonNode *root = json_parse(text, read_size, NULL, 0);
+    free(text);
+    if (!root) return 0;
+    JsonNode *disc = obj_get(root, "disc");
+    size_t count = 0;
+    char candidate[NK_MAX_DISC_ID_LEN];
+    if (overlay_copy_disc_id(obj_get(disc, "id"), candidate)) {
+        snprintf(disc_ids[count++], NK_MAX_DISC_ID_LEN, "%s", candidate);
+    }
+    JsonNode *revisions = obj_get(disc, "compatible_revisions");
+    if (revisions && revisions->type == JSON_ARRAY) {
+        for (size_t i = 0; i < revisions->u.arr.count && count < max_disc_ids; i++) {
+            if (!overlay_copy_disc_id(revisions->u.arr.items[i], candidate)) continue;
+            bool duplicate = false;
+            for (size_t existing = 0; existing < count; existing++) {
+                if (strcmp(disc_ids[existing], candidate) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                snprintf(disc_ids[count++], NK_MAX_DISC_ID_LEN, "%s", candidate);
+            }
+        }
+    }
+    json_free(root);
+    return count;
+}
+
 int nk_title_manifest_load_overlay_dir(const char *dir, char *report, size_t report_len) {
     if (report && report_len) report[0] = '\0';
     if (!dir || !*dir || !nk_platform_dir_exists(dir)) return 0;
@@ -1894,8 +1976,19 @@ int nk_title_manifest_load_overlay_dir(const char *dir, char *report, size_t rep
         if (nk_title_manifest_load_overlay(path, error, sizeof(error))) {
             loaded++;
         } else {
-            snprintf(line, sizeof(line), "%s: %s", listing->names[i], error);
-            overlay_report_line(report, report_len, line);
+            char refused_disc_ids[MAX_COMPAT_DISC_IDS + 1][NK_MAX_DISC_ID_LEN];
+            size_t refused_count = overlay_declared_disc_ids(
+                path, refused_disc_ids, MAX_COMPAT_DISC_IDS + 1u);
+            if (refused_count != 0) {
+                for (size_t disc = 0; disc < refused_count; disc++) {
+                    snprintf(line, sizeof(line), "%s (disc %s): %s",
+                             listing->names[i], refused_disc_ids[disc], error);
+                    overlay_report_line(report, report_len, line);
+                }
+            } else {
+                snprintf(line, sizeof(line), "%s: %s", listing->names[i], error);
+                overlay_report_line(report, report_len, line);
+            }
         }
     }
     if (listing->truncated) {
