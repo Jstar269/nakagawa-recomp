@@ -247,6 +247,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
     assert(session.staged_executable_checked);
+    assert(session.config.fps_cap == -1);
     assert(ends_with(session.executable_path, "display-smoke") ||
            ends_with(session.executable_path, "display-smoke.exe"));
     /* Prepare defaults: a caller that never configures the session must not
@@ -327,6 +328,7 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
+    session.config.fps_cap = -1;
     assert(nk_launch_start(&session) == NK_OK);
     child_exit = nk_launch_wait(&session, -1);
     nk_launch_stop(&session);
@@ -337,6 +339,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     observed[observed_size] = '\0';
     assert(!ferror(report));
     assert(fclose(report) == 0);
+    assert(strstr(observed, "SR_FPS_CAP=native\n") != NULL);
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
 
     restore_environment_value("PSP_ISO", old_iso, had_iso);
