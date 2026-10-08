@@ -2494,19 +2494,19 @@ player-state-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c \
-		tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o build/test_player_state$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o build/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
-		tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_settings$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_settings$(EXE_EXT)
 
 package-builder-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
-		tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o build/test_package_builder$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o build/test_package_builder$(EXE_EXT)
 
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
 # player itself builds rather than in the SDL-free native-core-tests set.
@@ -2522,11 +2522,11 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_pgf_public$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o build/test_core_catalog$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o build/test_core_catalog$(EXE_EXT)
 	./build/test_core_catalog$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o build/test_parsers_hostile$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o build/test_parsers_hostile$(EXE_EXT)
 	./build/test_parsers_hostile$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
@@ -2534,7 +2534,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_manifest_parser$(EXE_EXT) --check
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o build/test_launch_resolution$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o build/test_launch_resolution$(EXE_EXT)
 	./build/test_launch_resolution$(EXE_EXT)
 	$(MAKE) --no-print-directory player-state-test-bin
 	./build/test_player_state$(EXE_EXT)
