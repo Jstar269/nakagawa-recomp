@@ -167,6 +167,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `perf_summary_diff.py` | Compare two runtime performance summaries within a tolerance. |
 | `pgf_writer.py` | Deterministic PGF writer for project-generated glyph bitmaps (a fixture generator, never an authenticity claim). |
+| `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
@@ -452,6 +453,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_padscript_from_log.py` | Controller log to pad script conversion: press widths and mask-change spans. |
 | `test_perf_summary_diff.py` | Performance summary comparison within a tolerance. |
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |
+| `test_ttf2pgf.py` | Converter determinism, manifest/pin binding, named refusals, and public-reader round trip over the pinned font fixture. |
 | `test_ppmdiff_coverage.py` | Fail-closed coverage tests for the framebuffer diff. |
 | `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |
