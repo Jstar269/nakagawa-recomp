@@ -2885,7 +2885,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "014dbb3444599296ead31a7dacf4fbc67f84fb2880f85ec45d87e3d2ca620ad1"
+      "sha256": "032c4bf8ab24b6c284594f15030554483bc38510ac0285cf74922f8c7608bd18"
     },
     {
       "path": "src/player/package_builder.c",
@@ -5547,7 +5547,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8650fa8da8938efc9d5297463cdab29e9a35511890e5c02054fcc3649d885418"
+      "sha256": "cc06bbefe0cda14420ce55efd8201441022bf0027867270bdfe25aa3dfa87efb"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -6617,7 +6617,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91b9cd3bdbccb2104ea75541b1bffdb25d88469c9f49e9159f1c38f3e46afa34"
+      "sha256": "ce9f41d981d192258ced4798165d0c332c50e6182043070233d80bfd91cf634b"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -8050,7 +8050,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd3ce53aa5d80fdacf7ff2cd1f59779939f2dd74e330f70e3bc820d42f8501e5"
+      "sha256": "802f92a1b25e6184d78384f9108042a3a4d6f59df50cc3d011087bf38350316b"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
