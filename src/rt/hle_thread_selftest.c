@@ -250,6 +250,8 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_GE_LIST_ENQUEUE_HEAD 0x1c0d95a6u
 #define NID_SCE_GE_CONTINUE 0x4c06e472u
 #define NID_SCE_GE_BREAK 0xb448ec0du
+#define NID_SCE_GE_SAVE_CONTEXT 0x438a385au
+#define NID_SCE_GE_RESTORE_CONTEXT 0x0bf608fbu
 #define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
 #define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
@@ -2709,8 +2711,8 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         {NID_SCE_KERNEL_SET_ALARM, 0x80020002u, "sceKernelSetAlarm"},
         {NID_SCE_KERNEL_CANCEL_ALARM, 0x80020002u, "sceKernelCancelAlarm"},
         {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
-        {NID_SCE_GE_CONTINUE, 0x80020002u, "sceGeContinue"},
-        {NID_SCE_GE_BREAK, 0x80020002u, "sceGeBreak"},
+        {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
+        {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
         {NID_SCE_REG_CLOSE_CATEGORY, 0x80010086u, "sceRegCloseCategory"},
@@ -2726,6 +2728,80 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
                "unsupported kernel import returns its explicit refusal code");
     }
+}
+
+/* sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler report NULL (no profiler data
+ * is modeled), and write nothing through any argument register. A non-NULL error value would
+ * be dereferenced by the title, so the result must be exactly 0. */
+static void test_unregistered_batch_profiler_refer_null(void) {
+    enum {
+        NID_REFER_THREAD_PROFILER = 0x64d4540eu,
+        NID_REFER_GLOBAL_PROFILER = 0x8218b4ddu,
+        PROFILER_PROBE = 0x00270050u,
+    };
+    const uint32_t sentinel = 0xa57c3de1u;
+    const uint32_t nids[2] = {NID_REFER_THREAD_PROFILER, NID_REFER_GLOBAL_PROFILER};
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(nids) / sizeof(nids[0]); i++) {
+        expect(sr_hle_test_is_registered(nids[i]),
+               "profiler refer NID has a production registration");
+        MEM_W32(PROFILER_PROBE, sentinel);
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PROFILER_PROBE;
+        cpu.r[5] = PROFILER_PROBE;
+        cpu.r[6] = PROFILER_PROBE;
+        cpu.r[7] = PROFILER_PROBE;
+        expect(sr_syscall(&cpu, nids[i]) == 0u && MEM_R32(PROFILER_PROBE) == sentinel,
+               "profiler refer returns NULL (0) and writes nothing through its argument registers");
+    }
+}
+
+/* Imports that stopped titles on an unknown NID now resolve to a named refusal with the code
+ * recorded in hle.c's unregistered-import batch. The two NIDs without a confirmed public name
+ * must stay unregistered, so an unknown-NID trap still names them. */
+static void test_unregistered_batch_refusals(void) {
+    static const struct {
+        uint32_t nid;
+        uint32_t error;
+        const char *name;
+    } refused[] = {
+        {0x20fff560u, 0x80020002u, "sceKernelCreateVTimer"},
+        {0xc68d9437u, 0x80020002u, "sceKernelStartVTimer"},
+        {0x328f9e52u, 0x80020002u, "sceKernelDeleteVTimer"},
+        {0x542ad630u, 0x80020002u, "sceKernelSetVTimerTime"},
+        {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
+        {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
+        {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
+        {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
+        {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
+        {0x0282a3bdu, 0x80010086u, "sceHttpGetContentLength"},
+        {0x03d9526fu, 0x80010086u, "sceHttpSetResolveRetry"},
+        {0x1f0fc3e3u, 0x80010086u, "sceHttpSetRecvTimeOut"},
+        {0x2255551eu, 0x80010086u, "sceHttpGetNetworkPspError"},
+        {0x3eaba285u, 0x80010086u, "sceHttpAddExtraHeader"},
+        {0xab1abe07u, 0x80010086u, "sceHttpInit"},
+        {0xd1c8945eu, 0x80010086u, "sceHttpEnd"},
+        {0x29681260u, 0x80010086u, "sceAudiocodecReleaseEDRAM"},
+        {0x3a20a200u, 0x80010086u, "sceAudiocodecGetEDRAM"},
+        {0x5b37eb1du, 0x80010086u, "sceAudiocodecInit"},
+        {0x70a703f8u, 0x80010086u, "sceAudiocodecDecode"},
+    };
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        expect(sr_hle_test_is_registered(refused[i].nid),
+               "unregistered-import batch refusal has a production registration");
+        expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
+               "unregistered-import batch refusal returns its named refusal code");
+    }
+    expect(!sr_hle_test_is_registered(0x8ada38d3u),
+           "LoadExecForUser 0x8ada38d3 stays unregistered because no public name is confirmed");
+    expect(!sr_hle_test_is_registered(0x3dd7ee1au),
+           "sceAudiocodec 0x3dd7ee1a stays unregistered because no public name is confirmed");
 }
 
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
@@ -3710,6 +3786,81 @@ static void test_kernel_import_sweep_sysclock_conversion(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_SYS_CLOCK_TO_USEC) == 0x800200d3u &&
                MEM_R32(low_out) == sentinel && MEM_R32(high_out) == sentinel,
            "sceKernelSysClock2USec rejects an incomplete input span before writing outputs");
+}
+
+/* sceKernelSysClock2USecWide takes the 64-bit clock by value ($a0 low word, $a1 high word)
+ * and writes its two words through $a2/$a3. A missing output pointer refuses the whole call,
+ * so the valid low output is not written. */
+static void test_unregistered_batch_sysclock_wide(void) {
+    enum {
+        NID_SYS_CLOCK_TO_USEC_WIDE = 0xe1619d7cu,
+        WIDE_LOW_OUT = 0x00270030u,
+        WIDE_HIGH_OUT = 0x00270034u,
+    };
+    const uint32_t sentinel = 0xa57c3de1u;
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_SYS_CLOCK_TO_USEC_WIDE),
+           "sceKernelSysClock2USecWide has a production registration");
+    MEM_W32(WIDE_LOW_OUT, sentinel);
+    MEM_W32(WIDE_HIGH_OUT, sentinel);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x89abcdefu;
+    cpu.r[5] = 0x12345678u;
+    cpu.r[6] = WIDE_LOW_OUT;
+    cpu.r[7] = WIDE_HIGH_OUT;
+    expect(sr_syscall(&cpu, NID_SYS_CLOCK_TO_USEC_WIDE) == 0u &&
+               MEM_R32(WIDE_LOW_OUT) == 0x89abcdefu && MEM_R32(WIDE_HIGH_OUT) == 0x12345678u,
+           "sceKernelSysClock2USecWide splits the by-value 64-bit clock into low/high outputs");
+
+    MEM_W32(WIDE_LOW_OUT, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x89abcdefu;
+    cpu.r[5] = 0x12345678u;
+    cpu.r[6] = WIDE_LOW_OUT;
+    cpu.r[7] = 0u; /* missing high-output pointer */
+    expect(sr_syscall(&cpu, NID_SYS_CLOCK_TO_USEC_WIDE) == 0x800200d3u &&
+               MEM_R32(WIDE_LOW_OUT) == sentinel,
+           "sceKernelSysClock2USecWide refuses a missing output pointer before writing the low word");
+}
+
+/* sceCtrlGetSamplingMode reports the mode retained by sceCtrlSetSamplingMode through a
+ * required out-pointer, and a NULL pointer is refused without a write. */
+extern void sr_hle_test_ctrl_sampling_reset(void);
+static void test_unregistered_batch_ctrl_sampling_getter(void) {
+    enum {
+        NID_CTRL_GET_SAMPLING_MODE = 0xda6b76a1u,
+        NID_CTRL_SET_SAMPLING_MODE = 0x1f4011e6u,
+        CTRL_MODE_OUT = 0x00270040u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_sampling_reset();
+    expect(sr_hle_test_is_registered(NID_CTRL_GET_SAMPLING_MODE),
+           "sceCtrlGetSamplingMode has a production registration");
+    MEM_W32(CTRL_MODE_OUT, 0xa57c3de1u);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = CTRL_MODE_OUT;
+    expect(sr_syscall(&cpu, NID_CTRL_GET_SAMPLING_MODE) == 0u && MEM_R32(CTRL_MODE_OUT) == 0u,
+           "sceCtrlGetSamplingMode reports the power-on digital mode 0");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    (void)sr_syscall(&cpu, NID_CTRL_SET_SAMPLING_MODE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = CTRL_MODE_OUT;
+    expect(sr_syscall(&cpu, NID_CTRL_GET_SAMPLING_MODE) == 0u && MEM_R32(CTRL_MODE_OUT) == 1u,
+           "sceCtrlGetSamplingMode reports the mode retained by sceCtrlSetSamplingMode");
+
+    MEM_W32(CTRL_MODE_OUT, 0xa57c3de1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u; /* NULL out-pointer */
+    expect(sr_syscall(&cpu, NID_CTRL_GET_SAMPLING_MODE) == 0x800200d3u &&
+               MEM_R32(CTRL_MODE_OUT) == 0xa57c3de1u,
+           "sceCtrlGetSamplingMode refuses a NULL out-pointer with ILLEGAL_ADDR and no write");
+    sr_hle_test_ctrl_sampling_reset();
 }
 
 static void test_display_clock_reads_are_observational(void) {
@@ -7538,6 +7689,158 @@ static void test_sema_hardware_codes(void) {
 #define NID_B1_TRYLOCK_LWMUTEX 0xdc692ee3u
 #define NID_TRYLOCK_LWMUTEX_600 0x37431849u
 #define NID_B1_UNLOCK_LWMUTEX 0x15b6446bu
+
+/* sceKernelReferSemaStatus (0xbc6febc5): SceKernelSemaInfo is 56 bytes -- size(0),
+ * name[32](4), attr(36), initCount(40), currentCount(44), maxCount(48),
+ * numWaitThreads(52). Covers the live count, a genuinely blocked waiter, the unknown-UID
+ * and bad-pointer codes, and a small caller size word. */
+#define NID_RSS_REFER_SEMA 0xbc6febc5u
+#define RSS_INFO           0x00250a00u
+#define RSS_NAME           0x00250a80u
+#define RSS_UNKNOWN_UID    0x0badf00du
+#define RSS_BAD_PTR        0xfffffff0u
+#define RSS_ILLEGAL_ADDR   0x80000103u   /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+
+static uint32_t s_rss_obj;
+static uint32_t s_rss_ret;
+static int s_rss_returned;
+
+static void rss_waiter_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_rss_obj; cpu.r[5] = 3u; cpu.r[6] = 0u;
+    s_rss_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_rss_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t rss_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid; cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_RSS_REFER_SEMA);
+}
+
+/* name[32] at RSS_INFO+4 holds `want` followed by NUL bytes out to 32. */
+static int rss_name_is(const char *want) {
+    size_t n = strlen(want);
+    for (uint32_t i = 0; i < 32u; i++) {
+        uint8_t expected = i < n ? (uint8_t)want[i] : 0u;
+        if (MEM_R8(RSS_INFO + 4u + i) != expected) return 0;
+    }
+    return 1;
+}
+
+/* 1 when every byte in [from, to) of the RSS_INFO span equals value. */
+static int rss_bytes_are(uint32_t from, uint32_t to, uint8_t value) {
+    for (uint32_t i = from; i < to; i++)
+        if (MEM_R8(RSS_INFO + i) != value) return 0;
+    return 1;
+}
+
+static void test_sema_refer_status(void) {
+    static const char rss_name[] = "rss-sema";
+    TCB *main_t = wsv_begin();
+    for (size_t i = 0; i < sizeof(rss_name); i++) MEM_W8(RSS_NAME + (uint32_t)i, (uint8_t)rss_name[i]);
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = RSS_NAME; cpu.r[5] = 0x100u; cpu.r[6] = 1u; cpu.r[7] = 3u;
+    uint32_t sema = sr_syscall(&cpu, NID_CNW_CREATE_SEMA);
+    expect((int32_t)sema > 0, "ReferSemaStatus: test semaphore created (init 1, max 3, attr 0x100)");
+
+    /* Full-size caller (56): every byte of the struct is written. The sentinel fill
+     * proves each field is stored, not left behind. */
+    MEM_W32(RSS_INFO, 56u);
+    for (uint32_t i = 4u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0xa5u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds on a live semaphore");
+    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus writes the struct size (56) into the size word");
+    expect(rss_name_is(rss_name), "ReferSemaStatus copies the create-time name and zero-fills the rest of name[32]");
+    expect(MEM_R32(RSS_INFO + 36u) == 0x100u, "ReferSemaStatus reports the create-time attr");
+    expect(MEM_R32(RSS_INFO + 40u) == 1u, "ReferSemaStatus reports the create-time initCount");
+    expect(MEM_R32(RSS_INFO + 44u) == 1u, "ReferSemaStatus reports the current count");
+    expect(MEM_R32(RSS_INFO + 48u) == 3u, "ReferSemaStatus reports the maxCount");
+    expect(MEM_R32(RSS_INFO + 52u) == 0u, "ReferSemaStatus reports zero waiting threads with no waiter");
+
+    /* Caller size 40: bytes 0..39 are written; bytes 40..55 keep the sentinel. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0xa5u);
+    MEM_W32(RSS_INFO, 40u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with caller size 40");
+    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus with caller size 40 writes the struct size word");
+    expect(rss_name_is(rss_name), "ReferSemaStatus with caller size 40 writes the name");
+    expect(MEM_R32(RSS_INFO + 36u) == 0x100u, "ReferSemaStatus with caller size 40 writes attr (bytes 36..39)");
+    expect(rss_bytes_are(40u, 56u, 0xa5u),
+           "ReferSemaStatus with caller size 40 leaves bytes 40..55 untouched");
+
+    /* Caller size 0: nothing is written and the call succeeds. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0x5au);
+    MEM_W32(RSS_INFO, 0u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus with caller size 0 returns 0");
+    expect(MEM_R32(RSS_INFO) == 0u && rss_bytes_are(4u, 56u, 0x5au),
+           "ReferSemaStatus with caller size 0 writes nothing");
+
+    /* Caller size 8: only the size word and the first 4 bytes of name are written. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0xa5u);
+    MEM_W32(RSS_INFO, 8u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with caller size 8");
+    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus with caller size 8 writes the struct size word");
+    expect(rss_bytes_are(8u, 56u, 0xa5u),
+           "ReferSemaStatus with caller size 8 leaves bytes 8..55 untouched");
+
+    /* Signal to count 2, then block a real waiter that needs 3. */
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = sema; cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "ReferSemaStatus: signal to count 2 succeeds");
+
+    s_rss_obj = sema; s_rss_ret = 0xFFFFFFFFu; s_rss_returned = 0;
+    TCB *waiter = fixture_thread(0x1e2u, TH_READY, 16);
+    waiter->started = 1;
+    waiter->coro = sr_coro_create(rss_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "ReferSemaStatus: waiter coroutine created");
+    if (waiter->coro) {
+        s_cur = (int)(waiter - s_tcb);
+        waiter->state = TH_RUNNING;
+        sr_coro_switch(waiter->coro);
+        expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == sema,
+               "ReferSemaStatus: waiter blocked on the semaphore (need 3, count 2)");
+
+        s_cur = (int)(main_t - s_tcb);
+        MEM_W32(RSS_INFO, 56u);
+        expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with a blocked waiter");
+        expect(MEM_R32(RSS_INFO + 44u) == 2u, "ReferSemaStatus reports count 2 while the waiter is blocked");
+        expect(MEM_R32(RSS_INFO + 52u) == 1u, "ReferSemaStatus reports one waiting thread");
+
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "ReferSemaStatus: signal to count 3 succeeds");
+        if (waiter->state == TH_READY && waiter->coro) {
+            s_cur = (int)(waiter - s_tcb);
+            sr_coro_switch(waiter->coro);
+        }
+        expect(s_rss_returned == 1 && s_rss_ret == 0u,
+               "ReferSemaStatus: the blocked waiter resumed and succeeded after the signal");
+
+        s_cur = (int)(main_t - s_tcb);
+        MEM_W32(RSS_INFO, 56u);
+        expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds after the waiter resumed");
+        expect(MEM_R32(RSS_INFO + 44u) == 0u, "ReferSemaStatus reports count 0 after the waiter consumed 3");
+        expect(MEM_R32(RSS_INFO + 52u) == 0u, "ReferSemaStatus reports zero waiting threads after the wake");
+        sr_coro_destroy(waiter->coro); waiter->coro = NULL;
+    }
+
+    /* Error codes: unknown UID, NULL and unmapped output spans. */
+    MEM_W32(RSS_INFO, 56u);
+    expect(rss_refer(RSS_UNKNOWN_UID, RSS_INFO) == WSV_UNKNOWN_SEMID,
+           "ReferSemaStatus unknown UID returns UNKNOWN_SEMID 0x80020199");
+    expect(rss_refer(sema, 0u) == RSS_ILLEGAL_ADDR,
+           "ReferSemaStatus NULL info returns ILLEGAL_ADDR 0x80000103");
+    expect(rss_refer(sema, RSS_BAD_PTR) == RSS_ILLEGAL_ADDR,
+           "ReferSemaStatus unmapped info span returns ILLEGAL_ADDR 0x80000103");
+
+    wsv_delete(sema);
+    s_cur = -1;
+}
 
 static void test_lwmutex_hardware_codes(void) {
     TCB *self = wsv_begin();
@@ -11837,6 +12140,189 @@ static void test_kernel_import_sweep_ge_head(void) {
     cpu.r[5] = list + 8u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
            "the GE head-order boundary clears after the stalled list completes");
+}
+
+static void test_ge_break_continue(void) {
+    const uint32_t dl_base = 0x08920000u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    expect(sr_hle_test_is_registered(NID_SCE_GE_BREAK),
+           "sceGeBreak is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_CONTINUE),
+           "sceGeContinue is registered in this build");
+
+    /* Mode validation: mode > 1 is rejected with INVALID_VALUE */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x800001feu,
+           "sceGeBreak with invalid mode 2 returns INVALID_VALUE");
+
+    /* Param validation: non-NULL unreadable/unaligned param rejected with ILLEGAL_ADDR */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 1u; /* unaligned */
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000103u,
+           "sceGeBreak with unaligned param returns ILLEGAL_ADDR");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0xdeadbeefu; /* unmapped */
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000103u,
+           "sceGeBreak with unmapped param returns ILLEGAL_ADDR");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0x0c000000u - 8u; /* crosses arena boundary */
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000103u,
+           "sceGeBreak with crossing-arena param returns ILLEGAL_ADDR");
+
+    /* Idle checks: mode 0 when idle returns NOT_FOUND */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000025u,
+           "sceGeBreak mode 0 when idle returns NOT_FOUND");
+
+    /* Idle checks: sceGeContinue when no paused list returns NOT_FOUND */
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0x80000025u,
+           "sceGeContinue when idle returns NOT_FOUND");
+
+    /* Idle checks: mode 1 when idle resets all queues (0) and returns 0 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
+           "sceGeBreak mode 1 when idle returns 0");
+
+    /* Setup synthetic display list that stalls at dl_base */
+    MEM_W32(dl_base, 0x0f000000u);      /* FINISH */
+    MEM_W32(dl_base + 4u, 0x0c000000u); /* END */
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl_base;
+    cpu.r[5] = dl_base; /* empty ring: stalled */
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid & 0xff000000u) == 0x35000000u,
+           "enqueued stalled list has valid queue id");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 1u,
+           "ListSync peek reports stalled (1)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 1u,
+           "DrawSync peek reports busy (1)");
+
+    /* Pause with mode 0 */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
+           "sceGeBreak mode 0 pauses the display list and returns 0");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 2u,
+           "ListSync peek reports paused (DRAWING_DONE = 2)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 2u,
+           "DrawSync peek reports paused (DRAWING_DONE = 2)");
+
+    /* Update stall address while paused: accepted without resuming */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = dl_base + 8u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+           "UpdateStallAddr updates paused list stall address");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 2u,
+           "ListSync peek stays paused after UpdateStallAddr");
+
+    /* Continue: resumes and completes */
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
+           "sceGeContinue resumes paused list and returns 0");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
+           "ListSync reports completed (DONE = 0) after continue");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "DrawSync reports idle (0) after continue");
+
+    /* Mode 1 cancellation */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl_base;
+    cpu.r[5] = dl_base;
+    uint32_t qid2 = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid2 & 0xff000000u) == 0x35000000u,
+           "second stalled list enqueued");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid2,
+           "sceGeBreak mode 1 returns stopped queue id");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid2;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
+           "ListSync reports cancelled (CANCEL_DONE = 4) after mode 1 break");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
+           "DrawSync reports idle (0) after mode 1 break");
+
+    /* Continue fails after mode 1 break because no list is paused */
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0x80000025u,
+           "sceGeContinue after mode 1 break returns NOT_FOUND");
+
+    /* Mode 1 cancellation of an already paused list */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = dl_base;
+    cpu.r[5] = dl_base;
+    uint32_t qid3 = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect((qid3 & 0xff000000u) == 0x35000000u,
+           "third stalled list enqueued");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
+           "sceGeBreak mode 0 pauses the third display list");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid3,
+           "sceGeBreak mode 1 cancels paused list and returns its queue id");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid3;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
+           "ListSync reports cancelled (4) for paused list cancelled by mode 1 break");
 }
 
 /* A display list the GE already ran to its END is consumed, and a stall address
@@ -18383,7 +18869,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[640];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -18391,7 +18877,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
-                 "+ 1 vblank multi waiter "
+                 "+ 1 vblank multi waiter + 1 ReferSemaStatus waiter "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -22184,7 +22670,10 @@ int main(int argc, char **argv) {
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
+    test_unregistered_batch_refusals();
+    test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
+    test_ge_break_continue();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
     test_io_devctl_memory_stick();
@@ -22230,6 +22719,8 @@ int main(int argc, char **argv) {
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();
+    test_unregistered_batch_sysclock_wide();
+    test_unregistered_batch_ctrl_sampling_getter();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
     test_delay_zero_probe_semantics();
@@ -22266,6 +22757,7 @@ int main(int argc, char **argv) {
     test_dispatch_suspend_resume_nid_semantics();
     test_can_not_wait_semantics();
     test_sema_hardware_codes();
+    test_sema_refer_status();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_wait_sema_count_validation();
