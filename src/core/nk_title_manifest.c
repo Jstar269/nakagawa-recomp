@@ -4710,7 +4710,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     if (!package_direct_file(package_root, "package.json", package_path,
                              sizeof(package_path))) {
         package_rebuild_reason(reason, reason_size,
-            "Runtime package package.json is missing.", user_data_root, normalized);
+            "Runtime package package.json is missing.");
         return NK_RUNTIME_PACKAGE_MISSING;
     }
     char current_identity_file_digest[65] = "";
@@ -4723,8 +4723,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     if (source_iso_path && *source_iso_path) {
         if (!current_identity_file_digest[0]) {
             package_rebuild_reason(reason, reason_size,
-                "Title input identity record is missing or unreadable; source media cannot be qualified.",
-                user_data_root, normalized);
+                "Title input identity record is missing or unreadable; source media cannot be qualified.");
             return NK_RUNTIME_PACKAGE_STALE;
         }
         char *identity_text = NULL;
@@ -4739,8 +4738,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                 identity_exceeds_limit
                     ? "Title input identity record exceeds the supported JSON size limit; "
                       "source media cannot be qualified."
-                    : "Title input identity record is unreadable; source media cannot be qualified.",
-                user_data_root, normalized);
+                    : "Title input identity record is unreadable; source media cannot be qualified.");
             return NK_RUNTIME_PACKAGE_STALE;
         }
         JsonNode *current_identity = json_parse(identity_text, identity_length,
@@ -4756,8 +4754,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                                                 sizeof(identity_error))) {
             package_rebuild_reason(reason, reason_size,
                 identity_error[0] ? identity_error :
-                "Source media could not be qualified; rebuild the package from the current inputs.",
-                user_data_root, normalized);
+                "Source media could not be qualified; rebuild the package from the current inputs.");
             if (current_identity) json_free(current_identity);
             return NK_RUNTIME_PACKAGE_STALE;
         }

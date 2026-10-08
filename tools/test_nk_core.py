@@ -39,8 +39,10 @@ from nk_core import (
 )
 
 _ISSUE_REFERENCE_RE = re.compile(r"#[0-9]+")
+# Character literals are tokens too: an unmatched '"' would otherwise open a
+# phantom string that swallows the code after it.
 _C_TOKEN_RE = re.compile(
-    r'//[^\r\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"', re.DOTALL
+    r"""//[^\r\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\])*\"""", re.DOTALL
 )
 
 
