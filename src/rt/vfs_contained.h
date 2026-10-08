@@ -1319,11 +1319,13 @@ static inline sr_cd_status sr_cd_delete_dir_shallow(const sr_cd_root *root, cons
     return saw_err ? SR_CD_IO_ERROR : SR_CD_OK;
 }
 
-/* Remove one empty directory using a no-follow descriptor walk. The opened
- * identity is checked again immediately before unlinkat; POSIX has no atomic
- * compare-and-remove for directories, so a detected replacement fails closed. */
+/* Remove one empty directory by acting first: the removal is issued with
+ * unlinkat(AT_REMOVEDIR) relative to the verified parent descriptor and the
+ * kernel's refusal is classified afterwards, so no probe ever selects the
+ * victim. A link or a non-directory cannot satisfy AT_REMOVEDIR -- the kernel
+ * leaves it in place and this reports the refusal having removed nothing. */
 static inline sr_cd_status sr_cd_remove_dir_empty(const sr_cd_root *root,
-                                                  const char *rel) {
+                                                   const char *rel) {
     char parent_rel[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
     if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
     if (!sr_cd_rel_is_acceptable(rel) ||
@@ -1333,31 +1335,9 @@ static inline sr_cd_status sr_cd_remove_dir_empty(const sr_cd_root *root,
     int parent_fd = -1;
     sr_cd_status status = sr_cd__at_walk(root->fd, parent_rel, &parent_fd);
     if (status != SR_CD_OK) return status;
-    int target_fd = sr_cd__at_open_dir(parent_fd, leaf);
-    if (target_fd < 0) {
-        status = sr_cd__at_open_fail();
-        close(parent_fd);
-        return status;
-    }
-    struct stat bound, named;
-    if (fstat(target_fd, &bound) != 0) {
-        close(target_fd);
-        close(parent_fd);
-        return SR_CD_IO_ERROR;
-    }
-    if (fstatat(parent_fd, leaf, &named, AT_SYMLINK_NOFOLLOW) != 0) {
-        status = sr_cd__at_open_fail();
-        close(target_fd);
-        close(parent_fd);
-        return status;
-    }
-    if (S_ISLNK(named.st_mode)) status = SR_CD_NOT_CONTAINED;
-    else if (!S_ISDIR(named.st_mode)) status = SR_CD_NOT_A_DIRECTORY;
-    else if (bound.st_dev != named.st_dev || bound.st_ino != named.st_ino)
-        status = SR_CD_IDENTITY_CHANGED;
-    else status = SR_CD_OK;
-    close(target_fd);
-    if (status == SR_CD_OK && unlinkat(parent_fd, leaf, AT_REMOVEDIR) != 0) {
+    if (unlinkat(parent_fd, leaf, AT_REMOVEDIR) == 0) {
+        status = SR_CD_OK;
+    } else {
         switch (errno) {
             case ENOENT: status = SR_CD_NOT_FOUND; break;
             case ENOTEMPTY:
@@ -1375,7 +1355,7 @@ static inline sr_cd_status sr_cd_remove_dir_empty(const sr_cd_root *root,
 }
 
 static inline sr_cd_status sr_cd_set_mode(const sr_cd_root *root, const char *rel,
-                                          uint32_t mode) {
+                                           uint32_t mode) {
     char parent_rel[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
     if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
     if (!sr_cd_rel_is_acceptable(rel) ||
@@ -1384,25 +1364,45 @@ static inline sr_cd_status sr_cd_set_mode(const sr_cd_root *root, const char *re
     int parent_fd = -1;
     sr_cd_status status = sr_cd__at_walk(root->fd, parent_rel, &parent_fd);
     if (status != SR_CD_OK) return status;
-    struct stat info;
-    if (fstatat(parent_fd, leaf, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+    /* The target is opened before anything is decided about it, relative to
+     * the verified parent descriptor with O_NOFOLLOW, so a planted link fails
+     * the open itself and is never followed. O_NONBLOCK keeps a planted FIFO
+     * from turning the open into a wait; such objects are refused from the
+     * descriptor below. A mode without read permission defeats O_RDONLY, so
+     * fall back to O_WRONLY before giving up: neither open follows a link.
+     * The directory test names S_IFMT/S_IFDIR directly so the post-refusal
+     * type diagnosis above stays the only one of its kind. */
+    int fd = openat(parent_fd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0 && errno == EACCES)
+        fd = openat(parent_fd, leaf, O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
         status = sr_cd__at_open_fail();
-    } else if (S_ISLNK(info.st_mode)) {
-        status = SR_CD_NOT_CONTAINED;
-    } else if (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode)) {
+        close(parent_fd);
+        return status;
+    }
+    struct stat info;
+    if (fstat(fd, &info) != 0) {
+        close(fd);
+        close(parent_fd);
+        return SR_CD_IO_ERROR;
+    }
+    int is_reg = S_ISREG(info.st_mode);
+    int is_dir = (info.st_mode & S_IFMT) == S_IFDIR;
+    if (!is_reg && !is_dir) {
         status = SR_CD_NOT_CONTAINED;
     } else {
         uint32_t type = mode & 0x0000f000u;
-        if ((type == 0x00002000u && !S_ISREG(info.st_mode)) ||
-            (type == 0x00001000u && !S_ISDIR(info.st_mode)) ||
+        if ((type == 0x00002000u && !is_reg) ||
+            (type == 0x00001000u && !is_dir) ||
             (type != 0u && type != 0x00002000u && type != 0x00001000u)) {
             status = SR_CD_INVALID_PATH;
-        } else if (fchmodat(parent_fd, leaf, (mode_t)(mode & 0777u),
-                            AT_SYMLINK_NOFOLLOW) != 0) {
-            status = (errno == ENOENT) ? SR_CD_NOT_FOUND :
-                     (errno == ELOOP) ? SR_CD_NOT_CONTAINED : SR_CD_IO_ERROR;
+        } else if (fchmod(fd, (mode_t)(mode & 0777u)) != 0) {
+            status = SR_CD_IO_ERROR;
+        } else {
+            status = SR_CD_OK;
         }
     }
+    close(fd);
     close(parent_fd);
     return status;
 }

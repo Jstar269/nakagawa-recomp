@@ -909,6 +909,7 @@ static void case_posix_guest_file_operations(void) {
     CHECK(!is_dir(made_dir), "rmdir removes the empty directory");
     CHECK(sr_cd_psp_error(SR_CD_NOT_EMPTY) == 0x8001005au,
           "a nonempty directory maps to PSP ENOTEMPTY");
+    CHECK_ST(sr_cd_mkdir_leaf(&r, "PSP/SAVEDATA/NEW-DIR"), SR_CD_OK);
 
     /* Every structural escape fails before a host operation and maps to the
      * PSP illegal-path error (EINVAL). */
