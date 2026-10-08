@@ -484,6 +484,9 @@ class NkCoreTests(unittest.TestCase):
         registry = TitleRegistry(include_defaults=True)
         profile = registry.lookup_by_disc_id("TEST00001")
         self.assertEqual(int(cmd[3], 16), profile.executable_base)
+
+        _default_cmd, default_env = launcher.build_launch_plan(game_dir)
+        self.assertEqual(default_env["SR_FPS_CAP"], "native")
         # The run entry: a declared runtime_bindings.fallback_entry, else
         # executable.entry (title_codegen_plan._resolve_run_entry, and the native
         # catalog's run_entry), so every launcher starts the title at one address.
