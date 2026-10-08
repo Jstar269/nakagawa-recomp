@@ -636,36 +636,34 @@ static uint32_t h_SynthReal(CpuState *s) {
 
 
 class ControlledRefusalDiagnosticTests(unittest.TestCase):
-    def test_runtime_diagnostics_name_semantic_boundary_and_exit_summary(self) -> None:
+    def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
         source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn(
-            "UNSUPPORTED_IMPORT: %s is not supported yet (NID 0x%08x, error 0x%08x).",
+            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)",
             source,
         )
         self.assertIn(
-            "UNSUPPORTED_IMPORT: %s is not supported yet (NID 0x%08x, error 0x%08x).",
+            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)",
             source,
         )
         self.assertIn(
-            "UNSUPPORTED_IMPORT: sceIoDevctl command 0x%08x for device '%s' is not supported yet (error 0x%08x).",
+            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)",
             source,
         )
         self.assertIn("hle_devctl_refusal_first(device, command)", source)
-        self.assertIn(
-            "HLE_COMPATIBILITY: %s keeps result 0; full behavior is not supported yet (NID 0x%08x).",
-            source,
-        )
+        self.assertIn("HLE: compatibility exception: %s (NID 0x%08x)", source)
         self.assertIn("atexit(hle_unsupported_summary)", source)
-        # A stream the demuxer refuses is a named product boundary, not a debug line.
+        # A stream the demuxer refuses is a product boundary, not a debug line: the named
+        # reason and its tracking issue must survive any refactor of the emitting helper.
         self.assertIn(
-            'UNSUPPORTED_MEDIA: scePsmfPlayer: this stream is not supported yet: %s ',
+            'PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s ',
             source,
         )
         self.assertIn(
             "at source offset %llu; no further access unit is decoded and the player keeps ",
             source,
         )
-        self.assertIn("its current status.", source)
+        self.assertIn("its current status; in the works (#288)", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):

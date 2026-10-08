@@ -146,7 +146,7 @@ HANDLER_METADATA = {
             "fixtures/display_smoke/generate.py:flight_smoke",
             "src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events",
         ],
-        "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, head-versus-tail ordering with a stalled list, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route",
+        "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)",
     },
     "h_GeListEnQueueHead": {
         "status": "partial",

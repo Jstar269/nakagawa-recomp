@@ -20861,7 +20861,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
     sr_hle_test_module_reset();
 }
 
-/* ---- scePsmfPlayer: a rejected stream has to name itself ----------------------------- */
+/* ---- scePsmfPlayer: a rejected stream has to name itself (issue #288) ---------------- */
 
 #define NID_SCE_PSMF_PLAYER_CREATE       0x235d8787u
 #define NID_SCE_PSMF_PLAYER_DELETE       0x9b71a274u
@@ -20950,7 +20950,7 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
     CpuState cpu;
     char captured[8192];
     SrFlightEvent flight_event;
-    const char *boundary = "UNSUPPORTED_MEDIA: scePsmfPlayer: this stream is not supported yet: "
+    const char *boundary = "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: "
                            "pes-timestamp-field at source offset 2048";
 
     sr_hle_init();
@@ -21011,10 +21011,8 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
 
     expect(count_occurrences(captured, boundary) == 2,
            "psmf: every rejected stream names the demuxer refusal, the reason, and the offset");
-    expect(strstr(captured, "its current status.") != NULL &&
-               strstr(captured, "not supported yet") != NULL &&
-               strstr(captured, "#") == NULL,
-           "psmf: the named media boundary describes what is not supported yet without an issue number");
+    expect(strstr(captured, "in the works (#288)") != NULL,
+           "psmf: the media boundary carries its tracking issue");
     expect(strstr(captured, "MPEG_CONTRACT") == NULL,
            "psmf: the rejection is not reported as some other media boundary");
     expect(sr_flight_event_count() == 2, "psmf: each rejection is one media flight event");
