@@ -216,7 +216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9f37b0a35803d1a9c87e1455493b3322dd5a6a812b21acf36a68326c869d9bd"
+      "sha256": "f5b1a4c70f926792523eafc26d6bbef69f47ebf1165c717208c8dabba22a42e2"
     },
     {
       "path": "AGENTS.md",
@@ -313,7 +313,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b044f8670ee26ec9700f0347eac3d56a30a43da04558bd8a014a880d54595904"
+      "sha256": "4a9ef78eaf8df3a95c2a32cdcd154cdcb1aed45029304aea4340228775e107ea"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f6bced9cd09b40ae5ad0637dbd1c04381d20400ad11e6848bef6b365a1a20c7b"
+      "sha256": "17e17fd696876af0cc11692eba884402bcf5d3cc5c71f483f14ff09db9c4e0d7"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -688,7 +688,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ba831df872b66882c46051900822247f966cd307d8969c8837ec8be427890ee1"
+      "sha256": "4d0ac7627196578e5d063bc5262f262741be3a2306184b4c545e2484850d9126"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1309,7 +1309,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ae344f956330bfdbb32ea21f1f92a867ca57a79034120816eb048e721eb8502b"
+      "sha256": "c6b1b77c5e357dd2d2a8a31d952110b98e746d3a44638090f377eddf5a679eb3"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1447,6 +1447,15 @@
       "sha256": "e28d196433d7cbd9470aa50b92065848245a3fa67bebcb06950bd5a3aaea7139"
     },
     {
+      "path": "docs/cleanroom/PGF_CONVERTER_SPEC.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "dd0e153aefdf753cabd9e11e161fa87bef9bab687f2081b6d6a7e6b6b6f0b23e"
+    },
+    {
       "path": "docs/cleanroom/PGF_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1507,7 +1516,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4102dffa3f2e5916874c1f51b8b2f6c47d418ae436f1ff57f066015d192cb829"
+      "sha256": "11ba663635f4ef39b129f1d4a4b519a6a362eb35d372f24e86d1abf47d3bf37c"
     },
     {
       "path": "docs/provenance/GUEST_INTERP_ATTESTATION.md",
@@ -1643,6 +1652,42 @@
         "upstream_attribution": null
       },
       "sha256": "32cb4fe9f8154d051d24453b64816f0f2805ca84820a554a4029977e011379f8"
+    },
+    {
+      "path": "fixtures/fonts/README.md",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "4e1d29d6bd152b7b80640b778fd9323bdc570a5ca72a9548e97f03e699a618ab"
+    },
+    {
+      "path": "fixtures/fonts/gudea/Gudea-Regular.ttf",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "a4b5410090a821ea17021627312babdf3d8db0271217fd8c4d9f629ef0a2d90b"
+    },
+    {
+      "path": "fixtures/fonts/gudea/OFL.txt",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "315a576cbc7ab61c9e347b5725893bc8498fdcb8fc10831793c6864bc2cefba8"
+    },
+    {
+      "path": "fixtures/fonts/gudea/PIN.json",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "0896dcfd866f51f741b4535d5d23997403ce95581f50b559fe218517cd8b8c7f"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
@@ -5627,7 +5672,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3bb5b3c5e006800d7663c90ea97c9d4f887fe4946b2bd305e135879542caf8db"
+      "sha256": "096075b710087da672ceb91e18233500d45b5b15061198190dee60dd7ee3452b"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -7500,7 +7545,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb6bad047da2f2ea423022dc952fcf73f556948bdf2cb741dd8c9bfddef67e1f"
+      "sha256": "156db31d57e096e854825e2e7af3b13858b54f74232ea523dad767c2829f7a0e"
     },
     {
       "path": "tools/test_cpu_lle.py",
@@ -9245,6 +9290,18 @@
       "sha256": "9db9857d74e6feace06cc0bb540f4a2fafe09d26ab2f3067f41c0c936e9f5999"
     },
     {
+      "path": "tools/test_ttf2pgf.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ttf2pgf-converter-313",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "09ec64ffdcca8d228205d1b01e5acc0191e0db52cde5d9b661c6f88ea9bb0a4e"
+    },
+    {
       "path": "tools/test_validate_assets.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9580,6 +9637,18 @@
         "upstream_attribution": null
       },
       "sha256": "cee26dd59452d4e9a7d17a67a1f6d6ffbb35d6f7b5e0c95503b45aa2e9d3814e"
+    },
+    {
+      "path": "tools/ttf2pgf.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ttf2pgf-converter-313",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "566881af61db21ab87860f89894628025fdbdf64213a72e65d5dd8178c6fc0b9"
     },
     {
       "path": "tools/validate_assets.py",

@@ -46,6 +46,13 @@ it is not legal advice or a conclusion that any combined distribution is cleared
 - **VFPU tables** — PPSSPP-origin lookup data with the exact source and checksums
   recorded in `assets/vfpu/PROVENANCE.json`; inclusion is a provenance decision,
   not a claim about PSP firmware ownership.
+- **Gudea font fixture (issue #313)** — SIL Open Font License 1.1,
+  Copyright (c) 2011, Agustina Mingote, with Reserved Font Name "Gudea". The
+  exact upstream bytes, the licence text, and the `font-pin/v1` provenance
+  record are pinned in `fixtures/fonts/gudea/`; they are input to the
+  deterministic converter `tools/ttf2pgf.py` for test fixtures only. The font
+  is not packaged, generated PGFs stay in temporary or `build/` paths, and the
+  output name is project-owned so the Reserved Font Name is never claimed.
 
 ## Generated third-party notices
 
