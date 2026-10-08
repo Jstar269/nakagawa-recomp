@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **491** (dedicated **442**, fake_success **5**, controlled_unsupported **44**).
-Semantic handler census: **407** handlers across **21** API families, covering **448** handler-associated NID registrations.
+Registered NIDs: **491** (dedicated **448**, fake_success **5**, controlled_unsupported **38**).
+Semantic handler census: **413** handlers across **22** API families, covering **454** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 62 | 62 |
+| `partial` | 68 | 68 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 332 | 361 |
@@ -66,12 +66,13 @@ Semantic handler census: **407** handlers across **21** API families, covering *
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
+| `sceReg` | 0 | 6 | 0 | 0 | 0 | 6 | 6 |
 | `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **62** | **1** | **2** | **332** | **407** | **448** |
+| **Total** | **10** | **68** | **1** | **2** | **332** | **413** | **454** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -284,6 +285,18 @@ Semantic handler census: **407** handlers across **21** API families, covering *
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
   - Limitation: host HLE player; requires host codec backend; no hardware comparison tier measured (#341)
+- **`h_RegCloseCategory`** (`sceReg`): `sceRegCloseCategory` (0x0cae832b)
+  - Limitation: frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured
+- **`h_RegCloseRegistry`** (`sceReg`): `sceRegCloseRegistry` (0xfa8a5739)
+  - Limitation: frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured
+- **`h_RegGetKeyInfo`** (`sceReg`): `sceRegGetKeyInfo` (0xd4475aa8)
+  - Limitation: serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement
+- **`h_RegGetKeyValue`** (`sceReg`): `sceRegGetKeyValue` (0x28a8e98a)
+  - Limitation: copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured
+- **`h_RegOpenCategory`** (`sceReg`): `sceRegOpenCategory` (0x1d8a762e)
+  - Limitation: serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured
+- **`h_RegOpenRegistry`** (`sceReg`): `sceRegOpenRegistry` (0x92e41280)
+  - Limitation: read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured
 - **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
   - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
 - **`h_RtcConvertUtcToLocal`** (`sceRtc`): `sceRtcConvertUtcToLocalTime` (0x34885e0d)

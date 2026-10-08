@@ -960,6 +960,200 @@ static uint32_t h_GetSystemParamInt(CpuState *s) {
     return 0;
 }
 
+/* ---- sceReg: read-only virtual system registry ----
+ * Public reference: the PSPSDK Reg kernel library (pspdev.github.io/pspsdk, group__Reg and
+ * structRegParam). struct RegParam is 272 bytes: regtype u32 at +0, name[256] at +4 (documented
+ * as seemingly unused), namelen u32 at +260, unk2 u32 at +264, unk3 u32 at +268. Key types are
+ * DIR=1, INT=2, STR=3, BIN=4; REGHANDLE is a 32-bit handle. The reference documents no regtype
+ * values and no error codes, so regtype is not checked and the error codes below are errno-class
+ * choices, not hardware measurements.
+ *
+ * Read model: the writers (sceRegSetKeyValue and friends) are not registered, so a write fails
+ * closed as an unregistered import. Integer values come from systemparam_int_value(), the table
+ * sceUtilityGetSystemParamInt reads, so the two surfaces cannot disagree. The nickname is a
+ * project default because this runtime has no system-param string table yet. Nothing here
+ * touches the host filesystem. */
+#define SREG_REGPARAM_BYTES 272u
+#define SREG_SLOTS 4u
+#define SREG_TAG_REG 0x52470000u /* 'RG' registry handle; low byte = slot + 1 */
+#define SREG_TAG_CAT 0x52430000u /* 'RC' category handle; low byte = slot + 1 */
+#define SREG_TAG_KEY 0x524b0000u /* 'RK' key handle; bits 8..15 = category slot + 1, bits 0..7 = key index + 1 */
+#define SREG_ERR_ILLEGAL_ADDR 0x80000103u /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define SREG_ERR_BADF 0x80010009u /* EBADF: not an open handle of this kind */
+#define SREG_ERR_NOENT 0x80010002u /* ENOENT: unknown category or key */
+#define SREG_ERR_NOMEM 0x8001000cu /* ENOMEM: handle slots exhausted */
+#define SREG_ERR_INVAL 0x80010016u /* EINVAL: unsupported mode, or buffer smaller than the value */
+#define SREG_TYPE_INT 2u
+#define SREG_TYPE_STR 3u
+
+typedef struct {
+    const char *category; /* absolute path, exact match as passed to sceRegOpenCategory */
+    const char *key;
+    uint32_t type;        /* SREG_TYPE_INT or SREG_TYPE_STR */
+    int sysparam_id;      /* integer keys: PSP_SYSTEMPARAM_ID_INT_* read via systemparam_int_value() */
+    const char *str;      /* string keys: NUL-terminated value */
+} SregKey;
+
+static const SregKey s_sreg_keys[] = {
+    { "/CONFIG/SYSTEM/XMB",    "language",         SREG_TYPE_INT, 8, NULL },
+    { "/CONFIG/SYSTEM/XMB",    "button_assign",    SREG_TYPE_INT, 9, NULL },
+    { "/CONFIG/SYSTEM",        "nickname",         SREG_TYPE_STR, -1, "PSP" },
+    { "/CONFIG/DATE",          "date_format",      SREG_TYPE_INT, 4, NULL },
+    { "/CONFIG/DATE",          "time_format",      SREG_TYPE_INT, 5, NULL },
+    { "/CONFIG/DATE",          "time_zone_offset", SREG_TYPE_INT, 6, NULL },
+    { "/CONFIG/DATE",          "summer_time",      SREG_TYPE_INT, 7, NULL },
+    { "/CONFIG/NETWORK/ADHOC", "channel",          SREG_TYPE_INT, 2, NULL },
+};
+
+/* Categories that open successfully. CHARACTER_SET opens but has no modeled keys: its value source
+ * is not in this runtime yet, so key lookups under it fail closed. */
+static const char *const s_sreg_categories[] = {
+    "/CONFIG/SYSTEM", "/CONFIG/SYSTEM/XMB", "/CONFIG/SYSTEM/CHARACTER_SET",
+    "/CONFIG/DATE", "/CONFIG/NETWORK/ADHOC",
+};
+
+static uint8_t s_sreg_reg_open[SREG_SLOTS];
+static uint8_t s_sreg_cat_open[SREG_SLOTS];
+static int s_sreg_cat_index[SREG_SLOTS];
+
+static int sreg_slot_of(uint32_t h, uint32_t tag, const uint8_t *open) {
+    uint32_t n = h & 0xffu;
+    if ((h & 0xffff0000u) != tag || (h & 0xff00u) || n == 0u || n > SREG_SLOTS) return -1;
+    return open[n - 1u] ? (int)(n - 1u) : -1;
+}
+
+static int sreg_free_slot(const uint8_t *open) {
+    for (uint32_t i = 0; i < SREG_SLOTS; i++)
+        if (!open[i]) return (int)i;
+    return -1;
+}
+
+static int sreg_find_category(const char *path) {
+    for (uint32_t i = 0; i < sizeof(s_sreg_categories) / sizeof(s_sreg_categories[0]); i++)
+        if (strcmp(s_sreg_categories[i], path) == 0) return (int)i;
+    return -1;
+}
+
+static int sreg_find_key(int cat, const char *name) {
+    for (uint32_t i = 0; i < sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]); i++)
+        if (strcmp(s_sreg_keys[i].category, s_sreg_categories[cat]) == 0 &&
+            strcmp(s_sreg_keys[i].key, name) == 0)
+            return (int)i;
+    return -1;
+}
+
+static uint32_t sreg_key_size(const SregKey *k) {
+    return k->type == SREG_TYPE_INT ? 4u : (uint32_t)strlen(k->str) + 1u;
+}
+
+static int guest_cstr(uint32_t addr, char *out, int max);
+
+/* sceRegOpenRegistry(RegParam *reg, int mode, REGHANDLE *h): mode 1 only. */
+static uint32_t h_RegOpenRegistry(CpuState *s) {
+    uint32_t reg = A0, mode = A1, out = A2;
+    int slot;
+    if (!reg || !sr_guest_span_readable(reg, SREG_REGPARAM_BYTES)) return SREG_ERR_ILLEGAL_ADDR;
+    if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
+    if (mode != 1u) {
+        fprintf(stderr, "sceRegOpenRegistry: mode %u unsupported (the registry opens with mode 1)\n", mode);
+        return SREG_ERR_INVAL;
+    }
+    slot = sreg_free_slot(s_sreg_reg_open);
+    if (slot < 0) return SREG_ERR_NOMEM;
+    s_sreg_reg_open[slot] = 1;
+    MEM_W32(out, SREG_TAG_REG | (uint32_t)(slot + 1));
+    return 0;
+}
+
+/* sceRegOpenCategory(REGHANDLE h, const char *name, int mode, REGHANDLE *hd). Mode 2 (read/write)
+ * is accepted, but no writer is registered, so an open category cannot change any value. */
+static uint32_t h_RegOpenCategory(CpuState *s) {
+    uint32_t reg = A0, name = A1, mode = A2, out = A3;
+    char path[128];
+    int cat, slot;
+    if (sreg_slot_of(reg, SREG_TAG_REG, s_sreg_reg_open) < 0) return SREG_ERR_BADF;
+    if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
+    /* guest_cstr reports unreadable and unterminated names alike; both are refused as bad spans. */
+    if (!guest_cstr(name, path, (int)sizeof(path))) return SREG_ERR_ILLEGAL_ADDR;
+    if (mode != 1u && mode != 2u) return SREG_ERR_INVAL;
+    cat = sreg_find_category(path);
+    if (cat < 0) {
+        fprintf(stderr, "sceRegOpenCategory: unknown category \"%s\" (virtual system registry fails closed)\n",
+                path);
+        return SREG_ERR_NOENT;
+    }
+    slot = sreg_free_slot(s_sreg_cat_open);
+    if (slot < 0) return SREG_ERR_NOMEM;
+    s_sreg_cat_open[slot] = 1;
+    s_sreg_cat_index[slot] = cat;
+    MEM_W32(out, SREG_TAG_CAT | (uint32_t)(slot + 1));
+    return 0;
+}
+
+/* sceRegGetKeyInfo(REGHANDLE hd, const char *name, REGHANDLE *hk, unsigned int *type, SceSize *size).
+ * The fifth argument (t0/r8 under MIPS EABI) is the size pointer, read through stack_arg. */
+static uint32_t h_RegGetKeyInfo(CpuState *s) {
+    uint32_t cat = A0, name = A1, hk_out = A2, type_out = A3, size_out = stack_arg(s, 0);
+    char key[64];
+    int slot, idx;
+    slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
+    if (slot < 0) return SREG_ERR_BADF;
+    if (!hk_out || !sr_guest_span_writable(hk_out, 4u) || !type_out ||
+        !sr_guest_span_writable(type_out, 4u) || !size_out || !sr_guest_span_writable(size_out, 4u))
+        return SREG_ERR_ILLEGAL_ADDR;
+    if (!guest_cstr(name, key, (int)sizeof(key))) return SREG_ERR_ILLEGAL_ADDR;
+    idx = sreg_find_key(s_sreg_cat_index[slot], key);
+    if (idx < 0) {
+        fprintf(stderr, "sceRegGetKeyInfo: unknown key \"%s\" in category \"%s\" (virtual system registry fails closed)\n",
+                key, s_sreg_categories[s_sreg_cat_index[slot]]);
+        return SREG_ERR_NOENT;
+    }
+    MEM_W32(hk_out, SREG_TAG_KEY | ((uint32_t)(slot + 1) << 8) | (uint32_t)(idx + 1));
+    MEM_W32(type_out, s_sreg_keys[idx].type);
+    MEM_W32(size_out, sreg_key_size(&s_sreg_keys[idx]));
+    return 0;
+}
+
+/* sceRegGetKeyValue(REGHANDLE hd, REGHANDLE hk, void *buf, SceSize size): copies the value. A
+ * buffer smaller than the value is refused; a string value includes its terminating NUL. */
+static uint32_t h_RegGetKeyValue(CpuState *s) {
+    uint32_t cat = A0, keyh = A1, buf = A2, size = A3;
+    uint32_t kcat, kidx, need;
+    const SregKey *k;
+    int slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
+    if (slot < 0 || (keyh & 0xffff0000u) != SREG_TAG_KEY) return SREG_ERR_BADF;
+    kcat = (keyh >> 8) & 0xffu;
+    kidx = keyh & 0xffu;
+    if (kcat != (uint32_t)(slot + 1) || kidx == 0u || kidx > sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]))
+        return SREG_ERR_BADF;
+    k = &s_sreg_keys[kidx - 1u];
+    /* A stale key handle can name this slot after it was reopened on another category. */
+    if (strcmp(k->category, s_sreg_categories[s_sreg_cat_index[slot]]) != 0) return SREG_ERR_BADF;
+    need = sreg_key_size(k);
+    if (size < need) return SREG_ERR_INVAL;
+    if (!buf || !sr_guest_span_writable(buf, need)) return SREG_ERR_ILLEGAL_ADDR;
+    if (k->type == SREG_TYPE_INT) {
+        MEM_W32(buf, systemparam_int_value((uint32_t)k->sysparam_id));
+    } else {
+        for (uint32_t i = 0; i < need; i++) MEM_W8(buf + i, (uint8_t)k->str[i]);
+    }
+    return 0;
+}
+
+static uint32_t h_RegCloseCategory(CpuState *s) {
+    int slot = sreg_slot_of(A0, SREG_TAG_CAT, s_sreg_cat_open);
+    if (slot < 0) return SREG_ERR_BADF;
+    s_sreg_cat_open[slot] = 0;
+    return 0;
+}
+
+static uint32_t h_RegCloseRegistry(CpuState *s) {
+    int slot = sreg_slot_of(A0, SREG_TAG_REG, s_sreg_reg_open);
+    if (slot < 0) return SREG_ERR_BADF;
+    s_sreg_reg_open[slot] = 0;
+    return 0;
+}
+
 /* sceImpose: the impose language and confirm-button mode. The game sets this once during boot and
  * the impose surface (plus any dialog that follows the system convention) must agree with it, so
  * this is retained state rather than the h_ok fake success it used to be.
@@ -19770,6 +19964,19 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
+/* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The registry reads the same
+ * integer table as the system-param getter, so both are registered here: the executable harness
+ * and the production registry then dispatch one mapping. */
+static void hle_register_sysreg_handlers(void) {
+    sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
+    sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_RegOpenRegistry);
+    sr_hle_register(0x1d8a762e, "sceRegOpenCategory", h_RegOpenCategory);
+    sr_hle_register(0xd4475aa8, "sceRegGetKeyInfo", h_RegGetKeyInfo);
+    sr_hle_register(0x28a8e98a, "sceRegGetKeyValue", h_RegGetKeyValue);
+    sr_hle_register(0x0cae832b, "sceRegCloseCategory", h_RegCloseCategory);
+    sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_RegCloseRegistry);
+}
+
 /* Public APIs reported as first-stop kernel imports in the library sweep.
  * Keep this one mapping in both the executable harness and production registry;
  * facilities with missing lifecycle state are registered as explicit refusals. */
@@ -19800,8 +20007,6 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
     sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
-    sr_hle_register_unsupported(0x0cae832b, "sceRegCloseCategory", 0x80010086u);
-    sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u);
 }
 
 /* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the
@@ -19884,6 +20089,7 @@ void sr_hle_init(void) {
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_sysreg_handlers();
     hle_register_unregistered_import_batch();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
@@ -19935,7 +20141,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
     /* Boot setup batch (return success / reference value). */
     sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
-    sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
     /* sceImpose language/confirm-button mode: retained state shared with the system-param table
      * above (the getter had no registration at all before this). */
     hle_register_impose_handlers();
@@ -20125,12 +20330,9 @@ void sr_hle_init(void) {
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */
 
-    /* The registered registry calls below fail closed until their semantic model
-     * is available; the real sceRegExit NID (0x9b25edf1) remains unregistered. */
-    sr_hle_register_unsupported(0x28a8e98a, "sceRegGetKeyValue", 0x80010086u); /* function not supported */
-    sr_hle_register_unsupported(0x92e41280, "sceRegOpenRegistry", 0x80010086u); /* function not supported */
-    sr_hle_register_unsupported(0xd4475aa8, "sceRegGetKeyInfo", 0x80010086u); /* function not supported */
-    sr_hle_register_unsupported(0xfa8a5739, "sceRegCloseRegistry", 0x80010086u); /* function not supported */
+    /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers().
+     * The real sceRegExit NID (0x9b25edf1) remains unregistered. */
+    hle_register_sysreg_handlers();
     /* sceOpenPSID: returns 16-byte console unique ID; zero-fill is fine for boot. */
     sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);
 #endif
