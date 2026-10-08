@@ -880,6 +880,7 @@ void     sched_thread_sleep(void);                  /* sceKernelSleepThread (wak
 void     sched_thread_sleep_cb(void);               /* sceKernelSleepThreadCB (wakeup-count) */
 uint32_t sched_thread_wakeup(uint32_t uid);         /* sceKernelWakeupThread (banks if not asleep) */
 uint32_t sched_set_priority(uint32_t uid, int priority);   /* sceKernelChangeThreadPriority */
+uint32_t sched_change_current_thread_attr(uint32_t clear_mask, uint32_t set_mask); /* sceKernelChangeCurrentThreadAttr */
 uint32_t sched_terminate_thread(uint32_t uid);      /* sceKernelTerminateThread */
 uint32_t sched_delete_thread(uint32_t uid);          /* sceKernelDeleteThread object removal */
 int      sched_thread_cancel_wakeup(uint32_t uid);  /* sceKernelCancelWakeupThread; uid 0=current */
