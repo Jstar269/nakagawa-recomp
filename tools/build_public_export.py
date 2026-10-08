@@ -119,12 +119,13 @@ def check_unresolved_legal_blockers(public_safe_profile: bool = False) -> GateRe
     # Durable textual gates, deliberately not issue numbers. The administrative
     # state of a tracker item is not legal clearance, and issue ids do not survive
     # a repository replacement -- the public repository's own numbering already
-    # differs from the archive's. Each gate closes only on qualified review of the
-    # component it names.
+    # differs from the archive's. Each gate closes on provenance evidence for the
+    # component it names: project-authored replacement code or confirmed license
+    # terms. Maintainer decision 2026-10-07: no legal-review gate; PGD/amctrl is
+    # engineering work published when it works, so it is not a blocker here.
     open_blockers = [
-        "PGF/JPCSP/intraFont implementation provenance (qualified review required)",
-        "Replacement PGF font redistribution terms and notices (qualified review required)",
-        "PGD/amctrl distribution and anti-circumvention treatment (qualified review required)",
+        "PGF/JPCSP/intraFont implementation provenance (provenance evidence required)",
+        "Replacement PGF font redistribution terms and notices (provenance evidence required)",
     ]
 
     if public_safe_profile:

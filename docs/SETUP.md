@@ -218,9 +218,9 @@ are retained as historical evidence in
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files; this repository ships no keys or key material. The [built-in decryption boundary](#built-in-decryption-boundary-issue-295) below can unwrap a lawfully obtained disc's executable and required modules when you supply your own local key file. For what the player needs
+ELF/PRX files; this repository ships no keys or key material. The [built-in decryption boundary](#built-in-decryption-boundary-issue-295) below can unwrap the executable and required modules of your own copy of the game when you supply your own local key file. For what the player needs
 and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). When you already have plain modules from your own
-lawfully obtained copy, place them at the paths the local manifest expects, for example:
+copy of the game, place them at the paths the local manifest expects, for example:
 
 ```text
 place_game_here/EXTRACTED/decrypted/libfont.prx
@@ -249,7 +249,7 @@ Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be name
 
 ### Built-in decryption boundary (issue #295)
 
-The standalone player and `nk_cli` contain a built-in decryption boundary for a lawfully supplied disc image. It understands the supported container forms — `~PSP` executables and PRXs (including `~SCE` outer wrappers and PBP `DATA.PSP` entries) plus the gzip-compressed payloads they can carry — and unwraps them into plain MIPS ELF32 images for the analyzer. The player processes its bounded set of eligible module candidates from four `PSP_GAME` directories (at most 32); CLI workflows process the required `guest-prx` modules declared by the title manifest. The algorithms and container formats live in this repository; the keys do not.
+The standalone player and `nk_cli` contain a built-in decryption boundary for a disc image you supply. It understands the supported container forms — `~PSP` executables and PRXs (including `~SCE` outer wrappers and PBP `DATA.PSP` entries) plus the gzip-compressed payloads they can carry — and unwraps them into plain MIPS ELF32 images for the analyzer. The player processes its bounded set of eligible module candidates from four `PSP_GAME` directories (at most 32); CLI workflows process the required `guest-prx` modules declared by the title manifest. The decryption engine in `src/core/nk_psp_*` is ported from one GPL upstream, John-K/pspdecrypt (its libkirk code and its PRX decrypter, which itself derives from PPSSPP's PrxDecrypter), with every key removed. Each file's header names its upstream path, commit and notices, and [NOTICE.md](../NOTICE.md) lists the files and licences. The project ships no keys: key material comes only from a key file you supply.
 
 **The boundary never contains key material.** You supply a local-only key file at:
 
@@ -282,14 +282,14 @@ Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first
 
 ### System fonts
 
-Authentic in-game typography requires PSP system fonts in Sony's PlayStation Glyph Format (`.pgf`), dumped from the user's own physical PSP console firmware (`flash0:/font/`). Proprietary firmware fonts cannot legally be bundled or distributed by the project.
+Authentic in-game typography requires PSP system fonts in Sony's PlayStation Glyph Format (`.pgf`), dumped from the user's own physical PSP console firmware (`flash0:/font/`). The project does not bundle or distribute proprietary firmware fonts.
 
 > [!NOTE]
 > Do not confuse system fonts with `libfont.prx`. `libfont.prx` (located under `place_game_here/EXTRACTED/decrypted/libfont.prx` or `<user data>/titles/<DISC_ID>/decrypted/libfont.prx`) is a game-supplied guest middleware PRX executable module implementing the `sceFont` API; it does not contain the actual font glyph outlines. Typography requires the separate `.pgf` font files.
 
 #### What the user supplies
 
-From your own lawfully owned PSP console or firmware dump, supply genuine PGF font files:
+From your own PSP console or firmware dump, supply genuine PGF font files:
 
 - `jpn0.pgf`: Japanese and baseline font required by the runtime font manager.
 - Optional Latin and regional fonts: `kr0.pgf` and `ltn0.pgf` through `ltn15.pgf`.
