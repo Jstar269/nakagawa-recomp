@@ -910,8 +910,11 @@ class TestProductionSmokePackage(unittest.TestCase):
             self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
 
         env = os.environ.copy()
+        selected_executable = self.root / "EBOOT.BIN"
+        shutil.copyfile(self.fixture_dir / "guest.prx", selected_executable)
+        command = self.package_command(executable=selected_executable)
         first = subprocess.run(
-            self.package_command(), cwd=ROOT, env=env, capture_output=True, text=True
+            command, cwd=ROOT, env=env, capture_output=True, text=True
         )
         self.skip_if_toolchain_unusable(first)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
@@ -954,7 +957,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         )
 
         second = subprocess.run(
-            self.package_command(), cwd=ROOT, env=env, capture_output=True, text=True
+            command, cwd=ROOT, env=env, capture_output=True, text=True
         )
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         self.assertEqual(package_path.read_bytes(), package_bytes)
