@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import title_runtime_config
+import title_manifest
 
 FIXTURE = ROOT / "assets" / "titles" / "synthetic.json"
 
@@ -46,7 +47,6 @@ SYNTH_RUNTIME_SYNC = {
         {"mode": 2, "enter": 0x08904020, "leave": 0x08904024},
     ],
 }
-SYNTH_LIBFONT = 0x08905000
 SYNTH_FRAME = 0x08905004
 
 
@@ -56,7 +56,6 @@ def synthetic_manifest() -> dict:
         {
             "display_bringup": dict(SYNTH_DISPLAY),
             "runtime_sync": copy.deepcopy(SYNTH_RUNTIME_SYNC),
-            "libfont_ready_flag_addr": SYNTH_LIBFONT,
             "frame_ready_latch_addr": SYNTH_FRAME,
             "expected_data_file_count": 12345,
         }
@@ -132,6 +131,15 @@ def run_libfont_selftest(make: str, tmp_path: Path, manifest_path: Path,
 
 
 class HleTitleConfigBehaviorTests(unittest.TestCase):
+    def test_legacy_libfont_ready_binding_has_a_named_migration_error(self):
+        manifest = synthetic_manifest()
+        manifest["runtime_bindings"]["libfont_ready_flag_addr"] = 0x08905000
+        with self.assertRaisesRegex(
+            ValueError,
+            "LIBFONT_READY_FLAG_RETIRED: host readiness injection is not supported yet",
+        ):
+            title_manifest.validate_manifest(manifest)
+
     def test_libfont_registry_import_is_a_named_issue_299_boundary(self):
         compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(encoding="utf-8")
         heading = "### Issue #299: libfont registry import boundary"
@@ -167,8 +175,8 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("#define sr_title_config_diagnostics_profile 0", header)
         for value in SYNTH_DISPLAY.values():
             self.assertIn(f"{value:08x}", header)
-        for value in (SYNTH_LIBFONT, SYNTH_FRAME):
-            self.assertIn(f"{value:08x}", header)
+        self.assertIn(f"{SYNTH_FRAME:08x}", header)
+        self.assertNotIn("libfont_ready_flag_addr", header)
         for address in (0x00000BCC, 0x0029A8BC, 0x0001DC00, 0x00331B80):
             self.assertNotIn(f"{address:08x}", header)
 
@@ -228,8 +236,22 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("hle_title_production_selftest:", output)
         self.assertIn("0 failures", output)
         self.assertIn("replaying title display-driver init", output)
-        self.assertIn("LIBFONT_STARTUP_UNAVAILABLE", output)
-        self.assertIn("ready-flag fallback (#299)", output)
+        boundary_lines = [
+            line for line in output.splitlines()
+            if "LIBFONT_STARTUP_UNAVAILABLE:" in line
+        ]
+        self.assertTrue(boundary_lines, output)
+        self.assertTrue(
+            all("guest libfont startup is not supported yet on this route" in line.lower()
+                for line in boundary_lines),
+            output,
+        )
+        self.assertTrue(
+            any("refusing to synthesize readiness" in line.lower()
+                for line in boundary_lines),
+            output,
+        )
+        self.assertTrue(all("#" not in line for line in boundary_lines), output)
 
     def test_libfont_guest_startup_routes_exports_without_ready_binding(self):
         make = shutil.which("mingw32-make")
@@ -253,7 +275,11 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("prx image: libfont -> [0x09f00000", output.lower())
         self.assertIn("PRX link:", output)
         self.assertIn("0 failures", output)
-        self.assertIn("ready-flag fallback is unconfigured (#299)", output)
+        self.assertIn(
+            "translated guest libfont startup is not supported yet on this route; "
+            "refusing to synthesize readiness",
+            output.lower(),
+        )
         mutant_output = mutant.stdout + mutant.stderr
         self.assertNotEqual(mutant.returncode, 0, mutant_output)
         self.assertIn(

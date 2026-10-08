@@ -1634,12 +1634,20 @@ class RequiredRuntimeBindingsTests(unittest.TestCase):
             "does not configure: display_bringup, frame_ready_latch_addr")
 
     def test_absent_scalar_binding_rejected_when_required(self) -> None:
-        for field in ("frame_ready_latch_addr", "libfont_ready_flag_addr", "fallback_entry"):
+        for field in ("frame_ready_latch_addr", "fallback_entry"):
             with self.subTest(field=field):
                 self.assert_rejects(
                     self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
                                   required=[field]),
                     f"does not configure: {field}")
+
+    def test_retired_libfont_ready_binding_has_named_error(self) -> None:
+        manifest = self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100})
+        manifest["runtime_bindings"]["libfont_ready_flag_addr"] = 0x08900200
+        self.assert_rejects(
+            manifest,
+            "LIBFONT_READY_FLAG_RETIRED: host readiness injection is not supported yet",
+        )
 
     def test_partial_required_family_still_rejected(self) -> None:
         """A declared family cannot be satisfied by a half-configured one."""

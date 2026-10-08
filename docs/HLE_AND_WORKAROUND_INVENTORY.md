@@ -347,12 +347,12 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 ### 3.1 Title-Specific Memory Writes and Bypasses (Tier 4)
 
-#### 1. `libfont.prx` Startup Fallback & Compat Flag
+#### 1. `libfont.prx` Startup Refusal Boundary
 
-- **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and `src/rt/title_config.c:74` (`SR_TITLE_CONFIG_LIBFONT_READY_FLAG_ADDR`; accessor at lines 190–194).
-- **Mechanism:** `sceKernelLoadModule` does not write the ready word: readiness is bound to module startup, not module load. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` only, `0` never -- the environmental kill switch). When startup is unavailable (untranslated entry, no recorded entry, or the kill switch) it reports `LIBFONT_STARTUP_UNAVAILABLE` once per named boundary and writes the manifest-configured fallback word when one exists. A repeated start of a live module returns `SCE_ERROR_MODULE_ALREADY_STARTED` instead of re-entering `module_start`. Generic builds have no fallback binding.
-- **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Issue #299 replaces that unconditional bypass with guest startup plus a named fallback; a title evaluation showed the title does call `sceKernelStartModule` for `libfont.prx` (5/5 runs entered translated `module_start`), which is why the load-time arm was removed; completion and retirement of the fallback remain in the works (#299).
-- **Lower-Level Solution:** Keep guest `module_start` and its exports authoritative whenever translated. Retire `libfont_ready_flag_addr` after supported module paths no longer need the unavailable-startup fallback.
+- **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and the runtime-binding validators.
+- **Mechanism:** `sceKernelLoadModule` leaves readiness untouched. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` only, `0` never). If startup is unavailable (untranslated entry, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and returns `SCE_KERNEL_ERROR_NOTIMP`. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
+- **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Translated startup and export routing now have a source-owned production-path fixture. Real-title startup readiness remains unverified when no locally supplied decrypted executable and PRXs are available.
+- **Lower-Level Solution:** Provide translated guest startup and its kernel, thread, callback, heap and file dependencies; remove the retired field from existing manifests.
 
 #### 2. `psmf.prx` and `libpsmfplayer.prx` Start Module Skip
 
@@ -476,7 +476,7 @@ timeline
     title Workaround Elimination & LLE Convergence
     Phase 1 : Zero-Initialize BSS & Segment Extents : Audit tools/codegen.py for $s0 register preservation : Eliminate INIT_WALKER_GUARD : Revalidate historical walker bypass rationale
     Phase 2 : Implement standalone ATRAC3+ decoder : Eliminate high-risk fake_success audio NIDs : Implement sceReg virtual system registry
-    Phase 3 : Complete kernel semaphore & thread synchronization : Verify translated libfont.prx startup : Retire the named unavailable-startup fallback for #299
+    Phase 3 : Complete kernel semaphore & thread synchronization : Remove libfont readiness injection; validate real guest startup for #299
     Phase 4 : Execute scePsmf_library.prx & psmf.prx module_start : Bridge low-level sceMpeg to host hardware decoders : Eliminate StartModule bypasses
     Phase 5 : Eliminate remaining fake_success stubs : Retire title-specific manifest overrides : Reach Zero-Workaround State
 ```

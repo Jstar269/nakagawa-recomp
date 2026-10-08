@@ -712,32 +712,28 @@ RETIRED_HLE_DIAGNOSTIC_GROUPS = [
 ]
 HLE_GUEST_ADDRESS_GROUPS = []
 
-# Migrated to typed title configuration. These four groups were
-# EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before 2026-08-27 and are now
-# PROFILE_OWNED_CONFIGURATION via runtime_bindings (display_bringup, runtime_sync,
-# libfont_ready_flag_addr, frame_ready_latch_addr). Generic builds have no effect;
-# a validated title manifest enables them. They remain inventoried here so the
-# 46->30 census delta is auditable, but they are no longer part of the live
-# hle.c coupling census.
+# These four groups were EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before
+# 2026-08-27. Three remain PROFILE_OWNED_CONFIGURATION via runtime_bindings
+# (display_bringup, runtime_sync, frame_ready_latch_addr); libfont readiness
+# injection is retired and remains here as historical evidence. The 46->30 census
+# delta is auditable, but none is part of the live hle.c coupling census.
 HLE_TITLE_CONFIGURED_COMPAT = [
     dict(name="libfont_ready_flag", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:h_StartModule -> title_config.libfont_ready_flag_addr",
+         source="src/rt/hle.c:h_StartModule -> LIBFONT_STARTUP_UNAVAILABLE",
          addresses=[0x002d132c],
-         reason="when libfont.prx startup is unavailable (an untranslated entry, no "
-                "recorded entry, or SR_REAL_MODULE_START=0), sceKernelStartModule emits "
-                "LIBFONT_STARTUP_UNAVAILABLE once per named boundary and may write 1 to "
-                "the title-qualified word; translated guest startup owns readiness",
-         generic_fallback="translated libfont startup runs without host readiness writes; "
-                          "generic builds have no configured ready-flag fallback",
+         reason="when translated libfont startup is unavailable, sceKernelStartModule "
+                "emits LIBFONT_STARTUP_UNAVAILABLE and returns SCE_KERNEL_ERROR_NOTIMP; "
+                "the retired host readiness write is never synthesized",
+         generic_fallback="translated guest startup owns readiness; unavailable startup "
+                          "fails closed without writing a guest readiness word",
          evidence_tier="SOURCE_SHAPE",
-         evidence="title_config gated fallback; generic build has no MEM_W32(0x002d132c)",
-         accidental_inheritance="no -- only the configured title can write its fallback word",
+         evidence="synthetic production-path fixture verifies guest readiness and unavailable-start refusal",
+         accidental_inheritance="no -- no host path writes a libfont readiness word",
          test="tools/test_hle_title_config_behavior.py:test_libfont_guest_startup_routes_exports_without_ready_binding",
          owner_issue="#299",
-         retirement="after #299 proves supported libfont startup and retires the "
-                    "unavailable-startup fallback, remove this binding and manifest field"),
+         retirement="retired; legacy manifest fields fail with LIBFONT_READY_FLAG_RETIRED"),
     dict(name="frame_ready_latch_assist", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",

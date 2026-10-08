@@ -2777,8 +2777,8 @@ static int real_module_start_enabled(void) {
  *   "1"    - translated/real module_start may run for any module.
  *   unset  - translated libfont module_start runs, so the guest owns its own
  *             readiness; every other module keeps the host bypass in h_StartModule.
- *   "0"    - no module_start runs for any module and libfont takes the named
- *             readiness fallback, which reports the boundary it hit.
+ *   "0"    - no module_start runs for any module; libfont reports a named refusal
+ *             instead of synthesizing guest readiness.
  * Any other value is refused rather than guessed, and the refusal is named once. */
 typedef enum {
     MODULE_START_ALLOW_ALL,
@@ -8897,6 +8897,7 @@ static uint32_t h_StartModule(CpuState *s) {
     default:
         return SCE_ERROR_MODULE_BAD_ID;
     }
+    LoadedModuleState previous_state = mod->state;
     mod->start_entry_ran = 0;
 
     int is_libfont = module_path_is(path, "libfont.prx");
@@ -8904,8 +8905,8 @@ static uint32_t h_StartModule(CpuState *s) {
     int allow_entry = policy == MODULE_START_ALLOW_ALL ||
                       (policy == MODULE_START_LIBFONT_ONLY && is_libfont);
     /* A libfont module under the kill switch does not return here: startup is
-     * unavailable, so it falls through to the named readiness fallback below. */
-    int fallback_only = policy == MODULE_START_NONE && is_libfont;
+     * unavailable, so it reaches the fail-closed startup boundary below. */
+    int refuse_unavailable_libfont = policy == MODULE_START_NONE && is_libfont;
 
     /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
      * h_UtilityLoadModule): psmf.prx and libpsmfplayer.prx are fully host-side HLE'd, and their
@@ -8915,7 +8916,7 @@ static uint32_t h_StartModule(CpuState *s) {
      * sceKernelStartModule instead of sceUtilityLoadModule), so it needs the identical skip.
      * populate_known_module(path) was already called in h_LoadModule when the module was
      * recorded, so it is not repeated here. */
-    if (!allow_entry && !fallback_only) {
+    if (!allow_entry && !refuse_unavailable_libfont) {
         if (policy == MODULE_START_NONE) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> "
                             "SR_REAL_MODULE_START=0, module_start not executed\n",
@@ -8950,34 +8951,24 @@ static uint32_t h_StartModule(CpuState *s) {
     }
 
     /* Guest startup is unavailable: the entry is not translated, the image recorded none,
-     * or the operator disabled module_start. A configured ready word is a named fallback
-     * only for libfont; it never substitutes for translated startup. */
+     * or the operator disabled module_start. Libfont readiness belongs to guest code; do
+     * not synthesize it when translated startup cannot run. */
     if (is_libfont) {
-        uint32_t flag = 0;
         const char *reason = !allow_entry ? "SR_REAL_MODULE_START=0 disabled guest startup"
                          : (mod->module_start == 0) ? "no module_start entry recorded"
                                                     : "entry untranslated";
         unsigned reason_index = !allow_entry ? 0u : (mod->module_start == 0 ? 1u : 2u);
-        int configured = sr_title_config_libfont_ready_flag_addr(&flag);
-        int writable = configured && sr_guest_span_writable(flag, 4u);
-        if (writable) MEM_W32(flag, 1u);
-        /* The readiness write is not latched; the diagnostic is latched per named
-         * boundary, so a title that retries an unavailable libfont startup does not
-         * repeat the line while a different reason still gets its own name. */
+        /* The diagnostic is latched per named boundary while a failed start remains
+         * retryable in its previous module state. */
         static int s_logged_libfont_unavailable[3];
         if (!s_logged_libfont_unavailable[reason_index]) {
             s_logged_libfont_unavailable[reason_index] = 1;
-            if (writable) {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; using title-configured "
-                                "ready-flag fallback (#299)\n", reason);
-            } else if (configured) {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "target is not writable (#299)\n", reason);
-            } else {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "is unconfigured (#299)\n", reason);
-            }
+            fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; translated guest libfont "
+                            "startup is not supported yet on this route; refusing to "
+                            "synthesize readiness\n", reason);
         }
+        mod->state = previous_state;
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
     }
 
     static int s_logged_untranslated = 0;
