@@ -121,7 +121,7 @@ class BuildSystemParityTests(unittest.TestCase):
         self.assertEqual(classification["target_compiler"], "MSVC")
 
     def test_verification_targets_present(self) -> None:
-        """Verify make test and make check exist in Makefile (Issue #188 O-05)."""
+        """Verify make test and make check exist in Makefile (O-05)."""
         self.assertTrue(
             bool(re.search(r"^test:", self.makefile_text, re.MULTILINE)),
             "Missing test target in Makefile",
@@ -132,7 +132,7 @@ class BuildSystemParityTests(unittest.TestCase):
         )
 
     def test_public_target_catalog_covers_phony_targets(self) -> None:
-        """`make help` must expose every public target exactly once (Issue #188 O-16)."""
+        """`make help` must expose every public target exactly once (O-16)."""
         catalog = re.search(
             r"(?ms)^PUBLIC_TARGETS := \\\n(.*?)(?=^INTERNAL_TARGETS :=)",
             self.makefile_text,

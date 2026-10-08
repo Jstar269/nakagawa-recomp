@@ -82,7 +82,7 @@ class TestPublicCandidate(unittest.TestCase):
             self.assertEqual(findings, [])
 
     def test_manifest_lands_beside_the_tree_with_lf_endings(self):
-        """#667 A2: the export manifest must not live inside the audited tree.
+        """Workspace hygiene (#368): the export manifest must not live inside the audited tree.
 
         Before the fix, ``materialize()`` wrote ``PUBLIC_CANDIDATE.json`` into the
         destination, so every fresh export failed its own audit

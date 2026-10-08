@@ -213,7 +213,7 @@ class StrictModeHardeningTests(unittest.TestCase):
 This repository does not grant rights to the game.
 The project ships no decryption keys of any kind.
 This project is independent and is not endorsed.
-Users must supply their own legally obtained inputs.
+Users must supply any external inputs locally.
 This remains subject to legal review.
 """
             for name, content in {

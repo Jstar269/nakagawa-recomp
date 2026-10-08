@@ -32,7 +32,7 @@ The target end-to-end execution pipeline from raw user disc to running game is:
 
 ```mermaid
 flowchart TD
-    ISO[Legally Obtained PSP Game ISO] --> UMD[ISO9660 / UMD Disc Parser]
+    ISO[PSP Game ISO you own] --> UMD[ISO9660 / UMD Disc Parser]
     UMD --> DISC_DISC[Authentic Executable & Module Discovery]
     DISC_DISC --> CRYPTO[KIRK Hardware Cryptography Engine]
     CRYPTO --> DECRYPT[Decrypted Flat ELF & PRX Modules]

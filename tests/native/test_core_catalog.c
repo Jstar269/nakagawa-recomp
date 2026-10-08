@@ -1,20 +1,43 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/* Feature-test macro first: the per-run cache root uses POSIX setenv, mkdir,
+ * open, fdopendir, and getpid on non-Windows hosts. */
+#if !defined(_WIN32) && !defined(_WIN64)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
+#include <errno.h>
+#include <signal.h>
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#include <wchar.h>
+#else
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include "nk_types.h"
 #include "nk_iso.h"
 #include "nk_library.h"
 #include "nk_launch.h"
 #include "generated/nk_title_catalog.h"
-#if defined(_WIN32) || defined(_WIN64)
-#include <windows.h>
-#endif
+#include "native_test_isolation.h"
 
 int main(void) {
+    native_test_create_root("core-catalog");
+    native_test_isolate_user_data_roots();
+    native_test_assert_cache_root_isolated();
+    native_test_assert_config_root_isolated();
+
     /* Catalog SIZE is deliberately not asserted here. It is a literal that every
        new public title has to come back and edit, and it never caught anything:
        tools/title_catalog_codegen.py --verify and the codegen drift test already
@@ -195,5 +218,6 @@ int main(void) {
     nk_title_catalog_snapshot_release(&t_p5);
     nk_title_catalog_snapshot_release(&t_synth2);
     nk_title_catalog_snapshot_release(&t_disp);
+    native_test_assert_real_config_untouched();
     return 0;
 }

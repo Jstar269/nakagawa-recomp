@@ -62,6 +62,26 @@ A `Signed-off-by:` trailer is a contributor rights certification, not decoration
 - Keep AI-assistance disclosure separate from DCO: disclosure records how work was produced; DCO
   records the contributor's rights/authority to submit it.
 
+## Disclosing AI help in commits
+
+Every commit that an AI tool helped produce says so in its last lines, one line per tool:
+
+```text
+Assisted-by: Claude Code (Claude Opus 5.5)
+Assisted-by: Codex (GPT-6 Luna)
+```
+
+- Name the tool, and the model in parentheses when it is known. The tools in use are
+  Claude Code, Codex, Antigravity, OpenCode, Kilo, Cline, Codebuff, and GitHub Copilot; a
+  new tool is added to this list before it is used.
+- Use the same form for every tool. A uniform, honest record is the point: it lets anyone
+  see which changes had AI help without inferring it.
+- `Assisted-by:` is a disclosure, not authorship. Do not add `Co-Authored-By:` for an AI
+  tool: an AI is not a contributor of record and cannot certify anything.
+- `Assisted-by:` never replaces DCO. A human contributor who needs a sign-off still adds
+  their own `Signed-off-by:` after reviewing the final diff; no tool adds it for them.
+- A commit written entirely by a person carries no `Assisted-by:` line.
+
 Repository-specific contribution and disclosure rules remain authoritative:
 [AGENTS.md](../AGENTS.md), [CONTRIBUTING.md](../CONTRIBUTING.md), [NOTICE.md](../NOTICE.md), and
 [SECURITY.md](../SECURITY.md).

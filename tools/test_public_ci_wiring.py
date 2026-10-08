@@ -253,8 +253,8 @@ class PublicCiWiringTests(unittest.TestCase):
             "mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions",
             windows_text,
         )
-        # The fuzz part of the matrix must not run the UI regressions a second time.
-        self.assertIn("if: matrix.part == 'main'", windows_text)
+        # Exactly one Windows matrix part runs the UI regressions.
+        self.assertIn("if: matrix.part == 'smoke'", windows_text)
 
         # The harness, not the workflow, makes the gate headless: it forces the
         # drivers for every player it spawns.
@@ -266,6 +266,97 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("player-ui-regressions: $(PLAYER_UI_TEST_EXE)", makefile)
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("player-ui-regressions", docs)
+
+
+# Every gate the serial windows_runtime job ran before it was split into parallel
+# parts (#694), with the command that makes it that gate. The split may move a gate
+# between parts; it may never drop one, run one twice, or change its command.
+_WINDOWS_SERIAL_GATES = {
+    "Build and run full production pipeline smoke": "VULKAN_SDK=/ucrt64 production-smoke",
+    "Build and run AOT-gap dispatch-seam smoke": "VULKAN_SDK=/ucrt64 production-smoke-gap",
+    "Run native core test suite on Windows": "mingw32-make --no-print-directory CC=gcc native-core-tests",
+    "Build and link the native player": "VULKAN_SDK=/ucrt64 player-ui-tests",
+    "Run native player UI regressions headlessly on Windows": "VULKAN_SDK=/ucrt64 player-ui-regressions",
+    "Stage and run production smoke outside its build directory": "VULKAN_SDK=/ucrt64 production-smoke-staged",
+    "Build and run the full platform ladder": "VULKAN_SDK=/ucrt64 platform-ladder",
+    "Build and run profile-zero production routes": "VULKAN_SDK=/ucrt64 profile-zero-e2e",
+    "Build and run display presentation smoke": "VULKAN_SDK=/ucrt64 display-smoke-run",
+    "Build and run AOT/interpreter cosimulation gate": "VULKAN_SDK=/ucrt64 cosim-selftest",
+    "Prove the cosimulation comparator is load-bearing": "VULKAN_SDK=/ucrt64 cosim-mutants",
+    "Build and run scheduler selftest": "CC=gcc VULKAN_SDK=/ucrt64 sched-selftest",
+    "Build and run dispatch isolation selftest matrix": "CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest",
+    "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
+    "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
+    "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
+    "Build and run synthetic VFPU fuzzer": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
+}
+# Steps every part repeats: the toolchain setup and the runtime-object compile gate.
+_WINDOWS_EVERY_PART = (
+    "Check out repository",
+    "Set up MSYS2 UCRT64",
+    "Pin the Windows Python toolchain (MSYS2 UCRT64 CPython)",
+    "Verify default and override compiler resolution",
+    "Compile Windows runtime objects through the default compiler path",
+)
+
+
+class WindowsRuntimePartitionTests(unittest.TestCase):
+    """#694: splitting windows_runtime into parallel parts must not weaken it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.block = _ci_job_blocks()["windows_runtime"]
+        text = "\n".join(cls.block)
+        matrix = re.search(r"(?m)^\s+part:\s*\[([^\]]*)\]\s*$", text)
+        if matrix is None:
+            raise AssertionError("windows_runtime must declare its matrix parts explicitly")
+        cls.parts = [part.strip() for part in matrix.group(1).split(",")]
+        step_indent = "      - name: "
+        cls.steps = {
+            line[len(step_indent):]: _ci_step(cls.block, line[len(step_indent):])
+            for line in cls.block
+            if line.startswith(step_indent)
+        }
+
+    def part_of(self, name: str) -> str | None:
+        conditions = [line.strip() for line in self.steps[name] if line.strip().startswith("if:")]
+        if not conditions:
+            return None
+        self.assertEqual(len(conditions), 1, name)
+        match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
+        self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
+        return match.group(1)
+
+    def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
+        self.assertEqual(len(self.parts), len(set(self.parts)))
+        for name, command in _WINDOWS_SERIAL_GATES.items():
+            with self.subTest(step=name):
+                self.assertIn(name, self.steps, "a serial Windows gate was dropped")
+                self.assertIn(command, " ".join(line.strip() for line in self.steps[name]))
+                self.assertIn(self.part_of(name), self.parts)
+
+    def test_shared_steps_run_in_every_part_and_nothing_else_is_unconditional(self) -> None:
+        for name in self.steps:
+            with self.subTest(step=name):
+                if name in _WINDOWS_EVERY_PART:
+                    self.assertIsNone(self.part_of(name), f"{name} must run in every part")
+                else:
+                    self.assertIn(name, _WINDOWS_SERIAL_GATES, f"unclassified Windows step {name!r}")
+        compile_step = " ".join(self.steps["Compile Windows runtime objects through the default compiler path"])
+        self.assertIn("runtime-objects", compile_step)
+
+    def test_every_part_runs_a_gate_and_dependent_steps_share_a_part(self) -> None:
+        used = {self.part_of(name) for name in _WINDOWS_SERIAL_GATES}
+        self.assertEqual(used, set(self.parts), "a declared part runs no gate, or a gate names no part")
+        # The staged smoke re-runs generate/verify/run over the production smoke's build.
+        self.assertEqual(
+            self.part_of("Stage and run production smoke outside its build directory"),
+            self.part_of("Build and run full production pipeline smoke"),
+        )
+        self.assertLess(
+            _ci_step_index(self.block, "Build and run full production pipeline smoke"),
+            _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
+        )
 
 
 if __name__ == "__main__":

@@ -143,6 +143,20 @@ else ifeq ($(CASE),dma-cells)
 CASE_ID = 58
 else ifeq ($(CASE),delay-zero)
 CASE_ID = 59
+else ifeq ($(CASE),kernel-alarm)
+CASE_ID = 61
+else ifeq ($(CASE),thread-scheduler)
+CASE_ID = 62
+else ifeq ($(CASE),wait-outcomes)
+CASE_ID = 63
+else ifeq ($(CASE),ge-break-continue)
+CASE_ID = 64
+else ifeq ($(CASE),refer-status-size)
+CASE_ID = 65
+else ifeq ($(CASE),registry-readonly)
+CASE_ID = 66
+else ifeq ($(CASE),kernel-misc)
+CASE_ID = 67
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -298,6 +312,16 @@ endif
 # kernel interrupt manager library for independent ISR execution proof.
 ifeq ($(CASE),mutex-interrupt-context)
 LIBS += -lpspinterruptmanager_kernel_660
+endif
+ifeq ($(CASE),registry-readonly)
+LIBS += -lpspreg
+endif
+ifeq ($(CASE),kernel-misc)
+OBJS += $(BUILD_DIR)/threadman_user_imports.o
+LIBS += -lpspctrl
+endif
+ifeq ($(CASE),wait-outcomes)
+OBJS += $(BUILD_DIR)/threadman_user_imports.o
 endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)

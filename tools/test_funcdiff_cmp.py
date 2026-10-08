@@ -4,7 +4,7 @@
 # Modified by Nakagawa Recomp contributors, 2026-09-21.
 # See NOTICE.md for upstream lineage and modification provenance.
 #
-# Synthetic fail-closed tests for tools/funcdiff_cmp.py (issue #381).
+# Synthetic fail-closed tests for tools/funcdiff_cmp.py (issue #354).
 # No retail assets, traces, or golden hashes: every fixture is synthesized here.
 # The suite was first run against the pre-fix tool to record the failing-before
 # behavior (empty recomp -> MATCH 0 steps, truncated oracle -> MATCH on the
@@ -130,7 +130,7 @@ class TestFuncdiffCmpFailClosed(unittest.TestCase):
         self.assertIn("oracle step 4", out)
 
     # --- contiguous-step invariant: the oracle must supply the exact
-    # requested slice entry..entry+need-1 (issue #381 review follow-up) ---
+    # requested slice entry..entry+need-1 (issue #354 follow-up) ---
 
     def test_exact_contiguous_slice_passes(self):
         oracle = self.path(self.steps(3))

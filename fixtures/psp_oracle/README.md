@@ -30,10 +30,10 @@ decoder maps the ordinal to a generation and retail family; it never applies
 the PSPSDK enum table to the kernel-only `sceKernelGetModel()` original/slim
 convention.
 
-Bounded follow-up cases for issues #69, #311, #303, and #340 (related to #290) are
-`CASE=ge-nan`, `CASE=audio-query`, `CASE=dma-cells`, and
-`CASE=delay-zero`. Their records and completion contracts are described below;
-all remain `NOT_RUN` until the physical campaign captures them.
+Bounded follow-up cases for issues #69, #311, and #303 are `CASE=ge-nan`,
+`CASE=audio-query`, and `CASE=dma-cells`; these remain `NOT_RUN`. The
+`CASE=delay-zero` records were measured on the accepted 2026-10-01 PSPLink
+campaign and are indexed in `docs/HARDWARE_ORACLE.md`.
 
 ## Transport write-readback (`CASE=transport-write`)
 
@@ -448,6 +448,53 @@ destination spans inside the probe-owned scratch block or module-owned array;
 it measures bounded overrun classification and never treats `K` as a physical
 invalid boundary. An unowned destination tail remains `SKIP`; invalid-span
 validation and K3/K4 remain `NOT_RUN` under #303.
+
+## Pending PSP-3000 campaign
+
+The seven cases below are new synthetic probes. Their hardware expectations
+remain `NOT_RUN`; a complete parser only proves that the record stream is
+complete and well formed. It does not decide which PSP return values or
+ordering semantics are correct.
+
+| Case | Test id | Measurements |
+| --- | --- | --- |
+| `kernel-alarm` | `PSP-ALARM-001` | `SetAlarm` with a null handler and zero clock, alarm-table exhaustion count and error, cancellation after firing/cancel/unknown UID, handler-return re-arm timing, and a bounded semaphore wait from an alarm handler with interrupt state. |
+| `thread-scheduler` | `PSP-THREAD-003` | Suspend UID 0 and self, resume UID 0, out-of-range ready-queue rotation, ready order after rotation, and timeout of a waiting thread while suspended. |
+| `wait-outcomes` | `PSP-WAIT-001` | Semaphore and event-flag signal/cancel operations that occur before a deadline but are dispatched afterward. |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, and list/draw sync statuses for paused and cancelled work. |
+| `refer-status-size` | `PSP-KERNEL-STATUS-001` | Semaphore, event-flag, and mailbox status structures with size words 0, 8, 40, and full size; records the changed bytes and returned size word. |
+| `registry-readonly` | `PSP-REGISTRY-001` | Read-only registry/category enumeration under `/CONFIG`, key names/types/sizes, modeled setting values only, and unknown-category/key, bad-handle, small-buffer, and handle-exhaustion results. |
+| `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
+
+The registry case opens the registry and every category in read mode. It never
+calls a set, create, remove, or flush API. It records values only for the
+runtime-modeled keys `language`, `button_assign`, date/time format, `timezone`,
+`summer_time`, and `adhoc_channel`; all other keys contribute only name, type,
+and size. Registry and console-specific capture output stays in the private
+campaign output directory.
+
+The host campaign plan requires one staged PRX for each queued case. It launches
+one PRX per boot and issues a PSPLink soft reset between completed cases. The
+queue starts with `transport-write`, then runs the seven new cases in the table
+order, then every remaining README `NOT_RUN` probe: `smoke`,
+`thread-exit-delete`, `teardown-test`, `io-matrix`, `display-mask-duty`,
+`display-wait-late`, `display-wait-priority`, `display-vblank-window`,
+`fpu-vector`, `cache-alias`, `audio-query`, `ge-nan`, `dma-cells`, the five
+`dma-invalid-tail-*` launches, and the four `mutex-*` launches. `delay-zero` is
+not queued because it is already measured.
+
+Validate the private queue offline before a hardware session:
+
+```powershell
+python tools/psp_oracle/run_psplink.py --campaign-plan <private-campaign-plan.json> --dry-run
+```
+
+The actual campaign refuses to start unless the hardware lock is `HELD`,
+confirms a power cycle, and names the same session as the private plan.
+After an interrupted case, the maintainer power-cycles the PSP and resumes with
+`--confirm-power-cycle`; the failed case is retained as incomplete and the next
+case starts on the new boot. No automatic retry or semantic result is inferred
+from a host timeout.
 
 ## Build and hardware handoff
 

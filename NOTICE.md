@@ -34,7 +34,9 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   SHA-1 notices retained), KL4E/KL3E decompression (`nk_psp_kle.*`) and the
   `~PSP` container logic (`nk_psp_prx.*`, which also descends from PPSSPP's
   PrxDecrypter, Copyright (c) 2012- PPSSPP Project, GPL-2.0-or-later) are ported
-  from one GPL upstream at commit `c156627db7634d395c380c0a9589130f603307fc`;
+  from one GPL upstream,
+  [John-K/pspdecrypt](https://github.com/John-K/pspdecrypt) (including its libkirk
+  code), at commit `c156627db7634d395c380c0a9589130f603307fc`;
   each file's header names that upstream, its path and its notices. The
   upstream's license is GPL version 3 with no later-version grant, so every
   file ported through it (all of the above except the KIRK engine) is labelled
@@ -46,6 +48,13 @@ it is not legal advice or a conclusion that any combined distribution is cleared
 - **VFPU tables** — PPSSPP-origin lookup data with the exact source and checksums
   recorded in `assets/vfpu/PROVENANCE.json`; inclusion is a provenance decision,
   not a claim about PSP firmware ownership.
+- **Gudea font fixture (issue #313)** — SIL Open Font License 1.1,
+  Copyright (c) 2011, Agustina Mingote, with Reserved Font Name "Gudea". The
+  exact upstream bytes, the licence text, and the `font-pin/v1` provenance
+  record are pinned in `fixtures/fonts/gudea/`; they are input to the
+  deterministic converter `tools/ttf2pgf.py` for test fixtures only. The font
+  is not packaged, generated PGFs stay in temporary or `build/` paths, and the
+  output name is project-owned so the Reserved Font Name is never claimed.
 
 ## Generated third-party notices
 
@@ -151,7 +160,7 @@ upstream author.
 
 ## Private inputs and history
 
-Users must supply any lawful external inputs locally. Private inputs, keys, saves,
+Users must supply any external inputs locally. Private inputs, keys, saves,
 captures, extracted assets, generated output and private repository history must
 not be committed, attached to issues, or included in a release. A clean current
 tree is not historical clearance: the exact proposed history must pass the

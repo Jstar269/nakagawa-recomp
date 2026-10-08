@@ -137,7 +137,7 @@ reports as private diagnostic material unless paths have been reviewed and redac
 
 The doctor does not determine whether a user is legally entitled to decrypt, adapt, or use a game in
 a particular jurisdiction. It verifies only the project's technical input contract. Users must
-supply their own lawfully obtained copy and are responsible for applicable copyright,
+supply their own copy of the game and are responsible for applicable copyright,
 anti-circumvention, contract, and local-law questions. See `NOTICE.md` and
 `docs/PUBLICATION_READINESS.md`.
 
@@ -246,7 +246,9 @@ The governance work intentionally leaves these as separate, evidence-backed foll
 2. [DONE - #368] remove hardcoded machine paths from VS Code, `mem_debug`, and tool discovery:
    resolved via an explicit `MSYS_PATH` override (never `MSYSTEM_PREFIX`, which Git Bash points at its own MinGW) with documented defaults in `nk.ps1`, `nk_manager.ps1`,
    `tools/nk_doctor.py`, and `tools/nk_doctor_checks.py`; `tools/mem_debug.py` requires an explicit `--exe`
-   target and dynamically resolves `nm` rather than assuming HST or hardcoded directories;
+   target and dynamically resolves `nm` rather than assuming HST or hardcoded directories, keeps the HST
+   build directory only as the named `HST_DEFAULT_BUILD_DIR` fallback for the simulation mock state and
+   the unattached artifact root, and fails with a clear error when a `--exe` target does not exist on disk;
 3. make worktree asset resolution explicit and independent of the invoking checkout;
 4. [DONE - #368] add a long-path diagnostic to the workspace doctor:
    implemented in `tools/nk_doctor_checks.py` (`check_long_paths`, `query_windows_long_paths_enabled`)

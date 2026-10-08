@@ -126,7 +126,7 @@ class TestPackageNotices(unittest.TestCase):
         self.assertTrue((notices_dir / "RELINK.md").is_file())
 
         self.assertTrue((self.pkg_dir / "RELINK.md").is_file())
-        # #421: every package names the exact source it was built from.
+        # Every package names the exact source it was built from.
         self.assertTrue((self.pkg_dir / "SOURCE.txt").is_file())
         self.assertTrue((notices_dir / "SOURCE.txt").is_file())
         self.assertEqual(result["source"]["repository"], package_notices.PROJECT_REPOSITORY_URL)
@@ -240,7 +240,7 @@ class TestPackageNotices(unittest.TestCase):
         self.assertTrue((self.pkg_dir / "THIRD_PARTY_NOTICES" / "Custom_Math_Library.txt").is_file())
 
     def test_source_notice_names_repository_commit_and_local_changes(self) -> None:
-        """SOURCE.txt is the #421 relink mechanism: repository, commit, tag, changes."""
+        """SOURCE.txt is the relink mechanism: repository, commit, tag, changes."""
         text = package_notices.render_source_notice({
             "repository": package_notices.PROJECT_REPOSITORY_URL,
             "commit": "0123456789abcdef0123456789abcdef01234567",

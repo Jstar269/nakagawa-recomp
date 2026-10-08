@@ -17,7 +17,7 @@ in the tree:
     host_stubs.HST_SIMPLE_STUBS, and the
     per-address custom stubs between the "--- CUSTOM STUBS START/END ---"
     markers in emit_function's driver loop.
-  - src/rt/recomp.c: any live dispatch hook table (currently none; #362 retired
+  - src/rt/recomp.c: any live dispatch hook table (currently none; #363 retired
     both exact trace entries and all broad target predicates).
   - src/rt/hle.c: guest addresses used as addresses (MEM_R*/MEM_W*/dispatch/
     ge_call_guest*), historically grouped in RETIRED_HLE_DIAGNOSTIC_GROUPS.
@@ -287,8 +287,8 @@ CODEGEN_CUSTOM_STUBS = [
 # --- tools/codegen.py: HST profile entry roles -----------------------------
 # These are not behavior overrides: the listed addresses are translated from
 # guest instructions.  They are nevertheless title-address-specific metadata
-# and stay inventoried here so #20/#51 can audit and eventually retire the
-# remaining manual analyzer seeds without conflating host entries with source
+# and stay inventoried here so the remaining manual analyzer seeds can be
+# audited and eventually retired without conflating host entries with source
 # functions.
 HST_ENTRY_ROLES = [
     dict(address=0x0005A648, role="callable", owner=None,
@@ -359,7 +359,7 @@ HST_SIMPLE_STUBS = [
                     "returning a no-op success"),
 ]
 
-# --- src/rt/recomp.c: retired #362 exact diagnostic hooks -----------------
+# --- src/rt/recomp.c: retired #363 exact diagnostic hooks -----------------
 # Decision (c) for every entry: the hook added no PSP behavior or proof that
 # generic lookup could not provide. The source entries were deleted; operators
 # can now use generic SR_TRACE_PC/SR_WATCH instrumentation when needed.
@@ -372,13 +372,13 @@ RETIRED_DISPATCH_HOOKS = [
          test="none"),
     dict(address=0x0001b584, category="diagnostic", name="HFILL",
          reason="traces hash_fill entry, then falls through so ordinary dispatch "
-                "performs the single authoritative lookup (#362: never self-delegates "
+                 "performs the single authoritative lookup (#363: never self-delegates "
                 "and never consumes)",
          test="none"),
     dict(address=0x00018130, category="diagnostic", name="FMT_TRACE",
          reason="traces the format-parser integer handler, then falls through so "
                 "ordinary dispatch performs the single authoritative lookup "
-                "(#362: never self-delegates and never consumes)",
+                "(#363: never self-delegates and never consumes)",
          test="none"),
     dict(address=0x00000ec0, category="diagnostic", name="THUNK_A",
          reason="logs thunk dispatches through the function-pointer slot at 0x2CED08; always "
@@ -396,7 +396,7 @@ RETIRED_DISPATCH_HOOKS = [
          test="none"),
 ]
 DISPATCH_HOOKS = []  # Trace-only hooks were deleted from generic dispatch.
-DISPATCH_RANGE_HOOKS = []  # Issue #362: no generic target-pattern swallowing.
+DISPATCH_RANGE_HOOKS = []  # Compatibility debt (#363): no generic target-pattern swallowing.
 RETIRED_DISPATCH_TARGETS = [
     # Decision (c) for every entry: delete. Former broad resource predicates and exact
     # success/no-op cases are preserved only as a guard inventory; each now reaches
@@ -572,9 +572,9 @@ OVERRIDES = (
 # Live title diagnostic groups must identify one production function. The
 # DiagnosticGroupConsistencyTests gate checks that slice for guest-state,
 # scheduler-state, and control-flow writes before the group can be admitted.
-# All HST-specific probes below were retired by #361; generic observations use
+# All HST-specific probes below were retired under #363; generic observations use
 # SR_TRACE_PC/SR_WATCH.
-# RETIRED below by #361, decision (c): probes were deleted from generic runtime;
+# RETIRED below under #363, decision (c): probes were deleted from generic runtime;
 # use generic SR_TRACE_PC/SR_WATCH facilities when a trace is needed.
 RETIRED_DIAGNOSTIC_GROUPS = [
     dict(name="boot_diag_trace_points",
@@ -606,7 +606,7 @@ RETIRED_DIAGNOSTIC_GROUPS = [
                     0x00010c70, 0x002cf6d4, 0x002cf6dc, 0x0030b000, 0x0030aa84,
                     0x0030ab8c, 0x0001b500, 0x0001b800, 0x00011090, 0x0001119c,
                     0x00048360, 0x000483a0, 0x00310fec, 0x00310ff0],
-         reason="additional HST-only scheduler observations found during the #361 source census; "
+         reason="additional HST-only scheduler observations found during the #363 source census; "
                 "generic SR_TRACE_PC/SR_WATCH replaces the bespoke probes"),
 ]
 DIAGNOSTIC_GROUPS = []
@@ -650,10 +650,10 @@ DIAGNOSTIC_GROUPS = []
 # only in this title's memory map, from handlers named after generic PSP APIs.
 # A different guest executable reaching h_DisplaySetMode would dispatch to
 # whatever happens to live at 0x00000bcc in ITS map.  Retiring them is tracked
-# by issue #98 (compatibility-override surface) and the readiness record in
+# by issue #363 (compatibility-debt surface) and the readiness record in
 # docs/PORTING.md.  This previously cited #20, which is a merged pull request
 # about sceSasCore routing -- so the surface had no tracker at all.
-# RETIRED_HLE_DIAGNOSTIC_GROUPS below are #361 decision (c): bespoke reads,
+# RETIRED_HLE_DIAGNOSTIC_GROUPS below are #363 decision (c): bespoke reads,
 # snapshots, and dumps were removed; use generic SR_TRACE_PC/SR_WATCH instead.
 RETIRED_HLE_DIAGNOSTIC_GROUPS = [
     dict(name="guest_bss_snapshots", category="diagnostic",
@@ -712,32 +712,28 @@ RETIRED_HLE_DIAGNOSTIC_GROUPS = [
 ]
 HLE_GUEST_ADDRESS_GROUPS = []
 
-# Migrated to typed title configuration (issue #98). These four groups were
-# EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before 2026-08-27 and are now
-# PROFILE_OWNED_CONFIGURATION via runtime_bindings (display_bringup, runtime_sync,
-# libfont_ready_flag_addr, frame_ready_latch_addr). Generic builds have no effect;
-# a validated title manifest enables them. They remain inventoried here so the
-# 46->30 census delta is auditable, but they are no longer part of the live
-# hle.c coupling census.
+# These four groups were EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before
+# 2026-08-27. Three remain PROFILE_OWNED_CONFIGURATION via runtime_bindings
+# (display_bringup, runtime_sync, frame_ready_latch_addr); libfont readiness
+# injection is retired and remains here as historical evidence. The 46->30 census
+# delta is auditable, but none is part of the live hle.c coupling census.
 HLE_TITLE_CONFIGURED_COMPAT = [
     dict(name="libfont_ready_flag", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
-         source="src/rt/hle.c:h_StartModule -> title_config.libfont_ready_flag_addr",
+         source="src/rt/hle.c:h_StartModule -> LIBFONT_STARTUP_UNAVAILABLE",
          addresses=[0x002d132c],
-         reason="when libfont.prx startup is unavailable (an untranslated entry, no "
-                "recorded entry, or SR_REAL_MODULE_START=0), sceKernelStartModule emits "
-                "LIBFONT_STARTUP_UNAVAILABLE once per named boundary and may write 1 to "
-                "the title-qualified word; translated guest startup owns readiness",
-         generic_fallback="translated libfont startup runs without host readiness writes; "
-                          "generic builds have no configured ready-flag fallback",
+         reason="when translated libfont startup is unavailable, sceKernelStartModule "
+                "emits LIBFONT_STARTUP_UNAVAILABLE and returns SCE_KERNEL_ERROR_NOTIMP; "
+                "the retired host readiness write is never synthesized",
+         generic_fallback="translated guest startup owns readiness; unavailable startup "
+                          "fails closed without writing a guest readiness word",
          evidence_tier="SOURCE_SHAPE",
-         evidence="title_config gated fallback; generic build has no MEM_W32(0x002d132c)",
-         accidental_inheritance="no -- only the configured title can write its fallback word",
+         evidence="synthetic production-path fixture verifies guest readiness and unavailable-start refusal",
+         accidental_inheritance="no -- no host path writes a libfont readiness word",
          test="tools/test_hle_title_config_behavior.py:test_libfont_guest_startup_routes_exports_without_ready_binding",
          owner_issue="#299",
-         retirement="after #299 proves supported libfont startup and retires the "
-                    "unavailable-startup fallback, remove this binding and manifest field"),
+         retirement="retired; legacy manifest fields fail with LIBFONT_READY_FLAG_RETIRED"),
     dict(name="frame_ready_latch_assist", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",

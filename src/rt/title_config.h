@@ -35,7 +35,6 @@
  * is either fully configured or absent. See tools/title_manifest.py for shape. */
 #define SR_TITLE_CFG_DISPLAY_BRINGUP       0x40u
 #define SR_TITLE_CFG_RUNTIME_SYNC          0x80u
-#define SR_TITLE_CFG_LIBFONT_READY         0x100u
 #define SR_TITLE_CFG_FRAME_LATCH           0x200u
 #define SR_TITLE_CFG_EXPECTED_DATA_FILE_COUNT 0x400u
 
@@ -91,7 +90,6 @@ typedef struct SrTitleRuntimeConfig {
     uint32_t    fallback_entry;               /* module-start fallback when the image entry is uncompiled */
     uint32_t    worker_thread_entry;          /* thread entry that carries the title's worker role */
     uint32_t    launcher_thread_entry;        /* thread entry that carries the title's launcher role */
-    uint32_t    libfont_ready_flag_addr;      /* fallback word when libfont startup is unavailable */
     uint32_t    frame_ready_latch_addr;       /* guest counter that gates frame presentation */
     SrTitleDisplayBringup display_bringup;    /* valid only when DISPLAY_BRINGUP bit set */
     uint32_t    runtime_sync_config_base;     /* base of HST sync config block */
@@ -164,8 +162,6 @@ int sr_title_config_reent_bindings(SrTitleReentBindings *out);
  * the callee-saved registers. Returns 0 for generic and fixture profiles. */
 int sr_title_config_preserve_callee_saved_at_calls(void);
 
-/* Single-address compat flags. Returns 1 when configured. */
-int sr_title_config_libfont_ready_flag_addr(uint32_t *out);
 /* Guest PRX module declared by the title manifest for this guest load path
  * (case-insensitive exact match, e.g. "disc0:/PSP_GAME/USRDIR/module/psmf.prx"):
  * its module file name and the base both the recompiler and runtime use. 0 = none. */

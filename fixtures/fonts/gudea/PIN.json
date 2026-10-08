@@ -1,0 +1,23 @@
+{
+  "schema": "font-pin/v1",
+  "family": "Gudea",
+  "font_version": "Version 1.003",
+  "file": "Gudea-Regular.ttf",
+  "sha256": "a4b5410090a821ea17021627312babdf3d8db0271217fd8c4d9f629ef0a2d90b",
+  "size_bytes": 22932,
+  "license": {
+    "spdx": "OFL-1.1",
+    "copyright": "Copyright (c) 2011, Agustina Mingote (agustinamingote@gmail.com), with Reserved Font Names \"Gudea\"",
+    "license_text": "OFL.txt",
+    "license_text_sha256": "315a576cbc7ab61c9e347b5725893bc8498fdcb8fc10831793c6864bc2cefba8",
+    "reserved_font_names": [
+      "Gudea"
+    ]
+  },
+  "source": {
+    "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/gudea/Gudea-Regular.ttf",
+    "repository": "https://github.com/google/fonts",
+    "path": "ofl/gudea/Gudea-Regular.ttf",
+    "retrieved": "2026-10-07"
+  }
+}

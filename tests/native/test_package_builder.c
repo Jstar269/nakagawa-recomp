@@ -9,11 +9,26 @@
 #include "package_builder.h"
 #include "nk_platform.h"
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
+#include <errno.h>
+#include <signal.h>
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#include <wchar.h>
+#else
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "native_test_isolation.h"
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
@@ -68,11 +83,11 @@ static void test_progress_line_parsing(void) {
     assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PACKAGE);
     assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_PASS);
 
-    const char *line_fail = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#295)\"}";
+    const char *line_fail = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable\"}";
     assert(package_builder_parse_progress_line(line_fail, strlen(line_fail), &ev));
     assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PREFLIGHT);
     assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_FAIL);
-    assert(strstr(ev.message, "#295") != NULL);
+    assert(strcmp(ev.message, "Encrypted executable") == 0);
 
     /* 2. Malformed or invalid lines */
     assert(!package_builder_parse_progress_line(NULL, 0, &ev));
@@ -193,13 +208,13 @@ static void test_state_machine_transitions(void) {
     /* Test failure transition */
     PackageBuildSession fail_session;
     package_builder_init_session(&fail_session, "ULES00123", "Encrypted Title");
-    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#308). Supply a matching local key or decrypted modules.\"}";
+    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable. Supply a matching local key or decrypted modules.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
     assert(fail_session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
     assert(fail_session.is_failed);
     assert(!fail_session.is_complete);
-    assert(strcmp(fail_session.failure_boundary, "Encrypted executable (#308). Supply a matching local key or decrypted modules.") == 0);
+    assert(strcmp(fail_session.failure_boundary, "Encrypted executable. Supply a matching local key or decrypted modules.") == 0);
 }
 
 static void test_output_line_circular_buffer(void) {
@@ -628,6 +643,54 @@ static void test_native_download_verification(void) {
 }
 #endif
 
+static void test_remove_downloaded_tools_preserves_other_app_data(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 10: downloaded-tool removal boundary\n");
+    char data_root[NK_MAX_PATH];
+    char prerequisites_root[NK_MAX_PATH];
+    char nested_tool_dir[NK_MAX_PATH];
+    char tool_marker[NK_MAX_PATH];
+    char retained_file[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    int n = snprintf(data_root, sizeof(data_root), "%s%cdata_root_removal_test", native_test_get_root(), sep);
+    assert(n > 0 && (size_t)n < sizeof(data_root));
+    assert(nk_platform_mkdir_p(data_root));
+
+    n = snprintf(prerequisites_root, sizeof(prerequisites_root),
+                 "%s%cprerequisites", data_root, sep);
+    assert(n > 0 && (size_t)n < sizeof(prerequisites_root));
+    n = snprintf(nested_tool_dir, sizeof(nested_tool_dir),
+                 "%s%csynthetic-tool", prerequisites_root, sep);
+    assert(n > 0 && (size_t)n < sizeof(nested_tool_dir));
+    n = snprintf(tool_marker, sizeof(tool_marker), "%s%cmarker.txt",
+                 nested_tool_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(tool_marker));
+    n = snprintf(retained_file, sizeof(retained_file), "%s%ckeep.txt",
+                 data_root, sep);
+    assert(n > 0 && (size_t)n < sizeof(retained_file));
+    assert(nk_platform_mkdir_p(nested_tool_dir));
+
+    FILE *file = fopen(tool_marker, "wb");
+    assert(file != NULL);
+    assert(fputs("synthetic downloaded tool marker", file) >= 0);
+    assert(fclose(file) == 0);
+    file = fopen(retained_file, "wb");
+    assert(file != NULL);
+    assert(fputs("synthetic save and library data", file) >= 0);
+    assert(fclose(file) == 0);
+
+    char error_code[64];
+    char error_message[256];
+    assert(package_builder_remove_downloaded_tools(
+        data_root, error_code, sizeof(error_code),
+        error_message, sizeof(error_message)));
+    assert(error_code[0] == '\0');
+    assert(error_message[0] == '\0');
+    assert(!nk_platform_dir_exists(prerequisites_root));
+    assert(nk_platform_file_exists(retained_file));
+    assert(nk_remove_utf8(retained_file) == 0);
+    assert(native_test_remove_tree(data_root));
+}
+
 int main(int argc, char *argv[]) {
     if (argc == 3 && strcmp(argv[1], "--find-cli") == 0) {
         char cli_path[NK_MAX_PATH];
@@ -641,6 +704,14 @@ int main(int argc, char *argv[]) {
     if (argc == 6 && strcmp(argv[1], "--build-package") == 0) {
         return run_build_package_route(argv[2], argv[3], argv[4], argv[5]);
     }
+    /* Per-run cache isolation (#735 item 8): the fixtures below resolve their
+     * cache paths inside a temporary root. The modes above return before any
+     * fixture is written, and their child processes inherit this isolation. */
+    native_test_create_root("package-builder");
+    native_test_isolate_user_data_roots();
+    native_test_assert_cache_root_isolated();
+    native_test_assert_config_root_isolated();
+
     test_progress_line_parsing();
     test_elapsed_time_advances_while_building();
     test_reused_session_restarts_the_clock();
@@ -651,12 +722,14 @@ int main(int argc, char *argv[]) {
     test_cli_search_order_and_guidance();
     test_toolchain_preflight();
     test_pinned_prerequisite_manifest();
+    test_remove_downloaded_tools_preserves_other_app_data();
 #if defined(_WIN32) || defined(_WIN64)
     test_native_download_verification();
 #else
     puts("[PACKAGE_BUILDER_TEST] SKIP native WinHTTP/SHA-256 transport tests (non-Windows host)");
 #endif
 
+    native_test_assert_real_config_untouched();
     printf("ALL PACKAGE BUILDER TESTS PASSED\n");
     return 0;
 }

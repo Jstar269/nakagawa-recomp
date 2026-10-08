@@ -64,6 +64,7 @@ static const struct { uint32_t nid; uint32_t version; } k_variants[] = {
     { 0x1B4217BCu, 0x06050010u },  /* sceKernelSetCompiledSdkVersion603_605 */
     { 0xEBD5C3E6u, 0xA3950001u },  /* sceKernelSetCompiledSdkVersion395 */
     { 0x358CA1BBu, 0xA6060002u },  /* sceKernelSetCompiledSdkVersion606 */
+    { 0x342061E5u, 0x03070010u },  /* sceKernelSetCompiledSdkVersion370 */
 };
 
 static void test_initial_state_is_default(void) {

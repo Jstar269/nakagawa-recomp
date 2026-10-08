@@ -59,7 +59,10 @@ static bool player_populate_inspected_game(PlayerApp *app, const char *iso_path,
     snprintf(game->selected_executable, sizeof(game->selected_executable), "%s",
              result->executables.selected_path);
 
-    if (!result->is_supported && result->param_sfo_parsed) {
+    char refused_profile[512] = "";
+    bool profile_refused = player_app_title_profile_refusal_for_disc(
+        app, result->disc_id, refused_profile, sizeof(refused_profile));
+    if (!result->is_supported && result->param_sfo_parsed && !profile_refused) {
         char user_data_root[NK_MAX_PATH];
         char profile_id[64];
         if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root)) ||
@@ -138,16 +141,28 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
             player_app_set_view(app, VIEW_UNSUPPORTED_TITLE);
         }
     } else {
+        const bool named_boundary = res.boundary_code[0] != '\0';
+        const char *message = res.error_message[0]
+            ? res.error_message
+            : "The selected file is not a valid ISO9660 disc image.";
         if (app->active_view == VIEW_SETUP_WIZARD) {
             player_app_wizard_reset_extraction(app);
             app->wizard.iso_selected = false;
-            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                     "Selected file is not a valid PSP disc image: %.190s",
-                     res.error_message[0] ? res.error_message : "Not a valid ISO9660 image.");
+            if (named_boundary) {
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "%.48s: %.200s", res.boundary_code, message);
+            } else {
+                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                         "Selected file is not a valid PSP disc image: %.190s",
+                         res.error_message[0] ? res.error_message : "Not a valid ISO9660 image.");
+            }
         } else {
-            player_app_set_error(app, "ISO_CORRUPT", "Unreadable PSP Disc Image",
-                                 res.error_message[0] ? res.error_message : "The selected file is not a valid ISO9660 disc image.",
-                                 "Try Another File", VIEW_LIBRARY);
+            player_app_set_error(
+                app,
+                named_boundary ? res.boundary_code : "ISO_CORRUPT",
+                named_boundary ? "Not a Disc Image" : "Unreadable PSP Disc Image",
+                message,
+                "Try Another File", VIEW_LIBRARY);
         }
     }
 }
@@ -1053,6 +1068,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
+           "error_text_complete=%d error_text_lines=%d "
+           "error_details_complete=%d error_details_lines=%d error_details_available=%d "
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "input_scope=%s input_titles=%d input_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
@@ -1082,6 +1099,11 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            input_settings_is_capturing(&app->input_settings) ? 1 : 0,
            input_settings_has_conflicts(&app->input_settings) ? 1 : 0,
            input_settings_is_calibrating(&app->input_settings) ? 1 : 0,
+           ui_test_error_text_complete() ? 1 : 0,
+           ui_test_error_text_lines(),
+           ui_test_error_details_complete() ? 1 : 0,
+           ui_test_error_details_lines(),
+           app->last_error.details[0] ? 1 : 0,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_SELECT].primary.index,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_CIRCLE].primary.index,
@@ -1232,6 +1254,19 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
         job->status = NK_RUNTIME_PACKAGE_MISSING;
         snprintf(job->reason, sizeof(job->reason),
                  "Per-user data directory is unavailable; package discovery cannot run.");
+    }
+
+    if (job->runtime_available) {
+        char data_reason[1024] = "";
+        NkLaunchDataRootStatus data_status = nk_launch_game_data_root_status(
+            root, &job->game, NULL, 0, data_reason, sizeof(data_reason));
+        if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+            data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+            job->runtime_available = false;
+            if (data_reason[0]) {
+                snprintf(job->reason, sizeof(job->reason), "%s", data_reason);
+            }
+        }
     }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -1515,7 +1550,7 @@ static void player_package_status_finish(PlayerApp *app,
         player_app_runtime_package_worker_start_failed_clear(app, &job->game);
     }
     if (current_index >= 0 && cache_generation_matches) {
-        if (job->status == NK_RUNTIME_PACKAGE_OK) {
+        if (job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available) {
             app->games[current_index].is_prepared = true;
             app->games[current_index].status = NK_STATUS_PREPARED;
         } else if (!job->runtime_available &&
@@ -1568,7 +1603,7 @@ static void player_package_status_finish(PlayerApp *app,
         *build_check_session_generation = 0;
         *build_check_cache_generation = 0;
         build_check_disc_id[0] = '\0';
-        if (job->status == NK_RUNTIME_PACKAGE_OK) {
+        if (job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available) {
             app->games[current_index].is_prepared = true;
             app->games[current_index].status = NK_STATUS_PREPARED;
             nk_library_add_or_update(&app->library,
@@ -2088,6 +2123,20 @@ static int stage_iso_synchronously(PlayerApp *app) {
 
     if (nk_platform_dir_exists(final_root)) {
         if (adopt_existing_staged_root(app, final_root)) {
+            char data_reason[1024] = "";
+            NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
+                app, &app->inspecting_game, NULL, 0, data_reason,
+                sizeof(data_reason));
+            if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+                data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+                fprintf(stderr, "[PLAYER] %s\n", data_reason[0] ? data_reason :
+                        "This game's data folder could not be checked.");
+                printf("[PLAYER] STAGING_RESULT status=INCOMPLETE recovered=1 "
+                       "disc_id=%s assets=%u runtime=not-ready data_root=missing\n",
+                       app->inspecting_game.disc_id,
+                       (unsigned)app->inspecting_game.extracted_asset_count);
+                return 8;
+            }
             player_app_wizard_finish_extraction(
                 app, NK_OK, "Recovered the previously promoted staging tree.");
             printf("[PLAYER] STAGING_RESULT status=PASS recovered=1 disc_id=%s\n",
@@ -2126,8 +2175,14 @@ static int stage_iso_synchronously(PlayerApp *app) {
     app->inspecting_game.extracted_audio_count = summary.extracted_audio_count;
     app->inspecting_game.extracted_visual_count = summary.extracted_visual_count;
     app->inspecting_game.extracted_layout_count = summary.extracted_layout_count;
-    app->inspecting_game.is_prepared = player_app_validate_runtime_package(
-        app, &app->inspecting_game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
+    char data_reason[1024] = "";
+    NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
+        app, &app->inspecting_game, NULL, 0, data_reason, sizeof(data_reason));
+    app->inspecting_game.is_prepared =
+        player_app_validate_runtime_package(app, &app->inspecting_game,
+                                            NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK &&
+        (data_status == NK_LAUNCH_DATA_ROOT_READY ||
+         data_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
     app->inspecting_game.status = app->inspecting_game.is_prepared
         ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
     copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
@@ -2139,6 +2194,20 @@ static int stage_iso_synchronously(PlayerApp *app) {
             "Assets were staged, but the title could not be saved to the library.");
         fprintf(stderr, "[PLAYER] --stage-only could not save the staged title.\n");
         return 7;
+    }
+    if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+        data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+        fprintf(stderr, "[PLAYER] %s\n", data_reason[0] ? data_reason :
+                "This game's data folder could not be checked.");
+        printf("[PLAYER] STAGING_RESULT status=INCOMPLETE view=PLAYER_VIEW_READY_LIBRARY "
+               "disc_id=%s assets=%u audio=%u visual=%u layout=%u "
+               "runtime=not-ready data_root=missing\n",
+               app->inspecting_game.disc_id,
+               (unsigned)summary.extracted_asset_count,
+               (unsigned)summary.extracted_audio_count,
+               (unsigned)summary.extracted_visual_count,
+               (unsigned)summary.extracted_layout_count);
+        return 8;
     }
     player_app_wizard_finish_extraction(app, NK_OK, NULL);
     printf("[PLAYER] STAGING_RESULT status=PASS view=PLAYER_VIEW_READY_LIBRARY "
@@ -2542,12 +2611,8 @@ int main(int argc, char *argv[]) {
     if (force_empty) {
         populate_sample = false;
     }
-    if (launch_index_requested && !force_empty) {
-        /* The one-shot driver is a deliberate demo/test entry point. It still
-           uses the normal library loader first, so an existing user library is
-           never overwritten by the fixture population. */
-        populate_sample = true;
-    }
+    /* --launch-index names a library entry. It does not switch on the demo
+       fixtures: an empty library is refused below unless --demo asks for them. */
     if (runtime_root_path) {
         player_app_set_runtime_root(&app, runtime_root_path);
     }
@@ -2572,6 +2637,10 @@ int main(int argc, char *argv[]) {
                                   user_data_root, nk_platform_path_separator()) > 0) {
             char report[2048];
             int loaded = nk_title_manifest_load_overlay_dir(manifest_dir, report, sizeof(report));
+            if (report[0]) {
+                snprintf(app.title_manifest_report,
+                         sizeof(app.title_manifest_report), "%s", report);
+            }
             if (loaded > 0) printf("[PLAYER] Loaded %d title manifest(s) from %s\n", loaded, manifest_dir);
             if (report[0]) fprintf(stderr, "[PLAYER] Title manifests not loaded:\n%s", report);
         }
@@ -2633,22 +2702,37 @@ int main(int argc, char *argv[]) {
                          "Extracting game assets into local application data...");
             } else {
             /* Catalogued titles and structurally identified experimental discs
-               are useful library entries. Images without parsed PARAM.SFO
-               remain refused on the unsupported view. */
+               are offered on their card. The card's ADD TO LIBRARY stores them,
+               as the file picker and the setup wizard already do. --launch-now
+               is the one exception: it must launch, a launch needs a library
+               record, and the wizard's LAUNCH GAME NOW likewise adds before it
+               launches. Images without parsed PARAM.SFO remain refused on the
+               unsupported view. */
             bool should_store = res.is_supported || app.inspecting_game.is_experimental;
-            bool stored = should_store && player_app_add_game(&app, &app.inspecting_game);
+            bool add_before_launch = should_store && launch_now &&
+                                     !app.inspecting_game.is_experimental;
+            bool stored = add_before_launch && player_app_add_game(&app, &app.inspecting_game);
 
-            if (should_store && !stored) {
+            if (launch_now && app.inspecting_game.is_experimental) {
+                const char *message =
+                    "Launch now is unavailable for experimental titles. Generic ISO-to-Play "
+                    "support is in the works. This title was not added; review its "
+                    "compatibility checks before adding it to the library.";
+                fprintf(stderr, "[PLAYER] EXPERIMENTAL_LAUNCH_UNAVAILABLE: %s\n", message);
+                player_app_set_error(&app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
+                                     "Experimental Title Cannot Launch Yet", message,
+                                     "Review Compatibility", VIEW_EXPERIMENTAL_TITLE);
+            } else if (add_before_launch && !stored) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
                         app.inspecting_game.disc_id);
                 player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
                                      "The title could not be stored. The library may be full, "
                                      "or the user data directory is not writable.",
                                      "Return to Library", VIEW_LIBRARY);
-            } else if (stored) {
+            } else if (should_store) {
                 player_app_set_view(&app, app.inspecting_game.is_experimental
                     ? VIEW_EXPERIMENTAL_TITLE : VIEW_SUPPORTED_TITLE);
-                if (launch_now && !app.inspecting_game.is_experimental) {
+                if (stored) {
                     printf("[PLAYER] Launching supported title now...\n");
                     const char *target_root = app.runtime_root[0] ? app.runtime_root : NULL;
                     /* nk_library_add_or_update updates an existing record in
@@ -2682,6 +2766,10 @@ int main(int argc, char *argv[]) {
                             printf("[PLAYER] Child process started! PID: %d\n", app.launch_session.process.process_id);
                             app.is_game_running = true;
                             app.launch_time_ms = SDL_GetTicks();
+                            /* The disc is in the library now, so the card's
+                               ADD TO LIBRARY would be stale: show the library,
+                               as the wizard's LAUNCH GAME NOW does. */
+                            player_app_set_view(&app, VIEW_LIBRARY);
                         } else {
                             fprintf(stderr, "[PLAYER] Failed to start runtime: %s\n", app.launch_session.last_error);
                             player_app_set_error(&app, "PROCESS_SPAWN_FAILED", "Failed to Spawn Process",
@@ -2716,6 +2804,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* Entries at or after this index were not loaded from library.json: they are
+       the bundled demo samples (or prepared showcase demos) added below. */
+    int user_library_count = app.library.count;
     if (populate_sample) {
         player_app_populate_sample_games(&app);
     }
@@ -2894,11 +2985,36 @@ int main(int argc, char *argv[]) {
                  sizeof(app.games[app.selected_game_index].iso_path), "%s",
                  ui_test_iso_path);
     }
+    if (ui_test_iso_path) {
+        for (int i = 0; i < app.game_count; i++) {
+            if (strcmp(app.games[i].disc_id, "TEST00006") == 0) {
+                snprintf(app.games[i].iso_path, sizeof(app.games[i].iso_path),
+                         "%s", ui_test_iso_path);
+            }
+        }
+    }
     if (ui_test_fake_game_running) app.is_game_running = true;
     if (ui_test_error_code) {
-        player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
-                             "Synthetic UI regression error state.",
-                             "Return to Library", VIEW_LIBRARY);
+        if (strcmp(ui_test_error_code, "CLI_NOT_FOUND") == 0) {
+            player_app_set_cli_not_found_error(&app, "Return to Library",
+                                               VIEW_LIBRARY);
+        } else if (strcmp(ui_test_error_code, "UI_TEST_LONG_ERROR") == 0) {
+            static const char long_error_message[] =
+                "Build setup could not continue because a required file was missing. "
+                "Check the message, follow the suggested recovery steps, and try again. "
+                "If the application files are incomplete, reinstall the app and keep "
+                "its folder together. Return to the library after correcting the issue. "
+                "This final sentence confirms the full message remains visible beyond "
+                "the old four-line limit. Keep every recovery step on this card so the "
+                "player can read the complete instruction before leaving this screen.";
+            player_app_set_error(&app, ui_test_error_code,
+                                 "Synthetic Long Error", long_error_message,
+                                 "Return to Library", VIEW_LIBRARY);
+        } else {
+            player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
+                                 "Synthetic UI regression error state.",
+                                 "Return to Library", VIEW_LIBRARY);
+        }
     }
 #endif
 
@@ -2914,6 +3030,12 @@ int main(int argc, char *argv[]) {
        while the parent waits for its real exit status. A test can set
        SR_BOOT_EVENT_FILE to receive the child's window/first-frame milestones. */
     if (launch_index_requested) {
+        if (app.library.count == 0 && !populate_sample) {
+            fprintf(stderr, "[PLAYER] --launch-index=%d: your library is empty, so there is "
+                    "nothing to launch. Add a game first, or pass --demo to launch the "
+                    "bundled SAMPLE demo entries.\n", launch_index);
+            return 2;
+        }
         if (launch_index < 0 || launch_index >= app.game_count) {
             fprintf(stderr, "[PLAYER] Invalid --launch-index=%d for library count %d.\n",
                     launch_index, app.game_count);
@@ -2921,6 +3043,8 @@ int main(int argc, char *argv[]) {
         }
         app.selected_game_index = launch_index;
         const GameRecord *launch_game = &app.games[launch_index];
+        /* Bundled demo entries are not loaded from library.json. */
+        bool sample_entry = launch_index >= user_library_count;
         NkRuntimePackageStatus launch_status =
             player_app_validate_runtime_package(
                 &app, launch_game, NULL, NULL, 0);
@@ -2931,13 +3055,26 @@ int main(int argc, char *argv[]) {
                  app.runtime_root[0] ? app.runtime_root : NULL,
                  launch_game->title_id));
         if (!launch_available) {
-            fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
-                    launch_index);
+            if (sample_entry) {
+                fprintf(stderr, "[PLAYER] Launch index %d is a bundled SAMPLE demo, not in "
+                        "library.json, and has no prepared runtime; PLAY NOW is unavailable.\n",
+                        launch_index);
+            } else {
+                fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
+                        launch_index);
+            }
             return 3;
         }
-        printf("[PLAYER] Launch index %d: PLAY NOW available for %s (%s).\n",
-               launch_index, app.games[launch_index].disc_id,
-               app.games[launch_index].title_name);
+        if (sample_entry) {
+            printf("[PLAYER] Launch index %d is a bundled SAMPLE demo, not in library.json: "
+                   "PLAY NOW available for %s (%s).\n",
+                   launch_index, app.games[launch_index].disc_id,
+                   app.games[launch_index].title_name);
+        } else {
+            printf("[PLAYER] Launch index %d: PLAY NOW available for %s (%s).\n",
+                   launch_index, app.games[launch_index].disc_id,
+                   app.games[launch_index].title_name);
+        }
         if (!player_app_launch_game(&app, launch_index)) {
             fprintf(stderr, "[PLAYER] --launch-index failed: %s\n",
                     app.launch_session.last_error);

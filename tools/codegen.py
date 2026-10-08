@@ -33,9 +33,11 @@ from analyze import (
 )
 from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
+from imports import ImportTableError, format_boundary
 
 
 CPU_STATE_ABI_VERSION = 2
+EMITTED_OWNERSHIP_SCHEMA_VERSION = 1
 
 # LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
 # exceptions via sr_cpu_raise_exception instead of the default HLE path
@@ -330,6 +332,73 @@ def entry_symbol(addr, resume_owners=None):
     return f"r_{addr:08x}" if resume_owners and addr in resume_owners else f"f_{addr:08x}"
 
 
+def build_emitted_ownership_map(cfg_report, catalog, emitted):
+    """Project the existing CFG onto codegen's entry catalog without steering it."""
+    emitted_addresses = set(emitted)
+    ownership_rows = {
+        row["address"]: row
+        for row in cfg_report.get("ownership_map", ())
+        if isinstance(row, dict) and type(row.get("address")) is int
+    }
+    coverage = cfg_report.get("byte_classification", ())
+    if not isinstance(coverage, list):
+        coverage = []
+    regions = []
+    for span in coverage:
+        if not isinstance(span, dict):
+            continue
+        start, end = span.get("start"), span.get("end")
+        if type(start) is not int or type(end) is not int or end <= start:
+            continue
+        ownership = ownership_rows.get(start, {})
+        info = catalog.get(start)
+        owners = ownership.get("owners", ())
+        if ownership.get("classification") == "owner-conflict":
+            classification = "ambiguous"
+            region_owners = list(owners) if isinstance(owners, list) else []
+        elif info is not None and info.resumable and type(info.owner) is int:
+            classification = "resume"
+            region_owners = [info.owner]
+        elif info is not None and info.callable:
+            classification = "callable"
+            region_owners = [start]
+        elif isinstance(owners, list) and owners:
+            classification = "interior"
+            region_owners = list(owners)
+        elif span.get("classification") == "padding":
+            classification = "padding"
+            region_owners = []
+        elif span.get("classification") in ("unreadable-executable", "partial-executable"):
+            classification = "invalid-unowned"
+            region_owners = []
+        else:
+            classification = "unowned"
+            region_owners = []
+
+        is_emitted = start in emitted_addresses
+        row = {
+            "start": start,
+            "end": end,
+            "classification": classification,
+            "owners": region_owners,
+            "emitted": is_emitted,
+            "analysis_classification": span.get("classification"),
+        }
+        if is_emitted and info is not None and (info.callable or info.resumable):
+            row["symbol"] = entry_symbol(
+                start,
+                {start: info.owner} if info.resumable else None,
+            )
+        else:
+            row["symbol"] = None
+        regions.append(row)
+    return {
+        "schema_version": EMITTED_OWNERSHIP_SCHEMA_VERSION,
+        "source_cfg_schema_version": cfg_report.get("schema_version"),
+        "regions": regions,
+    }
+
+
 def write_funcs_header(path, emitted, resume_owners=None):
     """Write the shared generated declarations with the runtime ABI contract."""
     if resume_owners is None:
@@ -524,7 +593,7 @@ def vreg_indices(reg, size):
     # 14 selected wide encodings, including the two that discriminate between
     # candidate rules: triple width selects its row from bit 6 alone, and
     # transpose wraps as (row + lane) & 3 rather than saturating. See
-    # fixtures/vfpu_addressing/hardware_vfpu_addr_001.json and issue #296.
+    # fixtures/vfpu_addressing/hardware_vfpu_addr_001.json.
     #
     # Boundary: 14 of 512 wide encodings were observed. The rest are covered
     # only by the derived cross-implementation tests in
@@ -1083,7 +1152,7 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             return (f"{{ uint32_t _a = {base}; {guard}if((_a&15u)==0 && sr_guest_span_writable(_a,16u)){{ {parts} }}else{{"
                     f"{_vfpu_interp_stmt(addr, w)} }} }}"), base, 16  # sv.q
         if op == 0x36:  # lv.q
-            # #184: the whole 16-byte span must be readable before any destination
+            # The whole 16-byte span must be readable before any destination
             # lane commits. A straddling/wrapped aligned span falls back to the
             # authoritative interpreter, which rejects it all-or-nothing.
             parts = " ".join(f"s->vi[{idx[i]}] = MEM_R32(_a + {i*4});" for i in range(4))
@@ -1972,7 +2041,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     if lle_cpu is False:
         lle_cpu = LLE_CPU
     resume_owners = resume_owners or {}
-    host_entries = set(known) | set(resume_owners)
     insns, labels, continuations = function_flow(
         elf, start, ranges, known, resume_owners=resume_owners,
         dispatch_boundaries=dispatch_boundaries)
@@ -2284,7 +2352,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); s->r[31] = 0x{(addr + 8) & 0xFFFFFFFF:08x}u; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-            if target in host_entries:
+            if target in known or target in resume_owners:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
                 if lle_cpu:
                     out.append(f"    {_flow_return(resumable)}")
@@ -2357,7 +2425,9 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-            if target in host_entries and not (target in resume_owners and target in labels):
+            if (target in known or target in resume_owners) and not (
+                target in resume_owners and target in labels
+            ):
                 out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable, stack_census=stack_census)}")
             elif target in labels:
                 y = f"SR_YIELD(s, 0x{addr:08x}u); " if target <= addr else ""   # backward j: loop edge
@@ -2573,7 +2643,11 @@ def main(argv):
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     extra_spans = resolve_extra_spans(extra_span_arg)
-    analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    try:
+        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    except ImportTableError as exc:
+        sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
+        return 1
     if cfg_report_path is not None or cfg_gate:
         # This opt-in gate audits the primary image. Extra modules have their own
         # analyzer invocation below and remain a separate bring-up surface until
@@ -2582,7 +2656,11 @@ def main(argv):
         if not cfg_gate:
             # A report-only run describes gate-mode analysis but must not change
             # the entry set that feeds code emission.
-            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            try:
+                report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            except ImportTableError as exc:
+                sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
+                return 1
         cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
@@ -2622,6 +2700,9 @@ def main(argv):
         try:
             from imports import parse_imports
             impmap = parse_imports(elf)
+        except ImportTableError as e:
+            sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+            return 1
         except Exception as e:
             sys.stderr.write(f"warning: import table parse failed: {e}\n")
 
@@ -2925,6 +3006,8 @@ def main(argv):
             stubbed.append((a, reason))
             sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
 
+    primary_emitted = tuple(sorted(set(emitted)))
+
     # Process extra ELF files (PRX modules)
     for extra_elf_path, extra_base in extra_elfs:
         sys.stderr.write(f"Processing extra ELF: {extra_elf_path} @ 0x{extra_base:08x}\n")
@@ -2943,7 +3026,11 @@ def main(argv):
                         )
                         return 2
         owned_exec_ranges.extend(extra_ranges)
-        extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
+        try:
+            extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
+        except ImportTableError as exc:
+            sys.stderr.write(f"codegen: {format_boundary(exc, extra_elf_path)}\n")
+            return 1
         extra_known = set(extra_analyzed)
         extra_known = set(a for a in extra_known if in_ranges(a, extra_ranges))
         if cfg_gate:
@@ -2966,10 +3053,13 @@ def main(argv):
             )
 
         extra_impmap = {}
-        if extra_elf.reloc is not None:
+        if extra_elf.reloc is not None or extra_elf.sec(".rodata.sceModuleInfo") is not None:
             try:
                 from imports import parse_imports
                 extra_impmap = parse_imports(extra_elf)
+            except ImportTableError as e:
+                sys.stderr.write(f"codegen: {format_boundary(e, extra_elf_path)}\n")
+                return 1
             except Exception as e:
                 sys.stderr.write(f"warning: import table parse failed for {extra_elf_path}: {e}\n")
 
@@ -3150,6 +3240,13 @@ def main(argv):
                     a_val = int(m.group(2), 16)
                     f.write(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
             f.write("}\n")
+
+    if cfg_report_path is not None:
+        cfg_report["emitted_ownership_map"] = build_emitted_ownership_map(
+            cfg_report, catalog, primary_emitted,
+        )
+        with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
+            output.write(canonical_cfg_json(cfg_report))
 
     # Delete stale chunk files from previous runs
     j = num_files

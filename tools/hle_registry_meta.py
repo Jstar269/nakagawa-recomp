@@ -73,6 +73,12 @@ HANDLER_METADATA = {
     },
     # Stores g_sdk_version for SDK-dependent paths; the retained-state
     # contract for the variants routed to it is implemented.
+    # ReferSemaStatus reads the modeled semaphore: live count, create-time initCount,
+    # maxCount, attr and name recorded at create, and the blocked-waiter count.
+    "h_ReferSemaStatus": {
+        "status": "partial",
+        "limitation": "reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only",
+    },
     "h_SetCompiledSdkVersion": {
         "status": "complete",
         "evidence": [
@@ -81,6 +87,92 @@ HANDLER_METADATA = {
             "public ABI (PSPSDK sdkver.h: sceKernelSetCompiledSdkVersion)",
         ],
         "description": "Stores g_sdk_version for SDK-dependent paths; retained-state contract verified across all registered variants.",
+    },
+    "h_SysClock2USec": {
+        "status": "partial",
+        "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
+    },
+    # Suspend/Resume/Rotate are scheduler operations: suspension is a flag on a thread
+    # that keeps its wait semantics, rotation moves the head of one priority's ready
+    # queue behind its peers.  Measured cells are the DORMANT, double-suspend and
+    # resume-of-a-non-suspended-thread codes; the rest is project-defined.
+    "h_SuspendThread": {
+        "status": "partial",
+        "limitation": "suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread",
+            "src/rt/hle_thread_selftest.c:test_suspended_waiter_keeps_wait_semantics",
+            "src/rt/sched_selftest.c:test_suspended_wait_still_completes",
+        ],
+    },
+    "h_ResumeThread": {
+        "status": "partial",
+        "limitation": "resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread",
+            "src/rt/sched_selftest.c:test_suspend_resume_error_codes",
+        ],
+    },
+    "h_RotateThreadReadyQueue": {
+        "status": "partial",
+        "limitation": "rotates the cyclic slot-order ready queue of one priority (0 selects the caller's priority) and yields when the caller leads that queue; no range-error code is returned for an out-of-range priority because none is sourced, and ordering relative to threads that become ready after the rotation is not hardware measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rotate_ready_queue_selection_order",
+            "src/rt/hle_thread_selftest.c:test_rotate_equal_priority_yields_to_peers",
+            "src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers",
+        ],
+    },
+    "h_SysClock2USecWide": {
+        "status": "partial",
+        "limitation": "takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured",
+    },
+    "h_ReferProfilerNull": {
+        "status": "partial",
+        "limitation": "no profiler is modeled, so both sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler always report NULL, like firmware with profiling off; NULL-ness on retail firmware is not hardware-measured",
+    },
+    "h_CtrlGetSamplingMode": {
+        "status": "partial",
+        "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
+    },
+    # Kernel alarms are guest-time timers whose handlers run in interrupt context from the
+    # scheduler's interrupt-service step.  The only measured cells are the unknown-alarm-id
+    # code and "a non-zero handler return reschedules"; the rest is project-defined.
+    "h_SetAlarm": {
+        "status": "partial",
+        "limitation": "the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after delivery, which is hardware measured only as 'reschedules'; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument",
+            "src/rt/hle_thread_selftest.c:test_alarm_rearm_by_return_value",
+            "src/rt/hle_thread_selftest.c:test_alarm_handler_runs_under_interrupt_context_rules",
+            "src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline",
+            "src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context",
+            "src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler",
+        ],
+    },
+    "h_CancelAlarm": {
+        "status": "partial",
+        "limitation": "an unknown, cancelled or already-finished alarm UID returns the hardware-measured unknown-alarm code; treating a one-shot that has already fired as unknown (its UID is released when the handler returns 0) is the project's model and is not separately measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_alarm_registration_and_error_codes",
+            "src/rt/hle_thread_selftest.c:test_alarm_cancel_before_firing_prevents_the_handler",
+            "src/rt/sched_selftest.c:test_alarm_cancel_and_ordering",
+        ],
+    },
+    "h_AllocMemoryBlock": {
+        "status": "partial",
+        "limitation": "models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured",
+    },
+    "h_GetMemoryBlockAddr": {
+        "status": "partial",
+        "limitation": "resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured",
+    },
+    "h_FreeMemoryBlock": {
+        "status": "partial",
+        "limitation": "releases UIDs created by the modeled Low allocation path; invalid-UID result is source-tested but not hardware measured",
+    },
+    "h_DisplayWaitVblankStartMulti": {
+        "status": "partial",
+        "limitation": "waits the requested positive count of scheduler VBLANK periods; zero-count behavior fails closed as not implemented, while callback/context precedence and hardware timing are not measured",
     },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
@@ -127,6 +219,24 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events",
         ],
         "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)",
+    },
+    "h_GeListEnQueueHead": {
+        "status": "partial",
+        "limitation": "idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled",
+    },
+    "h_GeBreak": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+        ],
+        "limitation": "models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured",
+    },
+    "h_GeContinue": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+        ],
+        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
@@ -215,13 +325,13 @@ HANDLER_METADATA = {
     # outside the modeled contract.
     "h_UmdGetErrorStat": {
         "status": "compatibility",
-        "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#281, #341)",
+        "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#341)",
     },
     # Common Memory Stick devctls have explicit outputs; unsupported devices or
-    # command pairs remain visible per pair and are summarized under issue #281.
+    # command pairs remain visible per pair and are tracked under issue #341.
     "h_IoDevctl": {
         "status": "partial",
-        "limitation": "Memory Stick devctl callback events unmodeled (#281, #341)",
+        "limitation": "Memory Stick devctl callback events unmodeled (#341)",
     },
     "h_IoMkdir": {
         "status": "complete",
@@ -236,6 +346,93 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
             "src/rt/hle.c:h_IoRemove",
         ],
+    },
+    # Async IoFileMgr requests retain per-fd results and callbacks. Their
+    # deterministic import-boundary service interval is synthetic timing, not
+    # a PSP scheduler measurement; open also returns its descriptor at submit.
+    "h_IoOpenAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_fd_namespace"],
+        "limitation": "open completes its host lookup at submission to return the PSP-visible fd; async timing and callback ordering are synthetic, not hardware-measured",
+    },
+    "h_IoReadAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured",
+    },
+    "h_IoWriteAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured",
+    },
+    "h_IoLseekAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured",
+    },
+    "h_IoLseek32Async": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured",
+    },
+    "h_IoIoctlAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured",
+    },
+    "h_IoCloseAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_fd_namespace"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; close callback timing remains unmeasured",
+    },
+    "h_IoWaitAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the host operation runs when the guest waits; PSP blocking, wake, and callback interleaving remain unmeasured",
+    },
+    "h_IoWaitAsyncCB": {
+        "status": "partial",
+        "limitation": "callback dispatch is modeled at the wait boundary; PSP blocking and callback interleaving remain unmeasured",
+    },
+    "h_IoPollAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing",
+    },
+    "h_IoGetAsyncStat": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing",
+    },
+    "h_IoChangeAsyncPriority": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "priority selects queued host requests, but PSP priority ordering and its interaction with callbacks are not hardware-measured",
+    },
+    "h_IoSetAsyncCallback": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "completion queues the modeled thread callback; PSP callback argument and interleaving behavior remain unmeasured",
+    },
+    "h_IoRmdir": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "empty-directory removal and nonempty refusal are tested with synthetic roots; PSP error precedence beyond those cases remains unmeasured",
+    },
+    "h_IoChdir": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the modeled current directory is per-thread and resolves contained Memory Stick paths; PSP behavior for other devices is not established",
+    },
+    "h_IoSync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "Memory Stick handles are flushed and synced; other devices and nonzero unknown arguments fail closed with IO_SYNC_DEVICE or IO_SYNC_ARGUMENT",
+    },
+    "h_IoChstat": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "only the mode field is supported; attribute, size, and timestamp fields fail closed with IO_CHSTAT_NON_MODE_FIELDS",
     },
     "h_Memset": {
         "status": "complete",
@@ -257,7 +454,7 @@ HANDLER_METADATA = {
     },
     "h_ReferThreadStatus": {
         "status": "partial",
-        "limitation": "run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#309)",
+        "limitation": "run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)",
     },
     # Mailboxes (issue #339). Measured contracts live in docs/HARDWARE_ORACLE.md
     # (campaign psp-hw-20260917): unknown id 0x8002019B, timeout 0x800201A8 with
@@ -295,6 +492,96 @@ HANDLER_METADATA = {
     "h_ReferMbxStatus": {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
+    },
+    # sceRtc family (issue #341). Contract sources: the public PSPSDK header
+    # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
+    # component ranges) and the firmware-measured PSPAutotests tests/rtc corpus
+    # (convert.expected, rtc.expected, arithmetic.expected).  PSPAutotests
+    # records firmware CRASHING on several NULL arguments (rtc.c/convert.c
+    # "Crash." comments), so the NULL edges have no firmware return code to
+    # match; the runtime fails closed with SCE_KERNEL_ERROR_ILLEGAL_ADDR there
+    # and the tests declare that as a product boundary, not an equivalence.
+    "h_RtcGetCurrentTick": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_time_domains_are_coherent",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcGetCurrentTick",
+            "public PSPSDK contract (psprtc.h: sceRtcGetCurrentTick, 0 on success, <0 on error)",
+            "PSPAutotests tests/rtc/rtc.expected (tick advances across a 2 ms delay)",
+        ],
+    },
+    "h_RtcGetCurrentClock": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_time_domains_are_coherent",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcGetCurrentClock",
+            "public PSPSDK contract (psprtc.h: sceRtcGetCurrentClock, tz is minutes from UTC)",
+            "PSPAutotests tests/rtc/rtc.expected (0/+13/+60/-60/-600000/INT_MAX/-INT_MAX all return 0; -60 is one hour before the UTC baseline)",
+        ],
+    },
+    "h_RtcGetCurrentClockLocal": {
+        "status": "partial",
+        "limitation": "timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)",
+    },
+    "h_RtcConvertUtcToLocal": {
+        "status": "partial",
+        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+    },
+    "h_RtcConvertLocalToUtc": {
+        "status": "partial",
+        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+    },
+    "h_RtcGetTick": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcGetTick",
+            "public PSPSDK contract (psprtc.h: sceRtcGetTick, pspRtcCheckValidErrors component ranges)",
+            "PSPAutotests tests/rtc/convert.expected (year 0/10000 -> 0x800001fe with output untouched; year 10/9998/9999 exact ticks)",
+        ],
+    },
+    "h_RtcSetTick": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range",
+            "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
+            "src/rt/hle.c:h_RtcSetTick",
+            "public PSPSDK contract (psprtc.h: sceRtcSetTick, 0 on success, <0 on error)",
+            "PSPAutotests tests/rtc/convert.expected (checkSetTick: 835072 -> 0001-01-01, 62135596800000000 -> 1970-01-01)",
+        ],
+    },
+    "h_RtcGetWin32FileTime": {
+        "status": "partial",
+        "limitation": "cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)",
+    },
+    # sceReg virtual system registry (src/rt/hle.c, sceReg block). Read-only: writers are not
+    # registered. Integer values come from the table sceUtilityGetSystemParamInt reads.
+    "h_RegOpenRegistry": {
+        "status": "partial",
+        "limitation": "read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured",
+    },
+    "h_RegOpenCategory": {
+        "status": "partial",
+        "limitation": "serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured",
+    },
+    "h_RegGetKeyInfo": {
+        "status": "partial",
+        "limitation": "serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement",
+    },
+    "h_RegGetKeyValue": {
+        "status": "partial",
+        "limitation": "copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured",
+    },
+    "h_RegCloseCategory": {
+        "status": "partial",
+        "limitation": "frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured",
+    },
+    "h_RegCloseRegistry": {
+        "status": "partial",
+        "limitation": "frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured",
     },
 }
 

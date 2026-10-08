@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
-"""Built-in PSP decryption boundary tests (issue #295).
+"""Built-in PSP decryption boundary tests.
 
 Source-owned end-to-end and known-answer coverage for the production
 decryption boundary under ``src/core/nk_psp_*`` plus the ``nk_decrypt``
@@ -567,7 +567,7 @@ class TestKnownAnswers(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestSyntheticEndToEnd(unittest.TestCase):
-    """Issue #295 acceptance item 1: a source-owned encrypted fixture is
+    """A source-owned encrypted fixture is
     unwrapped end-to-end by the production boundary."""
 
     @classmethod
@@ -711,7 +711,7 @@ class TestSyntheticEndToEnd(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestPreflightIntegration(unittest.TestCase):
-    """Issue #295 acceptance item 2: an encrypted disc plus a local key
+    """An encrypted disc plus a local key
     file reaches the analyzer through the production boundary with no
     manual decryption step, and the no-keyfile route stays fail-closed."""
 
@@ -778,7 +778,7 @@ class TestPreflightIntegration(unittest.TestCase):
         self.assertEqual(executable["status"], "UNSUPPORTED")
         message = executable["message"]
         self.assertIn("supply decrypted modules at", message)
-        self.assertIn("#295", message)
+        self.assertNotRegex(message, r"#[0-9]+")
         key_hint = user_root / "keys" / "psp-keyfile.json"
         self.assertIn(str(key_hint), message)
         self.assertFalse((user_root / "titles" / "TEST00001" / "decrypted" /
@@ -805,7 +805,7 @@ class TestPreflightIntegration(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestDiscModuleBoundary(unittest.TestCase):
-    """Issue #295 module acceptance: the disc's own encrypted PRX modules are
+    """The disc's own encrypted PRX modules are
     unwrapped by the same production boundary into the same private per-title
     folder as the executable, one module at a time, fail closed per module."""
 
@@ -926,6 +926,36 @@ class TestDiscModuleBoundary(unittest.TestCase):
         self.assertEqual(by_name["gamma.prx"]["status"], "skipped")
         self.assertEqual(by_name["gamma.prx"]["reason"], "plain")
 
+    def test_plain_prx_with_unset_entry_is_ready_in_preflight(self):
+        """Issue #729: a plain PSP PRX whose e_entry is the unset 0xFFFFFFFF is
+        a ready module in the same checklist, not "0 of N ready"."""
+        from tools.test_iso_parity import build_plain_mips_elf
+
+        case_dir = self.tmp / "case-plain-prx"
+        case_dir.mkdir()
+        iso = case_dir / "plain_prx.iso"
+        self.create_iso_modules(
+            iso,
+            tiny_elf(b"NK-EBOOT"),
+            sysdir_modules={
+                "libfont.prx": build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF),
+            },
+            usrdir_modules={},
+            disc_id="TEST00001",
+            title="Synthetic Plain PRX Disc",
+        )
+        report = self._preflight(iso, self.tmp / "plain-prx-user")
+        module_report = self._module_report(report)
+        self.assertEqual((module_report["ready"], module_report["total"]), (1, 1))
+        self.assertEqual(
+            [(result["name"], result["status"], result["reason"])
+             for result in module_report["results"]],
+            [("libfont.prx", "skipped", "plain")],
+        )
+        check = self._module_check(report)
+        self.assertEqual(check["status"], "OK", check["message"])
+        self.assertIn("1 of 1 ready", check["message"])
+
     def test_missing_key_entry_fails_closed_naming_that_entry(self):
         alpha_entry = f"prx.tag.0x{SYNTH_TAG_ALPHA:08X}"
         entries = multi_tag_entries([SYNTH_TAG, SYNTH_TAG_ALPHA, SYNTH_TAG_BETA])
@@ -1017,7 +1047,7 @@ class TestDiscModuleBoundary(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestMatchedTypeDiagnosis(unittest.TestCase):
-    """Issue #559: the reported failure belongs to the container type whose
+    """The reported failure belongs to the container type whose
     shape matched, never to a later type's unmet key entry."""
 
     @classmethod
@@ -1121,7 +1151,7 @@ _ERASE_KEYFILE_JSON = (
 )
 
 _ERASE_HARNESS_C = r"""
-/* Key-material erasure harness for the PSP KeyStore (issue #295).
+/* Key-material erasure harness for the PSP KeyStore.
  *
  * Loads a user key file, confirms each entry reads back correctly, frees the
  * keystore, and then re-allocates the freed blocks and searches them for the
@@ -1278,7 +1308,7 @@ int main(int argc, char **argv)
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestKeystoreErasure(unittest.TestCase):
-    """Key material must not survive the free() that drops it (#295 boundary).
+    """Key material must not survive the free() that drops it (decryption boundary).
 
     ``free`` returns the block to the allocator without clearing it, so a
     plain ``free`` leaves the user's keys readable in freed heap.  This suite

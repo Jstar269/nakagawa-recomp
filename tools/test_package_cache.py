@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -77,6 +79,19 @@ class PackageCacheTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_native_build_report_byte_ceiling_matches_python(self) -> None:
+        header = (ROOT / "src/core/nk_title_manifest.h").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"(?m)^\s*#\s*define\s+NK_BUILD_REPORT_MAX_BYTES\s+\(\s*(\d+)\s*\*\s*1024\s*\*\s*1024\s*\)\s*$",
+            header,
+        )
+        self.assertIsNotNone(match)
+        assert match is not None
+        native_limit = int(match.group(1)) * 1024 * 1024
+        self.assertEqual(native_limit, package_cache.MAX_BUILD_REPORT_JSON_BYTES)
 
     def key(self, **overrides):
         values = {
@@ -250,6 +265,80 @@ class PackageCacheTests(unittest.TestCase):
         self.assertEqual(compatible.action, "native-recompile")
         self.assertTrue(compatible.generated_c_reusable)
         self.assertIn("aot:runtime_abi_epoch", compatible.reasons)
+
+    def test_title_input_identity_binds_source_media_revisions(self) -> None:
+        source_media = {
+            "executable": {
+                "path": "PSP_GAME/SYSDIR/EBOOT.BIN",
+                "sha256": "6" * 64,
+            },
+            "modules": [{
+                "name": "fixture.prx",
+                "path": "PSP_GAME/USRDIR/fixture.prx",
+                "sha256": "7" * 64,
+            }],
+        }
+        original = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[{"name": "fixture.prx", "sha256": "3" * 64}],
+            source_media=source_media,
+        )
+        self.assertEqual(package_cache.validate_title_input_identity(original), original)
+        changed_source = dict(source_media)
+        changed_source["executable"] = {
+            "path": "PSP_GAME/SYSDIR/EBOOT.BIN",
+            "sha256": "8" * 64,
+        }
+        changed = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[{"name": "fixture.prx", "sha256": "3" * 64}],
+            source_media=changed_source,
+        )
+        self.assertIn(
+            "source executable changed",
+            package_cache.title_input_identity_changes(original, changed),
+        )
+        invalid = dict(original)
+        invalid["source_media"] = {
+            "executable": {
+                "path": "PSP_GAME/SYSDIR/../EBOOT.BIN",
+                "sha256": "6" * 64,
+            },
+            "modules": [],
+        }
+        with self.assertRaisesRegex(package_cache.PackageCacheError, "source executable path"):
+            package_cache.validate_title_input_identity(invalid)
+
+    def test_source_iso_paths_match_native_validator_table(self) -> None:
+        native_test = (ROOT / "tests/native/test_player_state.c").read_text(
+            encoding="utf-8"
+        )
+        table = re.search(
+            r"(?ms)^\s*\} source_iso_path_cases\[\] = \{(?P<cases>.*?)^\};",
+            native_test,
+        )
+        self.assertIsNotNone(table)
+        cases = re.findall(
+            r'^\s*\{"((?:\\.|[^"\\])*)",\s*(true|false)\},?\s*$',
+            table.group("cases"),
+            re.MULTILINE,
+        )
+        self.assertGreaterEqual(len(cases), 20)
+        for encoded_path, expected_text in cases:
+            with self.subTest(path=encoded_path):
+                path = ast.literal_eval(f'"{encoded_path}"')
+                expected_valid = expected_text == "true"
+                if expected_valid:
+                    self.assertEqual(
+                        package_cache._validate_source_iso_path(path, "test"), path
+                    )
+                else:
+                    with self.assertRaises(package_cache.PackageCacheError):
+                        package_cache._validate_source_iso_path(path, "test")
 
     def test_cache_key_differs_by_public_safe_mode(self) -> None:
         key_public = self.key(compile_flags=package_cache.native_compile_flags(public_safe=True))
@@ -572,6 +661,7 @@ class PackageCacheTests(unittest.TestCase):
             executable_sha256=executable_hash,
             modules=[],
         )
+        self.assertEqual(package_cache.validate_title_input_identity(identity), identity)
         environment = dict(os.environ)
         for mode in (None, True, False):
             with mock.patch.object(
@@ -687,7 +777,7 @@ class PackageCacheTests(unittest.TestCase):
         self.assertTrue(findings)
         self.assertTrue(any(finding.code in {"UNRESOLVED_PUBLIC", "POLICY_UNCLASSIFIED"} for finding in findings))
 class BoundedJsonArtifactTests(unittest.TestCase):
-    """#319: externally supplied package/cache JSON must fail closed and bounded.
+    """Externally supplied package/cache JSON must fail closed and bounded.
 
     Every malformed case targets a production entry point and expects the
     named controlled error (BoundedJsonError, or the entry point's own named
@@ -895,7 +985,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             self.assertIn("unreadable", reason)
 
     def test_duplicate_key_diagnosis_does_not_echo_attacker_bulk(self) -> None:
-        """#319: rejection stays named, but a hostile key is not quoted back.
+        """Rejection stays named, but a hostile key is not quoted back.
 
         Bounding the artifact does not bound the message it produces. A
         duplicate key under the byte ceiling is attacker-chosen text that would
@@ -920,7 +1010,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             self.assertNotIn(bulk, message)
 
     def test_node_counter_never_undercounts_any_scalar_or_trailing_string(self) -> None:
-        """#319: the structural node count is a true lower bound, not a leaky one.
+        """The structural node count is a true lower bound, not a leaky one.
 
         Two ways the counter used to lose a node: a document whose final node
         was a string closer finished past the ceiling, because the in-string
@@ -956,7 +1046,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
         )
 
     def test_read_loop_is_bounded_even_if_a_read_returns_more_than_requested(self) -> None:
-        """#319: the reader must terminate and fail closed, not loop.
+        """The reader must terminate and fail closed, not loop.
 
         A real read never returns more than it was asked for, but the loop
         condition is written so that an over-long read short-circuits instead
@@ -976,7 +1066,7 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             self.assertIn("grew past", str(caught.exception))
 
     def test_bounded_echo_truncates_strings_and_bounds_field_samples(self) -> None:
-        """#319: untrusted text is quoted as a prefix, untrusted lists as a sample."""
+        """Untrusted text is quoted as a prefix, untrusted lists as a sample."""
         self.assertEqual(package_cache.bounded_echo("short"), "short")
         self.assertEqual(
             package_cache.bounded_echo("A" * 200),

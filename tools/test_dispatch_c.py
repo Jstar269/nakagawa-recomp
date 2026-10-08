@@ -41,7 +41,7 @@ DISPATCH_H_CODE = _strip_comments(DISPATCH_H)
 
 
 def _has_retired_target_swallow(source: str) -> bool:
-    """Detect the representative broad predicate mutation from Issue #362."""
+    """Detect the representative broad predicate mutation retired under #363."""
     code = _strip_comments(source)
     return bool(re.search(
         r"target\s*&\s*0xff000000u?\s*\)\s*==\s*0x(?:33|44|55|88)000000u?",
@@ -74,7 +74,7 @@ def _c_function_body(code: str, name: str) -> str | None:
 
 
 def _diagnostic_hook_violations(code: str) -> list[str]:
-    """Structural contract violations for surviving g_exact_hooks[] helpers (#362).
+    """Structural contract violations for surviving g_exact_hooks[] helpers (#363).
 
     A surviving exact-hook helper must be diagnostic/read-only: it may log, but
     it must not look the target up itself (self-delegation either double-runs a
@@ -154,7 +154,7 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertNotRegex(DISPATCH_H_CODE, r"addr\s*!=\s*0")       # the old L1 guard is gone
 
     def test_unconfigured_target_patterns_are_not_dispatch_hooks(self):
-        # Issue #362: historical HST target shapes must reach ordinary lookup/interpreter
+        # Compatibility debt (#363): historical HST target shapes must reach ordinary lookup/interpreter
         # disposition. A generic build may not swallow null, data-looking, resource-handle,
         # unresolved-PLT or module-table values as successful returns.
         recomp_code = _strip_comments(RECOMP_C)
@@ -186,8 +186,17 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertIn("test_historical_target_shapes_fail_closed", isolation)
 
     def test_rejections_name_the_semantic_boundary_and_tracker(self):
-        self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #285", RECOMP_C)
+        self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #308", RECOMP_C)
         self.assertIn('return "target-not-executable";', RECOMP_C)
+        self.assertIn('getenv("SR_BOOT_EVENT_FILE")', RECOMP_C)
+        self.assertIn(
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=308",
+            RECOMP_C,
+        )
+        self.assertIn(
+            "dispatch_record_semantic_stop(dispatch_semantic_boundary_name(interp_result));",
+            RECOMP_C,
+        )
 
     def test_broad_swallow_mutation_is_detected(self):
         # Mutation proof: inserting one representative old-style range predicate into

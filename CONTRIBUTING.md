@@ -76,7 +76,7 @@ Signed-off-by: Real Name <email@example.com>
 - The maintainer's own commits — including work prepared under the maintainer's direction by AI assistants or agents — are covered by a standing waiver that stays in force until the maintainer explicitly revokes it, on the public repository as well as this one. That waiver is personal to the maintainer and changes nothing for outside contributors. See [docs/DCO_POLICY.md §5.1](docs/DCO_POLICY.md).
 - DCO sign-off certifies that you authored the change or have the right to submit it under the project's applicable terms.
 - DCO is **not** a copyright assignment—you retain ownership of your original contributions.
-- Disclose third-party source origins and AI-assisted generation separately in pull request descriptions.
+- Disclose third-party source origins and AI-assisted generation separately in pull request descriptions. Commits that an AI tool helped produce end with one `Assisted-by: <tool> (<model>)` line per tool; see [docs/AI_USAGE.md](docs/AI_USAGE.md#disclosing-ai-help-in-commits).
 - For complete policy details, bot exceptions, and sign-off correction steps, see [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
 
 ## Development setup

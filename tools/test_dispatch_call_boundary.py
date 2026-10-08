@@ -55,6 +55,7 @@ def _build_and_run_stack_census(
     words: tuple[int, ...], expected_status: str, *,
     codegen_args: tuple[str, ...] = (), expected_final_sp: int = 0x2000,
     post_call_probe: str = "", extra_words: tuple[int, ...] | None = None,
+    generated_body_prefix: str = "",
 ) -> tuple[int, str, int, str]:
     """Generate and execute a real codegen entry wrapper against recomp.c."""
     assert CC is not None
@@ -78,6 +79,17 @@ def _build_and_run_stack_census(
         )
         if codegen.returncode != 0:
             return codegen.returncode, codegen.stderr + codegen.stdout, 1, ""
+        if generated_body_prefix:
+            generated_body = work / "census_0.c"
+            generated_text = generated_body.read_text(encoding="utf-8")
+            marker = "static void _sr_stack_census_body_00001000(CpuState *s) {\n"
+            if generated_text.count(marker) != 1:
+                return 2, "frame-leak mutation did not find one generated callable body", 1, ""
+            generated_body.write_text(
+                generated_text.replace(marker, marker + generated_body_prefix, 1),
+                encoding="utf-8",
+                newline="\n",
+            )
 
         config = subprocess.run(
             [sys.executable, str(TITLE_CONFIG_TOOL), "--output", str(work / "sr_title_config.h")],
@@ -341,6 +353,17 @@ class StackCensusPipelineTests(unittest.TestCase):
         compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
             (0x27BDFFF0, 0x03E00008, 0x00000000),
             "SR_STACK_CENSUS_FAILED",
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+        self.assertIn("STACK_CENSUS status=FAILED", run_output)
+        self.assertIn("mismatches=1", run_output)
+
+    def test_generated_frame_leak_mutant_is_caught(self):
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            (0x03E00008, 0x00000000),
+            "SR_STACK_CENSUS_FAILED",
+            generated_body_prefix="    s->r[29] -= 16u; /* injected frame leak */\n",
         )
         self.assertEqual(compile_rc, 0, compile_output)
         self.assertEqual(run_rc, 0, run_output)

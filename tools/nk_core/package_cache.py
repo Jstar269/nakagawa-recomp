@@ -23,7 +23,7 @@ COMPLETION_FORMAT = "nakagawa-aot-cache-completion"
 CACHE_SCHEMA_VERSION = 2
 COMPLETION_SCHEMA_VERSION = 2
 TITLE_INPUT_IDENTITY_FORMAT = "nakagawa-title-input-identity"
-TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 1
+TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 2
 ANALYZER_CODEGEN_SEMANTICS_EPOCH = "analyzer-codegen-v1"
 GENERATED_CODE_ABI_EPOCH = 1
 RUNTIME_ABI_EPOCH = 1
@@ -86,6 +86,7 @@ def build_title_input_identity(
     disc_version: str | None = None,
     param_sfo: Mapping[str, Any] | None = None,
     container: Mapping[str, Any] | None = None,
+    source_media: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the private, versioned identity record for one package input set."""
     module_records = [
@@ -112,6 +113,7 @@ def build_title_input_identity(
             {"sha256": psp_header_sha256, "magic": psp_header_magic}
             if psp_header_sha256 is not None else None
         ),
+        "source_media": dict(source_media) if source_media is not None else None,
     }
     validate_title_input_identity(identity)
     return identity
@@ -121,10 +123,10 @@ def validate_title_input_identity(value: Any) -> dict[str, Any]:
     """Validate the local identity schema without exposing or logging hashes."""
     root_keys = {
         "format", "schema_version", "manifest", "disc", "param_sfo",
-        "container", "main_executable", "modules", "psp_header",
+        "container", "main_executable", "modules", "psp_header", "source_media",
     }
     if not isinstance(value, dict) or set(value) != root_keys:
-        raise PackageCacheError("title input identity fields do not match schema v1")
+        raise PackageCacheError("title input identity fields do not match schema v2")
     if value.get("format") != TITLE_INPUT_IDENTITY_FORMAT or value.get("schema_version") != TITLE_INPUT_IDENTITY_SCHEMA_VERSION:
         raise PackageCacheError("title input identity format or schema is unsupported")
     manifest = value.get("manifest")
@@ -192,6 +194,49 @@ def validate_title_input_identity(value: Any) -> dict[str, Any]:
         _input_sha(header, "title input identity PSP header")
         if header.get("magic") is not None and not isinstance(header["magic"], str):
             raise PackageCacheError("title input identity PSP header magic is invalid")
+    source_media = value.get("source_media")
+    if source_media is not None:
+        if not isinstance(source_media, dict) or set(source_media) != {"executable", "modules"}:
+            raise PackageCacheError("title input identity source media record is invalid")
+        if executable["name"] not in {"EBOOT.BIN", "BOOT.BIN"}:
+            raise PackageCacheError("title input identity source executable name is unsupported")
+        executable_source = source_media.get("executable")
+        if not isinstance(executable_source, dict) or set(executable_source) != {"path", "sha256"}:
+            raise PackageCacheError("title input identity source executable record is invalid")
+        executable_path = _validate_source_iso_path(
+            executable_source.get("path"), "title input identity source executable path"
+        )
+        expected_executable_path = f"PSP_GAME/SYSDIR/{executable['name']}"
+        if executable_path.casefold() != expected_executable_path.casefold():
+            raise PackageCacheError("title input identity source executable path does not match its name")
+        _input_sha(executable_source, "title input identity source executable")
+        source_modules = source_media.get("modules")
+        if not isinstance(source_modules, list):
+            raise PackageCacheError("title input identity source modules must be an array")
+        source_module_names: set[str] = set()
+        for item in source_modules:
+            if not isinstance(item, dict) or set(item) != {"name", "path", "sha256"}:
+                raise PackageCacheError("title input identity source module record is invalid")
+            name = item.get("name")
+            if not isinstance(name, str) or name not in names or name in source_module_names:
+                raise PackageCacheError("title input identity source module name is invalid or repeated")
+            source_module_names.add(name)
+            _validate_source_iso_path(item.get("path"), f"title input identity source module {name} path")
+            _input_sha(item, f"title input identity source module {name}")
+    return value
+
+
+def _validate_source_iso_path(value: Any, field: str) -> str:
+    """Accept only an ISO-relative PSP_GAME path, never a host path."""
+    if (not isinstance(value, str) or not value or len(value) > 512 or
+        "\\" in value or ":" in value or value.startswith("/") or
+        any(ord(character) < 0x20 or ord(character) > 0x7E or
+            character in '?*"<>|' for character in value)):
+        raise PackageCacheError(f"{field} is invalid")
+    parts = value.split("/")
+    if (len(parts) < 3 or parts[0].casefold() != "psp_game" or
+        any(part in {"", ".", ".."} for part in parts)):
+        raise PackageCacheError(f"{field} is invalid")
     return value
 
 
@@ -230,6 +275,18 @@ def title_input_identity_changes(previous: Any, current: Any) -> tuple[str, ...]
         changes.append("container metadata changed")
     if old["psp_header"] != new["psp_header"]:
         changes.append("PSP header changed")
+    old_source = old["source_media"]
+    new_source = new["source_media"]
+    if (old_source is None) != (new_source is None):
+        changes.append("source media binding changed")
+    elif old_source is not None and new_source is not None:
+        if old_source["executable"] != new_source["executable"]:
+            changes.append("source executable changed")
+        old_source_modules = {item["name"]: item for item in old_source["modules"]}
+        new_source_modules = {item["name"]: item for item in new_source["modules"]}
+        for name in sorted(set(old_source_modules) | set(new_source_modules)):
+            if old_source_modules.get(name) != new_source_modules.get(name):
+                changes.append(f"source module {name} changed")
     return tuple(changes)
 
 

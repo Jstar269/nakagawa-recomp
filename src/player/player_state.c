@@ -60,6 +60,61 @@ static const char *player_package_root(const PlayerApp *app, const GameRecord *g
     return player_runtime_root(app);
 }
 
+bool player_app_title_profile_refusal_for_disc(
+    const PlayerApp *app,
+    const char *disc_id,
+    char *reason,
+    size_t reason_size
+) {
+    if (reason && reason_size) reason[0] = '\0';
+    if (!app || !disc_id || !disc_id[0]) return false;
+    const char *line = app->title_manifest_report;
+    const char marker[] = " (disc ";
+    while (line && *line) {
+        const char *end = strchr(line, '\n');
+        size_t line_len = end ? (size_t)(end - line) : strlen(line);
+        const char *id_start = NULL;
+        for (size_t i = 0; i + sizeof(marker) - 1u < line_len; i++) {
+            if (memcmp(line + i, marker, sizeof(marker) - 1u) == 0) {
+                id_start = line + i + sizeof(marker) - 1u;
+                break;
+            }
+        }
+        if (id_start) {
+            const char *id_end = memchr(id_start, ')',
+                                        (size_t)(line + line_len - id_start));
+            if (id_end && (size_t)(id_end - id_start) == strlen(disc_id) &&
+                memcmp(id_start, disc_id, strlen(disc_id)) == 0 &&
+                (size_t)(id_end - line + 2u) < line_len && id_end[1] == ':' &&
+                id_end[2] == ' ') {
+                if (reason && reason_size) {
+                    size_t detail_len = line_len - (size_t)(id_end + 3 - line);
+                    if (detail_len >= reason_size) detail_len = reason_size - 1u;
+                    memcpy(reason, id_end + 3, detail_len);
+                    reason[detail_len] = '\0';
+                }
+                return true;
+            }
+        }
+        line = end ? end + 1 : NULL;
+    }
+    return false;
+}
+
+NkLaunchDataRootStatus player_app_game_data_root_status(
+    const PlayerApp *app,
+    const GameRecord *game,
+    char *resolved_path,
+    size_t resolved_path_size,
+    char *reason,
+    size_t reason_size
+) {
+    const char *root = player_package_root(app, game);
+    return nk_launch_game_data_root_status(root, game, resolved_path,
+                                           resolved_path_size, reason,
+                                           reason_size);
+}
+
 static bool player_join_path(char *out, size_t out_size, const char *root,
                              const char *relative) {
     char sep = nk_platform_path_separator();
@@ -385,6 +440,10 @@ bool player_app_cached_game_has_runtime(const PlayerApp *app,
 
 bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game) {
     if (!game) return false;
+    NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
+        app, game, NULL, 0, NULL, 0);
+    if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+        data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) return false;
     NkRuntimePackageStatus status = player_app_validate_runtime_package(
         app, game, NULL, NULL, 0);
     if (status == NK_RUNTIME_PACKAGE_OK) return true;
@@ -513,8 +572,12 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
             !nk_platform_file_exists(game.iso_path)) continue;
         snprintf(game.prepared_root, sizeof(game.prepared_root), "%s", app->showcase_root);
         game.iso_size_bytes = (uint64_t)nk_platform_get_file_size(game.iso_path);
+        NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
+            app, &game, NULL, 0, NULL, 0);
         game.is_prepared = nk_launch_validate_runtime_package(
-            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
+            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK &&
+            (data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
+             data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
         if (!game.is_prepared) continue;
         game.status = NK_STATUS_PREPARED;
         snprintf(game.last_played, sizeof(game.last_played), "Never");
@@ -586,7 +649,7 @@ int player_app_focus_count(const PlayerApp *app) {
             if (app->game_count <= 0) return 1;
             {
                 /* Order matches render_loaded_library: primary action
-                 * (PLAY/STOP/BUILD/REBUILD when actionable), add, remove, the
+                 * (PLAY/STOP/BUILD/REBUILD or a pending package check), add, remove, the
                  * per-title controller mapping choice, then the paging stops
                  * when the library overflows. The unavailable pill is never a
                  * stop. */
@@ -609,7 +672,7 @@ int player_app_focus_count(const PlayerApp *app) {
                                  (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
                                   pkg_status == NK_RUNTIME_PACKAGE_STALE);
                 if (game && (game_ready || app->is_game_running || can_build ||
-                             check_failed)) count++;
+                             check_failed || checking)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
                 count += game ? 1 : 0; /* global / this-game controller mapping */
                 if (app->game_count > player_app_visible_library_cards(app)) count += 2;
@@ -634,11 +697,11 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREPARING:
             return 1;
         case VIEW_SETTINGS:
-            /* Resolution (3) + frame cap (3) + game display toggles (3: vsync,
+            /* Resolution (3) + presentation pacing (2) + game display toggles (3: vsync,
              * fullscreen, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
              * controller settings (1) + notices and remove-tools controls (2) + close (1),
              * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
-            return 16;
+            return 15;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -706,7 +769,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->fullscreen = false;
     settings->launcher_fullscreen = false;
     settings->vsync = true;
-    settings->fps_cap = 60;
+    settings->fps_cap = -1;
     settings->master_volume = 80;
     settings->reduce_motion = false;
     settings->launcher_window_maximized = false;
@@ -727,7 +790,7 @@ static bool resolution_scale_valid(int scale) {
 }
 
 static bool fps_cap_valid(int cap) {
-    return cap == 30 || cap == 60 || cap == 0;
+    return cap == -1 || cap == 0;
 }
 
 NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
@@ -812,7 +875,8 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
 
     NkJsonNode *sv_node = nk_json_obj_get(root, "schema_version");
     int64_t sv = 0;
-    if (!sv_node || !nk_json_get_int64(sv_node, &sv) || sv != NK_PLAYER_SETTINGS_SCHEMA_VERSION) {
+    if (!sv_node || !nk_json_get_int64(sv_node, &sv) ||
+        (sv != 1 && sv != NK_PLAYER_SETTINGS_SCHEMA_VERSION)) {
         nk_json_free(root);
         player_app_settings_init_default(&app->settings);
         snprintf(app->settings_notice, sizeof(app->settings_notice),
@@ -831,8 +895,14 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
 
     NkJsonNode *fps_node = nk_json_obj_get(root, "fps_cap");
     int64_t fps_val = 0;
-    if (fps_node && nk_json_get_int64(fps_node, &fps_val) && fps_cap_valid((int)fps_val)) {
-        app->settings.fps_cap = (int)fps_val;
+    if (fps_node && nk_json_get_int64(fps_node, &fps_val)) {
+        if (sv == 1 && (fps_val == 30 || fps_val == 60)) {
+            /* Legacy values capped host presentation and could hide a game's
+             * native cadence. Migrate both to the authentic PSP scanout path. */
+            app->settings.fps_cap = -1;
+        } else if (fps_val == -1 || fps_val == 0) {
+            app->settings.fps_cap = (int)fps_val;
+        }
     }
 
     NkJsonNode *vsync_node = nk_json_obj_get(root, "vsync");
@@ -1058,21 +1128,8 @@ void player_app_set_fps_cap(PlayerApp *app, int cap) {
 
 void player_app_cycle_fps_cap(PlayerApp *app, int direction) {
     if (!app) return;
-    static const int kOrder[] = { 30, 60, 0 };
-    int current = app->settings.fps_cap;
-    int at = 1;
-    for (int i = 0; i < 3; i++) {
-        if (kOrder[i] == current) {
-            at = i;
-            break;
-        }
-    }
-    if (direction < 0) {
-        at = (at + 2) % 3;
-    } else {
-        at = (at + 1) % 3;
-    }
-    app->settings.fps_cap = kOrder[at];
+    (void)direction; /* With two choices, either direction selects the other. */
+    app->settings.fps_cap = app->settings.fps_cap == -1 ? 0 : -1;
     maybe_persist_settings(app);
 }
 
@@ -1301,12 +1358,30 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     snprintf(app->last_error.error_code, sizeof(app->last_error.error_code), "%s", code ? code : "ERROR_UNKNOWN");
     snprintf(app->last_error.title, sizeof(app->last_error.title), "%s", title ? title : "Operation Failed");
     snprintf(app->last_error.message, sizeof(app->last_error.message), "%s", msg ? msg : "An unexpected error occurred.");
+    app->last_error.details[0] = '\0';
     snprintf(app->last_error.recovery_action_label, sizeof(app->last_error.recovery_action_label), "%s", recovery_label ? recovery_label : "Return to Library");
     app->last_error.return_view = return_view;
     app->last_error.failed_stage[0] = '\0';
     app->last_error.boundary_text[0] = '\0';
     app->last_error.log_file_path[0] = '\0';
     app->active_view = VIEW_ERROR;
+}
+
+void player_app_set_cli_not_found_error(PlayerApp *app,
+                                        const char *recovery_label,
+                                        PlayerView return_view) {
+    if (!app) return;
+    player_app_set_error(
+        app, "CLI_NOT_FOUND", "Build Tools Not Found",
+        "Nakagawa Recomp's build tools were not found next to the app. "
+        "Reinstall Nakagawa Recomp and keep its folder together.",
+        recovery_label, return_view);
+    /* After set_error, which resets last_error, so the details survive. */
+    package_builder_describe_cli_not_found(app->install_root,
+                                           app->last_error.details,
+                                           sizeof(app->last_error.details));
+    fprintf(stderr, "[PLAYER] CLI_NOT_FOUND details: %s\n",
+            app->last_error.details);
 }
 
 void player_app_populate_sample_games(PlayerApp *app) {
@@ -1337,19 +1412,10 @@ void player_app_populate_sample_games(PlayerApp *app) {
         player_app_sync_library(app);
     }
 
-    /* The display fixture is the only public title whose runtime is BUILT under
-       the layout nk_launch.c resolves (build/<title_id>/<title_id>), so it is the
-       one demo entry whose PLAY NOW can actually start a runtime -- after
-       `mingw32-make display-smoke`. Without it the demo library shows only titles
-       that cannot launch, which is what made the launch path look implemented
-       when it had never once been reached.
-
-       is_prepared is PROBED rather than asserted. Claiming prepared when the
-       runtime has not been built would put PLAY NOW in front of a launch that
-       cannot work; claiming unprepared when it HAS been built sends the user to
-       the preparation view, which in this build only says no pipeline is
-       connected. The probe uses the launcher's own candidate search, so the card
-       and the launch cannot disagree. */
+    /* The display fixture's generator is not source media. Even when its
+       runtime artifacts exist, the package cannot be reported ready without
+       the exact ISO revision required by launch validation. Keep the demo card
+       truthful until the fixture has a source ISO and matching private identity. */
     GameRecord disp;
     memset(&disp, 0, sizeof(disp));
     snprintf(disp.disc_id, sizeof(disp.disc_id), "TEST00006");
@@ -1448,6 +1514,17 @@ bool player_app_should_attempt_window_handoff(bool interactive_window,
            child_window_ready;
 }
 
+/* Copies a boundary reason into the error card. A reason longer than the
+ * card's buffer is shortened there and written whole to stderr, so it is
+ * never silently lost. */
+static void player_set_boundary_text(PlayerApp *app, const char *reason) {
+    int n = snprintf(app->last_error.boundary_text,
+                     sizeof(app->last_error.boundary_text), "%s", reason);
+    if (n >= (int)sizeof(app->last_error.boundary_text)) {
+        fprintf(stderr, "[PLAYER] full boundary reason: %s\n", reason);
+    }
+}
+
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
@@ -1459,35 +1536,51 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     char package_error[2048] = "";
     NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
         app, game, NULL, package_error, sizeof(package_error));
+    char data_root_path[NK_MAX_PATH] = "";
+    char data_root_reason[1024] = "";
+    NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
+        app, game, data_root_path, sizeof(data_root_path), data_root_reason,
+        sizeof(data_root_reason));
     bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
         (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
          nk_launch_runtime_available(player_package_root(app, game),
                                      game->title_id));
     if (!runtime_available) {
-        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
-                             package_error[0] ? package_error :
-                                 "Runtime package is missing or incompatible; build it from the library (#297).",
+        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Game Not Ready",
+                             "This game isn't ready to start yet. Build or repair its game files, then try again.",
                              "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, package_error[0] ? package_error :
+                                     "Runtime package is missing or incompatible.");
+        return false;
+    }
+    if (data_root_status != NK_LAUNCH_DATA_ROOT_READY &&
+        data_root_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+        player_app_set_error(app,
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "TITLE_DATA_MISSING" : "TITLE_PROFILE_INVALID",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "Game Data Missing" : "Game Settings Unavailable",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "This game needs its data files before it can start. Add the missing files, then try again."
+                                 : "This game's title settings could not be checked. Review the details and try again.",
+                             "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, data_root_reason[0] ? data_root_reason :
+                                     "The title data folder could not be resolved.");
         return false;
     }
 
     app->child_window_ready = false;
     app->launch_session.boot_event_file_path[0] = '\0';
-    if (app->enable_focus_handoff) {
-        if (!player_prepare_boot_event_file(app)) {
-            player_app_set_error(
-                app,
-                "WINDOW_HANDOFF_UNAVAILABLE",
-                "Window Handoff Unavailable",
-                "Nakagawa could not prepare the boot-event handoff file. "
-                "The game was not launched; check the per-user cache directory and retry.",
-                "Return to Library",
-                VIEW_LIBRARY
-            );
-            return false;
-        }
-    } else {
-        app->boot_event_file_path[0] = '\0';
+    if (!player_prepare_boot_event_file(app)) {
+        player_app_set_error(
+            app,
+            "LAUNCH_DETAILS_UNAVAILABLE",
+            "Launch Details Unavailable",
+            "Nakagawa couldn't save the game's launch details, so the game was not started. Check the app's cache folder and try again.",
+            "Return to Library",
+            VIEW_LIBRARY
+        );
+        return false;
     }
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
@@ -1626,7 +1719,7 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
     if (res != NK_OK) {
         snprintf(reason, sizeof(reason), "%.95s", diag);
         snprintf(app->input_profile_notice, sizeof(app->input_profile_notice),
-                 "Mapping for %s could not be handed to the game (%.48s); it starts on the global mapping (#520).",
+                 "Mapping for %s could not be handed to the game (%.48s); it starts on the global mapping.",
                  game->disc_id, reason[0] ? reason : "unknown reason");
         printf("[PLAYER] %s\n", app->input_profile_notice);
         return res;
@@ -1635,6 +1728,53 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
     snprintf(app->launch_session.config.input_profile_path,
              sizeof(app->launch_session.config.input_profile_path), "%s", path);
     return NK_OK;
+}
+
+static bool player_read_semantic_stop(const char *path, char *boundary,
+                                     size_t boundary_size,
+                                     unsigned int *issue_number) {
+    static const char prefix[] =
+        "BOOT_EVENT phase=stop reason=semantic-boundary boundary=";
+    if (boundary && boundary_size) boundary[0] = '\0';
+    if (issue_number) *issue_number = 0;
+    if (!path || !path[0] || !boundary || boundary_size == 0 || !issue_number) {
+        return false;
+    }
+    FILE *events = nk_fopen_utf8(path, "rb");
+    if (!events) return false;
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), events)) {
+        if (strncmp(line, prefix, sizeof(prefix) - 1u) != 0) continue;
+        const char *start = line + sizeof(prefix) - 1u;
+        const char *separator = strchr(start, ' ');
+        const char *issue = separator ? strstr(separator, " issue=") : NULL;
+        if (!separator || !issue || issue <= start) continue;
+        size_t name_len = (size_t)(separator - start);
+        if (name_len == 0 || name_len >= boundary_size || name_len >= 96u) continue;
+        bool valid_name = true;
+        for (size_t i = 0; i < name_len; i++) {
+            unsigned char ch = (unsigned char)start[i];
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-')) {
+                valid_name = false;
+                break;
+            }
+        }
+        if (!valid_name) continue;
+        const char *digits = issue + 7;
+        char *digits_end = NULL;
+        unsigned long parsed = strtoul(digits, &digits_end, 10);
+        if (digits_end == digits || parsed == 0 || parsed > 9999ul ||
+            (*digits_end != '\n' && *digits_end != '\r' && *digits_end != '\0')) {
+            continue;
+        }
+        memcpy(boundary, start, name_len);
+        boundary[name_len] = '\0';
+        *issue_number = (unsigned int)parsed;
+        found = true;
+    }
+    fclose(events);
+    return found;
 }
 
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
@@ -1648,6 +1788,11 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     uint64_t elapsed_ms = now_ms >= app->launch_time_ms
         ? (now_ms - app->launch_time_ms) : 0;
     int code = nk_launch_wait(&app->launch_session, 0);
+    char stopped_boundary[96] = "";
+    unsigned int stopped_issue = 0;
+    bool has_semantic_stop = player_read_semantic_stop(
+        app->boot_event_file_path, stopped_boundary, sizeof(stopped_boundary),
+        &stopped_issue);
     app->is_game_running = false;
     app->close_confirmation_pending = false;
     /* The child has exited and been reaped: release its process and job
@@ -1657,11 +1802,25 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
        one job handle per finished game in the long-lived player (#511). */
     nk_launch_stop(&app->launch_session);
     app->child_window_ready = false;
-    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+    if (app->boot_event_file_path[0] && !has_semantic_stop) {
+        remove(app->boot_event_file_path);
+    }
     printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
            (unsigned long long)elapsed_ms);
 
-    if (elapsed_ms < 500) {
+    if (has_semantic_stop) {
+        player_app_set_error(
+            app, "RUNTIME_SEMANTIC_BOUNDARY", "Game Stopped Early",
+            "This part of the game isn't supported yet. Check the details below and try again after an update.",
+            "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.boundary_text,
+                 sizeof(app->last_error.boundary_text),
+                 "RUNTIME_SEMANTIC_BOUNDARY: %s; not supported yet.",
+                 stopped_boundary);
+        snprintf(app->last_error.log_file_path,
+                 sizeof(app->last_error.log_file_path), "%s",
+                 app->boot_event_file_path);
+    } else if (elapsed_ms < 500) {
         char err_msg[512];
         snprintf(err_msg, sizeof(err_msg),
                  "Child runtime exited prematurely after %llu ms (exit code %d).\n"
@@ -1689,12 +1848,8 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
-        char cli_guidance[512];
-        package_builder_describe_cli_not_found(app->install_root,
-                                               cli_guidance, sizeof(cli_guidance));
-        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
-                             cli_guidance,
-                             "Return to Library", VIEW_LIBRARY);
+        player_app_set_cli_not_found_error(app, "Return to Library",
+                                           VIEW_LIBRARY);
         return false;
     }
 
@@ -1726,7 +1881,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 #if !defined(_WIN32) && !defined(_WIN64)
         player_app_set_error(app, "PREREQUISITE_PLATFORM_UNSUPPORTED",
                              "Build Tools Not Available on This Platform",
-                             "Automatic prerequisite installation currently supports Windows x64 with UCRT64. Linux build-tool installation is in the works (#306).",
+                             "Automatic prerequisite installation currently supports Windows x64 with UCRT64. Linux build-tool installation is in the works.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
 #else
@@ -1843,10 +1998,15 @@ void player_app_prereq_fail(PlayerApp *app, const char *code,
              "%s", message && message[0] ? message :
              "The prerequisite could not be installed. Check the connection and free disk space, then retry.");
     app->prerequisites.phase = PLAYER_PREREQ_FAILED;
-    player_app_set_error(app, app->prerequisites.error_code,
-                         "Build Prerequisite Could Not Be Installed",
-                         app->prerequisites.error_message,
-                         "Retry Download", VIEW_PREREQ_CONSENT);
+    if (strcmp(app->prerequisites.error_code, "CLI_NOT_FOUND") == 0) {
+        player_app_set_cli_not_found_error(app, "Retry Download",
+                                           VIEW_PREREQ_CONSENT);
+    } else {
+        player_app_set_error(app, app->prerequisites.error_code,
+                             "Build Prerequisite Could Not Be Installed",
+                             app->prerequisites.error_message,
+                             "Retry Download", VIEW_PREREQ_CONSENT);
+    }
 }
 
 void player_app_prereq_retry(PlayerApp *app) {
@@ -1899,9 +2059,8 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
         return false;
     }
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {
-        player_app_set_error(app, "CLI_NOT_FOUND", "Nakagawa CLI Not Found",
-                             "The packaged source/tools folder could not be located, so the prerequisite manifest is unavailable.",
-                             "Return to Settings", VIEW_SETTINGS);
+        player_app_set_cli_not_found_error(app, "Return to Settings",
+                                           VIEW_SETTINGS);
         return false;
     }
     if (!package_builder_load_prerequisites(cli_path, &list, error, sizeof(error))) {
@@ -2259,7 +2418,20 @@ static bool player_decrypted_eboot_paths(const char *runtime_root,
     return written >= 0 && (size_t)written < elf_path_size;
 }
 
-static bool player_is_usable_mips_elf32(const char *path) {
+/* The ELF32/MIPS usability decision after the header and program-header
+ * walks (issue #729).  Mirrors _elf32_mips_usable in tools/nk_core/iso_inspect.py:
+ * an executable (or any non-PRX) image needs e_entry inside an executable
+ * PT_LOAD, while a guest module that is a PSP PRX (e_type 0xFFA0) needs an
+ * executable PT_LOAD with code bytes, because its e_entry is not its start
+ * routine (module_start comes from the module info, commonly 0xFFFFFFFF). */
+static bool player_elf32_usable_decision(uint16_t e_type, bool module,
+                                         bool have_load, bool entry_executable,
+                                         bool code_segment) {
+    if (module && e_type == 0xffa0) return have_load && code_segment;
+    return have_load && entry_executable;
+}
+
+static bool player_is_usable_mips_elf32(const char *path, bool module) {
     unsigned char header[52];
     FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return false;
@@ -2301,6 +2473,7 @@ static bool player_is_usable_mips_elf32(const char *path) {
 
     bool have_load = false;
     bool entry_executable = false;
+    bool code_segment = false;
     for (uint16_t i = 0; valid && i < phnum; i++) {
         unsigned char ph[32];
         uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
@@ -2332,9 +2505,13 @@ static bool player_is_usable_mips_elf32(const char *path) {
         if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
             entry_executable = true;
         }
+        if ((flags & 1u) != 0 && filesz > 0) {
+            code_segment = true;
+        }
     }
     fclose(file);
-    return valid && have_load && entry_executable;
+    return valid && player_elf32_usable_decision(e_type, module, have_load,
+                                                 entry_executable, code_segment);
 }
 
 static PlayerDecryptedEbootState player_find_decrypted_eboot(
@@ -2347,11 +2524,11 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
     FILE *file = nk_fopen_utf8(elf_path, "rb");
     if (!file) return PLAYER_DECRYPTED_EBOOT_MISSING;
     fclose(file);
-    return player_is_usable_mips_elf32(elf_path)
+    return player_is_usable_mips_elf32(elf_path, false)
         ? PLAYER_DECRYPTED_EBOOT_VALID : PLAYER_DECRYPTED_EBOOT_INVALID;
 }
 
-/* Issue #295: built-in decryption boundary.  The player holds no key
+/* Issue #308: built-in decryption boundary.  The player holds no key
  * material: a local-only key file at <user data>/keys/psp-keyfile.json (or
  * $NAKAGAWA_PSP_KEY_FILE) unlocks the boundary, which unwraps the disc's
  * encrypted executable and encrypted PRX modules into the private per-title
@@ -2365,7 +2542,7 @@ typedef enum {
 static PlayerBoundaryStatus player_try_builtin_decrypt_member(
     const char *runtime_root, const char *iso_path, const char *disc_rel_path,
     const char *decrypt_dir, const char *out_name, const char *out_path,
-    char *detail, size_t detail_size) {
+    char *detail, size_t detail_size, bool module) {
     char key_path[NK_MAX_PATH + 64];
     char stage_dir[NK_MAX_PATH + 32];
     char stage_in[NK_MAX_PATH + 320];
@@ -2479,7 +2656,7 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
         snprintf(detail, detail_size, "the decrypted image could not be moved into place");
         return PLAYER_BOUNDARY_FAILED;
     }
-    if (!player_is_usable_mips_elf32(out_path)) {
+    if (!player_is_usable_mips_elf32(out_path, module)) {
         nk_remove_utf8(out_path);
         snprintf(detail, detail_size, "the decrypted image is not a usable MIPS ELF32");
         return PLAYER_BOUNDARY_FAILED;
@@ -2487,19 +2664,33 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
     return PLAYER_BOUNDARY_OK;
 }
 
-/* Issue #295 guest-module boundary: the disc's own PRX modules are resolved
+/* Issue #308 guest-module boundary: the disc's own PRX modules are resolved
    through the same per-title folder and built-in boundary as the executable,
    one module at a time and fail closed per module.  CFW patch-module exclusion
    stays the intake route's named job; this reports decryption readiness. */
-#define PLAYER_MAX_GUEST_MODULES 32
+/* Disc surveys found 35+ PRXs in one folder; 256 covers that count with a
+   fixed upper bound for malformed images. */
+#define PLAYER_MAX_GUEST_MODULES 256
 
 typedef struct {
     char name[256];
-    char rel_path[320];
+    char rel_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];
     uint32_t lba;
     uint32_t size;
     bool encrypted;
 } PlayerModuleCandidate;
+
+typedef enum {
+    PLAYER_MODULE_SCAN_OK = 0,
+    PLAYER_MODULE_SCAN_CANDIDATE_LIMIT,
+    PLAYER_MODULE_SCAN_DUPLICATE_NAME,
+    PLAYER_MODULE_SCAN_DIRECTORY_LIMIT,
+    PLAYER_MODULE_SCAN_PATH_LIMIT,
+    PLAYER_MODULE_SCAN_INVALID_TREE,
+    PLAYER_MODULE_SCAN_OPEN_FAILED,
+    PLAYER_MODULE_SCAN_INVALID_ARGUMENT,
+    PLAYER_MODULE_SCAN_CALLBACK_STOPPED
+} PlayerModuleScanStatus;
 
 static bool player_name_equals_ignore_case(const char *a, const char *b) {
     while (*a != '\0' && *b != '\0') {
@@ -2570,7 +2761,7 @@ static bool player_prx_header_supported(const unsigned char *header,
 
 /* The bounded MIPS ELF32 envelope check for a module still inside the ISO. */
 static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
-                                         uint32_t size) {
+                                         uint32_t size, bool module) {
     unsigned char header[52];
     unsigned char ph[32];
     if (size < sizeof(header) ||
@@ -2606,6 +2797,7 @@ static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
     }
     bool have_load = false;
     bool entry_executable = false;
+    bool code_segment = false;
     for (uint16_t i = 0; valid && i < phnum; i++) {
         uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
         if (nk_iso_reader_read(reader, lba, offset, ph, sizeof(ph)) !=
@@ -2636,84 +2828,186 @@ static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
         if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
             entry_executable = true;
         }
-    }
-    return valid && have_load && entry_executable;
-}
-
-static size_t player_scan_disc_modules(const char *iso_path,
-                                       const char *selected_name,
-                                       PlayerModuleCandidate *modules,
-                                       size_t max_modules) {
-    static const char * const directories[] = {
-        "PSP_GAME/SYSDIR", "PSP_GAME/SYSDIR/PRX",
-        "PSP_GAME/USRDIR", "PSP_GAME/USRDIR/PRX"
-    };
-    size_t count = 0;
-    NkIsoReader *reader = nk_iso_reader_open(iso_path);
-    if (reader == NULL) return 0;
-    for (size_t d = 0;
-         d < sizeof(directories) / sizeof(directories[0]) && count < max_modules;
-         d++) {
-        for (uint32_t index = 0; count < max_modules; index++) {
-            NkIsoDirEntry entry;
-            unsigned char header[0x64];
-            uint32_t header_size;
-            bool encrypted = false;
-            if (nk_iso_reader_list(reader, directories[d], index, &entry) != 1) break;
-            if (entry.is_directory) continue;
-            if (!player_module_name_is_safe(entry.name)) continue;
-            if (!player_name_has_suffix_ignore_case(entry.name, ".prx") &&
-                !player_name_has_suffix_ignore_case(entry.name, ".elf")) continue;
-            if (player_module_name_is_executable(entry.name, selected_name)) continue;
-            if (entry.size == 0 || entry.size > 64u * 1024u * 1024u) continue;
-            header_size = entry.size < (uint32_t)sizeof(header)
-                              ? entry.size : (uint32_t)sizeof(header);
-            if (nk_iso_reader_read(reader, entry.lba, 0, header, header_size) !=
-                (int)header_size) {
-                continue;
-            }
-            if (memcmp(header, "\x7f" "ELF", 4) == 0) {
-                if (!player_iso_elf32_mips_usable(reader, entry.lba, entry.size)) {
-                    continue;
-                }
-            } else if (memcmp(header, "~PSP", 4) == 0) {
-                if (!player_prx_header_supported(header, header_size)) continue;
-                encrypted = true;
-            } else if (memcmp(header, "~SCE", 4) == 0) {
-                encrypted = true;
-            } else {
-                continue;
-            }
-            memset(&modules[count], 0, sizeof(modules[count]));
-            snprintf(modules[count].name, sizeof(modules[count].name), "%s",
-                     entry.name);
-            snprintf(modules[count].rel_path, sizeof(modules[count].rel_path),
-                     "%s/%s", directories[d], entry.name);
-            modules[count].lba = entry.lba;
-            modules[count].size = entry.size;
-            modules[count].encrypted = encrypted;
-            count++;
+        if ((flags & 1u) != 0 && filesz > 0) {
+            code_segment = true;
         }
     }
+    return valid && player_elf32_usable_decision(e_type, module, have_load,
+                                                 entry_executable, code_segment);
+}
+
+typedef struct {
+    NkIsoReader *reader;
+    const char *selected_name;
+    PlayerModuleCandidate *modules;
+    size_t max_modules;
+    size_t count;
+    PlayerModuleScanStatus status;
+    char *boundary_message;
+    size_t boundary_message_size;
+} PlayerModuleScanContext;
+
+static bool player_scan_module_entry(const char *member_path,
+                                     const NkIsoDirEntry *entry,
+                                     void *userdata) {
+    PlayerModuleScanContext *context = (PlayerModuleScanContext *)userdata;
+    unsigned char header[0x64];
+    uint32_t header_size;
+    bool encrypted = false;
+    if (entry->multi_extent || !player_module_name_is_safe(entry->name)) return true;
+    if (!player_name_has_suffix_ignore_case(entry->name, ".prx") &&
+        !player_name_has_suffix_ignore_case(entry->name, ".elf")) return true;
+    if (player_module_name_is_executable(entry->name, context->selected_name)) {
+        return true;
+    }
+    if (entry->size == 0 || entry->size > 64u * 1024u * 1024u) return true;
+    header_size = entry->size < (uint32_t)sizeof(header)
+                      ? entry->size : (uint32_t)sizeof(header);
+    if (nk_iso_reader_read(context->reader, entry->lba, 0, header, header_size) !=
+        (int)header_size) {
+        return true;
+    }
+    if (memcmp(header, "\x7f" "ELF", 4) == 0) {
+        if (!player_iso_elf32_mips_usable(context->reader, entry->lba,
+                                         entry->size, true)) {
+            return true;
+        }
+    } else if (memcmp(header, "~PSP", 4) == 0) {
+        if (!player_prx_header_supported(header, header_size)) return true;
+        encrypted = true;
+    } else if (memcmp(header, "~SCE", 4) == 0) {
+        encrypted = true;
+    } else {
+        return true;
+    }
+
+    for (size_t i = 0; i < context->count; i++) {
+        if (player_name_equals_ignore_case(context->modules[i].name,
+                                           entry->name)) {
+            context->status = PLAYER_MODULE_SCAN_DUPLICATE_NAME;
+            snprintf(context->boundary_message, context->boundary_message_size,
+                     "DUPLICATE_DISC_MODULE_BASENAME: %.128s occurs at %.900s "
+                     "and %.900s; automatic module intake is in the works.",
+                     entry->name, context->modules[i].rel_path, member_path);
+            return false;
+        }
+    }
+    if (context->count >= context->max_modules) {
+        context->status = PLAYER_MODULE_SCAN_CANDIDATE_LIMIT;
+        snprintf(context->boundary_message, context->boundary_message_size,
+                 "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than %u "
+                 "guest-module candidates; larger module sets are in the works.",
+                 PLAYER_MAX_GUEST_MODULES);
+        return false;
+    }
+    memset(&context->modules[context->count], 0,
+           sizeof(context->modules[context->count]));
+    snprintf(context->modules[context->count].name,
+             sizeof(context->modules[context->count].name), "%s", entry->name);
+    snprintf(context->modules[context->count].rel_path,
+             sizeof(context->modules[context->count].rel_path), "%s", member_path);
+    context->modules[context->count].lba = entry->lba;
+    context->modules[context->count].size = entry->size;
+    context->modules[context->count].encrypted = encrypted;
+    context->count++;
+    return true;
+}
+
+static PlayerModuleScanStatus player_scan_disc_modules(
+    const char *iso_path, const char *selected_name,
+    PlayerModuleCandidate *modules, size_t max_modules, size_t *out_count,
+    char *boundary_message, size_t boundary_message_size) {
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    PlayerModuleScanContext context;
+    NkIsoModuleWalkStatus walk_status;
+    if (out_count) *out_count = 0;
+    if (boundary_message && boundary_message_size) boundary_message[0] = '\0';
+    if (reader == NULL) {
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_TREE_OPEN_FAILED: ISO could not be opened.");
+        }
+        return PLAYER_MODULE_SCAN_OPEN_FAILED;
+    }
+    memset(&context, 0, sizeof(context));
+    context.reader = reader;
+    context.selected_name = selected_name;
+    context.modules = modules;
+    context.max_modules = max_modules;
+    context.status = PLAYER_MODULE_SCAN_OK;
+    context.boundary_message = boundary_message;
+    context.boundary_message_size = boundary_message_size;
+    walk_status = nk_iso_reader_walk_module_tree(
+        reader, player_scan_module_entry, &context);
     nk_iso_reader_close(reader);
-    return count;
+    if (out_count) *out_count = context.count;
+    if (context.status != PLAYER_MODULE_SCAN_OK) return context.status;
+    switch (walk_status) {
+    case NK_ISO_MODULE_WALK_OK:
+        return PLAYER_MODULE_SCAN_OK;
+    case NK_ISO_MODULE_WALK_DIRECTORY_LIMIT:
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
+                     "%u directories; broader discovery is in the works.",
+                     NK_ISO_MODULE_TREE_MAX_DIRECTORIES);
+        }
+        return PLAYER_MODULE_SCAN_DIRECTORY_LIMIT;
+    case NK_ISO_MODULE_WALK_PATH_LIMIT:
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_PATH_LIMIT: ISO member path exceeds %u bytes; "
+                     "broader path-aware intake is in the works.",
+                     NK_ISO_MODULE_TREE_MAX_PATH_BYTES);
+        }
+        return PLAYER_MODULE_SCAN_PATH_LIMIT;
+    case NK_ISO_MODULE_WALK_INVALID_TREE:
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_TREE_INVALID: ISO module directories could "
+                     "not be listed safely.");
+        }
+        return PLAYER_MODULE_SCAN_INVALID_TREE;
+    case NK_ISO_MODULE_WALK_INVALID_ARGUMENT:
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_SCAN_INVALID_ARGUMENT: ISO module scan "
+                     "received invalid reader state.");
+        }
+        return PLAYER_MODULE_SCAN_INVALID_ARGUMENT;
+    case NK_ISO_MODULE_WALK_CALLBACK_STOPPED:
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_SCAN_CALLBACK_STOPPED: ISO module scan "
+                     "stopped without a candidate boundary.");
+        }
+        return PLAYER_MODULE_SCAN_CALLBACK_STOPPED;
+    }
+    if (boundary_message && boundary_message_size) {
+        snprintf(boundary_message, boundary_message_size,
+                 "DISC_MODULE_SCAN_STATUS_UNKNOWN: ISO module scan returned "
+                 "an unknown status.");
+    }
+    return PLAYER_MODULE_SCAN_INVALID_TREE;
 }
 
 static void player_check_guest_modules(PlayerApp *app,
                                        PlayerCompatibilityPreflight *preflight,
                                        const char *runtime_root) {
-    PlayerModuleCandidate modules[PLAYER_MAX_GUEST_MODULES];
+    PlayerModuleCandidate *modules = NULL;
     char decrypted_dir[NK_MAX_PATH * 2];
     char decrypted_elf[NK_MAX_PATH * 2];
     char key_path[NK_MAX_PATH + 64];
     char first_name[256];
     char first_detail[320];
-    char message[1024];
+    char message[2048];
+    char discovery_message[2048];
     char more[40];
-    size_t total, ready = 0, not_ready = 0;
+    size_t total = 0, ready = 0, not_ready = 0;
     bool first_encrypted = false;
     bool first_boundary = false;
     const char *env_override;
+    PlayerModuleScanStatus scan_status;
     if (!app->inspecting_game.iso_path[0] || !app->inspecting_game.disc_id[0]) {
         return;
     }
@@ -2722,10 +3016,34 @@ static void player_check_guest_modules(PlayerApp *app,
                                       decrypted_elf, sizeof(decrypted_elf))) {
         return;
     }
-    total = player_scan_disc_modules(
+    modules = (PlayerModuleCandidate *)calloc(PLAYER_MAX_GUEST_MODULES,
+                                               sizeof(*modules));
+    if (modules == NULL) {
+        static const unsigned int issues[] = { 308 };
+        player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
+                             "DISC_MODULE_SCAN_ALLOCATION_FAILED: module discovery "
+                             "could not allocate its bounded scan table.",
+                             issues, 1);
+        return;
+    }
+    scan_status = player_scan_disc_modules(
         app->inspecting_game.iso_path, app->inspecting_game.selected_executable,
-        modules, PLAYER_MAX_GUEST_MODULES);
-    if (total == 0) return;
+        modules, PLAYER_MAX_GUEST_MODULES, &total, discovery_message,
+        sizeof(discovery_message));
+    if (scan_status != PLAYER_MODULE_SCAN_OK) {
+        static const unsigned int issues[] = { 308 };
+        player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
+                             discovery_message[0] ? discovery_message :
+                                 "DISC_MODULE_SCAN_FAILED: module discovery failed "
+                                 "closed.",
+                             issues, 1);
+        free(modules);
+        return;
+    }
+    if (total == 0) {
+        free(modules);
+        return;
+    }
     env_override = getenv("NAKAGAWA_PSP_KEY_FILE");
     if (env_override != NULL && env_override[0] != '\0') {
         snprintf(key_path, sizeof(key_path), "%s", env_override);
@@ -2757,7 +3075,7 @@ static void player_check_guest_modules(PlayerApp *app,
         existing = nk_fopen_utf8(module_path, "rb");
         if (existing != NULL) {
             fclose(existing);
-            if (player_is_usable_mips_elf32(module_path)) {
+            if (player_is_usable_mips_elf32(module_path, true)) {
                 ready++;
                 continue;
             }
@@ -2776,7 +3094,8 @@ static void player_check_guest_modules(PlayerApp *app,
         detail[0] = '\0';
         status = player_try_builtin_decrypt_member(
             runtime_root, app->inspecting_game.iso_path, module->rel_path,
-            decrypted_dir, module->name, module_path, detail, sizeof(detail));
+            decrypted_dir, module->name, module_path, detail, sizeof(detail),
+            true);
         if (status == PLAYER_BOUNDARY_OK) {
             ready++;
             continue;
@@ -2798,6 +3117,7 @@ static void player_check_guest_modules(PlayerApp *app,
                  (unsigned)ready, (unsigned)total);
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_OK, message,
                              NULL, 0);
+        free(modules);
         return;
     }
     more[0] = '\0';
@@ -2806,11 +3126,11 @@ static void player_check_guest_modules(PlayerApp *app,
                  (unsigned)(not_ready - 1));
     }
     {
-        static const unsigned int issues[] = { 295 };
+        static const unsigned int issues[] = { 308 };
         if (first_encrypted) {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is encrypted%s. "
-                     "Supply decrypted modules at %.220s (#295), or a local key "
+                     "Supply decrypted modules at %.220s, or a local key "
                      "file at %.170s to enable the built-in boundary.",
                      (unsigned)ready, (unsigned)total, first_name, more,
                      decrypted_dir, key_path);
@@ -2820,7 +3140,7 @@ static void player_check_guest_modules(PlayerApp *app,
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s could not be "
                      "decrypted (%.190s)%s. Supply decrypted modules at %.220s "
-                     "(#295), or add the missing entry to your local key file.",
+                     "or add the missing entry to your local key file.",
                      (unsigned)ready, (unsigned)total, first_name, first_detail,
                      more, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
@@ -2828,13 +3148,14 @@ static void player_check_guest_modules(PlayerApp *app,
         } else {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is not ready "
-                     "(%.190s)%s. Supply decrypted modules at %.220s (#295).",
+                     "(%.190s)%s. Supply decrypted modules at %.220s.",
                      (unsigned)ready, (unsigned)total, first_name, first_detail,
                      more, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
         }
     }
+    free(modules);
 }
 
 void player_app_build_compatibility_preflight(
@@ -2852,10 +3173,10 @@ void player_app_build_compatibility_preflight(
     if (!runtime_root) runtime_root = ".";
 
     if (app->inspecting_game.is_experimental) {
-        static const unsigned int issues[] = { 285, 308 };
+        static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
-                             "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
-                             issues, 2);
+                             "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
+                             issues, 1);
     }
 
     if (!disc_readable) {
@@ -2882,7 +3203,7 @@ void player_app_build_compatibility_preflight(
                              "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.", NULL, 0);
     } else if (eboot == NK_ISO_EXEC_PSP_ENCRYPTED ||
                eboot == NK_ISO_EXEC_SCE_WRAPPER || eboot == NK_ISO_EXEC_PBP) {
-        static const unsigned int issues[] = { 295 };
+        static const unsigned int issues[] = { 308 };
         char decrypted_dir[NK_MAX_PATH * 2];
         char decrypted_elf[NK_MAX_PATH * 2];
         PlayerDecryptedEbootState decrypted_state = player_find_decrypted_eboot(
@@ -2907,7 +3228,7 @@ void player_app_build_compatibility_preflight(
             PlayerBoundaryStatus boundary = player_try_builtin_decrypt_member(
                 runtime_root, app->inspecting_game.iso_path,
                 "PSP_GAME/SYSDIR/EBOOT.BIN", decrypted_dir, "EBOOT.elf",
-                decrypted_elf, boundary_detail, sizeof(boundary_detail));
+                decrypted_elf, boundary_detail, sizeof(boundary_detail), false);
             if (env_override != NULL && env_override[0] != '\0') {
                 snprintf(key_path, sizeof(key_path), "%s", env_override);
             } else {
@@ -2922,14 +3243,14 @@ void player_app_build_compatibility_preflight(
                 char message[512];
                 snprintf(message, sizeof(message),
                     "Encrypted executable: the built-in decryption boundary failed "
-                    "(%.190s); supply decrypted modules at %.190s (#295).",
+                    "(%.190s); supply decrypted modules at %.190s.",
                     boundary_detail, decrypted_dir);
                 player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                      message, issues, 1);
             } else {
                 char message[512];
                 snprintf(message, sizeof(message),
-                    "Encrypted executable: supply decrypted modules at %.220s (#295), "
+                    "Encrypted executable: supply decrypted modules at %.220s, "
                     "or a local key file at %.170s to enable the built-in boundary.",
                     decrypted_dir, key_path);
                 player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
@@ -2941,7 +3262,7 @@ void player_app_build_compatibility_preflight(
             snprintf(message, sizeof(message),
                 "Encrypted executable: the per-title decrypted-data path could "
                 "not be resolved safely. Correct the user-data path and retry; "
-                "broader ISO-to-Play support is in the works (#308).");
+                "broader ISO-to-Play support is in the works.");
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, path_issues, 1);
         }
@@ -2951,7 +3272,7 @@ void player_app_build_compatibility_preflight(
     } else {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                             "Unknown/malformed executable boundary; broader title support is in the works (#308).",
+                             "Unknown/malformed executable boundary; broader title support is in the works.",
                              issues, 1);
     }
 
@@ -2962,14 +3283,14 @@ void player_app_build_compatibility_preflight(
     if (!app->inspecting_game.title_id[0]) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_UNSUPPORTED,
-                             "Title profile missing; generic title support is in the works (#308).",
+                             "Title profile missing; generic title support is in the works.",
                              issues, 1);
     } else {
         char package_reason[2048] = "";
         NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
             app, &app->inspecting_game, NULL, package_reason,
             sizeof(package_reason));
-        static const unsigned int issues[] = { 296, 297 };
+        static const unsigned int issues[] = { 308 };
         PlayerPreflightStatus status = PREFLIGHT_MISSING;
         if (package_status == NK_RUNTIME_PACKAGE_OK) status = PREFLIGHT_OK;
         else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) status = PREFLIGHT_INCOMPATIBLE;
@@ -2977,10 +3298,34 @@ void player_app_build_compatibility_preflight(
         player_preflight_add(preflight, "RUNTIME_PACKAGE", status,
             package_reason[0] ? package_reason : "Runtime package validation did not complete.",
             status == PREFLIGHT_OK ? NULL : issues,
-            status == PREFLIGHT_OK ? 0 : 2);
+            status == PREFLIGHT_OK ? 0 : 1);
     }
 
-    static const unsigned int font_issues[] = { 300 };
+    if (app->inspecting_game.title_id[0]) {
+        char data_root_path[NK_MAX_PATH] = "";
+        char data_root_reason[1024] = "";
+        NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
+            app, &app->inspecting_game, data_root_path, sizeof(data_root_path),
+            data_root_reason, sizeof(data_root_reason));
+        static const unsigned int issues[] = { 308 };
+        if (data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
+            data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+            player_preflight_add(preflight, "DATA_ROOT", PREFLIGHT_OK,
+                data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED
+                    ? "This game does not need a separate data folder."
+                    : "This game's data folder is available.",
+                NULL, 0);
+        } else {
+            player_preflight_add(preflight, "DATA_ROOT",
+                data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                    ? PREFLIGHT_MISSING : PREFLIGHT_UNSUPPORTED,
+                data_root_reason[0] ? data_root_reason
+                    : "This game's data folder could not be checked.",
+                issues, 1);
+        }
+    }
+
+    static const unsigned int font_issues[] = { 313 };
     char font_message[512] = "";
     NkFontStatus font_status = nk_font_check_cache(runtime_root, runtime_root,
                                                    font_message, sizeof(font_message));
@@ -2990,11 +3335,11 @@ void player_app_build_compatibility_preflight(
                              NULL, 0);
     } else if (font_status == NK_FONT_STATUS_INVALID) {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_INVALID,
-                             font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder> (#300).",
+                             font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder>.",
                              font_issues, 1);
     } else {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_MISSING,
-                             font_message[0] ? font_message : "PSP font jpn0.pgf missing; run fonts import <folder> (#300).",
+                             font_message[0] ? font_message : "PSP font jpn0.pgf missing; run fonts import <folder>.",
                              font_issues, 1);
     }
 

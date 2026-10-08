@@ -86,7 +86,7 @@ class DispositionTests(unittest.TestCase):
             by_api["sceKernelDelaySysClockThreadCB"]["disposition"], "implemented"
         )
 
-    def test_fake_success_maps_to_registered_and_281(self) -> None:
+    def test_fake_success_maps_to_registered_and_363(self) -> None:
         manifest = {
             "registrations": [
                 {
@@ -101,7 +101,7 @@ class DispositionTests(unittest.TestCase):
         census = waits_census.build_census(SAMPLE_MATRIX, manifest=manifest)
         row = next(r for r in census["rows"] if r["api"] == "sceKernelCreateMbx")
         self.assertEqual(row["disposition"], "registered")
-        self.assertEqual(row["owner"], "#281")
+        self.assertEqual(row["owner"], "#363")
 
     def test_controlled_unsupported_has_no_owner(self) -> None:
         manifest = {

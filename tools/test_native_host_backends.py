@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 #: The host platform backend, chosen the same way the Makefile chooses it.
 _WINDOWS = os.name == "nt"
 PLATFORM_SRC = "src/core/nk_platform_win32.c" if _WINDOWS else "src/core/nk_platform_posix.c"
+ISOLATION_SRC = "tests/native/native_test_isolation.c"
 EXE_EXT = ".exe" if _WINDOWS else ""
 
 CORE_SOURCES = [
@@ -97,6 +98,7 @@ def _build_and_run(
     link_cmd = ["gcc", "-o", str(out)]
     link_cmd.extend(str(owner._objects[source]) for source in CORE_SOURCES)
     link_cmd.append(str(owner._objects[PLATFORM_SRC]))
+    link_cmd.append(str(owner._objects[ISOLATION_SRC]))
     link_cmd.extend(str(owner._objects[source]) for source in extra_sources)
     link_cmd.append(str(owner._objects[test_source]))
     if _WINDOWS:
@@ -136,6 +138,10 @@ class NativeHostBackendTests(unittest.TestCase):
                 cls, source, f"{Path(source).stem}.o"
             )
 
+        # Every native test suite links the shared per-run isolation helper.
+        cls._objects[ISOLATION_SRC] = _compile_object(
+            cls, ISOLATION_SRC, "native_test_isolation.o", ("-Itests/native",)
+        )
         cls._objects["src/player/player_state.c"] = _compile_object(
             cls, "src/player/player_state.c", "player_state.o", ("-Isrc/player",)
         )

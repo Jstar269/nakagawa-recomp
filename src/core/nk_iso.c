@@ -434,11 +434,13 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
             continue;
         }
         if (rec_len < 34u || rec_len > dir_size - pos || (pos % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
-            break;
+            free(buf);
+            return -1;
         }
         uint8_t name_len = buf[pos + 32];
         if (name_len == 0 || 33u + name_len > rec_len) {
-            break;
+            free(buf);
+            return -1;
         }
 
         /* Skip '.' (0) and '..' (1) */
@@ -473,6 +475,19 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
             if (comp_len > 0 && name_bytes[comp_len - 1] == '.') {
                 comp_len--;
             }
+            if (comp_len == 0 ||
+                (comp_len == 1 && name_bytes[0] == '.') ||
+                (comp_len == 2 && name_bytes[0] == '.' && name_bytes[1] == '.')) {
+                free(buf);
+                return -1;
+            }
+            for (size_t c = 0; c < comp_len; c++) {
+                if (name_bytes[c] == '\0' || name_bytes[c] == '/' ||
+                    name_bytes[c] == '\\') {
+                    free(buf);
+                    return -1;
+                }
+            }
             if (comp_len >= sizeof(out_entry->name)) {
                 comp_len = sizeof(out_entry->name) - 1;
             }
@@ -481,6 +496,7 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
             out_entry->lba = ext_lba_le;
             out_entry->is_directory = (buf[pos + 25] & 0x02u) != 0;
             out_entry->size = out_entry->is_directory ? 0 : ext_sz_le;
+            out_entry->multi_extent = (buf[pos + 25] & 0x80u) != 0;
             found = true;
             break;
         }
@@ -491,6 +507,132 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
 
     free(buf);
     return found ? 1 : 0;
+}
+
+typedef struct {
+    NkIsoReader *reader;
+    NkIsoModuleWalkCallback callback;
+    void *userdata;
+    size_t directories_visited;
+} NkIsoModuleWalkContext;
+
+static bool nk_iso_module_name_equals(const char *left, const char *right) {
+    while (*left && *right) {
+        if (tolower((unsigned char)*left) != tolower((unsigned char)*right)) {
+            return false;
+        }
+        left++;
+        right++;
+    }
+    return *left == *right;
+}
+
+static NkIsoModuleWalkStatus nk_iso_walk_module_directory(
+    NkIsoModuleWalkContext *context, const char *directory, unsigned depth) {
+    for (uint32_t index = 0;; index++) {
+        NkIsoDirEntry entry;
+        int listed = nk_iso_reader_list(context->reader, directory, index, &entry);
+        if (listed == 0) return NK_ISO_MODULE_WALK_OK;
+        if (listed < 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        if (entry.is_directory) {
+            if (nk_iso_module_name_equals(entry.name, "KMODULE")) continue;
+            if (depth < NK_ISO_MODULE_TREE_MAX_DEPTH) {
+                char child_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];
+                int written;
+                NkIsoModuleWalkStatus status;
+                context->directories_visited++;
+                if (context->directories_visited >
+                    NK_ISO_MODULE_TREE_MAX_DIRECTORIES) {
+                    return NK_ISO_MODULE_WALK_DIRECTORY_LIMIT;
+                }
+                written = snprintf(child_path, sizeof(child_path), "%s/%s",
+                                   directory, entry.name);
+                if (written < 0 || (size_t)written >= sizeof(child_path)) {
+                    return NK_ISO_MODULE_WALK_PATH_LIMIT;
+                }
+                status = nk_iso_walk_module_directory(context, child_path,
+                                                       depth + 1u);
+                if (status != NK_ISO_MODULE_WALK_OK) return status;
+            }
+            continue;
+        }
+        {
+            char member_path[NK_ISO_MODULE_TREE_MAX_PATH_BYTES];
+            int written = snprintf(member_path, sizeof(member_path), "%s/%s",
+                                   directory, entry.name);
+            if (written < 0 || (size_t)written >= sizeof(member_path)) {
+                return NK_ISO_MODULE_WALK_PATH_LIMIT;
+            }
+            if (!context->callback(member_path, &entry, context->userdata)) {
+                return NK_ISO_MODULE_WALK_CALLBACK_STOPPED;
+            }
+        }
+    }
+}
+
+NkIsoModuleWalkStatus nk_iso_reader_walk_module_tree(
+    NkIsoReader *reader, NkIsoModuleWalkCallback callback, void *userdata) {
+    static const char *const roots[] = {
+        "PSP_GAME/SYSDIR", "PSP_GAME/USRDIR"
+    };
+    static const char *const root_names[] = { "SYSDIR", "USRDIR" };
+    NkIsoModuleWalkContext context;
+    bool psp_game_found = false;
+    bool psp_game_is_directory = false;
+    bool root_found[sizeof(root_names) / sizeof(root_names[0])] = { false };
+    bool root_is_directory[sizeof(root_names) / sizeof(root_names[0])] = { false };
+    if (!reader || !callback) return NK_ISO_MODULE_WALK_INVALID_ARGUMENT;
+    memset(&context, 0, sizeof(context));
+    context.reader = reader;
+    context.callback = callback;
+    context.userdata = userdata;
+
+    /* Validate the complete parent extents before deciding that either
+     * optional module root is absent. A lookup that stops at the matching
+     * record alone can hide a malformed record later in the directory. */
+    for (uint32_t index = 0;; index++) {
+        NkIsoDirEntry entry;
+        int listed = nk_iso_reader_list(reader, "", index, &entry);
+        if (listed == 0) break;
+        if (listed < 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        if (!nk_iso_module_name_equals(entry.name, "PSP_GAME")) continue;
+        if (psp_game_found) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        psp_game_found = true;
+        psp_game_is_directory = entry.is_directory;
+    }
+    if (!psp_game_found || !psp_game_is_directory) return NK_ISO_MODULE_WALK_OK;
+
+    for (uint32_t index = 0;; index++) {
+        NkIsoDirEntry entry;
+        int listed = nk_iso_reader_list(reader, "PSP_GAME", index, &entry);
+        if (listed == 0) break;
+        if (listed < 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        for (size_t i = 0; i < sizeof(root_names) / sizeof(root_names[0]); i++) {
+            if (!nk_iso_module_name_equals(entry.name, root_names[i])) continue;
+            if (root_found[i]) return NK_ISO_MODULE_WALK_INVALID_TREE;
+            root_found[i] = true;
+            root_is_directory[i] = entry.is_directory;
+        }
+    }
+
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        uint32_t lba = 0, size = 0;
+        bool is_directory = false;
+        if (!root_found[i]) continue;
+        if (!root_is_directory[i] ||
+            nk_iso_reader_lookup(reader, roots[i], &lba, &size, &is_directory) != 0 ||
+            !is_directory || size == 0) {
+            return NK_ISO_MODULE_WALK_INVALID_TREE;
+        }
+        context.directories_visited++;
+        if (context.directories_visited > NK_ISO_MODULE_TREE_MAX_DIRECTORIES) {
+            return NK_ISO_MODULE_WALK_DIRECTORY_LIMIT;
+        }
+        NkIsoModuleWalkStatus status = nk_iso_walk_module_directory(
+            &context, roots[i], 0);
+        if (status != NK_ISO_MODULE_WALK_OK) return status;
+    }
+    return NK_ISO_MODULE_WALK_OK;
 }
 
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
@@ -667,6 +809,98 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
     return true;
 }
 
+#define PBP_HEADER_SIZE 40u
+#define PBP_SECTION_COUNT 8u
+static const uint8_t PBP_MAGIC[4] = { 0x00, 'P', 'B', 'P' };
+
+/* Identify a PlayStation Store package and refuse it at a named boundary.
+ * A PBP package is not a disc image regardless of its file name or extension,
+ * so reading it as ISO9660 can only produce a misleading error. Only the
+ * PARAM.SFO section header is parsed, through the shared parser, so the
+ * message can name the title and disc ID the package carries. No package
+ * section is extracted or executed.
+ *
+ * Always returns a failure code with meta->boundary_code and
+ * meta->error_message set. */
+static NkResult nk_iso_inspect_pbp(FILE *f, uint64_t file_size,
+                                   const uint8_t *header, size_t header_len,
+                                   NkIsoMetadata *meta) {
+    if (header_len < PBP_HEADER_SIZE) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_HEADER_TRUNCATED");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "This file starts like a PlayStation Store package (PBP) but ends "
+                 "before the 40-byte package header is complete.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    uint32_t offsets[PBP_SECTION_COUNT];
+    for (uint32_t index = 0; index < PBP_SECTION_COUNT; index++) {
+        offsets[index] = read_le32(header + 8u + index * 4u);
+    }
+    bool ascending = true;
+    for (uint32_t index = 0; index + 1 < PBP_SECTION_COUNT; index++) {
+        if (offsets[index] > offsets[index + 1]) ascending = false;
+    }
+    if (offsets[0] < PBP_HEADER_SIZE || !ascending ||
+        (uint64_t)offsets[PBP_SECTION_COUNT - 1] > file_size) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_OFFSETS_INVALID");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "This PlayStation Store package (PBP) has a section table that is not "
+                 "ascending or that points past the end of the file.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    uint64_t sfo_start = offsets[0];
+    uint64_t sfo_size = (uint64_t)offsets[1] - (uint64_t)offsets[0];
+    if (sfo_size < 20u || sfo_size > (uint64_t)NK_ISO_MAX_SFO_BYTES ||
+        sfo_size > file_size - sfo_start) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_SFO_INVALID");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "The title information (PARAM.SFO) inside this PlayStation Store "
+                 "package (PBP) is missing, oversized, or malformed.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    uint8_t *sfo = (uint8_t *)malloc((size_t)sfo_size);
+    if (!sfo) {
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "Could not allocate %llu bytes to read the package title information",
+                 (unsigned long long)sfo_size);
+        return NK_ERROR_OUT_OF_MEMORY;
+    }
+    bool parsed =
+        nk_fseek64(f, (int64_t)sfo_start, SEEK_SET) == 0 &&
+        fread(sfo, 1, (size_t)sfo_size, f) == (size_t)sfo_size &&
+        nk_iso_parse_sfo_buffer(sfo, (size_t)sfo_size, meta) &&
+        meta->disc_id[0] != '\0' && sfo_disc_id_valid(meta->disc_id);
+    free(sfo);
+    if (!parsed) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_SFO_INVALID");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "The title information (PARAM.SFO) inside this PlayStation Store "
+                 "package (PBP) is missing, oversized, or malformed.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    char title[NK_MAX_TITLE_LEN];
+    snprintf(title, sizeof(title), "%s", meta->title_name);
+    for (size_t index = 0; title[index] != '\0'; index++) {
+        unsigned char c = (unsigned char)title[index];
+        if (c < 0x20u || c == 0x7fu) title[index] = '?';
+    }
+    char tail[156];
+    if (title[0] != '\0') {
+        snprintf(tail, sizeof(tail), " Title: %s (ID: %.9s)", title, meta->disc_id);
+    } else {
+        snprintf(tail, sizeof(tail), " ID: %.9s", meta->disc_id);
+    }
+    snprintf(meta->error_message, sizeof(meta->error_message),
+             "This is a PlayStation Store package (PBP), not a disc image. "
+             "Nakagawa Recomp can't use these yet.%s", tail);
+    snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_PACKAGE_UNSUPPORTED");
+    return NK_ERROR_INVALID_ISO;
+}
+
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     if (!iso_path || !out_meta) return NK_ERROR_GENERIC;
     memset(out_meta, 0, sizeof(*out_meta));
@@ -693,6 +927,19 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     nk_fseek64(f, 0, SEEK_SET);
 
     uint64_t file_size = (uint64_t)out_meta->file_size_bytes;
+
+    uint8_t pbp_header[PBP_HEADER_SIZE];
+    size_t pbp_header_len = 0;
+    if (file_size >= sizeof(PBP_MAGIC)) {
+        pbp_header_len = fread(pbp_header, 1, sizeof(pbp_header), f);
+    }
+    if (pbp_header_len >= sizeof(PBP_MAGIC) &&
+        memcmp(pbp_header, PBP_MAGIC, sizeof(PBP_MAGIC)) == 0) {
+        NkResult pbp_result = nk_iso_inspect_pbp(f, file_size, pbp_header,
+                                                 pbp_header_len, out_meta);
+        fclose(f);
+        return pbp_result;
+    }
 
     if (file_size < (uint64_t)(PVD_SECTOR + 1) * SECTOR_SIZE) {
         fclose(f);

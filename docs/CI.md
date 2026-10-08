@@ -23,6 +23,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security, Markdown, CI required | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
+| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over two shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
 | Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
@@ -276,6 +277,29 @@ The invariant, stated once: **the same logical generated text must produce the
 same bytes and the same SHA-256 whether it came from PowerShell, Windows Python,
 Bash, or WSL.**
 
+## Python test sharding
+
+`python_tools` runs `tools/test_*.py` on parallel runners. The module lists come
+from [`tools/ci_test_shards.py`](../tools/ci_test_shards.py), not from the file
+names: it packs modules longest-first onto the least-loaded shard (ties broken by
+name and then shard index) using the measured per-module seconds in
+[`tools/ci_test_weights.json`](../tools/ci_test_weights.json). A module without a
+measurement uses the file's `default_seconds`, so a new test needs no data edit to
+run. Modules in one `separate` group never share a shard; `test_title_catalog` and
+`test_publication_policy_gate` deliberately mutate tracked repository state and
+form such a group. The plan depends only on the tracked module names and the data
+file, so every runner computes the same partition independently.
+
+`tools/test_ci_test_shards.py` runs the planner exactly as the workflow does and
+proves that every `tools/test_*.py` module is scheduled on exactly one shard, that
+the separated modules stay apart, and that the workflow captures the planner's
+output before using it (a failing planner must stop the step instead of handing
+`unittest` an empty module list, which would fall back to discovery). Refresh the
+weights when the suite's cost moves materially: run each module once, serially,
+and record its wall-clock seconds; `python tools/ci_test_shards.py --check` rejects
+weights for modules that no longer exist, and `--plan` prints the resulting
+partition with per-shard estimates.
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a
@@ -310,6 +334,20 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   may therefore skip the Python suite only because the audit still runs here.
   `PublicationCoverageInvariantTests` pins both halves so this cannot regress
   into a path-gated audit.
+- **Only a structurally proven recipe-only `Makefile` edit narrows the build
+  route.** `makefile_recipe_only_targets` parses the base and head `Makefile` and
+  accepts the change only when every changed line is a comment, a blank line, or a
+  recipe line of an explicit rule whose targets are all literal `.PHONY` names, and
+  every unchanged line keeps its kind and owning targets. A variable, flag,
+  prerequisite, rule header, pattern rule, file-producing recipe, conditional,
+  include or `.PHONY` edit keeps `build_system`, as does a `Makefile` that either
+  revision cannot provide. A recipe-only edit still runs the native and Windows
+  gates, which execute recipes. Python runs only the modules whose transitive tool
+  closure reads the `Makefile` or runs `make` (`ci_test_shards.py --select
+  makefile`), on two shards; any other Python-routing change in the same diff
+  restores the full four-shard suite. That closure covers most of the suite's
+  weight, because most heavy modules build through `make`, so the saving is the
+  unrelated modules and two runners rather than the Python job as a whole.
 - **The published surface is derived, not listed.** `_is_public_surface` asks the
   publication policy instead of maintaining a second list that can drift; it
   fails closed to "published" when the policy cannot be read. The `public_surface`
@@ -428,14 +466,14 @@ developer runs locally, without private inputs:
 - `windows_runtime` links the native player (`mingw32-make player`), runs
   `player-ui-tests`, executes headless native player UI regressions
   (`mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions`,
-  main part only; the harness forces SDL's dummy video and software render drivers),
+  `smoke` part only; the harness forces SDL's dummy video and software render drivers),
   runs the complete platform ladder
   (`mingw32-make --no-print-directory platform-ladder`), and runs
   `profile-zero-e2e` for the two profile-zero manifests. That gate
   validates the guest ProgramImage, generates a public AOT package, launches it
   through the headless production runtime, and checks all seven named
-  guest-service cases for each manifest. It runs in the existing 25-minute
-  `windows_runtime` job and took about 123 seconds locally for both package
+  guest-service cases for each manifest. It runs in the `routes` part of the
+  25-minute `windows_runtime` job and took about 123 seconds locally for both package
   builds and runtime launches. The guest bytes are the committed
   `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
   fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),

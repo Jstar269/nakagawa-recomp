@@ -32,7 +32,7 @@ Nakagawa Program + User's Game ISO → Play
 | **Option C** | **Build-Time AOT + End-User Asset Binding** | YES | **Maximum (target)** | **Instant (target)** | Moderate (+20–40 MB per title) | **Recommended target; NOT IMPLEMENTED** |
 | **Option D** | **Pre-Generated Static Stems + Interpreter Floor (#118)** | YES | High (fail-closed interpreter floor) | Instant (<1s) | Minimal (<10 MB) | **Transitional / Development Proving** |
 | **Option E** | **Embedded Cranelift / LLVM Backend** | YES | High | Fast (3–8s first run) | Moderate (+35 MB) | **Strategic Long-Term AOT Engine** |
-| **Option F** | **Cloud-Based Recompilation Service** | YES | Zero (Severe Privacy/Legal Breach) | Poor (Network transfer of multi-GB ISOs) | Minimal | **REJECTED (Illegal & Hostile to Privacy)** |
+| **Option F** | **Cloud-Based Recompilation Service** | YES | Zero (Severe Privacy Risk) | Poor (Network transfer of multi-GB ISOs) | Minimal | **REJECTED (Hostile to Privacy)** |
 | **Option G** | **Independent Standalone Title Releases** | YES | High | Instant | Minimal | **Viable for Specific Public Domain / Homebrew Titles** |
 
 ---
@@ -58,7 +58,7 @@ In this model, Nakagawa maintainers/packagers compile the verified title executa
   * Zero compilation latency for the user.
   * Zero compiler required on user machine.
   * 100% reproducible optimization (`-O2` runtime, `-O1` recomp chunks).
-  * Avoids distributing proprietary game bytes; lawful user-supplied inputs remain required.
+  * Avoids distributing proprietary game bytes; user-supplied inputs remain required.
 
 ### Option A: Bundled Embedded Host Compiler (The "Compile-on-Import" Route)
 

@@ -56,6 +56,25 @@ from analyze import Elf
 # malformed/unmapped string cannot make the offline pipeline walk an unbounded address range.
 MAX_IMPORT_LIBRARY_NAME_BYTES = 1024
 
+
+class ImportTableError(ValueError):
+    """A fail-closed import-table boundary with a stable public code."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+    def format_boundary(self, subject=None):
+        if subject is not None:
+            return f"{self.code}: {subject}: {self}"
+        return f"{self.code}: {self}"
+
+
+def format_boundary(exc, subject=None):
+    """Format a named ImportTableError boundary, optionally naming the module."""
+    return exc.format_boundary(subject=subject)
+
+
 # Marker for stub slots that no library window claims (interleaved stub tables). Kept
 # out of the guest-name alphabet (percent-encoding turns any guest byte into %XX) so it
 # can never collide with a real library name.
@@ -92,7 +111,10 @@ def _read_guest_cstr(elf, addr, *, max_bytes=MAX_IMPORT_LIBRARY_NAME_BYTES):
             raise ValueError("guest string address wraps 32-bit address space")
         ch = elf.read_at_vaddr(cur, 1)
         if ch is None or len(ch) != 1:
-            raise ValueError(f"guest string at 0x{addr:08x} leaves mapped input")
+            raise ImportTableError(
+                "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED",
+                f"guest string at 0x{addr:08x} leaves mapped input",
+            )
         if ch[0] == 0:
             return _encode_import_library_name(out)
         if offset == max_bytes:
@@ -117,7 +139,7 @@ def _toml_basic_string(value):
     return json.dumps(value, ensure_ascii=True)
 
 
-def _import_model(elf):
+def _import_model_impl(elf):
     """Return (stubs, findings) for a PSP ELF import table.
 
     stubs maps every stub-slot address in the region to
@@ -150,7 +172,7 @@ def _import_model(elf):
         return struct.unpack("<I", b4)[0]
 
     # Pass 1: walk the PspLibStubEntry window table (libstub..libstubend).
-    windows = []  # (library name, numFuncs, nidData, firstSym)
+    windows = []  # (library name, numFuncs, numVars, nidData, firstSym)
     pos = libstub
     while pos < libstubend:
         e = elf.read_at_vaddr(pos, 28)
@@ -162,12 +184,20 @@ def _import_model(elf):
             break
         name_ptr, nidData, firstSym = rebase(name_ptr), rebase(nidData), rebase(firstSym)
         if numFuncs > 0 and nidData == 0:
-            raise ValueError(f"import entry at 0x{pos:08x}: {numFuncs} functions but null NID table pointer")
+            raise ImportTableError(
+                "ANALYZER_IMPORT_NID_TABLE_MISSING",
+                f"import entry at 0x{pos:08x}: {numFuncs} functions but null NID table pointer",
+            )
+        if numFuncs > 0 and name_ptr == 0:
+            raise ImportTableError(
+                "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED",
+                f"import entry at 0x{pos:08x} has functions but a null library-name pointer",
+            )
         # A zero-function window claims no import stubs, so its library name is
         # never used by the codegen map. Some stripped retail inputs leave this
         # optional pointer stale; do not dereference it for an empty window.
         libname = _read_guest_cstr(elf, name_ptr) if name_ptr and numFuncs else "(null)"
-        windows.append((libname, numFuncs, nidData, firstSym))
+        windows.append((libname, numFuncs, numVars, nidData, firstSym))
         step = size * 4
         if step <= 0 or pos + step > 0xFFFFFFFF:
             raise ValueError("import stub table step wraps 32-bit guest space")
@@ -199,13 +229,23 @@ def _import_model(elf):
 
     stub_base = stub_end = None
     nid_base = nid_end = None
+    variable_windows = [w for w in windows if w[2] > 0]
+    if variable_windows:
+        variable_count = sum(w[2] for w in variable_windows)
+        raise ImportTableError(
+            "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED",
+            f"import table declares {variable_count} variable imports; variable imports are not supported yet",
+        )
     function_windows = [w for w in windows if w[1] > 0]
     if not function_windows:
-        raise ValueError("import stub table has no function windows")
-    window_stub_base = min(w[3] for w in function_windows)
-    window_stub_end = max(w[3] + w[1] * 8 for w in function_windows)
-    window_nid_base = min(w[2] for w in function_windows)
-    window_nid_end = max(w[2] + w[1] * 4 for w in function_windows)
+        raise ImportTableError(
+            "ANALYZER_IMPORT_TABLE_INVALID",
+            "import stub table has no function windows",
+        )
+    window_stub_base = min(w[4] for w in function_windows)
+    window_stub_end = max(w[4] + w[1] * 8 for w in function_windows)
+    window_nid_base = min(w[3] for w in function_windows)
+    window_nid_end = max(w[3] + w[1] * 4 for w in function_windows)
     section_tail_finding = None
     if st is not None:
         if st["size"] % 8:
@@ -241,7 +281,8 @@ def _import_model(elf):
         stub_base, stub_end = window_stub_base, window_stub_end
         nid_base, nid_end = window_nid_base, window_nid_end
     if stub_end - stub_base != 2 * (nid_end - nid_base):
-        raise ValueError(
+        raise ImportTableError(
+            "ANALYZER_IMPORT_REGIONS_MISMATCH",
             "import stub region size does not match NID region size "
             "(psp-fixup-imports requires stub slots to pair 1:1 with NIDs)"
         )
@@ -258,7 +299,7 @@ def _import_model(elf):
 
     claims = {}    # position -> library name (last claimer wins)
     claimers = {}  # position -> [libraries in table order]
-    for libname, numFuncs, nidData, firstSym in windows:
+    for libname, numFuncs, _numVars, nidData, firstSym in windows:
         if numFuncs == 0:
             continue
         if firstSym % 4:
@@ -305,6 +346,16 @@ def _import_model(elf):
             f"stub slots claimed by multiple library windows: {len(ambiguous)} "
             f"positions {ambiguous}")
     return stubs, findings
+
+
+def _import_model(elf):
+    """Return imports or a stable, fail-closed analyzer boundary."""
+    try:
+        return _import_model_impl(elf)
+    except ImportTableError:
+        raise
+    except (ValueError, RuntimeError, struct.error) as exc:
+        raise ImportTableError("ANALYZER_IMPORT_TABLE_INVALID", str(exc)) from exc
 
 
 def parse_imports(elf):

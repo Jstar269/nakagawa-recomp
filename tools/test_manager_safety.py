@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Manager filesystem/process/build safety guarantees (#183).
+"""Manager filesystem/process/build safety guarantees.
 
 Two layers:
 
@@ -195,7 +195,7 @@ class ManagerSafetyContractTests(unittest.TestCase):
 
     def test_manager_anchors_to_its_own_script_location(self) -> None:
         # The canonical root is $PSScriptRoot, never the caller's CWD.
-        # Phase 3 (#196): nk_manager uses Assert-NkWorkspaceRoot and nk_safety.ps1.
+        # Phase 3: nk_manager uses Assert-NkWorkspaceRoot and nk_safety.ps1.
         self.assertIn("Assert-NkWorkspaceRoot -Root $PSScriptRoot", self.manager)
         self.assertIn("Set-Location -LiteralPath $script:RepoRoot", self.manager)
         self.assertIn("nk_safety.ps1", self.manager)

@@ -8,7 +8,7 @@ The player resolves its SDL3_ttf shared library at run time with
 ``SDL_LoadObject``. On Windows the loader only searches the executable's own
 directory and ``PATH``, so a player started from Explorer or a plain ``cmd.exe``
 (with no MSYS2 toolchain on ``PATH``) silently lost its readable UI font unless
-the library and its whole dependency closure sat beside the executable (#421).
+the library and its whole dependency closure sat beside the executable.
 
 This module is the one mechanical staging step both packaging routes share:
 
@@ -21,12 +21,12 @@ recursively, stopping at Windows system DLLs. It is never hand-guessed. A
 non-system import that cannot be resolved to a file is a named, fail-closed
 error -- a half-staged closure would merely move the silent fallback.
 
-Root DLLs follow the ``SDL3_DLL`` override pattern from #296: an environment
+Root DLLs follow the ``SDL3_DLL`` override pattern: an environment
 override names the exact file, otherwise the search directories are consulted --
 an explicit ``MSYS_PATH`` bin directory first, then the discovered toolchain
 root (``MINGW_PREFIX``, a ``gcc`` on ``PATH``, or the installer's pinned
 toolchain), then ``C:/msys64/ucrt64/bin`` as the last resort. Resolution
-failures name both the per-file override and those environment knobs (#667 A5).
+failures name both the per-file override and those environment knobs (#368).
 
 Licence texts are staged beside the DLLs through
 ``tools/package_notices.py`` (``THIRD_PARTY_NOTICES/``), which fails closed when
@@ -245,7 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Stage the SDL3/SDL3_ttf runtime DLL closure and their licence "
-            "notices beside a built player or package (#421)."
+            "notices beside a built player or package."
         )
     )
     parser.add_argument(

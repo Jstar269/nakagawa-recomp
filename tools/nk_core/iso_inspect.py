@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
+from collections import deque
 import hashlib
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 import struct
-from typing import Dict, Optional, Sequence
+from typing import Dict, Iterator, Optional, Sequence
 
 import title_manifest
 from .decrypt_boundary import BoundaryOutcome, decrypt_bytes_to, key_file_path
@@ -37,10 +38,41 @@ PSP_MODULE_HEAP_RESERVE = 0x00100000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
+PBP_MAGIC = b"\x00PBP"
+PBP_HEADER_SIZE = 40
+PBP_SECTION_COUNT = 8
+PBP_PARAM_SFO_SECTION = 0
+PBP_TITLE_MAX_BYTES = 128  # same bound as the native title_name field
+PBP_UNSUPPORTED_SENTENCE = (
+    "This is a PlayStation Store package (PBP), not a disc image. "
+    "Nakagawa Recomp can't use these yet."
+)
+PBP_HEADER_TRUNCATED_SENTENCE = (
+    "This file starts like a PlayStation Store package (PBP) but ends "
+    "before the 40-byte package header is complete."
+)
+PBP_OFFSETS_INVALID_SENTENCE = (
+    "This PlayStation Store package (PBP) has a section table that is not "
+    "ascending or that points past the end of the file."
+)
+PBP_SFO_INVALID_SENTENCE = (
+    "The title information (PARAM.SFO) inside this PlayStation Store "
+    "package (PBP) is missing, oversized, or malformed."
+)
 
 
 class IsoInspectionError(ValueError):
-    """Raised when an ISO image is unreadable or malformed."""
+    """Raised when an ISO image is unreadable or malformed.
+
+    ``boundary_code`` names a format boundary the file was identified as
+    (for example a PlayStation Store package Nakagawa cannot use). It is
+    carried beside the message, never inside it: ``str(exc)`` stays the
+    plain sentence shown to a person.
+    """
+
+    def __init__(self, message: str, *, boundary_code: str | None = None) -> None:
+        super().__init__(message)
+        self.boundary_code = boundary_code
 
 
 def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
@@ -285,6 +317,77 @@ def _canonical_disc_id(value: str) -> str:
     return normalized
 
 
+def _pbp_display_title(title: str) -> str:
+    """Show a package title the way the native reader would.
+
+    A C string stops at the first NUL, and ASCII control characters are
+    replaced with '?' so the sentence stays one plain single line.
+    """
+    visible = title.split("\0", 1)[0]
+    return "".join(
+        char if ord(char) >= 0x20 and ord(char) != 0x7F else "?" for char in visible
+    )
+
+
+def _pbp_package_sentence(disc_id: str, title: str) -> str:
+    if title:
+        return f"{PBP_UNSUPPORTED_SENTENCE} Title: {title} (ID: {disc_id})"
+    return f"{PBP_UNSUPPORTED_SENTENCE} ID: {disc_id}"
+
+
+def _reject_pbp_package(stream, size_bytes: int, header: bytes) -> None:
+    """Refuse a file already identified as a PBP package at a named boundary.
+
+    Always raises ``IsoInspectionError``: the ``\\0PBP`` magic was seen at
+    offset 0, so any ISO9660 reading of this file is a misread rather than a
+    format this function can fall back to. Only the PARAM.SFO section is
+    parsed, with the shared parser, so the sentence can name the title and
+    disc ID the package carries. No package section is extracted or executed.
+    """
+    if len(header) < PBP_HEADER_SIZE:
+        raise IsoInspectionError(
+            PBP_HEADER_TRUNCATED_SENTENCE, boundary_code="PBP_HEADER_TRUNCATED"
+        )
+    offsets = struct.unpack_from("<8I", header, 8)
+    ascending = all(
+        offsets[index] <= offsets[index + 1]
+        for index in range(PBP_SECTION_COUNT - 1)
+    )
+    if (
+        offsets[0] < PBP_HEADER_SIZE
+        or not ascending
+        or offsets[PBP_SECTION_COUNT - 1] > size_bytes
+    ):
+        raise IsoInspectionError(
+            PBP_OFFSETS_INVALID_SENTENCE, boundary_code="PBP_OFFSETS_INVALID"
+        )
+
+    sfo_start = offsets[PBP_PARAM_SFO_SECTION]
+    sfo_size = offsets[PBP_PARAM_SFO_SECTION + 1] - sfo_start
+    if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
+        raise IsoInspectionError(
+            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
+        )
+    stream.seek(sfo_start)
+    raw_sfo = stream.read(sfo_size)
+    try:
+        if len(raw_sfo) != sfo_size:
+            raise IsoInspectionError("PARAM.SFO section is truncated")
+        sfo = parse_param_sfo(raw_sfo)
+        disc_id = _canonical_disc_id(sfo.get("DISC_ID", ""))
+        title = sfo.get("TITLE", "")
+        if len(title.encode("utf-8")) >= PBP_TITLE_MAX_BYTES:
+            raise IsoInspectionError("PARAM.SFO TITLE is too long to display")
+    except IsoInspectionError as exc:
+        raise IsoInspectionError(
+            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
+        ) from exc
+    raise IsoInspectionError(
+        _pbp_package_sentence(disc_id, _pbp_display_title(title)),
+        boundary_code="PBP_PACKAGE_UNSUPPORTED",
+    )
+
+
 def inspect_iso(
     iso_path: Path | str,
     registry: Optional[TitleRegistry] = None,
@@ -297,6 +400,15 @@ def inspect_iso(
         raise IsoInspectionError(f"ISO file does not exist: {path}")
 
     size_bytes = path.stat().st_size
+
+    # A PlayStation Store package carries "\0PBP" at offset 0 and is not a
+    # disc image whatever its name or size says, so it is identified before
+    # any ISO9660 reading rather than reported as a broken disc.
+    with path.open("rb") as probe:
+        header = probe.read(PBP_HEADER_SIZE)
+        if header[: len(PBP_MAGIC)] == PBP_MAGIC:
+            _reject_pbp_package(probe, size_bytes, header)
+
     if size_bytes < 1024 * 1024:  # Under 1 MiB is not a valid PSP UMD image
         raise IsoInspectionError(f"File is too small to be a valid PSP ISO: {size_bytes} bytes")
 
@@ -520,7 +632,7 @@ def write_experimental_profile(
                 raise IsoInspectionError("selected executable is not a supported MIPS ELF32 image")
             if e_type not in (2, 3, 0xFFA0):
                 raise IsoInspectionError(
-                    "experimental import needs a user-supplied load binding for unsupported relocatable ELF input (#308)"
+                    "experimental import needs a user-supplied load binding for unsupported relocatable ELF input"
                 )
             executable_entry = struct.unpack_from("<I", header, 24)[0]
             if e_type in (3, 0xFFA0):
@@ -654,11 +766,12 @@ def _read_iso_directory_entries(
 
 
 def list_iso_directory(
-    iso_path: Path | str, path: tuple[str, ...]
+    iso_path: Path | str, path: tuple[str, ...], *, require_final_directory: bool = False
 ) -> list[IsoDirectoryEntry] | None:
     """List one fixed ISO directory after validating every record and extent.
 
-    ``None`` means the requested directory is absent or is not a directory. Caller
+    ``None`` means the requested directory is absent or is not a directory, unless
+    ``require_final_directory`` is set and the final component names a file. Caller
     supplied components are single names; traversal syntax and nested separators
     are refused.
     """
@@ -682,14 +795,21 @@ def list_iso_directory(
             lba, size, is_directory = _extent_from_record(pvd[156:190], file_size)
             if not is_directory or size == 0 or size > MAX_DIRECTORY_BYTES:
                 raise IsoInspectionError("root directory is not a bounded directory extent")
-            for component in path:
+            for index, component in enumerate(path):
                 entries = _read_iso_directory_entries(stream, file_size, lba, size)
                 found = next(
                     (entry for entry in entries
                      if entry.name.casefold() == component.casefold()),
                     None,
                 )
-                if found is None or not found.is_directory:
+                if found is None:
+                    return None
+                if not found.is_directory:
+                    if require_final_directory and index == len(path) - 1:
+                        raise IsoInspectionError(
+                            "DISC_MODULE_TREE_INVALID: module root "
+                            f"{'/'.join(path)} is not a directory."
+                        )
                     return None
                 lba, size = found.lba, found.size
             if not is_directory and not path:
@@ -741,8 +861,20 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
 
 
 def _elf32_mips_usable(
-    stream, file_size: int, lba: int, size: int, *, require_segment_alignment: bool = True
+    stream, file_size: int, lba: int, size: int, *,
+    require_segment_alignment: bool = True, module: bool = False,
 ) -> bool:
+    """Whether an ELF32/MIPS file is usable as a plain executable or guest module.
+
+    The executable rule (``module=False``) needs ``e_entry`` inside an
+    executable PT_LOAD, because the launcher starts at ``e_entry``.  A PSP PRX
+    (``e_type 0xFFA0``) checked as a guest module (``module=True``) is a
+    relocatable module whose start routine comes from its module info, so its
+    ``e_entry`` (commonly 0xFFFFFFFF) is not checked; it needs an executable
+    PT_LOAD that carries code bytes instead.  Header and program-header bounds
+    apply to both rules.  Mirrored by ``player_is_usable_mips_elf32`` and
+    ``player_iso_elf32_mips_usable`` in ``src/player/player_state.c``.
+    """
     if size < 52:
         return False
     header = _read_iso_extent(stream, file_size, lba, size, 0, 52)
@@ -769,6 +901,7 @@ def _elf32_mips_usable(
     table = _read_iso_extent(stream, file_size, lba, size, phoff, phentsize * phnum)
     have_load = False
     entry_executable = False
+    code_segment = False
     for index in range(phnum):
         p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags, p_align = struct.unpack_from(
             "<8I", table, index * phentsize
@@ -785,26 +918,109 @@ def _elf32_mips_usable(
         ):
             return False
         have_load = True
-        if p_flags & 1 and p_vaddr <= entry < memory_end:
+        executable = bool(p_flags & 1)
+        if executable and p_vaddr <= entry < memory_end:
             entry_executable = True
+        if executable and p_filesz > 0:
+            code_segment = True
+    if module and e_type == 0xFFA0:
+        return have_load and code_segment
     return have_load and entry_executable
 
 
 # ---------------------------------------------------------------------------
-# Guest-module boundary (issue #295).  The disc's own PRX/ELF modules are
+# Guest-module boundary (issue #308).  The disc's own PRX/ELF modules are
 # resolved through the same per-title folder and built-in decryption boundary
 # as the executable, one module at a time and fail closed per module.
 # ---------------------------------------------------------------------------
 
-MODULE_DIRECTORIES = (
+MODULE_ROOTS = (
     ("PSP_GAME", "SYSDIR"),
-    ("PSP_GAME", "SYSDIR", "PRX"),
     ("PSP_GAME", "USRDIR"),
-    ("PSP_GAME", "USRDIR", "PRX"),
 )
-MAX_MODULE_CANDIDATES = 32
+# Depth is measured below SYSDIR/USRDIR: the issue's deepest observed layout,
+# USRDIR/DATA/MODULE/MODULE, is depth 3. The extra level leaves room for common
+# packaging variations while bounding traversal work.
+MAX_MODULE_DIRECTORY_DEPTH = 4
+MAX_MODULE_DIRECTORIES = 1024
+# The largest surveyed folder contained 35+ PRXs; 256 exceeds the
+# aggregate known folder counts without turning malformed images into an
+# unbounded intake route.
+MAX_MODULE_CANDIDATES = 256
 _MODULE_SUFFIXES = {".prx", ".elf"}
 _EXECUTABLE_FILENAMES = {"eboot.bin", "boot.bin", "eboot.old"}
+
+
+def walk_disc_module_entries(
+    iso_path: Path | str,
+) -> Iterator[tuple[tuple[str, ...], IsoDirectoryEntry]]:
+    """Yield files under SYSDIR/USRDIR with shared bounded module policy.
+
+    The walk descends at most four directory levels below either root, visits
+    at most 1024 directories, and excludes every subtree named ``KMODULE``.
+    Returned paths are ISO member components; callers apply their own format
+    and executable checks to the files.
+    """
+    directories = deque()
+    visited = 0
+    discovered = 0
+
+    def read_module_directory(
+        directory: tuple[str, ...], *, module_root: bool = False
+    ) -> list[IsoDirectoryEntry] | None:
+        try:
+            entries = list_iso_directory(
+                iso_path, directory, require_final_directory=module_root
+            )
+        except IsoInspectionError as exc:
+            if str(exc).startswith("DISC_MODULE_TREE_INVALID:"):
+                raise
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: module directory "
+                f"{'/'.join(directory)} could not be listed safely: {exc}"
+            ) from exc
+        if entries is None and not module_root:
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: listed module directory could not "
+                "be reopened safely."
+            )
+        return entries
+
+    for root in MODULE_ROOTS:
+        entries = read_module_directory(root, module_root=True)
+        if entries is not None:
+            discovered += 1
+            directories.append((root, 0))
+    while directories:
+        directory, depth = directories.popleft()
+        visited += 1
+        if visited > MAX_MODULE_DIRECTORIES:
+            raise IsoInspectionError(
+                "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
+                f"{MAX_MODULE_DIRECTORIES} directories; broader discovery is "
+                "in the works."
+            )
+        entries = read_module_directory(directory)
+        if entries is None:
+            raise IsoInspectionError(
+                "DISC_MODULE_TREE_INVALID: listed module directory could not "
+                "be reopened safely."
+            )
+        for entry in entries:
+            if entry.is_directory:
+                if entry.name.casefold() == "kmodule":
+                    continue
+                if depth < MAX_MODULE_DIRECTORY_DEPTH:
+                    discovered += 1
+                    if discovered > MAX_MODULE_DIRECTORIES:
+                        raise IsoInspectionError(
+                            "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery "
+                            f"exceeds {MAX_MODULE_DIRECTORIES} directories; "
+                            "broader discovery is in the works."
+                        )
+                    directories.append((directory + (entry.name,), depth + 1))
+                continue
+            yield directory, entry
 
 
 def _prx_container_header_supported(header: bytes) -> bool:
@@ -819,7 +1035,7 @@ def _prx_container_header_supported(header: bytes) -> bool:
 def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
     """The disc's own viable guest-module candidates.
 
-    Bounded ``.prx``/``.elf`` files below the title's module directories, minus
+    Bounded ``.prx``/``.elf`` files below the title's module roots, minus
     the executables, CFW patch modules, and any file the intake route refuses
     by name or extent (those keep their own named failure).  Each candidate
     records its member path and whether it is already plain or an encrypted
@@ -828,53 +1044,66 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
     path = Path(iso_path)
     file_size = path.stat().st_size
     candidates: list[dict] = []
+    seen_names: dict[str, str] = {}
     with path.open("rb") as stream:
-        for directory in MODULE_DIRECTORIES:
-            for entry in list_iso_directory(path, directory) or []:
-                if entry.is_directory:
+        for directory, entry in walk_disc_module_entries(path):
+            name = entry.name
+            if Path(name).suffix.casefold() not in _MODULE_SUFFIXES or \
+                    name.casefold() in _EXECUTABLE_FILENAMES:
+                continue
+            if not title_manifest.FILENAME_RE.fullmatch(name) or \
+                    name.endswith(".") or \
+                    name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
+                continue
+            if entry.multi_extent or entry.size <= 0 or \
+                    entry.size > MAX_EXECUTABLE_BYTES:
+                continue
+            header = _read_iso_extent(
+                stream, file_size, entry.lba, entry.size, 0, min(entry.size, 0x64)
+            )
+            if header.startswith(b"\x7fELF"):
+                if not _elf32_mips_usable(
+                    stream, file_size, entry.lba, entry.size, module=True
+                ):
                     continue
-                name = entry.name
-                if Path(name).suffix.casefold() not in _MODULE_SUFFIXES or \
-                        name.casefold() in _EXECUTABLE_FILENAMES:
-                    continue
-                if not title_manifest.FILENAME_RE.fullmatch(name) or \
-                        name.endswith(".") or \
-                        name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
-                    continue
-                if entry.multi_extent or entry.size <= 0 or \
-                        entry.size > MAX_EXECUTABLE_BYTES:
-                    continue
-                header = _read_iso_extent(
-                    stream, file_size, entry.lba, entry.size, 0, min(entry.size, 0x64)
+                blob = _read_iso_extent(
+                    stream, file_size, entry.lba, entry.size, 0, entry.size
                 )
-                if header.startswith(b"\x7fELF"):
-                    if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
-                        continue
-                    blob = _read_iso_extent(
-                        stream, file_size, entry.lba, entry.size, 0, entry.size
-                    )
-                    if len(blob) != entry.size or _has_cfw_or_kernel_only_imports(blob):
-                        continue  # patch modules are excluded from every route
-                    kind = "plain"
-                elif header.startswith(b"~PSP"):
-                    if not _prx_container_header_supported(header):
-                        continue
-                    kind = "encrypted"
-                elif header.startswith(b"~SCE"):
-                    kind = "encrypted"
-                else:
+                if len(blob) != entry.size or _has_cfw_or_kernel_only_imports(blob):
+                    continue  # patch modules are excluded from every route
+                kind = "plain"
+            elif header.startswith(b"~PSP"):
+                if not _prx_container_header_supported(header):
                     continue
-                candidates.append({
-                    "name": name,
-                    "names": (name,),
-                    "members": (directory + (name,),),
-                    "directory": directory,
-                    "kind": kind,
-                })
-                if len(candidates) > MAX_MODULE_CANDIDATES:
-                    raise IsoInspectionError(
-                        "The ISO contains more than 32 guest-module candidates (#296)."
-                    )
+                kind = "encrypted"
+            elif header.startswith(b"~SCE"):
+                kind = "encrypted"
+            else:
+                continue
+            member_path = "/".join(directory + (name,))
+            folded_name = name.casefold()
+            prior_path = seen_names.get(folded_name)
+            if prior_path is not None:
+                raise IsoInspectionError(
+                    "DUPLICATE_DISC_MODULE_BASENAME: module filename "
+                    f"{name!r} occurs at {prior_path} and {member_path}; "
+                    "the decrypted module folder is keyed by filename; "
+                    "path-aware duplicate handling is in the works."
+                )
+            seen_names[folded_name] = member_path
+            candidates.append({
+                "name": name,
+                "names": (name,),
+                "members": (directory + (name,),),
+                "directory": directory,
+                "kind": kind,
+            })
+            if len(candidates) > MAX_MODULE_CANDIDATES:
+                raise IsoInspectionError(
+                    "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
+                    f"{MAX_MODULE_CANDIDATES} guest-module candidates; larger "
+                    "module sets are in the works."
+                )
     return candidates
 
 
@@ -939,7 +1168,7 @@ def decrypt_needed_modules(
                 for spelling in names:
                     candidate = module_dir / spelling
                     if candidate.is_file():
-                        if _classify_decrypted_elf_file(candidate) == "PLAIN_MIPS_ELF32":
+                        if _classify_decrypted_elf_file(candidate, module=True) == "PLAIN_MIPS_ELF32":
                             user_plain = candidate
                             break
                         if invalid_spelling is None:
@@ -979,7 +1208,7 @@ def decrypt_needed_modules(
                 stream, file_size, lba, extent_size, 0, min(extent_size, 0x64)
             )
             if header.startswith(b"\x7fELF"):
-                if _elf32_mips_usable(stream, file_size, lba, extent_size):
+                if _elf32_mips_usable(stream, file_size, lba, extent_size, module=True):
                     result.update(status="skipped", reason="plain", detail="")
                     ready += 1
                 else:
@@ -1027,7 +1256,7 @@ def decrypt_needed_modules(
                     outcome.detail or "the container could not be decrypted",
                 ))
                 continue
-            if _classify_decrypted_elf_file(destination) != "PLAIN_MIPS_ELF32":
+            if _classify_decrypted_elf_file(destination, module=True) != "PLAIN_MIPS_ELF32":
                 destination.unlink(missing_ok=True)
                 results.append(_module_failure(
                     result, "boundary", "boundary output is not a usable MIPS ELF32",
@@ -1046,6 +1275,13 @@ def decrypt_needed_modules(
 
 def _guest_modules_check(report: dict, key_hint: Path) -> dict:
     """The compatibility check line for the module boundary (no tool names)."""
+    discovery_error = report.get("error")
+    if isinstance(discovery_error, str) and discovery_error:
+        return {
+            "code": "GUEST_MODULES", "status": "UNSUPPORTED",
+            "message": f"Guest module discovery stopped: {discovery_error}",
+            "issues": [308],
+        }
     ready = report["ready"]
     total = report["total"]
     module_dir = report.get("module_dir") or "the per-title decrypted folder"
@@ -1064,10 +1300,10 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
             "code": "GUEST_MODULES", "status": "MISSING",
             "message": (
                 f"Guest modules: {ready} of {total} ready; {label} is encrypted{more}. "
-                f"Supply decrypted modules at {module_dir} (#295), or a local key file "
+                f"Supply decrypted modules at {module_dir}, or a local key file "
                 f"at {key_hint} to enable the built-in boundary."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     if first["reason"] == "boundary":
         return {
@@ -1075,17 +1311,17 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
             "message": (
                 f"Guest modules: {ready} of {total} ready; {label} could not be "
                 f"decrypted ({first['detail']}){more}. Supply decrypted modules at "
-                f"{module_dir} (#295), or add the missing entry to your local key file."
+                f"{module_dir}, or add the missing entry to your local key file."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     return {
         "code": "GUEST_MODULES", "status": "UNSUPPORTED",
         "message": (
             f"Guest modules: {ready} of {total} ready; {label} is not ready "
-            f"({first['detail']}){more}. Supply decrypted modules at {module_dir} (#295)."
+            f"({first['detail']}){more}. Supply decrypted modules at {module_dir}."
         ),
-        "issues": [295],
+        "issues": [308],
     }
 
 
@@ -1104,8 +1340,11 @@ def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | Non
     return resolved
 
 
-def _classify_decrypted_elf_file(path: Path | str) -> str:
-    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans."""
+def _classify_decrypted_elf_file(path: Path | str, *, module: bool = False) -> str:
+    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans.
+
+    ``module=True`` applies the guest-module rule (see ``_elf32_mips_usable``).
+    """
     candidate = Path(path)
     try:
         size = candidate.stat().st_size
@@ -1119,7 +1358,8 @@ def _classify_decrypted_elf_file(path: Path | str) -> str:
                 # The original ELF is read by the static analyzer, not a host
                 # ELF loader; its bounded guest spans remain required.
                 usable = _elf32_mips_usable(
-                    stream, size, 0, size, require_segment_alignment=False
+                    stream, size, 0, size, require_segment_alignment=False,
+                    module=module,
                 )
                 return "PLAIN_MIPS_ELF32" if usable else "UNKNOWN"
     except (OSError, IsoInspectionError, struct.error):
@@ -1298,7 +1538,7 @@ def inspect_compatibility_preflight(
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
-    # Built-in decryption boundary (issue #295): when the user keeps a local
+    # Built-in decryption boundary (issue #308): when the user keeps a local
     # key file in the private user data, unwrap the disc's encrypted
     # executable through the production boundary and continue to the
     # analyzer.  Nothing is ever written next to the ISO or the repository.
@@ -1340,7 +1580,7 @@ def inspect_compatibility_preflight(
         and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
     ):
         selected = "EBOOT.elf"
-    # Guest-module boundary (issue #295): every module the disc carries is
+    # Guest-module boundary (issue #308): every module the disc carries is
     # resolved through the same per-title folder and boundary as the
     # executable, one module at a time and fail closed per module.
     module_report: dict[str, object] = {
@@ -1358,7 +1598,7 @@ def inspect_compatibility_preflight(
             }
     modules_check = (
         _guest_modules_check(module_report, key_hint)
-        if module_report["total"]
+        if module_report["total"] or module_report.get("error")
         else None
     )
     if directory_error:
@@ -1392,7 +1632,7 @@ def inspect_compatibility_preflight(
                 "Custom-firmware-patched dump detected; EBOOT.OLD is the game executable "
                 "but is still encrypted. Supply its decrypted form at "
                 "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake is "
-                "in the works (#308)."
+                "in the works."
             ),
             "issues": [308],
         }
@@ -1442,26 +1682,26 @@ def inspect_compatibility_preflight(
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
                 f"Encrypted executable: the built-in decryption boundary failed "
-                f"({boundary_outcome.detail}); supply decrypted modules at {module_dir} (#295). "
+                f"({boundary_outcome.detail}); supply decrypted modules at {module_dir}. "
                 f"Check the local key file at {boundary_outcome.key_path}."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     elif eboot_kind in user_decryptable_kinds and module_dir is not None:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
-                f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
+                f"Encrypted executable: supply decrypted modules at {module_dir}. "
                 f"A matching local key file at {key_hint} enables built-in decryption "
                 "for supported formats. The project ships no keys; broader ISO-to-Play "
-                "support is in the works (#308)."
+                "support is in the works."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Encrypted executable format is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "message": "Encrypted executable format is not supported yet; broader ISO-to-Play support is in the works.",
             "issues": [308],
         }
     elif eboot_kind == "EMPTY_OR_ZERO_FILLED":
@@ -1472,19 +1712,19 @@ def inspect_compatibility_preflight(
     elif eboot_kind == "SCE_WRAPPER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "~SCE wrapper could not be analyzed; broader ISO-to-Play support is in the works (#308).",
+            "message": "~SCE wrapper could not be analyzed; broader ISO-to-Play support is in the works.",
             "issues": [308],
         }
     elif eboot_kind == "PBP":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "PBP executable unpacking is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "message": "PBP executable unpacking is not supported yet; broader ISO-to-Play support is in the works.",
             "issues": [308],
         }
     else:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Unknown/malformed executable boundary; broader title support is in the works (#308).",
+            "message": "Unknown/malformed executable boundary; broader title support is in the works.",
             "issues": [308],
         }
 
@@ -1500,20 +1740,20 @@ def inspect_compatibility_preflight(
     experimental_check = {
         "code": "EXPERIMENTAL",
         "status": "IN_PROGRESS",
-        "message": "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
-        "issues": [285, 308],
+        "message": "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
+        "issues": [308],
     } if is_experimental else None
 
     if is_experimental:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
-            "message": "Experimental title runtime package is missing; build it from the library (#296/#297).",
-            "issues": [296, 297],
+            "message": "Experimental title runtime package is missing; build it from the library.",
+            "issues": [308],
         }
     elif metadata.matched_profile is None:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "UNSUPPORTED",
-            "message": "Title profile missing; generic title support is in the works (#308).",
+            "message": "Title profile missing; generic title support is in the works.",
             "issues": [308],
         }
     elif package_present:
@@ -1524,9 +1764,40 @@ def inspect_compatibility_preflight(
     else:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
-            "message": "Runtime package missing; build it from the library (#296/#297).",
-            "issues": [296, 297],
+            "message": "Runtime package missing; build it from the library.",
+            "issues": [308],
         }
+
+    data_root_check: dict[str, object] | None = None
+    if metadata.matched_profile is not None:
+        declared_data_root = metadata.matched_profile.archive_relpath
+        if not declared_data_root:
+            data_root_check = {
+                "code": "DATA_ROOT", "status": "OK",
+                "message": "This game does not need a separate data folder.",
+                "issues": [],
+            }
+        else:
+            data_root_path = root / declared_data_root
+            extracted_data_root = (
+                Path(iso_path).resolve(strict=False).parent
+                / "EXTRACTED" / "PSP_GAME" / "USRDIR" / declared_data_root
+            )
+            if data_root_path.is_dir() or extracted_data_root.is_dir():
+                data_root_check = {
+                    "code": "DATA_ROOT", "status": "OK",
+                    "message": "This game's data folder is available.", "issues": [],
+                }
+            else:
+                data_root_check = {
+                    "code": "DATA_ROOT", "status": "MISSING",
+                    "message": (
+                        f"This game needs its '{declared_data_root}' data folder, but it is missing. "
+                        "Add the game's data files before playing; broader ISO-to-play support "
+                        "is coming later."
+                    ),
+                    "issues": [308],
+                }
 
     from .fonts import inspect_font_cache
 
@@ -1539,12 +1810,12 @@ def inspect_compatibility_preflight(
     elif font_status == "INVALID":
         fonts_check = {
             "code": "SYSTEM_FONTS", "status": "INVALID",
-            "message": font_message, "issues": [300],
+            "message": font_message,             "issues": [313],
         }
     else:
         fonts_check = {
             "code": "SYSTEM_FONTS", "status": "MISSING",
-            "message": font_message, "issues": [300],
+            "message": font_message,             "issues": [313],
         }
     audio_check = {
         "code": "AUDIO_OUTPUT", "status": "OK",
@@ -1562,19 +1833,22 @@ def inspect_compatibility_preflight(
                 "is the game executable selected through the supplied decrypted EBOOT.elf. "
                 "The EBOOT.BIN loader and "
                 "custom-firmware patch modules are excluded. Broader CFW dump support "
-                "is in the works (#308)."
+                "is in the works."
                 if selected == "EBOOT.elf"
                 else "Custom-firmware-patched dump detected; EBOOT.OLD is the game "
                      "executable but is still encrypted. Supply its decrypted form at "
                      "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake "
-                     "is in the works (#308)."
+                     "is in the works."
             ),
             "issues": [308],
         })
     checks.append(executable_check)
     if modules_check is not None:
         checks.append(modules_check)
-    checks.extend((runtime_check, fonts_check, audio_check))
+    checks.append(runtime_check)
+    if data_root_check is not None:
+        checks.append(data_root_check)
+    checks.extend((fonts_check, audio_check))
     if experimental_check is not None:
         checks.insert(0, experimental_check)
     return {

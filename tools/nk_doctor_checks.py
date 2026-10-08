@@ -1070,7 +1070,7 @@ def _check_elf_file(report: Report, code: str, path: Path, description: str) -> 
             f"Invalid {description}",
             path=path,
             detail=error,
-            remediation="Supply a decrypted 32-bit little-endian MIPS ELF produced from your own lawful game copy.",
+            remediation="Supply a decrypted 32-bit little-endian MIPS ELF produced from your own copy of the game.",
         )
         return None
     assert metadata is not None
@@ -1112,6 +1112,7 @@ class TitleDiagnosticContext:
     kind: str
     game_name: str
     game_elf_candidates: tuple[Path, ...]
+    has_declared_executable_path: bool
     module_dir: Path | None
     psp_header_path: Path | None
     data_root: Path | None
@@ -1268,6 +1269,7 @@ def title_diagnostic_context(
         kind=kind,
         game_name=effective_name,
         game_elf_candidates=elf_candidates,
+        has_declared_executable_path="path" in executable,
         module_dir=module_dir,
         psp_header_path=psp_header,
         data_root=data_root,
@@ -1304,7 +1306,36 @@ def check_private_inputs(
     if context.requires_game_elf:
         elf_candidates = context.game_elf_candidates or (root / "eboot.elf",)
         elf_path = next((path for path in elf_candidates if path.is_file()), elf_candidates[0])
-        elf_meta = _check_elf_file(report, "INPUT_EBOOT_ELF", elf_path, "decrypted title EBOOT ELF")
+        default_fixture_paths = (
+            root / "build" / "fixtures" / f"{context.game_name}.elf",
+            root / "fixtures" / f"{context.game_name}.elf",
+        )
+        if (report.scope == "build" and context.kind == "synthetic" and not elf_path.is_file()
+                and not context.has_declared_executable_path
+                and elf_path in default_fixture_paths):
+            # The synthetic title's default ELF fixture is not a build input: no
+            # build target in this checkout writes it. Declared executables, the
+            # inputs scope, and a retail or homebrew title's missing ELF all stay FAILs.
+            required_title_inputs: list[str] = []
+            if context.requires_psp_header:
+                required_title_inputs.append("the original EBOOT.BIN PSP header")
+            if context.required_modules:
+                required_title_inputs.append(
+                    "required PRX modules (" + ", ".join(context.required_modules) + ")"
+                )
+            if required_title_inputs:
+                required_summary = "Build scope still checks " + " and ".join(required_title_inputs) + "."
+            else:
+                required_summary = "No additional title-specific files are required by --scope build."
+            report.info(
+                "INPUT_EBOOT_ELF",
+                "Synthetic title ELF is not present; --scope build does not require it "
+                "(--scope inputs still checks it). " + required_summary + " "
+                "Declared title data roots and disc images are checked by --scope inputs when required.",
+                path=elf_path,
+            )
+        else:
+            elf_meta = _check_elf_file(report, "INPUT_EBOOT_ELF", elf_path, "decrypted title EBOOT ELF")
 
     psp_meta: dict[str, object] | None = None
     if context.requires_psp_header:
@@ -1317,7 +1348,7 @@ def check_private_inputs(
                     "Invalid original EBOOT.BIN PSP header",
                     path=psp_header_path,
                     detail=error,
-                    remediation="Re-extract PSP_GAME/SYSDIR/EBOOT.BIN from the same lawful ISO used by this workspace.",
+                    remediation="Re-extract PSP_GAME/SYSDIR/EBOOT.BIN from the same ISO used by this workspace.",
                 )
             else:
                 report.pass_("INPUT_EBOOT_BIN", "Validated original EBOOT.BIN PSP header", path=psp_header_path, metadata=psp_meta or {})
@@ -1366,7 +1397,7 @@ def check_private_inputs(
             report.fail(
                 "INPUT_ISO",
                 "The selected title manifest does not declare filesystem.disc_image",
-                remediation="Declare the lawful local ISO path in the title manifest.",
+                remediation="Declare the local ISO path in the title manifest.",
             )
         elif not selected.is_file():
             report.fail(
@@ -1407,7 +1438,7 @@ def check_private_inputs(
         ):
             report.warn(
                 "MIGRATE_LOOSE_CONTENT_ROOTS",
-                "Loose files beside the manifest data root need filesystem.loose_content_roots (#289 is in the works)",
+                "Loose files beside the manifest data root are not bound; declare their root in filesystem.loose_content_roots.",
                 path=manifest_data_root.parent,
                 remediation=(
                     "Declare each loose-content root in filesystem.loose_content_roots so the runtime can bind it explicitly."
@@ -1673,7 +1704,7 @@ def check_typography_runtime(
     imports_of: object = None,
     is_system: object = None,
 ) -> None:
-    """Report whether SDL3_ttf and its resolved closure sit beside the player (#421).
+    """Report whether SDL3_ttf and its resolved closure sit beside the player.
 
     The launcher resolves SDL3_ttf at run time and falls back to the SDL bitmap
     font only as a logged last resort, so an unstaged typography runtime is
@@ -2210,11 +2241,10 @@ def check_repository_contract(report: Report) -> None:
             ),
             "NOTICE_PRIVATE_INPUT": (
                 (
-                    "users must supply their own legally obtained",
-                    "users must supply any lawful external inputs",
+                    "users must supply any external inputs",
                     "user-supplied",
                 ),
-                "lawful user-supplied input requirement",
+                "user-supplied input requirement",
             ),
             "NOTICE_LEGAL_REVIEW": (
                 ("legal review", "not legal advice", "qualified review"),

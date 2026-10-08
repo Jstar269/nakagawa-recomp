@@ -102,12 +102,15 @@ def corrupt_png_header() -> bytes:
 
 
 def synthetic_art_iso(
-    path: Path, *, include_picture: bool = True, icon_bytes: bytes | None = None
+    path: Path, *, include_picture: bool = True, icon_bytes: bytes | None = None,
+    source_executable: bytes | None = None,
 ) -> None:
     sector_size = 2048
     icon_image = png_pixel(50, 190, 120) if icon_bytes is None else icon_bytes
     assert len(icon_image) <= sector_size, "the synthetic icon must fit one sector"
-    image = bytearray(22 * sector_size)
+    image = bytearray((23 if source_executable is not None else 22) * sector_size)
+    if source_executable is not None:
+        assert len(source_executable) <= sector_size, "the synthetic executable must fit one sector"
 
     def both_endian(value: int) -> bytes:
         return struct.pack("<I", value) + struct.pack(">I", value)
@@ -149,12 +152,66 @@ def synthetic_art_iso(
     if include_picture:
         game_records += record(b"PIC1.PNG;1", 20, len(png_pixel(50, 100, 190)), False)
         picture_size = len(png_pixel(50, 100, 190))
+    if source_executable is not None:
+        game_records += record(b"SYSDIR", 21, sector_size, True)
     image[17 * sector_size : 17 * sector_size + len(root_records)] = root_records
     image[18 * sector_size : 18 * sector_size + len(game_records)] = game_records
     image[19 * sector_size : 19 * sector_size + len(icon_image)] = icon_image
     if picture_size:
         image[20 * sector_size : 20 * sector_size + picture_size] = png_pixel(50, 100, 190)
+    if source_executable is not None:
+        sysdir_records = (
+            record(b"\x00", 21, sector_size, True)
+            + record(b"\x01", 18, sector_size, True)
+            + record(b"EBOOT.BIN;1", 22, len(source_executable), False)
+        )
+        image[21 * sector_size : 21 * sector_size + len(sysdir_records)] = sysdir_records
+        image[22 * sector_size : 22 * sector_size + len(source_executable)] = source_executable
     path.write_bytes(image)
+
+
+def synthetic_pbp_package(path: Path, *, disc_id: str = "TEST00424",
+                          title: str = "Store Package") -> None:
+    """Write a synthetic PlayStation Store package named like a disc image.
+
+    The package carries "\0PBP" at offset 0 and a PARAM.SFO in its first
+    section. Nothing in it is executed or extracted; it exists only so the
+    player has a file whose extension lies about its format.
+    """
+    entries = sorted([
+        ("DISC_ID", disc_id.encode("utf-8") + b"\0"),
+        ("TITLE", title.encode("utf-8") + b"\0"),
+    ])
+    key_table = bytearray()
+    data_table = bytearray()
+    entry_table = bytearray()
+    for key, value in entries:
+        key_offset = len(key_table)
+        key_table.extend(key.encode("utf-8") + b"\0")
+        data_offset = len(data_table)
+        data_table.extend(value)
+        while len(data_table) % 4:
+            data_table.append(0)
+        entry_table.extend(
+            struct.pack("<HHIII", key_offset, 0x0204, len(value), len(value), data_offset)
+        )
+    key_table_start = 20 + len(entry_table)
+    data_table_start = key_table_start + len(key_table)
+    while data_table_start % 4:
+        key_table.append(0)
+        data_table_start += 1
+    sfo = bytes(
+        struct.pack("<4s4sIII", b"\x00PSF", b"\x01\x01\x00\x00",
+                    key_table_start, data_table_start, len(entries))
+    ) + bytes(entry_table) + bytes(key_table) + bytes(data_table)
+
+    header = bytearray(40)
+    header[:4] = b"\x00PBP"
+    struct.pack_into("<I", header, 4, 0x00010000)
+    offsets = [40] + [40 + len(sfo)] * 7
+    for index, value in enumerate(offsets):
+        struct.pack_into("<I", header, 8 + index * 4, value)
+    path.write_bytes(bytes(header) + sfo)
 
 
 def synthetic_stale_package(runtime_root: Path) -> None:
@@ -183,7 +240,9 @@ def synthetic_stale_package(runtime_root: Path) -> None:
     (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
 
 
-def synthetic_ready_package(runtime_root: Path) -> None:
+def synthetic_ready_package(
+    runtime_root: Path, source_executable: bytes, *, data_root_present: bool = True
+) -> None:
     """Write a source-owned package accepted by the real native validator."""
     disc_id = "TEST00006"
     title_id = "display-smoke-v1"
@@ -192,7 +251,7 @@ def synthetic_ready_package(runtime_root: Path) -> None:
     executable_name = f"{title_id}.exe"
     image_name = f"{title_id}_image.bin"
     executable_bytes = b"synthetic ready package executable\n"
-    input_executable_hash = hashlib.sha256(b"synthetic input executable\n").hexdigest()
+    input_executable_hash = hashlib.sha256(source_executable).hexdigest()
     executable_hash = hashlib.sha256(executable_bytes).hexdigest()
     zero_hash = "0" * 64
 
@@ -212,7 +271,14 @@ def synthetic_ready_package(runtime_root: Path) -> None:
         "modules": [],
         "param_sfo": None,
         "psp_header": None,
-        "schema_version": 1,
+        "schema_version": 2,
+        "source_media": {
+            "executable": {
+                "path": "PSP_GAME/SYSDIR/EBOOT.BIN",
+                "sha256": input_executable_hash,
+            },
+            "modules": [],
+        },
     }
     identity_text = json.dumps(identity, separators=(",", ":")) + "\n"
     identity_digest = canonical_hash(identity)
@@ -326,6 +392,8 @@ def synthetic_ready_package(runtime_root: Path) -> None:
         ],
     }
     write_json(package / "completion-manifest.json", completion)
+    if data_root_present:
+        (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
 
 
 def badge_rect(frame: dict[str, str]) -> tuple[int, int, int, int]:
@@ -425,12 +493,16 @@ class NativePlayerUiTests(unittest.TestCase):
         runtime_ready: bool = False,
         invalid_profile: bool = False,
         drop_invalid_iso: bool = False,
+        drop_pbp_iso: bool = False,
         art_iso: str | None = None,
         stale_package: bool = False,
         wait_background: bool = False,
         catalog_reload_count: int = 0,
         build_ready_test: bool = False,
         post_build_ready: bool = False,
+        downloaded_tool_payload: bool = False,
+        data_root_present: bool = True,
+        profile_refusal: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
         width: int = 1280,
@@ -452,10 +524,68 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            tool_marker: Path | None = None
+            if downloaded_tool_payload:
+                tool_marker = runtime_root / "prerequisites" / "synthetic-tool" / "marker.txt"
+                tool_marker.parent.mkdir(parents=True)
+                tool_marker.write_text("synthetic downloaded tool", encoding="utf-8")
+            if profile_refusal:
+                manifest_dir = runtime_root / "manifests"
+                manifest_dir.mkdir()
+                (manifest_dir / "retired-binding.json").write_text(
+                    json.dumps({
+                        "schema_version": 1,
+                        "id": "retired-profile-fixture-v1",
+                        "display_name": "Retired Profile Fixture",
+                        "kind": "retail",
+                        "disc": {
+                            "id": "TEST00001",
+                            "region": "NA",
+                            "revision_policy": "exact-disc-id",
+                        },
+                        "executable": {
+                            "base": "0x08800000",
+                            "entry": "0x08804000",
+                            "bss_metadata_source": "elf",
+                            "extra_executable_spans": [],
+                        },
+                        "modules": [],
+                        "filesystem": {
+                            "data_root": "fixtures/profile_zero",
+                            "memory_stick_root": "savedata",
+                            "device_prefixes": ["disc0:", "ms0:"],
+                        },
+                        "hle_profile": "generic",
+                        "feature_requirements": [],
+                        "verification_profile": "unverified",
+                        "runtime_bindings": {
+                            "schema_version": 1,
+                            "vblank_frame_counter_addr": "0x08804000",
+                        },
+                    }, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+            ready_source_iso: Path | None = None
             if build_ready_test:
-                synthetic_ready_package(runtime_root)
+                source_executable = b"synthetic input executable\n"
+                ready_source_iso = scratch / "ready-source.iso"
+                synthetic_art_iso(
+                    ready_source_iso, source_executable=source_executable
+                )
+                synthetic_ready_package(
+                    runtime_root, source_executable,
+                    data_root_present=data_root_present,
+                )
             elif post_build_ready:
-                synthetic_ready_package(runtime_root)
+                source_executable = b"synthetic input executable\n"
+                ready_source_iso = scratch / "ready-source.iso"
+                synthetic_art_iso(
+                    ready_source_iso, source_executable=source_executable
+                )
+                synthetic_ready_package(
+                    runtime_root, source_executable,
+                    data_root_present=data_root_present,
+                )
             catalog_overlay: Path | None = None
             if catalog_reload_count:
                 catalog_overlay = scratch / "catalog-overlay.json"
@@ -516,6 +646,8 @@ class NativePlayerUiTests(unittest.TestCase):
                         ui_iso_path = scratch / "late-mounted-synthetic.iso"
                     elif art_iso not in ("available", "icon-only", "undecodable", "corrupt"):
                         raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
+            if ready_source_iso is not None:
+                ui_iso_path = ready_source_iso
             if stale_package:
                 synthetic_stale_package(runtime_root)
 
@@ -543,6 +675,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 invalid_iso = scratch / "source-owned-invalid.iso"
                 invalid_iso.write_bytes(b"synthetic invalid PSP disc image\n")
                 event_script.insert(0, f"DROP_FILE={invalid_iso}")
+            elif drop_pbp_iso:
+                package_iso = scratch / "source-owned-store-package.iso"
+                synthetic_pbp_package(package_iso)
+                event_script.insert(0, f"DROP_FILE={package_iso}")
             args.append("--ui-test-events=" + ";".join(event_script))
             screenshot = scratch / "last-frame.bmp"
             args.append(f"--ui-test-screenshot={screenshot}")
@@ -572,6 +708,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1.exe").write_bytes(b"")
                 (package / "display-smoke-v1").write_bytes(b"")
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
+                (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
             args.append(f"--runtime-root={runtime_root}")
 
             effective_timeout = compute_effective_timeout(event_script, timeout)
@@ -603,6 +740,15 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertTrue(screenshot.is_file())
             bmp = read_bmp(screenshot)
             self.assertEqual((bmp[0], bmp[1]), (width, height))
+            persisted_settings = None
+            for settings_path in scratch.rglob("settings.json"):
+                try:
+                    candidate = json.loads(settings_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(candidate, dict) and "fps_cap" in candidate:
+                    persisted_settings = candidate
+                    break
             return {
                 "frames": frames,
                 "bmp": bmp,
@@ -612,6 +758,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 "stderr": completed.stderr,
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
+                "settings": persisted_settings,
+                "downloaded_tool_marker_exists": (
+                    tool_marker.is_file() if tool_marker is not None else None
+                ),
             }
 
     def test_compute_effective_timeout(self) -> None:
@@ -671,6 +821,47 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["focus"], "1")
         self.assertEqual(frames[2]["view"], "library")
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
+
+    def test_settings_presentation_choice_saves_with_native_default_schema(self) -> None:
+        events = ("KEY_TAB",) * 4 + ("KEY_RETURN",) + ("KEY_TAB",) * 10 + ("KEY_RETURN",)
+        run = self.run_player("settings", events)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "15")
+        self.assertEqual(frames[4]["focus"], "4")
+        self.assertEqual(frames[5]["focus"], "4")
+        self.assertNotEqual(frames[4]["pixels"], frames[5]["pixels"])
+        self.assertEqual(frames[-1]["view"], "library")
+        settings = run["settings"]
+        self.assertIsInstance(settings, dict)
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("schema_version"), 2)
+        self.assertEqual(settings.get("fps_cap"), 0)
+        renderer_source = (ROOT / "src" / "player" / "ui_renderer.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('case -1: return "PSP TIMING";', renderer_source)
+        self.assertIn('case 0:  return "NO EXTRA CAP";', renderer_source)
+        self.assertNotIn("30 FPS CAP", renderer_source)
+        self.assertNotIn("60 FPS CAP", renderer_source)
+
+    def test_settings_about_opens_the_pinned_license_list(self) -> None:
+        run = self.run_player("settings", ("KEY_TAB",) * 12 + ("KEY_RETURN",))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "15")
+        self.assertEqual(frames[12]["focus"], "12")
+        self.assertEqual(frames[-1]["view"], "prereq_about")
+
+    def test_settings_removal_requires_confirmation_and_keeps_other_app_data(self) -> None:
+        events = ("KEY_TAB",) * 13 + ("KEY_RETURN", "KEY_RETURN")
+        run = self.run_player("settings", events, downloaded_tool_payload=True)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[13]["focus"], "13")
+        self.assertEqual(frames[14]["view"], "confirm_remove_tools")
+        self.assertEqual(frames[-1]["view"], "settings")
+        self.assertFalse(run["downloaded_tool_marker_exists"])
 
     def test_settings_layout_avoids_launcher_save_overlap_at_client_widths(self) -> None:
         cases = (
@@ -740,6 +931,36 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(ready_frame["selected_runtime"], "1")
         self.assertEqual(ready_frame["selected_prepared"], "0")
         self.assertNotEqual(missing_frame["pixels"], ready_frame["pixels"])
+
+    def test_valid_package_with_missing_data_root_is_not_marked_ready(self) -> None:
+        run = self.run_player(
+            "ready", (), post_build_ready=True, data_root_present=False,
+            wait_background=True,
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        ready_package_frames = [
+            frame for frame in frames if frame["selected_package_status"] == "0"
+        ]
+        self.assertTrue(ready_package_frames, run["stdout"])
+        self.assertTrue(
+            all(frame["selected_runtime"] == "0" for frame in ready_package_frames),
+            run["stdout"],
+        )
+        self.assertTrue(
+            all(frame["selected_prepared"] == "0" for frame in ready_package_frames),
+            run["stdout"],
+        )
+
+    def test_refused_local_title_profile_is_shown_on_the_game_card(self) -> None:
+        normal = self.run_player("supported")
+        refused = self.run_player("supported", profile_refusal=True)
+        normal_frames = normal["frames"]
+        refused_frames = refused["frames"]
+        assert isinstance(normal_frames, list) and isinstance(refused_frames, list)
+        self.assertEqual(refused_frames[0]["view"], "supported")
+        self.assertIn("vblank_frame_counter_addr", refused["stderr"])
+        self.assertNotEqual(normal_frames[0]["pixels"], refused_frames[0]["pixels"])
 
     def test_one_title_offline_art_and_stale_package_stay_off_frame_path(self) -> None:
         # The counters are the load-bearing gate: package validation and ISO
@@ -1476,6 +1697,43 @@ class NativePlayerUiTests(unittest.TestCase):
                 expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
                 self.assertEqual(frames[1]["picker"], expected_picker)
 
+    def test_pbp_package_error_card_names_the_package_boundary(self) -> None:
+        """A store package dropped as an ISO is named as a package, not a broken disc.
+
+        Reading it as ISO9660 only ever said the volume descriptor was missing,
+        which points a person at repairing a file that was never a disc. The
+        card must carry the package boundary, and its recovery action must still
+        reopen the file picker so another file can be chosen.
+        """
+        package = self.run_player("library", ("KEY_RETURN",), drop_pbp_iso=True)
+        frames = package["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["view"], "error")
+        self.assertEqual(frames[1]["error"], "PBP_PACKAGE_UNSUPPORTED")
+        self.assertEqual(frames[2]["picker"], "1")
+
+    def test_long_error_text_fits_at_minimum_window(self) -> None:
+        run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
+                              width=960, height=540)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "UI_TEST_LONG_ERROR")
+        self.assertEqual(frames[0]["error_text_complete"], "1",
+                         "the error view clipped a long message")
+        self.assertGreater(int(frames[0]["error_text_lines"]), 4)
+
+    def test_cli_not_found_error_text_fits_at_minimum_window(self) -> None:
+        run = self.run_player("error", error_code="CLI_NOT_FOUND",
+                              width=960, height=540)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "CLI_NOT_FOUND")
+        self.assertEqual(frames[0]["error_text_complete"], "1",
+                         "the error view clipped the CLI_NOT_FOUND message")
+        self.assertEqual(frames[0]["error_details_complete"], "1")
+        self.assertGreater(int(frames[0]["error_details_lines"]), 0)
+        self.assertEqual(frames[0]["error_details_available"], "1")
+
     def test_per_title_controller_mapping_choice(self) -> None:
         """A disc can get its own mapping, or go back to the global one."""
         # The library card carries the choice: three tabs reach it, because the
@@ -1558,6 +1816,133 @@ class NativePlayerUiTests(unittest.TestCase):
                 # degradation this contract forbids.
                 self.assertNotEqual(frame["font_reason"], "NONE")
                 self.assertTrue(frame["font_reason"])
+
+
+def library_disc_ids(scratch: Path) -> list[str]:
+    """Disc IDs in every library.json this run wrote below its isolated LOCALAPPDATA."""
+    ids: list[str] = []
+    for path in scratch.rglob("library.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ids.extend(entry["disc_id"] for entry in data.get("games", []))
+    return ids
+
+
+class FirstRunRouteTests(unittest.TestCase):
+    """First-run routes: --iso= persistence and --launch-index on an empty library.
+
+    An inspected disc is stored only when the user chooses ADD TO LIBRARY, as the
+    file picker and setup wizard already do; --launch-now is the exception, since it
+    must launch and a launch needs a library record. --launch-index names a library
+    entry, so an empty library is an error and bundled demo entries are named SAMPLE.
+    """
+
+    def scratch_env(self, scratch: Path) -> dict[str, str]:
+        profile = scratch / "profile"
+        for name in ("appdata", "localappdata", "profile"):
+            (scratch / name).mkdir(exist_ok=True)
+        env = os.environ.copy()
+        env.update(
+            {
+                "SDL_VIDEODRIVER": "dummy",
+                "SDL_RENDER_DRIVER": "software",
+                "SDL_AUDIODRIVER": "dummy",
+                "APPDATA": str(scratch / "appdata"),
+                "LOCALAPPDATA": str(scratch / "localappdata"),
+                "USERPROFILE": str(profile),
+                "HOME": str(profile),
+                "XDG_CONFIG_HOME": str(profile / "config"),
+                "XDG_DATA_HOME": str(profile / "data"),
+                "XDG_CACHE_HOME": str(profile / "cache"),
+            }
+        )
+        return env
+
+    def run_route(self, scratch: Path, args: Sequence[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(PLAYER_EXE), *args, f"--runtime-root={scratch / 'runtime'}"],
+            cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+            timeout=120, check=False,
+        )
+
+    def test_iso_route_stores_nothing_until_add_to_library(self) -> None:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import create_test_iso
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-iso-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "supported.iso"
+            create_test_iso(iso, disc_id="TEST00002", title="Café® ™",
+                            volume_id="TEST00001")
+            completed = self.run_route(scratch, [
+                f"--iso={iso}",
+                "--ui-test-events=WAIT_VIEW=supported,10000;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            views = [frame["view"] for frame in parse_frames(completed.stdout)]
+            self.assertIn("supported", views, completed.stdout)
+            self.assertEqual(library_disc_ids(scratch), [],
+                             "the card still offers ADD TO LIBRARY, so nothing may be stored yet")
+
+    def test_add_to_library_on_the_iso_card_stores_the_disc(self) -> None:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import create_test_iso
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-add-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "supported.iso"
+            create_test_iso(iso, disc_id="TEST00002", title="Café® ™",
+                            volume_id="TEST00001")
+            completed = self.run_route(scratch, [
+                f"--iso={iso}",
+                "--ui-test-events=WAIT_VIEW=supported,10000;KEY_RETURN;WAIT_VIEW=library,10000;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual(library_disc_ids(scratch), ["TEST00002"])
+
+    def test_launch_now_on_experimental_iso_reports_the_unavailable_boundary(self) -> None:
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-experimental-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "experimental.iso"
+            executable = build_plain_mips_elf() + bytes(i % 251 for i in range(70000))
+            create_test_iso_with_executables(
+                iso, executable, disc_id="ULUS99998", title="Experimental Fixture"
+            )
+            completed = self.run_route(scratch, [
+                f"--iso={iso}",
+                "--launch-now",
+                "--ui-test-events=WAIT_MS=100;QUIT",
+                f"--ui-test-screenshot={scratch / 'last-frame.bmp'}",
+            ])
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        frames = parse_frames(completed.stdout)
+        self.assertTrue(frames, completed.stdout)
+        self.assertEqual(frames[0]["view"], "error")
+        self.assertEqual(frames[0]["error"], "EXPERIMENTAL_LAUNCH_UNAVAILABLE")
+        self.assertIn("in the works.", completed.stderr)
+        self.assertNotIn("(#308)", completed.stderr)
+        self.assertEqual(library_disc_ids(scratch), [])
+
+    def test_launch_index_on_an_empty_library_fails_with_a_clear_message(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".first-run-empty-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            completed = self.run_route(scratch, ["--launch-index=0", "--headless-launch"])
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("library is empty", completed.stderr)
+        self.assertNotIn("has no prepared runtime", completed.stderr)
+
+    def test_demo_launch_index_names_its_bundled_entry_as_a_sample(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".first-run-demo-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            completed = self.run_route(scratch, ["--demo", "--launch-index=0", "--headless-launch"])
+        # No runtime is built in the scratch root, so the bounded launch refuses.
+        self.assertEqual(completed.returncode, 3, completed.stdout + completed.stderr)
+        self.assertIn("SAMPLE", completed.stderr)
 
 
 if __name__ == "__main__":

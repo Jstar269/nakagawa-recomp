@@ -15,6 +15,7 @@ bool iso_inspect_file(const char *iso_path, IsoInspectResult *out_result) {
 
     if (res != NK_OK) {
         snprintf(out_result->error_message, sizeof(out_result->error_message), "%s", meta.error_message);
+        snprintf(out_result->boundary_code, sizeof(out_result->boundary_code), "%s", meta.boundary_code);
         out_result->success = false;
         return false;
     }

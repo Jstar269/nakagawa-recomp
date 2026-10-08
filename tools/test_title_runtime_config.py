@@ -165,18 +165,18 @@ class RuntimeBindingValidation(unittest.TestCase):
     def test_retired_vblank_counter_fields_are_rejected(self) -> None:
         self.assert_rejected(
             base_manifest(vblank_frame_counter_addr=0x08820000),
-            "vblank_frame_counter_addr is retired (#643)",
+            "vblank_frame_counter_addr is retired",
         )
         self.assert_rejected(
             base_manifest(vblank_vsync_counter_addr=0x08820004),
-            "vblank_vsync_counter_addr is retired (#643)",
+            "vblank_vsync_counter_addr is retired",
         )
         self.assert_rejected(
             base_manifest(
                 vblank_frame_counter_addr=0x08820000,
                 vblank_vsync_counter_addr=0x08820004,
             ),
-            "retired (#643)",
+            "retired",
         )
 
     def test_identical_worker_and_launcher_roles_are_rejected(self) -> None:
@@ -1634,12 +1634,20 @@ class RequiredRuntimeBindingsTests(unittest.TestCase):
             "does not configure: display_bringup, frame_ready_latch_addr")
 
     def test_absent_scalar_binding_rejected_when_required(self) -> None:
-        for field in ("frame_ready_latch_addr", "libfont_ready_flag_addr", "fallback_entry"):
+        for field in ("frame_ready_latch_addr", "fallback_entry"):
             with self.subTest(field=field):
                 self.assert_rejects(
                     self.manifest(bindings={"schema_version": 1, "display_bringup": self.BRINGUP},
                                   required=[field]),
                     f"does not configure: {field}")
+
+    def test_retired_libfont_ready_binding_has_named_error(self) -> None:
+        manifest = self.manifest(bindings={"schema_version": 1, "fallback_entry": 0x08900100})
+        manifest["runtime_bindings"]["libfont_ready_flag_addr"] = 0x08900200
+        self.assert_rejects(
+            manifest,
+            "LIBFONT_READY_FLAG_RETIRED: host readiness injection is not supported yet",
+        )
 
     def test_partial_required_family_still_rejected(self) -> None:
         """A declared family cannot be satisfied by a half-configured one."""

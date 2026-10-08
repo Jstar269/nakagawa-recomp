@@ -76,7 +76,7 @@ def materialize(ref: str, destination: Path, profile_path: Path) -> dict:
     The manifest is written beside the destination as
     ``<destination>.PUBLIC_CANDIDATE.json``, never inside the tree: the tree must
     stay exactly equal to its declared public scope, and a self-manifest inside it
-    is rejected by the export's own audit (#667). Line endings are pinned to LF
+    is rejected by the export's own audit (#368). Line endings are pinned to LF
     rather than the host default.
     """
     destination = destination.resolve()

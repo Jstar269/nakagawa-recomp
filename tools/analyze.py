@@ -411,11 +411,13 @@ def _file_backed_exec_ranges(elf):
 def trace_function(elf, start, ranges, covered, calls, hc):
     # Recursive descent over one function's intra-procedural control flow from `start`.
     # Adds every instruction address reached to `covered`, and every direct-call (jal) target
-    # to `calls`. Calls return, so execution continues after the delay slot; jr and j and an
-    # unconditional b end a path (no fall-through). Conditional branches fork: follow the
-    # target and continue past the delay slot.
+    # to `calls`. Returns newly found targets so callers can extend their worklists without
+    # rescanning all prior calls. Calls return, so execution continues after the delay slot;
+    # jr and j and an unconditional b end a path (no fall-through). Conditional branches
+    # fork: follow the target and continue past the delay slot.
     stack = [start]
     local = set()
+    new_calls = []
     while stack:
         pc = stack.pop()
         # Stop the linear scan when it reaches a DIFFERENT high-confidence function entry
@@ -463,7 +465,9 @@ def trace_function(elf, start, ranges, covered, calls, hc):
             if op == 3:  # jal: direct call, returns -> continue past delay slot
                 target = (pc & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
                 if in_ranges(target, ranges) or in_ranges(target, _file_backed_exec_ranges(elf)):
-                    calls.add(target)
+                    if target not in calls:
+                        calls.add(target)
+                        new_calls.append(target)
                 covered.add(pc + 4)
                 pc += 8
                 continue
@@ -480,7 +484,9 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                         if (tw >> 16) == 0x27BD and (tw & 0x8000):
                             is_prologue = True
                     if target in hc or is_stub_target or is_prologue:
-                        calls.add(target)
+                        if target not in calls:
+                            calls.add(target)
+                            new_calls.append(target)
                         break
                     else:
                         stack.append(target)
@@ -513,6 +519,7 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                 pc += 8
                 continue
             pc += 4
+    return new_calls
 
 
 def _is_hard_terminator(word):
@@ -695,7 +702,14 @@ def direct_branch_edges(elf, ranges, targets=None):
     return {target: tuple(sorted(srcs)) for target, srcs in edges.items()}
 
 
-CFG_SCHEMA_VERSION = 1
+CFG_SCHEMA_VERSION = 2
+CFG_SUCCESSOR_CLASSIFICATIONS = frozenset({
+    "same-region",
+    "continuation-resume-entry",
+    "inter-function-handoff-dispatch",
+    "interpreter-fail-closed-boundary",
+    "invalid-unowned",
+})
 
 
 def _cfg_field(value, name, default=None):
@@ -1053,7 +1067,7 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
     unowned_executable = sorted(
         address for address, node in nodes.items() if node["classification"] == "unowned-executable"
     )
-    return {
+    report = {
         "schema_version": CFG_SCHEMA_VERSION,
         "executable_intervals": [
             {"start": lo, "end": hi} for lo, hi in effective_ranges
@@ -1090,6 +1104,8 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
             jump_table_ownership, key=lambda item: (item["address"], item["target"], item["section"])
         ),
     }
+    report["successor_classifications"] = _cfg_successor_classifications(report)
+    return report
 
 
 _CFG_NONE = 0x100000000
@@ -1123,6 +1139,84 @@ _CFG_DETAIL_NAMES = (
 _CFG_DETAIL_IDS = {name: index for index, name in enumerate(_CFG_DETAIL_NAMES)}
 _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
 _CFG_REASON_BITS = {name: 1 << index for index, name in enumerate(_CFG_REASON_NAMES)}
+
+
+def _cfg_successor_classifications(report):
+    """Classify every CFG edge using only the serialized ownership model."""
+    nodes = {
+        row.get("address"): row
+        for row in report.get("instructions", ())
+        if isinstance(row, dict) and type(row.get("address")) is int
+    }
+    entries = {
+        entry for entry in report.get("entries", ())
+        if type(entry) is int
+    }
+    interior = set()
+    for row in report.get("interior_entries", ()):
+        if not isinstance(row, dict):
+            continue
+        source, target, kind = row.get("source"), row.get("address"), row.get("reason")
+        if type(source) is int and type(target) is int and isinstance(kind, str):
+            interior.add((source, target, kind))
+
+    classifications = []
+    external_transfer_kinds = {"call", "direct-jump", "direct-branch", "branch", "tail-call"}
+    for edge in report.get("edges", ()):
+        if not isinstance(edge, dict):
+            continue
+        source, target, kind = edge.get("source"), edge.get("target"), edge.get("kind")
+        source_node = nodes.get(source) if type(source) is int else None
+        target_node = nodes.get(target) if type(target) is int else None
+        source_owner_values = source_node.get("owners", ()) if source_node else ()
+        target_owner_values = target_node.get("owners", ()) if target_node else ()
+        source_owners = {
+            owner for owner in source_owner_values
+            if type(owner) is int
+        } if isinstance(source_owner_values, list) else set()
+        target_owners = {
+            owner for owner in target_owner_values
+            if type(owner) is int
+        } if isinstance(target_owner_values, list) else set()
+
+        if kind == "unresolved-indirect":
+            classification = "interpreter-fail-closed-boundary"
+        elif isinstance(kind, str) and kind in ("call", "tail-call"):
+            classification = (
+                "inter-function-handoff-dispatch"
+                if target_node is None or target_owners
+                else "invalid-unowned"
+            )
+        elif target is None:
+            classification = "invalid-unowned"
+        elif target_node is None:
+            classification = (
+                "inter-function-handoff-dispatch"
+                if isinstance(kind, str) and kind in external_transfer_kinds
+                else "invalid-unowned"
+            )
+        elif (source, target, kind) in interior:
+            classification = "continuation-resume-entry"
+        elif source_owners.intersection(target_owners):
+            classification = "same-region"
+        elif (
+            target in entries and isinstance(kind, str)
+            and kind in external_transfer_kinds
+        ):
+            classification = "inter-function-handoff-dispatch"
+        else:
+            classification = "invalid-unowned"
+
+        row = {
+            "source": source,
+            "target": target,
+            "kind": kind,
+            "classification": classification,
+        }
+        if "detail" in edge:
+            row["detail"] = edge["detail"]
+        classifications.append(row)
+    return classifications
 
 
 class CanonicalCfgState:
@@ -1344,7 +1438,7 @@ class CanonicalCfgState:
             }
             for index in sorted(self.multi_owner_masks, key=lambda item: self.addresses[item])
         ]
-        return {
+        report = {
             "schema_version": self.schema_version,
             "executable_intervals": [
                 {"start": start, "end": end} for start, end in self.executable_intervals
@@ -1403,6 +1497,8 @@ class CanonicalCfgState:
                 for address, section, target, owners in sorted(self.jump_table_ownership)
             ],
         }
+        report["successor_classifications"] = _cfg_successor_classifications(report)
+        return report
 
 
 def canonical_cfg_state(image, ranges=None, entries=None):
@@ -1841,6 +1937,19 @@ def verify_canonical_cfg_report(report):
             "message": "instruction edge rows and top-level edge rows differ",
         })
 
+    successor_rows = list_field("successor_classifications")
+    for successor in successor_rows:
+        if not isinstance(successor, dict):
+            finding("successor-classification-invalid", successor)
+            continue
+        if successor.get("classification") not in CFG_SUCCESSOR_CLASSIFICATIONS:
+            finding("successor-classification-invalid", successor)
+    if successor_rows != _cfg_successor_classifications(report):
+        finding(
+            "successor-classification-coverage",
+            "successor classifications do not cover the canonical edge set",
+        )
+
     def edge_projection(name):
         """Normalize one duplicated edge projection without trusting its shape."""
         rows = list_field(name)
@@ -2056,12 +2165,13 @@ def canonical_cfg_gate(report):
     """Return fail-closed ownership-gate findings for a CFG report.
 
     ``verify_canonical_cfg_report`` checks that the serialized projections agree
-    with one another. This gate requires every known in-range successor of an
-    owned instruction to have an owner, and keeps ambiguous ownership or
-    unmapped entries fail-closed. Non-padding words that are not reached from
-    the supplied entries remain explicitly classified as unowned; that is not
-    proof that no dynamic entry exists, but file adjacency alone is not a
-    control-flow edge. Continuation/interior entries are valid classifications.
+    with one another and that every CFG edge has exactly one successor class.
+    This gate requires every known in-range successor of an owned instruction to
+    have an owner, and keeps ambiguous ownership or unmapped entries fail-closed.
+    Non-padding words that are not reached from the supplied entries remain
+    explicitly classified as unowned; that is not proof that no dynamic entry
+    exists, but file adjacency alone is not a control-flow edge.
+    Continuation/interior entries are valid classifications.
     """
     findings = verify_canonical_cfg_report(report)
     if findings:
@@ -2311,17 +2421,25 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
 
     # Reconstruct stubs from .sceStub.text or imports
     stubs_sec = elf.sec(".sceStub.text")
-    if stubs_sec:
-        if elf.reloc is not None:
-            try:
-                from imports import parse_imports
-                impmap = parse_imports(elf)
-                for a in impmap.keys():
+    has_module_info = elf.sec(".rodata.sceModuleInfo") is not None
+    if has_module_info or (stubs_sec and elf.reloc is not None):
+        try:
+            from imports import ImportTableError, parse_imports
+            impmap = parse_imports(elf)
+            for a in impmap.keys():
+                if in_ranges(a, ranges) and (a & 3) == 0:
                     hc.add(a)
-            except Exception as e:
-                sys.stderr.write(f"warning: failed to parse imports in analyzer: {e}\n")
-        else:
-            for a in range(stubs_sec["addr"], stubs_sec["addr"] + stubs_sec["size"], 8):
+        except Exception as e:
+            from imports import ImportTableError
+            if isinstance(e, ImportTableError):
+                raise
+            raise ImportTableError(
+                "ANALYZER_IMPORT_TABLE_INVALID",
+                f"failed to parse imports in analyzer: {e}",
+            ) from e
+    elif stubs_sec:
+        for a in range(stubs_sec["addr"], stubs_sec["addr"] + stubs_sec["size"], 8):
+            if in_ranges(a, ranges) and (a & 3) == 0:
                 hc.add(a)
 
 
@@ -2470,9 +2588,12 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     work = list(hc)
     while work:
         s = work.pop()
+        new_calls = []
         if in_ranges(s, ranges) or in_ranges(s, file_exec_ranges):
-            trace_function(elf, s, trace_ranges_for_entry(s), covered, calls, hc)
-        for t in list(calls):
+            new_calls = trace_function(
+                elf, s, trace_ranges_for_entry(s), covered, calls, hc
+            )
+        for t in new_calls:
             if t not in functions and (
                 in_ranges(t, ranges) or in_ranges(t, file_exec_ranges)
             ):
@@ -2489,6 +2610,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     # tools/ghidra_crosscheck.py, 16 live cases). Promotion is safe: codegen's
     # continuation machinery stops the covering function's extent at the new
     # entry and emits a continuation call, so both owners stay correct.
+    pending_tail_calls = []
     for t in sorted(jtails):
         if t in functions or not in_ranges(t, ranges):
             continue
@@ -2498,15 +2620,22 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
         if not _is_hard_terminator(int.from_bytes(wb, 'little')):
             continue
         functions.add(t)
-        trace_function(elf, t, ranges, covered, calls, hc)
-        for c in list(calls):
+        pending_tail_calls.extend(
+            trace_function(elf, t, ranges, covered, calls, hc)
+        )
+        tail_call_batch = pending_tail_calls
+        pending_tail_calls = []
+        for c in tail_call_batch:
             if c not in functions and in_ranges(c, ranges):
                 functions.add(c)
-                trace_function(elf, c, ranges, covered, calls, hc)
+                pending_tail_calls.extend(
+                    trace_function(elf, c, ranges, covered, calls, hc)
+                )
 
     # Gap fill: a weak-signal address that no known function covers is an indirect-only
     # function (reached through a register the call graph could not resolve). Add it and trace
     # it, which may reveal further calls. Iterate until stable.
+    pending_gap_calls = pending_tail_calls
     changed = True
     while changed:
         changed = False
@@ -2534,11 +2663,15 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
                         covered.add(c + 4)
                         continue
                 functions.add(c)
-                trace_function(elf, c, ranges, covered, calls, hc)
-                for t in list(calls):
+                new_calls = trace_function(elf, c, ranges, covered, calls, hc)
+                gap_call_batch = pending_gap_calls + new_calls
+                pending_gap_calls = []
+                for t in gap_call_batch:
                     if t not in functions and in_ranges(t, ranges):
                         functions.add(t)
-                        trace_function(elf, t, ranges, covered, calls, hc)
+                        pending_gap_calls.extend(
+                            trace_function(elf, t, ranges, covered, calls, hc)
+                        )
                 changed = True
 
     # A direct call can prove that code exists outside named .text sections. Grant the
@@ -2701,7 +2834,18 @@ def main(argv):
             cfg_gate = True
     elf = Elf(args[0], base=base)
     extra_spans = resolve_extra_spans(extra_span_arg)
-    starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    try:
+        starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    except Exception as exc:
+        boundary_code = getattr(exc, "code", None)
+        if not isinstance(boundary_code, str) or not boundary_code.startswith("ANALYZER_"):
+            raise
+        if boundary_code == "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED":
+            message = "PSP variable imports are not supported yet."
+        else:
+            message = "This PSP import-table layout is not supported yet."
+        sys.stderr.write(f"{boundary_code}: {exc}. {message}\n")
+        return 1
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts

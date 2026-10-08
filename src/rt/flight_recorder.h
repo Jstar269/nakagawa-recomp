@@ -170,6 +170,11 @@ void sr_flight_prx_load(uint32_t base, uint32_t result, uint32_t entry, uint32_t
 void sr_flight_fatal(uint32_t kind, uint32_t pc, uint32_t detail, uint32_t aux);
 void sr_flight_exit(uint32_t status);
 void sr_flight_fault(uint32_t kind, uint32_t pc, uint32_t detail, uint32_t aux);
+/* Host crash-filter entry: names SR_FLIGHT_KIND_FAULT_EXCEPTION with the host
+ * exception code as detail and the guest fault address (or 0 when the fault
+ * is outside guest memory) as aux, so the first host fault dumps a bounded
+ * bundle whose fatal terminal carries the fault. Recording stays opt-in. */
+void sr_flight_host_fault(uint32_t guest_pc, uint32_t exception_code, uint32_t guest_fault_addr);
 void sr_flight_snapshot(SrFlightSnapshot *out);
 int sr_flight_event_count(void);
 int sr_flight_event_at(uint32_t index, SrFlightEvent *out);
@@ -275,6 +280,12 @@ static inline void sr_flight_fault(uint32_t kind, uint32_t pc, uint32_t detail, 
     (void)pc;
     (void)detail;
     (void)aux;
+}
+static inline void sr_flight_host_fault(uint32_t guest_pc, uint32_t exception_code,
+                                        uint32_t guest_fault_addr) {
+    (void)guest_pc;
+    (void)exception_code;
+    (void)guest_fault_addr;
 }
 static inline void sr_flight_snapshot(SrFlightSnapshot *out) {
     if (out) *out = (SrFlightSnapshot){0};

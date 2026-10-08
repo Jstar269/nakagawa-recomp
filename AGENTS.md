@@ -79,6 +79,7 @@ subject to Section 2.
   external trusted ledger.
 - Preserve SPDX, copyright, upstream, and third-party notices. Agents must never invent a
   human DCO identity or add `Signed-off-by:` on anyone's behalf.
+- End agent commits with `Assisted-by: <tool> (<model>)`, never `Co-Authored-By:` ([form and tools](docs/AI_USAGE.md#disclosing-ai-help-in-commits)).
 - Keep public source correctness, provenance/publication readiness, private title
   acceptance, physical PSP correctness, visual evidence, and release readiness as
   separate claims.

@@ -5,11 +5,11 @@
 # manifest (assets/release_manifest.json) and the SBOM generators in
 # tools/generate_sbom.py.
 #
-# History: PR #294 (issue #149) replaced generate_sbom.py's API wholesale
+# History: an SBOM API rewrite replaced generate_sbom.py's API wholesale
 # (load_release_manifest/build_spdx_sbom/build_spdx3_sbom/SPDX3_NO_ASSERTION_IRI/
 # calculate_sha256/check_sbom_freshness -> parse_*_lockfile + generate_spdx23/
 # generate_spdx301/generate_cyclonedx) but was merged without updating this
-# test, leaving the Python gate red on main (issue #298). This file now tests
+# test, leaving the Python gate red on main. This file now tests
 # the ACTUAL current API: the three format generators, the CLI entry point,
 # and the manifest-integrity properties that are independent of the generator
 # surface (component presence, git tracking, declared-vs-actual sha256).

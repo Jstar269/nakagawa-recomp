@@ -25,6 +25,8 @@ extern "C" {
  * JSON parsing attacks.
  */
 #define NK_MANIFEST_MAX_BYTES (256 * 1024)
+/* Keep equal to tools/nk_core/package_cache.py:MAX_BUILD_REPORT_JSON_BYTES. */
+#define NK_BUILD_REPORT_MAX_BYTES (4 * 1024 * 1024)
 #define NK_MANIFEST_LIMIT_CLASS "PRODUCT_SECURITY_POLICY"
 #define NK_MANIFEST_MAX_JSON_DEPTH 16
 #define NK_AOT_PACKAGE_SCHEMA_VERSION 2
@@ -98,6 +100,8 @@ bool nk_title_manifest_load_overlay_ext(
  * disc. The profile is written below <user_data_root>/experimental/<DISC_ID>,
  * its embedded canonical manifest is validated by the native manifest parser,
  * and executable hashes are retained only in that user data directory.
+ * Validation registers nothing: it takes no parser overlay slot and publishes
+ * no catalog epoch change (#670).
  */
 bool nk_title_manifest_write_experimental_profile(
     const char *iso_path,
@@ -115,7 +119,10 @@ bool nk_title_manifest_write_experimental_profile(
 /* Read the private experimental profile for one library identity. The embedded
  * manifest is fully validated and, when requested, returned as an owned title
  * snapshot that survives subsequent overlay reloads. Release the snapshot with
- * nk_title_catalog_snapshot_release(). */
+ * nk_title_catalog_snapshot_release(). Like the writer, the reader only
+ * validates: registered overlays, parser overlay storage and the catalog epoch
+ * are unchanged, so package validation of an experimental title cannot evict a
+ * registered overlay or invalidate other cached package statuses (#670). */
 bool nk_title_manifest_read_experimental_profile(
     const char *user_data_root,
     const char *disc_id,
@@ -138,6 +145,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     bool is_experimental,
     const char *selected_executable,
     const char *current_disc_version,
+    const char *source_iso_path,
     uint32_t player_abi_version,
     NkRuntimePackageInfo *out_info,
     char *reason,
@@ -155,6 +163,7 @@ bool nk_title_manifest_aot_package_cache_identity(
     bool is_experimental,
     const char *selected_executable,
     const char *current_disc_version,
+    const char *source_iso_path,
     uint32_t player_abi_version,
     char out_identity[65]
 );
@@ -173,6 +182,7 @@ void nk_title_manifest_test_set_validation_checkpoint(
     NkPackageValidationCheckpointFn checkpoint, void *ctx);
 bool nk_title_manifest_test_package_cache_entry(uint64_t *out_catalog_epoch,
                                                 char out_status_identity[65]);
+bool nk_title_manifest_test_source_iso_path_valid(const char *path);
 #endif
 
 #ifdef __cplusplus

@@ -35,6 +35,8 @@
  *                         Windows savedata keeps its existing HANDLE route)
  *   sr_cd_mkdir_leaf     create one final directory component without
  *                         creating missing parents (POSIX guest-I/O extension)
+ *   sr_cd_remove_dir_empty remove one empty directory without following links
+ *                         (guest-I/O extension)
  *   sr_cd_rename_file    rename one regular file between root-relative paths
  *                         (POSIX guest-I/O extension)
  *   sr_cd_delete_file    delete one regular file; reject directories, links,
@@ -214,6 +216,7 @@ typedef enum sr_cd_status {
     SR_CD_NOT_FOUND,        /* the named object does not exist */
     SR_CD_NOT_CONTAINED,    /* escaped the root, or a link/mount stood in the way */
     SR_CD_IS_DIRECTORY,     /* a directory was named where a file was required */
+    SR_CD_NOT_A_DIRECTORY,  /* a non-directory was named where a directory was required */
     SR_CD_ALREADY_EXISTS,   /* a directory creation target already exists */
     SR_CD_NOT_EMPTY,        /* the tree still held entries this seam may not remove */
     SR_CD_IDENTITY_CHANGED, /* the name stopped resolving to the bound object; nothing removed */
@@ -296,6 +299,7 @@ static inline const char *sr_cd_status_name(sr_cd_status s) {
         case SR_CD_NOT_FOUND: return "not-found";
         case SR_CD_NOT_CONTAINED: return "not-contained";
         case SR_CD_IS_DIRECTORY: return "is-directory";
+        case SR_CD_NOT_A_DIRECTORY: return "not-a-directory";
         case SR_CD_ALREADY_EXISTS: return "already-exists";
         case SR_CD_NOT_EMPTY: return "not-empty";
         case SR_CD_IDENTITY_CHANGED: return "identity-changed";
@@ -313,6 +317,8 @@ static inline uint32_t sr_cd_psp_error(sr_cd_status status) {
         case SR_CD_NOT_FOUND: return 0x80010002u;
         case SR_CD_ALREADY_EXISTS: return 0x80010011u;
         case SR_CD_IS_DIRECTORY: return 0x80010015u;
+        case SR_CD_NOT_A_DIRECTORY: return 0x80010014u;
+        case SR_CD_NOT_EMPTY: return 0x8001005au;
         case SR_CD_INVALID_PATH:
         case SR_CD_NOT_CONTAINED: return 0x80010016u;
         default: return 0x80010005u;
@@ -574,6 +580,85 @@ static inline sr_cd_status sr_cd_delete_leaf(const sr_cd_root *root, const char 
      * rather than a link target. No by-name deletion happens after the check. */
     if (sr_vfs_delete_contained_leaf(path, root->canonical, &was_dir)) return SR_CD_OK;
     return was_dir ? SR_CD_IS_DIRECTORY : SR_CD_NOT_CONTAINED;
+}
+
+/* Remove exactly one empty directory through its verified object handle.
+ * Reparse points are refused so a directory link can never select its target. */
+static inline sr_cd_status sr_cd_remove_dir_empty(const sr_cd_root *root,
+                                                   const char *rel) {
+    char path[SR_CD_HOST_PATH_MAX];
+    if (!root) return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_is_acceptable(rel)) return SR_CD_INVALID_PATH;
+    if (!sr_cd__win_dir_path(root, rel, path, sizeof(path))) return SR_CD_INVALID_PATH;
+    HANDLE handle;
+    if (!sr_vfs_open_contained_utf8(path, DELETE | FILE_READ_ATTRIBUTES,
+                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                    OPEN_EXISTING, root->canonical, &handle)) {
+        DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+            return SR_CD_NOT_FOUND;
+        if (error == ERROR_DIRECTORY) return SR_CD_NOT_A_DIRECTORY;
+        return SR_CD_NOT_CONTAINED;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(handle, &info)) {
+        CloseHandle(handle);
+        return SR_CD_IO_ERROR;
+    }
+    if (!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        CloseHandle(handle);
+        return SR_CD_NOT_A_DIRECTORY;
+    }
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        CloseHandle(handle);
+        return SR_CD_NOT_CONTAINED;
+    }
+    int removed = sr_vfs_dispose_by_handle(handle);
+    DWORD error = removed ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(handle);
+    if (removed) return SR_CD_OK;
+    if (error == ERROR_DIR_NOT_EMPTY) return SR_CD_NOT_EMPTY;
+    return SR_CD_IO_ERROR;
+}
+
+static inline sr_cd_status sr_cd_set_mode(const sr_cd_root *root, const char *rel,
+                                          uint32_t mode) {
+    char path[SR_CD_HOST_PATH_MAX];
+    if (!root) return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_is_acceptable(rel)) return SR_CD_INVALID_PATH;
+    if (!sr_cd__win_dir_path(root, rel, path, sizeof(path))) return SR_CD_INVALID_PATH;
+    HANDLE handle;
+    if (!sr_vfs_open_contained_utf8(path, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                    OPEN_EXISTING, root->canonical, &handle))
+        return SR_CD_NOT_CONTAINED;
+    BY_HANDLE_FILE_INFORMATION basic;
+    if (!GetFileInformationByHandle(handle, &basic)) {
+        CloseHandle(handle);
+        return SR_CD_IO_ERROR;
+    }
+    if (basic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        CloseHandle(handle);
+        return SR_CD_NOT_CONTAINED;
+    }
+    uint32_t type = mode & 0x0000f000u;
+    int is_dir = (basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if ((type == 0x00002000u && is_dir) || (type == 0x00001000u && !is_dir) ||
+        (type != 0u && type != 0x00002000u && type != 0x00001000u)) {
+        CloseHandle(handle);
+        return SR_CD_INVALID_PATH;
+    }
+    FILE_BASIC_INFO info;
+    if (!GetFileInformationByHandleEx(handle, FileBasicInfo, &info, sizeof(info))) {
+        CloseHandle(handle);
+        return SR_CD_IO_ERROR;
+    }
+    const uint32_t write_bits = 0x0080u | 0x0010u | 0x0002u;
+    if (mode & write_bits) info.FileAttributes &= ~FILE_ATTRIBUTE_READONLY;
+    else info.FileAttributes |= FILE_ATTRIBUTE_READONLY;
+    int changed = SetFileInformationByHandle(handle, FileBasicInfo, &info, sizeof(info));
+    CloseHandle(handle);
+    return changed ? SR_CD_OK : SR_CD_IO_ERROR;
 }
 
 /* ROOT BINDING (documented once, applies to both backends).
@@ -1234,6 +1319,94 @@ static inline sr_cd_status sr_cd_delete_dir_shallow(const sr_cd_root *root, cons
     return saw_err ? SR_CD_IO_ERROR : SR_CD_OK;
 }
 
+/* Remove one empty directory by acting first: the removal is issued with
+ * unlinkat(AT_REMOVEDIR) relative to the verified parent descriptor and the
+ * kernel's refusal is classified afterwards, so no probe ever selects the
+ * victim. A link or a non-directory cannot satisfy AT_REMOVEDIR -- the kernel
+ * leaves it in place and this reports the refusal having removed nothing. */
+static inline sr_cd_status sr_cd_remove_dir_empty(const sr_cd_root *root,
+                                                   const char *rel) {
+    char parent_rel[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
+    if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_is_acceptable(rel) ||
+        !sr_cd_rel_split(rel, parent_rel, sizeof(parent_rel), leaf, sizeof(leaf)))
+        return SR_CD_INVALID_PATH;
+
+    int parent_fd = -1;
+    sr_cd_status status = sr_cd__at_walk(root->fd, parent_rel, &parent_fd);
+    if (status != SR_CD_OK) return status;
+    if (unlinkat(parent_fd, leaf, AT_REMOVEDIR) == 0) {
+        status = SR_CD_OK;
+    } else {
+        switch (errno) {
+            case ENOENT: status = SR_CD_NOT_FOUND; break;
+            case ENOTEMPTY:
+#if defined(EEXIST)
+            case EEXIST:
+#endif
+                status = SR_CD_NOT_EMPTY; break;
+            case ENOTDIR: status = SR_CD_NOT_A_DIRECTORY; break;
+            case ELOOP: status = SR_CD_NOT_CONTAINED; break;
+            default: status = SR_CD_IO_ERROR; break;
+        }
+    }
+    close(parent_fd);
+    return status;
+}
+
+static inline sr_cd_status sr_cd_set_mode(const sr_cd_root *root, const char *rel,
+                                           uint32_t mode) {
+    char parent_rel[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
+    if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
+    if (!sr_cd_rel_is_acceptable(rel) ||
+        !sr_cd_rel_split(rel, parent_rel, sizeof(parent_rel), leaf, sizeof(leaf)))
+        return SR_CD_INVALID_PATH;
+    int parent_fd = -1;
+    sr_cd_status status = sr_cd__at_walk(root->fd, parent_rel, &parent_fd);
+    if (status != SR_CD_OK) return status;
+    /* The target is opened before anything is decided about it, relative to
+     * the verified parent descriptor with O_NOFOLLOW, so a planted link fails
+     * the open itself and is never followed. O_NONBLOCK keeps a planted FIFO
+     * from turning the open into a wait; such objects are refused from the
+     * descriptor below. A mode without read permission defeats O_RDONLY, so
+     * fall back to O_WRONLY before giving up: neither open follows a link.
+     * The directory test names S_IFMT/S_IFDIR directly so the post-refusal
+     * type diagnosis above stays the only one of its kind. */
+    int fd = openat(parent_fd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0 && errno == EACCES)
+        fd = openat(parent_fd, leaf, O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+        status = sr_cd__at_open_fail();
+        close(parent_fd);
+        return status;
+    }
+    struct stat info;
+    if (fstat(fd, &info) != 0) {
+        close(fd);
+        close(parent_fd);
+        return SR_CD_IO_ERROR;
+    }
+    int is_reg = S_ISREG(info.st_mode);
+    int is_dir = (info.st_mode & S_IFMT) == S_IFDIR;
+    if (!is_reg && !is_dir) {
+        status = SR_CD_NOT_CONTAINED;
+    } else {
+        uint32_t type = mode & 0x0000f000u;
+        if ((type == 0x00002000u && !is_reg) ||
+            (type == 0x00001000u && !is_dir) ||
+            (type != 0u && type != 0x00002000u && type != 0x00001000u)) {
+            status = SR_CD_INVALID_PATH;
+        } else if (fchmod(fd, (mode_t)(mode & 0777u)) != 0) {
+            status = SR_CD_IO_ERROR;
+        } else {
+            status = SR_CD_OK;
+        }
+    }
+    close(fd);
+    close(parent_fd);
+    return status;
+}
+
 /* ======================================================================== */
 /* Fail-closed backend for hosts with no containment implementation yet.    */
 /* Deliberately destroys nothing rather than offering a pathname fallback.  */
@@ -1288,6 +1461,18 @@ static inline sr_cd_status sr_cd_delete_leaf(const sr_cd_root *root, const char 
 
 static inline sr_cd_status sr_cd_delete_dir_shallow(const sr_cd_root *root, const char *rel) {
     (void)root; (void)rel;
+    return SR_CD_UNSUPPORTED_HOST;
+}
+
+static inline sr_cd_status sr_cd_remove_dir_empty(const sr_cd_root *root,
+                                                   const char *rel) {
+    (void)root; (void)rel;
+    return SR_CD_UNSUPPORTED_HOST;
+}
+
+static inline sr_cd_status sr_cd_set_mode(const sr_cd_root *root, const char *rel,
+                                          uint32_t mode) {
+    (void)root; (void)rel; (void)mode;
     return SR_CD_UNSUPPORTED_HOST;
 }
 

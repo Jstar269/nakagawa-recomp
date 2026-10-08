@@ -14,7 +14,7 @@ import tempfile
 import time
 from typing import Callable, Optional
 
-from .iso_inspect import inspect_iso, select_boot_executable_source
+from .iso_inspect import IsoInspectionError, inspect_iso, select_boot_executable_source
 from .title_registry import TitleRegistry, get_default_registry
 from .types import (
     CancellationToken,
@@ -164,7 +164,17 @@ class PreparationEngine:
             emit(PrepStage.INSPECTING_ISO, "Inspecting disc image", completed=0, total=100)
             cancel_token.check()
 
-            iso_meta = inspect_iso(iso, self.registry, user_data_root=self.base_dir)
+            try:
+                iso_meta = inspect_iso(iso, self.registry, user_data_root=self.base_dir)
+            except IsoInspectionError as exc:
+                if exc.boundary_code is None:
+                    raise
+                return PreparationResult(
+                    success=False,
+                    disc_id=disc_id,
+                    error_code=exc.boundary_code,
+                    error_message=str(exc),
+                )
             if iso_meta.qualification_error:
                 return PreparationResult(
                     success=False,

@@ -123,7 +123,7 @@ pass `--extra-span=LO,HI` to `codegen.py` for a direct Make build.
 
 ## Step 2: Supply a plain (unencrypted) ELF
 
-The direct recompiler/codegen input must be a **plain** PSP ELF: a file that begins with the ELF magic bytes `7F 45 4C 46`; a `~PSP` or `~SCE` container is rejected at that boundary. For player and CLI disc workflows, the built-in boundary can decrypt supported executable and PRX containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The project ships no keys, and missing key entries or unsupported containers fail closed. When a disc carries an unencrypted `BOOT.BIN`, the player and CLI select it automatically. For a direct Make/codegen route, supply a plain ELF such as a lawful user-decrypted executable.
+The direct recompiler/codegen input must be a **plain** PSP ELF: a file that begins with the ELF magic bytes `7F 45 4C 46`; a `~PSP` or `~SCE` container is rejected at that boundary. For player and CLI disc workflows, the built-in boundary can decrypt supported executable and PRX containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The project ships no keys, and missing key entries or unsupported containers fail closed. When a disc carries an unencrypted `BOOT.BIN`, the player and CLI select it automatically. For a direct Make/codegen route, supply a plain ELF such as an executable that you decrypted yourself.
 
 Keep the result in a Git-ignored private-input location such as `place_game_here/EBOOT.elf`, or pass its actual path to Make. Do not commit the decrypted game executable.
 
@@ -276,7 +276,7 @@ tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98), n
 previously cited #20, which is a merged pull request about `sceSasCore` routing and has
 no relation to this surface — so the surface had no tracker at all.)
 
-**Readiness criterion.** A newly supplied, lawfully obtained PSP executable should be
+**Readiness criterion.** A newly supplied PSP executable from your own copy of a game should be
 able to receive a profile, run analysis, produce its target/import/capability census,
 attempt compilation, and expose its first unsupported semantic boundary **without
 title-specific edits to generic core**.
@@ -312,11 +312,10 @@ recompiler address probes have been removed from generic `hle.c`, `sched.c`, and
 `recomp.c`. The historical inventory remains under `RETIRED_*` names as a guard;
 the live HST diagnostic count in those files is zero. Generic runtime diagnostics
 use `SR_TRACE_PC` and `SR_WATCH`.
-The four former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups below (16 addresses / 23 sites)
-were migrated on 2026-08-27 to typed title configuration via `runtime_bindings`
-(`display_bringup`, `runtime_sync`, `libfont_ready_flag_addr`,
-`frame_ready_latch_addr`); they are `PROFILE_OWNED_CONFIGURATION` and no longer
-appear in the `hle.c` census. Retired inventory lives in
+Three active former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups (15 addresses / 22 sites)
+remain typed title configuration via `runtime_bindings` (`display_bringup`,
+`runtime_sync`, `frame_ready_latch_addr`). The libfont readiness injection was retired;
+its single historical address remains only in the inventory. Retired inventory lives in
 `tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
 `tools/test_hle_title_isolation.py`.
 
@@ -335,7 +334,7 @@ By bucket (live `hle.c` only):
   There is no blanket numeric ceiling and no whole-region VRAM exemption: a
   direct `MEM_R`/`MEM_W` at an arbitrary VRAM address (`0x04000000`..
   `0x041fffff`) is inventoried like any other absolute guest address.
-- `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (16 title-configured
+- `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (15 active title-configured
   addresses are outside it, in `HLE_TITLE_CONFIGURED_COMPAT`); two documented
   build/profile couplings below (C-2, C-3) are retired.
 - `EXPLICIT_COMPATIBILITY_OVERRIDE`: 0 in live `hle.c` (migrated).
@@ -349,17 +348,16 @@ Migrated compat (now `PROFILE_OWNED_CONFIGURATION` via `runtime_bindings`):
 
 | Group | Addresses | Title config | Note |
 | --- | --- | --- | --- |
-| `libfont_ready_flag` | 1 | `libfont_ready_flag_addr` | fallback only when guest startup is unavailable (untranslated entry or `SR_REAL_MODULE_START=0`); generic builds have no write |
 | `frame_ready_latch_assist` | 1 | `frame_ready_latch_addr` | 30-vblank timer is profile-qualified |
 | `runtime_sync_callback_config` | 8 | `runtime_sync {config_base, sema_name_ptr, wrappers{mode,enter,leave}}` | mode-keyed pairs not flattened |
 | `display_setmode_guest_init` | 6 | `display_bringup {malloc, vblank_init, render_init, magic, ready_flag, ctx_word}` | 3 dispatch + 3 data |
 
-**Why this no longer blocks title #2 (for these 4 groups).** Generic `sceDisplaySetMode`
+**Why this no longer blocks title #2 (for these 3 live groups).** Generic `sceDisplaySetMode`
 / `sceKernelLoadModule` / `sr_vblank_tick` now consult `title_config` and perform
 no HST guest calls, writes or callback installs when the title has no compat
 profile. A second executable reaching `h_DisplaySetMode` with no `display_bringup`
 gets the generic PSP path (mode/width/height logged, no guest dispatch). The
-`HLE_TITLE_CONFIGURED_COMPAT` inventory keeps the 16 addresses auditable and the
+`HLE_TITLE_CONFIGURED_COMPAT` inventory keeps the active and retired addresses auditable and the
 `test_hle_title_isolation.py` matrix proves wrong-title, invalid-address and
 disabled-profile fail-closed.
 

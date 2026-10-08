@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -35,6 +37,38 @@ from nk_core import (
     TitleRegistry,
     inspect_iso,
 )
+
+_ISSUE_REFERENCE_RE = re.compile(r"#[0-9]+")
+# Character literals are tokens too: an unmatched '"' would otherwise open a
+# phantom string that swallows the code after it.
+_C_TOKEN_RE = re.compile(
+    r"""//[^\r\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\])*\"""", re.DOTALL
+)
+
+
+def _python_non_docstring_literals(path: Path) -> list[tuple[int, str]]:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    docstring_positions: set[tuple[int, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ) or not node.body:
+            continue
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstring_positions.add((first.value.lineno, first.value.col_offset))
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and (node.lineno, node.col_offset) not in docstring_positions
+    ]
 
 
 def _build_param_sfo(disc_id: str, title: str = "Synthetic Test Title",
@@ -107,7 +141,7 @@ def _write_stale_other_title_artifacts(root: Path) -> None:
 
     These are source-owned synthetic stand-ins for the exact paths the legacy
     generic candidates used to probe: a stale sibling-title build must be
-    irrelevant to every other title's launch resolution (#366). No real retail
+    irrelevant to every other title's launch resolution. No real retail
     byte is used or needed here.
     """
     build_dir = root / "build" / "hst"
@@ -126,9 +160,73 @@ def _write_stale_other_title_artifacts(root: Path) -> None:
 class NkCoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = Path(tempfile.mkdtemp(prefix="test_nk_core_"))
+        data_root = self.temp_dir / "fixtures" / "profile_zero"
+        data_root.mkdir(parents=True)
+        (data_root / "synthetic-data.txt").write_text(
+            "Source-owned synthetic runtime data.\n", encoding="utf-8"
+        )
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_user_facing_text_does_not_cite_issue_numbers(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        failures: list[str] = []
+        c_paths = [
+            *sorted((repo_root / "src" / "player").glob("*.c")),
+            repo_root / "src" / "core" / "nk_font.c",
+            repo_root / "src" / "core" / "nk_launch.c",
+            repo_root / "src" / "core" / "nk_title_manifest.c",
+        ]
+        for path in c_paths:
+            source = path.read_text(encoding="utf-8")
+            for match in _C_TOKEN_RE.finditer(source):
+                token = match.group()
+                if token.startswith('"') and _ISSUE_REFERENCE_RE.search(token):
+                    line = source.count("\n", 0, match.start()) + 1
+                    failures.append(f"{path.relative_to(repo_root)}:{line}: {token}")
+
+        python_paths = [
+            repo_root / "tools" / "nk_cli.py",
+            repo_root / "tools" / "nk_doctor_checks.py",
+            repo_root / "tools" / "title_manifest.py",
+            *sorted((repo_root / "tools" / "nk_core").glob("*.py")),
+        ]
+        for path in python_paths:
+            for line, literal in _python_non_docstring_literals(path):
+                if _ISSUE_REFERENCE_RE.search(literal):
+                    failures.append(
+                        f"{path.relative_to(repo_root)}:{line}: {literal!r}"
+                    )
+
+        prerequisite_manifest = json.loads(
+            (repo_root / "assets" / "prereq_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        for hook in prerequisite_manifest.get("font_source_hooks", []):
+            if not isinstance(hook, dict):
+                continue
+            message = hook.get("failure_message")
+            if isinstance(message, str) and _ISSUE_REFERENCE_RE.search(message):
+                failures.append(f"assets/prereq_manifest.json: {message!r}")
+
+        renderer = (repo_root / "src" / "player" / "ui_renderer.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("draw_issue_links", renderer)
+        self.assertNotRegex(renderer, r'"#%[0-9]*[du]"')
+        self.assertEqual(failures, [])
+
+        summary = nk_cli._bringup_human_summary(
+            {
+                "preflight_checks": [],
+                "failure_class": "ENTRY_NOT_COMPILED",
+                "issue_numbers": [308],
+                "reached_stage": "compile",
+            }
+        )
+        self.assertNotRegex(summary, _ISSUE_REFERENCE_RE)
 
     def test_title_registry_matching_and_normalization(self) -> None:
         reg = TitleRegistry(include_defaults=True)
@@ -241,14 +339,47 @@ class NkCoreTests(unittest.TestCase):
         # File too small
         tiny_file = self.temp_dir / "tiny.iso"
         tiny_file.write_bytes(b"short data")
-        with self.assertRaises(IsoInspectionError):
+        with self.assertRaises(IsoInspectionError) as caught:
             inspect_iso(tiny_file)
+        self.assertIsNone(caught.exception.boundary_code)
 
         # Missing PVD magic
         bad_pvd = self.temp_dir / "bad_pvd.iso"
         bad_pvd.write_bytes(b"\0" * (2 * 1024 * 1024))
-        with self.assertRaises(IsoInspectionError):
+        with self.assertRaises(IsoInspectionError) as caught:
             inspect_iso(bad_pvd)
+        self.assertIsNone(caught.exception.boundary_code)
+
+        # A PlayStation Store package named ".iso" is identified by its magic
+        # and refused at a named boundary, never as a disc with a missing PVD.
+        from test_iso_parity import build_pbp_package
+
+        package = self.temp_dir / "store-package.iso"
+        build_pbp_package(package, disc_id="TEST00424", title="Store Package")
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(package)
+        self.assertEqual(caught.exception.boundary_code, "PBP_PACKAGE_UNSUPPORTED")
+        self.assertIn("Title: Store Package (ID: TEST00424)", str(caught.exception))
+        self.assertNotRegex(str(caught.exception), r"#\d+")
+        self.assertNotIn("ISO9660", str(caught.exception))
+
+        truncated = self.temp_dir / "truncated-package.iso"
+        truncated.write_bytes(b"\0PBP\0\0\x01\0")
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(truncated)
+        self.assertEqual(caught.exception.boundary_code, "PBP_HEADER_TRUNCATED")
+
+        bad_offsets = self.temp_dir / "bad-offsets-package.iso"
+        build_pbp_package(bad_offsets, offsets=[40, 16, 40, 40, 40, 40, 40, 40])
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(bad_offsets)
+        self.assertEqual(caught.exception.boundary_code, "PBP_OFFSETS_INVALID")
+
+        bad_sfo = self.temp_dir / "bad-sfo-package.iso"
+        build_pbp_package(bad_sfo, offsets=[40] * 8, sfo_bytes=b"")
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(bad_sfo)
+        self.assertEqual(caught.exception.boundary_code, "PBP_SFO_INVALID")
 
     def test_preparation_engine_transactional_flow(self) -> None:
         iso_file = self.temp_dir / "synthetic.iso"
@@ -276,7 +407,7 @@ class NkCoreTests(unittest.TestCase):
         self.assertEqual(manifest["title_id"], "synthetic-allegrex-v1")
         self.assertEqual(manifest["game_name"], "synthetic")
 
-        # A manifest alone is not evidence of preparation (#374). The staged
+        # A manifest alone is not evidence of preparation. The staged
         # outputs the engine must verify before promotion: the ISO reference
         # and an attributable manifest tied to this disc, profile and source.
         disc_dir = result.prepared_root / "disc"
@@ -301,6 +432,21 @@ class NkCoreTests(unittest.TestCase):
         stages = [e.stage.value for e in events]
         self.assertIn("INSPECTING_ISO", stages)
         self.assertIn("READY", stages)
+
+    def test_preparation_names_a_pbp_package_boundary(self) -> None:
+        """A PBP package reaches the caller as a named boundary, not PREPARATION_FAILED."""
+        from test_iso_parity import build_pbp_package
+
+        package = self.temp_dir / "store-package.iso"
+        build_pbp_package(package, disc_id="TEST00424", title="Store Package")
+
+        result = PreparationEngine(base_dir=self.temp_dir).prepare_game(
+            package, destination_root=self.temp_dir / "installed-games-pbp"
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "PBP_PACKAGE_UNSUPPORTED")
+        self.assertIn("Title: Store Package (ID: TEST00424)", result.error_message or "")
+        self.assertNotRegex(result.error_message or "", r"#\d+")
 
     def test_preparation_records_the_selected_boot_executable(self) -> None:
         from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
@@ -443,7 +589,7 @@ class NkCoreTests(unittest.TestCase):
         manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
 
         # The plan can only launch the selected title's own build product;
-        # there is no retail-title executable/image fallback (#366).
+        # there is no retail-title executable/image fallback.
         mock_exe, mock_image = _write_title_runtime(
             self.temp_dir, "synthetic", exe_ext=".exe"
         )
@@ -479,6 +625,9 @@ class NkCoreTests(unittest.TestCase):
         registry = TitleRegistry(include_defaults=True)
         profile = registry.lookup_by_disc_id("TEST00001")
         self.assertEqual(int(cmd[3], 16), profile.executable_base)
+
+        _default_cmd, default_env = launcher.build_launch_plan(game_dir)
+        self.assertEqual(default_env["SR_FPS_CAP"], "native")
         # The run entry: a declared runtime_bindings.fallback_entry, else
         # executable.entry (title_codegen_plan._resolve_run_entry, and the native
         # catalog's run_entry), so every launcher starts the title at one address.
@@ -543,7 +692,7 @@ class NkCoreTests(unittest.TestCase):
         )
         # The title's own runtime exists, and every legacy retail-image probe
         # location is populated: none of them may stand in for this title's
-        # missing image (#366 hostile case: sibling-title image rescue).
+        # missing image (hostile case: sibling-title image rescue).
         _write_title_runtime(self.temp_dir, "synthetic", exe_ext=".exe", image=False)
         _write_stale_other_title_artifacts(self.temp_dir)
 
@@ -585,7 +734,7 @@ class NkCoreTests(unittest.TestCase):
 
         The session manifest may only *restate* the validated game name; the
         Python and native planners both key their candidates off the one
-        registry/catalog value so they cannot diverge (#366).
+        registry/catalog value so they cannot diverge.
         """
         game_dir = self.temp_dir / "TEST00001"
         game_dir.mkdir(parents=True, exist_ok=True)
@@ -780,7 +929,7 @@ class NkCoreTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# #366 Generic launcher identity/path contract.
+# Generic launcher identity/path contract.
 #
 # Generic launch resolution derives title identity, runtime executable, image,
 # and base/entry ONLY from validated title/manifest/session data. The tests
@@ -872,7 +1021,7 @@ class BootExecutablePathLimitTests(unittest.TestCase):
 
 
 class GenericLauncherHostileTests(unittest.TestCase):
-    """Hostile contract cases for the Python generic launcher (#366)."""
+    """Hostile contract cases for the Python generic launcher."""
 
     TITLE2 = "pspdev-phase5-v1"
     TITLE2_DISC = "TEST00005"
@@ -882,6 +1031,12 @@ class GenericLauncherHostileTests(unittest.TestCase):
         self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_launch_genericity_"))
         self.iso = self.temp_dir / "source.iso"
         self.iso.write_bytes(b"iso")
+        for relative in ("fixtures/pspdev_phase5", "fixtures/profile_zero"):
+            data_root = self.temp_dir.joinpath(*relative.split("/"))
+            data_root.mkdir(parents=True, exist_ok=True)
+            (data_root / "synthetic-data.txt").write_text(
+                "Source-owned synthetic runtime data.\n", encoding="utf-8"
+            )
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -967,6 +1122,14 @@ class GenericLauncherHostileTests(unittest.TestCase):
         self.assertEqual(Path(cmd[2]), img)
         self.assertEqual(env["PSP_ISO"], str(self.iso))
 
+    def test_missing_declared_data_root_fails_with_a_named_reason(self) -> None:
+        shutil.rmtree(self.temp_dir / "fixtures" / "pspdev_phase5")
+        _write_title_runtime(self.temp_dir, self.TITLE2_GAME, exe_ext=".exe")
+        message = self._error(self._title2_manifest())
+        self.assertIn("This game needs its data folder", message)
+        self.assertIn("fixtures/pspdev_phase5", message)
+        self.assertNotIn("#", message)
+
     def test_loose_root_environment_uses_manifest_and_masks_inherited_value(self) -> None:
         source = json.loads(
             (REPO_ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8")
@@ -1010,7 +1173,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
             os.environ,
             {"SR_DATAROOT": "inherited-data-root", "SR_LOOSE_CONTENT_ROOTS": "inherited-root"},
         ):
-            with self.assertRaisesRegex(RuntimeLaunchError, "Loose-content root binding #289"):
+            with self.assertRaisesRegex(RuntimeLaunchError, r"Loose-content root binding:"):
                 RuntimeLauncher(repo_root=self.temp_dir, registry=registry).build_launch_plan(game_dir)
 
     # Hostile 7: a session whose disc and title identities disagree is rejected
@@ -1080,6 +1243,11 @@ class GenericLauncherHostileTests(unittest.TestCase):
     def test_paths_with_spaces_second_title_route(self) -> None:
         spaced_root = self.temp_dir / "root with spaces"
         exe, img = _write_title_runtime(spaced_root, self.TITLE2_GAME, exe_ext=".exe")
+        data_root = spaced_root / "fixtures" / "pspdev_phase5"
+        data_root.mkdir(parents=True)
+        (data_root / "synthetic-data.txt").write_text(
+            "Source-owned synthetic runtime data.\n", encoding="utf-8"
+        )
         game_dir = self._game_dir(self._title2_manifest(), name="prepared game dir")
         cmd, _ = RuntimeLauncher(repo_root=spaced_root).build_launch_plan(game_dir)
         assert img is not None
@@ -1139,7 +1307,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
 
 
 class GenericLauncherParityTests(unittest.TestCase):
-    """Native and Python planners must select the same outcome (#366 parity)."""
+    """Native and Python planners must select the same outcome."""
 
     TITLE2 = "pspdev-phase5-v1"
     TITLE2_DISC = "TEST00005"
@@ -1237,7 +1405,17 @@ int main(int argc, char **argv) {
                 parsed[key] = value
         return parsed
 
-    def _native(self, root: Path) -> dict[str, str]:
+    @staticmethod
+    def _write_phase5_data_root(root: Path) -> None:
+        data_root = root / "fixtures" / "pspdev_phase5"
+        data_root.mkdir(parents=True, exist_ok=True)
+        (data_root / "synthetic-data.txt").write_text(
+            "Source-owned synthetic runtime data.\n", encoding="utf-8"
+        )
+
+    def _native(self, root: Path, create_data_root: bool = True) -> dict[str, str]:
+        if create_data_root:
+            self._write_phase5_data_root(root)
         cmd = [
             str(self.harness), str(root), self.TITLE2_DISC, self.TITLE2, str(self.iso),
         ]
@@ -1249,7 +1427,9 @@ int main(int argc, char **argv) {
     def _same_path(a: str, b: str) -> bool:
         return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
-    def _python_plan(self, root: Path):
+    def _python_plan(self, root: Path, create_data_root: bool = True):
+        if create_data_root:
+            self._write_phase5_data_root(root)
         game_dir = root / "TEST00005"
         game_dir.mkdir(exist_ok=True)
         (game_dir / "manifest.json").write_text(
@@ -1298,6 +1478,47 @@ int main(int argc, char **argv) {
         self.assertIn("Runtime binary not found", native.get("ERROR", ""))
         self.assertNotIn("hst", native.get("ERROR", ""))
         self.assertEqual(native.get("AVAILABLE"), "0")
+
+    def test_missing_declared_data_root_fails_in_both_planners(self) -> None:
+        root = self.temp_dir / "ws_missing_data"
+        _write_title_runtime(root, self.TITLE2_GAME, exe_ext=".exe")
+
+        native = self._native(root, create_data_root=False)
+        with self.assertRaises(RuntimeLaunchError) as cm:
+            self._python_plan(root, create_data_root=False)
+
+        message = str(cm.exception)
+        self.assertEqual(native.get("RESULT"), "-2")
+        self.assertEqual(native.get("ERROR"), message)
+        self.assertIn("This game needs its data folder", message)
+        self.assertIn("fixtures/pspdev_phase5", message)
+        self.assertNotIn("#", message)
+
+    def test_no_data_title_launches_in_both_planners_without_dataroot(self) -> None:
+        root = self.temp_dir / "ws_no_data"
+        exe, image = _write_title_runtime(root, "showcase-scene", exe_ext=".exe")
+        assert image is not None
+        game_dir = root / "TEST00007"
+        game_dir.mkdir(parents=True)
+        (game_dir / "manifest.json").write_text(json.dumps({
+            "title_id": "showcase-scene-v1",
+            "disc_id": "TEST00007",
+            "iso_path": str(self.iso),
+        }), encoding="utf-8")
+
+        cmd, env = RuntimeLauncher(repo_root=root).build_launch_plan(game_dir)
+        native_run = subprocess.run(
+            [str(self.harness), str(root), "TEST00007", "showcase-scene-v1", str(self.iso)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(native_run.returncode, 0, native_run.stderr)
+        native = self._parse_native(native_run.stdout)
+        self.assertEqual(native.get("RESULT"), "0", native.get("ERROR"))
+        self.assertTrue(self._same_path(cmd[0], str(exe)))
+        self.assertTrue(self._same_path(cmd[0], native["EXE"]))
+        self.assertTrue(self._same_path(cmd[2], native["IMAGE"]))
+        self.assertNotIn("SR_DATAROOT", env)
+        self.assertEqual(env["SR_LOOSE_CONTENT_ROOTS"], "")
 
     # Cross-planner precedence: when BOTH the game_name build and the
     # title_id build are valid candidates, native and Python must choose the
@@ -1367,6 +1588,7 @@ int main(int argc, char **argv) {
         fixture_root = self.temp_dir / "ws_reorder"
         _write_title_runtime(fixture_root, self.TITLE2_GAME, exe_ext=".exe")
         _write_title_runtime(fixture_root, self.TITLE2, exe_ext=".exe")
+        self._write_phase5_data_root(fixture_root)
         game_exe = fixture_root / "build" / self.TITLE2_GAME / f"{self.TITLE2_GAME}.exe"
         id_exe = fixture_root / "build" / self.TITLE2 / f"{self.TITLE2}.exe"
 
@@ -1606,6 +1828,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
 
         root = self.temp_dir / "ws"
         _write_stale_other_title_artifacts(root)
+        GenericLauncherParityTests._write_phase5_data_root(root)
         game_dir = root / "TEST00005"
         game_dir.mkdir(parents=True, exist_ok=True)
         (game_dir / "manifest.json").write_text(
@@ -1682,6 +1905,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
 
         root = self.temp_dir / "ws"
         _write_stale_other_title_artifacts(root)
+        GenericLauncherParityTests._write_phase5_data_root(root)
         run = subprocess.run(
             [str(out), str(root), self.TITLE2_DISC, self.TITLE2, str(self.iso)],
             capture_output=True, text=True,
@@ -1697,7 +1921,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
         self.assertEqual(parsed.get("AVAILABLE"), "1")
 
 class BoundedLibraryJsonTests(unittest.TestCase):
-    """#319: the externally supplied library.json must fail closed and bounded.
+    """The externally supplied library.json must fail closed and bounded.
 
     Every malformed case targets the production GameLibrary.load entry point
     (or the production nk_cli library route) and expects a named controlled
@@ -1925,7 +2149,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
             GameLibrary.load(path)
 
     def test_library_diagnoses_reject_hostile_content_without_echoing_it(self) -> None:
-        """#319: every attacker-reachable rejection stays named AND bounded.
+        """Every attacker-reachable rejection stays named AND bounded.
 
         library.json is attacker-supplied, so each untrusted value that a
         diagnosis would otherwise quote -- an unknown root field, an unknown

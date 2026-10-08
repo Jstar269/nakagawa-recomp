@@ -20,7 +20,7 @@
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 8
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 9
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
@@ -127,7 +127,6 @@ static const SrTitleRuntimeConfig s_config = {
     SR_TITLE_CONFIG_FALLBACK_ENTRY,
     SR_TITLE_CONFIG_WORKER_THREAD_ENTRY,
     SR_TITLE_CONFIG_LAUNCHER_THREAD_ENTRY,
-    SR_TITLE_CONFIG_LIBFONT_READY_FLAG_ADDR,
     SR_TITLE_CONFIG_FRAME_READY_LATCH_ADDR,
     {
         SR_TITLE_CONFIG_DISPLAY_BRINGUP_MALLOC_ENTRY,
@@ -267,12 +266,6 @@ int sr_title_config_preserve_callee_saved_at_calls(void) {
 #else
     return 0;
 #endif
-}
-
-int sr_title_config_libfont_ready_flag_addr(uint32_t *out) {
-    if (!(s_config.valid & SR_TITLE_CFG_LIBFONT_READY)) return 0;
-    if (out) *out = s_config.libfont_ready_flag_addr;
-    return 1;
 }
 
 int sr_title_config_frame_latch_addr(uint32_t *out) {

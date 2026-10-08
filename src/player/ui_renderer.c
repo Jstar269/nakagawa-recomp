@@ -45,8 +45,8 @@ static void draw_rect_outline(SDL_Renderer *ren, float x, float y, float w, floa
 
 /* --- Runtime typography layer ---
  *
- * Fully legal by construction: no font is bundled, vendored, or
- * redistributed. At startup the renderer tries to load the platform's
+ * No font is bundled, vendored, or redistributed by this project.
+ * At startup the renderer tries to load the platform's
  * SDL3_ttf shared library (if the user happens to have it) and open a
  * system UI font already licensed on the user's own machine. If the
  * library, every symbol, or every font file is missing, the classic
@@ -1479,31 +1479,17 @@ static bool draw_button(SDL_Renderer *ren, float x, float y, float w, float h, c
     return draw_button_focused(ren, x, y, w, h, label, is_accent, in, false);
 }
 
-static float draw_issue_links(SDL_Renderer *ren, float x, float y,
-                              const unsigned int *issues, size_t issue_count,
-                              const UiInput *in) {
-    for (size_t i = 0; issues && i < issue_count; i++) {
-        char label[16];
-        char url[128];
-        snprintf(label, sizeof(label), "#%u", issues[i]);
-        float width = 48.0f;
-        if (draw_button(ren, x, y, width, 22.0f, label, false, in)) {
-            snprintf(url, sizeof(url),
-                     "https://github.com/Jstar269/nakagawa-recomp/issues/%u",
-                     issues[i]);
-            (void)SDL_OpenURL(url);
-        }
-        x += width + 6.0f;
-    }
-    return x;
-}
-
 /* Non-interactive status pill drawn where a button could be misread as one.
- * Uses the same geometry so cards keep alignment, but never hovers and is
- * never a focus stop. */
-static void draw_status_pill(SDL_Renderer *ren, float x, float y, float w, float h, const char *label) {
+ * A pending primary action can retain its focus outline while validation runs. */
+static void draw_status_pill_focused(SDL_Renderer *ren, float x, float y,
+                                     float w, float h, const char *label,
+                                     bool focused) {
     draw_rounded_fill(ren, x, y, w, h, 7.0f, (SDL_Color){ 20, 26, 32, 255 });
     draw_rounded_outline(ren, x, y, w, h, 7.0f, COLOR_CARD_BORDER);
+    if (focused) {
+        draw_rounded_outline(ren, x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f,
+                             9.0f, COLOR_LIME);
+    }
     float base_len = ui_font_text_width(label, 1.0f);
     if (base_len < 1.0f) base_len = 1.0f;
     float scale = (w - 20.0f) / base_len;
@@ -1515,15 +1501,24 @@ static void draw_status_pill(SDL_Renderer *ren, float x, float y, float w, float
     draw_text(ren, x + (w - text_len) * 0.5f, y + (h - text_h) * 0.5f, label, scale, COLOR_TEXT_DIM);
 }
 
+static void draw_status_pill(SDL_Renderer *ren, float x, float y, float w, float h, const char *label) {
+    draw_status_pill_focused(ren, x, y, w, h, label, false);
+}
+
 /* Word-wrap with real text metrics. Splits on '\n' first, then on spaces;
  * overlong words are hard-cut on UTF-8 boundaries. Returns the y of the
  * line after the last one drawn. */
-static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
-                               const char *str, float scale, SDL_Color c, int max_lines) {
+static float draw_text_wrapped_checked(SDL_Renderer *ren, float x, float y,
+                                       float max_w, const char *str,
+                                       float scale, SDL_Color c, int max_lines,
+                                       int *out_lines, bool *out_complete) {
+    if (out_lines) *out_lines = 0;
+    if (out_complete) *out_complete = true;
     if (!str || !*str || scale <= 0.0f || max_w <= 0.0f || max_lines <= 0) return y;
     float line_h = ui_font_line_height(scale);
 
     int line_no = 0;
+    bool truncated = false;
     const char *cursor = str;
     char line_buf[512];
     while (*cursor && line_no < max_lines) {
@@ -1562,16 +1557,17 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
             const char *emit = line_buf;
             if (*emit == ' ' || *emit == '\t') emit++;
             if (last_line && more_after) {
+                truncated = true;
                 size_t emit_len = strlen(emit);
                 if (emit_len > 3) {
                     memcpy(line_buf + (emit - line_buf) + emit_len - 3, "...", 3);
                 }
-                draw_text(ren, x, y, emit, scale, c);
+                if (ren) draw_text(ren, x, y, emit, scale, c);
                 y += line_h;
                 line_no++;
                 break;
             }
-            draw_text(ren, x, y, emit, scale, c);
+            if (ren) draw_text(ren, x, y, emit, scale, c);
             y += line_h;
             line_no++;
             offset += take;
@@ -1580,16 +1576,57 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
         cursor += para_len;
         if (*cursor == '\n') cursor++;
     }
+    if (out_lines) *out_lines = line_no;
+    if (out_complete) *out_complete = !truncated && *cursor == '\0';
     return y;
+}
+
+static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
+                               const char *str, float scale, SDL_Color c, int max_lines) {
+    return draw_text_wrapped_checked(ren, x, y, max_w, str, scale, c,
+                                     max_lines, NULL, NULL);
+}
+
+static int wrapped_text_line_count(const char *str, float scale, float max_w) {
+    if (!str || !*str || scale <= 0.0f || max_w <= 0.0f) return 0;
+    /* No card renders more lines than this; a longer text reports incomplete. */
+    size_t length = strlen(str);
+    int max_lines = length < 256 ? (int)length + 1 : 256;
+    int line_count = 0;
+    bool complete = false;
+    (void)draw_text_wrapped_checked(NULL, 0.0f, 0.0f, max_w, str, scale,
+                                    COLOR_TEXT_MUTED, max_lines, &line_count,
+                                    &complete);
+    return complete ? line_count : max_lines;
 }
 
 static SDL_FRect s_last_status_badge;
 static bool s_last_status_badge_valid;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 static const char *s_last_status_badge_label;
+static bool s_ui_test_error_text_complete = true;
+static int s_ui_test_error_text_lines;
+static bool s_ui_test_error_details_complete = true;
+static int s_ui_test_error_details_lines;
 
 const char *ui_test_last_status_badge_label(void) {
     return s_last_status_badge_label ? s_last_status_badge_label : "";
+}
+
+bool ui_test_error_text_complete(void) {
+    return s_ui_test_error_text_complete;
+}
+
+int ui_test_error_text_lines(void) {
+    return s_ui_test_error_text_lines;
+}
+
+bool ui_test_error_details_complete(void) {
+    return s_ui_test_error_details_complete;
+}
+
+int ui_test_error_details_lines(void) {
+    return s_ui_test_error_details_lines;
 }
 #endif
 
@@ -1677,21 +1714,21 @@ static const char *status_label(NkGameSupportStatus status) {
 static const char *resolution_label(int scale) {
     switch (scale) {
         case 1: return "1x Native (480x272)";
-        case 2: return "2x Vita (960x544)";
+        case 2: return "2x Scale (960x544)";
         case 3: return "3x Scale (1440x816)";
-        case 4: return "4x Scale (1920x1088)";
+        case 4: return "4x Scale";
         case 8: return "8x Scale (3840x2176)";
         default: return "Custom Scale";
     }
 }
 
-/* Human-readable label for the configured frame rate cap. */
+/* Human-readable label for host presentation pacing; the guest clock remains
+ * tied to PSP VBlank in either mode. */
 static const char *fps_label(int cap) {
     switch (cap) {
-        case 30: return "30 FPS CAP";
-        case 60: return "60 FPS CAP";
-        case 0:  return "UNCAPPED TARGET";
-        default: return "CADENCE CAP";
+        case -1: return "PSP TIMING";
+        case 0:  return "NO EXTRA CAP";
+        default: return "PSP TIMING";
     }
 }
 
@@ -1920,21 +1957,14 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf (#295). Build the runtime package from the library (#296/#297).");
+                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "%s selected. Build the runtime package from the library (#296/#297).",
+                     "%s selected. Build the runtime package from the library.",
                      game->selected_executable);
         } else {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "No analyzable executable selected. Build the runtime package from the library (#296/#297).");
-        }
-        unsigned int issues[5] = { 285, 308, 296, 297, 0 };
-        size_t issue_count = 4;
-        if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
-            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
-            issues[4] = 295;
-            issue_count++;
+                     "No analyzable executable selected. Build the runtime package from the library.");
         }
         if (hero_h <= 215.0f) {
             char compact_summary[400];
@@ -1952,9 +1982,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 156.0f,
                                  experimental_reason, 0.95f, hero_w - 64.0f,
                                  COLOR_TEXT_MUTED);
-            draw_issue_links(ren, hero_x + 32.0f,
-                             hero_y + (hero_h >= 300.0f ? 184.0f : 174.0f),
-                             issues, issue_count, in);
         }
     } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
@@ -2048,9 +2075,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } /* end specs rail (skipped on compact heroes) */
 
     /* Action Buttons. Focus order: 0 = primary, 1 = add, 2 = remove,
-     * 3 = per-title controller mapping, then paging stops. The unavailable pill
-     * is never a focus stop. (btn_y and scope_y are set above, next to the
-     * specs rail that has to stay clear of them.) */
+     * 3 = per-title controller mapping, then paging stops. Unavailable pills
+     * are never focus stops; a pending primary check keeps its focus position.
+     * (btn_y and scope_y are set above, next to the specs rail that has to
+     * stay clear of them.) */
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
     if (app->is_game_running) {
@@ -2067,8 +2095,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
         focus++;
     } else if (package_checking) {
-        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "CHECKING PACKAGE...");
+        draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f,
+                                 54.0f, "CHECKING PACKAGE...",
+                                 primary_focused);
+        focus++;
     } else if (package_check_failed) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "RETRY PACKAGE CHECK", true, in, primary_focused)) {
@@ -2092,7 +2122,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "PACKAGE INCOMPATIBLE (#297)");
+                         "PACKAGE INCOMPATIBLE");
     } else if (game->assets_staged) {
         /* Disc extraction is useful progress, but it is not a runnable
          * recompiled title. Keep this state visible without exposing a
@@ -2311,7 +2341,7 @@ static void render_inspecting(SDL_Renderer *ren, PlayerApp *app, const UiInput *
     } else {
         draw_text(ren, card_x + 32.0f, card_y + 120.0f, "No disc image selected.", 1.2f, COLOR_TEXT_MUTED);
         draw_text_wrapped(ren, card_x + 32.0f, card_y + 144.0f, card_w - 64.0f,
-                          "Select a lawfully obtained PSP game ISO to inspect it.", 1.0f, COLOR_TEXT_DIM, 2);
+                          "Select a PSP game ISO you own to inspect it.", 1.0f, COLOR_TEXT_DIM, 2);
     }
 
     bool focused = (app->focus_index == 0);
@@ -2330,7 +2360,11 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     /* Narrow cards stack the actions vertically so BACK can never run
      * off the card edge. Focus order (ADD, BACK) is unchanged. */
     bool stacked_actions = (card_w < 500.0f);
-    float card_h = stacked_actions ? 430.0f : 360.0f;
+    char profile_refusal[512] = "";
+    bool has_profile_refusal = player_app_title_profile_refusal_for_disc(
+        app, app->inspecting_game.disc_id, profile_refusal,
+        sizeof(profile_refusal));
+    float card_h = stacked_actions ? 460.0f : (has_profile_refusal ? 420.0f : 360.0f);
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
     float card_y = cy - card_h * 0.5f;
@@ -2341,7 +2375,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "TITLE RECOGNIZED", COLOR_EMERALD);
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "GAME FOUND", COLOR_EMERALD);
     if (card_w >= 560.0f) {
         draw_badge(ren, card_x + 220.0f, card_y + 28.0f, app->inspecting_game.disc_id[0] ? app->inspecting_game.disc_id : "DISC_ID", COLOR_BLUE);
     }
@@ -2350,16 +2384,28 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
                          app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "PlayStation Portable Title",
                          2.2f, card_w - 64.0f, COLOR_TEXT_WHITE);
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 116.0f, card_w - 64.0f,
-                      "Disc identified in Nakagawa title catalog.\nThis build does not connect the module preparation pipeline.",
-                      1.1f, COLOR_TEXT_MUTED, 3);
+                      "We found this game in Nakagawa's title list. Game preparation is still in the works.",
+                      1.1f, COLOR_TEXT_MUTED, 2);
+    float note_y = card_y + 180.0f;
+    if (has_profile_refusal) {
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 154.0f,
+                          card_w - 64.0f,
+                          "A local title profile was refused, so this game uses its built-in entry.",
+                          1.0f, COLOR_AMBER, 2);
+        char details[640];
+        snprintf(details, sizeof(details), "Details: %s", profile_refusal);
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 196.0f,
+                          card_w - 64.0f, details, 0.9f, COLOR_TEXT_DIM, 2);
+        note_y = card_y + 254.0f;
+    }
 
     /* Honesty warning */
-    draw_text_wrapped(ren, card_x + 32.0f, card_y + 180.0f, card_w - 64.0f,
+    draw_text_wrapped(ren, card_x + 32.0f, note_y, card_w - 64.0f,
                       "NOTE: Full LLE font fidelity requires jpn0.pgf in system font directory.",
                       1.0f, COLOR_AMBER, 2);
 
     bool add_focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 260.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in, add_focused)) {
+    if (draw_button_focused(ren, card_x + 32.0f, card_y + 300.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in, add_focused)) {
         /* Do not mark the game prepared: no preparation has run. The entry
          * keeps the status reported by the ISO inspection. */
         if (player_app_add_game(app, &app->inspecting_game)) {
@@ -2376,7 +2422,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     }
     bool back_focused = (app->focus_index == 1);
     float back_x = stacked_actions ? card_x + 32.0f : card_x + 310.0f;
-    float back_y = stacked_actions ? card_y + 330.0f : card_y + 260.0f;
+    float back_y = stacked_actions ? card_y + 360.0f : card_y + 300.0f;
     if (draw_button_focused(ren, back_x, back_y, 140.0f, 50.0f, "BACK", false, in, back_focused)) {
         player_app_set_view(app, VIEW_LIBRARY);
     }
@@ -2432,17 +2478,11 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
                              status_text, 0.82f, 82.0f, status_color);
         draw_text_ellipsized(ren, card_x + 120.0f, row_y,
                              check->code, 0.82f, 116.0f, COLOR_TEXT_WHITE);
-        float issue_width = (float)check->issue_count * 54.0f;
-        float message_width = card_w - 300.0f - issue_width;
+        float message_width = card_w - 300.0f;
         if (message_width < 120.0f) message_width = 120.0f;
         draw_text_ellipsized(ren, card_x + 244.0f, row_y,
                              check->message, 0.78f, message_width,
                              COLOR_TEXT_MUTED);
-        if (check->issue_count) {
-            draw_issue_links(ren, card_x + card_w - 32.0f - issue_width,
-                             row_y - 2.0f, check->issue_numbers,
-                             check->issue_count, in);
-        }
     }
 
     float button_y = card_y + card_h - 60.0f;
@@ -2471,7 +2511,11 @@ static void render_unsupported_title(SDL_Renderer *ren, PlayerApp *app, const Ui
     float cx = w * 0.5f;
     float cy = h * 0.5f;
     float card_w = dialog_card_w(w, 640.0f);
-    float card_h = 320.0f;
+    char profile_refusal[512] = "";
+    bool has_profile_refusal = player_app_title_profile_refusal_for_disc(
+        app, app->inspecting_game.disc_id, profile_refusal,
+        sizeof(profile_refusal));
+    float card_h = has_profile_refusal ? 380.0f : 320.0f;
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
     float card_y = cy - card_h * 0.5f;
@@ -2482,14 +2526,24 @@ static void render_unsupported_title(SDL_Renderer *ren, PlayerApp *app, const Ui
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "UNSUPPORTED TITLE", COLOR_RED);
-    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Title Not Qualified", 2.2f, COLOR_TEXT_WHITE);
+    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "NOT READY", COLOR_RED);
+    draw_text(ren, card_x + 32.0f, card_y + 76.0f,
+              "This game isn't ready yet", 2.2f, COLOR_TEXT_WHITE);
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 120.0f, card_w - 64.0f,
-                      "The selected ISO disc image is a valid PSP game, but is not yet registered in Nakagawa Recomp's title registry.\nTo avoid unpredictable crashes, unsupported titles are not executed.",
-                      1.1f, COLOR_TEXT_MUTED, 4);
+                      has_profile_refusal
+                          ? "We couldn't use this game's title profile, so it can't be added or run yet."
+                          : "This game isn't in Nakagawa's title list yet, so it can't be run safely.",
+                      1.1f, COLOR_TEXT_MUTED, 3);
+    if (has_profile_refusal) {
+        char details[640];
+        snprintf(details, sizeof(details), "Details: %s", profile_refusal);
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 174.0f,
+                          card_w - 64.0f, details, 0.95f, COLOR_TEXT_DIM, 3);
+    }
 
     bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 230.0f, 220.0f, 48.0f, "RETURN TO LIBRARY", true, in, focused)) {
+    float button_y = card_y + card_h - 90.0f;
+    if (draw_button_focused(ren, card_x + 32.0f, button_y, 220.0f, 48.0f, "RETURN TO LIBRARY", true, in, focused)) {
         player_app_set_view(app, VIEW_LIBRARY);
     }
 }
@@ -2532,13 +2586,13 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
 
 /* --- View: Settings ---
  *
- * Every control here is live: resolution and frame-cap presets write the
+ * Every control here is live: resolution and presentation pacing write the
  * launch preferences that PLAY NOW consumes, toggles flip, and volume
  * steps clamp 0..100. Focus order is stable so Tab/Enter and gamepad
  * SOUTH all reach the same actions as a mouse click. */
-/* Real save root the launcher resolves at launch: nk_launch_prepare_session
- * points SR_MEMSTICK at <root>/<disc id> (platform per-user saves; writable by
- * construction). Computed once because nk_platform_get_path creates the
+/* Default per-user save root shown in Settings. Launch normally uses a
+ * per-title child here, but prepared titles can use their staged memory-stick
+ * root instead. Computed once because nk_platform_get_path creates the
  * directory and the root cannot change while the player runs. Replaces the old
  * save_directory field, which was never read by anything. */
 static char g_saves_root[MAX_PATH_LEN];
@@ -2581,9 +2635,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (app->settings_notice[0]) {
         draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
     } else {
-        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f,
-                             "Game settings apply at the next launch; launcher fullscreen applies now.",
-                             1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 96.0f,
+                          card_w - 64.0f,
+                          "PSP VBlank (~59.94 Hz) sets game timing; each title chooses its own cadence. "
+                          "High-refresh presentation is not supported yet. Game settings apply next launch; "
+                          "launcher fullscreen applies now.",
+                          0.9f, COLOR_TEXT_DIM, 2);
     }
     /* Identify the platform the player runs, never imply endorsement. */
     draw_text_ellipsized(ren, card_x + 4.0f, card_y + card_h + 14.0f,
@@ -2605,7 +2662,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
         {
             struct { const char *label; int scale; } kRes[] = {
-                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
+                { "1x Native", 1 }, { "2x Scale", 2 }, { "4x Scale", 4 },
             };
             float bx = col1_x;
             float by = y + 24.0f;
@@ -2625,25 +2682,25 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             y = by + 52.0f;
         }
         /* Frame rate: wrap the same way. */
-        draw_text(ren, col1_x, y, "FRAME CADENCE (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "PRESENTATION PACING (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
         {
             struct { const char *label; int cap; } kFps[] = {
-                { "30 FPS (PSP Cap)", 30 }, { "60 FPS (Smooth)", 60 }, { "Uncapped", 0 },
+                { "PSP timing", -1 }, { "No extra cap", 0 },
             };
             float bx = col1_x;
             float by = y + 24.0f;
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < 2; i++) {
                 bool selected = (app->settings.fps_cap == kFps[i].cap);
                 bool focused = (app->focus_index == focus);
-                if (bx + 140.0f > inner_r + 1.0f && bx > col1_x) {
+                if (bx + 180.0f > inner_r + 1.0f && bx > col1_x) {
                     bx = col1_x;
                     by += 42.0f;
                 }
-                if (draw_button_focused(ren, bx, by, 140.0f, 36.0f, kFps[i].label, selected, in, focused)) {
+                if (draw_button_focused(ren, bx, by, 180.0f, 36.0f, kFps[i].label, selected, in, focused)) {
                     player_app_set_fps_cap(app, kFps[i].cap);
                 }
                 focus++;
-                bx += 150.0f;
+                bx += 190.0f;
             }
             y = by + 52.0f;
         }
@@ -2730,7 +2787,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             y = by + 50.0f;
         }
         /* Gamepad + save stay one-liners here; the topbar badge already
-         * carries live controller state and the save path is display-only. */
+         * carries live controller state and this is the default save root. */
         if (h >= 620.0f) {
             draw_text(ren, col1_x, y, "GAMEPAD & STORAGE", 1.1f, COLOR_TEXT_DIM);
             if (app->settings.controller_connected) {
@@ -2744,6 +2801,9 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             draw_text_ellipsized(ren, col1_x, y + 44.0f,
                                  saves_root_display(),
                                  1.0f, inner_r - col1_x, COLOR_TEXT_DIM);
+            draw_text_ellipsized(ren, col1_x, y + 60.0f,
+                                 "Packages use this root per title; prepared titles may use staged saves.",
+                                 0.8f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
         bool ctrl_focused = (app->focus_index == focus);
@@ -2795,7 +2855,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
     {
         struct { const char *label; int scale; } kRes[] = {
-            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
+            { "1x Native", 1 }, { "2x Scale", 2 }, { "4x Scale", 4 },
         };
         float bx = col1_x;
         for (int i = 0; i < 3; i++) {
@@ -2811,22 +2871,26 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Frame rate */
     float fps_y = two_col ? row_y + 90.0f : row_y + 132.0f;
-    draw_text(ren, col1_x, fps_y, "FRAME CADENCE (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, fps_y, "PRESENTATION PACING (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
     {
         struct { const char *label; int cap; } kFps[] = {
-            { "30 FPS (PSP Cap)", 30 }, { "60 FPS (Smooth)", 60 }, { "Uncapped", 0 },
+            { "PSP timing", -1 }, { "No extra cap", 0 },
         };
         float bx = col1_x;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 2; i++) {
             bool selected = (app->settings.fps_cap == kFps[i].cap);
             bool focused = (app->focus_index == focus);
-            if (draw_button_focused(ren, bx, fps_y + 24.0f, 140.0f, 36.0f, kFps[i].label, selected, in, focused)) {
+            if (draw_button_focused(ren, bx, fps_y + 24.0f, 180.0f, 36.0f, kFps[i].label, selected, in, focused)) {
                 player_app_set_fps_cap(app, kFps[i].cap);
             }
             focus++;
-            bx += 150.0f;
+            bx += 190.0f;
         }
     }
+    draw_text_ellipsized(ren, col1_x, fps_y + 64.0f,
+                         "Guest timing follows PSP VBlank. High-refresh output is not supported yet.",
+                         0.75f, card_x + player_settings_second_column_offset(card_w) - col1_x - 16.0f,
+                         COLOR_TEXT_DIM);
 
     /* Display toggles */
     float tog_y = fps_y + 90.0f;
@@ -2937,10 +3001,13 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Save path lives under the gamepad block: column one grew a second
      * toggle row, so its old slot now belongs to reduce-motion. */
-    draw_text(ren, col2_x, pad_y + 92.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col2_x, pad_y + 92.0f, "DEFAULT PER-USER SAVE ROOT", 1.1f, COLOR_TEXT_DIM);
     draw_text_ellipsized(ren, col2_x, pad_y + 116.0f,
                          saves_root_display(),
                          1.1f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_WHITE);
+    draw_text_ellipsized(ren, col2_x, pad_y + 140.0f,
+                         "Packages use this root per title; prepared titles may use staged saves.",
+                         0.8f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_DIM);
 
     /* Close */
     bool close_focused = (app->focus_index == focus);
@@ -3636,7 +3703,7 @@ static void render_prerequisite_consent(SDL_Renderer *ren, PlayerApp *app,
     for (size_t i = 0; i < count; i++) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (#304 license review in the works)" : item->license;
+            ? "NOASSERTION (license review in the works)" : item->license;
         char row[640];
         snprintf(row, sizeof(row), "%s %s | %s | %llu bytes | %s",
                  item->name, item->version, item->host,
@@ -3739,7 +3806,7 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         if (!item->installed) continue;
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (#304 license review in the works)" : item->license;
+            ? "NOASSERTION (license review in the works)" : item->license;
         char row[384];
         snprintf(row, sizeof(row), "%s %s | %s", item->name,
                  item->version, license);
@@ -3809,22 +3876,81 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
     float cx = w * 0.5f;
-    float cy = h * 0.5f;
     float card_w = dialog_card_w(w, 680.0f);
+    bool runtime_stop = strcmp(app->last_error.error_code,
+                               "RUNTIME_SEMANTIC_BOUNDARY") == 0;
+    bool launch_readiness_error = runtime_stop ||
+        strcmp(app->last_error.error_code, "TITLE_DATA_MISSING") == 0 ||
+        strcmp(app->last_error.error_code, "TITLE_PROFILE_INVALID") == 0 ||
+        strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0;
     bool has_build_details = (app->last_error.failed_stage[0] != '\0' ||
                               app->last_error.log_file_path[0] != '\0');
-    float card_h = has_build_details ? 420.0f : 340.0f;
-    if (card_h > h - 32.0f && h > 340.0f) card_h = h - 32.0f;
+    char log_str[NK_MAX_PATH + 32] = "";
+    if (app->last_error.log_file_path[0]) {
+        snprintf(log_str, sizeof(log_str), "LOG FILE: %s",
+                 app->last_error.log_file_path);
+    }
+    /* Launch-readiness errors lead with the plain sentence and show the
+     * technical boundary as details; other errors show the boundary itself. */
+    const char *err_msg = launch_readiness_error ? app->last_error.message
+        : (app->last_error.boundary_text[0]
+            ? app->last_error.boundary_text : app->last_error.message);
+    const char *details_text = app->last_error.details[0]
+        ? app->last_error.details
+        : (launch_readiness_error ? app->last_error.boundary_text : "");
+    float max_card_h = h - 88.0f;
+    if (max_card_h < 260.0f) max_card_h = h - 32.0f;
+    if (max_card_h < 160.0f) max_card_h = h;
+    float text_width = card_w - 64.0f;
+    float message_scale = 1.1f;
+    int message_lines = wrapped_text_line_count(err_msg, message_scale,
+                                                 text_width);
+    if (message_lines < 1) message_lines = 1;
+    float message_height = (float)message_lines *
+        ui_font_line_height(message_scale);
+    float text_start_y = 110.0f +
+        (app->last_error.failed_stage[0] ? 34.0f : 0.0f);
+    float message_required_h = text_start_y + message_height + 12.0f +
+        58.0f + 12.0f;
+    while (message_required_h > max_card_h && message_scale > 0.7f) {
+        message_scale -= 0.05f;
+        message_lines = wrapped_text_line_count(err_msg, message_scale,
+                                                 text_width);
+        if (message_lines < 1) message_lines = 1;
+        message_height = (float)message_lines *
+            ui_font_line_height(message_scale);
+        message_required_h = text_start_y + message_height + 12.0f +
+            58.0f + 12.0f;
+    }
+
+    int detail_lines = wrapped_text_line_count(details_text, 0.9f,
+                                                text_width);
+    float detail_height = detail_lines > 0
+        ? 10.0f + ui_font_line_height(0.82f) +
+          (float)detail_lines * ui_font_line_height(0.9f)
+        : 0.0f;
+    float log_height = log_str[0] ? ui_font_line_height(0.9f) + 6.0f : 0.0f;
+    float required_h = message_required_h + detail_height + log_height;
+    float card_h = required_h > 340.0f ? required_h : 340.0f;
+    if ((has_build_details || launch_readiness_error) && card_h < 420.0f) card_h = 420.0f;
+    if (card_h > max_card_h) card_h = max_card_h;
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
-    float card_y = cy - card_h * 0.5f;
-    if (card_y < 60.0f) card_y = 60.0f;
+    float card_y = (h - card_h) * 0.5f;
+    if (card_y < 72.0f) card_y = 72.0f;
 
     draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, app->last_error.error_code, COLOR_RED);
+    const char *badge = runtime_stop ? "GAME STOPPED"
+        : (strcmp(app->last_error.error_code, "TITLE_DATA_MISSING") == 0
+            ? "GAME DATA NEEDED"
+            : (strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0
+                ? "GAME NOT READY"
+                : (strcmp(app->last_error.error_code, "TITLE_PROFILE_INVALID") == 0
+                    ? "TITLE SETTINGS NEEDED" : app->last_error.error_code)));
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, badge, COLOR_RED);
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 66.0f, app->last_error.title,
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
 
@@ -3836,29 +3962,74 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
         text_y += 34.0f;
     }
 
-    const char *err_msg = app->last_error.boundary_text[0]
-        ? app->last_error.boundary_text
-        : app->last_error.message;
-    draw_text_wrapped(ren, card_x + 32.0f, text_y, card_w - 64.0f,
-                      err_msg, 1.1f, COLOR_TEXT_MUTED, 4);
-    text_y += 76.0f;
+    bool message_complete = false;
+    int rendered_message_lines = 0;
+    float message_end_y = draw_text_wrapped_checked(
+        ren, card_x + 32.0f, text_y, text_width, err_msg, message_scale,
+        COLOR_TEXT_MUTED, message_lines, &rendered_message_lines,
+        &message_complete);
+    text_y = message_end_y + 10.0f;
 
-    if (app->last_error.log_file_path[0]) {
-        char log_str[NK_MAX_PATH + 32];
-        snprintf(log_str, sizeof(log_str), "LOG FILE: %s", app->last_error.log_file_path);
-        draw_text_ellipsized(ren, card_x + 32.0f, text_y, log_str, 0.95f, card_w - 64.0f, COLOR_TEXT_MUTED);
+    bool details_complete = true;
+    int rendered_detail_lines = 0;
+    if (details_text[0]) {
+        draw_text(ren, card_x + 32.0f, text_y, "DETAILS", 0.82f,
+                  COLOR_TEXT_DIM);
+        text_y += ui_font_line_height(0.82f);
+        int detail_budget = detail_lines;
+        float button_y = card_y + card_h - 58.0f;
+        float details_bottom = button_y - 12.0f;
+        if (log_str[0]) details_bottom -= log_height;
+        float available = details_bottom - text_y;
+        float detail_line_height = ui_font_line_height(0.9f);
+        int visible_lines = available > 0.0f
+            ? (int)(available / detail_line_height) : 0;
+        if (detail_budget > visible_lines) detail_budget = visible_lines;
+        float details_end_y = draw_text_wrapped_checked(
+            ren, card_x + 32.0f, text_y, text_width,
+            details_text, 0.9f, COLOR_TEXT_DIM, detail_budget,
+            &rendered_detail_lines, &details_complete);
+        if (details_end_y > details_bottom ||
+            rendered_detail_lines != detail_lines) {
+            details_complete = false;
+        }
+        text_y = details_end_y + 6.0f;
     }
 
-    bool focused = (app->focus_index == 0);
+    bool log_complete = true;
+    if (log_str[0]) {
+        draw_text_ellipsized(ren, card_x + 32.0f, text_y, log_str, 0.9f,
+                             text_width, COLOR_TEXT_MUTED);
+        float button_y = card_y + card_h - 58.0f;
+        log_complete = text_y + ui_font_line_height(0.9f) <= button_y - 8.0f;
+    }
+
     float btn_y = card_y + card_h - 58.0f;
-    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_error_text_lines = rendered_message_lines;
+    s_ui_test_error_text_complete = message_complete &&
+        message_end_y <= btn_y - 8.0f;
+    s_ui_test_error_details_lines = rendered_detail_lines;
+    s_ui_test_error_details_complete = details_complete && log_complete;
+#else
+    (void)rendered_message_lines;
+    (void)rendered_detail_lines;
+    (void)details_complete;
+    (void)log_complete;
+#endif
+
+    bool focused = (app->focus_index == 0);
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f,
+                            app->last_error.recovery_action_label, true,
+                            in, focused)) {
         if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
             app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
             player_app_prereq_retry(app);
         } else {
             player_app_set_view(app, app->last_error.return_view);
             if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
-                strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0) {
+                strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
                 app->request_file_picker = true;
             }
         }
@@ -3914,12 +4085,11 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               "This wizard inspects a PSP disc image and stages title data. Launch is available "
                               "only for catalogued titles with a generated runtime package.\n\n"
                               "What you will need:\n"
-                              " • Lawfully obtained PSP game ISO\n"
+                              " • A PSP game ISO you own\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "This build decrypts encrypted executables with a local key file (#295). It builds runtime "
-                              "packages from the library (#296/#297). Verify also lists font (#300) and audio "
-                              "(#301) status.",
+                              "This build decrypts encrypted executables with a local key file. It builds runtime "
+                              "packages from the library. Verify also lists font and audio status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 
             bool get_started_foc = (app->focus_index == focus++);
@@ -3936,7 +4106,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
         case WIZARD_STEP_SELECT_GAME: {
             draw_text(ren, card_x + 32.0f, content_y, "Select Game Disc Image", 2.0f, COLOR_TEXT_WHITE);
             draw_text_wrapped(ren, card_x + 32.0f, content_y + 36.0f, card_w - 64.0f,
-                              "Select your lawfully obtained PSP game disc image (*.iso).\n"
+                              "Select your PSP game disc image (*.iso) of a game you own.\n"
                               "Nakagawa Recomp will inspect the ISO filesystem, volume descriptors, and PARAM.SFO.",
                               1.1f, COLOR_TEXT_MUTED, 3);
 
@@ -4087,15 +4257,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                                          status_text, 0.8f, 80.0f, status_color);
                     draw_text_ellipsized(ren, card_x + 132.0f, row_y,
                                          check->code, 0.8f, 122.0f, COLOR_TEXT_WHITE);
-                    float issue_width = (float)check->issue_count * 54.0f;
                     draw_text_ellipsized(ren, card_x + 260.0f, row_y,
-                                         check->message, 0.78f, card_w - 308.0f - issue_width,
+                                         check->message, 0.78f, card_w - 308.0f,
                                          COLOR_TEXT_MUTED);
-                    if (check->issue_count) {
-                        draw_issue_links(ren, card_x + card_w - 48.0f - issue_width,
-                                         row_y - 2.0f, check->issue_numbers,
-                                         check->issue_count, in);
-                    }
                 }
             }
 
@@ -4314,6 +4478,10 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
     s_last_status_badge_valid = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     s_last_status_badge_label = NULL;
+    s_ui_test_error_text_complete = true;
+    s_ui_test_error_text_lines = 0;
+    s_ui_test_error_details_complete = true;
+    s_ui_test_error_details_lines = 0;
 #endif
 
     /* Clamp focus before drawing so a resize or library change can never

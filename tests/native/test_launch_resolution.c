@@ -27,8 +27,16 @@
 #include "nk_platform.h"
 #include "nk_title_manifest.h"
 #include "nk_types.h"
+#include "native_test_isolation.h"
 
+/* The per-run root setup and its recursive cleanup run inside assert(); keep
+ * them even in a build that defines NDEBUG (#735). */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,8 +44,11 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #include <windows.h>
+#include <wchar.h>
 #define test_rmdir _rmdir
 #else
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define test_rmdir rmdir
@@ -47,6 +58,24 @@ static const NkTitleEntry *lookup_title_snapshot(
     const char *title_id, NkTitleEntrySnapshot *snapshot) {
     return snapshot && nk_title_catalog_find_by_id(title_id, snapshot)
         ? &snapshot->entry : NULL;
+}
+
+static void make_catalog_data_root(const char *root, const char *title_id) {
+    NkTitleEntrySnapshot snapshot = {0};
+    const NkTitleEntry *entry = lookup_title_snapshot(title_id, &snapshot);
+    assert(entry != NULL);
+    if (entry->data_root && entry->data_root[0]) {
+        char path[NK_MAX_PATH * 2];
+        char separator = nk_platform_path_separator();
+        int written = snprintf(path, sizeof(path), "%s%c%s", root, separator,
+                              entry->data_root);
+        assert(written > 0 && (size_t)written < sizeof(path));
+        for (size_t i = 0; path[i]; i++) {
+            if (path[i] == '/' || path[i] == '\\') path[i] = separator;
+        }
+        assert(nk_platform_mkdir_p(path));
+    }
+    nk_title_catalog_snapshot_release(&snapshot);
 }
 
 static void write_file(const char *path, const char *data) {
@@ -196,6 +225,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     make_game(&game, "");
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
     snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    make_catalog_data_root(stage_root, game.title_id);
     assert(strlen(stage_root) < sizeof(game.prepared_root));
     memcpy(game.prepared_root, stage_root, strlen(stage_root) + 1);
     game.assets_staged = true;
@@ -218,6 +248,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
     assert(session.staged_executable_checked);
+    assert(session.config.fps_cap == -1);
     assert(ends_with(session.executable_path, "display-smoke") ||
            ends_with(session.executable_path, "display-smoke.exe"));
     /* Prepare defaults: a caller that never configures the session must not
@@ -298,6 +329,7 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
+    session.config.fps_cap = -1;
     assert(nk_launch_start(&session) == NK_OK);
     child_exit = nk_launch_wait(&session, -1);
     nk_launch_stop(&session);
@@ -308,6 +340,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     observed[observed_size] = '\0';
     assert(!ferror(report));
     assert(fclose(report) == 0);
+    assert(strstr(observed, "SR_FPS_CAP=native\n") != NULL);
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
 
     restore_environment_value("PSP_ISO", old_iso, had_iso);
@@ -594,6 +627,7 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
     make_game(&unicode_game, "");
     snprintf(unicode_game.disc_id, sizeof(unicode_game.disc_id), "TEST00006");
     snprintf(unicode_game.title_id, sizeof(unicode_game.title_id), "display-smoke-v1");
+    make_catalog_data_root(root, unicode_game.title_id);
     assert(strlen(root) < sizeof(unicode_game.prepared_root));
     memcpy(unicode_game.prepared_root, root, strlen(root) + 1);
     unicode_game.assets_staged = true;
@@ -705,6 +739,11 @@ int main(int argc, char **argv) {
         return write_launch_environment_probe();
     }
 
+    native_test_create_root("launch-resolution");
+    native_test_isolate_user_data_roots();
+    native_test_assert_cache_root_isolated();
+    native_test_assert_config_root_isolated();
+
 #if defined(_WIN32) || defined(_WIN64)
     test_windows_data_directory_candidate_order();
 #else
@@ -754,6 +793,7 @@ int main(int argc, char **argv) {
     write_file(img_noext, "image");
 
     make_game(&game, iso_path);
+    make_catalog_data_root(root1, game.title_id);
     assert(nk_launch_prepare_session(&session, &game, root1) == NK_OK);
     assert(ends_with(session.executable_path, "synthetic"));
     assert(ends_with(session.image_path, "synthetic_image.bin"));
@@ -789,6 +829,7 @@ int main(int argc, char **argv) {
     write_file(img_dot, "image");
 
     make_game(&game, iso_path);
+    make_catalog_data_root(root2, game.title_id);
     assert(nk_launch_prepare_session(&session, &game, root2) == NK_OK);
     assert(ends_with(session.executable_path, "synthetic.exe"));
     assert(ends_with(session.image_path, "synthetic_image.bin"));
@@ -821,6 +862,7 @@ int main(int argc, char **argv) {
     write_file(img_nested, "image");
 
     make_game(&game, iso_path);
+    make_catalog_data_root(dotted_dir, game.title_id);
     assert(nk_launch_prepare_session(&session, &game, dotted_dir) == NK_OK);
     assert(ends_with(session.image_path, "synthetic_image.bin"));
 
@@ -1093,6 +1135,7 @@ int main(int argc, char **argv) {
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
     snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    make_catalog_data_root(root9, game.title_id);
     assert(nk_launch_prepare_session(&session, &game, root9) != NK_OK);
     assert(strstr(session.last_error, "Runtime binary not found") != NULL);
     assert(strstr(session.last_error, "hst") == NULL);
@@ -1285,6 +1328,7 @@ int main(int argc, char **argv) {
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
     snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    make_catalog_data_root(root13, game.title_id);
     assert(nk_launch_prepare_session(&session, &game, root13) == NK_OK);
     assert(ends_with(session.executable_path, amb_expected));
 
@@ -1317,6 +1361,7 @@ int main(int argc, char **argv) {
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
     snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    make_catalog_data_root(root14a, game.title_id);
     {
         NkLaunchSession session_a;
         NkLaunchSession session_b;
@@ -1362,6 +1407,7 @@ int main(int argc, char **argv) {
     make_game(&game, iso_path);
     snprintf(game.disc_id, sizeof(game.disc_id), "TEST00005");
     snprintf(game.title_id, sizeof(game.title_id), "pspdev-phase5-v1");
+    make_catalog_data_root(root15, game.title_id);
     assert(nk_launch_prepare_session(&session, &game, root15) == NK_OK);
     assert(strchr(session.executable_path, ' ') != NULL);
 
@@ -1460,6 +1506,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
         assert(!"legacy fixture manifest must validate");
     }
+    make_catalog_data_root(root17, game.title_id);
     assert(nk_launch_prepare_session(&session, &game, root17) == NK_OK);
     assert(session.base_address == 0u);
     assert(session.entry_point == 0u);
@@ -1487,5 +1534,6 @@ int main(int argc, char **argv) {
     test_non_ascii_user_data_root(base, sep);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
+    native_test_assert_real_config_untouched();
     return 0;
 }

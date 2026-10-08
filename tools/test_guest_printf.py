@@ -38,8 +38,8 @@ class TestGuestPrintf(unittest.TestCase):
                     os.fspath(RT / "guest_printf_selftest.c"),
                     os.fspath(RT / "guest_printf.c"),
                     os.fspath(RT / "debug.c"),
-                    # debug.c depends on the derived watchpoints.json parser
-                    # (issue #188); the harness compiles the real implementation.
+                    # debug.c depends on the derived watchpoints.json parser;
+                    # the harness compiles the real implementation.
                     os.fspath(RT / "watchpoints_file.c"),
                 ],
                 capture_output=True,

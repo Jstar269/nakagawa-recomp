@@ -30,6 +30,12 @@ The authoritative public shape is [`assets/title_manifest.schema.json`](../asset
 
 The schema covers manifest identity and kind, retail disc identity, executable layout, module inventory, filesystem roots, game/HLE/code-generation identifiers, feature requirements, compatibility-manifest and verification references, and notes. Optional `runtime_contract` and `profile_zero` blocks have additional machine-checked constraints; `profile_zero` is limited to synthetic manifests. Their exact required fields belong to the schema and validator, not to a second prose-defined schema.
 
+`filesystem.data_root` is a safe relative path when the title needs separate
+host data. The empty string explicitly means that no separate data directory
+is required. A declared non-empty path must resolve before launch; otherwise
+the player and Python launcher report the missing-data reason tracked by
+[#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
+
 ### Typed loose-content roots (#289)
 
 `filesystem.loose_content_roots` optionally declares up to 16 extra host roots

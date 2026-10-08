@@ -65,7 +65,12 @@ class CodegenImportCompatibilityTests(unittest.TestCase):
         module_info = elf.sec(".rodata.sceModuleInfo")
         header = elf.read_at_vaddr(module_info["addr"], 52)
         libstub = struct.unpack("<I", header[44:48])[0]
-        name_pointer_offset = DATA_FILE_OFF + (libstub - BASE_VADDR)
+        import_entry_offset = DATA_FILE_OFF + (libstub - BASE_VADDR)
+        # The fixture helper treats a zero function count as a variable-only
+        # window. Make this an empty window so the test isolates the guarantee
+        # that unused library names are not dereferenced.
+        struct.pack_into("<B", blob, import_entry_offset + 9, 0)
+        name_pointer_offset = import_entry_offset
         struct.pack_into("<I", blob, name_pointer_offset, 0x00100000)
 
         stubs, _findings = self._parse(bytes(blob))

@@ -26,8 +26,10 @@ directory. They contain no retail or private bytes.
 ## Reproduce (requires PSPDEV/PSPSDK)
 
 From the repository root, with `psp-config`, `psp-gcc`, `psp-prxgen`, and
-`pack-pbp` on `PATH` (the committed bytes came from a WSL Ubuntu PSPDEV install,
-`psp-gcc (GCC) 15.2.0`, PSPSDK pinned by `assets/upstream/pspdev.lock.json`):
+`pack-pbp` on `PATH` (the committed bytes came from the PSPDEV distribution
+pinned by `assets/upstream/pspdev.lock.json`: release `v20260601`, official
+`pspdev-ubuntu-latest-x86_64.tar.gz` release asset, installed into a WSL Ubuntu
+`/usr/local/pspdev`, `psp-gcc (GCC) 15.2.0`):
 
 ```bash
 out="$(mktemp -d)"
@@ -48,3 +50,12 @@ absolute (as shown). Both digests must equal the entries in `prebuilt/SHA256SUMS
 present and fails on byte drift; on hosts without PSPDEV (such as hosted CI)
 it consumes the committed bytes and runs the same seven-case route without a
 toolchain SKIP.
+
+The rebuild-and-compare is authoritative only for the pinned distribution
+(#708). The gate first verifies that the installed PSPDEV tool binaries match
+the identities `assets/upstream/pspdev.lock.json` records for release
+`v20260601` and the `pspdev-ubuntu-latest-x86_64.tar.gz` release asset; a
+PSPDEV from a different asset class (for example the Debian archives) or a
+different release ships different tool binaries and produces different fixture
+bytes, so the gate fails closed naming the pin instead of reporting drift from
+an unauthoritative toolchain.

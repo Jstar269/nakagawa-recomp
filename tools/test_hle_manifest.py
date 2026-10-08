@@ -332,6 +332,27 @@ class LiveManifestTests(unittest.TestCase):
         self.assertNotEqual(sas[0x9EC3676A]["handler"], sas[0xCBCD4F79]["handler"])
         self.assertTrue(all(r["handler"] != "h_ok" for r in sas.values()))
 
+    def test_iofilemgr_sweep_imports_have_named_production_handlers(self) -> None:
+        """Common file-manager NIDs must resolve to named live handlers."""
+        expected = {
+            0x0FACAB19: ("sceIoWriteAsync", "h_IoWriteAsync"),
+            0x1117C65F: ("sceIoRmdir", "h_IoRmdir"),
+            0x55F4717D: ("sceIoChdir", "h_IoChdir"),
+            0xB293727F: ("sceIoChangeAsyncPriority", "h_IoChangeAsyncPriority"),
+            0x1B385D8F: ("sceIoLseek32Async", "h_IoLseek32Async"),
+            0xAB96437F: ("sceIoSync", "h_IoSync"),
+            0xB8A740F4: ("sceIoChstat", "h_IoChstat"),
+            0xE95A012B: ("sceIoIoctlAsync", "h_IoIoctlAsync"),
+            0xCB05F8D6: ("sceIoGetAsyncStat", "h_IoGetAsyncStat"),
+            0xA12A0514: ("sceIoSetAsyncCallback", "h_IoSetAsyncCallback"),
+        }
+        observed = {
+            nid: (r["name"], r["handler"])
+            for nid, r in self.regs.items()
+            if nid in expected
+        }
+        self.assertEqual(observed, expected)
+
     def test_all_classifications_present(self) -> None:
         classes = {r["classification"] for r in self.manifest["registrations"]}
         self.assertEqual(classes, {"dedicated", "fake_success", "controlled_unsupported"})
@@ -368,6 +389,44 @@ class LiveManifestTests(unittest.TestCase):
             [],
             "the 603_605 fix must leave no waiver behind",
         )
+
+    def test_kernel_import_sweep_names_and_routes_every_target(self) -> None:
+        expected = {
+            0xEA748E31: ("sceKernelChangeCurrentThreadAttr", "h_ChangeCurrentThreadAttr", "dedicated"),
+            0x912354A7: ("sceKernelRotateThreadReadyQueue", "h_RotateThreadReadyQueue", "dedicated"),
+            0x75156E8F: ("sceKernelResumeThread", "h_ResumeThread", "dedicated"),
+            0x9944F31F: ("sceKernelSuspendThread", "h_SuspendThread", "dedicated"),
+            0x6652B8CA: ("sceKernelSetAlarm", "h_SetAlarm", "dedicated"),
+            0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
+            0x7E65B999: ("sceKernelCancelAlarm", "h_CancelAlarm", "dedicated"),
+            0x034A921F: ("sceKernelGetVTimerTime", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x50F61D8A: ("sceKernelFreeMemoryBlock", "h_FreeMemoryBlock", "dedicated"),
+            0xDB83A952: ("sceKernelGetMemoryBlockAddr", "h_GetMemoryBlockAddr", "dedicated"),
+            0xFE707FDF: ("sceKernelAllocMemoryBlock", "h_AllocMemoryBlock", "dedicated"),
+            0x342061E5: ("sceKernelSetCompiledSdkVersion370", "h_SetCompiledSdkVersion", "dedicated"),
+            0x1C0D95A6: ("sceGeListEnQueueHead", "h_GeListEnQueueHead", "dedicated"),
+            0x4C06E472: ("sceGeContinue", "h_GeContinue", "dedicated"),
+            0xB448EC0D: ("sceGeBreak", "h_GeBreak", "dedicated"),
+            0xBD2F1094: ("sceKernelLoadExec", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xD675EBB8: ("sceKernelSelfStopUnloadModule", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x40F1469C: ("sceDisplayWaitVblankStartMulti", "h_DisplayWaitVblankStartMulti", "dedicated"),
+            0xBC6FEBC5: ("sceKernelReferSemaStatus", "h_ReferSemaStatus", "dedicated"),
+            0x438A385A: ("sceGeSaveContext", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x0BF608FB: ("sceGeRestoreContext", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x0CAE832B: ("sceRegCloseCategory", "h_RegCloseCategory", "dedicated"),
+            0x1D8A762E: ("sceRegOpenCategory", "h_RegOpenCategory", "dedicated"),
+        }
+        self.assertEqual(len(expected), 23)
+        for nid, (name, handler, classification) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                if nid not in self.regs:
+                    self.fail(f"{name} (NID 0x{nid:08x}) is missing from production registration")
+                registration = self.regs[nid]
+                self.assertEqual(registration["name"], name)
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], classification)
+                if classification == "controlled_unsupported" and nid not in (0x0CAE832B, 0x1D8A762E):
+                    self.assertEqual(int(registration["refusal_error"], 16), 0x80020002)
 
     def test_findings_and_waivers_are_in_exact_balance(self) -> None:
         findings = [{**f, "nid": int(f["nid"], 16)} for f in self.manifest["findings"]]
@@ -540,8 +599,14 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xa569e425": "sceKernelVolatileMemUnlock",
                 "0x4b85c861": "sceUtilityOskUpdate",
                 "0xb3b5d042": "sceAtracGetOutputChannel",
+                # Profiler refers return NULL because no profiler is modeled, which is what
+                # firmware with profiling off reports. The body is a bare `return 0`, so the
+                # mechanical stub detector classifies it fake_success; the handler is curated
+                # partial with that limitation recorded in tools/hle_registry_meta.py.
+                "0x64d4540e": "sceKernelReferThreadProfiler",
+                "0x8218b4dd": "sceKernelReferGlobalProfiler",
             },
-            "only three named route compatibility exceptions may remain fake-success",
+            "only named exceptions may remain fake-success: three route compatibility results and two profiler NULL results",
         )
 
         unsupported = {
@@ -553,19 +618,38 @@ static uint32_t h_SynthReal(CpuState *s) {
         self.assertEqual(
             unsupported,
             {
+                "0x0282a3bd": ("sceHttpGetContentLength", "0x80010086"),
+                "0x034a921f": ("sceKernelGetVTimerTime", "0x80020002"),
+                "0x03d9526f": ("sceHttpSetResolveRetry", "0x80010086"),
+                "0x0bf0a3ae": ("sceNetGetLocalEtherAddr", "0x80010086"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
-                "0x0cae832b": ("sceRegCloseCategory", "0x80010086"),
                 "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
                 "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
-                "0x1d8a762e": ("sceRegOpenCategory", "0x80010086"),
+                "0x1f0fc3e3": ("sceHttpSetRecvTimeOut", "0x80010086"),
+                "0x20fff560": ("sceKernelCreateVTimer", "0x80020002"),
+                "0x2255551e": ("sceHttpGetNetworkPspError", "0x80010086"),
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
-                "0x28a8e98a": ("sceRegGetKeyValue", "0x80010086"),
+                "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
+                "0x328f9e52": ("sceKernelDeleteVTimer", "0x80020002"),
+                "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
+                "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
+                "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
+                "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
+                "0x438a385a": ("sceGeSaveContext", "0x80020002"),
+                "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
                 "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
-                "0x92e41280": ("sceRegOpenRegistry", "0x80010086"),
+                "0x70a703f8": ("sceAudiocodecDecode", "0x80010086"),
+                "0x72189c48": ("sceImposeSetUMDPopup", "0x80010086"),
+                "0x77ed8b3a": ("sceDisplayWaitVblankStartMultiCB", "0x80020002"),
+                "0x7ed59bc4": ("sceDisplaySetHoldMode", "0x80020002"),
+                "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
+                "0xab1abe07": ("sceHttpInit", "0x80010086"),
+                "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
+                "0xc68d9437": ("sceKernelStartVTimer", "0x80020002"),
+                "0xd1c8945e": ("sceHttpEnd", "0x80010086"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
-                "0xd4475aa8": ("sceRegGetKeyInfo", "0x80010086"),
-                "0xfa8a5739": ("sceRegCloseRegistry", "0x80010086"),
+                "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
             },
         )
         self.assertEqual(
@@ -594,15 +678,15 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
     def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
         source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn(
-            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)",
+            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn(
-            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)",
+            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn(
-            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)",
+            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn("hle_devctl_refusal_first(device, command)", source)
@@ -618,7 +702,7 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
             "at source offset %llu; no further access unit is decoded and the player keeps ",
             source,
         )
-        self.assertIn("its current status; in the works (#288)", source)
+        self.assertIn("its current status; in the works (#286)", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):

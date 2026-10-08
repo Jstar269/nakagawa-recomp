@@ -4,7 +4,7 @@
 # Modified by Nakagawa Recomp contributors, 2026-09-21.
 # See NOTICE.md for upstream lineage and modification provenance.
 #
-# Synthetic fail-closed tests for tools/nidseq.py (issue #381).
+# Synthetic fail-closed tests for tools/nidseq.py (issue #354).
 # No retail assets, traces, or import tables: every fixture is synthesized here.
 # The suite was first run against the pre-fix tool to record the failing-before
 # behavior (zero-vs-zero agreement, prefix-as-equivalence, DIVERGE with exit 0,

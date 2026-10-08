@@ -64,6 +64,7 @@ PACKAGE_SCHEMA_VERSION = 2
 BUILD_REPORT_SCHEMA_VERSION = 1
 PACKAGE_FORMAT = "nakagawa-aot-package"
 BUILD_REPORT_FORMAT = "nakagawa-build-report"
+PACKAGE_BUILD_JOBS = 2
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Manifest fields that carry no operational meaning and are therefore excluded
@@ -81,6 +82,12 @@ class PackageRouteError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def _make_build_command(make_executable: str, *, native_only: bool) -> list[str]:
+    """Bound package builds to two jobs for independent runtime and AOT objects."""
+    target = "compile" if native_only else "all"
+    return [make_executable, "--no-print-directory", f"-j{PACKAGE_BUILD_JOBS}", target]
 
 
 def compute_protected_digest(manifest: dict[str, Any]) -> str:
@@ -668,7 +675,7 @@ def _make_input_images(
         import analyze
         import import_audit
         from hle_manifest import build_manifest as build_hle_manifest
-        from imports import _import_model
+        from imports import ImportTableError, _import_model
         from types import SimpleNamespace
 
         normalized = title_manifest.validate_manifest(manifest)
@@ -708,10 +715,15 @@ def _make_input_images(
         for source in sources:
             base = source["base"]
             elf = analyze.Elf(str(source["path"]), base=base)
-            starts, ranges = analyze.analyze(
-                elf,
-                extra_spans=extra_spans if source["name"] == "executable" else None,
-            )
+            try:
+                starts, ranges = analyze.analyze(
+                    elf,
+                    extra_spans=extra_spans if source["name"] == "executable" else None,
+                )
+            except ImportTableError as exc:
+                raise PackageRouteError(
+                    exc.code, f"{source['name']}: {exc}"
+                ) from exc
             if ranges == [(0, 0)]:
                 raise PackageRouteError(
                     "PACKAGE_NO_EXECUTABLE_REGIONS",
@@ -725,6 +737,10 @@ def _make_input_images(
 
             try:
                 stubs, findings = _import_model(elf)
+            except ImportTableError as exc:
+                raise PackageRouteError(
+                    exc.code, f"{source['name']}: {exc}"
+                ) from exc
             except (ValueError, RuntimeError) as exc:
                 raise PackageRouteError(
                     "PACKAGE_INVALID_IMPORT_TABLE",
@@ -757,6 +773,8 @@ def _make_input_images(
         return sources, analysis_summary, unsupported_imports, diagnostics
     except PackageRouteError:
         raise
+    except ImportTableError as exc:
+        raise PackageRouteError(exc.code, str(exc)) from exc
     except (OSError, ValueError, RuntimeError) as exc:
         raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
 
@@ -1340,7 +1358,7 @@ def build_package(
         })
         try:
             built = subprocess.run(
-                [make_executable, "--no-print-directory", "compile" if native_only else "all"],
+                _make_build_command(make_executable, native_only=native_only),
                 cwd=ROOT,
                 env=build_environment,
                 check=False,

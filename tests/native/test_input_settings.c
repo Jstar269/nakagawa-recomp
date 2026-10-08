@@ -6,36 +6,41 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "input_settings.h"
+#include "nk_input_profile.h"
+#include "nk_platform.h"
+#include "native_test_isolation.h"
+
+/* The per-run root setup and its recursive cleanup run inside assert(); keep
+ * them even in a build that defines NDEBUG (#735). */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
+#include <errno.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "input_settings.h"
-#include "nk_input_profile.h"
-#include "nk_platform.h"
-
 #if defined(_WIN32) || defined(_WIN64)
+#include <direct.h>
 #include <windows.h>
-static void test_setenv(const char *name, const char *val) {
-    if (val && val[0]) {
-        _putenv_s(name, val);
-    } else {
-        _putenv_s(name, "");
-    }
-}
+#include <wchar.h>
+#define test_rmdir _rmdir
 #else
-#include <unistd.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-static void test_setenv(const char *name, const char *val) {
-    if (val) {
-        setenv(name, val, 1);
-    } else {
-        unsetenv(name);
-    }
-}
+#include <unistd.h>
+#define test_rmdir rmdir
 #endif
+
+static void test_setenv(const char *name, const char *val) {
+    native_test_set_env(name, val);
+}
 
 /* -----------------------------------------------------------------------------
  * 1. Default Load
@@ -45,6 +50,13 @@ static void test_default_load(void) {
 
     InputSettingsState state;
     input_settings_init(&state);
+
+    /* Resolved default profile path must live inside temporary test root */
+    assert(state.profile_path[0] != '\0');
+    assert(native_test_path_within(state.profile_path, native_test_get_root()));
+    if (native_test_get_real_config_probe()[0]) {
+        assert(!native_test_path_within(state.profile_path, native_test_get_real_config_probe()));
+    }
 
     /* Point to non-existent file */
     NkResult res = input_settings_load(&state, "build/nonexistent_profile_12345.json");
@@ -344,7 +356,67 @@ static void test_sr_padscript_semantics_untouched(void) {
     test_setenv("NK_INPUT_PROFILE", NULL);
     test_setenv("SR_PADSCRIPT", NULL);
 
+    /* Path resolution without overrides resolves inside temporary test root */
+    res = nk_input_profile_resolve_path(path_buf, sizeof(path_buf));
+    assert(res == NK_OK);
+    assert(native_test_path_within(path_buf, native_test_get_root()));
+    if (native_test_get_real_config_probe()[0]) {
+        assert(!native_test_path_within(path_buf, native_test_get_real_config_probe()));
+    }
+
     printf("[INPUT_SETTINGS_TEST] Subtest 8 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
+ * 8b. Environment Variable Clearing Consistency
+ * -------------------------------------------------------------------------- */
+static void test_env_clearing_consistency(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 8b: Environment variable clearing consistency...\n");
+
+    const char *test_var = "NK_TEST_ISOLATION_CLEAR_VAR";
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wvar[NATIVE_TEST_PATH_MAX];
+    assert(MultiByteToWideChar(CP_UTF8, 0, test_var, -1, wvar, NATIVE_TEST_PATH_MAX) > 0);
+    WCHAR wbuf[64];
+#endif
+
+    /* 1. Set variable to a non-empty value */
+    native_test_set_env(test_var, "val_active");
+    assert(getenv(test_var) != NULL && strcmp(getenv(test_var), "val_active") == 0);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    DWORD len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len > 0 && wcscmp(wbuf, L"val_active") == 0);
+#endif
+
+    /* 2. Clear variable with NULL: must be absent via both getenv and GetEnvironmentVariableW */
+    native_test_set_env(test_var, NULL);
+    assert(getenv(test_var) == NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND);
+#endif
+
+    /* 3. Set variable again */
+    native_test_set_env(test_var, "val_active_again");
+    assert(getenv(test_var) != NULL && strcmp(getenv(test_var), "val_active_again") == 0);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len > 0 && wcscmp(wbuf, L"val_active_again") == 0);
+#endif
+
+    /* 4. Clear variable with "": must be absent via both getenv and GetEnvironmentVariableW */
+    native_test_set_env(test_var, "");
+    assert(getenv(test_var) == NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND);
+#endif
+
+    printf("[INPUT_SETTINGS_TEST] Subtest 8b PASSED!\n");
 }
 
 /* -----------------------------------------------------------------------------
@@ -619,6 +691,11 @@ static void test_per_title_scope_and_atomic_save(void) {
     assert(input_settings_write_disc_profile(&after_failed, "UCUS98701", path, sizeof(path),
                                              diag, sizeof(diag)) == NK_OK);
     assert(strstr(path, "UCUS98701") != NULL);
+    assert(native_test_path_within(path, native_test_get_root()));
+    if (native_test_get_real_config_probe()[0]) {
+        assert(!native_test_path_within(path, native_test_get_real_config_probe()));
+    }
+    native_test_assert_real_config_untouched();
     NkInputProfile handed;
     assert(nk_input_profile_load(&handed, path, diag, sizeof(diag)) == NK_OK);
     assert(handed.psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
@@ -672,6 +749,8 @@ static void test_per_title_scope_and_atomic_save(void) {
 #endif
         }
         remove(blocker_file);
+        native_test_assert_config_root_isolated();
+        native_test_assert_real_config_untouched();
     }
 
     /* The document the player writes is bounded: a full table refuses another
@@ -687,6 +766,7 @@ static void test_per_title_scope_and_atomic_save(void) {
 
     remove(path);
     remove(file_path);
+    native_test_assert_real_config_untouched();
     printf("[INPUT_SETTINGS_TEST] Subtest 10 PASSED!\n");
 }
 
@@ -822,6 +902,12 @@ int main(void) {
      * that line even when the run aborts on the assert that follows. */
     setbuf(stdout, NULL);
 
+    native_test_capture_real_config_probe();
+    native_test_create_root("input-settings");
+    native_test_isolate_user_data_roots();
+    native_test_assert_config_root_isolated();
+    native_test_assert_real_config_untouched();
+
     printf("=================================================================\n");
     printf("Starting Nakagawa Native Player Input Settings Test Suite\n");
     printf("=================================================================\n");
@@ -834,9 +920,12 @@ int main(void) {
     test_reset_to_defaults();
     test_save_load_roundtrip();
     test_sr_padscript_semantics_untouched();
+    test_env_clearing_consistency();
     test_guided_calibration_and_resting_extremes();
     test_per_title_scope_and_atomic_save();
     test_hostile_profile_files();
+
+    native_test_assert_real_config_untouched();
 
     printf("=================================================================\n");
     printf("ALL INPUT SETTINGS TESTS PASSED SUCCESSFULLY!\n");

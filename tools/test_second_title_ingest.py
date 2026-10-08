@@ -188,7 +188,7 @@ int main(void) {
     assert(boot_path != NULL && strcmp(boot_path,
            "disc0:/PSP_GAME/SYSDIR/EBOOT.OLD") == 0);
     const char *fps = getenv("SR_FPS_CAP");
-    assert(fps != NULL && strcmp(fps, "60") == 0);
+    assert(fps != NULL && strcmp(fps, "native") == 0);
     /* No dispatch-control variable may reach the runtime: dispatch is
      * unconditionally fail-closed (src/rt/recomp.c). */
     const char *fatal = getenv("SR_DISPATCH_FATAL");
@@ -205,6 +205,14 @@ int main(void) {
         # usage path, so an imageless fixture is not a launchable fixture (#366).
         mock_img = bin_dir / "pspdev-phase5-v1_image.bin"
         mock_img.write_bytes(b"image")
+
+        # A launchable synthetic title includes its catalogued data root. The
+        # runtime correctly refuses to prepare a session without it (#731).
+        data_root = self.temp_dir / "fixtures" / "pspdev_phase5"
+        data_root.mkdir(parents=True)
+        (data_root / "synthetic-data.txt").write_text(
+            "Source-owned synthetic runtime data.\n", encoding="utf-8"
+        )
 
         res = subprocess.run(
             [str(self.exe_path), str(iso1), str(iso2), str(lib_json), str(self.temp_dir)],

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Host-neutral regression for the dynamic extracted-asset index (issue #223)."""
+"""Host-neutral regression for the dynamic extracted-asset index."""
 
 import os
 from pathlib import Path
@@ -140,7 +140,7 @@ class TestAssetIndexSelftestC(unittest.TestCase):
 
     def test_production_data_root_is_wide_and_configured(self):
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
-        # Issue #289: generic HLE no longer infers a data root beside the executable; the
+        # Title isolation (#308): generic HLE no longer infers a data root beside the executable; the
         # title manifest / launcher must configure SR_DATAROOT, and its absence is refused.
         self.assertNotIn("sr_wide_module_data_root(&root_wide)", hle)
         self.assertNotIn("host_data: executable-relative data root could not be resolved", hle)
@@ -183,7 +183,7 @@ class TestAssetIndexSelftestC(unittest.TestCase):
     def test_cold_census_preparation_precedes_guest_execution(self):
         """The cold extracted-data census must be prepared BEFORE guest execution.
 
-        Pins, by source shape (PR #108 reconstruction):
+        Pins, by source shape:
         1. driver.c calls sr_host_data_prepare() after entry validation and
            BEFORE gui_init / sched_init / any direct fn(&s) invocation;
         2. host_data_lookup consumes TERMINAL route states only -- it must not

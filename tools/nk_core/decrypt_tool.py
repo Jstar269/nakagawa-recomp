@@ -67,7 +67,7 @@ def find_or_build_tool(root: Union[Path, str]) -> Path:
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
-            "failed to build nk_decrypt (issue #295 boundary):\n" + proc.stdout + proc.stderr
+            "failed to build nk_decrypt (local key file boundary):\n" + proc.stdout + proc.stderr
         )
     stamp.write_text(key, encoding="utf-8")
     return out

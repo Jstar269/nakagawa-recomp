@@ -103,6 +103,24 @@ class TitleManifestParityTests(unittest.TestCase):
             raw = json.loads(mf.read_text(encoding="utf-8"))
             self.assertIn(f"id={raw['id']}", c_out)
 
+    def test_retired_libfont_readiness_binding_has_named_native_migration_error(self):
+        manifest = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
+        manifest.setdefault("runtime_bindings", {"schema_version": 1})
+        manifest["runtime_bindings"]["libfont_ready_flag_addr"] = 0x08905000
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "legacy-libfont-ready.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            py_ok, py_output = self._run_python(path)
+            c_ok, c_output = self._run_native(path)
+        for accepted, output, parser in (
+            (py_ok, py_output, "Python"),
+            (c_ok, c_output, "native"),
+        ):
+            self.assertFalse(accepted, f"{parser} parser accepted a retired readiness binding")
+            self.assertIn("LIBFONT_READY_FLAG_RETIRED", output)
+            self.assertIn("host readiness injection is not supported yet", output)
+            self.assertNotIn("#", output)
+
     def test_loose_root_bindings_and_failures_have_native_python_parity(self):
         base = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
         base["filesystem"]["loose_content_roots"] = [
