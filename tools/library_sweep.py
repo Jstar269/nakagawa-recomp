@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -56,9 +58,19 @@ STAGES = (
     "first presented frame",
     "input-responsive",
 )
+_PROGRESS_STAGE_TO_SWEEP_STAGE = {
+    "inspect": "identify",
+    "prepare_import": "decrypt",
+    "analyze": "analyze",
+    "codegen": "codegen",
+    "compile": "compile",
+    "build_package": "compile",
+    "launch": "launch",
+}
+_PROGRESS_STAGE_NAMES = frozenset(_PROGRESS_STAGE_TO_SWEEP_STAGE)
 BLOCKING_PROCESS_NAMES = frozenset({"verify_flagship", "hst", "nakagawa_player"})
 
-_PUBLIC_AGGREGATE_REQUIRED_KEYS = frozenset({
+_PUBLIC_AGGREGATE_V1_REQUIRED_KEYS = frozenset({
     "schema_version",
     "source_commit",
     "source_fingerprint",
@@ -69,7 +81,14 @@ _PUBLIC_AGGREGATE_REQUIRED_KEYS = frozenset({
     "nid_families_by_title_count",
     "input_responsiveness",
 })
-_PUBLIC_AGGREGATE_OPTIONAL_KEYS = frozenset({"ratchet", "comparison"})
+_PUBLIC_AGGREGATE_V1_OPTIONAL_KEYS = frozenset({"ratchet", "comparison"})
+_PUBLIC_AGGREGATE_REQUIRED_KEYS = _PUBLIC_AGGREGATE_V1_REQUIRED_KEYS | frozenset({
+    "timed_out_during_stage_histogram",
+    "stopped_at_stage_histogram",
+    "timed_out_with_unknown_stage",
+    "stage_duration_ms",
+})
+_PUBLIC_AGGREGATE_OPTIONAL_KEYS = _PUBLIC_AGGREGATE_V1_OPTIONAL_KEYS
 _PUBLIC_COVERAGE_REQUIRED_KEYS = frozenset({
     "iso_count",
     "completed_routes",
@@ -82,6 +101,11 @@ _PUBLIC_COMPARISON_KEYS = frozenset({
     "reason",
     "stage_delta",
     "completed_routes_delta",
+    "previous_schema_version",
+    "baseline_compatibility",
+})
+_PUBLIC_COMPARISON_V1_KEYS = _PUBLIC_COMPARISON_KEYS - frozenset({
+    "previous_schema_version", "baseline_compatibility"
 })
 _PUBLIC_LIBRARY_FAMILY = re.compile(r"^[A-Za-z][A-Za-z0-9_.$-]{0,63}$")
 _PUBLIC_COMPARISON_STATUSES = frozenset({"NO_BASELINE", "NEW_BASELINE", "MATCHED"})
@@ -178,6 +202,12 @@ class RouteOutcome:
     report: dict | None
     timed_out: bool = False
     return_code: int | None = None
+    progress: dict | None = None
+    timed_out_stage: str | None = None
+    timed_out_stage_ms: int | None = None
+    stage_durations_ms: dict | None = None
+    build_log_path: str | None = None
+    build_diagnostic: str | None = None
 
 
 def _utc_now() -> str:
@@ -268,7 +298,11 @@ def _read_existing_rows(
         )
     except (OSError, ValueError) as exc:
         raise ValueError("existing private sweep report is unreadable") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") not in {1, 2}
+        or isinstance(payload.get("schema_version"), bool)
+    ):
         raise ValueError("existing private sweep report has an unsupported schema")
     if (
         payload.get("source_commit") != source_commit
@@ -431,6 +465,105 @@ def _terminate_process_tree(process: subprocess.Popen) -> None:
             pass
 
 
+def _read_bringup_progress(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = package_cache.read_bounded_json(
+            path,
+            max_bytes=64 * 1024,
+            max_depth=8,
+            max_members=256,
+            max_items=256,
+            max_nodes=1024,
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "stages"}:
+        return None
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
+        return None
+    stages = payload.get("stages")
+    if not isinstance(stages, dict) or set(stages) - _PROGRESS_STAGE_NAMES:
+        return None
+    active_count = 0
+    for detail in stages.values():
+        if not isinstance(detail, dict) or set(detail) != {
+            "status", "started_at_unix_ms", "finished_at_unix_ms", "duration_ms"
+        }:
+            return None
+        status = detail["status"]
+        started = detail["started_at_unix_ms"]
+        finished = detail["finished_at_unix_ms"]
+        duration = detail["duration_ms"]
+        if (
+            not isinstance(status, str)
+            or status not in {"RUNNING", "PASS", "FAIL"}
+            or type(started) is not int or started < 0
+            or (finished is not None and (type(finished) is not int or finished < started))
+            or type(duration) is not int or duration < 0
+        ):
+            return None
+        if status == "RUNNING":
+            active_count += 1
+            if finished is not None or duration != 0:
+                return None
+        elif finished is None:
+            return None
+    if active_count > 1:
+        return None
+    return payload
+
+
+def _progress_stage_details(progress: dict | None, *, now_unix_ms: int | None = None) -> tuple[
+    str | None, int | None, dict[str, int | None]
+]:
+    durations: dict[str, int | None] = {stage: None for stage in STAGES}
+    if not isinstance(progress, dict):
+        return None, None, durations
+    now_unix_ms = now_unix_ms if now_unix_ms is not None else int(time.time() * 1000)
+    active_stage = None
+    active_elapsed_ms = None
+    for report_stage, detail in progress.get("stages", {}).items():
+        sweep_stage = _PROGRESS_STAGE_TO_SWEEP_STAGE[report_stage]
+        elapsed_ms = (
+            max(0, now_unix_ms - detail["started_at_unix_ms"])
+            if detail["status"] == "RUNNING"
+            else detail["duration_ms"]
+        )
+        if durations[sweep_stage] is None:
+            durations[sweep_stage] = elapsed_ms
+        else:
+            durations[sweep_stage] += elapsed_ms
+        if detail["status"] == "RUNNING":
+            active_stage = sweep_stage
+            active_elapsed_ms = elapsed_ms
+    return active_stage, active_elapsed_ms, durations
+
+
+_BUILD_DIAGNOSTIC_MARKERS = (
+    "error:",
+    "cannot find",
+    "undefined reference",
+    "ld returned",
+)
+
+
+def _first_build_diagnostic(log_path: Path) -> str | None:
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as stream:
+            while raw := stream.readline(65536):
+                line = raw.strip()
+                folded = line.casefold()
+                if not line or "warning:" in folded or "***" in line:
+                    continue
+                if any(marker in folded for marker in _BUILD_DIAGNOSTIC_MARKERS):
+                    return line[:300]
+    except OSError:
+        return None
+    return None
+
+
 def _run_bringup(
     iso_path: Path,
     work_dir: Path,
@@ -440,6 +573,10 @@ def _run_bringup(
 ) -> RouteOutcome:
     report_path.unlink(missing_ok=True)
     private_import_report_path.unlink(missing_ok=True)
+    progress_path = report_path.with_name("bringup-progress.json")
+    progress_path.unlink(missing_ok=True)
+    build_log_path = work_dir / "bringup-build.log"
+    build_log_path.unlink(missing_ok=True)
     command = [
         sys.executable,
         str(NK_CLI),
@@ -449,6 +586,8 @@ def _run_bringup(
         str(work_dir),
         "--report",
         str(report_path),
+        "--sweep-progress-report",
+        str(progress_path),
         "--launch-timeout",
         str(max(1, min(20, time_budget_seconds))),
         "--private-sweep-import-report",
@@ -473,11 +612,33 @@ def _run_bringup(
         raise
     except subprocess.TimeoutExpired:
         _terminate_process_tree(process)
-        return RouteOutcome(None, timed_out=True)
+        progress = _read_bringup_progress(progress_path)
+        active_stage, active_elapsed_ms, durations = _progress_stage_details(progress)
+        return RouteOutcome(
+            None,
+            timed_out=True,
+            progress=progress,
+            timed_out_stage=active_stage,
+            timed_out_stage_ms=active_elapsed_ms,
+            stage_durations_ms=durations,
+            build_log_path=str(build_log_path),
+            build_diagnostic=_first_build_diagnostic(build_log_path),
+        )
     except OSError:
         return RouteOutcome(None)
     if not report_path.is_file():
-        return RouteOutcome(None, return_code=process.returncode)
+        progress = _read_bringup_progress(progress_path)
+        active_stage, active_elapsed_ms, durations = _progress_stage_details(progress)
+        return RouteOutcome(
+            None,
+            return_code=process.returncode,
+            progress=progress,
+            timed_out_stage=active_stage,
+            timed_out_stage_ms=active_elapsed_ms,
+            stage_durations_ms=durations,
+            build_log_path=str(build_log_path),
+            build_diagnostic=_first_build_diagnostic(build_log_path),
+        )
     try:
         report = package_cache.read_bounded_json(
             report_path,
@@ -488,10 +649,29 @@ def _run_bringup(
             max_nodes=_SWEEP_TITLE_JSON_MAX_NODES,
         )
     except (OSError, ValueError):
-        return RouteOutcome(None, return_code=process.returncode)
+        return RouteOutcome(
+            None,
+            return_code=process.returncode,
+            build_log_path=str(build_log_path),
+            build_diagnostic=_first_build_diagnostic(build_log_path),
+        )
     if not isinstance(report, dict):
-        return RouteOutcome(None, return_code=process.returncode)
-    return RouteOutcome(report, return_code=process.returncode)
+        return RouteOutcome(
+            None,
+            return_code=process.returncode,
+            build_log_path=str(build_log_path),
+            build_diagnostic=_first_build_diagnostic(build_log_path),
+        )
+    progress = _read_bringup_progress(progress_path)
+    _active_stage, _active_elapsed_ms, durations = _progress_stage_details(progress)
+    return RouteOutcome(
+        report,
+        return_code=process.returncode,
+        progress=progress,
+        stage_durations_ms=durations,
+        build_log_path=str(build_log_path),
+        build_diagnostic=_first_build_diagnostic(build_log_path),
+    )
 
 
 def _normalize_nid_rows(values) -> list[dict]:
@@ -566,26 +746,22 @@ def _read_private_nid_rows(sidecar_path: Path, report: dict | None) -> tuple[lis
     return [], "NOT_REACHED"
 
 
-def _furthest_stage(report: dict | None) -> str:
+def _furthest_stage(report: dict | None, progress: dict | None = None) -> str:
     stage = "identify"
-    if not isinstance(report, dict):
-        return stage
-    stages = report.get("stages", {})
-    for report_stage, sweep_stage in (
-        ("inspect", "identify"),
-        ("prepare_import", "decrypt"),
-        ("analyze", "analyze"),
-        ("codegen", "codegen"),
-        ("compile", "compile"),
-        ("build_package", "compile"),
-        ("launch", "launch"),
-    ):
-        detail = stages.get(report_stage, {}) if isinstance(stages, dict) else {}
-        if isinstance(detail, dict) and detail.get("status") in {"PASS", "FAIL", "TIMED_OUT"}:
-            stage = sweep_stage
-    presentation = report.get("presentation", {})
-    if isinstance(presentation, dict) and presentation.get("frame_submissions", 0) > 0:
-        return "first presented frame"
+    if isinstance(report, dict):
+        stages = report.get("stages", {})
+        for report_stage, sweep_stage in _PROGRESS_STAGE_TO_SWEEP_STAGE.items():
+            detail = stages.get(report_stage, {}) if isinstance(stages, dict) else {}
+            if isinstance(detail, dict) and detail.get("status") in {"PASS", "FAIL", "TIMED_OUT"}:
+                stage = sweep_stage
+        presentation = report.get("presentation", {})
+        if isinstance(presentation, dict) and presentation.get("frame_submissions", 0) > 0:
+            stage = "first presented frame"
+    if isinstance(progress, dict):
+        for report_stage, detail in progress.get("stages", {}).items():
+            if detail.get("status") == "RUNNING":
+                stage = _PROGRESS_STAGE_TO_SWEEP_STAGE[report_stage]
+                break
     return stage
 
 
@@ -629,19 +805,24 @@ def _validate_public_aggregate(payload: object) -> dict:
     """Validate the title-free aggregate before it is read or compared."""
     if not isinstance(payload, dict):
         raise ValueError("public aggregate must be a JSON object")
+    schema_version = payload.get("schema_version")
+    if type(schema_version) is not int or schema_version not in {1, 2}:
+        raise ValueError("public aggregate has an unsupported schema")
+    legacy_schema = schema_version == 1
+    required_keys = (
+        _PUBLIC_AGGREGATE_V1_REQUIRED_KEYS
+        if legacy_schema else _PUBLIC_AGGREGATE_REQUIRED_KEYS
+    )
+    comparison_keys = (
+        _PUBLIC_COMPARISON_V1_KEYS if legacy_schema else _PUBLIC_COMPARISON_KEYS
+    )
     keys = set(payload)
-    if not _PUBLIC_AGGREGATE_REQUIRED_KEYS <= keys:
-        missing = sorted(_PUBLIC_AGGREGATE_REQUIRED_KEYS - keys)
+    if not required_keys <= keys:
+        missing = sorted(required_keys - keys)
         raise ValueError(f"public aggregate is missing fields: {', '.join(missing)}")
-    unknown = keys - _PUBLIC_AGGREGATE_REQUIRED_KEYS - _PUBLIC_AGGREGATE_OPTIONAL_KEYS
+    unknown = keys - required_keys - _PUBLIC_AGGREGATE_OPTIONAL_KEYS
     if unknown:
         raise ValueError("public aggregate contains unrecognized fields")
-    if (
-        not isinstance(payload["schema_version"], int)
-        or isinstance(payload["schema_version"], bool)
-        or payload["schema_version"] != 1
-    ):
-        raise ValueError("public aggregate has an unsupported schema")
 
     source_commit = payload["source_commit"]
     if (
@@ -689,6 +870,45 @@ def _validate_public_aggregate(payload: object) -> dict:
     )
     if sum(histogram.values()) != recorded_routes:
         raise ValueError("public aggregate stage histogram does not match recorded routes")
+    if not legacy_schema:
+        timed_out_histogram = _validate_stage_map(
+            payload["timed_out_during_stage_histogram"],
+            "timed_out_during_stage_histogram",
+            nonnegative=True,
+        )
+        stopped_histogram = _validate_stage_map(
+            payload["stopped_at_stage_histogram"],
+            "stopped_at_stage_histogram",
+            nonnegative=True,
+        )
+        unknown_timeout_count = _nonnegative_int(
+            payload["timed_out_with_unknown_stage"], "timed_out_with_unknown_stage"
+        )
+        if sum(timed_out_histogram.values()) + unknown_timeout_count != coverage["time_budget_exits"]:
+            raise ValueError("public aggregate timeout stage counts do not match timeout routes")
+        if sum(stopped_histogram.values()) > coverage["completed_routes"]:
+            raise ValueError("public aggregate stopped-stage counts exceed completed routes")
+        stage_duration_summary = payload["stage_duration_ms"]
+        if not isinstance(stage_duration_summary, dict) or set(stage_duration_summary) != set(STAGES):
+            raise ValueError("public aggregate stage duration has an invalid stage set")
+        summary_keys = {"count", "min_ms", "median_ms", "p95_ms", "max_ms"}
+        for stage in STAGES:
+            summary = stage_duration_summary[stage]
+            if not isinstance(summary, dict) or set(summary) != summary_keys:
+                raise ValueError("public aggregate stage duration contains an invalid summary")
+            count = _nonnegative_int(summary["count"], f"stage_duration_ms.{stage}.count")
+            values = [summary[key] for key in ("min_ms", "median_ms", "p95_ms", "max_ms")]
+            if count == 0:
+                if any(value is not None for value in values):
+                    raise ValueError("public aggregate empty stage duration must use null values")
+            else:
+                if count > recorded_routes or any(
+                    not isinstance(value, int) or isinstance(value, bool) or value < 0
+                    for value in values
+                ):
+                    raise ValueError("public aggregate stage duration values are invalid")
+                if values != sorted(values):
+                    raise ValueError("public aggregate stage duration ordering is invalid")
     blockers = payload["top_blocker_classes"]
     if not isinstance(blockers, list):
         raise ValueError("public aggregate top_blocker_classes must be a list")
@@ -747,7 +967,7 @@ def _validate_public_aggregate(payload: object) -> dict:
         if (
             not isinstance(name, str)
             or _PUBLIC_LIBRARY_FAMILY.fullmatch(name) is None
-            or name not in _PUBLIC_LIBRARY_FAMILIES
+            or (not legacy_schema and name not in _PUBLIC_LIBRARY_FAMILIES)
         ):
             raise ValueError("public aggregate library family is not source-backed")
         title_count = _nonnegative_int(
@@ -782,7 +1002,7 @@ def _validate_public_aggregate(payload: object) -> dict:
     if "comparison" in payload and comparison is None:
         raise ValueError("public aggregate comparison cannot be null")
     if comparison is not None:
-        if not isinstance(comparison, dict) or set(comparison) != _PUBLIC_COMPARISON_KEYS:
+        if not isinstance(comparison, dict) or set(comparison) != comparison_keys:
             raise ValueError("public aggregate comparison contains unrecognized fields")
         status = comparison["status"]
         reason = comparison["reason"]
@@ -793,6 +1013,21 @@ def _validate_public_aggregate(payload: object) -> dict:
             or reason not in _PUBLIC_COMPARISON_REASONS
         ):
             raise ValueError("public aggregate comparison status is invalid")
+        if not legacy_schema:
+            previous_schema = comparison["previous_schema_version"]
+            compatibility = comparison["baseline_compatibility"]
+            if previous_schema is None:
+                valid_compatibility = compatibility == "NONE"
+            elif type(previous_schema) is int and previous_schema == 1:
+                valid_compatibility = compatibility == "LEGACY_V1_SUPPORTED"
+            elif type(previous_schema) is int and previous_schema == 2:
+                valid_compatibility = compatibility == "CURRENT_V2"
+            else:
+                valid_compatibility = False
+            if not valid_compatibility:
+                raise ValueError("public aggregate baseline compatibility is invalid")
+            if (status == "NO_BASELINE") != (previous_schema is None):
+                raise ValueError("public aggregate baseline status is inconsistent")
         stage_delta = comparison["stage_delta"]
         stage_delta_map = None
         if stage_delta is not None:
@@ -864,6 +1099,38 @@ def _public_library_family(value: object) -> str | None:
     return value
 
 
+def _stage_duration_summaries(rows: list[dict]) -> dict[str, dict]:
+    samples: dict[str, list[int]] = {stage: [] for stage in STAGES}
+    for row in rows:
+        durations = row.get("stage_duration_ms", {})
+        if not isinstance(durations, dict):
+            continue
+        for stage in STAGES:
+            value = durations.get(stage)
+            if isinstance(value, int) and not isinstance(value, bool):
+                samples[stage].append(value)
+    summaries = {}
+    for stage, values in samples.items():
+        ordered = sorted(values)
+        if not ordered:
+            summaries[stage] = {
+                "count": 0,
+                "min_ms": None,
+                "median_ms": None,
+                "p95_ms": None,
+                "max_ms": None,
+            }
+            continue
+        summaries[stage] = {
+            "count": len(ordered),
+            "min_ms": ordered[0],
+            "median_ms": int(statistics.median(ordered)),
+            "p95_ms": ordered[math.ceil(0.95 * len(ordered)) - 1],
+            "max_ms": ordered[-1],
+        }
+    return summaries
+
+
 def _validate_sweep_rows(rows: object) -> None:
     """Reject malformed sweep rows before either output file can advance.
 
@@ -931,6 +1198,42 @@ def _validate_sweep_rows(rows: object) -> None:
                 raise ValueError(
                     f"sweep row {index} field nid_families must be a list of strings"
                 )
+        for field in ("timed_out_during_stage", "stopped_at_stage"):
+            stage = row.get(field)
+            if stage is not None and (not isinstance(stage, str) or stage not in STAGES):
+                raise ValueError(f"sweep row {index} field {field} is not source-backed")
+        if row.get("timed_out_during_stage") is not None and run_status != "TIMED_OUT":
+            raise ValueError(f"sweep row {index} timeout stage has a non-timeout status")
+        if row.get("stopped_at_stage") is not None and run_status != "COMPLETED":
+            raise ValueError(f"sweep row {index} stopped stage has a non-completed status")
+        elapsed = row.get("timed_out_stage_elapsed_ms")
+        if elapsed is not None and (
+            not isinstance(elapsed, int) or isinstance(elapsed, bool) or elapsed < 0
+        ):
+            raise ValueError(
+                f"sweep row {index} field timed_out_stage_elapsed_ms is invalid"
+            )
+        durations = row.get("stage_duration_ms")
+        if durations is not None:
+            if not isinstance(durations, dict) or set(durations) != set(STAGES):
+                raise ValueError(f"sweep row {index} stage_duration_ms has an invalid stage set")
+            for stage, duration in durations.items():
+                if duration is not None and (
+                    not isinstance(duration, int) or isinstance(duration, bool) or duration < 0
+                ):
+                    raise ValueError(
+                        f"sweep row {index} stage_duration_ms.{stage} is invalid"
+                    )
+        diagnostic = row.get("build_diagnostic")
+        if diagnostic is not None and (
+            not isinstance(diagnostic, str) or len(diagnostic) > 300
+        ):
+            raise ValueError(f"sweep row {index} build_diagnostic is invalid")
+        log_path = row.get("build_log_path")
+        if log_path is not None and (
+            not isinstance(log_path, str) or not log_path or len(log_path) > 4096
+        ):
+            raise ValueError(f"sweep row {index} build_log_path is invalid")
 
 
 def _public_aggregate(
@@ -947,9 +1250,24 @@ def _public_aggregate(
         raise ValueError("public aggregate total ISO count is smaller than the number of recorded rows")
     stage_counts = Counter(row.get("furthest_stage", "identify") for row in rows)
     histogram = {stage: stage_counts.get(stage, 0) for stage in STAGES}
+    timeout_stage_counts: Counter[str] = Counter()
+    stopped_stage_counts: Counter[str] = Counter()
+    unknown_timeout_count = 0
     blocker_rows: dict[str, dict] = {}
     family_counts: Counter[str] = Counter()
     for row in rows:
+        if row.get("run_status") == "TIMED_OUT":
+            timed_out_stage = row.get("timed_out_during_stage")
+            if timed_out_stage in STAGES:
+                timeout_stage_counts[timed_out_stage] += 1
+            else:
+                unknown_timeout_count += 1
+        elif (
+            row.get("run_status") == "COMPLETED"
+            and row.get("boundary_code") not in (None, "NONE")
+        ):
+            stopped_stage = row.get("stopped_at_stage") or row.get("furthest_stage", "identify")
+            stopped_stage_counts[stopped_stage] += 1
         code = row.get("boundary_code")
         if code and code != "NONE":
             entry = blocker_rows.setdefault(code, {"boundary_code": code, "title_count": 0, "issue_numbers": set()})
@@ -978,7 +1296,7 @@ def _public_aggregate(
     # Blocker rows carry one boundary code each; a title can name several NID families,
     # so the family title counts can legitimately add up to more than recorded_routes.
     aggregate = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_commit": source_commit,
         "source_fingerprint": source_fingerprint,
         "time_budget_seconds": time_budget_seconds,
@@ -990,6 +1308,14 @@ def _public_aggregate(
             "route_errors": sum(row.get("run_status") == "NO_REPORT" for row in rows),
         },
         "furthest_stage_histogram": histogram,
+        "timed_out_during_stage_histogram": {
+            stage: timeout_stage_counts.get(stage, 0) for stage in STAGES
+        },
+        "stopped_at_stage_histogram": {
+            stage: stopped_stage_counts.get(stage, 0) for stage in STAGES
+        },
+        "timed_out_with_unknown_stage": unknown_timeout_count,
+        "stage_duration_ms": _stage_duration_summaries(rows),
         "top_blocker_classes": blockers,
         "nid_families_by_title_count": families,
         "input_responsiveness": "NOT_MEASURED_BY_HEADLESS_BRINGUP",
@@ -1007,7 +1333,13 @@ def _public_aggregate(
         previous_high_water = {}
         stage_delta = None
         completed_routes_delta = None
+        previous_schema_version = None
+        baseline_compatibility = "NONE"
     else:
+        previous_schema_version = previous_aggregate["schema_version"]
+        baseline_compatibility = (
+            "LEGACY_V1_SUPPORTED" if previous_schema_version == 1 else "CURRENT_V2"
+        )
         previous_coverage = previous_aggregate["coverage"]
         same_source = (
             previous_aggregate["source_commit"] == source_commit
@@ -1052,6 +1384,8 @@ def _public_aggregate(
         "reason": comparison_reason,
         "stage_delta": stage_delta,
         "completed_routes_delta": completed_routes_delta,
+        "previous_schema_version": previous_schema_version,
+        "baseline_compatibility": baseline_compatibility,
     }
     return _validate_public_aggregate(aggregate)
 
@@ -1071,7 +1405,7 @@ def _write_outputs(
 ) -> None:
     _validate_sweep_rows(rows)
     private_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_commit": source_commit,
         "source_fingerprint": source_fingerprint,
         "time_budget_seconds": time_budget_seconds,
@@ -1217,6 +1551,10 @@ def run_sweep(
             run_status = "COMPLETED"
             boundary_code = report.get("failure_class") or "SWEEP_REPORT_INVALID"
             issues = _issue_numbers(report)
+        furthest_stage = _furthest_stage(report, outcome.progress)
+        stage_durations = outcome.stage_durations_ms or _progress_stage_details(
+            outcome.progress
+        )[2]
         nid_rows, nid_status = _read_private_nid_rows(private_import_report_path, report)
         row = {
             "source_key": key,
@@ -1226,7 +1564,19 @@ def run_sweep(
             "inspect_error": inspect_error,
             "input_size_bytes": stat.st_size,
             "input_mtime_ns": stat.st_mtime_ns,
-            "furthest_stage": _furthest_stage(report),
+            "furthest_stage": furthest_stage,
+            "timed_out_during_stage": (
+                outcome.timed_out_stage if outcome.timed_out else None
+            ),
+            "timed_out_stage_elapsed_ms": (
+                outcome.timed_out_stage_ms if outcome.timed_out else None
+            ),
+            "stopped_at_stage": (
+                furthest_stage
+                if run_status == "COMPLETED" and boundary_code not in (None, "NONE")
+                else None
+            ),
+            "stage_duration_ms": stage_durations,
             "boundary_code": boundary_code,
             "issue_numbers": issues,
             "first_missing_nids": nid_rows[:5],
@@ -1242,6 +1592,15 @@ def run_sweep(
             "route_exit_code": outcome.return_code,
             "input_responsive": "NOT_MEASURED",
         }
+        if run_status == "COMPLETED" and report is not None:
+            stages = report.get("stages", {})
+            if any(
+                isinstance(stages.get(stage), dict)
+                and stages[stage].get("status") == "FAIL"
+                for stage in ("compile", "build_package")
+            ):
+                row["build_log_path"] = outcome.build_log_path
+                row["build_diagnostic"] = outcome.build_diagnostic
         rows_by_key[key] = row
         run_count += 1
         _write_outputs(
@@ -1269,6 +1628,117 @@ def run_sweep(
     return result
 
 
+def _read_private_report_for_merge(path: Path) -> dict:
+    try:
+        payload = package_cache.read_bounded_json(
+            path,
+            max_bytes=_SWEEP_RESUME_JSON_MAX_BYTES,
+            max_depth=_SWEEP_RESUME_JSON_MAX_DEPTH,
+            max_members=_SWEEP_RESUME_JSON_MAX_MEMBERS,
+            max_items=_SWEEP_RESUME_JSON_MAX_ITEMS,
+            max_nodes=_SWEEP_RESUME_JSON_MAX_NODES,
+        )
+    except (OSError, ValueError) as exc:
+        raise ValueError("private shard report is unreadable") from exc
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("schema_version")) is not int
+        or payload["schema_version"] not in {1, 2}
+    ):
+        raise ValueError("private shard report has an unsupported schema")
+    source_commit = payload.get("source_commit")
+    source_fingerprint = payload.get("source_fingerprint")
+    if (
+        not isinstance(source_commit, str)
+        or len(source_commit) != 40
+        or any(char not in "0123456789abcdef" for char in source_commit)
+        or not isinstance(source_fingerprint, str)
+        or len(source_fingerprint) != 64
+        or any(char not in "0123456789abcdef" for char in source_fingerprint)
+    ):
+        raise ValueError("private shard report source identity is invalid")
+    time_budget = payload.get("time_budget_seconds")
+    if type(time_budget) is not int or time_budget < 1:
+        raise ValueError("private shard report time budget is invalid")
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, dict) or set(coverage) != {
+        "iso_count", "ran_this_invocation", "resumed_this_invocation"
+    }:
+        raise ValueError("private shard report coverage is invalid")
+    for field, value in coverage.items():
+        if type(value) is not int or value < 0:
+            raise ValueError(f"private shard report coverage.{field} is invalid")
+    rows = payload.get("rows")
+    _validate_sweep_rows(rows)
+    if len(rows) > coverage["iso_count"]:
+        raise ValueError("private shard report has more rows than inputs")
+    return payload
+
+
+def merge_private_reports(
+    report_paths: list[Path],
+    private_dir: Path,
+    public_output: Path,
+    *,
+    previous_public_output: Path | None = None,
+) -> dict:
+    """Merge shard checkpoints and regenerate their title-free aggregate."""
+    if not report_paths:
+        raise ValueError("at least one private shard report is required")
+    reports = [_read_private_report_for_merge(path) for path in report_paths]
+    first = reports[0]
+    source_commit = first["source_commit"]
+    source_fingerprint = first["source_fingerprint"]
+    time_budget = first["time_budget_seconds"]
+    rows_by_key: dict[str, dict] = {}
+    total_isos = 0
+    ran_count = 0
+    resumed_count = 0
+    for report_index, report in enumerate(reports, start=1):
+        if (
+            report["source_commit"] != source_commit
+            or report["source_fingerprint"] != source_fingerprint
+            or report["time_budget_seconds"] != time_budget
+        ):
+            raise ValueError("private shard reports do not share source and budget identity")
+        total_isos += report["coverage"]["iso_count"]
+        ran_count += report["coverage"]["ran_this_invocation"]
+        resumed_count += report["coverage"]["resumed_this_invocation"]
+        for row in report["rows"]:
+            key = row["source_key"]
+            if key in rows_by_key:
+                key = f"shard-{report_index}/{key}"
+                while key in rows_by_key:
+                    key = f"shard-{report_index}/{key}"
+            rows_by_key[key] = dict(row, source_key=key)
+    rows = list(rows_by_key.values())
+    previous_aggregate = _read_previous_public_aggregate(previous_public_output)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    private_path = private_dir / "library-sweep.json"
+    _write_outputs(
+        private_path,
+        public_output,
+        source_commit,
+        source_fingerprint,
+        time_budget,
+        rows,
+        total_isos=total_isos,
+        ran_this_invocation=ran_count,
+        resumed_this_invocation=resumed_count,
+        previous_aggregate=previous_aggregate,
+    )
+    return {
+        "private_report": str(private_path),
+        "public_aggregate": str(public_output),
+        "source_commit": source_commit,
+        "source_fingerprint": source_fingerprint,
+        "iso_count": total_isos,
+        "ran_this_invocation": ran_count,
+        "resumed_this_invocation": resumed_count,
+        "rows": rows,
+    }
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -1278,7 +1748,8 @@ def _positive_int(value: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("iso_dir", type=Path, help="Directory containing PSP ISO images")
+    parser.add_argument("iso_dir", nargs="?", type=Path,
+                        help="Directory containing PSP ISO images")
     parser.add_argument("--private-dir", required=True, type=Path,
                         help="Private directory for per-title reports and build outputs")
     parser.add_argument("--public-output", required=True, type=Path,
@@ -1289,16 +1760,30 @@ def main(argv: list[str] | None = None) -> int:
                         help="Existing title-free aggregate used as a comparison baseline")
     parser.add_argument("--time-budget", type=_positive_int, default=DEFAULT_TIME_BUDGET_SECONDS,
                         help="Hard per-title route limit in seconds (default: 120)")
+    parser.add_argument("--merge-private-reports", nargs="+", type=Path,
+                        help="Merge private shard checkpoints and write one aggregate")
     args = parser.parse_args(argv)
     try:
-        result = run_sweep(
-            args.iso_dir,
-            args.private_dir,
-            args.public_output,
-            time_budget_seconds=args.time_budget,
-            decrypted_titles=args.decrypted_titles,
-            previous_public_output=args.previous_public_output,
-        )
+        if args.merge_private_reports:
+            if args.iso_dir is not None:
+                raise ValueError("iso_dir cannot be supplied with --merge-private-reports")
+            result = merge_private_reports(
+                args.merge_private_reports,
+                args.private_dir,
+                args.public_output,
+                previous_public_output=args.previous_public_output,
+            )
+        else:
+            if args.iso_dir is None:
+                raise ValueError("an ISO directory is required unless merging private reports")
+            result = run_sweep(
+                args.iso_dir,
+                args.private_dir,
+                args.public_output,
+                time_budget_seconds=args.time_budget,
+                decrypted_titles=args.decrypted_titles,
+                previous_public_output=args.previous_public_output,
+            )
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         print(f"library sweep failed: {exc}", file=sys.stderr)
         return 2
