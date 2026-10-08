@@ -4,7 +4,7 @@
   "description": "Reproducible release and asset provenance manifest for Nakagawa Recomp public releases",
   "version": "0.1.0",
   "license": "GPL-3.0-or-later",
-  "license_notice": "Nakagawa Recomp's project-level declared license is GPL-3.0-or-later. That declaration does not resolve component-specific provenance or redistribution questions. Three remain open and each closes only on qualified legal review, not on the administrative state of any tracker item: (1) PGF/JPCSP/intraFont implementation provenance; (2) replacement PGF font redistribution terms and notices; (3) PGD/amctrl distribution and anti-circumvention treatment. See NOTICE.md.",
+  "license_notice": "Nakagawa Recomp's project-level declared license is GPL-3.0-or-later. That declaration does not resolve component-specific provenance or redistribution questions. Two remain open and each closes on provenance evidence (project-authored replacement code or confirmed license terms), not on the administrative state of any tracker item: (1) PGF/JPCSP/intraFont implementation provenance; (2) replacement PGF font redistribution terms and notices. PGD/amctrl support is engineering work: it is published when it works, and the project ships no keys. See NOTICE.md.",
   "reference_environment": {
     "compiler": "GCC >= 13.0.0 (MSYS2 UCRT64)",
     "make": "GNU Make >= 4.4",

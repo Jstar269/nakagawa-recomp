@@ -91,7 +91,7 @@ overstated. State it exactly this way:
 - The interpreter is **not an all-Allegrex interpreter**, and AOT coverage remains a
   correctness requirement outside the supported floor.
 
-Do not restate this as "arbitrary lawful AOT to interpreter and back is proven". It is not.
+Do not restate this as "arbitrary valid-input AOT to interpreter and back is proven". It is not.
 
 ## Evidence boundary
 

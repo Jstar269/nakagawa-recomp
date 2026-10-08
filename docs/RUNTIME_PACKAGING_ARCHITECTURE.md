@@ -15,7 +15,7 @@ The ultimate end-user experience target is:
 
 ~~~text
 Download/install Nakagawa Recomp
-  → Select legally owned PSP ISO
+  → Select a PSP ISO you own
   → Instant recognition & authentic local preparation
   → Launch & Play
 ~~~
