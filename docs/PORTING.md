@@ -312,11 +312,10 @@ recompiler address probes have been removed from generic `hle.c`, `sched.c`, and
 `recomp.c`. The historical inventory remains under `RETIRED_*` names as a guard;
 the live HST diagnostic count in those files is zero. Generic runtime diagnostics
 use `SR_TRACE_PC` and `SR_WATCH`.
-The four former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups below (16 addresses / 23 sites)
-were migrated on 2026-08-27 to typed title configuration via `runtime_bindings`
-(`display_bringup`, `runtime_sync`, `libfont_ready_flag_addr`,
-`frame_ready_latch_addr`); they are `PROFILE_OWNED_CONFIGURATION` and no longer
-appear in the `hle.c` census. Retired inventory lives in
+Three active former `EXPLICIT_COMPATIBILITY_OVERRIDE` groups (15 addresses / 22 sites)
+remain typed title configuration via `runtime_bindings` (`display_bringup`,
+`runtime_sync`, `frame_ready_latch_addr`). The libfont readiness injection was retired;
+its single historical address remains only in the inventory. Retired inventory lives in
 `tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
 `tools/test_hle_title_isolation.py`.
 
@@ -335,7 +334,7 @@ By bucket (live `hle.c` only):
   There is no blanket numeric ceiling and no whole-region VRAM exemption: a
   direct `MEM_R`/`MEM_W` at an arbitrary VRAM address (`0x04000000`..
   `0x041fffff`) is inventoried like any other absolute guest address.
-- `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (16 title-configured
+- `PROFILE_OWNED_CONFIGURATION`: 0 inside the live `hle.c` gate (15 active title-configured
   addresses are outside it, in `HLE_TITLE_CONFIGURED_COMPAT`); two documented
   build/profile couplings below (C-2, C-3) are retired.
 - `EXPLICIT_COMPATIBILITY_OVERRIDE`: 0 in live `hle.c` (migrated).
@@ -349,17 +348,16 @@ Migrated compat (now `PROFILE_OWNED_CONFIGURATION` via `runtime_bindings`):
 
 | Group | Addresses | Title config | Note |
 | --- | --- | --- | --- |
-| `libfont_ready_flag` | 1 | `libfont_ready_flag_addr` | fallback only when guest startup is unavailable (untranslated entry or `SR_REAL_MODULE_START=0`); generic builds have no write |
 | `frame_ready_latch_assist` | 1 | `frame_ready_latch_addr` | 30-vblank timer is profile-qualified |
 | `runtime_sync_callback_config` | 8 | `runtime_sync {config_base, sema_name_ptr, wrappers{mode,enter,leave}}` | mode-keyed pairs not flattened |
 | `display_setmode_guest_init` | 6 | `display_bringup {malloc, vblank_init, render_init, magic, ready_flag, ctx_word}` | 3 dispatch + 3 data |
 
-**Why this no longer blocks title #2 (for these 4 groups).** Generic `sceDisplaySetMode`
+**Why this no longer blocks title #2 (for these 3 live groups).** Generic `sceDisplaySetMode`
 / `sceKernelLoadModule` / `sr_vblank_tick` now consult `title_config` and perform
 no HST guest calls, writes or callback installs when the title has no compat
 profile. A second executable reaching `h_DisplaySetMode` with no `display_bringup`
 gets the generic PSP path (mode/width/height logged, no guest dispatch). The
-`HLE_TITLE_CONFIGURED_COMPAT` inventory keeps the 16 addresses auditable and the
+`HLE_TITLE_CONFIGURED_COMPAT` inventory keeps the active and retired addresses auditable and the
 `test_hle_title_isolation.py` matrix proves wrong-title, invalid-address and
 disabled-profile fail-closed.
 
