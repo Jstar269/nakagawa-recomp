@@ -5415,7 +5415,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7478ebcb6a9137a96f0acfcedc7bd3b3b8455a9570561a08fcc1e9b60052442d"
+      "sha256": "e5d088c7f848d916908e5fdb9f6de7c1bebff868357f850b5c6f323444ec8baf"
     },
     {
       "path": "tests/native/test_fuzz_parsers.c",
@@ -5487,7 +5487,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c37617991e7f72ed22c6864bfc5f56e5428b2dc9c37ee161b5586edd498a6b7c"
+      "sha256": "034d378f4b5ded576fb31f1feaa3a1a7cc668559171ce2c6f7fb3fc9f23a1f7c"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -5499,7 +5499,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c231f11a1b534c16b57abd141742968c251206cd439bd613a5b585708b55a1e7"
+      "sha256": "3293b554bc749bd2d3c61df1583f2c9bc620753e5d6ff8dfac44614ba05dc8e2"
     },
     {
       "path": "tests/native/test_pgf_public.c",
