@@ -1891,7 +1891,7 @@ int main(int argc, char **argv) {{
     def test_native_launch_plan(self) -> None:
         """Native launch resolution is identity-bound to the selected title.
 
-        #366 failing-before contract: this fixture used to PROVE the defect --
+        Failing-before contract: this fixture used to PROVE the defect --
         a stale build/<retail>/<retail> runtime satisfied an unrelated
         selected title (display-smoke-v1) and the session paired that binary
         with another title's session data. The stale artifact now must be

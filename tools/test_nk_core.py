@@ -107,7 +107,7 @@ def _write_stale_other_title_artifacts(root: Path) -> None:
 
     These are source-owned synthetic stand-ins for the exact paths the legacy
     generic candidates used to probe: a stale sibling-title build must be
-    irrelevant to every other title's launch resolution (#366). No real retail
+    irrelevant to every other title's launch resolution. No real retail
     byte is used or needed here.
     """
     build_dir = root / "build" / "hst"
@@ -276,7 +276,7 @@ class NkCoreTests(unittest.TestCase):
         self.assertEqual(manifest["title_id"], "synthetic-allegrex-v1")
         self.assertEqual(manifest["game_name"], "synthetic")
 
-        # A manifest alone is not evidence of preparation (#374). The staged
+        # A manifest alone is not evidence of preparation. The staged
         # outputs the engine must verify before promotion: the ISO reference
         # and an attributable manifest tied to this disc, profile and source.
         disc_dir = result.prepared_root / "disc"
@@ -443,7 +443,7 @@ class NkCoreTests(unittest.TestCase):
         manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
 
         # The plan can only launch the selected title's own build product;
-        # there is no retail-title executable/image fallback (#366).
+        # there is no retail-title executable/image fallback.
         mock_exe, mock_image = _write_title_runtime(
             self.temp_dir, "synthetic", exe_ext=".exe"
         )
@@ -543,7 +543,7 @@ class NkCoreTests(unittest.TestCase):
         )
         # The title's own runtime exists, and every legacy retail-image probe
         # location is populated: none of them may stand in for this title's
-        # missing image (#366 hostile case: sibling-title image rescue).
+        # missing image (hostile case: sibling-title image rescue).
         _write_title_runtime(self.temp_dir, "synthetic", exe_ext=".exe", image=False)
         _write_stale_other_title_artifacts(self.temp_dir)
 
@@ -585,7 +585,7 @@ class NkCoreTests(unittest.TestCase):
 
         The session manifest may only *restate* the validated game name; the
         Python and native planners both key their candidates off the one
-        registry/catalog value so they cannot diverge (#366).
+        registry/catalog value so they cannot diverge.
         """
         game_dir = self.temp_dir / "TEST00001"
         game_dir.mkdir(parents=True, exist_ok=True)
@@ -780,7 +780,7 @@ class NkCoreTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# #366 Generic launcher identity/path contract.
+# Generic launcher identity/path contract.
 #
 # Generic launch resolution derives title identity, runtime executable, image,
 # and base/entry ONLY from validated title/manifest/session data. The tests
@@ -872,7 +872,7 @@ class BootExecutablePathLimitTests(unittest.TestCase):
 
 
 class GenericLauncherHostileTests(unittest.TestCase):
-    """Hostile contract cases for the Python generic launcher (#366)."""
+    """Hostile contract cases for the Python generic launcher."""
 
     TITLE2 = "pspdev-phase5-v1"
     TITLE2_DISC = "TEST00005"
@@ -1139,7 +1139,7 @@ class GenericLauncherHostileTests(unittest.TestCase):
 
 
 class GenericLauncherParityTests(unittest.TestCase):
-    """Native and Python planners must select the same outcome (#366 parity)."""
+    """Native and Python planners must select the same outcome."""
 
     TITLE2 = "pspdev-phase5-v1"
     TITLE2_DISC = "TEST00005"
@@ -1697,7 +1697,7 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
         self.assertEqual(parsed.get("AVAILABLE"), "1")
 
 class BoundedLibraryJsonTests(unittest.TestCase):
-    """#319: the externally supplied library.json must fail closed and bounded.
+    """The externally supplied library.json must fail closed and bounded.
 
     Every malformed case targets the production GameLibrary.load entry point
     (or the production nk_cli library route) and expects a named controlled
@@ -1925,7 +1925,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
             GameLibrary.load(path)
 
     def test_library_diagnoses_reject_hostile_content_without_echoing_it(self) -> None:
-        """#319: every attacker-reachable rejection stays named AND bounded.
+        """Every attacker-reachable rejection stays named AND bounded.
 
         library.json is attacker-supplied, so each untrusted value that a
         diagnosis would otherwise quote -- an unknown root field, an unknown

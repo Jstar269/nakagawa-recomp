@@ -747,7 +747,7 @@ class CompatManifestCoverageTests(unittest.TestCase):
 
     def test_dispatch_range_hooks_are_documented_by_name(self):
         found_names: set[str] = {name for _addr, name in extract_dispatch_hook_table("g_range_hooks")}
-        # Empty is intentional for issue #362: no generic range predicate may swallow
+        # Empty is intentional for compatibility debt (#363): no generic range predicate may swallow
         # historical target-shaped values. Equality remains the parser/census guard.
         documented_names: set[str] = {str(o["name"]) for o in compat_overrides.DISPATCH_RANGE_HOOKS if "name" in o}
         self.assertEqual(found_names, documented_names,

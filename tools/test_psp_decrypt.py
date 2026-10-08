@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
-"""Built-in PSP decryption boundary tests (issue #295).
+"""Built-in PSP decryption boundary tests.
 
 Source-owned end-to-end and known-answer coverage for the production
 decryption boundary under ``src/core/nk_psp_*`` plus the ``nk_decrypt``
@@ -567,7 +567,7 @@ class TestKnownAnswers(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestSyntheticEndToEnd(unittest.TestCase):
-    """Issue #295 acceptance item 1: a source-owned encrypted fixture is
+    """A source-owned encrypted fixture is
     unwrapped end-to-end by the production boundary."""
 
     @classmethod
@@ -711,7 +711,7 @@ class TestSyntheticEndToEnd(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestPreflightIntegration(unittest.TestCase):
-    """Issue #295 acceptance item 2: an encrypted disc plus a local key
+    """An encrypted disc plus a local key
     file reaches the analyzer through the production boundary with no
     manual decryption step, and the no-keyfile route stays fail-closed."""
 
@@ -805,7 +805,7 @@ class TestPreflightIntegration(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestDiscModuleBoundary(unittest.TestCase):
-    """Issue #295 module acceptance: the disc's own encrypted PRX modules are
+    """The disc's own encrypted PRX modules are
     unwrapped by the same production boundary into the same private per-title
     folder as the executable, one module at a time, fail closed per module."""
 
@@ -1017,7 +1017,7 @@ class TestDiscModuleBoundary(unittest.TestCase):
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestMatchedTypeDiagnosis(unittest.TestCase):
-    """Issue #559: the reported failure belongs to the container type whose
+    """The reported failure belongs to the container type whose
     shape matched, never to a later type's unmet key entry."""
 
     @classmethod
@@ -1121,7 +1121,7 @@ _ERASE_KEYFILE_JSON = (
 )
 
 _ERASE_HARNESS_C = r"""
-/* Key-material erasure harness for the PSP KeyStore (issue #295).
+/* Key-material erasure harness for the PSP KeyStore.
  *
  * Loads a user key file, confirms each entry reads back correctly, frees the
  * keystore, and then re-allocates the freed blocks and searches them for the
@@ -1278,7 +1278,7 @@ int main(int argc, char **argv)
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestKeystoreErasure(unittest.TestCase):
-    """Key material must not survive the free() that drops it (#295 boundary).
+    """Key material must not survive the free() that drops it (decryption boundary).
 
     ``free`` returns the block to the allocator without clearing it, so a
     plain ``free`` leaves the user's keys readable in freed heap.  This suite

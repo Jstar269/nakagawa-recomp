@@ -287,9 +287,8 @@ class FontProvisioningTests(unittest.TestCase):
         readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
         setup_text = (ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
 
-        # README consumer section documents fonts import and issues #300 / #313
+        # README consumer section documents fonts import and issue #313
         self.assertIn("tools/nk_cli.py fonts import", readme_text)
-        self.assertIn("#300", readme_text)
         self.assertIn("#313", readme_text)
 
         # docs/SETUP.md contains System fonts subsection with command, cache, and issue references

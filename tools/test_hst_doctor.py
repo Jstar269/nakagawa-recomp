@@ -1120,7 +1120,7 @@ class LongPathDiagnosticTests(unittest.TestCase):
 
 
 class TypographyRuntimeCheckTests(unittest.TestCase):
-    """The player's SDL3_ttf runtime is a reported workspace fact, never silent (#421)."""
+    """The player's SDL3_ttf runtime is a reported workspace fact, never silent."""
 
     def player_root(self, tmp: str) -> Path:
         root = Path(tmp)
