@@ -38,10 +38,41 @@ PSP_MODULE_HEAP_RESERVE = 0x00100000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
+PBP_MAGIC = b"\x00PBP"
+PBP_HEADER_SIZE = 40
+PBP_SECTION_COUNT = 8
+PBP_PARAM_SFO_SECTION = 0
+PBP_TITLE_MAX_BYTES = 128  # same bound as the native title_name field
+PBP_UNSUPPORTED_SENTENCE = (
+    "This is a PlayStation Store package (PBP), not a disc image. "
+    "Nakagawa Recomp can't use these yet."
+)
+PBP_HEADER_TRUNCATED_SENTENCE = (
+    "This file starts like a PlayStation Store package (PBP) but ends "
+    "before the 40-byte package header is complete."
+)
+PBP_OFFSETS_INVALID_SENTENCE = (
+    "This PlayStation Store package (PBP) has a section table that is not "
+    "ascending or that points past the end of the file."
+)
+PBP_SFO_INVALID_SENTENCE = (
+    "The title information (PARAM.SFO) inside this PlayStation Store "
+    "package (PBP) is missing, oversized, or malformed."
+)
 
 
 class IsoInspectionError(ValueError):
-    """Raised when an ISO image is unreadable or malformed."""
+    """Raised when an ISO image is unreadable or malformed.
+
+    ``boundary_code`` names a format boundary the file was identified as
+    (for example a PlayStation Store package Nakagawa cannot use). It is
+    carried beside the message, never inside it: ``str(exc)`` stays the
+    plain sentence shown to a person.
+    """
+
+    def __init__(self, message: str, *, boundary_code: str | None = None) -> None:
+        super().__init__(message)
+        self.boundary_code = boundary_code
 
 
 def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
@@ -286,6 +317,77 @@ def _canonical_disc_id(value: str) -> str:
     return normalized
 
 
+def _pbp_display_title(title: str) -> str:
+    """Show a package title the way the native reader would.
+
+    A C string stops at the first NUL, and ASCII control characters are
+    replaced with '?' so the sentence stays one plain single line.
+    """
+    visible = title.split("\0", 1)[0]
+    return "".join(
+        char if ord(char) >= 0x20 and ord(char) != 0x7F else "?" for char in visible
+    )
+
+
+def _pbp_package_sentence(disc_id: str, title: str) -> str:
+    if title:
+        return f"{PBP_UNSUPPORTED_SENTENCE} Title: {title} (ID: {disc_id})"
+    return f"{PBP_UNSUPPORTED_SENTENCE} ID: {disc_id}"
+
+
+def _reject_pbp_package(stream, size_bytes: int, header: bytes) -> None:
+    """Refuse a file already identified as a PBP package at a named boundary.
+
+    Always raises ``IsoInspectionError``: the ``\\0PBP`` magic was seen at
+    offset 0, so any ISO9660 reading of this file is a misread rather than a
+    format this function can fall back to. Only the PARAM.SFO section is
+    parsed, with the shared parser, so the sentence can name the title and
+    disc ID the package carries. No package section is extracted or executed.
+    """
+    if len(header) < PBP_HEADER_SIZE:
+        raise IsoInspectionError(
+            PBP_HEADER_TRUNCATED_SENTENCE, boundary_code="PBP_HEADER_TRUNCATED"
+        )
+    offsets = struct.unpack_from("<8I", header, 8)
+    ascending = all(
+        offsets[index] <= offsets[index + 1]
+        for index in range(PBP_SECTION_COUNT - 1)
+    )
+    if (
+        offsets[0] < PBP_HEADER_SIZE
+        or not ascending
+        or offsets[PBP_SECTION_COUNT - 1] > size_bytes
+    ):
+        raise IsoInspectionError(
+            PBP_OFFSETS_INVALID_SENTENCE, boundary_code="PBP_OFFSETS_INVALID"
+        )
+
+    sfo_start = offsets[PBP_PARAM_SFO_SECTION]
+    sfo_size = offsets[PBP_PARAM_SFO_SECTION + 1] - sfo_start
+    if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
+        raise IsoInspectionError(
+            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
+        )
+    stream.seek(sfo_start)
+    raw_sfo = stream.read(sfo_size)
+    try:
+        if len(raw_sfo) != sfo_size:
+            raise IsoInspectionError("PARAM.SFO section is truncated")
+        sfo = parse_param_sfo(raw_sfo)
+        disc_id = _canonical_disc_id(sfo.get("DISC_ID", ""))
+        title = sfo.get("TITLE", "")
+        if len(title.encode("utf-8")) >= PBP_TITLE_MAX_BYTES:
+            raise IsoInspectionError("PARAM.SFO TITLE is too long to display")
+    except IsoInspectionError as exc:
+        raise IsoInspectionError(
+            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
+        ) from exc
+    raise IsoInspectionError(
+        _pbp_package_sentence(disc_id, _pbp_display_title(title)),
+        boundary_code="PBP_PACKAGE_UNSUPPORTED",
+    )
+
+
 def inspect_iso(
     iso_path: Path | str,
     registry: Optional[TitleRegistry] = None,
@@ -298,6 +400,15 @@ def inspect_iso(
         raise IsoInspectionError(f"ISO file does not exist: {path}")
 
     size_bytes = path.stat().st_size
+
+    # A PlayStation Store package carries "\0PBP" at offset 0 and is not a
+    # disc image whatever its name or size says, so it is identified before
+    # any ISO9660 reading rather than reported as a broken disc.
+    with path.open("rb") as probe:
+        header = probe.read(PBP_HEADER_SIZE)
+        if header[: len(PBP_MAGIC)] == PBP_MAGIC:
+            _reject_pbp_package(probe, size_bytes, header)
+
     if size_bytes < 1024 * 1024:  # Under 1 MiB is not a valid PSP UMD image
         raise IsoInspectionError(f"File is too small to be a valid PSP ISO: {size_bytes} bytes")
 
