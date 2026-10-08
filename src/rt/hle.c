@@ -1060,6 +1060,19 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
 
+/* sceCtrlGetSamplingMode(int *pmode): report the mode retained by
+ * sceCtrlSetSamplingMode (power-on default digital, 0) through the required
+ * out-pointer, and return 0 as the PSPSDK pspctrl.h contract documents. The span
+ * is validated before anything is written, so a refused call leaves guest memory
+ * untouched; the refusal code is the same ILLEGAL_ADDR used by the clock getters.
+ * The pointer-error code itself is UNMEASURED on hardware. */
+static uint32_t h_CtrlGetSamplingMode(CpuState *s) {
+    (void)s;
+    if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A0, s_ctrl_sampling_mode);
+    return 0;
+}
+
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* SysMemUserForUser */
@@ -8395,6 +8408,19 @@ static uint32_t h_SysClock2USec(CpuState *s) {
     uint32_t high = MEM_R32(A0 + 4u);
     MEM_W32(A1, low);
     MEM_W32(A2, high);
+    return 0;
+}
+/* sceKernelSysClock2USecWide(SceInt64 clock, unsigned *low, unsigned *high): the 64-bit
+ * clock is passed by value, so under the o32 convention its low word is $a0 and its high
+ * word is $a1, with the two output pointers in $a2 and $a3 (PSPSDK pspthreadman.h). It
+ * uses the same microsecond clock representation as h_SysClock2USec, so the split is the
+ * identity on the value. Both output spans are validated before either word is written. */
+static uint32_t h_SysClock2USecWide(CpuState *s) {
+    (void)s;
+    if (!A2 || !A3 || !sr_guest_span_writable(A2, 4u) || !sr_guest_span_writable(A3, 4u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A2, A0);
+    MEM_W32(A3, A1);
     return 0;
 }
 static uint32_t h_RtcGetCurrentTick(CpuState *s) {
@@ -15752,6 +15778,16 @@ void ge_finish_latch_assist(void) {
 }
 
 #define GE_LIST_MAX 64
+#define SCE_ERROR_NOT_FOUND 0x80000025u
+
+enum {
+    GE_LIST_FREE = 0,
+    GE_LIST_STALLED = 1,
+    GE_LIST_COMPLETED = 2,
+    GE_LIST_PAUSED = 3,
+    GE_LIST_CANCELLED = 4,
+};
+
 typedef struct {
     uint32_t uid;
     uint32_t start_pc;
@@ -15759,7 +15795,7 @@ typedef struct {
     uint32_t stall_addr;
     uint32_t cbid;
     uint32_t cbarg;
-    int status; // 0 = idle/free, 1 = stalled, 2 = completed
+    int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
 } GeListInfo;
 
@@ -15853,7 +15889,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
  * insertion yet. */
 static uint32_t h_GeListEnQueueHead(CpuState *s) {
     for (int i = 0; i < GE_LIST_MAX; i++) {
-        if (s_ge_lists[i].status == 1) {
+        if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
             fprintf(stderr, "UNSUPPORTED_IMPORT: sceGeListEnQueueHead queue ordering is not supported yet.\n");
             return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
         }
@@ -15870,7 +15906,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
         /* A list the GE already ran to its END is found too: the stall address
          * that follows its consumption is a defined no-op, not an unknown list. */
         if (s_ge_lists[i].uid == list_id &&
-            (s_ge_lists[i].status == 1 || s_ge_lists[i].executed)) {
+            (s_ge_lists[i].status == GE_LIST_STALLED ||
+             s_ge_lists[i].status == GE_LIST_PAUSED ||
+             s_ge_lists[i].executed)) {
             slot = i;
             break;
         }
@@ -15901,6 +15939,15 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
         ge_enqueue_trace_result(s, "update_stall", list_id, "already_executed", 0u, 0);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list_id=0x%08x already executed; stall=0x%08x ignored\n",
+                    list_id, new_stall);
+        return 0;
+    }
+
+    if (s_ge_lists[slot].status == GE_LIST_PAUSED) {
+        s_ge_lists[slot].stall_addr = new_stall;
+        ge_enqueue_trace_result(s, "update_stall", list_id, "paused", s_ge_lists[slot].current_pc, 0);
+        if (ge_log_on())
+            fprintf(stderr, "GE_UPDATE_STALL: list_id=0x%08x is paused; updated stall=0x%08x without resuming\n",
                     list_id, new_stall);
         return 0;
     }
@@ -15954,11 +16001,19 @@ static uint32_t h_GeListSync(CpuState *s) {
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
-            if (s_ge_lists[i].status == 2) return 0;
-            if (s_ge_lists[i].status == 1) {
-                if (syncType == 1) return 1;
+            if (s_ge_lists[i].status == GE_LIST_COMPLETED) return 0;
+            if (s_ge_lists[i].status == GE_LIST_STALLED) {
+                if (syncType == 1) return 1; /* PSP_GE_LIST_QUEUED */
                 sched_delay_current(1000);
                 return 0;
+            }
+            if (s_ge_lists[i].status == GE_LIST_PAUSED) {
+                if (syncType == 1) return 2; /* PSP_GE_LIST_DRAWING_DONE */
+                sched_delay_current(1000);
+                return 2;
+            }
+            if (s_ge_lists[i].status == GE_LIST_CANCELLED) {
+                return 4; /* PSP_GE_LIST_CANCEL_DONE */
             }
         }
     }
@@ -15990,21 +16045,122 @@ static uint32_t h_GeDrawSync(CpuState *s) {
      * PSPSDK GE interface (pspge.h) and PPSSPP Core/HLE/sceGe.cpp. The queue
      * state is the same s_ge_lists table h_GeListSync reads: status 1 is a
      * list still owned by the GE (stalled on its stall address), status 2 is
-     * completed. Peek reports the documented sync status (1 while any list is
-     * still owned, else 0); wait yields once through the scheduler -- the same
-     * pacing h_GeListSync's mode-0 path uses -- and reports completion,
-     * because a stalled list advances only on the game's UpdateStallAddr,
-     * never on time, so blocking here could never complete it. Which
-     * non-{0,1} modes firmware accepts is UNMEASURED: anything but the
-     * documented peek takes the wait path. */
+     * completed, status 3 is paused. Peek reports the documented sync status
+     * (2 while any list is paused, 1 while any list is stalled/owned, else 0);
+     * wait yields once through the scheduler -- the same pacing h_GeListSync's
+     * mode-0 path uses -- and reports completion, because a stalled list advances
+     * only on the game's UpdateStallAddr, never on time, so blocking here could
+     * never complete it. Which non-{0,1} modes firmware accepts is UNMEASURED:
+     * anything but the documented peek takes the wait path. */
     uint32_t mode = A0;
     int busy = 0;
-    for (int i = 0; i < GE_LIST_MAX; i++)
-        if (s_ge_lists[i].status == 1) { busy = 1; break; }
+    int paused = 0;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
+        if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
+    }
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
-                           mode, (uint32_t)busy, 0u, 0u);
-    if (mode == 1u) return busy ? 1u : 0u;
-    if (busy) sched_delay_current(1000);
+                           mode, (uint32_t)(busy || paused), 0u, 0u);
+    if (mode == 1u) {
+        if (paused) return 2u; /* PSP_GE_LIST_DRAWING_DONE */
+        return busy ? 1u : 0u;
+    }
+    if (busy || paused) sched_delay_current(1000);
+    return 0;
+}
+
+static uint32_t h_GeBreak(CpuState *s) {
+    uint32_t mode = A0;
+    uint32_t pparam = A1;
+
+    if (mode > 1u) {
+        return 0x800001feu; /* SCE_KERNEL_ERROR_INVALID_VALUE */
+    }
+    if (pparam != 0u && (!sr_guest_span_readable(pparam, 16u) || (pparam & 3u) != 0u)) {
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+
+    int active_slot = -1;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == GE_LIST_STALLED) {
+            active_slot = i;
+            break;
+        }
+    }
+
+    if (mode == 0u) {
+        /* Mode 0: pause current drawing list at command boundary */
+        if (active_slot == -1) {
+            return SCE_ERROR_NOT_FOUND;
+        }
+        s_ge_lists[active_slot].status = GE_LIST_PAUSED;
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                               s_ge_lists[active_slot].uid, s_ge_lists[active_slot].start_pc,
+                               s_ge_lists[active_slot].stall_addr, mode);
+        if (ge_log_on())
+            fprintf(stderr, "GE_BREAK: paused list_id=0x%08x cur_pc=0x%08x\n",
+                    s_ge_lists[active_slot].uid, s_ge_lists[active_slot].current_pc);
+        return 0;
+    } else {
+        /* Mode 1: cancel/reset all queues, returning stopped queue ID (or 0 if none) */
+        uint32_t stopped_id = (active_slot != -1) ? s_ge_lists[active_slot].uid : 0u;
+        if (stopped_id == 0u) {
+            for (int i = 0; i < GE_LIST_MAX; i++) {
+                if (s_ge_lists[i].status == GE_LIST_PAUSED) {
+                    stopped_id = s_ge_lists[i].uid;
+                    break;
+                }
+            }
+        }
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
+                s_ge_lists[i].status = GE_LIST_CANCELLED;
+                if (ge_log_on())
+                    fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
+            }
+        }
+        return stopped_id;
+    }
+}
+
+static uint32_t h_GeContinue(CpuState *s) {
+    int paused_slot = -1;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == GE_LIST_PAUSED) {
+            paused_slot = i;
+            break;
+        }
+    }
+    if (paused_slot == -1) {
+        return SCE_ERROR_NOT_FOUND;
+    }
+
+    s_ge_lists[paused_slot].status = GE_LIST_STALLED;
+    if (ge_log_on())
+        fprintf(stderr, "GE_CONTINUE: resuming list_id=0x%08x cur_pc=0x%08x stall=0x%08x\n",
+                s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].current_pc,
+                s_ge_lists[paused_slot].stall_addr);
+
+    if (s_ge_lists[paused_slot].stall_addr == 0 ||
+        s_ge_lists[paused_slot].current_pc != s_ge_lists[paused_slot].stall_addr) {
+        g_ge_stall_addr = s_ge_lists[paused_slot].stall_addr;
+        uint32_t next_pc = ge_run_list(s_ge_lists[paused_slot].current_pc, 1); /* 1 = resume */
+        g_ge_stall_addr = 0;
+
+        if (next_pc == 0) {
+            s_ge_lists[paused_slot].executed = 1;
+            s_ge_lists[paused_slot].status = GE_LIST_COMPLETED;
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                                   s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].start_pc,
+                                   s_ge_lists[paused_slot].stall_addr, next_pc);
+            ge_finish_callback(s, s_ge_lists[paused_slot].cbid,
+                               s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].cbarg);
+        } else {
+            s_ge_lists[paused_slot].current_pc = next_pc;
+            s_ge_lists[paused_slot].status = GE_LIST_STALLED;
+        }
+    }
+
     return 0;
 }
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }
@@ -19494,6 +19650,7 @@ static void hle_register_ctrl_sampling_handlers(void) {
     sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
+    sr_hle_register(0xda6b76a1, "sceCtrlGetSamplingMode", h_CtrlGetSamplingMode);
     /* 0x687660fa is GetIdleCancelThreshold(int*,int*), NOT ReadBufferNegative -- the pad
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
@@ -19573,13 +19730,58 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
     sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
-    sr_hle_register_unsupported(0x4c06e472, "sceGeContinue", 0x80020002u);
-    sr_hle_register_unsupported(0xb448ec0d, "sceGeBreak", 0x80020002u);
+    sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
+    sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
     sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
     sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
     sr_hle_register_unsupported(0x0cae832b, "sceRegCloseCategory", 0x80010086u);
     sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u);
+}
+
+/* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the
+ * profiler registers, or NULL when no profiler data is available. This runtime models no
+ * profiler, so the honest answer is always NULL, which is what firmware with profiling off
+ * reports. The handler writes nothing; a controlled refusal would instead return a non-NULL
+ * error value in $v0 that the title dereferences as a pointer. NULL-ness on retail firmware
+ * is not hardware-measured. */
+static uint32_t h_ReferProfilerNull(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
+/* Imports that were absent from the registry and stopped titles on an unknown NID. Each
+ * is either a real handler over state the runtime already models (sceKernelSysClock2USecWide
+ * and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
+ * named controlled refusal. A refusal is never fake success: no virtual timer, hold-mode,
+ * UMD popup, battery icon, sceNet, sceHttp, or audiocodec state exists to back these calls. ThreadMan and sceDisplay refusals use SCE_KERNEL_ERROR_NOTIMP, the code the
+ * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
+ * sceAudiocodec libraries use SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the code the
+ * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
+static void hle_register_unregistered_import_batch(void) {
+    sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
+    sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
+    sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
+    sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
+    sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
+    sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
+    sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
+    sr_hle_register_unsupported(0x8c943191u, "sceImposeGetBatteryIconStatus", 0x80010086u);
+    sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    sr_hle_register_unsupported(0x0282a3bdu, "sceHttpGetContentLength", 0x80010086u);
+    sr_hle_register_unsupported(0x03d9526fu, "sceHttpSetResolveRetry", 0x80010086u);
+    sr_hle_register_unsupported(0x1f0fc3e3u, "sceHttpSetRecvTimeOut", 0x80010086u);
+    sr_hle_register_unsupported(0x2255551eu, "sceHttpGetNetworkPspError", 0x80010086u);
+    sr_hle_register_unsupported(0x3eaba285u, "sceHttpAddExtraHeader", 0x80010086u);
+    sr_hle_register_unsupported(0xab1abe07u, "sceHttpInit", 0x80010086u);
+    sr_hle_register_unsupported(0xd1c8945eu, "sceHttpEnd", 0x80010086u);
+    sr_hle_register_unsupported(0x29681260u, "sceAudiocodecReleaseEDRAM", 0x80010086u);
+    sr_hle_register_unsupported(0x3a20a200u, "sceAudiocodecGetEDRAM", 0x80010086u);
+    sr_hle_register_unsupported(0x5b37eb1du, "sceAudiocodecInit", 0x80010086u);
+    sr_hle_register_unsupported(0x70a703f8u, "sceAudiocodecDecode", 0x80010086u);
 }
 
 void sr_hle_init(void) {
@@ -19617,6 +19819,7 @@ void sr_hle_init(void) {
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_unregistered_import_batch();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
@@ -19638,6 +19841,7 @@ void sr_hle_init(void) {
     hle_register_cancel_release_handlers();
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_unregistered_import_batch();
     hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
     sr_hle_register(0x00061e74u, "newlibModuleStreamWrite", h_ModuleStreamWrite);
