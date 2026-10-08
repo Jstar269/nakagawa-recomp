@@ -109,9 +109,9 @@ From nassau-tk's notes in PPSSPP #13718 (2020-11-26) and #13589:
 Tool licence status: pgftool carries **no licence file** (single-merge repo,
 HEAD `a9b3114`; verified by clone 2026-09-17), so its terms are UNKNOWN —
 all-rights-reserved by default. Tool licensing does not automatically
-encumber output files, but this project must not adopt pgftool code. The
-planned project-owned converter is a planned clean-room item whose
-contract is not yet published: it must be written from a behaviour
+encumber output files, but this project must not adopt pgftool code. The project-owned converter is
+specified in `docs/cleanroom/PGF_CONVERTER_SPEC.md` and implemented in
+`tools/pgf_writer.py` and `tools/ttf2pgf.py` (#313): written from a behaviour
 specification, not from any emulator or tool source. `ttf2pgfj.exe`
 provenance/licence: UNKNOWN (flagged, not used).
 
@@ -199,9 +199,12 @@ PGFs from pinned OFL sources with a project-owned reproducible converter,
   camouflage names and of the Adobe Reserved Font Name "Source" in the output
   name; a manifest recording input SHA-256, codepoint coverage, output SHA-256
   and the licence texts that must ship with the payload; CJK-scale coverage and
-  the metric targets discussed upstream. The converter is a planned clean-room item (its independence contract is
-  not yet published) so that it carries no emulator-derived code.
-  No converter or payload is added by this change.
+  the metric targets discussed upstream. The converter's behaviour contract and
+  independence record are published as `docs/cleanroom/PGF_CONVERTER_SPEC.md`
+  (#313, implemented in `tools/pgf_writer.py` and `tools/ttf2pgf.py`) so that it
+  carries no emulator-derived code. This record adds no generated payload: the
+  pinned public input fixture lives under `fixtures/fonts/gudea/`, and generated
+  PGFs stay in test temporaries and `build/`.
 - **(3) is the interim.** Payloads stay excluded. The public source tree reads
   user-supplied fonts through the project-authored reader
   (`src/rt/pgf_public.c`, written from `docs/cleanroom/PGF_SPEC.md`, #349); the
