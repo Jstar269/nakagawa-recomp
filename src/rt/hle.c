@@ -1060,6 +1060,19 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
 
+/* sceCtrlGetSamplingMode(int *pmode): report the mode retained by
+ * sceCtrlSetSamplingMode (power-on default digital, 0) through the required
+ * out-pointer, and return 0 as the PSPSDK pspctrl.h contract documents. The span
+ * is validated before anything is written, so a refused call leaves guest memory
+ * untouched; the refusal code is the same ILLEGAL_ADDR used by the clock getters.
+ * The pointer-error code itself is UNMEASURED on hardware. */
+static uint32_t h_CtrlGetSamplingMode(CpuState *s) {
+    (void)s;
+    if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A0, s_ctrl_sampling_mode);
+    return 0;
+}
+
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* SysMemUserForUser */
@@ -8375,6 +8388,19 @@ static uint32_t h_SysClock2USec(CpuState *s) {
     uint32_t high = MEM_R32(A0 + 4u);
     MEM_W32(A1, low);
     MEM_W32(A2, high);
+    return 0;
+}
+/* sceKernelSysClock2USecWide(SceInt64 clock, unsigned *low, unsigned *high): the 64-bit
+ * clock is passed by value, so under the o32 convention its low word is $a0 and its high
+ * word is $a1, with the two output pointers in $a2 and $a3 (PSPSDK pspthreadman.h). It
+ * uses the same microsecond clock representation as h_SysClock2USec, so the split is the
+ * identity on the value. Both output spans are validated before either word is written. */
+static uint32_t h_SysClock2USecWide(CpuState *s) {
+    (void)s;
+    if (!A2 || !A3 || !sr_guest_span_writable(A2, 4u) || !sr_guest_span_writable(A3, 4u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A2, A0);
+    MEM_W32(A3, A1);
     return 0;
 }
 static uint32_t h_RtcGetCurrentTick(CpuState *s) {
@@ -19570,6 +19596,7 @@ static void hle_register_ctrl_sampling_handlers(void) {
     sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
+    sr_hle_register(0xda6b76a1, "sceCtrlGetSamplingMode", h_CtrlGetSamplingMode);
     /* 0x687660fa is GetIdleCancelThreshold(int*,int*), NOT ReadBufferNegative -- the pad
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
@@ -19658,6 +19685,51 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u);
 }
 
+/* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the
+ * profiler registers, or NULL when no profiler data is available. This runtime models no
+ * profiler, so the honest answer is always NULL, which is what firmware with profiling off
+ * reports. The handler writes nothing; a controlled refusal would instead return a non-NULL
+ * error value in $v0 that the title dereferences as a pointer. NULL-ness on retail firmware
+ * is not hardware-measured. */
+static uint32_t h_ReferProfilerNull(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
+/* Imports that were absent from the registry and stopped titles on an unknown NID. Each
+ * is either a real handler over state the runtime already models (sceKernelSysClock2USecWide
+ * and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
+ * named controlled refusal. A refusal is never fake success: no virtual timer, hold-mode,
+ * UMD popup, battery icon, sceNet, sceHttp, or audiocodec state exists to back these calls. ThreadMan and sceDisplay refusals use SCE_KERNEL_ERROR_NOTIMP, the code the
+ * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
+ * sceAudiocodec libraries use SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the code the
+ * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
+static void hle_register_unregistered_import_batch(void) {
+    sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
+    sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
+    sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
+    sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
+    sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
+    sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
+    sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
+    sr_hle_register_unsupported(0x8c943191u, "sceImposeGetBatteryIconStatus", 0x80010086u);
+    sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    sr_hle_register_unsupported(0x0282a3bdu, "sceHttpGetContentLength", 0x80010086u);
+    sr_hle_register_unsupported(0x03d9526fu, "sceHttpSetResolveRetry", 0x80010086u);
+    sr_hle_register_unsupported(0x1f0fc3e3u, "sceHttpSetRecvTimeOut", 0x80010086u);
+    sr_hle_register_unsupported(0x2255551eu, "sceHttpGetNetworkPspError", 0x80010086u);
+    sr_hle_register_unsupported(0x3eaba285u, "sceHttpAddExtraHeader", 0x80010086u);
+    sr_hle_register_unsupported(0xab1abe07u, "sceHttpInit", 0x80010086u);
+    sr_hle_register_unsupported(0xd1c8945eu, "sceHttpEnd", 0x80010086u);
+    sr_hle_register_unsupported(0x29681260u, "sceAudiocodecReleaseEDRAM", 0x80010086u);
+    sr_hle_register_unsupported(0x3a20a200u, "sceAudiocodecGetEDRAM", 0x80010086u);
+    sr_hle_register_unsupported(0x5b37eb1du, "sceAudiocodecInit", 0x80010086u);
+    sr_hle_register_unsupported(0x70a703f8u, "sceAudiocodecDecode", 0x80010086u);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -19693,6 +19765,7 @@ void sr_hle_init(void) {
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_unregistered_import_batch();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
@@ -19714,6 +19787,7 @@ void sr_hle_init(void) {
     hle_register_cancel_release_handlers();
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_unregistered_import_batch();
     hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
     sr_hle_register(0x00061e74u, "newlibModuleStreamWrite", h_ModuleStreamWrite);

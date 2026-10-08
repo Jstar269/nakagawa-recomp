@@ -2726,6 +2726,80 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
     }
 }
 
+/* sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler report NULL (no profiler data
+ * is modeled), and write nothing through any argument register. A non-NULL error value would
+ * be dereferenced by the title, so the result must be exactly 0. */
+static void test_unregistered_batch_profiler_refer_null(void) {
+    enum {
+        NID_REFER_THREAD_PROFILER = 0x64d4540eu,
+        NID_REFER_GLOBAL_PROFILER = 0x8218b4ddu,
+        PROFILER_PROBE = 0x00270050u,
+    };
+    const uint32_t sentinel = 0xa57c3de1u;
+    const uint32_t nids[2] = {NID_REFER_THREAD_PROFILER, NID_REFER_GLOBAL_PROFILER};
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(nids) / sizeof(nids[0]); i++) {
+        expect(sr_hle_test_is_registered(nids[i]),
+               "profiler refer NID has a production registration");
+        MEM_W32(PROFILER_PROBE, sentinel);
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PROFILER_PROBE;
+        cpu.r[5] = PROFILER_PROBE;
+        cpu.r[6] = PROFILER_PROBE;
+        cpu.r[7] = PROFILER_PROBE;
+        expect(sr_syscall(&cpu, nids[i]) == 0u && MEM_R32(PROFILER_PROBE) == sentinel,
+               "profiler refer returns NULL (0) and writes nothing through its argument registers");
+    }
+}
+
+/* Imports that stopped titles on an unknown NID now resolve to a named refusal with the code
+ * recorded in hle.c's unregistered-import batch. The two NIDs without a confirmed public name
+ * must stay unregistered, so an unknown-NID trap still names them. */
+static void test_unregistered_batch_refusals(void) {
+    static const struct {
+        uint32_t nid;
+        uint32_t error;
+        const char *name;
+    } refused[] = {
+        {0x20fff560u, 0x80020002u, "sceKernelCreateVTimer"},
+        {0xc68d9437u, 0x80020002u, "sceKernelStartVTimer"},
+        {0x328f9e52u, 0x80020002u, "sceKernelDeleteVTimer"},
+        {0x542ad630u, 0x80020002u, "sceKernelSetVTimerTime"},
+        {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
+        {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
+        {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
+        {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
+        {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
+        {0x0282a3bdu, 0x80010086u, "sceHttpGetContentLength"},
+        {0x03d9526fu, 0x80010086u, "sceHttpSetResolveRetry"},
+        {0x1f0fc3e3u, 0x80010086u, "sceHttpSetRecvTimeOut"},
+        {0x2255551eu, 0x80010086u, "sceHttpGetNetworkPspError"},
+        {0x3eaba285u, 0x80010086u, "sceHttpAddExtraHeader"},
+        {0xab1abe07u, 0x80010086u, "sceHttpInit"},
+        {0xd1c8945eu, 0x80010086u, "sceHttpEnd"},
+        {0x29681260u, 0x80010086u, "sceAudiocodecReleaseEDRAM"},
+        {0x3a20a200u, 0x80010086u, "sceAudiocodecGetEDRAM"},
+        {0x5b37eb1du, 0x80010086u, "sceAudiocodecInit"},
+        {0x70a703f8u, 0x80010086u, "sceAudiocodecDecode"},
+    };
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        expect(sr_hle_test_is_registered(refused[i].nid),
+               "unregistered-import batch refusal has a production registration");
+        expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
+               "unregistered-import batch refusal returns its named refusal code");
+    }
+    expect(!sr_hle_test_is_registered(0x8ada38d3u),
+           "LoadExecForUser 0x8ada38d3 stays unregistered because no public name is confirmed");
+    expect(!sr_hle_test_is_registered(0x3dd7ee1au),
+           "sceAudiocodec 0x3dd7ee1a stays unregistered because no public name is confirmed");
+}
+
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
  * write and preserves the existing no-op behavior for NULL output pointers. */
@@ -3708,6 +3782,81 @@ static void test_kernel_import_sweep_sysclock_conversion(void) {
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_SYS_CLOCK_TO_USEC) == 0x800200d3u &&
                MEM_R32(low_out) == sentinel && MEM_R32(high_out) == sentinel,
            "sceKernelSysClock2USec rejects an incomplete input span before writing outputs");
+}
+
+/* sceKernelSysClock2USecWide takes the 64-bit clock by value ($a0 low word, $a1 high word)
+ * and writes its two words through $a2/$a3. A missing output pointer refuses the whole call,
+ * so the valid low output is not written. */
+static void test_unregistered_batch_sysclock_wide(void) {
+    enum {
+        NID_SYS_CLOCK_TO_USEC_WIDE = 0xe1619d7cu,
+        WIDE_LOW_OUT = 0x00270030u,
+        WIDE_HIGH_OUT = 0x00270034u,
+    };
+    const uint32_t sentinel = 0xa57c3de1u;
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_SYS_CLOCK_TO_USEC_WIDE),
+           "sceKernelSysClock2USecWide has a production registration");
+    MEM_W32(WIDE_LOW_OUT, sentinel);
+    MEM_W32(WIDE_HIGH_OUT, sentinel);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x89abcdefu;
+    cpu.r[5] = 0x12345678u;
+    cpu.r[6] = WIDE_LOW_OUT;
+    cpu.r[7] = WIDE_HIGH_OUT;
+    expect(sr_syscall(&cpu, NID_SYS_CLOCK_TO_USEC_WIDE) == 0u &&
+               MEM_R32(WIDE_LOW_OUT) == 0x89abcdefu && MEM_R32(WIDE_HIGH_OUT) == 0x12345678u,
+           "sceKernelSysClock2USecWide splits the by-value 64-bit clock into low/high outputs");
+
+    MEM_W32(WIDE_LOW_OUT, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x89abcdefu;
+    cpu.r[5] = 0x12345678u;
+    cpu.r[6] = WIDE_LOW_OUT;
+    cpu.r[7] = 0u; /* missing high-output pointer */
+    expect(sr_syscall(&cpu, NID_SYS_CLOCK_TO_USEC_WIDE) == 0x800200d3u &&
+               MEM_R32(WIDE_LOW_OUT) == sentinel,
+           "sceKernelSysClock2USecWide refuses a missing output pointer before writing the low word");
+}
+
+/* sceCtrlGetSamplingMode reports the mode retained by sceCtrlSetSamplingMode through a
+ * required out-pointer, and a NULL pointer is refused without a write. */
+extern void sr_hle_test_ctrl_sampling_reset(void);
+static void test_unregistered_batch_ctrl_sampling_getter(void) {
+    enum {
+        NID_CTRL_GET_SAMPLING_MODE = 0xda6b76a1u,
+        NID_CTRL_SET_SAMPLING_MODE = 0x1f4011e6u,
+        CTRL_MODE_OUT = 0x00270040u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_sampling_reset();
+    expect(sr_hle_test_is_registered(NID_CTRL_GET_SAMPLING_MODE),
+           "sceCtrlGetSamplingMode has a production registration");
+    MEM_W32(CTRL_MODE_OUT, 0xa57c3de1u);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = CTRL_MODE_OUT;
+    expect(sr_syscall(&cpu, NID_CTRL_GET_SAMPLING_MODE) == 0u && MEM_R32(CTRL_MODE_OUT) == 0u,
+           "sceCtrlGetSamplingMode reports the power-on digital mode 0");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 1u;
+    (void)sr_syscall(&cpu, NID_CTRL_SET_SAMPLING_MODE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = CTRL_MODE_OUT;
+    expect(sr_syscall(&cpu, NID_CTRL_GET_SAMPLING_MODE) == 0u && MEM_R32(CTRL_MODE_OUT) == 1u,
+           "sceCtrlGetSamplingMode reports the mode retained by sceCtrlSetSamplingMode");
+
+    MEM_W32(CTRL_MODE_OUT, 0xa57c3de1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u; /* NULL out-pointer */
+    expect(sr_syscall(&cpu, NID_CTRL_GET_SAMPLING_MODE) == 0x800200d3u &&
+               MEM_R32(CTRL_MODE_OUT) == 0xa57c3de1u,
+           "sceCtrlGetSamplingMode refuses a NULL out-pointer with ILLEGAL_ADDR and no write");
+    sr_hle_test_ctrl_sampling_reset();
 }
 
 static void test_display_clock_reads_are_observational(void) {
@@ -22365,6 +22514,8 @@ int main(int argc, char **argv) {
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
+    test_unregistered_batch_refusals();
+    test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_ge_break_continue();
     test_volatile_mem_output_preflight();
@@ -22412,6 +22563,8 @@ int main(int argc, char **argv) {
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();
+    test_unregistered_batch_sysclock_wide();
+    test_unregistered_batch_ctrl_sampling_getter();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
     test_delay_zero_probe_semantics();

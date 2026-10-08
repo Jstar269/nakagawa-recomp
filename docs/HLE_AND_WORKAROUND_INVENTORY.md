@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **464** (dedicated **434**, fake_success **3**, controlled_unsupported **27**).
-Semantic handler census: **399** handlers across **21** API families, covering **440** handler-associated NID registrations.
+Registered NIDs: **488** (dedicated **436**, fake_success **5**, controlled_unsupported **47**).
+Semantic handler census: **401** handlers across **21** API families, covering **442** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 54 | 54 |
+| `partial` | 56 | 56 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 332 | 361 |
@@ -54,14 +54,14 @@ Semantic handler census: **399** handlers across **21** API families, covering *
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
 | `sceAudio` | 0 | 0 | 0 | 0 | 13 | 13 | 14 |
-| `sceCtrl` | 0 | 0 | 0 | 0 | 6 | 6 | 6 |
+| `sceCtrl` | 0 | 1 | 0 | 0 | 6 | 7 | 7 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
 | `sceGe` | 0 | 4 | 0 | 0 | 8 | 12 | 12 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 13 | 0 | 0 | 134 | 149 | 173 |
+| `sceKernel` | 2 | 14 | 0 | 0 | 134 | 150 | 174 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
@@ -71,7 +71,7 @@ Semantic handler census: **399** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **54** | **1** | **2** | **332** | **399** | **440** |
+| **Total** | **10** | **56** | **1** | **2** | **332** | **401** | **442** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -124,6 +124,8 @@ Semantic handler census: **399** handlers across **21** API families, covering *
 
 #### Partial Handlers (Named Limitations)
 
+- **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
+  - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -231,6 +233,8 @@ Semantic handler census: **399** handlers across **21** API families, covering *
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
 - **`h_SysClock2USec`** (`sceKernel`): `sceKernelSysClock2USec` (0xba6b92e2)
   - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
+- **`h_SysClock2USecWide`** (`sceKernel`): `sceKernelSysClock2USecWide` (0xe1619d7c)
+  - Limitation: takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
   - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)

@@ -86,6 +86,18 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
     },
+    "h_SysClock2USecWide": {
+        "status": "partial",
+        "limitation": "takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured",
+    },
+    "h_ReferProfilerNull": {
+        "status": "partial",
+        "limitation": "no profiler is modeled, so both sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler always report NULL, like firmware with profiling off; NULL-ness on retail firmware is not hardware-measured",
+    },
+    "h_CtrlGetSamplingMode": {
+        "status": "partial",
+        "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
+    },
     "h_AllocMemoryBlock": {
         "status": "partial",
         "limitation": "models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured",
