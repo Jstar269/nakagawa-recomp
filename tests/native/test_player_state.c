@@ -341,11 +341,14 @@ static bool test_remove_tree(const char *path) {
             ok = false;
             break;
         }
-        struct stat metadata;
-        if (lstat(child, &metadata) != 0 ||
-            (S_ISDIR(metadata.st_mode) ? !test_remove_tree(child) : unlink(child) != 0)) {
-            ok = false;
-            break;
+        /* Act first, then classify the failure: no stat precedes the removal. */
+        if (unlink(child) != 0) {
+            bool removed = (errno == EISDIR || errno == EPERM) ? test_remove_tree(child)
+                                                                : errno == ENOENT;
+            if (!removed) {
+                ok = false;
+                break;
+            }
         }
     }
     closedir(directory);
