@@ -1532,6 +1532,11 @@ int main(int argc, char **argv) {
         snprintf(entry.title_id, sizeof(entry.title_id), "ulus-10041");
         stops->games[0] = entry;
         assert(player_app_focus_count(stops) == 4); /* build package + add + remove + mapping */
+        stops->focus_index = 0;
+        player_app_runtime_package_cache_mark_pending(stops, 0);
+        assert(player_app_focus_count(stops) == 4);
+        assert(stops->focus_index == 0); /* background validation keeps primary focus */
+        stops->runtime_package_cache[0].validation_pending = false;
 
         stops->active_view = VIEW_BUILDING_PACKAGE;
         assert(player_app_focus_count(stops) == 1); /* cancel build */
@@ -3470,13 +3475,17 @@ int main(int argc, char **argv) {
         snprintf(capp->install_root, sizeof(capp->install_root), "%.*s",
                  (int)sizeof(capp->install_root) - 1, probe);
 
-        /* CLI_NOT_FOUND: the card must name NK_INSTALL_ROOT and the checkout fix. */
+        /* CLI_NOT_FOUND gives a plain reinstall instruction and keeps the
+           searched paths available in the details/log. */
         assert(!player_app_start_package_build(capp, 0));
         assert(capp->active_view == VIEW_ERROR);
         assert(strcmp(capp->last_error.error_code, "CLI_NOT_FOUND") == 0);
-        assert(strstr(capp->last_error.message, "NK_INSTALL_ROOT") != NULL);
-        assert(strstr(capp->last_error.message, "source checkout") != NULL);
-        assert(strstr(capp->last_error.message, "nk_cli.py") != NULL);
+        assert(strcmp(capp->last_error.message,
+                      "Nakagawa Recomp's build tools were not found next to the app. "
+                      "Reinstall Nakagawa Recomp and keep its folder together.") == 0);
+        assert(strstr(capp->last_error.details, "NK_INSTALL_ROOT") != NULL);
+        assert(strstr(capp->last_error.details, "source checkout") != NULL);
+        assert(strstr(capp->last_error.details, "nk_cli.py") != NULL);
 
         /* 21c: back in the checkout, an empty PATH requests consent before
            any prerequisite download or child process starts. */

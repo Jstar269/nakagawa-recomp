@@ -181,6 +181,7 @@ typedef struct {
     char error_code[32];
     char title[128];
     char message[512];
+    char details[MAX_PATH_LEN * 3 + 512];
     char recovery_action_label[64];
     PlayerView return_view;
     char failed_stage[64];
@@ -345,6 +346,9 @@ bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming)
 bool player_app_remove_game(PlayerApp *app, int game_index);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
+void player_app_set_cli_not_found_error(PlayerApp *app,
+                                        const char *recovery_label,
+                                        PlayerView return_view);
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory);
