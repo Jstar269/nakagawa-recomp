@@ -73,6 +73,12 @@ HANDLER_METADATA = {
     },
     # Stores g_sdk_version for SDK-dependent paths; the retained-state
     # contract for the variants routed to it is implemented.
+    # ReferSemaStatus reads the modeled semaphore: live count, create-time initCount,
+    # maxCount, attr and name recorded at create, and the blocked-waiter count.
+    "h_ReferSemaStatus": {
+        "status": "partial",
+        "limitation": "reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only",
+    },
     "h_SetCompiledSdkVersion": {
         "status": "complete",
         "evidence": [

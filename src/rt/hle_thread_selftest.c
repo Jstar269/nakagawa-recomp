@@ -250,6 +250,8 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_GE_LIST_ENQUEUE_HEAD 0x1c0d95a6u
 #define NID_SCE_GE_CONTINUE 0x4c06e472u
 #define NID_SCE_GE_BREAK 0xb448ec0du
+#define NID_SCE_GE_SAVE_CONTEXT 0x438a385au
+#define NID_SCE_GE_RESTORE_CONTEXT 0x0bf608fbu
 #define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
 #define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
@@ -2711,6 +2713,8 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
         {NID_SCE_GE_CONTINUE, 0x80020002u, "sceGeContinue"},
         {NID_SCE_GE_BREAK, 0x80020002u, "sceGeBreak"},
+        {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
+        {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
         {NID_SCE_REG_CLOSE_CATEGORY, 0x80010086u, "sceRegCloseCategory"},
@@ -7538,6 +7542,121 @@ static void test_sema_hardware_codes(void) {
 #define NID_B1_TRYLOCK_LWMUTEX 0xdc692ee3u
 #define NID_TRYLOCK_LWMUTEX_600 0x37431849u
 #define NID_B1_UNLOCK_LWMUTEX 0x15b6446bu
+
+/* sceKernelReferSemaStatus (0xbc6febc5): SceKernelSemaInfo is 56 bytes -- size(0),
+ * name[32](4), attr(36), initCount(40), currentCount(44), maxCount(48),
+ * numWaitThreads(52). Covers the live count, a genuinely blocked waiter, the unknown-UID
+ * and bad-pointer codes, and a small caller size word. */
+#define NID_RSS_REFER_SEMA 0xbc6febc5u
+#define RSS_INFO           0x00250a00u
+#define RSS_NAME           0x00250a80u
+#define RSS_UNKNOWN_UID    0x0badf00du
+#define RSS_BAD_PTR        0xfffffff0u
+#define RSS_ILLEGAL_ADDR   0x80000103u   /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+
+static uint32_t s_rss_obj;
+static uint32_t s_rss_ret;
+static int s_rss_returned;
+
+static void rss_waiter_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_rss_obj; cpu.r[5] = 3u; cpu.r[6] = 0u;
+    s_rss_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_rss_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t rss_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid; cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_RSS_REFER_SEMA);
+}
+
+static void test_sema_refer_status(void) {
+    static const char rss_name[] = "rss-sema";
+    TCB *main_t = wsv_begin();
+    for (size_t i = 0; i < sizeof(rss_name); i++) MEM_W8(RSS_NAME + (uint32_t)i, (uint8_t)rss_name[i]);
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = RSS_NAME; cpu.r[5] = 0x100u; cpu.r[6] = 1u; cpu.r[7] = 3u;
+    uint32_t sema = sr_syscall(&cpu, NID_CNW_CREATE_SEMA);
+    expect((int32_t)sema > 0, "ReferSemaStatus: test semaphore created (init 1, max 3, attr 0x100)");
+
+    /* Live semaphore, no waiter. The sentinel fill proves every field is written. */
+    MEM_W32(RSS_INFO, 56u);
+    for (uint32_t i = 4u; i < 56u; i++) MEM_W8(RSS_INFO + i, 0xa5u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds on a live semaphore");
+    expect(MEM_R32(RSS_INFO) == 56u, "ReferSemaStatus leaves the caller's size word as written");
+    int name_ok = 1;
+    for (uint32_t i = 0; i < 32u; i++) {
+        uint8_t want = i < sizeof(rss_name) ? (uint8_t)rss_name[i] : 0u;
+        if (MEM_R8(RSS_INFO + 4u + i) != want) name_ok = 0;
+    }
+    expect(name_ok, "ReferSemaStatus copies the create-time name and zero-fills the rest of name[32]");
+    expect(MEM_R32(RSS_INFO + 36u) == 0x100u, "ReferSemaStatus reports the create-time attr");
+    expect(MEM_R32(RSS_INFO + 40u) == 1u, "ReferSemaStatus reports the create-time initCount");
+    expect(MEM_R32(RSS_INFO + 44u) == 1u, "ReferSemaStatus reports the current count");
+    expect(MEM_R32(RSS_INFO + 48u) == 3u, "ReferSemaStatus reports the maxCount");
+    expect(MEM_R32(RSS_INFO + 52u) == 0u, "ReferSemaStatus reports zero waiting threads with no waiter");
+
+    /* Signal to count 2, then block a real waiter that needs 3. */
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = sema; cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "ReferSemaStatus: signal to count 2 succeeds");
+
+    s_rss_obj = sema; s_rss_ret = 0xFFFFFFFFu; s_rss_returned = 0;
+    TCB *waiter = fixture_thread(0x1e2u, TH_READY, 16);
+    waiter->started = 1;
+    waiter->coro = sr_coro_create(rss_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "ReferSemaStatus: waiter coroutine created");
+    if (waiter->coro) {
+        s_cur = (int)(waiter - s_tcb);
+        waiter->state = TH_RUNNING;
+        sr_coro_switch(waiter->coro);
+        expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == sema,
+               "ReferSemaStatus: waiter blocked on the semaphore (need 3, count 2)");
+
+        s_cur = (int)(main_t - s_tcb);
+        expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with a blocked waiter");
+        expect(MEM_R32(RSS_INFO + 44u) == 2u, "ReferSemaStatus reports count 2 while the waiter is blocked");
+        expect(MEM_R32(RSS_INFO + 52u) == 1u, "ReferSemaStatus reports one waiting thread");
+
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "ReferSemaStatus: signal to count 3 succeeds");
+        if (waiter->state == TH_READY && waiter->coro) {
+            s_cur = (int)(waiter - s_tcb);
+            sr_coro_switch(waiter->coro);
+        }
+        expect(s_rss_returned == 1 && s_rss_ret == 0u,
+               "ReferSemaStatus: the blocked waiter resumed and succeeded after the signal");
+
+        s_cur = (int)(main_t - s_tcb);
+        expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds after the waiter resumed");
+        expect(MEM_R32(RSS_INFO + 44u) == 0u, "ReferSemaStatus reports count 0 after the waiter consumed 3");
+        expect(MEM_R32(RSS_INFO + 52u) == 0u, "ReferSemaStatus reports zero waiting threads after the wake");
+        sr_coro_destroy(waiter->coro); waiter->coro = NULL;
+    }
+
+    /* Unknown UID, NULL and unmapped output spans, and a small caller size word. */
+    expect(rss_refer(RSS_UNKNOWN_UID, RSS_INFO) == WSV_UNKNOWN_SEMID,
+           "ReferSemaStatus unknown UID returns UNKNOWN_SEMID 0x80020199");
+    expect(rss_refer(sema, 0u) == RSS_ILLEGAL_ADDR,
+           "ReferSemaStatus NULL info returns ILLEGAL_ADDR 0x80000103");
+    expect(rss_refer(sema, RSS_BAD_PTR) == RSS_ILLEGAL_ADDR,
+           "ReferSemaStatus unmapped info span returns ILLEGAL_ADDR 0x80000103");
+    MEM_W32(RSS_INFO, 8u);
+    expect(rss_refer(sema, RSS_INFO) == 0u, "ReferSemaStatus succeeds with a small caller size word");
+    expect(MEM_R32(RSS_INFO) == 8u, "ReferSemaStatus leaves a small caller size word as written");
+    expect(MEM_R32(RSS_INFO + 48u) == 3u, "ReferSemaStatus still writes maxCount under a small size word");
+
+    wsv_delete(sema);
+    s_cur = -1;
+}
 
 static void test_lwmutex_hardware_codes(void) {
     TCB *self = wsv_begin();
@@ -18383,7 +18502,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[640];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -18391,7 +18510,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
-                 "+ 1 vblank multi waiter "
+                 "+ 1 vblank multi waiter + 1 ReferSemaStatus waiter "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -22266,6 +22385,7 @@ int main(int argc, char **argv) {
     test_dispatch_suspend_resume_nid_semantics();
     test_can_not_wait_semantics();
     test_sema_hardware_codes();
+    test_sema_refer_status();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_wait_sema_count_validation();

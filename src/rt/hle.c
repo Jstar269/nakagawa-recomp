@@ -17570,6 +17570,11 @@ static uint32_t h_CreateSema(CpuState *s) {
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
     m->initc = (int)A2;
+    /* Create-time name and attr for ReferSemaStatus. sync_new does not clear
+     * these fields, so both are written on every create (an unreadable name
+     * pointer yields an empty name, never a failed create). */
+    m->attr = A1;
+    guest_cstr(A0, m->name, sizeof(m->name));
     if (hle_log_on())
         fprintf(stderr, "HLE: CreateSema uid=0x%x init=%d max=%d (from uid=0x%x)\n", m->uid, (int)A2, (int)A3, sched_current_uid());
     return m->uid;
@@ -17876,6 +17881,22 @@ static uint32_t h_PollSema(CpuState *s) {
     if (need <= 0 || need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (m->count < need) return 0x800201adu;   /* SCE_KERNEL_ERROR_SEMA_ZERO */
     m->count -= need;
+    return 0;
+}
+/* sceKernelReferSemaStatus(semaid, SceKernelSemaInfo *info): the struct is 56 bytes --
+ * size(0), name[32](4), attr(36), initCount(40), currentCount(44), maxCount(48),
+ * numWaitThreads(52). Mirrors h_ReferEventFlagStatus: the caller's size word is left as
+ * written, and the full 56-byte span is checked writable before any store. */
+static uint32_t h_ReferSemaStatus(CpuState *s) {
+    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    uint32_t info = A1;
+    if (!info || !sr_guest_span_writable(info, 56u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    for (uint32_t i = 0; i < 32u; i++) MEM_W8(info + 4u + i, (uint8_t)m->name[i]);
+    MEM_W32(info + 36u, (uint32_t)m->attr);
+    MEM_W32(info + 40u, (uint32_t)m->initc);
+    MEM_W32(info + 44u, (uint32_t)m->count);
+    MEM_W32(info + 48u, (uint32_t)m->maxc);
+    MEM_W32(info + 52u, (uint32_t)sched_count_waiters(A0));
     return 0;
 }
 
@@ -19073,6 +19094,7 @@ static void hle_register_selftest_oracle_handlers(void) {
     sr_hle_register(0x28b6489c, "sceKernelDeleteSema", h_DeleteSema);
     sr_hle_register(0x3f53e640, "sceKernelSignalSema", h_SignalSema);
     sr_hle_register(0x58b1f937, "sceKernelPollSema", h_PollSema);
+    sr_hle_register(0xbc6febc5, "sceKernelReferSemaStatus", h_ReferSemaStatus);
 }
 
 /* Registry scope for the issue #88 wait/blocking-context conformance matrix
@@ -19521,6 +19543,14 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register_unsupported(0x4c06e472, "sceGeContinue", 0x80020002u);
     sr_hle_register_unsupported(0xb448ec0d, "sceGeBreak", 0x80020002u);
+    /* sceGeSaveContext / sceGeRestoreContext are refused, not faked. The modeled GE state
+     * (GeState in ge_shared.h, 3364 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
+     * and derived fields, so it cannot fit a 2048-byte PspGeContext, and the 256-entry
+     * command register file alone does not capture matrices or CLUT contents. A restore
+     * therefore cannot reinstate what a save would need, so both refuse with the GE
+     * controlled-refusal code and write nothing to the guest buffer. */
+    sr_hle_register_unsupported(0x438a385au, "sceGeSaveContext", 0x80020002u);
+    sr_hle_register_unsupported(0x0bf608fbu, "sceGeRestoreContext", 0x80020002u);
     sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
     sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
