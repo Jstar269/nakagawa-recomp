@@ -34,7 +34,9 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   SHA-1 notices retained), KL4E/KL3E decompression (`nk_psp_kle.*`) and the
   `~PSP` container logic (`nk_psp_prx.*`, which also descends from PPSSPP's
   PrxDecrypter, Copyright (c) 2012- PPSSPP Project, GPL-2.0-or-later) are ported
-  from one GPL upstream at commit `c156627db7634d395c380c0a9589130f603307fc`;
+  from one GPL upstream,
+  [John-K/pspdecrypt](https://github.com/John-K/pspdecrypt) (including its libkirk
+  code), at commit `c156627db7634d395c380c0a9589130f603307fc`;
   each file's header names that upstream, its path and its notices. The
   upstream's license is GPL version 3 with no later-version grant, so every
   file ported through it (all of the above except the KIRK engine) is labelled
