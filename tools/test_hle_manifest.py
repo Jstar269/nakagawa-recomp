@@ -596,8 +596,14 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xa569e425": "sceKernelVolatileMemUnlock",
                 "0x4b85c861": "sceUtilityOskUpdate",
                 "0xb3b5d042": "sceAtracGetOutputChannel",
+                # Profiler refers return NULL because no profiler is modeled, which is what
+                # firmware with profiling off reports. The body is a bare `return 0`, so the
+                # mechanical stub detector classifies it fake_success; the handler is curated
+                # partial with that limitation recorded in tools/hle_registry_meta.py.
+                "0x64d4540e": "sceKernelReferThreadProfiler",
+                "0x8218b4dd": "sceKernelReferGlobalProfiler",
             },
-            "only three named route compatibility exceptions may remain fake-success",
+            "only named exceptions may remain fake-success: three route compatibility results and two profiler NULL results",
         )
 
         unsupported = {
@@ -630,7 +636,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x4c06e472": ("sceGeContinue", "0x80020002"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
-                "0x64d4540e": ("sceKernelReferThreadProfiler", "0x80020002"),
                 "0x6652b8ca": ("sceKernelSetAlarm", "0x80020002"),
                 "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
@@ -640,7 +645,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x77ed8b3a": ("sceDisplayWaitVblankStartMultiCB", "0x80020002"),
                 "0x7e65b999": ("sceKernelCancelAlarm", "0x80020002"),
                 "0x7ed59bc4": ("sceDisplaySetHoldMode", "0x80020002"),
-                "0x8218b4dd": ("sceKernelReferGlobalProfiler", "0x80020002"),
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
                 "0x92e41280": ("sceRegOpenRegistry", "0x80010086"),
                 "0x912354a7": ("sceKernelRotateThreadReadyQueue", "0x80020002"),

@@ -2728,6 +2728,34 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
     }
 }
 
+/* sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler report NULL (no profiler data
+ * is modeled), and write nothing through any argument register. A non-NULL error value would
+ * be dereferenced by the title, so the result must be exactly 0. */
+static void test_unregistered_batch_profiler_refer_null(void) {
+    enum {
+        NID_REFER_THREAD_PROFILER = 0x64d4540eu,
+        NID_REFER_GLOBAL_PROFILER = 0x8218b4ddu,
+        PROFILER_PROBE = 0x00270050u,
+    };
+    const uint32_t sentinel = 0xa57c3de1u;
+    const uint32_t nids[2] = {NID_REFER_THREAD_PROFILER, NID_REFER_GLOBAL_PROFILER};
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(nids) / sizeof(nids[0]); i++) {
+        expect(sr_hle_test_is_registered(nids[i]),
+               "profiler refer NID has a production registration");
+        MEM_W32(PROFILER_PROBE, sentinel);
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = PROFILER_PROBE;
+        cpu.r[5] = PROFILER_PROBE;
+        cpu.r[6] = PROFILER_PROBE;
+        cpu.r[7] = PROFILER_PROBE;
+        expect(sr_syscall(&cpu, nids[i]) == 0u && MEM_R32(PROFILER_PROBE) == sentinel,
+               "profiler refer returns NULL (0) and writes nothing through its argument registers");
+    }
+}
+
 /* Imports that stopped titles on an unknown NID now resolve to a named refusal with the code
  * recorded in hle.c's unregistered-import batch. The two NIDs without a confirmed public name
  * must stay unregistered, so an unknown-NID trap still names them. */
@@ -2737,8 +2765,6 @@ static void test_unregistered_batch_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {0x64d4540eu, 0x80020002u, "sceKernelReferThreadProfiler"},
-        {0x8218b4ddu, 0x80020002u, "sceKernelReferGlobalProfiler"},
         {0x20fff560u, 0x80020002u, "sceKernelCreateVTimer"},
         {0xc68d9437u, 0x80020002u, "sceKernelStartVTimer"},
         {0x328f9e52u, 0x80020002u, "sceKernelDeleteVTimer"},
@@ -22308,6 +22334,7 @@ int main(int argc, char **argv) {
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
     test_unregistered_batch_refusals();
+    test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();

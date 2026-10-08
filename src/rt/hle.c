@@ -19555,19 +19555,29 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u);
 }
 
+/* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the
+ * profiler registers, or NULL when no profiler data is available. This runtime models no
+ * profiler, so the honest answer is always NULL, which is what firmware with profiling off
+ * reports. The handler writes nothing; a controlled refusal would instead return a non-NULL
+ * error value in $v0 that the title dereferences as a pointer. NULL-ness on retail firmware
+ * is not hardware-measured. */
+static uint32_t h_ReferProfilerNull(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
 /* Imports that were absent from the registry and stopped titles on an unknown NID. Each
  * is either a real handler over state the runtime already models (sceKernelSysClock2USecWide
  * and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
- * named controlled refusal. A refusal is never fake success: no profiler, virtual timer,
- * hold-mode, UMD popup, battery icon, sceNet, sceHttp, or audiocodec state exists to back
- * these calls. ThreadMan and sceDisplay refusals use SCE_KERNEL_ERROR_NOTIMP, the code the
+ * named controlled refusal. A refusal is never fake success: no virtual timer, hold-mode,
+ * UMD popup, battery icon, sceNet, sceHttp, or audiocodec state exists to back these calls. ThreadMan and sceDisplay refusals use SCE_KERNEL_ERROR_NOTIMP, the code the
  * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
  * sceAudiocodec libraries use SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the code the
  * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
 static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
-    sr_hle_register_unsupported(0x64d4540eu, "sceKernelReferThreadProfiler", 0x80020002u);
-    sr_hle_register_unsupported(0x8218b4ddu, "sceKernelReferGlobalProfiler", 0x80020002u);
+    sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
+    sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
     sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
     sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
     sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);

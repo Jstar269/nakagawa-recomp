@@ -1221,11 +1221,10 @@
     "status": "unreviewed"
   },
   "0x64d4540e": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "fake_success",
+    "handler": "h_ReferProfilerNull",
     "name": "sceKernelReferThreadProfiler",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "stub"
   },
   "0x64d50c56": {
     "classification": "controlled_unsupported",
@@ -1591,11 +1590,10 @@
     "status": "partial"
   },
   "0x8218b4dd": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "fake_success",
+    "handler": "h_ReferProfilerNull",
     "name": "sceKernelReferGlobalProfiler",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "stub"
   },
   "0x82826f70": {
     "classification": "dedicated",
