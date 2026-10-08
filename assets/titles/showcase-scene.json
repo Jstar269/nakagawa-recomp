@@ -11,7 +11,7 @@
   },
   "modules": [],
   "filesystem": {
-    "data_root": "data/showcase-scene-v1",
+    "data_root": "",
     "memory_stick_root": "build/showcase/memstick/TEST00007",
     "device_prefixes": ["host0:", "ms0:"]
   },
@@ -29,7 +29,7 @@
     ],
     "unknown_capability_policy": "fail-closed",
     "boot": {"entry_policy": "image-entry", "thread_policy": "profile-default", "arguments": []},
-    "resources": {"mode": "manifest-filesystem", "locators": ["data/showcase-scene-v1"]},
+    "resources": {"mode": "none", "locators": []},
     "hle_overrides": [],
     "input_mapping": {"labels": ["analog", "cross", "start"], "replay": "deterministic"},
     "enhancements": {"enabled_by_default": false, "capabilities": []},
