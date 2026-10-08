@@ -750,8 +750,20 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
 
 
 def _elf32_mips_usable(
-    stream, file_size: int, lba: int, size: int, *, require_segment_alignment: bool = True
+    stream, file_size: int, lba: int, size: int, *,
+    require_segment_alignment: bool = True, module: bool = False,
 ) -> bool:
+    """Whether an ELF32/MIPS file is usable as a plain executable or guest module.
+
+    The executable rule (``module=False``) needs ``e_entry`` inside an
+    executable PT_LOAD, because the launcher starts at ``e_entry``.  A PSP PRX
+    (``e_type 0xFFA0``) checked as a guest module (``module=True``) is a
+    relocatable module whose start routine comes from its module info, so its
+    ``e_entry`` (commonly 0xFFFFFFFF) is not checked; it needs an executable
+    PT_LOAD that carries code bytes instead.  Header and program-header bounds
+    apply to both rules.  Mirrored by ``player_is_usable_mips_elf32`` and
+    ``player_iso_elf32_mips_usable`` in ``src/player/player_state.c``.
+    """
     if size < 52:
         return False
     header = _read_iso_extent(stream, file_size, lba, size, 0, 52)
@@ -778,6 +790,7 @@ def _elf32_mips_usable(
     table = _read_iso_extent(stream, file_size, lba, size, phoff, phentsize * phnum)
     have_load = False
     entry_executable = False
+    code_segment = False
     for index in range(phnum):
         p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags, p_align = struct.unpack_from(
             "<8I", table, index * phentsize
@@ -794,8 +807,13 @@ def _elf32_mips_usable(
         ):
             return False
         have_load = True
-        if p_flags & 1 and p_vaddr <= entry < memory_end:
+        executable = bool(p_flags & 1)
+        if executable and p_vaddr <= entry < memory_end:
             entry_executable = True
+        if executable and p_filesz > 0:
+            code_segment = True
+    if module and e_type == 0xFFA0:
+        return have_load and code_segment
     return have_load and entry_executable
 
 
@@ -933,7 +951,9 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
                 stream, file_size, entry.lba, entry.size, 0, min(entry.size, 0x64)
             )
             if header.startswith(b"\x7fELF"):
-                if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
+                if not _elf32_mips_usable(
+                    stream, file_size, entry.lba, entry.size, module=True
+                ):
                     continue
                 blob = _read_iso_extent(
                     stream, file_size, entry.lba, entry.size, 0, entry.size
@@ -1037,7 +1057,7 @@ def decrypt_needed_modules(
                 for spelling in names:
                     candidate = module_dir / spelling
                     if candidate.is_file():
-                        if _classify_decrypted_elf_file(candidate) == "PLAIN_MIPS_ELF32":
+                        if _classify_decrypted_elf_file(candidate, module=True) == "PLAIN_MIPS_ELF32":
                             user_plain = candidate
                             break
                         if invalid_spelling is None:
@@ -1077,7 +1097,7 @@ def decrypt_needed_modules(
                 stream, file_size, lba, extent_size, 0, min(extent_size, 0x64)
             )
             if header.startswith(b"\x7fELF"):
-                if _elf32_mips_usable(stream, file_size, lba, extent_size):
+                if _elf32_mips_usable(stream, file_size, lba, extent_size, module=True):
                     result.update(status="skipped", reason="plain", detail="")
                     ready += 1
                 else:
@@ -1125,7 +1145,7 @@ def decrypt_needed_modules(
                     outcome.detail or "the container could not be decrypted",
                 ))
                 continue
-            if _classify_decrypted_elf_file(destination) != "PLAIN_MIPS_ELF32":
+            if _classify_decrypted_elf_file(destination, module=True) != "PLAIN_MIPS_ELF32":
                 destination.unlink(missing_ok=True)
                 results.append(_module_failure(
                     result, "boundary", "boundary output is not a usable MIPS ELF32",
@@ -1209,8 +1229,11 @@ def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | Non
     return resolved
 
 
-def _classify_decrypted_elf_file(path: Path | str) -> str:
-    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans."""
+def _classify_decrypted_elf_file(path: Path | str, *, module: bool = False) -> str:
+    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans.
+
+    ``module=True`` applies the guest-module rule (see ``_elf32_mips_usable``).
+    """
     candidate = Path(path)
     try:
         size = candidate.stat().st_size
@@ -1224,7 +1247,8 @@ def _classify_decrypted_elf_file(path: Path | str) -> str:
                 # The original ELF is read by the static analyzer, not a host
                 # ELF loader; its bounded guest spans remain required.
                 usable = _elf32_mips_usable(
-                    stream, size, 0, size, require_segment_alignment=False
+                    stream, size, 0, size, require_segment_alignment=False,
+                    module=module,
                 )
                 return "PLAIN_MIPS_ELF32" if usable else "UNKNOWN"
     except (OSError, IsoInspectionError, struct.error):
