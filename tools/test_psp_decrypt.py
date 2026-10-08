@@ -926,6 +926,36 @@ class TestDiscModuleBoundary(unittest.TestCase):
         self.assertEqual(by_name["gamma.prx"]["status"], "skipped")
         self.assertEqual(by_name["gamma.prx"]["reason"], "plain")
 
+    def test_plain_prx_with_unset_entry_is_ready_in_preflight(self):
+        """Issue #729: a plain PSP PRX whose e_entry is the unset 0xFFFFFFFF is
+        a ready module in the same checklist, not "0 of N ready"."""
+        from tools.test_iso_parity import build_plain_mips_elf
+
+        case_dir = self.tmp / "case-plain-prx"
+        case_dir.mkdir()
+        iso = case_dir / "plain_prx.iso"
+        self.create_iso_modules(
+            iso,
+            tiny_elf(b"NK-EBOOT"),
+            sysdir_modules={
+                "libfont.prx": build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF),
+            },
+            usrdir_modules={},
+            disc_id="TEST00001",
+            title="Synthetic Plain PRX Disc",
+        )
+        report = self._preflight(iso, self.tmp / "plain-prx-user")
+        module_report = self._module_report(report)
+        self.assertEqual((module_report["ready"], module_report["total"]), (1, 1))
+        self.assertEqual(
+            [(result["name"], result["status"], result["reason"])
+             for result in module_report["results"]],
+            [("libfont.prx", "skipped", "plain")],
+        )
+        check = self._module_check(report)
+        self.assertEqual(check["status"], "OK", check["message"])
+        self.assertIn("1 of 1 ready", check["message"])
+
     def test_missing_key_entry_fails_closed_naming_that_entry(self):
         alpha_entry = f"prx.tag.0x{SYNTH_TAG_ALPHA:08X}"
         entries = multi_tag_entries([SYNTH_TAG, SYNTH_TAG_ALPHA, SYNTH_TAG_BETA])
