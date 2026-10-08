@@ -110,6 +110,72 @@ static void write_file(const char *path) {
     assert(fclose(file) == 0);
 }
 
+static void put_iso_both32(uint8_t *out, uint32_t value) {
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8);
+    out[2] = (uint8_t)(value >> 16);
+    out[3] = (uint8_t)(value >> 24);
+    out[4] = (uint8_t)(value >> 24);
+    out[5] = (uint8_t)(value >> 16);
+    out[6] = (uint8_t)(value >> 8);
+    out[7] = (uint8_t)value;
+}
+
+static void write_iso_record(uint8_t *sector, size_t offset,
+                             const uint8_t *name, size_t name_size,
+                             uint32_t lba, uint32_t size, bool is_directory) {
+    size_t record_size = 33u + name_size;
+    if (record_size & 1u) record_size++;
+    memset(sector + offset, 0, record_size);
+    sector[offset] = (uint8_t)record_size;
+    put_iso_both32(sector + offset + 2, lba);
+    put_iso_both32(sector + offset + 10, size);
+    sector[offset + 25] = is_directory ? 0x02u : 0u;
+    sector[offset + 32] = (uint8_t)name_size;
+    memcpy(sector + offset + 33, name, name_size);
+}
+
+static void write_iso_with_fixture_eboot(const char *path) {
+    enum { SECTOR_SIZE = 2048, ISO_SECTORS = 21 };
+    static const uint8_t dot[] = {0};
+    static const uint8_t dotdot[] = {1};
+    static const uint8_t game[] = "PSP_GAME";
+    static const uint8_t sysdir[] = "SYSDIR";
+    static const uint8_t eboot[] = "EBOOT.BIN;1";
+    uint8_t image[ISO_SECTORS * SECTOR_SIZE];
+    memset(image, 0, sizeof(image));
+
+    uint8_t *pvd = image + 16 * SECTOR_SIZE;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    put_iso_both32(pvd + 158, 17);
+    put_iso_both32(pvd + 166, SECTOR_SIZE);
+    write_iso_record(pvd, 156, dot, sizeof(dot), 17, SECTOR_SIZE, true);
+
+    uint8_t *root = image + 17 * SECTOR_SIZE;
+    write_iso_record(root, 0, dot, sizeof(dot), 17, SECTOR_SIZE, true);
+    write_iso_record(root, 34, dotdot, sizeof(dotdot), 17, SECTOR_SIZE, true);
+    write_iso_record(root, 68, game, sizeof(game) - 1, 18, SECTOR_SIZE, true);
+
+    uint8_t *game_dir = image + 18 * SECTOR_SIZE;
+    write_iso_record(game_dir, 0, dot, sizeof(dot), 18, SECTOR_SIZE, true);
+    write_iso_record(game_dir, 34, dotdot, sizeof(dotdot), 17, SECTOR_SIZE, true);
+    write_iso_record(game_dir, 68, sysdir, sizeof(sysdir) - 1, 19,
+                     SECTOR_SIZE, true);
+
+    uint8_t *sysdir_dir = image + 19 * SECTOR_SIZE;
+    write_iso_record(sysdir_dir, 0, dot, sizeof(dot), 19, SECTOR_SIZE, true);
+    write_iso_record(sysdir_dir, 34, dotdot, sizeof(dotdot), 18, SECTOR_SIZE, true);
+    write_iso_record(sysdir_dir, 68, eboot, sizeof(eboot) - 1, 20, 7, false);
+    memcpy(image + 20 * SECTOR_SIZE, "fixture", 7);
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, sizeof(image), file) == sizeof(image));
+    assert(fclose(file) == 0);
+}
+
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
@@ -904,11 +970,11 @@ static void write_synthetic_pgf(const char *path, uint16_t header_offset, uint16
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
-static void write_runtime_package_fixture_with_report_size(
+static void write_runtime_package_fixture_with_options(
     const char *user_root, const char *disc_id, const char *title_id,
     uint32_t abi_version, const char *executable_relative_path,
     const char *input_executable_sha256, const char *seed_executable_path,
-    size_t report_target_size) {
+    const char *source_media_json, size_t report_target_size) {
     char packages[768], package_dir[896], executable[1100], image[1100];
     char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
     char aot_components_json[2048], native_components_json[2048], identity_json[2048];
@@ -938,13 +1004,15 @@ static void write_runtime_package_fixture_with_report_size(
     fixture_sha_file(executable, executable_hash);
 
     const char *region = strncmp(disc_id, "UL", 2) == 0 ? "NA" : "TEST";
+    if (!source_media_json) source_media_json = "null";
     int identity_length = snprintf(identity_json, sizeof(identity_json),
         "{\"container\":null,\"disc\":{\"disc_version\":null,\"id\":\"%s\","
         "\"region\":\"%s\"},\"format\":\"nakagawa-title-input-identity\","
         "\"main_executable\":{\"name\":\"EBOOT.BIN\",\"sha256\":\"%s\"},"
         "\"manifest\":{\"id\":\"%s\",\"schema_version\":1},"
-        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":1}",
-        disc_id, region, input_executable_sha256, title_id);
+        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":2,"
+        "\"source_media\":%s}",
+        disc_id, region, input_executable_sha256, title_id, source_media_json);
     assert(identity_length > 0 && (size_t)identity_length < sizeof(identity_json));
     int identity_hash_length = snprintf(identity_hash_input,
         sizeof(identity_hash_input), "%s\n", identity_json);
@@ -1073,9 +1141,29 @@ static void write_runtime_package_fixture(const char *user_root,
                                           const char *executable_relative_path,
                                           const char *input_executable_sha256,
                                           const char *seed_executable_path) {
-    write_runtime_package_fixture_with_report_size(
+    write_runtime_package_fixture_with_options(
         user_root, disc_id, title_id, abi_version, executable_relative_path,
-        input_executable_sha256, seed_executable_path, 0);
+        input_executable_sha256, seed_executable_path, NULL, 0);
+}
+
+static void write_runtime_package_fixture_with_source_media(
+    const char *user_root, const char *disc_id, const char *title_id,
+    uint32_t abi_version, const char *executable_relative_path,
+    const char *input_executable_sha256, const char *seed_executable_path,
+    const char *source_media_json) {
+    write_runtime_package_fixture_with_options(
+        user_root, disc_id, title_id, abi_version, executable_relative_path,
+        input_executable_sha256, seed_executable_path, source_media_json, 0);
+}
+
+static void write_runtime_package_fixture_with_report_size(
+    const char *user_root, const char *disc_id, const char *title_id,
+    uint32_t abi_version, const char *executable_relative_path,
+    const char *input_executable_sha256, const char *seed_executable_path,
+    size_t report_target_size) {
+    write_runtime_package_fixture_with_options(
+        user_root, disc_id, title_id, abi_version, executable_relative_path,
+        input_executable_sha256, seed_executable_path, NULL, report_target_size);
 }
 
 /* Remove exactly what write_runtime_package_fixture() writes under *user_root*
@@ -1586,6 +1674,52 @@ static void assert_cache_root_isolated(void) {
     }
 }
 
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+static const struct {
+    const char *path;
+    bool valid;
+} source_iso_path_cases[] = {
+    {"PSP_GAME/SYSDIR/EBOOT.BIN", true},
+    {"psp_game/USRDIR/module/fixture.prx", true},
+    {"PSP_GAME/USRDIR/space in name.prx", true},
+    {"PSP_GAME/USRDIR/punctuation_#%!+.prx", true},
+    {"PSP_GAME/EBOOT.BIN", false},
+    {"OTHER_GAME/USRDIR/fixture.prx", false},
+    {"PSP_GAME//USRDIR/fixture.prx", false},
+    {"PSP_GAME/USRDIR/../SYSDIR/EBOOT.BIN", false},
+    {"PSP_GAME/USRDIR/./fixture.prx", false},
+    {"C:/PSP_GAME/USRDIR/fixture.prx", false},
+    {"/PSP_GAME/USRDIR/fixture.prx", false},
+    {"PSP_GAME/USRDIR/back\\\\slash.prx", false},
+    {"PSP_GAME/USRDIR/fixture?.prx", false},
+    {"PSP_GAME/USRDIR/fixture*.prx", false},
+    {"PSP_GAME/USRDIR/fixture\".prx", false},
+    {"PSP_GAME/USRDIR/fixture<.prx", false},
+    {"PSP_GAME/USRDIR/fixture>.prx", false},
+    {"PSP_GAME/USRDIR/fixture|.prx", false},
+    {"PSP_GAME/USRDIR/control\x1f.prx", false},
+    {"PSP_GAME/USRDIR/del\x7f.prx", false},
+    {"PSP_GAME/USRDIR/non-ascii-\xc3\xa9.prx", false},
+};
+
+static void test_source_iso_member_path_validation(void) {
+    for (size_t i = 0;
+         i < sizeof(source_iso_path_cases) / sizeof(source_iso_path_cases[0]);
+         i++) {
+        assert(nk_title_manifest_test_source_iso_path_valid(
+                   source_iso_path_cases[i].path) ==
+               source_iso_path_cases[i].valid);
+    }
+    char too_long[600];
+    const char prefix[] = "PSP_GAME/USRDIR/";
+    size_t prefix_length = sizeof(prefix) - 1u;
+    memcpy(too_long, prefix, prefix_length);
+    memset(too_long + prefix_length, 'a', 513u);
+    too_long[prefix_length + 513u] = '\0';
+    assert(!nk_title_manifest_test_source_iso_path_valid(too_long));
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -1612,6 +1746,10 @@ int main(int argc, char **argv) {
         free(probe);
         return 0;
     }
+
+#if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+    test_source_iso_member_path_validation();
+#endif
 
     /* Per-run cache isolation (#735 item 8): every fixture below resolves its
      * cache, save and boot-event paths inside a temporary root, never inside
@@ -1792,7 +1930,7 @@ int main(int argc, char **argv) {
      * display-smoke-v1 is the public title whose build layout nk_launch.c can
      * resolve, so it has to be in the set a fresh install shows. This also pins
      * the memory-only contract: populate must leave a populated library alone. */
-    printf("[PLAYER_STATE_TEST] Subtest 7: demo fixtures include a launchable title\n");
+    printf("[PLAYER_STATE_TEST] Subtest 7: demo fixtures stay unprepared without qualified source media\n");
     fflush(stdout);
     PlayerApp *fresh = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     assert(fresh != NULL);
@@ -1801,8 +1939,7 @@ int main(int argc, char **argv) {
     assert(fresh->game_count == 0);
 
     /* Point package discovery at a disposable root. A bare executable/image
-       pair must not make the fixture launchable; only a matching v1 package
-       enables Play. */
+       pair or an unqualified identity must not make the fixture launchable. */
     char cache_dir[512];
     char fixture_root[700];
     char fixture_package_dir[900];
@@ -1837,8 +1974,8 @@ int main(int argc, char **argv) {
     int disp = player_app_find_game_by_disc_id(fresh, "TEST00006");
     assert(disp >= 0);
     assert(strcmp(fresh->games[disp].title_id, "display-smoke-v1") == 0);
-    assert(fresh->games[disp].is_prepared == true);
-    assert(fresh->games[disp].status == NK_STATUS_PREPARED);
+    assert(fresh->games[disp].is_prepared == false);
+    assert(fresh->games[disp].status == NK_STATUS_IDENTIFIED);
 
     int before = fresh->game_count;
     player_app_populate_sample_games(fresh);
@@ -3926,7 +4063,7 @@ int main(int argc, char **argv) {
         snprintf(user_root, sizeof(user_root), "%s%cuser", scratch, sep);
         assert(nk_platform_mkdir_p(user_root));
         snprintf(iso_path, sizeof(iso_path), "%s%cgame.iso", scratch, sep);
-        write_text_file(iso_path, "NOT-A-REAL-ISO");
+        write_iso_with_fixture_eboot(iso_path);
         snprintf(report_path, sizeof(report_path), "%s%crepeat_report.txt",
                  scratch, sep);
         snprintf(git_before, sizeof(git_before), "%s%cgit_before.txt", scratch, sep);
@@ -3945,9 +4082,14 @@ int main(int argc, char **argv) {
         assert(nk_platform_mkdir_p(data_root));
         nk_title_catalog_snapshot_release(&title_snapshot);
 
-        write_runtime_package_fixture(user_root, disc_id, "synthetic-allegrex-v1",
-                                      2, "synthetic-allegrex-v1.exe",
-                                      FIXTURE_SHA256, self_path);
+        char source_media_json[512];
+        snprintf(source_media_json, sizeof(source_media_json),
+            "{\"executable\":{\"path\":\"PSP_GAME/SYSDIR/EBOOT.BIN\","
+            "\"sha256\":\"%s\"},\"modules\":[]}", FIXTURE_SHA256);
+        write_runtime_package_fixture_with_source_media(
+            user_root, disc_id, "synthetic-allegrex-v1", 2,
+            "synthetic-allegrex-v1.exe", FIXTURE_SHA256, self_path,
+            source_media_json);
         char package_exe[1100];
         snprintf(package_exe, sizeof(package_exe),
                  "%s%cpackages%c%s%csynthetic-allegrex-v1.exe", user_root, sep,
@@ -4002,7 +4144,13 @@ int main(int argc, char **argv) {
            the launch path performs. */
         {
             NkLaunchSession probe;
-            assert(nk_launch_prepare_session(&probe, &rep->games[0], user_root) == NK_OK);
+            NkResult probe_result = nk_launch_prepare_session(
+                &probe, &rep->games[0], user_root);
+            if (probe_result != NK_OK) {
+                fprintf(stderr, "repeat launch probe failed: %s\n",
+                        probe.last_error);
+            }
+            assert(probe_result == NK_OK);
             assert(probe.memstick_root[0] != '\0');
             snprintf(memstick1, sizeof(memstick1), "%s", probe.memstick_root);
             nk_launch_stop(&probe);
