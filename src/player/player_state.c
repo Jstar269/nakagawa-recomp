@@ -2510,7 +2510,9 @@ typedef enum {
     PLAYER_MODULE_SCAN_DIRECTORY_LIMIT,
     PLAYER_MODULE_SCAN_PATH_LIMIT,
     PLAYER_MODULE_SCAN_INVALID_TREE,
-    PLAYER_MODULE_SCAN_OPEN_FAILED
+    PLAYER_MODULE_SCAN_OPEN_FAILED,
+    PLAYER_MODULE_SCAN_INVALID_ARGUMENT,
+    PLAYER_MODULE_SCAN_CALLBACK_STOPPED
 } PlayerModuleScanStatus;
 
 static bool player_name_equals_ignore_case(const char *a, const char *b) {
@@ -2760,30 +2762,54 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     nk_iso_reader_close(reader);
     if (out_count) *out_count = context.count;
     if (context.status != PLAYER_MODULE_SCAN_OK) return context.status;
-    if (walk_status == NK_ISO_MODULE_WALK_OK) return PLAYER_MODULE_SCAN_OK;
-    if (boundary_message && boundary_message_size) {
-        if (walk_status == NK_ISO_MODULE_WALK_DIRECTORY_LIMIT) {
+    switch (walk_status) {
+    case NK_ISO_MODULE_WALK_OK:
+        return PLAYER_MODULE_SCAN_OK;
+    case NK_ISO_MODULE_WALK_DIRECTORY_LIMIT:
+        if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
                      "%u directories; broader discovery is in the works "
                      "(#726).",
                      NK_ISO_MODULE_TREE_MAX_DIRECTORIES);
-        } else if (walk_status == NK_ISO_MODULE_WALK_PATH_LIMIT) {
+        }
+        return PLAYER_MODULE_SCAN_DIRECTORY_LIMIT;
+    case NK_ISO_MODULE_WALK_PATH_LIMIT:
+        if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_PATH_LIMIT: ISO member path exceeds %u bytes; "
                      "broader path-aware intake is in the works (#726).",
                      NK_ISO_MODULE_TREE_MAX_PATH_BYTES);
-        } else {
+        }
+        return PLAYER_MODULE_SCAN_PATH_LIMIT;
+    case NK_ISO_MODULE_WALK_INVALID_TREE:
+        if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_TREE_INVALID: ISO module directories could "
                      "not be listed safely (#726).");
         }
+        return PLAYER_MODULE_SCAN_INVALID_TREE;
+    case NK_ISO_MODULE_WALK_INVALID_ARGUMENT:
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_SCAN_INVALID_ARGUMENT: ISO module scan "
+                     "received invalid reader state (#726).");
+        }
+        return PLAYER_MODULE_SCAN_INVALID_ARGUMENT;
+    case NK_ISO_MODULE_WALK_CALLBACK_STOPPED:
+        if (boundary_message && boundary_message_size) {
+            snprintf(boundary_message, boundary_message_size,
+                     "DISC_MODULE_SCAN_CALLBACK_STOPPED: ISO module scan "
+                     "stopped without a candidate boundary (#726).");
+        }
+        return PLAYER_MODULE_SCAN_CALLBACK_STOPPED;
     }
-    return walk_status == NK_ISO_MODULE_WALK_DIRECTORY_LIMIT
-               ? PLAYER_MODULE_SCAN_DIRECTORY_LIMIT
-               : walk_status == NK_ISO_MODULE_WALK_PATH_LIMIT
-                     ? PLAYER_MODULE_SCAN_PATH_LIMIT
-                     : PLAYER_MODULE_SCAN_INVALID_TREE;
+    if (boundary_message && boundary_message_size) {
+        snprintf(boundary_message, boundary_message_size,
+                 "DISC_MODULE_SCAN_STATUS_UNKNOWN: ISO module scan returned "
+                 "an unknown status (#726).");
+    }
+    return PLAYER_MODULE_SCAN_INVALID_TREE;
 }
 
 static void player_check_guest_modules(PlayerApp *app,

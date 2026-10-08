@@ -735,6 +735,11 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             if device.casefold() in {"disc0", "umd0"} and \
                     guest_components[:1] and guest_components[0].casefold() == "psp_game":
                 members.append(guest_components)
+        if members:
+            file_size = iso_path.stat().st_size
+            with iso_path.open("rb") as stream:
+                if _lookup_iso_file(stream, file_size, members[0]) is None:
+                    members.clear()
         if not members:
             disc_spellings = {name.casefold()}
             if disc_name:
@@ -1905,6 +1910,21 @@ def _fail_bringup(report: dict, stage: str, failure_class: str, issues=(), durat
     _update_issues(report, issues)
 
 
+def _bringup_import_failure(exc: Exception, checks: dict) -> tuple[str, list[int], str | None]:
+    detail = str(exc)
+    if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
+        return "GUEST_MODULE_DISCOVERY_FAILED", [726], detail
+
+    failure = "EXPERIMENTAL_IMPORT_FAILED"
+    issues = [308]
+    if isinstance(exc, IsoInspectionError) and "load binding" in detail:
+        failure = "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED"
+    if checks.get("EXECUTABLE", {}).get("issue_numbers") and \
+            failure == "EXPERIMENTAL_IMPORT_FAILED":
+        issues = checks["EXECUTABLE"]["issue_numbers"]
+    return failure, issues, None
+
+
 def _sanitized_checks(preflight: dict) -> list[dict]:
     known_codes = {
         "DISC_SFO", "EXECUTABLE", "EXPERIMENTAL", "GUEST_MODULES", "RUNTIME_PACKAGE",
@@ -2619,13 +2639,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             is_experimental, str(preflight["selected_executable_source"]),
         )
     except Exception as exc:
-        failure = "EXPERIMENTAL_IMPORT_FAILED"
-        issues = [308]
-        if isinstance(exc, IsoInspectionError) and "load binding" in str(exc):
-            failure = "RELOCATABLE_ELF_LOAD_BINDING_REQUIRED"
-        if checks.get("EXECUTABLE", {}).get("issue_numbers"):
-            if failure == "EXPERIMENTAL_IMPORT_FAILED":
-                issues = checks["EXECUTABLE"]["issue_numbers"]
+        failure, issues, module_detail = _bringup_import_failure(exc, checks)
+        if module_detail is not None:
+            print(module_detail)
         _fail_bringup(report, "prepare_import", failure, issues,
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)

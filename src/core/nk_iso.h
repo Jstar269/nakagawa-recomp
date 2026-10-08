@@ -33,7 +33,9 @@ typedef struct {
  * USRDIR/DATA/MODULE/MODULE layout (depth 3). */
 #define NK_ISO_MODULE_TREE_MAX_DEPTH 4u
 #define NK_ISO_MODULE_TREE_MAX_DIRECTORIES 1024u
+#ifndef NK_ISO_MODULE_TREE_MAX_PATH_BYTES
 #define NK_ISO_MODULE_TREE_MAX_PATH_BYTES 1200u
+#endif
 
 typedef enum {
     NK_ISO_MODULE_WALK_OK = 0,

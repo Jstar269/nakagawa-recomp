@@ -434,11 +434,13 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
             continue;
         }
         if (rec_len < 34u || rec_len > dir_size - pos || (pos % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
-            break;
+            free(buf);
+            return -1;
         }
         uint8_t name_len = buf[pos + 32];
         if (name_len == 0 || 33u + name_len > rec_len) {
-            break;
+            free(buf);
+            return -1;
         }
 
         /* Skip '.' (0) and '..' (1) */
@@ -472,6 +474,19 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
             }
             if (comp_len > 0 && name_bytes[comp_len - 1] == '.') {
                 comp_len--;
+            }
+            if (comp_len == 0 ||
+                (comp_len == 1 && name_bytes[0] == '.') ||
+                (comp_len == 2 && name_bytes[0] == '.' && name_bytes[1] == '.')) {
+                free(buf);
+                return -1;
+            }
+            for (size_t c = 0; c < comp_len; c++) {
+                if (name_bytes[c] == '\0' || name_bytes[c] == '/' ||
+                    name_bytes[c] == '\\') {
+                    free(buf);
+                    return -1;
+                }
             }
             if (comp_len >= sizeof(out_entry->name)) {
                 comp_len = sizeof(out_entry->name) - 1;
@@ -519,7 +534,6 @@ static NkIsoModuleWalkStatus nk_iso_walk_module_directory(
         int listed = nk_iso_reader_list(context->reader, directory, index, &entry);
         if (listed == 0) return NK_ISO_MODULE_WALK_OK;
         if (listed < 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
-        if (index == UINT32_MAX) return NK_ISO_MODULE_WALK_INVALID_TREE;
         if (entry.is_directory) {
             if (nk_iso_module_name_equals(entry.name, "KMODULE")) continue;
             if (depth < NK_ISO_MODULE_TREE_MAX_DEPTH) {
@@ -561,19 +575,55 @@ NkIsoModuleWalkStatus nk_iso_reader_walk_module_tree(
     static const char *const roots[] = {
         "PSP_GAME/SYSDIR", "PSP_GAME/USRDIR"
     };
+    static const char *const root_names[] = { "SYSDIR", "USRDIR" };
     NkIsoModuleWalkContext context;
+    bool psp_game_found = false;
+    bool psp_game_is_directory = false;
+    bool root_found[sizeof(root_names) / sizeof(root_names[0])] = { false };
+    bool root_is_directory[sizeof(root_names) / sizeof(root_names[0])] = { false };
     if (!reader || !callback) return NK_ISO_MODULE_WALK_INVALID_ARGUMENT;
     memset(&context, 0, sizeof(context));
     context.reader = reader;
     context.callback = callback;
     context.userdata = userdata;
+
+    /* Validate the complete parent extents before deciding that either
+     * optional module root is absent. A lookup that stops at the matching
+     * record alone can hide a malformed record later in the directory. */
+    for (uint32_t index = 0;; index++) {
+        NkIsoDirEntry entry;
+        int listed = nk_iso_reader_list(reader, "", index, &entry);
+        if (listed == 0) break;
+        if (listed < 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        if (!nk_iso_module_name_equals(entry.name, "PSP_GAME")) continue;
+        if (psp_game_found) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        psp_game_found = true;
+        psp_game_is_directory = entry.is_directory;
+    }
+    if (!psp_game_found || !psp_game_is_directory) return NK_ISO_MODULE_WALK_OK;
+
+    for (uint32_t index = 0;; index++) {
+        NkIsoDirEntry entry;
+        int listed = nk_iso_reader_list(reader, "PSP_GAME", index, &entry);
+        if (listed == 0) break;
+        if (listed < 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
+        for (size_t i = 0; i < sizeof(root_names) / sizeof(root_names[0]); i++) {
+            if (!nk_iso_module_name_equals(entry.name, root_names[i])) continue;
+            if (root_found[i]) return NK_ISO_MODULE_WALK_INVALID_TREE;
+            root_found[i] = true;
+            root_is_directory[i] = entry.is_directory;
+        }
+    }
+
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         uint32_t lba = 0, size = 0;
         bool is_directory = false;
-        if (nk_iso_reader_lookup(reader, roots[i], &lba, &size, &is_directory) != 0) {
-            continue;
+        if (!root_found[i]) continue;
+        if (!root_is_directory[i] ||
+            nk_iso_reader_lookup(reader, roots[i], &lba, &size, &is_directory) != 0 ||
+            !is_directory || size == 0) {
+            return NK_ISO_MODULE_WALK_INVALID_TREE;
         }
-        if (!is_directory || size == 0) return NK_ISO_MODULE_WALK_INVALID_TREE;
         context.directories_visited++;
         if (context.directories_visited > NK_ISO_MODULE_TREE_MAX_DIRECTORIES) {
             return NK_ISO_MODULE_WALK_DIRECTORY_LIMIT;
