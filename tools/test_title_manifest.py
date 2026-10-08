@@ -36,6 +36,21 @@ class TitleManifestTests(unittest.TestCase):
         self.assertEqual(normalized["feature_requirements"], sorted(normalized["feature_requirements"]))
         self.assertNotIn("disc", normalized)
 
+    def test_empty_data_root_declares_no_separate_host_data(self) -> None:
+        value = copy.deepcopy(self.fixture)
+        value["filesystem"]["data_root"] = ""
+        normalized = title_manifest.validate_manifest(value)
+        self.assertEqual(normalized["filesystem"]["data_root"], "")
+
+        showcase = title_manifest.load_manifest(
+            ROOT / "assets" / "titles" / "showcase-scene.json"
+        )
+        showcase = title_manifest.validate_manifest(showcase)
+        self.assertEqual(showcase["filesystem"]["data_root"], "")
+        self.assertEqual(showcase["runtime_contract"]["resources"], {
+            "mode": "none", "locators": [],
+        })
+
     def test_schema_is_parseable_strict_and_matches_root_contract(self) -> None:
         schema = json.loads((ROOT / "assets" / "title_manifest.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
