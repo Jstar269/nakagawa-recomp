@@ -2465,6 +2465,25 @@ static uint32_t h_RotateThreadReadyQueue(CpuState *s) {
     return sched_rotate_thread_ready_queue((int)A0);
 }
 
+/* sceKernelSetAlarm(SceUInt clock, SceKernelAlarmHandler handler, void *common) returns an
+ * alarm UID; once `clock` microseconds of guest time pass, the handler runs in interrupt
+ * context with `common` as its argument, and a non-zero return value re-arms it for that
+ * many microseconds (public PSPSDK pspthreadman.h prototypes).  The timer model and the
+ * unknown-id code live with the scheduler (sched_alarm_set / sched_alarm_cancel).  A NULL
+ * handler is refused with the project's invalid-guest-address code
+ * (SCE_KERNEL_ERROR_ILLEGAL_ADDR); the console's own code for it is not measured.  A zero
+ * clock is accepted and fires at the next interrupt-service point; the console's answer to
+ * it is not measured either. */
+static uint32_t h_SetAlarm(CpuState *s) {
+    (void)s;
+    if (A1 == 0u) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    return sched_alarm_set(A0, A1, A2);
+}
+static uint32_t h_CancelAlarm(CpuState *s) {
+    (void)s;
+    return sched_alarm_cancel(A0);
+}
+
 static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
@@ -19975,9 +19994,9 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x912354a7, "sceKernelRotateThreadReadyQueue", h_RotateThreadReadyQueue);
     sr_hle_register(0x75156e8f, "sceKernelResumeThread", h_ResumeThread);
     sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
-    sr_hle_register_unsupported(0x6652b8ca, "sceKernelSetAlarm", 0x80020002u);
+    sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
-    sr_hle_register_unsupported(0x7e65b999, "sceKernelCancelAlarm", 0x80020002u);
+    sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
     sr_hle_register_unsupported(0x034a921f, "sceKernelGetVTimerTime", 0x80020002u);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);

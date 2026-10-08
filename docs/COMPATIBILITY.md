@@ -104,6 +104,6 @@ at a named semantic boundary rather than simulating phantom success.
 
 ### Issue #299: libfont registry import boundary
 
-The runtime provides a read-only virtual system registry for modeled `/CONFIG` keys, and its integer values share the table used by `sceUtilityGetSystemParamInt`. Unknown categories and keys, and all writes, fail closed.
+`sceRegOpenRegistry` (NID `0x92e41280`, library `sceReg`) and the rest of the `sceReg` family run against a read-only virtual system registry for modeled `/CONFIG` keys, and its integer values share the table used by `sceUtilityGetSystemParamInt`. Unknown categories and keys, and all writes, fail closed.
 
 Repeated `sceKernelStartModule` calls return `SCE_KERNEL_ERROR_ALREADY_STARTED` (`0x80020133`), matching the public [PSP kernel error table](https://github.com/pspdev/prxtool/blob/master/pspkerror.C). This source-backed value and the stopped-module restart rule have not been verified on physical hardware; restartability remains an inference.

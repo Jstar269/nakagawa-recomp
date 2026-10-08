@@ -1244,11 +1244,10 @@
     "status": "controlled_unsupported"
   },
   "0x6652b8ca": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetAlarm",
     "name": "sceKernelSetAlarm",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x67179b1b": {
     "classification": "dedicated",
@@ -1549,11 +1548,10 @@
     "status": "unreviewed"
   },
   "0x7e65b999": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_CancelAlarm",
     "name": "sceKernelCancelAlarm",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x7ed29e40": {
     "classification": "dedicated",
