@@ -22,14 +22,14 @@ Live join of every exact `sce*` / `__sce*` API named in
 ## Summary
 
 - total exact APIs: **72**
-- missing: **6**
+- missing: **5**
 - registered (fake success): **0**
-- implemented: **66**
+- implemented: **67**
 - controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #339: 6
+- #339: 5
 - #341: 53
 
 ## Census
@@ -46,7 +46,7 @@ Open-owner counts:
 | `sceDisplayWaitVblankCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankCB` | `0x8eb9ec49` |
 | `sceDisplayWaitVblankStart` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStart` | `0x984c27e7` |
 | `sceDisplayWaitVblankStartCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStartCB` | `0x46f186c3` |
-| `sceDisplayWaitVblankStartMulti` | missing | #339 | missing | - | - | - |
+| `sceDisplayWaitVblankStartMulti` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMulti` | `0x40f1469c` |
 | `sceDisplayWaitVblankStartMultiCB` | missing | #339 | missing | - | - | - |
 | `sceGeDrawSync` | implemented | #341 | dedicated | unreviewed | `h_GeDrawSync` | `0xb287bd61` |
 | `sceGeListDeQueue` | missing | #339 | missing | - | - | - |
