@@ -60,6 +60,61 @@ static const char *player_package_root(const PlayerApp *app, const GameRecord *g
     return player_runtime_root(app);
 }
 
+bool player_app_title_profile_refusal_for_disc(
+    const PlayerApp *app,
+    const char *disc_id,
+    char *reason,
+    size_t reason_size
+) {
+    if (reason && reason_size) reason[0] = '\0';
+    if (!app || !disc_id || !disc_id[0]) return false;
+    const char *line = app->title_manifest_report;
+    const char marker[] = " (disc ";
+    while (line && *line) {
+        const char *end = strchr(line, '\n');
+        size_t line_len = end ? (size_t)(end - line) : strlen(line);
+        const char *id_start = NULL;
+        for (size_t i = 0; i + sizeof(marker) - 1u < line_len; i++) {
+            if (memcmp(line + i, marker, sizeof(marker) - 1u) == 0) {
+                id_start = line + i + sizeof(marker) - 1u;
+                break;
+            }
+        }
+        if (id_start) {
+            const char *id_end = memchr(id_start, ')',
+                                        (size_t)(line + line_len - id_start));
+            if (id_end && (size_t)(id_end - id_start) == strlen(disc_id) &&
+                memcmp(id_start, disc_id, strlen(disc_id)) == 0 &&
+                (size_t)(id_end - line + 2u) < line_len && id_end[1] == ':' &&
+                id_end[2] == ' ') {
+                if (reason && reason_size) {
+                    size_t detail_len = line_len - (size_t)(id_end + 3 - line);
+                    if (detail_len >= reason_size) detail_len = reason_size - 1u;
+                    memcpy(reason, id_end + 3, detail_len);
+                    reason[detail_len] = '\0';
+                }
+                return true;
+            }
+        }
+        line = end ? end + 1 : NULL;
+    }
+    return false;
+}
+
+NkLaunchDataRootStatus player_app_game_data_root_status(
+    const PlayerApp *app,
+    const GameRecord *game,
+    char *resolved_path,
+    size_t resolved_path_size,
+    char *reason,
+    size_t reason_size
+) {
+    const char *root = player_package_root(app, game);
+    return nk_launch_game_data_root_status(root, game, resolved_path,
+                                           resolved_path_size, reason,
+                                           reason_size);
+}
+
 static bool player_join_path(char *out, size_t out_size, const char *root,
                              const char *relative) {
     char sep = nk_platform_path_separator();
@@ -385,6 +440,10 @@ bool player_app_cached_game_has_runtime(const PlayerApp *app,
 
 bool player_app_game_has_runtime(const PlayerApp *app, const GameRecord *game) {
     if (!game) return false;
+    NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
+        app, game, NULL, 0, NULL, 0);
+    if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+        data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) return false;
     NkRuntimePackageStatus status = player_app_validate_runtime_package(
         app, game, NULL, NULL, 0);
     if (status == NK_RUNTIME_PACKAGE_OK) return true;
@@ -513,8 +572,12 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
             !nk_platform_file_exists(game.iso_path)) continue;
         snprintf(game.prepared_root, sizeof(game.prepared_root), "%s", app->showcase_root);
         game.iso_size_bytes = (uint64_t)nk_platform_get_file_size(game.iso_path);
+        NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
+            app, &game, NULL, 0, NULL, 0);
         game.is_prepared = nk_launch_validate_runtime_package(
-            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
+            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK &&
+            (data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
+             data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
         if (!game.is_prepared) continue;
         game.status = NK_STATUS_PREPARED;
         snprintf(game.last_played, sizeof(game.last_played), "Never");
@@ -1460,6 +1523,17 @@ bool player_app_should_attempt_window_handoff(bool interactive_window,
            child_window_ready;
 }
 
+/* Copies a boundary reason into the error card. A reason longer than the
+ * card's buffer is shortened there and written whole to stderr, so it is
+ * never silently lost. */
+static void player_set_boundary_text(PlayerApp *app, const char *reason) {
+    int n = snprintf(app->last_error.boundary_text,
+                     sizeof(app->last_error.boundary_text), "%s", reason);
+    if (n >= (int)sizeof(app->last_error.boundary_text)) {
+        fprintf(stderr, "[PLAYER] full boundary reason: %s\n", reason);
+    }
+}
+
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
@@ -1471,35 +1545,51 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     char package_error[2048] = "";
     NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
         app, game, NULL, package_error, sizeof(package_error));
+    char data_root_path[NK_MAX_PATH] = "";
+    char data_root_reason[1024] = "";
+    NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
+        app, game, data_root_path, sizeof(data_root_path), data_root_reason,
+        sizeof(data_root_reason));
     bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
         (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
          nk_launch_runtime_available(player_package_root(app, game),
                                      game->title_id));
     if (!runtime_available) {
-        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Runtime Package Not Ready",
-                             package_error[0] ? package_error :
-                                 "Runtime package is missing or incompatible; build it from the library (#297).",
+        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Game Not Ready",
+                             "This game isn't ready to start yet. Build or repair its game files, then try again.",
                              "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, package_error[0] ? package_error :
+                                     "Runtime package is missing or incompatible.");
+        return false;
+    }
+    if (data_root_status != NK_LAUNCH_DATA_ROOT_READY &&
+        data_root_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+        player_app_set_error(app,
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "TITLE_DATA_MISSING" : "TITLE_PROFILE_INVALID",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "Game Data Missing" : "Game Settings Unavailable",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "This game needs its data files before it can start. Add the missing files, then try again."
+                                 : "This game's title settings could not be checked. Review the details and try again.",
+                             "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, data_root_reason[0] ? data_root_reason :
+                                     "The title data folder could not be resolved.");
         return false;
     }
 
     app->child_window_ready = false;
     app->launch_session.boot_event_file_path[0] = '\0';
-    if (app->enable_focus_handoff) {
-        if (!player_prepare_boot_event_file(app)) {
-            player_app_set_error(
-                app,
-                "WINDOW_HANDOFF_UNAVAILABLE",
-                "Window Handoff Unavailable",
-                "Nakagawa could not prepare the boot-event handoff file. "
-                "The game was not launched; check the per-user cache directory and retry.",
-                "Return to Library",
-                VIEW_LIBRARY
-            );
-            return false;
-        }
-    } else {
-        app->boot_event_file_path[0] = '\0';
+    if (!player_prepare_boot_event_file(app)) {
+        player_app_set_error(
+            app,
+            "LAUNCH_DETAILS_UNAVAILABLE",
+            "Launch Details Unavailable",
+            "Nakagawa couldn't save the game's launch details, so the game was not started. Check the app's cache folder and try again.",
+            "Return to Library",
+            VIEW_LIBRARY
+        );
+        return false;
     }
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
@@ -1649,6 +1739,53 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
     return NK_OK;
 }
 
+static bool player_read_semantic_stop(const char *path, char *boundary,
+                                     size_t boundary_size,
+                                     unsigned int *issue_number) {
+    static const char prefix[] =
+        "BOOT_EVENT phase=stop reason=semantic-boundary boundary=";
+    if (boundary && boundary_size) boundary[0] = '\0';
+    if (issue_number) *issue_number = 0;
+    if (!path || !path[0] || !boundary || boundary_size == 0 || !issue_number) {
+        return false;
+    }
+    FILE *events = nk_fopen_utf8(path, "rb");
+    if (!events) return false;
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), events)) {
+        if (strncmp(line, prefix, sizeof(prefix) - 1u) != 0) continue;
+        const char *start = line + sizeof(prefix) - 1u;
+        const char *separator = strchr(start, ' ');
+        const char *issue = separator ? strstr(separator, " issue=") : NULL;
+        if (!separator || !issue || issue <= start) continue;
+        size_t name_len = (size_t)(separator - start);
+        if (name_len == 0 || name_len >= boundary_size || name_len >= 96u) continue;
+        bool valid_name = true;
+        for (size_t i = 0; i < name_len; i++) {
+            unsigned char ch = (unsigned char)start[i];
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-')) {
+                valid_name = false;
+                break;
+            }
+        }
+        if (!valid_name) continue;
+        const char *digits = issue + 7;
+        char *digits_end = NULL;
+        unsigned long parsed = strtoul(digits, &digits_end, 10);
+        if (digits_end == digits || parsed == 0 || parsed > 9999ul ||
+            (*digits_end != '\n' && *digits_end != '\r' && *digits_end != '\0')) {
+            continue;
+        }
+        memcpy(boundary, start, name_len);
+        boundary[name_len] = '\0';
+        *issue_number = (unsigned int)parsed;
+        found = true;
+    }
+    fclose(events);
+    return found;
+}
+
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     if (!app || !app->is_game_running) return false;
     if (app->launch_time_ms == 0) {
@@ -1660,6 +1797,11 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     uint64_t elapsed_ms = now_ms >= app->launch_time_ms
         ? (now_ms - app->launch_time_ms) : 0;
     int code = nk_launch_wait(&app->launch_session, 0);
+    char stopped_boundary[96] = "";
+    unsigned int stopped_issue = 0;
+    bool has_semantic_stop = player_read_semantic_stop(
+        app->boot_event_file_path, stopped_boundary, sizeof(stopped_boundary),
+        &stopped_issue);
     app->is_game_running = false;
     app->close_confirmation_pending = false;
     /* The child has exited and been reaped: release its process and job
@@ -1669,11 +1811,25 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
        one job handle per finished game in the long-lived player (#511). */
     nk_launch_stop(&app->launch_session);
     app->child_window_ready = false;
-    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+    if (app->boot_event_file_path[0] && !has_semantic_stop) {
+        remove(app->boot_event_file_path);
+    }
     printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
            (unsigned long long)elapsed_ms);
 
-    if (elapsed_ms < 500) {
+    if (has_semantic_stop) {
+        player_app_set_error(
+            app, "RUNTIME_SEMANTIC_BOUNDARY", "Game Stopped Early",
+            "This part of the game isn't supported yet. Check the details below and try again after an update.",
+            "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.boundary_text,
+                 sizeof(app->last_error.boundary_text),
+                 "RUNTIME_SEMANTIC_BOUNDARY: %s; not supported yet.",
+                 stopped_boundary);
+        snprintf(app->last_error.log_file_path,
+                 sizeof(app->last_error.log_file_path), "%s",
+                 app->boot_event_file_path);
+    } else if (elapsed_ms < 500) {
         char err_msg[512];
         snprintf(err_msg, sizeof(err_msg),
                  "Child runtime exited prematurely after %llu ms (exit code %d).\n"
@@ -3131,6 +3287,30 @@ void player_app_build_compatibility_preflight(
             package_reason[0] ? package_reason : "Runtime package validation did not complete.",
             status == PREFLIGHT_OK ? NULL : issues,
             status == PREFLIGHT_OK ? 0 : 2);
+    }
+
+    if (app->inspecting_game.title_id[0]) {
+        char data_root_path[NK_MAX_PATH] = "";
+        char data_root_reason[1024] = "";
+        NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
+            app, &app->inspecting_game, data_root_path, sizeof(data_root_path),
+            data_root_reason, sizeof(data_root_reason));
+        static const unsigned int issues[] = { 308 };
+        if (data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
+            data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+            player_preflight_add(preflight, "DATA_ROOT", PREFLIGHT_OK,
+                data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED
+                    ? "This game does not need a separate data folder."
+                    : "This game's data folder is available.",
+                NULL, 0);
+        } else {
+            player_preflight_add(preflight, "DATA_ROOT",
+                data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                    ? PREFLIGHT_MISSING : PREFLIGHT_UNSUPPORTED,
+                data_root_reason[0] ? data_root_reason
+                    : "This game's data folder could not be checked.",
+                issues, 1);
+        }
     }
 
     static const unsigned int font_issues[] = { 300 };

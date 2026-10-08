@@ -50,6 +50,13 @@ typedef struct {
     uint16_t load_segment_count;
 } NkLaunchExecutableInfo;
 
+typedef enum {
+    NK_LAUNCH_DATA_ROOT_INVALID = 0,
+    NK_LAUNCH_DATA_ROOT_NOT_REQUIRED,
+    NK_LAUNCH_DATA_ROOT_READY,
+    NK_LAUNCH_DATA_ROOT_MISSING
+} NkLaunchDataRootStatus;
+
 typedef struct {
     char executable_path[NK_MAX_PATH];
     char image_path[NK_MAX_PATH];
@@ -86,8 +93,8 @@ typedef struct {
     /* Runtime configuration */
     NkRuntimeConfig config;
 
-    /* Optional player-owned BOOT_EVENT side channel used to hand focus to the
-       child after its GUI window is ready. Empty for ordinary launch callers. */
+    /* Optional player-owned BOOT_EVENT side channel for launch milestones and
+       named runtime stops. The player prepares it for every child launch. */
     char boot_event_file_path[NK_MAX_PATH];
 
     /* Live process tracking */
@@ -118,6 +125,17 @@ NkRuntimePackageStatus nk_launch_validate_runtime_package(
     const char *user_data_root,
     const NkGameEntry *game,
     NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+);
+
+/* Resolve the manifest-declared host-data folder using the same prepared,
+ * runtime-root, and extracted-ISO locations as launch-session preparation. */
+NkLaunchDataRootStatus nk_launch_game_data_root_status(
+    const char *runtime_root,
+    const NkGameEntry *game,
+    char *resolved_path,
+    size_t resolved_path_size,
     char *reason,
     size_t reason_size
 );
