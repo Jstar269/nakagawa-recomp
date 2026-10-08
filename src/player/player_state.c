@@ -1314,17 +1314,17 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
                                         const char *recovery_label,
                                         PlayerView return_view) {
     if (!app) return;
-    char details[sizeof(app->last_error.details)];
-    package_builder_describe_cli_not_found(app->install_root, details,
-                                           sizeof(details));
     player_app_set_error(
         app, "CLI_NOT_FOUND", "Build Tools Not Found",
         "Nakagawa Recomp's build tools were not found next to the app. "
         "Reinstall Nakagawa Recomp and keep its folder together.",
         recovery_label, return_view);
-    snprintf(app->last_error.details, sizeof(app->last_error.details), "%s",
-             details);
-    fprintf(stderr, "[PLAYER] CLI_NOT_FOUND details: %s\n", details);
+    /* After set_error, which resets last_error, so the details survive. */
+    package_builder_describe_cli_not_found(app->install_root,
+                                           app->last_error.details,
+                                           sizeof(app->last_error.details));
+    fprintf(stderr, "[PLAYER] CLI_NOT_FOUND details: %s\n",
+            app->last_error.details);
 }
 
 void player_app_populate_sample_games(PlayerApp *app) {

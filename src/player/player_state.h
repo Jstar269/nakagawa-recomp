@@ -177,11 +177,15 @@ typedef struct {
     bool resume_build_pending;
 } PlayerPrerequisiteState;
 
+/* Room for a diagnostic that names up to three searched paths plus
+ * surrounding guidance (CLI_NOT_FOUND is the longest today). */
+#define PLAYER_ERROR_DETAILS_MAX (MAX_PATH_LEN * 3 + 512)
+
 typedef struct {
     char error_code[32];
     char title[128];
     char message[512];
-    char details[MAX_PATH_LEN * 3 + 512];
+    char details[PLAYER_ERROR_DETAILS_MAX];
     char recovery_action_label[64];
     PlayerView return_view;
     char failed_stage[64];

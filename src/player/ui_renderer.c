@@ -1608,8 +1608,9 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
 
 static int wrapped_text_line_count(const char *str, float scale, float max_w) {
     if (!str || !*str || scale <= 0.0f || max_w <= 0.0f) return 0;
+    /* No card renders more lines than this; a longer text reports incomplete. */
     size_t length = strlen(str);
-    int max_lines = (int)length + 1;
+    int max_lines = length < 256 ? (int)length + 1 : 256;
     int line_count = 0;
     bool complete = false;
     (void)draw_text_wrapped_checked(NULL, 0.0f, 0.0f, max_w, str, scale,
