@@ -5722,7 +5722,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7aa029136ef6dd1b02e83d876bac372b4b10f97d9bee755e048740df5365c656"
+      "sha256": "924e5820d5f249a9154170cb5a912c4893e655780bae179f0b85e0f38ddc20d0"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -5867,7 +5867,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "cd46882d4afbbaa19bf0e999b532a72805ed04cf74b0ea7ab42d02ef8d8fb86e"
+      "sha256": "d17c1cdc12fa1b0aa5667d7e9c2df08509bd15a63c5cab7250ea1787ebdc21e6"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -5940,7 +5940,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "815bbb29783c967066c6ddfe76afe7b276a408d112394946ef9e8505d195a8c9"
+      "sha256": "76da102cc7a09bc5ded4ae1a0e84037e4dd226eafcc0820c28f95f52c9d45e63"
     },
     {
       "path": "tools/discovery_contract.py",
@@ -5988,7 +5988,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1ac9c27eb3b303e4f73c65c7b8937aea32f23cf75de5e3a9a8c954ff0d444cbb"
+      "sha256": "2c17569cda5ea5049ab2739522c9ab088c4713f9fe0ad240183eac122c66b769"
     },
     {
       "path": "tools/evidence_model.py",
@@ -6158,7 +6158,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "876bef65f4682b5cac552fbad320979c9062290e31b2de33a6da960e3bc4d419"
+      "sha256": "3122f86ee580e1bd5f245b3d583f65020788e3549287c95da03e29187ff33188"
     },
     {
       "path": "tools/ghidra_headless.py",
@@ -6339,7 +6339,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "222caf50b4558812c0a489ea0dc7262a53903f19ec111a29df23929e105ee68c"
+      "sha256": "2d2a8c6c21fa547b84a7af53ef46a34d2aeca15df7b6630a14cc168f16a2f68a"
     },
     {
       "path": "tools/library_sweep.py",
@@ -6351,7 +6351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2eb9355035dd4e445dac0fc828b480eaea0a162e2cedb489fd2d8b5903b1306e"
+      "sha256": "8ba0df75be64e8a025aba9c258515a96aee44b300b6ee9024eb6daefefe305e9"
     },
     {
       "path": "tools/lint_docs.py",
@@ -8170,7 +8170,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d8f6965bd43395d7d470917c4d90846513353cb05d436c298a112f4b13c0562"
+      "sha256": "6edd023aead019b3e49cdbb02514d012e403629a0b5f36e806357f095250acce"
     },
     {
       "path": "tools/test_imports.py",
@@ -8242,7 +8242,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "33f25b27b2c92b9b8095613d8cc8f2fcd24f611dc25f884dd5660d30d29a522f"
+      "sha256": "88276bcb1150efb3e8cc9bb414510bccdf0f546da1022987ba9d4cf83cfb36d1"
     },
     {
       "path": "tools/test_lint_docs.py",
