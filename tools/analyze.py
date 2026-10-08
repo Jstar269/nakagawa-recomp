@@ -411,11 +411,13 @@ def _file_backed_exec_ranges(elf):
 def trace_function(elf, start, ranges, covered, calls, hc):
     # Recursive descent over one function's intra-procedural control flow from `start`.
     # Adds every instruction address reached to `covered`, and every direct-call (jal) target
-    # to `calls`. Calls return, so execution continues after the delay slot; jr and j and an
-    # unconditional b end a path (no fall-through). Conditional branches fork: follow the
-    # target and continue past the delay slot.
+    # to `calls`. Returns newly found targets so callers can extend their worklists without
+    # rescanning all prior calls. Calls return, so execution continues after the delay slot;
+    # jr and j and an unconditional b end a path (no fall-through). Conditional branches
+    # fork: follow the target and continue past the delay slot.
     stack = [start]
     local = set()
+    new_calls = []
     while stack:
         pc = stack.pop()
         # Stop the linear scan when it reaches a DIFFERENT high-confidence function entry
@@ -463,7 +465,9 @@ def trace_function(elf, start, ranges, covered, calls, hc):
             if op == 3:  # jal: direct call, returns -> continue past delay slot
                 target = (pc & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
                 if in_ranges(target, ranges) or in_ranges(target, _file_backed_exec_ranges(elf)):
-                    calls.add(target)
+                    if target not in calls:
+                        calls.add(target)
+                        new_calls.append(target)
                 covered.add(pc + 4)
                 pc += 8
                 continue
@@ -480,7 +484,9 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                         if (tw >> 16) == 0x27BD and (tw & 0x8000):
                             is_prologue = True
                     if target in hc or is_stub_target or is_prologue:
-                        calls.add(target)
+                        if target not in calls:
+                            calls.add(target)
+                            new_calls.append(target)
                         break
                     else:
                         stack.append(target)
@@ -513,6 +519,7 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                 pc += 8
                 continue
             pc += 4
+    return new_calls
 
 
 def _is_hard_terminator(word):
@@ -2573,9 +2580,12 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     work = list(hc)
     while work:
         s = work.pop()
+        new_calls = []
         if in_ranges(s, ranges) or in_ranges(s, file_exec_ranges):
-            trace_function(elf, s, trace_ranges_for_entry(s), covered, calls, hc)
-        for t in list(calls):
+            new_calls = trace_function(
+                elf, s, trace_ranges_for_entry(s), covered, calls, hc
+            )
+        for t in new_calls:
             if t not in functions and (
                 in_ranges(t, ranges) or in_ranges(t, file_exec_ranges)
             ):
@@ -2592,6 +2602,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     # tools/ghidra_crosscheck.py, 16 live cases). Promotion is safe: codegen's
     # continuation machinery stops the covering function's extent at the new
     # entry and emits a continuation call, so both owners stay correct.
+    pending_tail_calls = []
     for t in sorted(jtails):
         if t in functions or not in_ranges(t, ranges):
             continue
@@ -2601,15 +2612,22 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
         if not _is_hard_terminator(int.from_bytes(wb, 'little')):
             continue
         functions.add(t)
-        trace_function(elf, t, ranges, covered, calls, hc)
-        for c in list(calls):
+        pending_tail_calls.extend(
+            trace_function(elf, t, ranges, covered, calls, hc)
+        )
+        tail_call_batch = pending_tail_calls
+        pending_tail_calls = []
+        for c in tail_call_batch:
             if c not in functions and in_ranges(c, ranges):
                 functions.add(c)
-                trace_function(elf, c, ranges, covered, calls, hc)
+                pending_tail_calls.extend(
+                    trace_function(elf, c, ranges, covered, calls, hc)
+                )
 
     # Gap fill: a weak-signal address that no known function covers is an indirect-only
     # function (reached through a register the call graph could not resolve). Add it and trace
     # it, which may reveal further calls. Iterate until stable.
+    pending_gap_calls = pending_tail_calls
     changed = True
     while changed:
         changed = False
@@ -2637,11 +2655,15 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
                         covered.add(c + 4)
                         continue
                 functions.add(c)
-                trace_function(elf, c, ranges, covered, calls, hc)
-                for t in list(calls):
+                new_calls = trace_function(elf, c, ranges, covered, calls, hc)
+                gap_call_batch = pending_gap_calls + new_calls
+                pending_gap_calls = []
+                for t in gap_call_batch:
                     if t not in functions and in_ranges(t, ranges):
                         functions.add(t)
-                        trace_function(elf, t, ranges, covered, calls, hc)
+                        pending_gap_calls.extend(
+                            trace_function(elf, t, ranges, covered, calls, hc)
+                        )
                 changed = True
 
     # A direct call can prove that code exists outside named .text sections. Grant the

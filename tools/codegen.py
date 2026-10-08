@@ -2040,7 +2040,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     if lle_cpu is False:
         lle_cpu = LLE_CPU
     resume_owners = resume_owners or {}
-    host_entries = set(known) | set(resume_owners)
     insns, labels, continuations = function_flow(
         elf, start, ranges, known, resume_owners=resume_owners,
         dispatch_boundaries=dispatch_boundaries)
@@ -2352,7 +2351,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); s->r[31] = 0x{(addr + 8) & 0xFFFFFFFF:08x}u; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-            if target in host_entries:
+            if target in known or target in resume_owners:
                 out.append(f"    {entry_symbol(target, resume_owners)}(s);")
                 if lle_cpu:
                     out.append(f"    {_flow_return(resumable)}")
@@ -2425,7 +2424,9 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-            if target in host_entries and not (target in resume_owners and target in labels):
+            if (target in known or target in resume_owners) and not (
+                target in resume_owners and target in labels
+            ):
                 out.append(f"    {entry_symbol(target, resume_owners)}(s); {emit_host_return(resumable, stack_census=stack_census)}")
             elif target in labels:
                 y = f"SR_YIELD(s, 0x{addr:08x}u); " if target <= addr else ""   # backward j: loop edge
