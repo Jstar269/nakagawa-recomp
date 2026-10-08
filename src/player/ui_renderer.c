@@ -1480,11 +1480,16 @@ static bool draw_button(SDL_Renderer *ren, float x, float y, float w, float h, c
 }
 
 /* Non-interactive status pill drawn where a button could be misread as one.
- * Uses the same geometry so cards keep alignment, but never hovers and is
- * never a focus stop. */
-static void draw_status_pill(SDL_Renderer *ren, float x, float y, float w, float h, const char *label) {
+ * A pending primary action can retain its focus outline while validation runs. */
+static void draw_status_pill_focused(SDL_Renderer *ren, float x, float y,
+                                     float w, float h, const char *label,
+                                     bool focused) {
     draw_rounded_fill(ren, x, y, w, h, 7.0f, (SDL_Color){ 20, 26, 32, 255 });
     draw_rounded_outline(ren, x, y, w, h, 7.0f, COLOR_CARD_BORDER);
+    if (focused) {
+        draw_rounded_outline(ren, x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f,
+                             9.0f, COLOR_LIME);
+    }
     float base_len = ui_font_text_width(label, 1.0f);
     if (base_len < 1.0f) base_len = 1.0f;
     float scale = (w - 20.0f) / base_len;
@@ -1496,15 +1501,24 @@ static void draw_status_pill(SDL_Renderer *ren, float x, float y, float w, float
     draw_text(ren, x + (w - text_len) * 0.5f, y + (h - text_h) * 0.5f, label, scale, COLOR_TEXT_DIM);
 }
 
+static void draw_status_pill(SDL_Renderer *ren, float x, float y, float w, float h, const char *label) {
+    draw_status_pill_focused(ren, x, y, w, h, label, false);
+}
+
 /* Word-wrap with real text metrics. Splits on '\n' first, then on spaces;
  * overlong words are hard-cut on UTF-8 boundaries. Returns the y of the
  * line after the last one drawn. */
-static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
-                               const char *str, float scale, SDL_Color c, int max_lines) {
+static float draw_text_wrapped_checked(SDL_Renderer *ren, float x, float y,
+                                       float max_w, const char *str,
+                                       float scale, SDL_Color c, int max_lines,
+                                       int *out_lines, bool *out_complete) {
+    if (out_lines) *out_lines = 0;
+    if (out_complete) *out_complete = true;
     if (!str || !*str || scale <= 0.0f || max_w <= 0.0f || max_lines <= 0) return y;
     float line_h = ui_font_line_height(scale);
 
     int line_no = 0;
+    bool truncated = false;
     const char *cursor = str;
     char line_buf[512];
     while (*cursor && line_no < max_lines) {
@@ -1543,16 +1557,17 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
             const char *emit = line_buf;
             if (*emit == ' ' || *emit == '\t') emit++;
             if (last_line && more_after) {
+                truncated = true;
                 size_t emit_len = strlen(emit);
                 if (emit_len > 3) {
                     memcpy(line_buf + (emit - line_buf) + emit_len - 3, "...", 3);
                 }
-                draw_text(ren, x, y, emit, scale, c);
+                if (ren) draw_text(ren, x, y, emit, scale, c);
                 y += line_h;
                 line_no++;
                 break;
             }
-            draw_text(ren, x, y, emit, scale, c);
+            if (ren) draw_text(ren, x, y, emit, scale, c);
             y += line_h;
             line_no++;
             offset += take;
@@ -1561,16 +1576,57 @@ static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
         cursor += para_len;
         if (*cursor == '\n') cursor++;
     }
+    if (out_lines) *out_lines = line_no;
+    if (out_complete) *out_complete = !truncated && *cursor == '\0';
     return y;
+}
+
+static float draw_text_wrapped(SDL_Renderer *ren, float x, float y, float max_w,
+                               const char *str, float scale, SDL_Color c, int max_lines) {
+    return draw_text_wrapped_checked(ren, x, y, max_w, str, scale, c,
+                                     max_lines, NULL, NULL);
+}
+
+static int wrapped_text_line_count(const char *str, float scale, float max_w) {
+    if (!str || !*str || scale <= 0.0f || max_w <= 0.0f) return 0;
+    /* No card renders more lines than this; a longer text reports incomplete. */
+    size_t length = strlen(str);
+    int max_lines = length < 256 ? (int)length + 1 : 256;
+    int line_count = 0;
+    bool complete = false;
+    (void)draw_text_wrapped_checked(NULL, 0.0f, 0.0f, max_w, str, scale,
+                                    COLOR_TEXT_MUTED, max_lines, &line_count,
+                                    &complete);
+    return complete ? line_count : max_lines;
 }
 
 static SDL_FRect s_last_status_badge;
 static bool s_last_status_badge_valid;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 static const char *s_last_status_badge_label;
+static bool s_ui_test_error_text_complete = true;
+static int s_ui_test_error_text_lines;
+static bool s_ui_test_error_details_complete = true;
+static int s_ui_test_error_details_lines;
 
 const char *ui_test_last_status_badge_label(void) {
     return s_last_status_badge_label ? s_last_status_badge_label : "";
+}
+
+bool ui_test_error_text_complete(void) {
+    return s_ui_test_error_text_complete;
+}
+
+int ui_test_error_text_lines(void) {
+    return s_ui_test_error_text_lines;
+}
+
+bool ui_test_error_details_complete(void) {
+    return s_ui_test_error_details_complete;
+}
+
+int ui_test_error_details_lines(void) {
+    return s_ui_test_error_details_lines;
 }
 #endif
 
@@ -2019,9 +2075,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } /* end specs rail (skipped on compact heroes) */
 
     /* Action Buttons. Focus order: 0 = primary, 1 = add, 2 = remove,
-     * 3 = per-title controller mapping, then paging stops. The unavailable pill
-     * is never a focus stop. (btn_y and scope_y are set above, next to the
-     * specs rail that has to stay clear of them.) */
+     * 3 = per-title controller mapping, then paging stops. Unavailable pills
+     * are never focus stops; a pending primary check keeps its focus position.
+     * (btn_y and scope_y are set above, next to the specs rail that has to
+     * stay clear of them.) */
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
     if (app->is_game_running) {
@@ -2038,8 +2095,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
         focus++;
     } else if (package_checking) {
-        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "CHECKING PACKAGE...");
+        draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f,
+                                 54.0f, "CHECKING PACKAGE...",
+                                 primary_focused);
+        focus++;
     } else if (package_check_failed) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "RETRY PACKAGE CHECK", true, in, primary_focused)) {
@@ -3774,16 +3833,57 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
     float cx = w * 0.5f;
-    float cy = h * 0.5f;
     float card_w = dialog_card_w(w, 680.0f);
     bool has_build_details = (app->last_error.failed_stage[0] != '\0' ||
                               app->last_error.log_file_path[0] != '\0');
-    float card_h = has_build_details ? 420.0f : 340.0f;
-    if (card_h > h - 32.0f && h > 340.0f) card_h = h - 32.0f;
+    char log_str[NK_MAX_PATH + 32] = "";
+    if (app->last_error.log_file_path[0]) {
+        snprintf(log_str, sizeof(log_str), "LOG FILE: %s",
+                 app->last_error.log_file_path);
+    }
+    const char *err_msg = app->last_error.boundary_text[0]
+        ? app->last_error.boundary_text
+        : app->last_error.message;
+    float max_card_h = h - 88.0f;
+    if (max_card_h < 260.0f) max_card_h = h - 32.0f;
+    if (max_card_h < 160.0f) max_card_h = h;
+    float text_width = card_w - 64.0f;
+    float message_scale = 1.1f;
+    int message_lines = wrapped_text_line_count(err_msg, message_scale,
+                                                 text_width);
+    if (message_lines < 1) message_lines = 1;
+    float message_height = (float)message_lines *
+        ui_font_line_height(message_scale);
+    float text_start_y = 110.0f +
+        (app->last_error.failed_stage[0] ? 34.0f : 0.0f);
+    float message_required_h = text_start_y + message_height + 12.0f +
+        58.0f + 12.0f;
+    while (message_required_h > max_card_h && message_scale > 0.7f) {
+        message_scale -= 0.05f;
+        message_lines = wrapped_text_line_count(err_msg, message_scale,
+                                                 text_width);
+        if (message_lines < 1) message_lines = 1;
+        message_height = (float)message_lines *
+            ui_font_line_height(message_scale);
+        message_required_h = text_start_y + message_height + 12.0f +
+            58.0f + 12.0f;
+    }
+
+    int detail_lines = wrapped_text_line_count(app->last_error.details, 0.9f,
+                                                text_width);
+    float detail_height = detail_lines > 0
+        ? 10.0f + ui_font_line_height(0.82f) +
+          (float)detail_lines * ui_font_line_height(0.9f)
+        : 0.0f;
+    float log_height = log_str[0] ? ui_font_line_height(0.9f) + 6.0f : 0.0f;
+    float required_h = message_required_h + detail_height + log_height;
+    float card_h = required_h > 340.0f ? required_h : 340.0f;
+    if (has_build_details && card_h < 420.0f) card_h = 420.0f;
+    if (card_h > max_card_h) card_h = max_card_h;
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
-    float card_y = cy - card_h * 0.5f;
-    if (card_y < 60.0f) card_y = 60.0f;
+    float card_y = (h - card_h) * 0.5f;
+    if (card_y < 72.0f) card_y = 72.0f;
 
     draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
@@ -3801,22 +3901,66 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
         text_y += 34.0f;
     }
 
-    const char *err_msg = app->last_error.boundary_text[0]
-        ? app->last_error.boundary_text
-        : app->last_error.message;
-    draw_text_wrapped(ren, card_x + 32.0f, text_y, card_w - 64.0f,
-                      err_msg, 1.1f, COLOR_TEXT_MUTED, 4);
-    text_y += 76.0f;
+    bool message_complete = false;
+    int rendered_message_lines = 0;
+    float message_end_y = draw_text_wrapped_checked(
+        ren, card_x + 32.0f, text_y, text_width, err_msg, message_scale,
+        COLOR_TEXT_MUTED, message_lines, &rendered_message_lines,
+        &message_complete);
+    text_y = message_end_y + 10.0f;
 
-    if (app->last_error.log_file_path[0]) {
-        char log_str[NK_MAX_PATH + 32];
-        snprintf(log_str, sizeof(log_str), "LOG FILE: %s", app->last_error.log_file_path);
-        draw_text_ellipsized(ren, card_x + 32.0f, text_y, log_str, 0.95f, card_w - 64.0f, COLOR_TEXT_MUTED);
+    bool details_complete = true;
+    int rendered_detail_lines = 0;
+    if (app->last_error.details[0]) {
+        draw_text(ren, card_x + 32.0f, text_y, "DETAILS", 0.82f,
+                  COLOR_TEXT_DIM);
+        text_y += ui_font_line_height(0.82f);
+        int detail_budget = detail_lines;
+        float button_y = card_y + card_h - 58.0f;
+        float details_bottom = button_y - 12.0f;
+        if (log_str[0]) details_bottom -= log_height;
+        float available = details_bottom - text_y;
+        float detail_line_height = ui_font_line_height(0.9f);
+        int visible_lines = available > 0.0f
+            ? (int)(available / detail_line_height) : 0;
+        if (detail_budget > visible_lines) detail_budget = visible_lines;
+        float details_end_y = draw_text_wrapped_checked(
+            ren, card_x + 32.0f, text_y, text_width,
+            app->last_error.details, 0.9f, COLOR_TEXT_DIM, detail_budget,
+            &rendered_detail_lines, &details_complete);
+        if (details_end_y > details_bottom ||
+            rendered_detail_lines != detail_lines) {
+            details_complete = false;
+        }
+        text_y = details_end_y + 6.0f;
     }
 
-    bool focused = (app->focus_index == 0);
+    bool log_complete = true;
+    if (log_str[0]) {
+        draw_text_ellipsized(ren, card_x + 32.0f, text_y, log_str, 0.9f,
+                             text_width, COLOR_TEXT_MUTED);
+        float button_y = card_y + card_h - 58.0f;
+        log_complete = text_y + ui_font_line_height(0.9f) <= button_y - 8.0f;
+    }
+
     float btn_y = card_y + card_h - 58.0f;
-    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f, app->last_error.recovery_action_label, true, in, focused)) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_error_text_lines = rendered_message_lines;
+    s_ui_test_error_text_complete = message_complete &&
+        message_end_y <= btn_y - 8.0f;
+    s_ui_test_error_details_lines = rendered_detail_lines;
+    s_ui_test_error_details_complete = details_complete && log_complete;
+#else
+    (void)rendered_message_lines;
+    (void)rendered_detail_lines;
+    (void)details_complete;
+    (void)log_complete;
+#endif
+
+    bool focused = (app->focus_index == 0);
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 240.0f, 48.0f,
+                            app->last_error.recovery_action_label, true,
+                            in, focused)) {
         if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
             app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
             player_app_prereq_retry(app);
@@ -4272,6 +4416,10 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
     s_last_status_badge_valid = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     s_last_status_badge_label = NULL;
+    s_ui_test_error_text_complete = true;
+    s_ui_test_error_text_lines = 0;
+    s_ui_test_error_details_complete = true;
+    s_ui_test_error_details_lines = 0;
 #endif
 
     /* Clamp focus before drawing so a resize or library change can never

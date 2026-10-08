@@ -1476,6 +1476,28 @@ class NativePlayerUiTests(unittest.TestCase):
                 expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
                 self.assertEqual(frames[1]["picker"], expected_picker)
 
+    def test_long_error_text_fits_at_minimum_window(self) -> None:
+        run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
+                              width=960, height=540)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "UI_TEST_LONG_ERROR")
+        self.assertEqual(frames[0]["error_text_complete"], "1",
+                         "the error view clipped a long message")
+        self.assertGreater(int(frames[0]["error_text_lines"]), 4)
+
+    def test_cli_not_found_error_text_fits_at_minimum_window(self) -> None:
+        run = self.run_player("error", error_code="CLI_NOT_FOUND",
+                              width=960, height=540)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "CLI_NOT_FOUND")
+        self.assertEqual(frames[0]["error_text_complete"], "1",
+                         "the error view clipped the CLI_NOT_FOUND message")
+        self.assertEqual(frames[0]["error_details_complete"], "1")
+        self.assertGreater(int(frames[0]["error_details_lines"]), 0)
+        self.assertEqual(frames[0]["error_details_available"], "1")
+
     def test_per_title_controller_mapping_choice(self) -> None:
         """A disc can get its own mapping, or go back to the global one."""
         # The library card carries the choice: three tabs reach it, because the

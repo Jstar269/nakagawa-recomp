@@ -1053,6 +1053,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
+           "error_text_complete=%d error_text_lines=%d "
+           "error_details_complete=%d error_details_lines=%d error_details_available=%d "
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "input_scope=%s input_titles=%d input_notice=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
@@ -1082,6 +1084,11 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            input_settings_is_capturing(&app->input_settings) ? 1 : 0,
            input_settings_has_conflicts(&app->input_settings) ? 1 : 0,
            input_settings_is_calibrating(&app->input_settings) ? 1 : 0,
+           ui_test_error_text_complete() ? 1 : 0,
+           ui_test_error_text_lines(),
+           ui_test_error_details_complete() ? 1 : 0,
+           ui_test_error_details_lines(),
+           app->last_error.details[0] ? 1 : 0,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_SELECT].primary.index,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index,
            app->input_settings.profile.psp_buttons[INPUT_CONTROL_BTN_CIRCLE].primary.index,
@@ -2914,9 +2921,26 @@ int main(int argc, char *argv[]) {
     }
     if (ui_test_fake_game_running) app.is_game_running = true;
     if (ui_test_error_code) {
-        player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
-                             "Synthetic UI regression error state.",
-                             "Return to Library", VIEW_LIBRARY);
+        if (strcmp(ui_test_error_code, "CLI_NOT_FOUND") == 0) {
+            player_app_set_cli_not_found_error(&app, "Return to Library",
+                                               VIEW_LIBRARY);
+        } else if (strcmp(ui_test_error_code, "UI_TEST_LONG_ERROR") == 0) {
+            static const char long_error_message[] =
+                "Build setup could not continue because a required file was missing. "
+                "Check the message, follow the suggested recovery steps, and try again. "
+                "If the application files are incomplete, reinstall the app and keep "
+                "its folder together. Return to the library after correcting the issue. "
+                "This final sentence confirms the full message remains visible beyond "
+                "the old four-line limit. Keep every recovery step on this card so the "
+                "player can read the complete instruction before leaving this screen.";
+            player_app_set_error(&app, ui_test_error_code,
+                                 "Synthetic Long Error", long_error_message,
+                                 "Return to Library", VIEW_LIBRARY);
+        } else {
+            player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
+                                 "Synthetic UI regression error state.",
+                                 "Return to Library", VIEW_LIBRARY);
+        }
     }
 #endif
 
