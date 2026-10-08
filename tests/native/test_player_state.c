@@ -118,6 +118,251 @@ static void write_text_file(const char *path, const char *text) {
     assert(fclose(file) == 0);
 }
 
+#define TEST_ISO_SECTOR_BYTES 2048u
+#define TEST_ISO_MAX_NODES 2048u
+#define TEST_ISO_MODULE_BYTES 128u
+
+typedef struct {
+    char name[256];
+    size_t parent;
+    uint32_t lba;
+    uint32_t size;
+    bool is_directory;
+} TestIsoNode;
+
+static void test_iso_put_both32(uint8_t *out, uint32_t value) {
+    for (unsigned i = 0; i < 4; i++) {
+        out[i] = (uint8_t)(value >> (i * 8u));
+        out[4u + i] = (uint8_t)(value >> ((3u - i) * 8u));
+    }
+}
+
+static size_t test_iso_record_size(size_t name_size) {
+    size_t record_size = 33u + name_size;
+    return record_size + (record_size & 1u);
+}
+
+static size_t test_iso_record_end(size_t offset, size_t name_size) {
+    size_t record_size = test_iso_record_size(name_size);
+    size_t sector_offset = offset % TEST_ISO_SECTOR_BYTES;
+    if (sector_offset + record_size > TEST_ISO_SECTOR_BYTES) {
+        offset += TEST_ISO_SECTOR_BYTES - sector_offset;
+    }
+    return offset + record_size;
+}
+
+static size_t test_iso_write_record(uint8_t *directory, size_t offset,
+                                    const uint8_t *name, size_t name_size,
+                                    uint32_t lba, uint32_t size,
+                                    bool is_directory) {
+    size_t record_size = test_iso_record_size(name_size);
+    assert(record_size <= UINT8_MAX);
+    memset(directory + offset, 0, record_size);
+    directory[offset] = (uint8_t)record_size;
+    test_iso_put_both32(directory + offset + 2, lba);
+    test_iso_put_both32(directory + offset + 10, size);
+    directory[offset + 25] = is_directory ? 0x02u : 0u;
+    directory[offset + 28] = 1;
+    directory[offset + 31] = 1;
+    directory[offset + 32] = (uint8_t)name_size;
+    memcpy(directory + offset + 33, name, name_size);
+    return record_size;
+}
+
+static size_t test_iso_add_node(TestIsoNode *nodes, size_t *node_count,
+                                size_t parent, const char *name,
+                                bool is_directory) {
+    assert(*node_count < TEST_ISO_MAX_NODES);
+    assert(strlen(name) < sizeof(nodes[*node_count].name));
+    size_t index = (*node_count)++;
+    memset(&nodes[index], 0, sizeof(nodes[index]));
+    snprintf(nodes[index].name, sizeof(nodes[index].name), "%s", name);
+    nodes[index].parent = parent;
+    nodes[index].is_directory = is_directory;
+    return index;
+}
+
+static void write_module_scan_iso(const char *path, size_t candidate_count,
+                                  bool duplicate_name, size_t child_directories,
+                                  bool malformed_usrdir) {
+    TestIsoNode *nodes = (TestIsoNode *)calloc(TEST_ISO_MAX_NODES,
+                                                sizeof(*nodes));
+    assert(nodes != NULL);
+    size_t node_count = 1;
+    nodes[0].is_directory = true;
+    nodes[0].parent = 0;
+    size_t psp_game = test_iso_add_node(nodes, &node_count, 0, "PSP_GAME", true);
+    size_t sysdir = test_iso_add_node(nodes, &node_count, psp_game, "SYSDIR", true);
+    size_t usrdir = test_iso_add_node(nodes, &node_count, psp_game, "USRDIR", true);
+    if (duplicate_name) {
+        test_iso_add_node(nodes, &node_count, sysdir, "shared.prx", false);
+        test_iso_add_node(nodes, &node_count, usrdir, "SHARED.PRX", false);
+    }
+    for (size_t i = 0; i < candidate_count; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "module-%03lu.prx", (unsigned long)i);
+        test_iso_add_node(nodes, &node_count, usrdir, name, false);
+    }
+    for (size_t i = 0; i < child_directories; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "directory-%04lu", (unsigned long)i);
+        test_iso_add_node(nodes, &node_count, usrdir, name, true);
+    }
+
+    for (size_t i = 0; i < node_count; i++) {
+        if (!nodes[i].is_directory) continue;
+        size_t bytes = test_iso_record_end(0, 1);
+        bytes = test_iso_record_end(bytes, 1);
+        for (size_t child = 1; child < node_count; child++) {
+            if (nodes[child].parent != i) continue;
+            size_t name_size = strlen(nodes[child].name) +
+                               (nodes[child].is_directory ? 0u : 2u);
+            bytes = test_iso_record_end(bytes, name_size);
+        }
+        size_t sectors = (bytes + TEST_ISO_SECTOR_BYTES - 1u) /
+                         TEST_ISO_SECTOR_BYTES;
+        nodes[i].size = (uint32_t)(sectors * TEST_ISO_SECTOR_BYTES);
+    }
+    uint32_t next_lba = 33;
+    for (size_t i = 0; i < node_count; i++) {
+        if (!nodes[i].is_directory) continue;
+        nodes[i].lba = next_lba;
+        next_lba += nodes[i].size / TEST_ISO_SECTOR_BYTES;
+    }
+    for (size_t i = 0; i < node_count; i++) {
+        if (nodes[i].is_directory) continue;
+        nodes[i].lba = next_lba++;
+        nodes[i].size = TEST_ISO_MODULE_BYTES;
+    }
+    size_t image_size = (size_t)next_lba * TEST_ISO_SECTOR_BYTES;
+    uint8_t *image = (uint8_t *)calloc(1, image_size);
+    assert(image != NULL);
+
+    uint8_t *pvd = image + 16u * TEST_ISO_SECTOR_BYTES;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    (void)test_iso_write_record(pvd, 156, (const uint8_t *)"\0", 1,
+                                nodes[0].lba, nodes[0].size, true);
+
+    for (size_t i = 0; i < node_count; i++) {
+        if (nodes[i].is_directory) {
+            uint8_t *directory = image + (size_t)nodes[i].lba * TEST_ISO_SECTOR_BYTES;
+            size_t offset = 0;
+            const uint8_t self_name[] = { 0 };
+            const uint8_t parent_name[] = { 1 };
+            size_t parent = i == 0 ? 0 : nodes[i].parent;
+            offset += test_iso_write_record(directory, offset, self_name, 1,
+                                            nodes[i].lba, nodes[i].size, true);
+            offset += test_iso_write_record(directory, offset, parent_name, 1,
+                                            nodes[parent].lba, nodes[parent].size,
+                                            true);
+            for (size_t child = 1; child < node_count; child++) {
+                if (nodes[child].parent != i) continue;
+                char versioned_name[260];
+                const char *entry_name = nodes[child].name;
+                if (!nodes[child].is_directory) {
+                    int written = snprintf(versioned_name, sizeof(versioned_name),
+                                           "%s;1", entry_name);
+                    assert(written > 0 && (size_t)written < sizeof(versioned_name));
+                    entry_name = versioned_name;
+                }
+                size_t record_size = test_iso_record_size(strlen(entry_name));
+                size_t sector_offset = offset % TEST_ISO_SECTOR_BYTES;
+                if (sector_offset + record_size > TEST_ISO_SECTOR_BYTES) {
+                    offset += TEST_ISO_SECTOR_BYTES - sector_offset;
+                }
+                offset += test_iso_write_record(
+                    directory, offset, (const uint8_t *)entry_name,
+                    strlen(entry_name), nodes[child].lba, nodes[child].size,
+                    nodes[child].is_directory);
+            }
+            if (i == usrdir && malformed_usrdir) {
+                assert(offset < nodes[i].size);
+                directory[offset] = 1;
+            }
+        } else {
+            uint8_t *module = image + (size_t)nodes[i].lba * TEST_ISO_SECTOR_BYTES;
+            memcpy(module, "~PSP", 4);
+            module[0x27] = 1;
+            module[0x54] = 0x40;
+        }
+    }
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, image_size, file) == image_size);
+    assert(fclose(file) == 0);
+    free(image);
+    free(nodes);
+}
+
+static bool test_remove_tree(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    char pattern[1024];
+    WIN32_FIND_DATAA data;
+    int written = snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    if (written < 0 || (size_t)written >= sizeof(pattern)) return false;
+    HANDLE find = FindFirstFileA(pattern, &data);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+                continue;
+            }
+            char child[1024];
+            written = snprintf(child, sizeof(child), "%s\\%s", path,
+                               data.cFileName);
+            if (written < 0 || (size_t)written >= sizeof(child)) {
+                FindClose(find);
+                return false;
+            }
+            bool removed;
+            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+                (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+                removed = test_remove_tree(child);
+            } else if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                removed = RemoveDirectoryA(child) != 0;
+            } else {
+                removed = DeleteFileA(child) != 0;
+            }
+            if (!removed) {
+                FindClose(find);
+                return false;
+            }
+        } while (FindNextFileA(find, &data));
+        FindClose(find);
+    }
+    return RemoveDirectoryA(path) != 0 || GetLastError() == ERROR_PATH_NOT_FOUND;
+#else
+    DIR *directory = opendir(path);
+    if (directory == NULL) return errno == ENOENT;
+    bool ok = true;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char child[1024];
+        int written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+        if (written < 0 || (size_t)written >= sizeof(child)) {
+            ok = false;
+            break;
+        }
+        /* Act first, then classify the failure: no stat precedes the removal. */
+        if (unlink(child) != 0) {
+            bool removed = (errno == EISDIR || errno == EPERM) ? test_remove_tree(child)
+                                                                : errno == ENOENT;
+            if (!removed) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    closedir(directory);
+    return ok && (rmdir(path) == 0 || errno == ENOENT);
+#endif
+}
+
 static void append_json_whitespace(const char *path, size_t count) {
     FILE *file = fopen(path, "ab");
     assert(file != NULL);
@@ -816,6 +1061,23 @@ static const PlayerPreflightCheck *find_preflight_check(
         if (strcmp(preflight->checks[i].code, code) == 0) return &preflight->checks[i];
     }
     return NULL;
+}
+
+static void assert_module_scan_boundary(PlayerApp *app, const char *iso_path,
+                                        const NkIsoExecutableReport *executables,
+                                        const char *message_fragment) {
+    snprintf(app->inspecting_game.iso_path,
+             sizeof(app->inspecting_game.iso_path), "%s", iso_path);
+    player_app_build_compatibility_preflight(app, true, true, executables);
+    const PlayerPreflightCheck *check = find_preflight_check(
+        &app->wizard.preflight, "GUEST_MODULES");
+    assert(check != NULL && check->status == PREFLIGHT_UNSUPPORTED);
+    if (strstr(check->message, message_fragment) == NULL) {
+        fprintf(stderr, "expected module boundary %s, got: %s\n",
+                message_fragment, check->message);
+    }
+    assert(strstr(check->message, message_fragment) != NULL);
+    assert(check->issue_count == 1 && check->issue_numbers[0] == 726);
 }
 
 /* The package-status identity the validator itself computes for *user_root*
@@ -1942,9 +2204,16 @@ int main(int argc, char **argv) {
            fallback and every current pre-launch boundary without touching a
            real title or runtime package. */
         char preflight_root[640], font_dir[720], font_path[800];
+        unsigned long preflight_run_id;
+#if defined(_WIN32) || defined(_WIN64)
+        preflight_run_id = (unsigned long)_getpid();
+#else
+        preflight_run_id = (unsigned long)getpid();
+#endif
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
-        snprintf(preflight_root, sizeof(preflight_root), "%s%cplayer-preflight-synthetic",
-                 cache_dir, nk_platform_path_separator());
+        snprintf(preflight_root, sizeof(preflight_root),
+                 "%s%cplayer-preflight-synthetic-%lu", cache_dir,
+                 nk_platform_path_separator(), preflight_run_id);
         assert(nk_platform_mkdir_p(preflight_root));
         snprintf(font_dir, sizeof(font_dir), "%s%cfont", preflight_root,
                  nk_platform_path_separator());
@@ -1989,6 +2258,7 @@ int main(int argc, char **argv) {
                  "%s", synthetic_disc_id);
         snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
                  "synthetic-allegrex-v1");
+        wiz->inspecting_game.iso_path[0] = '\0';
         NkIsoExecutableReport executable_report;
         memset(&executable_report, 0, sizeof(executable_report));
         executable_report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
@@ -2011,6 +2281,41 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_MISSING);
         check = find_preflight_check(&wiz->wizard.preflight, "AUDIO_OUTPUT");
         assert(check && check->status == PREFLIGHT_OK);
+
+        /* Exercise the production ISO module scan through player preflight,
+           using only generated synthetic images. Each assertion protects a
+           named fail-closed boundary. */
+        char module_iso_path[900];
+        snprintf(wiz->inspecting_game.selected_executable,
+                 sizeof(wiz->inspecting_game.selected_executable), "EBOOT.BIN");
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-duplicate.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 0, true, 0, false);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DUPLICATE_DISC_MODULE_BASENAME");
+        assert(remove(module_iso_path) == 0);
+
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-candidate-limit.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 257, false, 0, false);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DISC_MODULE_CANDIDATE_LIMIT");
+        assert(remove(module_iso_path) == 0);
+
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-directory-limit.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 0, false, 1023, false);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DISC_MODULE_DIRECTORY_LIMIT");
+        assert(remove(module_iso_path) == 0);
+
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-invalid-tree.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 1, false, 0, true);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DISC_MODULE_TREE_INVALID");
+        assert(remove(module_iso_path) == 0);
+        wiz->inspecting_game.iso_path[0] = '\0';
 
         assert(nk_platform_mkdir_p(build_dir));
         write_file(runtime_exe);
@@ -2291,6 +2596,7 @@ int main(int argc, char **argv) {
         remove(runtime_exe);
         remove(runtime_image);
         remove(font_path);
+        assert(test_remove_tree(preflight_root));
 
         free(wiz);
     }
