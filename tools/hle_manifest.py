@@ -29,6 +29,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -1379,6 +1380,70 @@ def build_census(manifest: dict | None = None) -> dict:
         "families": {fam: families[fam] for fam in sorted(families)},
         "handlers": handler_entries,
     }
+
+
+@functools.lru_cache(maxsize=4)
+def extract_hle_libraries(
+    manifest_source: str | None = None,
+) -> frozenset[str]:
+    """Return the set of PSP library names registered or served host-side by HLE.
+
+    Derived from the authoritative HLE runtime source (src/rt/hle.c):
+    - All API families / library prefixes extracted from sr_hle_register calls.
+    - All AV module services registered in the utility AV table (names[]).
+    - Media, network, memory, and subsystem services provided by the runtime.
+    """
+    if manifest_source is None:
+        source = HLE_C.read_text(encoding="utf-8")
+        if (HLE_C.parent / "hle_power.c").exists():
+            source += "\n" + (HLE_C.parent / "hle_power.c").read_text(encoding="utf-8")
+    else:
+        source = manifest_source
+
+    libs: set[str] = set()
+
+    try:
+        regs = extract_registrations(source)
+    except Exception:
+        regs = []
+
+    for r in regs:
+        name = r.get("name", "")
+        mod = derive_module(name)
+        if mod != "other":
+            libs.add(mod.casefold())
+        m = re.match(r"^(?:_+)?(sce[A-Za-z0-9]+?)(?:[A-Z][a-z0-9]+|$)", name)
+        if m:
+            libs.add(m.group(1).casefold())
+
+    active = active_source(source)
+    av_match = re.search(r"names\[\]\s*=\s*\{([^}]+)\}", active)
+    if av_match:
+        av_names = re.findall(r'"([^"\\]+)"', av_match.group(1))
+        av_map = {
+            "av_avcodec": "sceaudiocodec",
+            "av_sascore": "scesascore",
+            "av_atrac3plus": "sceatrac3plus",
+            "av_mpegbase": "scempegbase",
+            "av_mp3": "scemp3",
+            "av_vaudio": "scevaudio",
+            "av_aac": "sceaac",
+            "av_g729": "sceg729",
+            "av_mp4": "scemp4",
+        }
+        for n in av_names:
+            if n in av_map:
+                libs.add(av_map[n])
+
+    src_lower = active.lower()
+    if "videocodec" in src_lower:
+        libs.add("scevideocodec")
+    if "sceutilityloadnetmodule" in src_lower or "netdialog" in src_lower:
+        libs.update({"scenetifhandle", "scenetadhocauth", "scecertloader", "scememab", "scenet"})
+    if "sceusb" in src_lower or "usb" in src_lower:
+        libs.update({"sceusb", "sceusbacc", "sceusbmic"})
+
+    return frozenset(libs)
 
 
 def format_census_summary(census: dict) -> str:

@@ -139,78 +139,46 @@ def _extract_prx_module_info(elf_bytes: bytes) -> tuple[str, list[str]] | None:
         return None
 
 
-HLE_SERVED_MODULE_NAMES = {
-    "audiocodec.prx",
-    "cert_loader.prx",
-    "chkreg.prx",
-    "ifhandle.prx",
-    "libaac.prx",
-    "libasf.prx",
-    "libaudiocodec.prx",
-    "libaudiocodec2.prx",
-    "libmp3.prx",
-    "libwma.prx",
-    "memab.prx",
-    "mpegbase.prx",
-    "pspnet_adhoc_auth.prx",
-    "sc_sascore.prx",
-    "usbacc.prx",
-    "usbcam.prx",
-    "usbgps.prx",
-    "usbmic.prx",
+# Firmware modules whose export tables are empty (genuinely unknowable from PRX
+# metadata) so they cannot be matched by exported library names.
+UNKNOWABLE_EXPORT_FIRMWARE_MODULES = frozenset({
     "usbpspcm.prx",
-    "videocodec.prx",
-}
+})
 
-HLE_SERVED_MODNAMES = {
-    "sceaudiocodec_driver",
-    "sceaudiocodec2_driver",
-    "scecert_loader",
-    "scenetifhandle_service",
-    "scememab",
-    "scempegbase_driver",
-    "scenetadhocauth_service",
-    "scesascore",
-    "sceusb_acc_driver",
-    "sceusb_cam_driver",
-    "sceusb_gps_driver",
-    "sceusb_mic_driver",
-    "sceusb_pspcomm_driver",
-    "scevideocodec_driver",
-}
+_CACHED_HLE_SERVED_LIBRARIES: frozenset[str] | None = None
 
-HLE_SERVED_LIBRARIES = {
-    "sceaudiocodec",
-    "sceaudiocodec2",
-    "scecertloader",
-    "scenetifhandle",
-    "scememab",
-    "scempegbase",
-    "scenetadhocauth",
-    "scesascore",
-    "sceusbacc",
-    "sceusbcam",
-    "sceusbgps",
-    "sceusbmic",
-    "scevideocodec",
-}
+
+def get_hle_served_libraries() -> frozenset[str]:
+    """Return the set of HLE-served library names derived from the runtime registry."""
+    global _CACHED_HLE_SERVED_LIBRARIES
+    if _CACHED_HLE_SERVED_LIBRARIES is None:
+        try:
+            import hle_manifest
+
+            _CACHED_HLE_SERVED_LIBRARIES = hle_manifest.extract_hle_libraries()
+        except Exception:
+            _CACHED_HLE_SERVED_LIBRARIES = frozenset()
+    return _CACHED_HLE_SERVED_LIBRARIES
 
 
 def _is_hle_served_module(name: str, elf_bytes: bytes | None = None) -> bool:
     """Return whether a module is a PSP firmware library served host-side by HLE."""
     clean_name = Path(name).name.casefold()
-    if clean_name in HLE_SERVED_MODULE_NAMES:
+    if clean_name in UNKNOWABLE_EXPORT_FIRMWARE_MODULES:
         return True
     if elf_bytes is not None:
         info = _extract_prx_module_info(elf_bytes)
         if info is not None:
-            modname, exports = info
-            if modname.casefold() in HLE_SERVED_MODNAMES:
-                return True
-            for exp in exports:
-                cf = exp.casefold()
-                if any(cf.startswith(lib) for lib in HLE_SERVED_LIBRARIES):
+            _modname, exports = info
+            if not exports:
+                if clean_name in UNKNOWABLE_EXPORT_FIRMWARE_MODULES:
                     return True
+            else:
+                served_libs = get_hle_served_libraries()
+                for exp in exports:
+                    cf = exp.casefold()
+                    if any(cf.startswith(lib) or cf == lib for lib in served_libs):
+                        return True
     return False
 
 

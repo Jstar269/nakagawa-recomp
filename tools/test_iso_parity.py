@@ -22,13 +22,16 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from nk_core.iso_inspect import (
     _classify_decrypted_elf_file,
+    _is_hle_served_module,
     decrypt_needed_modules,
     decrypted_module_dir,
+    get_hle_served_libraries,
     IsoInspectionError,
     inspect_compatibility_preflight,
     inspect_iso,
     list_disc_module_candidates,
     plan_provisional_module_bindings,
+    UNKNOWABLE_EXPORT_FIRMWARE_MODULES,
     write_experimental_profile,
 )
 import nk_cli
@@ -2039,30 +2042,85 @@ int main(int argc, char **argv) {{
     def test_provisional_guest_module_placement_hle_served_module_is_excluded_without_blocking(self) -> None:
         main_elf = self.temp_dir / "placement-main-hle.elf"
         user_mod = self.temp_dir / "user.prx"
-        fw_by_name = self.temp_dir / "audiocodec.prx"
-        fw_by_export = self.temp_dir / "custom_audio.prx"
+        fw_by_export = self.temp_dir / "audiocodec.prx"
+        fw_custom_name = self.temp_dir / "custom_audio.prx"
+        fw_unknowable = self.temp_dir / "usbpspcm.prx"
 
         main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
         user_mod.write_bytes(build_synthetic_prx(modattribute=0, modname="UserModule"))
-        fw_by_name.write_bytes(build_synthetic_prx(modattribute=0x1000, modname="FirmwareAudio"))
         fw_by_export.write_bytes(
+            build_synthetic_prx(
+                modattribute=0x1000,
+                modname="FirmwareAudio",
+                exported_lib="sceAudiocodec",
+            )
+        )
+        fw_custom_name.write_bytes(
             build_synthetic_prx(
                 modattribute=0x1006,
                 modname="MyDriver",
-                exported_lib="sceAudiocodec",
+                exported_lib="sceSasCore",
+            )
+        )
+        fw_unknowable.write_bytes(
+            build_synthetic_prx(
+                modattribute=0x1000,
+                modname="USBComm",
+                exported_lib=None,
             )
         )
 
         placed = plan_provisional_module_bindings(
             main_elf,
             [
-                ("audiocodec.prx", fw_by_name, "disc0:/PSP_GAME/USRDIR/audiocodec.prx"),
-                ("custom_audio.prx", fw_by_export, "disc0:/PSP_GAME/USRDIR/custom_audio.prx"),
+                ("audiocodec.prx", fw_by_export, "disc0:/PSP_GAME/USRDIR/audiocodec.prx"),
+                ("custom_audio.prx", fw_custom_name, "disc0:/PSP_GAME/USRDIR/custom_audio.prx"),
+                ("usbpspcm.prx", fw_unknowable, "disc0:/PSP_GAME/USRDIR/usbpspcm.prx"),
                 ("user.prx", user_mod, "disc0:/PSP_GAME/USRDIR/user.prx"),
             ],
         )
         self.assertEqual(len(placed), 1)
         self.assertEqual(placed[0]["name"], "user.prx")
+
+    def test_derived_hle_served_libraries_include_all_audit_firmware_modules(self) -> None:
+        """Verify the derived single-source HLE registry includes all firmware modules from the audit."""
+        served = get_hle_served_libraries()
+        self.assertIn("sceaudiocodec", served)
+        self.assertIn("scesascore", served)
+        self.assertIn("scempegbase", served)
+        self.assertIn("scevideocodec", served)
+        self.assertIn("scenetifhandle", served)
+        self.assertIn("scenetadhocauth", served)
+        self.assertIn("scecertloader", served)
+        self.assertIn("scememab", served)
+        self.assertIn("sceusbacc", served)
+        self.assertIn("sceusbmic", served)
+        self.assertIn("usbpspcm.prx", UNKNOWABLE_EXPORT_FIRMWARE_MODULES)
+
+        # Firmware modules from the audit export libraries served by the runtime
+        audit_cases = [
+            ("audiocodec.prx", "sceAudiocodec"),
+            ("sc_sascore.prx", "sceSasCore"),
+            ("mpegbase.prx", "sceMpegbase"),
+            ("videocodec.prx", "sceVideocodec"),
+            ("ifhandle.prx", "sceNetIfhandle"),
+            ("pspnet_adhoc_auth.prx", "sceNetAdhocAuth_lib"),
+            ("cert_loader.prx", "sceCertLoader"),
+            ("memab.prx", "sceMemab_driver"),
+            ("usbacc.prx", "sceUsbAcc"),
+            ("usbmic.prx", "sceUsbMic"),
+        ]
+        for name, lib in audit_cases:
+            prx_bytes = build_synthetic_prx(modattribute=0x1000, modname="FwMod", exported_lib=lib)
+            self.assertTrue(_is_hle_served_module(name, prx_bytes), f"{name} should be HLE-served")
+
+        # Unknowable-export exception case
+        unknowable_bytes = build_synthetic_prx(modattribute=0x1000, modname="USBComm", exported_lib=None)
+        self.assertTrue(_is_hle_served_module("usbpspcm.prx", unknowable_bytes))
+
+        # Title-owned kernel module with private exports is NOT HLE-served
+        title_bytes = build_synthetic_prx(modattribute=0x1000, modname="TitleDriver", exported_lib="CustomGameLib")
+        self.assertFalse(_is_hle_served_module("title_driver.prx", title_bytes))
 
     def test_provisional_guest_module_placement_kernel_mode_module_raises_format_unsupported(self) -> None:
         main_elf = self.temp_dir / "placement-main-km.elf"

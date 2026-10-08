@@ -1470,6 +1470,23 @@ class CensusTests(unittest.TestCase):
                 lim = meta.HANDLER_LIMITATIONS.get(handler, "")
                 self.assertTrue(isinstance(lim, str) and lim.strip(), f"{handler} must have limitation")
 
+    def test_extract_hle_libraries_derives_registered_and_av_families(self) -> None:
+        libs = hle_manifest.extract_hle_libraries()
+        self.assertIn("scekernel", libs)
+        self.assertIn("sceaudio", libs)
+        self.assertIn("sceaudiocodec", libs)
+        self.assertIn("scesas", libs)
+        self.assertIn("scesascore", libs)
+        self.assertIn("scempeg", libs)
+        self.assertIn("scempegbase", libs)
+        self.assertIn("scevideocodec", libs)
+        self.assertIn("scenetifhandle", libs)
+        self.assertIn("scenetadhocauth", libs)
+        self.assertIn("scecertloader", libs)
+        self.assertIn("scememab", libs)
+        self.assertIn("sceusbacc", libs)
+        self.assertIn("sceusbmic", libs)
+
 
 if __name__ == "__main__":
     unittest.main()
