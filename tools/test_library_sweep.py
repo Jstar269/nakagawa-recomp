@@ -174,6 +174,197 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertEqual(observed_timeouts, [7])
         terminate.assert_called_once_with(process)
 
+    def test_timeout_during_analyze_preserves_the_active_stage_elapsed_time(self) -> None:
+        work_dir = self.private_dir / "work"
+        work_dir.mkdir(parents=True)
+        iso = _write_iso(self.iso_dir, "timeout-analyze.iso", "UCUS99994", "Timeout Sentinel")
+        observed_timeouts: list[int] = []
+
+        class TimedOutDuringAnalyze:
+            pid = 9002
+            returncode = None
+
+            def __init__(self, command, **_kwargs):
+                self.command = command
+
+            def communicate(self, timeout=None):
+                observed_timeouts.append(timeout)
+                now_ms = int(library_sweep.time.time() * 1000)
+                progress_path = Path(
+                    self.command[self.command.index("--sweep-progress-report") + 1]
+                )
+                progress_path.write_text(json.dumps({
+                    "schema_version": 1,
+                    "stages": {
+                        "inspect": {
+                            "status": "PASS", "started_at_unix_ms": now_ms - 20,
+                            "finished_at_unix_ms": now_ms - 10, "duration_ms": 10,
+                        },
+                        "prepare_import": {
+                            "status": "PASS", "started_at_unix_ms": now_ms - 10,
+                            "finished_at_unix_ms": now_ms - 1, "duration_ms": 9,
+                        },
+                        "analyze": {
+                            "status": "RUNNING", "started_at_unix_ms": now_ms - 2400,
+                            "finished_at_unix_ms": None, "duration_ms": 0,
+                        },
+                    },
+                }), encoding="utf-8")
+                raise subprocess.TimeoutExpired("nk_cli bringup", timeout)
+
+        with (
+            mock.patch.object(library_sweep.subprocess, "Popen", TimedOutDuringAnalyze),
+            mock.patch.object(library_sweep, "_terminate_process_tree") as terminate,
+        ):
+            outcome = library_sweep._run_bringup(
+                iso, work_dir, work_dir / "bringup.json", work_dir / "sweep-imports.json", 7
+            )
+
+        self.assertTrue(outcome.timed_out)
+        self.assertEqual(observed_timeouts, [7])
+        self.assertEqual(outcome.timed_out_stage, "analyze")
+        self.assertGreaterEqual(outcome.timed_out_stage_ms, 2000)
+        terminate.assert_called_once()
+
+    def test_compile_failure_keeps_first_diagnostic_only_in_private_report(self) -> None:
+        work_dir = self.private_dir / "compile-failure-work"
+        work_dir.mkdir(parents=True)
+        iso = _write_iso(self.iso_dir, "compile-failure.iso", "UCUS99993", "Failure Sentinel")
+
+        class FailedCompile:
+            pid = 9003
+            returncode = 1
+
+            def __init__(self, command, **_kwargs):
+                self.command = command
+
+            def communicate(self, timeout=None):
+                report_path = Path(self.command[self.command.index("--report") + 1])
+                report_path.write_text(json.dumps({
+                    **_bringup_report(failure="COMPILE_FAILED"),
+                    "stages": {
+                        **_bringup_report()["stages"],
+                        "compile": {"status": "FAIL", "duration_ms": 250},
+                    },
+                }), encoding="utf-8")
+                (work_dir / "bringup-build.log").write_text(
+                    "warning: ignored warning\n"
+                    "C:/private/source.c: fatal error: DIAGNOSTIC_PRIVATE_SENTINEL\n",
+                    encoding="utf-8",
+                )
+                return "", ""
+
+        with (
+            mock.patch.object(library_sweep.subprocess, "Popen", FailedCompile),
+            mock.patch.object(library_sweep, "_route_environment", return_value={}),
+        ):
+            outcome = library_sweep._run_bringup(
+                iso,
+                work_dir,
+                work_dir / "bringup.json",
+                work_dir / "sweep-imports.json",
+                7,
+            )
+
+        self.assertEqual(outcome.report["failure_class"], "COMPILE_FAILED")
+        self.assertEqual(
+            outcome.build_diagnostic,
+            "C:/private/source.c: fatal error: DIAGNOSTIC_PRIVATE_SENTINEL",
+        )
+        self.assertEqual(outcome.build_log_path, str(work_dir / "bringup-build.log"))
+
+        with mock.patch.object(library_sweep, "_run_bringup", return_value=outcome):
+            library_sweep.run_sweep(
+                self.iso_dir, self.private_dir / "compile-failure", self.public_output,
+                **self._run_kwargs(),
+            )
+        private = json.loads(
+            (self.private_dir / "compile-failure" / "library-sweep.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        public_text = self.public_output.read_text(encoding="utf-8")
+        row = private["rows"][0]
+        self.assertEqual(row["build_diagnostic"], outcome.build_diagnostic)
+        self.assertEqual(row["build_log_path"], outcome.build_log_path)
+        self.assertNotIn("DIAGNOSTIC_PRIVATE_SENTINEL", public_text)
+        self.assertNotIn(str(work_dir), public_text)
+
+    def test_legacy_schema_baseline_is_compared_without_exporting_old_family_names(self) -> None:
+        previous = library_sweep._public_aggregate(
+            [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1
+        )
+        previous["nid_families_by_title_count"] = [
+            {"library_family": "sceGe_user", "title_count": 1},
+        ]
+        # Schema 1 predates current family-source filtering and the new stage fields.
+        previous["schema_version"] = 1
+        previous.pop("timed_out_during_stage_histogram", None)
+        previous.pop("stopped_at_stage_histogram", None)
+        previous.pop("timed_out_with_unknown_stage", None)
+        previous.pop("stage_duration_ms", None)
+        previous["comparison"].pop("previous_schema_version", None)
+        previous["comparison"].pop("baseline_compatibility", None)
+        previous_path = self.root / "legacy-public-aggregate.json"
+        previous_path.write_text(json.dumps(previous), encoding="utf-8")
+
+        loaded = library_sweep._read_previous_public_aggregate(previous_path)
+        current = library_sweep._public_aggregate(
+            [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1,
+            previous_aggregate=loaded,
+        )
+
+        self.assertEqual(current["comparison"]["status"], "MATCHED")
+        self.assertEqual(current["comparison"]["baseline_compatibility"], "LEGACY_V1_SUPPORTED")
+        self.assertEqual(current["comparison"]["previous_schema_version"], 1)
+        self.assertNotIn("sceGe_user", json.dumps(current))
+
+    def test_merge_private_reports_combines_shard_stage_data(self) -> None:
+        shard_reports = []
+        durations = {stage: None for stage in library_sweep.STAGES}
+        durations["analyze"] = 2400
+        timeout_row = {
+            **_sweep_row("analyze", run_status="TIMED_OUT"),
+            "boundary_code": "SWEEP_TIME_BUDGET",
+            "timed_out_during_stage": "analyze",
+            "timed_out_stage_elapsed_ms": 2400,
+            "stage_duration_ms": durations,
+        }
+        failure_row = {
+            **_sweep_row("analyze"),
+            "boundary_code": "ANALYSIS_FAILED",
+            "issue_numbers": [296],
+            "stopped_at_stage": "analyze",
+            "stage_duration_ms": {**durations, "analyze": 1200},
+        }
+        for index, row in enumerate((timeout_row, failure_row), start=1):
+            private_dir = self.root / f"shard-{index}"
+            public_path = self.root / f"shard-{index}-public.json"
+            library_sweep._write_outputs(
+                private_dir / "library-sweep.json",
+                public_path,
+                SOURCE_COMMIT,
+                SOURCE_FINGERPRINT,
+                900,
+                [dict(row, source_key=f"shard-{index}/{index}.iso")],
+                total_isos=1,
+                ran_this_invocation=1,
+                resumed_this_invocation=0,
+            )
+            shard_reports.append(private_dir / "library-sweep.json")
+
+        result = library_sweep.merge_private_reports(
+            shard_reports, self.root / "merged-private", self.public_output
+        )
+        aggregate = json.loads(self.public_output.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["iso_count"], 2)
+        self.assertEqual(aggregate["coverage"]["recorded_routes"], 2)
+        self.assertEqual(aggregate["timed_out_during_stage_histogram"]["analyze"], 1)
+        self.assertEqual(aggregate["stopped_at_stage_histogram"]["analyze"], 1)
+        self.assertEqual(aggregate["stage_duration_ms"]["analyze"]["count"], 2)
+        self.assertNotIn("PRIVATE TITLE", self.public_output.read_text(encoding="utf-8"))
+
     def test_public_aggregate_contains_only_aggregated_title_neutral_data(self) -> None:
         _write_iso(
             self.iso_dir,
@@ -239,6 +430,8 @@ class LibrarySweepTests(unittest.TestCase):
             "reason": "no_previous_aggregate",
             "stage_delta": None,
             "completed_routes_delta": None,
+            "previous_schema_version": None,
+            "baseline_compatibility": "NONE",
         })
         self.assertEqual(
             aggregate["ratchet"]["furthest_stage_high_water"]["launch"], 1
@@ -487,6 +680,8 @@ class LibrarySweepTests(unittest.TestCase):
             "reason": "same_source_and_input_count",
             "stage_delta": None,
             "completed_routes_delta": None,
+            "previous_schema_version": 2,
+            "baseline_compatibility": "CURRENT_V2",
         }
         with self.assertRaisesRegex(ValueError, "matched comparison"):
             library_sweep._validate_public_aggregate(comparison)
