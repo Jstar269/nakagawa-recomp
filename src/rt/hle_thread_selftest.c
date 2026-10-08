@@ -257,6 +257,11 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
 #define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
 #define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
+#define NID_SCE_REG_OPEN_REGISTRY 0x92e41280u
+#define NID_SCE_REG_GET_KEY_INFO 0xd4475aa8u
+#define NID_SCE_REG_GET_KEY_VALUE 0x28a8e98au
+#define NID_SCE_REG_CLOSE_REGISTRY 0xfa8a5739u
+#define NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT 0xa5da2406u
 #define NID_SCE_RTC_GET_CURRENT_TICK 0x3f7ad767u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL 0xe7c27d1bu
@@ -2705,18 +2710,11 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0x80020002u, "sceKernelRotateThreadReadyQueue"},
-        {NID_SCE_KERNEL_RESUME_THREAD, 0x80020002u, "sceKernelResumeThread"},
-        {NID_SCE_KERNEL_SUSPEND_THREAD, 0x80020002u, "sceKernelSuspendThread"},
-        {NID_SCE_KERNEL_SET_ALARM, 0x80020002u, "sceKernelSetAlarm"},
-        {NID_SCE_KERNEL_CANCEL_ALARM, 0x80020002u, "sceKernelCancelAlarm"},
         {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
         {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
-        {NID_SCE_REG_CLOSE_CATEGORY, 0x80010086u, "sceRegCloseCategory"},
-        {NID_SCE_REG_OPEN_CATEGORY, 0x80010086u, "sceRegOpenCategory"},
     };
     reset_fixture();
     sr_hle_init();
@@ -2727,6 +2725,248 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
                "kernel import sweep refusal has a production registration");
         expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
                "unsupported kernel import returns its explicit refusal code");
+    }
+}
+
+/* Set the five arguments; for sceRegGetKeyInfo, the fifth (t0/r8 under MIPS EABI) is the size
+ * pointer, read through stack_arg. */
+static void sysreg_args(CpuState *cpu, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    cpu->r[7] = a3;
+    cpu->r[8] = a4;
+}
+
+/* True when sceUtilityGetSystemParamInt(id) succeeds and writes its value to out. */
+static int sysreg_sysparam_int_check(uint32_t id, uint32_t out) {
+    CpuState cpu;
+    sysreg_args(&cpu, id, out, 0u, 0u, 0u);
+    return sr_syscall(&cpu, NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT) == 0u;
+}
+
+/* sceReg virtual system registry (read model in hle.c): handle lifecycle, typed key info, value
+ * copies, refusals for unknown names, bad handles, bad spans, and short buffers, plus agreement
+ * with sceUtilityGetSystemParamInt. Guest scratch lives in the arena at 0x08b00000. */
+static void test_sysreg_virtual_registry(void) {
+    const uint32_t REGPARAM = 0x08b00000u, HANDLE_OUT = 0x08b00400u;
+    const uint32_t NAME = 0x08b00800u, NAME2 = 0x08b00900u;
+    const uint32_t HK = 0x08b00c00u, TYPE = 0x08b00c04u, SIZE = 0x08b00c08u;
+    const uint32_t VAL = 0x08b01000u, VAL2 = 0x08b01100u;
+    CpuState cpu;
+    uint32_t r, reg, cat, cat2, cat3, cat4, hk, hk_lang;
+    char long_category[129];
+
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_SCE_REG_OPEN_REGISTRY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_OPEN_CATEGORY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_INFO) &&
+               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_VALUE) &&
+               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_CATEGORY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_REGISTRY) &&
+               sr_hle_test_is_registered(NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT),
+           "sceReg family and sceUtilityGetSystemParamInt have production registrations");
+
+    /* Registry handle: mode 1 only; RegParam and out pointers must be guest spans. */
+    MEM_W32(REGPARAM, 1u);
+    sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
+    reg = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry with mode 1");
+    sysreg_args(&cpu, REGPARAM, 3u, HANDLE_OUT, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80010016u,
+           "sceRegOpenRegistry refuses an unsupported mode with EINVAL");
+    sysreg_args(&cpu, 0u, 1u, HANDLE_OUT, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+           "sceRegOpenRegistry refuses a NULL RegParam pointer");
+    sysreg_args(&cpu, REGPARAM, 1u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+           "sceRegOpenRegistry refuses a NULL handle output");
+
+    /* Category handles: unknown names fail closed with ENOENT. */
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB");
+    {
+        uint32_t mode2_cat, mode2_hk;
+
+        title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
+        sysreg_args(&cpu, reg, NAME, 2u, HANDLE_OUT, 0u);
+        r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+        mode2_cat = MEM_R32(HANDLE_OUT);
+        expect(r == 0u && mode2_cat != 0u && mode2_cat != cat,
+               "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB with mode 2");
+        title_hle_write_cstr(NAME2, "language");
+        sysreg_args(&cpu, mode2_cat, NAME2, HK, TYPE, SIZE);
+        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+        mode2_hk = MEM_R32(HK);
+        expect(r == 0u && mode2_hk != 0u, "mode-2 category still provides readable key info");
+        sysreg_args(&cpu, mode2_cat, mode2_hk, VAL, 4u, 0u);
+        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+        expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+               "mode-2 category still provides readable values");
+        sysreg_args(&cpu, mode2_cat, 0u, 0u, 0u, 0u);
+        expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u,
+               "sceRegCloseCategory closes the mode-2 category");
+    }
+    title_hle_write_cstr(NAME, "/CONFIG/NOPE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010002u,
+           "sceRegOpenCategory refuses an unknown category with ENOENT");
+    memset(long_category, 'A', sizeof(long_category) - 1u);
+    long_category[sizeof(long_category) - 1u] = '\0';
+    title_hle_write_cstr(NAME, long_category);
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80000103u,
+           "sceRegOpenCategory refuses a 128-character category name with ILLEGAL_ADDR");
+    sysreg_args(&cpu, 0x12345678u, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010009u,
+           "sceRegOpenCategory refuses a bad registry handle with EBADF");
+
+    /* Integer key: type and size, then the value must equal the system-param table. */
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    expect(r == 0u && MEM_R32(TYPE) == 2u && MEM_R32(SIZE) == 4u && hk != 0u,
+           "sceRegGetKeyInfo reports language as an INT of 4 bytes");
+    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+           "registry language agrees with sceUtilityGetSystemParamInt(LANGUAGE)");
+    sysreg_args(&cpu, cat, hk, VAL, 2u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
+           "sceRegGetKeyValue refuses a buffer smaller than the INT value with EINVAL");
+    hk_lang = hk;
+
+    title_hle_write_cstr(NAME2, "button_assign");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
+    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && sysreg_sysparam_int_check(9u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+           "registry button_assign agrees with sceUtilityGetSystemParamInt(BUTTON_PREFERENCE)");
+
+    /* Keys under the date and network categories agree with the same table. */
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat2 = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && cat2 != 0u && cat2 != cat, "sceRegOpenCategory opens /CONFIG/DATE in its own slot");
+    {
+        static const char *const date_keys[] = { "date_format", "time_format", "time_zone_offset", "summer_time" };
+        static const uint32_t date_ids[] = { 4u, 5u, 6u, 7u };
+        for (uint32_t i = 0; i < 4u; i++) {
+            title_hle_write_cstr(NAME2, date_keys[i]);
+            sysreg_args(&cpu, cat2, NAME2, HK, TYPE, SIZE);
+            r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+            hk = MEM_R32(HK);
+            sysreg_args(&cpu, cat2, hk, VAL, 4u, 0u);
+            r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+            expect(r == 0u && sysreg_sysparam_int_check(date_ids[i], VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+                   "registry date and time keys agree with sceUtilityGetSystemParamInt");
+        }
+    }
+
+    /* String key: the nickname is a NUL-terminated STR of 4 bytes; a 3-byte buffer is too small. */
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat3 = MEM_R32(HANDLE_OUT);
+    title_hle_write_cstr(NAME2, "nickname");
+    sysreg_args(&cpu, cat3, NAME2, HK, TYPE, SIZE);
+    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    expect(r == 0u && MEM_R32(TYPE) == 3u && MEM_R32(SIZE) == 4u, "sceRegGetKeyInfo reports nickname as a STR of 4 bytes");
+    sysreg_args(&cpu, cat3, hk, VAL, 3u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
+           "sceRegGetKeyValue refuses a 3-byte buffer for a 4-byte string with EINVAL");
+    sysreg_args(&cpu, cat3, hk, VAL, 4u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && MEM_R8(VAL) == 'P' && MEM_R8(VAL + 1u) == 'S' && MEM_R8(VAL + 2u) == 'P' &&
+               MEM_R8(VAL + 3u) == 0u,
+           "sceRegGetKeyValue copies the nickname with its terminating NUL");
+
+    /* Unknown key and the CHARACTER_SET category, which opens but models no keys. */
+    title_hle_write_cstr(NAME2, "no_such_key");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
+           "sceRegGetKeyInfo refuses an unknown key with ENOENT");
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/CHARACTER_SET");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u, "sceRegOpenCategory opens CHARACTER_SET");
+    cat4 = MEM_R32(HANDLE_OUT);
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat4, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
+           "CHARACTER_SET has no modeled keys and refuses lookups with ENOENT");
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x8001000cu,
+           "sceRegOpenCategory refuses a fifth open category handle with NO_MEMORY");
+
+    /* Bad handles and spans on the key calls. */
+    sysreg_args(&cpu, 0x12345678u, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010009u,
+           "sceRegGetKeyInfo refuses a bad category handle with EBADF");
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat, NAME2, HK, 0u, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80000103u,
+           "sceRegGetKeyInfo refuses a NULL type output");
+    sysreg_args(&cpu, cat2, hk_lang, VAL, 4u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
+           "a key handle from /CONFIG/SYSTEM/XMB is refused under /CONFIG/DATE with EBADF");
+
+    /* A stale key handle must not survive reopening its slot on a different category. */
+    sysreg_args(&cpu, cat, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the XMB category");
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0x80010009u,
+           "a closed category handle is refused with EBADF");
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u && MEM_R32(HANDLE_OUT) == cat,
+           "the reopened slot reuses the closed category handle value");
+    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), hk_lang, VAL, 4u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
+           "a stale language key handle is refused on the reopened DATE slot with EBADF");
+
+    /* Close everything and confirm the registry handle is then refused. */
+    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the DATE category");
+    sysreg_args(&cpu, cat2, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the second DATE handle");
+    sysreg_args(&cpu, cat3, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the SYSTEM category");
+    sysreg_args(&cpu, cat4, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes CHARACTER_SET");
+    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u, "sceRegCloseRegistry closes the registry");
+    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0x80010009u,
+           "a closed registry handle is refused with EBADF");
+    {
+        uint32_t registry_handles[4];
+
+        for (uint32_t i = 0; i < 4u; i++) {
+            sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+            r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
+            registry_handles[i] = MEM_R32(HANDLE_OUT);
+            expect(r == 0u && registry_handles[i] != 0u,
+                   "sceRegOpenRegistry opens a handle while a slot is available");
+        }
+        sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+        expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x8001000cu,
+               "sceRegOpenRegistry refuses a fifth open registry handle with NO_MEMORY");
+        for (uint32_t i = 0; i < 4u; i++) {
+            sysreg_args(&cpu, registry_handles[i], 0u, 0u, 0u, 0u);
+            expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u,
+                   "sceRegCloseRegistry closes a handle opened for the exhaustion test");
+        }
     }
 }
 
@@ -3328,6 +3568,7 @@ static void reset_fixture(void) {
     audio_fixture_reset();
     extern void sr_hle_test_mutex_reset(void);
     sr_hle_test_mutex_reset();
+    sched_alarm_reset();
 }
 
 static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
@@ -10030,6 +10271,840 @@ static void test_change_current_thread_attr(void) {
     s_cpu->r[5] = 0;
     ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
     expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects unknown clear bits");
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelSuspendThread / sceKernelResumeThread / sceKernelRotateThreadReadyQueue
+ * -------------------------------------------------------------------------
+ * Every case enters the production NIDs through sr_syscall, so the registration,
+ * the handler and the scheduler are all in the path.  Error codes: DORMANT,
+ * SUSPEND (double suspend) and NOT_SUSPEND (resume of a thread that is not
+ * suspended) are the measured cells in docs/HARDWARE_ORACLE.md; ILLEGAL_THID and
+ * UNKNOWN_THID are the project's existing thread-object codes.
+ * ------------------------------------------------------------------------- */
+#define SRT_ILLEGAL_THID  0x80020197u
+#define SRT_UNKNOWN_THID  0x80020198u
+#define SRT_DORMANT       0x800201a2u
+#define SRT_SUSPEND       0x800201a3u
+#define SRT_NOT_SUSPEND   0x800201a5u
+
+static uint32_t srt_call(uint32_t nid, uint32_t a0) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Only the thread that owns the CPU may be marked RUNNING. */
+static int srt_running_off_cpu(void) {
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].state == TH_RUNNING && i != s_cur) return 1;
+    return 0;
+}
+
+static void test_suspend_resume_errors_and_ready_thread(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x5a0u, TH_RUNNING, 32);
+    TCB *ready = fixture_thread(0x5a1u, TH_READY, 32);
+    TCB *stopped = fixture_thread(0x5a2u, TH_DORMANT, 32);
+    self->started = 1;
+    ready->started = 1;
+    s_cur = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SUSPEND_THREAD) &&
+           sr_hle_test_is_registered(NID_SCE_KERNEL_RESUME_THREAD) &&
+           sr_hle_test_is_registered(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE),
+           "suspend/resume/rotate have production registrations");
+
+    /* ---- every suspend error path, none of which may disturb a thread ------ */
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, 0x7fffffu) == SRT_UNKNOWN_THID,
+           "SuspendThread of an unknown UID returns UNKNOWN_THID");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, 0u) == SRT_ILLEGAL_THID,
+           "SuspendThread(0) returns ILLEGAL_THID");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, self->uid) == SRT_ILLEGAL_THID,
+           "SuspendThread of the calling thread returns ILLEGAL_THID");
+    expect(!self->suspended && self->state == TH_RUNNING,
+           "a refused self-suspend leaves the caller running");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, stopped->uid) == SRT_DORMANT,
+           "SuspendThread of a dormant thread returns DORMANT");
+    expect(!stopped->suspended, "a refused suspend of a dormant thread sets no flag");
+
+    /* ---- every resume error path ------------------------------------------ */
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, 0x7fffffu) == SRT_UNKNOWN_THID,
+           "ResumeThread of an unknown UID returns UNKNOWN_THID");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, stopped->uid) == SRT_DORMANT,
+           "ResumeThread of a dormant thread returns DORMANT");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, ready->uid) == SRT_NOT_SUSPEND,
+           "ResumeThread of a thread that is not suspended returns NOT_SUSPEND");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, self->uid) == SRT_NOT_SUSPEND,
+           "ResumeThread of the running caller returns NOT_SUSPEND");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, 0u) == SRT_NOT_SUSPEND,
+           "ResumeThread(0) names the running caller and returns NOT_SUSPEND");
+
+    /* ---- suspend a ready thread: it is never selected ---------------------- */
+    expect(pick_next() == ready_idx, "control: the ready thread is selectable before suspension");
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, ready->uid) == 0u,
+           "SuspendThread of a ready thread succeeds");
+    expect(ready->suspended && ready->state == TH_READY,
+           "suspension is recorded without changing the ready state");
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, ready->uid) == SRT_SUSPEND,
+           "a second SuspendThread returns the measured double-suspend code");
+    SrThreadRunStatus status;
+    expect(sched_thread_run_status(ready->uid, &status) == 0 &&
+           status.status == (PSP_THREAD_READY | PSP_THREAD_SUSPEND),
+           "ReferThreadStatus reports READY plus the SUSPEND bit");
+    expect(pick_next() == -1, "a suspended ready thread is never selected");
+
+    /* ---- a stronger suspended thread does not preempt the runner ----------- */
+    ready->priority = 8;
+    sched_preempt();
+    expect(self->state == TH_RUNNING,
+           "a stronger but suspended thread does not take the CPU from the runner");
+
+    /* ---- resume makes it selectable and the stronger thread preempts ------- */
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, ready->uid) == 0u,
+           "ResumeThread of a suspended thread succeeds");
+    expect(!ready->suspended, "resume clears the suspension");
+    expect(self->state == TH_READY,
+           "resuming a stronger thread applies strict-priority preemption to the runner");
+    self->state = TH_RUNNING;
+    expect(pick_next() == ready_idx, "a resumed thread is selectable again");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, ready->uid) == SRT_NOT_SUSPEND,
+           "a second ResumeThread returns NOT_SUSPEND");
+    expect(sched_thread_run_status(ready->uid, &status) == 0 &&
+           status.status == PSP_THREAD_READY,
+           "ReferThreadStatus drops the SUSPEND bit after resume");
+
+    /* ---- terminating a suspended thread ends its suspension ---------------- */
+    ready->priority = 32;
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, ready->uid) == 0u, "suspend again");
+    expect(sched_terminate_thread(ready->uid) == 0u, "terminate the suspended thread");
+    expect(!ready->suspended && ready->state == TH_DORMANT,
+           "terminating a suspended thread clears the suspension");
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+/* A rotated queue is observed through the selection order, not the rotation flag:
+ * `order` runs the real pick_next() over three READY peers and records which slots
+ * it chooses, re-READYing each one the way a thread that yields would. */
+static void srt_pick_order(int n, int *out) {
+    for (int k = 0; k < n; k++) {
+        int idx = pick_next();
+        out[k] = idx;
+    }
+}
+
+static void test_rotate_ready_queue_selection_order(void) {
+    int order[3];
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5b0u, TH_RUNNING, 10);   /* strongest: holds the CPU */
+    TCB *a = fixture_thread(0x5b1u, TH_READY, 20);
+    TCB *b = fixture_thread(0x5b2u, TH_READY, 20);
+    TCB *c = fixture_thread(0x5b3u, TH_READY, 20);
+    runner->started = a->started = b->started = c->started = 1;
+    s_cur = (int)(runner - s_tcb);
+    const int ia = (int)(a - s_tcb), ib = (int)(b - s_tcb), ic = (int)(c - s_tcb);
+
+    /* Control: with no rotation the peers are chosen in slot order. */
+    s_last_pick = -1;
+    srt_pick_order(3, order);
+    expect(order[0] == ia && order[1] == ib && order[2] == ic,
+           "control: three equal-priority peers are selected in slot order");
+
+    /* Rotating priority 20 moves its head (A) behind B and C. */
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 20u) == 0u,
+           "RotateThreadReadyQueue(20) succeeds");
+    expect(runner->state == TH_RUNNING,
+           "rotating a weaker queue does not take the CPU from a stronger runner");
+    srt_pick_order(3, order);
+    expect(order[0] == ib && order[1] == ic && order[2] == ia,
+           "rotation moved the head thread behind its equal-priority peers");
+
+    /* The rotation is consumed once: the next lap starts where the cursor is. */
+    srt_pick_order(3, order);
+    expect(order[0] == ib && order[1] == ic && order[2] == ia,
+           "after the rotation was consumed selection continues round-robin");
+
+    /* Priority 0 means the CALLER's priority (10), not 20: the priority-20 queue
+     * is untouched, and with no peer at priority 10 the caller keeps the CPU. */
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0u) == 0u,
+           "RotateThreadReadyQueue(0) succeeds");
+    expect(runner->state == TH_RUNNING,
+           "rotating a queue with no peers does not yield");
+    srt_pick_order(3, order);
+    expect(order[0] == ia && order[1] == ib && order[2] == ic,
+           "priority 0 rotated the caller's queue, leaving the priority-20 queue alone");
+
+    /* A suspended head is not in the ready queue: the first READY thread is rotated. */
+    s_last_pick = -1;
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, a->uid) == 0u, "suspend the queue head");
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 20u) == 0u,
+           "rotate a queue whose first slot is suspended");
+    int first = pick_next();
+    expect(first == ic, "the suspended thread was neither rotated nor selected; C follows the rotated B");
+    expect(first != ia, "a suspended thread is skipped by selection");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, a->uid) == 0u, "resume the queue head");
+
+    /* A priority with no ready thread is a successful no-op. */
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 99u) == 0u,
+           "rotating a priority with no ready thread succeeds");
+
+    /* Dispatch-disabled: the caller's queue rotates but the yield is deferred. */
+    b->priority = 10;
+    s_dispatch_enabled = 0;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0u) == 0u,
+           "rotate with dispatch disabled succeeds");
+    expect(runner->state == TH_RUNNING, "dispatch-disabled rotate does not yield");
+    s_dispatch_enabled = 1;
+    expect(srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0u) == 0u,
+           "rotate with a ready equal-priority peer succeeds");
+    expect(runner->state == TH_READY,
+           "a caller with a ready equal-priority peer yields to the scheduler");
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+/* Three equal-priority threads on real coroutines, scheduled the way sched_run
+ * schedules them.  Each logs, rotates its own priority queue, logs again.  Without a
+ * working rotate the first thread would log both phases before the second ran. */
+static int s_srt_log[16];
+static int s_srt_log_n;
+
+static void srt_peer_body(void *arg) {
+    int me = (int)(intptr_t)arg;
+    s_srt_log[s_srt_log_n++] = me * 10 + 1;
+    /* thread 1 names its priority explicitly; the others use 0 for "mine". */
+    (void)srt_call(NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, me == 1 ? 20u : 0u);
+    s_srt_log[s_srt_log_n++] = me * 10 + 2;
+    s_tcb[s_cur].state = TH_DORMANT;
+    selftest_park_on_scheduler();
+}
+
+static void test_rotate_equal_priority_yields_to_peers(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *peer[3];
+    for (int i = 0; i < 3; i++) {
+        peer[i] = fixture_thread(0x5c0u + (uint32_t)i, TH_READY, 20);
+        peer[i]->started = 1;
+        peer[i]->coro = sr_coro_create(srt_peer_body, (void *)(intptr_t)(i + 1), (size_t)4 << 20);
+        expect(peer[i]->coro != NULL, "rotation peer coroutine created");
+        if (!peer[i]->coro) { s_cur = -1; return; }
+    }
+    s_srt_log_n = 0;
+    s_last_pick = -1;
+    for (int guard = 0; guard < 32; guard++) {
+        int idx = pick_next();
+        if (idx < 0) break;
+        s_cur = idx;
+        s_tcb[idx].state = TH_RUNNING;
+        sr_coro_switch(s_tcb[idx].coro);
+        expect(!srt_running_off_cpu(), "no thread is RUNNING while off the CPU between switches");
+        s_cur = -1;
+    }
+    static const int want[] = {11, 21, 31, 12, 22, 32};
+    int ok = s_srt_log_n == 6;
+    for (int i = 0; ok && i < 6; i++) ok = s_srt_log[i] == want[i];
+    expect(ok, "each rotating thread went behind its two peers before running again");
+    for (int i = 0; i < 3; i++)
+        if (peer[i]->coro) { sr_coro_destroy(peer[i]->coro); peer[i]->coro = NULL; }
+}
+
+/* A WAITING thread that is suspended keeps its wait semantics.  Its timeout (or
+ * signal) completes while it is suspended and the outcome is recorded, but it
+ * cannot run until resumed, and then it observes that outcome. */
+static void srt_suspended_waiter_case(int signal_instead_of_timeout) {
+    char msg[200];
+    const char *how = signal_instead_of_timeout ? "signalled" : "timed-out";
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5d0u, TH_RUNNING, 40);
+    TCB *waiter = fixture_thread(0x5d1u, TH_READY, 16);
+    runner->started = waiter->started = 1;
+    const int waiter_idx = (int)(waiter - s_tcb);
+    uint32_t sema = wsv_create(0, 1);
+    MEM_W32(SLC_TIMEOUT_PTR, SLC_TIMEOUT_US);
+    s_slc_nid = NID_CNW_WAIT_SEMA; s_slc_sema = sema;
+    s_slc_ret = 0xFFFFFFFFu; s_slc_returned = 0;
+    waiter->coro = sr_coro_create(slc_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "suspended-waiter fixture: coroutine created");
+    if (!waiter->coro) { wsv_delete(sema); s_cur = -1; return; }
+
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s waiter blocked on the semaphore with its deadline", how);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == sema &&
+           waiter->wake == (uint64_t)SLC_TIMEOUT_US, msg);
+
+    s_cur = (int)(runner - s_tcb);
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, waiter->uid) == 0u,
+           "SuspendThread of a waiting thread succeeds");
+    expect(waiter->state == TH_WAIT_OBJ && waiter->suspended,
+           "suspension leaves the thread's wait in place");
+    SrThreadRunStatus status;
+    expect(sched_thread_run_status(waiter->uid, &status) == 0 &&
+           status.status == (PSP_THREAD_WAITING | PSP_THREAD_SUSPEND),
+           "ReferThreadStatus reports WAITING plus the SUSPEND bit");
+
+    if (signal_instead_of_timeout) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+               "the semaphore is signalled while the waiter is suspended");
+    } else {
+        s_vtime_us = SLC_TIMEOUT_US;     /* the deadline passes during the suspension */
+    }
+
+    expect(pick_next() == -1,
+           "a suspended waiter whose wait completed is not selected");
+    snprintf(msg, sizeof msg, "the %s suspended waiter's wait completed (now READY) but it is still suspended", how);
+    expect(waiter->state == TH_READY && waiter->suspended, msg);
+    expect(s_slc_returned == 0, "the suspended waiter has not run");
+    sched_preempt();
+    expect(runner->state == TH_RUNNING,
+           "a stronger completed-but-suspended waiter does not preempt the runner");
+    expect(!srt_running_off_cpu(), "no thread is RUNNING while off the CPU while suspended");
+
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, waiter->uid) == 0u,
+           "ResumeThread of the completed waiter succeeds");
+    expect(runner->state == TH_READY,
+           "resume lets the now-runnable stronger waiter preempt the runner");
+    runner->state = TH_RUNNING;
+    expect(pick_next() == waiter_idx, "the resumed waiter is selected");
+
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(s_slc_returned == 1, "the waiter returns from its wait only after resume");
+    if (signal_instead_of_timeout) {
+        expect(s_slc_ret == 0u && wsv_count(sema) == 0,
+               "the signal delivered during suspension satisfied the wait");
+    } else {
+        expect(s_slc_ret == SLC_WAIT_TIMEOUT && wsv_count(sema) == 0,
+               "the timeout recorded during suspension is what the resumed waiter sees");
+    }
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    wsv_delete(sema);
+    s_cur = -1;
+}
+
+static void test_suspended_waiter_keeps_wait_semantics(void) {
+    srt_suspended_waiter_case(0);
+    srt_suspended_waiter_case(1);
+}
+
+/* The outcome of a timed object wait is recorded when the wait is RELEASED.  A waiter
+ * that was signalled, cancelled or timed out reports exactly that, however late it
+ * resumes -- suspended, or simply behind a stronger thread past its deadline.  The
+ * semaphore wait uses a 1000 us timeout; every case resumes it well after that. */
+enum { RW_TIMEOUT = 0, RW_SIGNAL_SUSPENDED, RW_SIGNAL_DELAYED, RW_CANCEL_DELAYED, RW_TOKEN_STOLEN };
+
+static void srt_released_wait_case(int mode, const char *what, uint32_t want_ret) {
+    char msg[220];
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5f0u, TH_RUNNING, 40);
+    TCB *waiter = fixture_thread(0x5f1u, TH_READY, 16);
+    runner->started = waiter->started = 1;
+    const int waiter_idx = (int)(waiter - s_tcb);
+    uint32_t sema = wsv_create(0, 1);
+    MEM_W32(SLC_TIMEOUT_PTR, SLC_TIMEOUT_US);
+    s_slc_nid = NID_CNW_WAIT_SEMA; s_slc_sema = sema;
+    s_slc_ret = 0xFFFFFFFFu; s_slc_returned = 0;
+    waiter->coro = sr_coro_create(slc_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "released-wait fixture: coroutine created");
+    if (!waiter->coro) { wsv_delete(sema); s_cur = -1; return; }
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s: the waiter blocked with its deadline", what);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wake == (uint64_t)SLC_TIMEOUT_US, msg);
+
+    const uint64_t late = (uint64_t)SLC_TIMEOUT_US + 4000u;   /* well past the deadline */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    s_cur = (int)(runner - s_tcb);
+    switch (mode) {
+    case RW_TIMEOUT:
+        s_vtime_us = late;
+        break;
+    case RW_SIGNAL_SUSPENDED:
+        expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, waiter->uid) == 0u, "suspend the waiter");
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "signal inside the deadline");
+        s_vtime_us = late;
+        expect(pick_next() == -1, "the signalled suspended waiter stays off the CPU");
+        expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, waiter->uid) == 0u, "resume after the deadline");
+        break;
+    case RW_SIGNAL_DELAYED:
+    case RW_TOKEN_STOLEN:
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "signal inside the deadline");
+        if (mode == RW_TOKEN_STOLEN)
+            expect(wsv_wait(0x58b1f937u, sema, 1u, 0u) == 0u,
+                   "another thread takes the signalled count before the waiter runs");
+        s_vtime_us = late;               /* the waiter is READY but has not been dispatched */
+        break;
+    case RW_CANCEL_DELAYED:
+        MEM_W32(WCR_NUMWAIT, 0xFFFFFFFFu);
+        cpu.r[4] = sema; cpu.r[5] = 0xFFFFFFFFu; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        expect(sr_syscall(&cpu, NID_WCR_CANCEL_SEMA) == 0u, "cancel inside the deadline");
+        s_vtime_us = late;
+        break;
+    }
+    runner->state = TH_RUNNING;
+    expect(pick_next() == waiter_idx, "the released waiter is selected");
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s: the waiter returned", what);
+    expect(s_slc_returned == 1, msg);
+    snprintf(msg, sizeof msg, "%s: the wait reports its recorded outcome 0x%08x (got 0x%08x)",
+             what, want_ret, s_slc_ret);
+    expect(s_slc_ret == want_ret, msg);
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    wsv_delete(sema);
+    s_cur = -1;
+}
+
+static void test_released_timed_wait_reports_release_not_clock(void) {
+    srt_released_wait_case(RW_TIMEOUT, "genuine timeout", SLC_WAIT_TIMEOUT);
+    srt_released_wait_case(RW_SIGNAL_SUSPENDED, "signalled while suspended, resumed after the deadline", 0u);
+    srt_released_wait_case(RW_SIGNAL_DELAYED, "signalled, dispatched after the deadline", 0u);
+    srt_released_wait_case(RW_CANCEL_DELAYED, "cancelled, dispatched after the deadline", WCR_WAIT_CANCEL);
+    srt_released_wait_case(RW_TOKEN_STOLEN, "signalled but count taken, dispatched after the deadline",
+                           SLC_WAIT_TIMEOUT);
+}
+
+/* A suspended DelayThread sleeper likewise reaches READY at its deadline without
+ * running, and the idle classification still sees its deadline (not frozen). */
+static void test_suspended_delay_deadline_still_counts(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5e0u, TH_RUNNING, 40);
+    TCB *sleeper = fixture_thread(0x5e1u, TH_WAIT_DELAY, 16);
+    runner->started = sleeper->started = 1;
+    sleeper->wake = 500u;
+    s_cur = (int)(runner - s_tcb);
+    expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, sleeper->uid) == 0u,
+           "SuspendThread of a delayed thread succeeds");
+    runner->state = TH_READY;      /* the runner blocks elsewhere; only the sleeper remains */
+    s_cur = -1;
+    SchedIdleState idle = sched_classify_idle();
+    expect(idle.soonest == 500u,
+           "idle classification still honours a suspended thread's delay deadline");
+    s_vtime_us = 500u;
+    expect(pick_next() == (int)(runner - s_tcb),
+           "the expired suspended sleeper is promoted but the runnable thread wins");
+    expect(sleeper->state == TH_READY && sleeper->suspended,
+           "the suspended sleeper completed its delay yet remains suspended");
+    runner->state = TH_WAIT_OBJ;
+    runner->wake = SCHED_WAIT_FOREVER;
+    expect(pick_next() == -1, "with only a suspended thread left nothing is selected");
+    expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, sleeper->uid) == 0u, "resume the sleeper");
+    expect(pick_next() == (int)(sleeper - s_tcb), "the resumed sleeper is selected");
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelSetAlarm / sceKernelCancelAlarm
+ * -------------------------------------------------------------------------
+ * Every case enters the production NIDs through sr_syscall.  Handlers are guest
+ * functions run by the real interrupt-service path (scheduler_service_pending, or the
+ * idle loop inside sched_run).  The unknown-id code is the measured Alarm cell in
+ * docs/HARDWARE_ORACLE.md; the NULL-handler and table-exhausted codes are the
+ * project's existing invalid-address and out-of-resources codes, not measurements.
+ * ------------------------------------------------------------------------- */
+#define ALM_UNKNOWN_ALMID    0x8002019fu
+#define ALM_ILLEGAL_ADDR     0x800200d3u
+#define ALM_NO_MEMORY        0x80020190u
+#define ALM_ILLEGAL_CONTEXT  0x80020064u
+#define ALM_UNKNOWN_MUTEXID  0x800201c3u
+#define ALM_NOT_IMPLEMENTED  0x80020002u
+#define ALM_HANDLER_ENTRY    0x08a10000u
+#define NID_ALM_LOCK_MUTEX   0xb011b11fu
+
+enum {
+    ALM_MODE_PLAIN = 0,
+    ALM_MODE_CANCEL_SELF,
+    ALM_MODE_LOCK_MUTEX,
+    ALM_MODE_SET_ANOTHER,
+};
+
+static unsigned s_alm_calls;
+static uint32_t s_alm_commons[8];
+static uint64_t s_alm_times[8];
+static int s_alm_intr_ctx[8];
+static uint32_t s_alm_periods[8];     /* the $v0 each call returns */
+static int s_alm_mode;
+static uint32_t s_alm_self_uid;
+static uint32_t s_alm_cancel_rc;
+static uint32_t s_alm_lock_rc;
+static uint32_t s_alm_spawned_uid;
+
+static uint32_t alm_set(uint32_t clock_us, uint32_t handler, uint32_t common) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = clock_us;
+    cpu.r[5] = handler;
+    cpu.r[6] = common;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_SET_ALARM);
+}
+
+static uint32_t alm_cancel(uint32_t uid) {
+    return srt_call(NID_SCE_KERNEL_CANCEL_ALARM, uid);
+}
+
+static void alm_handler_fn(CpuState *cpu) {
+    unsigned n = s_alm_calls++;
+    if (n < 8u) {
+        s_alm_commons[n] = cpu->r[4];
+        s_alm_times[n] = s_vtime_us;
+        s_alm_intr_ctx[n] = sched_is_intr_context();
+    }
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    switch (s_alm_mode) {
+    case ALM_MODE_CANCEL_SELF:
+        s_alm_cancel_rc = alm_cancel(s_alm_self_uid);
+        break;
+    case ALM_MODE_LOCK_MUTEX:
+        sc.r[4] = 0x1234u;     /* the interrupt-context check precedes the object lookup */
+        sc.r[5] = 1u;
+        s_alm_lock_rc = sr_syscall(&sc, NID_ALM_LOCK_MUTEX);
+        break;
+    case ALM_MODE_SET_ANOTHER:
+        if (n == 0u) s_alm_spawned_uid = alm_set(300u, ALM_HANDLER_ENTRY, 0x99u);
+        break;
+    default:
+        break;
+    }
+    cpu->r[2] = n < 8u ? s_alm_periods[n] : 0u;
+}
+
+static TCB *alm_fixture(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(ALM_HANDLER_ENTRY, alm_handler_fn);
+    s_vbl_next_us = UINT64_MAX;       /* isolate the alarm source from the display source */
+    s_vblank_q_us = 0x7fffffff;
+    s_alm_calls = 0;
+    memset(s_alm_commons, 0, sizeof s_alm_commons);
+    memset(s_alm_times, 0, sizeof s_alm_times);
+    memset(s_alm_intr_ctx, 0, sizeof s_alm_intr_ctx);
+    memset(s_alm_periods, 0, sizeof s_alm_periods);
+    s_alm_mode = ALM_MODE_PLAIN;
+    s_alm_self_uid = 0;
+    s_alm_cancel_rc = 0xffffffffu;
+    s_alm_lock_rc = 0xffffffffu;
+    s_alm_spawned_uid = 0;
+    TCB *main_t = fixture_thread(0x5f0u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+    return main_t;
+}
+
+static void test_alarm_registration_and_error_codes(void) {
+    alm_fixture();
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SET_ALARM) &&
+           sr_hle_test_is_registered(NID_SCE_KERNEL_CANCEL_ALARM),
+           "SetAlarm and CancelAlarm have production registrations");
+
+    expect(alm_set(1000u, 0u, 0x1u) == ALM_ILLEGAL_ADDR,
+           "SetAlarm with a NULL handler returns the invalid-address code");
+    expect(sched_alarm_next_deadline() == SCHED_WAIT_FOREVER,
+           "a refused SetAlarm leaves no alarm behind");
+
+    uint32_t uid = alm_set(1000u, ALM_HANDLER_ENTRY, 0x2u);
+    expect(uid != 0u && uid < 0x80000000u && uid != ALM_NOT_IMPLEMENTED,
+           "SetAlarm returns a positive alarm UID, no longer the named refusal");
+    expect(alm_cancel(uid) == 0u, "CancelAlarm of a pending alarm returns 0");
+    expect(alm_cancel(uid) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of a cancelled alarm returns the measured unknown-alarm code");
+    expect(alm_cancel(0u) == ALM_UNKNOWN_ALMID, "CancelAlarm(0) returns UNKNOWN_ALMID");
+    expect(alm_cancel(0x7fffffffu) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of a UID that was never an alarm returns UNKNOWN_ALMID");
+    expect(alm_cancel(s_tcb[0].uid) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of another object's UID (a thread) returns UNKNOWN_ALMID");
+
+    /* A zero clock is accepted and becomes due at the next service point. */
+    uid = alm_set(0u, ALM_HANDLER_ENTRY, 0x3u);
+    expect(uid != 0u && uid < 0x80000000u && s_alm_calls == 0u,
+           "SetAlarm(0) is accepted and does not run the handler inline");
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_commons[0] == 0x3u, "SetAlarm(0) fires at the next service point");
+
+    /* Exhausting the table is an out-of-resources error, and a cancel makes room. */
+    uint32_t uids[SCHED_ALARM_MAX];
+    sched_alarm_reset();
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++) {
+        uids[i] = alm_set(100000u, ALM_HANDLER_ENTRY, i);
+        if (uids[i] >= 0x80000000u) break;
+    }
+    expect(alm_set(100000u, ALM_HANDLER_ENTRY, 0u) == ALM_NO_MEMORY,
+           "SetAlarm on a full table returns the out-of-resources code");
+    expect(alm_cancel(uids[0]) == 0u && alm_set(100000u, ALM_HANDLER_ENTRY, 0u) < 0x80000000u,
+           "CancelAlarm frees a slot for the next SetAlarm");
+    s_cur = -1;
+}
+
+static void test_alarm_one_shot_fires_once_at_its_time_with_its_argument(void) {
+    alm_fixture();
+    s_vtime_us = 1000u;
+    uint32_t uid = alm_set(2500u, ALM_HANDLER_ENTRY, 0x2468u);
+    expect(uid != 0u && uid < 0x80000000u, "SetAlarm returns an alarm UID");
+
+    s_vtime_us = 3499u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 0u, "the handler has not run 1 us before the deadline");
+    s_vtime_us = 3500u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "the handler runs when clock_us of virtual time has elapsed");
+    expect(s_alm_times[0] == 3500u, "the handler ran at SetAlarm time plus clock_us");
+    expect(s_alm_commons[0] == 0x2468u, "the handler's argument is the common pointer");
+    expect(s_alm_intr_ctx[0] == 1, "the handler ran in interrupt context");
+    expect(s_cur >= 0 && !sched_is_intr_context(),
+           "normal context is restored once the handler returns");
+    s_vtime_us = 1000000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "a handler returning 0 is a one-shot: it never runs again");
+    expect(alm_cancel(uid) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of a one-shot that already fired returns UNKNOWN_ALMID");
+    s_cur = -1;
+}
+
+static void test_alarm_rearm_by_return_value(void) {
+    alm_fixture();
+    s_alm_periods[0] = 5000u;
+    s_alm_periods[1] = 5000u;
+    s_alm_periods[2] = 0u;
+    s_vtime_us = 0u;
+    uint32_t uid = alm_set(10000u, ALM_HANDLER_ENTRY, 0x7u);
+    for (uint64_t t = 0; t <= 40000u; t += 500u) {
+        s_vtime_us = t;
+        scheduler_service_pending();
+    }
+    expect(s_alm_calls == 3u,
+           "a non-zero return re-arms the alarm until a handler returns 0");
+    expect(s_alm_times[0] == 10000u && s_alm_times[1] == 15000u && s_alm_times[2] == 20000u,
+           "the alarm re-fires at the returned period after each delivery");
+    expect(s_alm_commons[1] == 0x7u && s_alm_commons[2] == 0x7u,
+           "the common pointer is passed to every re-armed delivery");
+    expect(alm_cancel(uid) == ALM_UNKNOWN_ALMID,
+           "the alarm is released once its handler stops re-arming it");
+    s_cur = -1;
+}
+
+static void test_alarm_cancel_before_firing_prevents_the_handler(void) {
+    alm_fixture();
+    s_vtime_us = 0u;
+    uint32_t a = alm_set(1000000u, ALM_HANDLER_ENTRY, 0xa1u);
+    uint32_t b = alm_set(2000u, ALM_HANDLER_ENTRY, 0xb2u);
+    expect(alm_cancel(a) == 0u, "CancelAlarm of a pending alarm succeeds");
+    expect(alm_cancel(a) == ALM_UNKNOWN_ALMID, "a second CancelAlarm of it returns UNKNOWN_ALMID");
+    s_vtime_us = 2000000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_commons[0] == 0xb2u,
+           "only the alarm that was not cancelled ran");
+    (void)b;
+
+    /* A re-arming alarm cancelled between two deliveries stops. */
+    alm_fixture();
+    s_alm_periods[0] = 1000u;
+    s_vtime_us = 0u;
+    uint32_t c = alm_set(500u, ALM_HANDLER_ENTRY, 0xc3u);
+    s_vtime_us = 500u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "the first delivery of a periodic alarm");
+    expect(alm_cancel(c) == 0u, "the re-armed alarm can be cancelled");
+    s_vtime_us = 100000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "a cancelled periodic alarm does not run again");
+    s_cur = -1;
+}
+
+static void test_alarm_handler_runs_under_interrupt_context_rules(void) {
+    /* A handler cancelling its own alarm succeeds and suppresses its re-arm. */
+    alm_fixture();
+    s_alm_mode = ALM_MODE_CANCEL_SELF;
+    s_alm_periods[0] = 1000u;
+    s_vtime_us = 0u;
+    s_alm_self_uid = alm_set(100u, ALM_HANDLER_ENTRY, 1u);
+    s_vtime_us = 100u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_cancel_rc == 0u,
+           "a handler can cancel its own alarm");
+    s_vtime_us = 50000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "cancelling from inside the handler suppresses the re-arm");
+
+    /* A handler may arm another alarm; it runs later, never inline. */
+    alm_fixture();
+    s_alm_mode = ALM_MODE_SET_ANOTHER;
+    s_vtime_us = 0u;
+    alm_set(100u, ALM_HANDLER_ENTRY, 1u);
+    s_vtime_us = 100u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_spawned_uid != 0u && s_alm_spawned_uid < 0x80000000u,
+           "a handler can arm another alarm, which does not run inline");
+    s_vtime_us = 400u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 2u && s_alm_commons[1] == 0x99u && s_alm_times[1] == 400u,
+           "the alarm armed from a handler fires at its own deadline");
+
+    /* A blocking wait attempted from the handler gets the interrupt-context refusal. */
+    alm_fixture();
+    s_alm_mode = ALM_MODE_LOCK_MUTEX;
+    s_vtime_us = 0u;
+    alm_set(100u, ALM_HANDLER_ENTRY, 1u);
+    s_vtime_us = 100u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_intr_ctx[0] == 1,
+           "the blocking-wait probe ran inside the alarm handler");
+    expect(s_alm_lock_rc == ALM_ILLEGAL_CONTEXT,
+           "a blocking wait from an alarm handler returns SCE_KERNEL_ERROR_ILLEGAL_CONTEXT");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 0x1234u;
+        cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_ALM_LOCK_MUTEX) == ALM_UNKNOWN_MUTEXID,
+               "control: the same call from normal context reaches the object lookup");
+    }
+
+    /* An alarm due under a CpuSuspendIntr window waits for the resume. */
+    alm_fixture();
+    s_vtime_us = 0u;
+    alm_set(100u, ALM_HANDLER_ENTRY, 5u);
+    uint32_t token = sched_suspend_interrupts();
+    s_vtime_us = 1000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 0u, "interrupts disabled: the alarm handler does not run");
+    sched_resume_interrupts(token);
+    expect(s_alm_calls == 1u && s_alm_commons[0] == 5u,
+           "the pending alarm is delivered when interrupts are enabled again");
+    s_cur = -1;
+}
+
+/* ---- the idle scheduler waits for an alarm instead of declaring a deadlock ---------- */
+enum {
+    ALM_IDLE_ENTRY = 0x08a20000u,
+    ALM_IDLE_HANDLER = 0x08a20040u,
+    ALM_LONG_ENTRY = 0x08a20080u,
+    ALM_LONG_HANDLER = 0x08a200c0u,
+};
+static uint32_t s_alm_idle_main_uid;
+static uint32_t s_alm_idle_alarm_uid;
+static uint64_t s_alm_idle_deadline;
+static uint64_t s_alm_idle_fired_at;
+static uint64_t s_alm_idle_resumed_at;
+static unsigned s_alm_idle_handler_calls;
+static int s_alm_idle_handler_ctx;
+static uint32_t s_alm_idle_wake_rc;
+static unsigned s_alm_idle_entry_finished;
+static unsigned s_alm_long_calls;
+
+static void alm_idle_handler_fn(CpuState *cpu) {
+    s_alm_idle_handler_calls++;
+    s_alm_idle_fired_at = s_vtime_us;
+    s_alm_idle_handler_ctx = sched_is_intr_context();
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    sc.r[4] = s_alm_idle_main_uid;
+    s_alm_idle_wake_rc = sr_syscall(&sc, NID_SCE_KERNEL_WAKEUP_THREAD);
+    cpu->r[2] = 0u;
+}
+
+static void alm_idle_entry_fn(CpuState *cpu) {
+    s_alm_idle_main_uid = sched_current_uid();
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    sc.r[4] = 100000u;
+    sc.r[5] = ALM_IDLE_HANDLER;
+    sc.r[6] = 0xfeedu;
+    s_alm_idle_alarm_uid = sr_syscall(&sc, NID_SCE_KERNEL_SET_ALARM);
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++)
+        if (s_alarms[i].uid == s_alm_idle_alarm_uid) s_alm_idle_deadline = s_alarms[i].deadline;
+    /* Nothing else is runnable and nothing else has a deadline: only the alarm can wake us. */
+    cpu->r[4] = 0u;
+    (void)sr_syscall(cpu, NID_SCE_KERNEL_SLEEP_THREAD);
+    s_alm_idle_resumed_at = s_vtime_us;
+    s_alm_idle_entry_finished = 1u;
+    cpu->r[2] = 0u;
+}
+
+static void alm_long_handler_fn(CpuState *cpu) {
+    s_alm_long_calls++;
+    /* A runaway guard for the test only: stop re-arming after a bounded number of calls. */
+    cpu->r[2] = s_alm_long_calls < 50u ? 1000000u : 0u;
+}
+
+static void alm_long_entry_fn(CpuState *cpu) {
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    sc.r[4] = 1000000u;
+    sc.r[5] = ALM_LONG_HANDLER;
+    (void)sr_syscall(&sc, NID_SCE_KERNEL_SET_ALARM);
+    cpu->r[2] = 0u;            /* return at once: nobody is left waiting for the alarm */
+}
+
+static void test_alarm_idle_scheduler_advances_to_the_deadline(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_alm_idle_main_uid = 0;
+    s_alm_idle_alarm_uid = 0;
+    s_alm_idle_deadline = 0;
+    s_alm_idle_fired_at = 0;
+    s_alm_idle_resumed_at = 0;
+    s_alm_idle_handler_calls = 0;
+    s_alm_idle_handler_ctx = 0;
+    s_alm_idle_wake_rc = 0xffffffffu;
+    s_alm_idle_entry_finished = 0;
+    sr_test_register_guest_fn(ALM_IDLE_ENTRY, alm_idle_entry_fn);
+    sr_test_register_guest_fn(ALM_IDLE_HANDLER, alm_idle_handler_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(ALM_IDLE_ENTRY, 0u, 0u);
+
+    expect(s_alm_idle_alarm_uid != 0u && s_alm_idle_alarm_uid < 0x80000000u &&
+           s_alm_idle_deadline != 0u,
+           "idle: the sleeping thread armed an alarm");
+    expect(s_alm_idle_handler_calls == 1u,
+           "idle: the scheduler advanced to the alarm deadline and ran the handler instead of "
+           "reporting a deadlock");
+    expect(s_alm_idle_fired_at == s_alm_idle_deadline,
+           "idle: the clock was advanced exactly to the deadline");
+    expect(s_alm_idle_handler_ctx == 1 && s_alm_idle_wake_rc == 0u,
+           "idle: the handler ran in interrupt context and woke the sleeper");
+    expect(s_alm_idle_entry_finished == 1u && s_alm_idle_resumed_at >= s_alm_idle_deadline,
+           "idle: the sleeper resumed after the deadline and finished");
+
+    /* A periodic alarm with no thread left waiting does not keep the run alive. */
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_alm_long_calls = 0;
+    sr_test_register_guest_fn(ALM_LONG_ENTRY, alm_long_entry_fn);
+    sr_test_register_guest_fn(ALM_LONG_HANDLER, alm_long_handler_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(ALM_LONG_ENTRY, 0u, 0u);
+    expect(s_alm_long_calls < 50u,
+           "idle: a periodic alarm alone does not keep a finished run alive");
+    sr_test_guest_fn_reset();
 }
 
 static volatile uint32_t s_delay_zero_worker_runs;
@@ -18869,8 +19944,8 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
-        char msg[640];
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
@@ -18878,6 +19953,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
                  "+ 1 vblank multi waiter + 1 ReferSemaStatus waiter "
+                 "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -22670,6 +23746,7 @@ int main(int argc, char **argv) {
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
+    test_sysreg_virtual_registry();
     test_unregistered_batch_refusals();
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
@@ -22715,6 +23792,18 @@ int main(int argc, char **argv) {
     test_sysclib_memory_imports();
     test_refer_thread_status();
     test_change_current_thread_attr();
+    test_suspend_resume_errors_and_ready_thread();
+    test_rotate_ready_queue_selection_order();
+    test_rotate_equal_priority_yields_to_peers();
+    test_suspended_waiter_keeps_wait_semantics();
+    test_released_timed_wait_reports_release_not_clock();
+    test_suspended_delay_deadline_still_counts();
+    test_alarm_registration_and_error_codes();
+    test_alarm_one_shot_fires_once_at_its_time_with_its_argument();
+    test_alarm_rearm_by_return_value();
+    test_alarm_cancel_before_firing_prevents_the_handler();
+    test_alarm_handler_runs_under_interrupt_context_rules();
+    test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();

@@ -132,11 +132,10 @@
     "status": "unreviewed"
   },
   "0x0cae832b": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_RegCloseCategory",
     "name": "sceRegCloseCategory",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x0d81716a": {
     "classification": "dedicated",
@@ -333,11 +332,10 @@
     "status": "partial"
   },
   "0x1d8a762e": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_RegOpenCategory",
     "name": "sceRegOpenCategory",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x1e490401": {
     "classification": "dedicated",
@@ -500,11 +498,10 @@
     "status": "partial"
   },
   "0x28a8e98a": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_RegGetKeyValue",
     "name": "sceRegGetKeyValue",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x28b6489c": {
     "classification": "dedicated",
@@ -1247,11 +1244,10 @@
     "status": "controlled_unsupported"
   },
   "0x6652b8ca": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SetAlarm",
     "name": "sceKernelSetAlarm",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x67179b1b": {
     "classification": "dedicated",
@@ -1449,11 +1445,10 @@
     "status": "unreviewed"
   },
   "0x75156e8f": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_ResumeThread",
     "name": "sceKernelResumeThread",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x7591c7db": {
     "classification": "dedicated",
@@ -1553,11 +1548,10 @@
     "status": "unreviewed"
   },
   "0x7e65b999": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_CancelAlarm",
     "name": "sceKernelCancelAlarm",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x7ed29e40": {
     "classification": "dedicated",
@@ -1754,11 +1748,10 @@
     "status": "unreviewed"
   },
   "0x912354a7": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_RotateThreadReadyQueue",
     "name": "sceKernelRotateThreadReadyQueue",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x91de343c": {
     "classification": "dedicated",
@@ -1785,11 +1778,10 @@
     "status": "unreviewed"
   },
   "0x92e41280": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_RegOpenRegistry",
     "name": "sceRegOpenRegistry",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x93440b11": {
     "classification": "dedicated",
@@ -1852,11 +1844,10 @@
     "status": "partial"
   },
   "0x9944f31f": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SuspendThread",
     "name": "sceKernelSuspendThread",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x99944089": {
     "classification": "dedicated",
@@ -2452,11 +2443,10 @@
     "status": "unreviewed"
   },
   "0xd4475aa8": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_RegGetKeyInfo",
     "name": "sceRegGetKeyInfo",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0xd4b95ffb": {
     "classification": "dedicated",
@@ -2928,11 +2918,10 @@
     "status": "unreviewed"
   },
   "0xfa8a5739": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_RegCloseRegistry",
     "name": "sceRegCloseRegistry",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0xfaa4f89b": {
     "classification": "dedicated",
