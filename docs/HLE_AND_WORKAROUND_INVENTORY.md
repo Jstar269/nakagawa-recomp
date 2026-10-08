@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **488** (dedicated **434**, fake_success **5**, controlled_unsupported **49**).
-Semantic handler census: **399** handlers across **21** API families, covering **440** handler-associated NID registrations.
+Registered NIDs: **491** (dedicated **442**, fake_success **5**, controlled_unsupported **44**).
+Semantic handler census: **407** handlers across **21** API families, covering **448** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 54 | 54 |
+| `partial` | 62 | 62 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 332 | 361 |
@@ -58,10 +58,10 @@ Semantic handler census: **399** handlers across **21** API families, covering *
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 2 | 0 | 0 | 8 | 10 | 10 |
+| `sceGe` | 0 | 4 | 0 | 0 | 8 | 12 | 12 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 14 | 0 | 0 | 134 | 150 | 174 |
+| `sceKernel` | 2 | 20 | 0 | 0 | 134 | 156 | 180 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
@@ -71,7 +71,7 @@ Semantic handler census: **399** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **54** | **1** | **2** | **332** | **399** | **440** |
+| **Total** | **10** | **62** | **1** | **2** | **332** | **407** | **448** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -142,6 +142,12 @@ Semantic handler census: **399** handlers across **21** API families, covering *
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+- **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
+  - Limitation: models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+- **`h_GeContinue`** (`sceGe`): `sceGeContinue` (0x4c06e472)
+  - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
   - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -203,6 +209,11 @@ Semantic handler census: **399** handlers across **21** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_AllocMemoryBlock`** (`sceKernel`): `sceKernelAllocMemoryBlock` (0xfe707fdf)
   - Limitation: models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured
+- **`h_CancelAlarm`** (`sceKernel`): `sceKernelCancelAlarm` (0x7e65b999)
+  - Limitation: an unknown, cancelled or already-finished alarm UID returns the hardware-measured unknown-alarm code; treating a one-shot that has already fired as unknown (its UID is released when the handler returns 0) is the project's model and is not separately measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_registration_and_error_codes
+  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_cancel_before_firing_prevents_the_handler
+  - Evidence: src/rt/sched_selftest.c:test_alarm_cancel_and_ordering
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)
@@ -221,10 +232,34 @@ Semantic handler census: **399** handlers across **21** API families, covering *
   - Limitation: callback-dispatch interleaving during a mailbox wait unmeasured; ILLEGAL_CONTEXT precedence unmeasured (#339, #341)
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
+- **`h_ReferSemaStatus`** (`sceKernel`): `sceKernelReferSemaStatus` (0xbc6febc5)
+  - Limitation: reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only
 - **`h_ReferThreadStatus`** (`sceKernel`): `sceKernelReferThreadStatus` (0x17c1684e)
   - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
+- **`h_ResumeThread`** (`sceKernel`): `sceKernelResumeThread` (0x75156e8f)
+  - Limitation: resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
+  - Evidence: src/rt/sched_selftest.c:test_suspend_resume_error_codes
+- **`h_RotateThreadReadyQueue`** (`sceKernel`): `sceKernelRotateThreadReadyQueue` (0x912354a7)
+  - Limitation: rotates the cyclic slot-order ready queue of one priority (0 selects the caller's priority) and yields when the caller leads that queue; no range-error code is returned for an out-of-range priority because none is sourced, and ordering relative to threads that become ready after the rotation is not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_rotate_ready_queue_selection_order
+  - Evidence: src/rt/hle_thread_selftest.c:test_rotate_equal_priority_yields_to_peers
+  - Evidence: src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
+- **`h_SetAlarm`** (`sceKernel`): `sceKernelSetAlarm` (0x6652b8ca)
+  - Limitation: the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after delivery, which is hardware measured only as 'reschedules'; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented
+  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument
+  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_rearm_by_return_value
+  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_handler_runs_under_interrupt_context_rules
+  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline
+  - Evidence: src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context
+  - Evidence: src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler
+- **`h_SuspendThread`** (`sceKernel`): `sceKernelSuspendThread` (0x9944f31f)
+  - Limitation: suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
+  - Evidence: src/rt/hle_thread_selftest.c:test_suspended_waiter_keeps_wait_semantics
+  - Evidence: src/rt/sched_selftest.c:test_suspended_wait_still_completes
 - **`h_SysClock2USec`** (`sceKernel`): `sceKernelSysClock2USec` (0xba6b92e2)
   - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
 - **`h_SysClock2USecWide`** (`sceKernel`): `sceKernelSysClock2USecWide` (0xe1619d7c)
