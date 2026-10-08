@@ -216,6 +216,7 @@ static void reset_sched(void) {
     memset(&g_test_handler_seen, 0, sizeof(g_test_handler_seen));
     s_test_uid_next = 0x110u;
     g_test_body = NULL;
+    sched_alarm_reset();
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
     s_cpu = &g_cpu_store;
     s_pace_on = 0;   /* turbo: no host-clock sleeps if a vblank path ever fires */
@@ -3054,6 +3055,270 @@ static void test_novbpace_value_semantics(void) {
     s_pace_on = 0;
 }
 
+/* ---- kernel alarms (sceKernelSetAlarm / sceKernelCancelAlarm) -------------------------
+ * The alarm timer model lives in the scheduler.  These drive the real
+ * scheduler_service_pending(), sr_yield() and sched_classify_idle() with the stand-in
+ * dispatch() running the handler body, so delivery context, ordering, masking and the
+ * idle classification are the production paths. */
+#define ALARM_HANDLER 0x00005000u
+
+static unsigned g_alarm_calls;
+static uint32_t g_alarm_seen_common;
+static uint64_t g_alarm_seen_time;
+static int g_alarm_seen_intr_ctx;
+static int g_alarm_seen_cur;
+static unsigned g_alarm_seen_vblanks;
+static CpuState g_alarm_seen_frame;
+static uint32_t g_alarm_ret;
+static uint32_t g_alarm_order[8];
+
+static void alarm_body(CpuState *s) {
+    g_alarm_calls++;
+    if (g_alarm_calls <= 8u) g_alarm_order[g_alarm_calls - 1u] = s->r[4];
+    g_alarm_seen_common = s->r[4];
+    g_alarm_seen_time = s_vtime_us;
+    g_alarm_seen_intr_ctx = sched_is_intr_context();
+    g_alarm_seen_cur = s_cur;
+    g_alarm_seen_vblanks = g_test_handler_calls;
+    memcpy(&g_alarm_seen_frame, s, sizeof(g_alarm_seen_frame));
+    s->r[16] = 0xdeadbeefu;     /* the interrupted thread must never see this */
+    s->r[2] = g_alarm_ret;
+}
+
+static void alarm_fixture(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0);          /* turbo: virtual time moves only when the test says */
+    disable_vblank_sources();
+    g_test_body = alarm_body;
+    g_alarm_calls = 0;
+    g_alarm_ret = 0;
+    g_alarm_seen_common = 0;
+    g_alarm_seen_time = 0;
+    g_alarm_seen_intr_ctx = 0;
+    g_alarm_seen_cur = 0;
+    g_alarm_seen_vblanks = 0;
+    memset(g_alarm_order, 0, sizeof(g_alarm_order));
+    memset(&g_alarm_seen_frame, 0, sizeof(g_alarm_seen_frame));
+}
+
+static void test_alarm_runs_at_its_deadline_in_interrupt_context(void) {
+    alarm_fixture();
+    int running = mk(0x240u, TH_RUNNING, 20);
+    s_cur = running;
+    g_cpu_store.pc = 0x11112222u;
+    g_cpu_store.r[16] = 0x33334444u;
+    g_cpu_store.r[29] = 0x77778888u;
+    s_gp = 0x00abc000u;
+    CpuState interrupted;
+    memcpy(&interrupted, &g_cpu_store, sizeof(interrupted));
+
+    s_vtime_us = 1000u;
+    uint32_t uid = sched_alarm_set(1500u, ALARM_HANDLER, 0x2468u);
+    expect(uid != 0u && uid < 0x80000000u, "SetAlarm returns a UID, not an error code");
+    expect(sched_alarm_next_deadline() == 2500u, "the deadline is now plus the request");
+
+    s_vtime_us = 2499u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 0u, "the handler does not run before its deadline");
+    s_vtime_us = 2500u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 1u, "the handler runs once the deadline is reached");
+    expect(g_alarm_seen_time == 2500u, "the handler ran at the deadline");
+    expect(g_alarm_seen_common == 0x2468u, "the common word reaches the handler in $a0");
+    expect(g_alarm_seen_intr_ctx && g_alarm_seen_cur == -1,
+           "the handler runs in interrupt context (no current thread)");
+    expect(g_alarm_seen_frame.pc == ALARM_HANDLER &&
+           g_alarm_seen_frame.r[29] == SR_VBLANK_STACK_TOP &&
+           g_alarm_seen_frame.r[28] == s_gp &&
+           g_alarm_seen_frame.r[31] == 0u &&
+           g_alarm_seen_frame.r[16] == interrupted.r[16],
+           "the handler gets the interrupt stack, kernel entry state and the live callee-saved file");
+    expect(s_cur == running && !sched_is_intr_context(),
+           "the interrupted thread is current again after the handler");
+    expect(memcmp(&g_cpu_store, &interrupted, sizeof(interrupted)) == 0,
+           "the handler's register writes do not leak into the interrupted thread");
+    s_vtime_us = 900000u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 1u, "a one-shot alarm fires exactly once");
+    expect(sched_alarm_cancel(uid) == SCHED_ERROR_UNKNOWN_ALMID,
+           "the UID of a one-shot that already ran is unknown");
+
+    /* The yield path is an interrupt-service point as well, and a zero request is due at
+     * the next one. */
+    g_alarm_calls = 0;
+    uid = sched_alarm_set(0u, ALARM_HANDLER, 0x1357u);
+    expect(uid != 0u && g_alarm_calls == 0u,
+           "a zero-microsecond request is accepted and not run inline");
+    sr_yield(&g_cpu_store);
+    expect(g_alarm_calls == 1u && g_alarm_seen_common == 0x1357u,
+           "a due alarm is delivered from the yield path");
+}
+
+static void test_alarm_rearm_is_relative_to_delivery(void) {
+    alarm_fixture();
+    s_cur = mk(0x241u, TH_RUNNING, 20);
+    s_vtime_us = 0u;
+    uint32_t uid = sched_alarm_set(1000u, ALARM_HANDLER, 7u);
+
+    g_alarm_ret = 500u;
+    s_vtime_us = 1000u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 1u, "first delivery");
+    expect(sched_alarm_next_deadline() == 1500u,
+           "a non-zero return re-arms the same alarm that many microseconds later");
+    s_vtime_us = 1499u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 1u, "the re-armed alarm waits for its new deadline");
+
+    g_alarm_ret = 700u;
+    s_vtime_us = 1600u;            /* service was late by 100 us */
+    scheduler_service_pending();
+    expect(g_alarm_calls == 2u && g_alarm_seen_time == 1600u, "second delivery");
+    expect(sched_alarm_next_deadline() == 2300u,
+           "the period counts from delivery, so a late service point owes no burst");
+
+    g_alarm_ret = 0u;
+    s_vtime_us = 2300u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 3u, "third delivery");
+    expect(sched_alarm_next_deadline() == SCHED_WAIT_FOREVER, "a zero return ends the alarm");
+    s_vtime_us = 99999u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 3u, "an ended alarm never fires again");
+    expect(sched_alarm_cancel(uid) == SCHED_ERROR_UNKNOWN_ALMID,
+           "an alarm that ended through its return value is released");
+
+    /* Many missed periods still deliver one episode per pass, not a catch-up burst. */
+    alarm_fixture();
+    s_cur = mk(0x242u, TH_RUNNING, 20);
+    sched_alarm_set(100u, ALARM_HANDLER, 1u);
+    g_alarm_ret = 100u;
+    s_vtime_us = 100000u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 1u, "1000 missed periods deliver one episode, not a burst");
+    expect(sched_alarm_next_deadline() == 100100u, "and the next period starts at the delivery");
+}
+
+static void test_alarm_cancel_and_ordering(void) {
+    alarm_fixture();
+    s_cur = mk(0x243u, TH_RUNNING, 20);
+    uint32_t a = sched_alarm_set(1000u, ALARM_HANDLER, 0xa1u);
+    uint32_t b = sched_alarm_set(2000u, ALARM_HANDLER, 0xb2u);
+    expect(a != 0u && b != 0u && a != b, "each alarm gets its own UID");
+    expect(sched_alarm_cancel(a) == 0u, "cancelling a pending alarm succeeds");
+    expect(sched_alarm_cancel(a) == SCHED_ERROR_UNKNOWN_ALMID, "a cancelled UID is unknown");
+    expect(sched_alarm_cancel(0u) == SCHED_ERROR_UNKNOWN_ALMID, "UID 0 is unknown");
+    expect(sched_alarm_cancel(0x7fffffffu) == SCHED_ERROR_UNKNOWN_ALMID,
+           "a never-issued UID is unknown");
+    s_vtime_us = 1500u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 0u, "a cancelled alarm never runs");
+    s_vtime_us = 2500u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 1u && g_alarm_seen_common == 0xb2u,
+           "cancelling one alarm leaves the others armed");
+
+    /* Several due at once run oldest deadline first, then in the order they were set. */
+    alarm_fixture();
+    s_cur = mk(0x244u, TH_RUNNING, 20);
+    sched_alarm_set(3000u, ALARM_HANDLER, 0x31u);
+    sched_alarm_set(2000u, ALARM_HANDLER, 0x32u);
+    sched_alarm_set(3000u, ALARM_HANDLER, 0x33u);
+    s_vtime_us = 3000u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 3u && g_alarm_order[0] == 0x32u &&
+           g_alarm_order[1] == 0x31u && g_alarm_order[2] == 0x33u,
+           "due alarms run by deadline, ties in the order they were set");
+}
+
+static void test_alarm_waits_for_enabled_interrupts_and_follows_vblank(void) {
+    alarm_fixture();
+    s_cur = mk(0x245u, TH_RUNNING, 20);
+    sched_alarm_set(1000u, ALARM_HANDLER, 0x44u);
+    uint32_t token = sched_suspend_interrupts();
+    expect(token == 1u, "interrupts were enabled");
+    s_vtime_us = 5000u;
+    scheduler_service_pending();
+    expect(g_alarm_calls == 0u,
+           "an alarm that comes due under a CpuSuspendIntr window is not delivered");
+    expect(sched_alarm_wake_deadline() == SCHED_WAIT_FOREVER,
+           "the idle scheduler cannot wait for an alarm it is not allowed to deliver");
+    sched_resume_interrupts(token);
+    expect(g_alarm_calls == 1u && g_alarm_seen_common == 0x44u,
+           "the alarm is delivered when interrupts are re-enabled");
+
+    /* A VBLANK episode and a due alarm: the display episode is delivered first. */
+    alarm_fixture();
+    s_cur = mk(0x246u, TH_RUNNING, 20);
+    g_test_vblank_handler = 0x00001234u;
+    sched_alarm_set(10u, ALARM_HANDLER, 0x55u);
+    s_vtime_us = 20u;
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    scheduler_service_pending();
+    expect(g_test_handler_calls == 1u && g_alarm_calls == 1u,
+           "both interrupt sources were delivered");
+    expect(g_alarm_seen_vblanks == 1u, "the VBLANK episode ran before the alarm handler");
+}
+
+static void test_alarm_is_a_wake_source_for_the_idle_scheduler(void) {
+    alarm_fixture();
+    uint32_t uid = sched_alarm_set(5000u, ALARM_HANDLER, 1u);
+
+    /* Nobody is waiting: the alarm cannot ready anyone, so it must not keep a run alive. */
+    SchedIdleState st = sched_classify_idle();
+    expect(st.soonest == SCHED_WAIT_FOREVER && st.unwakeable,
+           "a pending alarm with no waiting thread does not make an idle run wakeable");
+
+    /* A thread asleep with no deadline of its own is released only by the handler. */
+    TCB *sleeper = &s_tcb[mk(0x250u, TH_WAIT_OBJ, 32)];
+    sleeper->wait_obj = 0x53000009u;
+    sleeper->wake = SCHED_WAIT_FOREVER;
+    st = sched_classify_idle();
+    expect(st.soonest == 5000u, "the idle scheduler sees the alarm deadline as its next wake");
+    expect(!st.unwakeable, "a sleeper waiting on an alarm is not a deadlock");
+
+    /* The earlier of a thread's deadline and the alarm wins. */
+    TCB *delayed = &s_tcb[mk(0x251u, TH_WAIT_DELAY, 32)];
+    delayed->wake = 3000u;
+    st = sched_classify_idle();
+    expect(st.soonest == 3000u, "an earlier thread deadline still wins");
+    delayed->wake = 9000u;
+    st = sched_classify_idle();
+    expect(st.soonest == 5000u, "an earlier alarm deadline wins over a later thread deadline");
+
+    /* Interrupts disabled: the alarm cannot be delivered, so it cannot be waited for. */
+    delayed->wake = SCHED_WAIT_FOREVER;
+    delayed->state = TH_DORMANT;
+    s_interrupts_enabled = 0;
+    st = sched_classify_idle();
+    expect(st.soonest == SCHED_WAIT_FOREVER && st.unwakeable,
+           "with interrupts disabled the alarm is not a wake source");
+    s_interrupts_enabled = 1;
+    expect(sched_classify_idle().soonest == 5000u, "enabled again, the alarm is the next wake");
+
+    expect(sched_alarm_cancel(uid) == 0u, "cancel the pending alarm");
+    st = sched_classify_idle();
+    expect(st.unwakeable, "with the alarm cancelled the same sleeper is a deadlock again");
+}
+
+static void test_alarm_table_capacity_and_reset(void) {
+    alarm_fixture();
+    uint32_t uids[SCHED_ALARM_MAX];
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++) {
+        uids[i] = sched_alarm_set(1000u + i, ALARM_HANDLER, i);
+        expect(uids[i] != 0u && uids[i] < 0x80000000u, "alarm slot allocates");
+    }
+    expect(sched_alarm_set(1u, ALARM_HANDLER, 0u) == SCHED_ERROR_ALARM_NO_MEMORY,
+           "a full table answers the out-of-resources code");
+    expect(sched_alarm_cancel(uids[10]) == 0u, "free one slot");
+    expect(sched_alarm_set(1u, ALARM_HANDLER, 0u) != SCHED_ERROR_ALARM_NO_MEMORY,
+           "a released slot is reusable");
+    sched_alarm_reset();
+    expect(sched_alarm_cancel(uids[0]) == SCHED_ERROR_UNKNOWN_ALMID &&
+           sched_alarm_next_deadline() == SCHED_WAIT_FOREVER,
+           "reset drops every alarm");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--test-pace-setup") == 0) {
         s_pace_on = -1;
@@ -3152,6 +3417,14 @@ int main(int argc, char **argv) {
     test_unwakeable_vblank_states_are_reported();
     test_turbo_vblank_latches_and_services();
     test_novbpace_value_semantics();
+
+    /* Kernel alarms. */
+    test_alarm_runs_at_its_deadline_in_interrupt_context();
+    test_alarm_rearm_is_relative_to_delivery();
+    test_alarm_cancel_and_ordering();
+    test_alarm_waits_for_enabled_interrupts_and_follows_vblank();
+    test_alarm_is_a_wake_source_for_the_idle_scheduler();
+    test_alarm_table_capacity_and_reset();
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",
             sr_title_config()->source_id, sr_title_config()->valid);
