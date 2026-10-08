@@ -665,6 +665,10 @@ def _run_bringup(
         )
     progress = _read_bringup_progress(progress_path)
     _active_stage, _active_elapsed_ms, durations = _progress_stage_details(progress)
+    report_stages = report.get("stages")
+    analyze_stage = (
+        report_stages.get("analyze") if isinstance(report_stages, dict) else None
+    )
     return RouteOutcome(
         report,
         return_code=process.returncode,
@@ -674,7 +678,7 @@ def _run_bringup(
         build_diagnostic=_first_build_diagnostic(build_log_path),
         analyzer_diagnostic=(
             _read_private_analyzer_diagnostic(private_import_report_path)
-            if report.get("failure_class") == "ANALYSIS_FAILED"
+            if isinstance(analyze_stage, dict) and analyze_stage.get("status") == "FAIL"
             else None
         ),
     )
@@ -1633,7 +1637,12 @@ def run_sweep(
             ):
                 row["build_log_path"] = outcome.build_log_path
                 row["build_diagnostic"] = outcome.build_diagnostic
-            if boundary_code == "ANALYSIS_FAILED" and outcome.analyzer_diagnostic:
+            analyze_stage = stages.get("analyze")
+            if (
+                isinstance(analyze_stage, dict)
+                and analyze_stage.get("status") == "FAIL"
+                and outcome.analyzer_diagnostic
+            ):
                 row["analyzer_diagnostic"] = outcome.analyzer_diagnostic
         rows_by_key[key] = row
         run_count += 1

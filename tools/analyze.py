@@ -2421,18 +2421,23 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
 
     # Reconstruct stubs from .sceStub.text or imports
     stubs_sec = elf.sec(".sceStub.text")
-    if stubs_sec:
-        if elf.reloc is not None:
-            try:
-                from imports import parse_imports
-                impmap = parse_imports(elf)
-                for a in impmap.keys():
-                    hc.add(a)
-            except Exception as e:
-                sys.stderr.write(f"warning: failed to parse imports in analyzer: {e}\n")
-        else:
-            for a in range(stubs_sec["addr"], stubs_sec["addr"] + stubs_sec["size"], 8):
+    has_module_info = elf.sec(".rodata.sceModuleInfo") is not None
+    if has_module_info or (stubs_sec and elf.reloc is not None):
+        try:
+            from imports import ImportTableError, parse_imports
+            impmap = parse_imports(elf)
+            for a in impmap.keys():
                 hc.add(a)
+        except ImportTableError:
+            raise
+        except Exception as e:
+            raise ImportTableError(
+                "ANALYZER_IMPORT_TABLE_INVALID",
+                f"failed to parse imports in analyzer: {e}",
+            ) from e
+    elif stubs_sec:
+        for a in range(stubs_sec["addr"], stubs_sec["addr"] + stubs_sec["size"], 8):
+            hc.add(a)
 
 
     # Function-pointer tables in read-only/data sections (callbacks reached via jalr).
@@ -2826,7 +2831,18 @@ def main(argv):
             cfg_gate = True
     elf = Elf(args[0], base=base)
     extra_spans = resolve_extra_spans(extra_span_arg)
-    starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    try:
+        starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    except Exception as exc:
+        boundary_code = getattr(exc, "code", None)
+        if not isinstance(boundary_code, str) or not boundary_code.startswith("ANALYZER_"):
+            raise
+        if boundary_code == "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED":
+            message = "PSP variable imports are not supported yet."
+        else:
+            message = "This PSP import-table layout is not supported yet."
+        sys.stderr.write(f"{boundary_code}: {exc}. {message}\n")
+        return 1
     model = build_model(elf, starts)
 
     quiet = "--quiet" in opts

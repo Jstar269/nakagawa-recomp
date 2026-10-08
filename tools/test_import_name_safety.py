@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import shutil
 import struct
@@ -21,6 +23,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import tomllib  # noqa: E402
+import analyze as analyze_tool  # noqa: E402
 import imports as imports_tool  # noqa: E402
 
 
@@ -194,6 +197,106 @@ class TestImportNameSafety(unittest.TestCase):
         parsed = imports_tool.parse_imports(FakeElf(b"sceDisplay"))
         self.assertEqual(parsed[FakeElf.FIRST_SYM], ("sceDisplay", 0x12345678))
 
+    def test_null_nid_pointer_has_a_named_analyzer_boundary(self):
+        elf = FakeElf(b"sceDisplay")
+        struct.pack_into("<I", elf.mem, FakeElf.STUB - FakeElf.BASE + 12, 0)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_variable_only_imports_have_a_named_unsupported_boundary(self):
+        elf = FakeElf(b"sceDisplay")
+        struct.pack_into("<B", elf.mem, FakeElf.STUB - FakeElf.BASE + 9, 1)
+        struct.pack_into("<H", elf.mem, FakeElf.STUB - FakeElf.BASE + 10, 0)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED")
+
+    def test_misaligned_import_regions_have_a_named_boundary(self):
+        class MismatchedRegionElf(FakeElf):
+            def sec(self, name: str):
+                if name == ".sceStub.text":
+                    return {"addr": self.FIRST_SYM - 8, "size": 16}
+                if name == ".rodata.sceNid":
+                    return {"addr": self.NIDS, "size": 4}
+                return super().sec(name)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(MismatchedRegionElf(b"sceDisplay"))
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_REGIONS_MISMATCH")
+
+    def test_analyzer_does_not_swallow_a_named_import_boundary(self):
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+        malformed_elf = imports_tool.Elf(bytes(malformed), base=base)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            analyze_tool.analyze(malformed_elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_analyzer_checks_import_metadata_when_section_names_are_missing(self):
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        image = bytearray(blob)
+        # Match a stripped retail ELF: segment addresses are absolute, but the
+        # section-name table no longer identifies .sceStub.text.
+        struct.pack_into("<H", image, 16, 2)
+        struct.pack_into("<I", image, 24, base)
+        phoff = struct.unpack_from("<I", image, 28)[0]
+        struct.pack_into("<II", image, phoff + 8, base, base)
+        module_info = 0x100 + 0x40
+        image[module_info + 4:module_info + 13] = b"Synthetic"
+        struct.pack_into("<I", image, module_info + 32, 4)
+        elf = imports_tool.Elf(bytes(image), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        struct.pack_into("<I", image, import_section["off"] + 12, 0)
+        struct.pack_into("<H", image, 50, 0)
+        shoff = struct.unpack_from("<I", image, 32)[0]
+        shentsize, shnum = struct.unpack_from("<HH", image, 46)
+        for index in range(shnum):
+            struct.pack_into("<I", image, shoff + index * shentsize, 0)
+        stripped_elf = imports_tool.Elf(bytes(image), base=base)
+        self.assertIsNone(stripped_elf.sec(".sceStub.text"))
+        self.assertIsNotNone(stripped_elf.sec(".rodata.sceModuleInfo"))
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            analyze_tool.analyze(stripped_elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_analyzer_cli_names_unsupported_import_layout(self):
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="analyzer-import-boundary-") as temp:
+            path = Path(temp) / "synthetic.elf"
+            path.write_bytes(malformed)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = analyze_tool.main([
+                    "analyze.py", os.fspath(path), f"--base={base:08x}", "--quiet"
+                ])
+
+        self.assertEqual(status, 1)
+        self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", stderr.getvalue())
+        self.assertIn("not supported yet", stderr.getvalue())
+
     def test_psp_import_table_is_reconstructed_when_section_names_are_missing(self):
         base = 0x08804000
         image, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
@@ -253,8 +356,10 @@ class TestImportNameSafety(unittest.TestCase):
         last_addr = elf.BASE + len(elf.mem) - 1
         struct.pack_into("<I", elf.mem, elf.STUB - elf.BASE, last_addr)
         elf.mem[-1] = ord("X")
-        with self.assertRaisesRegex(ValueError, "leaves mapped input"):
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
             imports_tool.parse_imports(elf)
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED")
+        self.assertIn("leaves mapped input", str(raised.exception))
 
     def test_truncated_module_info_is_rejected(self):
         elf = FakeElf(b"sceDisplay")

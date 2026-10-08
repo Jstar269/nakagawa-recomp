@@ -1346,7 +1346,7 @@ class TestSanitizedBringup(unittest.TestCase):
     def _run_case(
         self, failure=None, *, launch_code=0, launch_output="", timeout=False,
         flight_events=None, flight_dropped=0, instruction_trace=False,
-        unsupported_opcodes=None,
+        unsupported_opcodes=None, analyzer_error=None,
     ):
         case_root = self.root / (failure or "success")
         report_path = case_root / "bringup.json"
@@ -1356,6 +1356,7 @@ class TestSanitizedBringup(unittest.TestCase):
             report=str(report_path),
             launch_timeout=1,
             instruction_trace=instruction_trace,
+            private_sweep_import_report=str(case_root / "work" / "sweep-imports.json"),
         )
         globals_timeout = timeout
         launch_commands = []
@@ -1437,7 +1438,8 @@ class TestSanitizedBringup(unittest.TestCase):
                 ))
             if failure == "analyze":
                 stack.enter_context(mock.patch.object(
-                    title_codegen_plan, "_make_input_images", side_effect=RuntimeError("synthetic refusal")
+                    title_codegen_plan, "_make_input_images",
+                    side_effect=analyzer_error or RuntimeError("synthetic refusal"),
                 ))
             if failure == "inspect":
                 broken_iso = case_root / "broken.iso"
@@ -2225,7 +2227,7 @@ class TestSanitizedBringup(unittest.TestCase):
         expected = {
             "inspect": "INVALID_ISO",
             "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
-            "analyze": "ANALYSIS_FAILED",
+            "analyze": "ANALYZER_FAILURE_UNCLASSIFIED",
             "codegen": "CODEGEN_FAILED",
             "compile": "COMPILE_FAILED",
             "build_package": "BUILD_PACKAGE_FAILED",
@@ -2242,7 +2244,36 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["reached_stage"], stage)
                 self.assertEqual(report["failure_class"], failure_class)
                 self.assertEqual(report["stages"][stage]["status"], "FAIL")
+                if stage == "analyze":
+                    summary = nk_cli._bringup_human_summary(report)
+                    self.assertIn("ANALYZER_FAILURE_UNCLASSIFIED", summary)
+                    self.assertIn("not supported yet", summary)
+                    self.assertNotRegex(summary, r"#[0-9]+")
                 nk_cli.validate_bringup_report(report)
+
+    def test_analyzer_import_boundary_is_named_and_says_not_supported_yet(self):
+        boundary = title_codegen_plan.PackageRouteError(
+            "ANALYZER_IMPORT_NID_TABLE_MISSING",
+            "synthetic import entry has no NID table",
+        )
+        status, report = self._run_case("analyze", analyzer_error=boundary)
+
+        self.assertNotEqual(status, 0)
+        self.assertEqual(report["reached_stage"], "analyze")
+        self.assertEqual(report["failure_class"], "ANALYZER_IMPORT_NID_TABLE_MISSING")
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", summary)
+        self.assertIn("not supported yet", summary)
+        self.assertNotRegex(summary, r"#[0-9]+")
+        sidecar = json.loads(
+            (self.root / "analyze" / "work" / "sweep-imports.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertTrue(sidecar["analyzer_diagnostic"].startswith(
+            "ANALYZER_IMPORT_NID_TABLE_MISSING: PackageRouteError:"
+        ))
+        nk_cli.validate_bringup_report(report)
 
     def test_runtime_unimplemented_nid_is_reported_as_unsupported_import(self):
         status, report = self._run_case(
