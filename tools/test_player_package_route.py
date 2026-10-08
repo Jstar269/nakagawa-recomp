@@ -655,6 +655,153 @@ class TestPlayerPackageRoute(unittest.TestCase):
         )
         self.assertIn("GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE (#308, in the works)",
                       log_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stderr.getvalue(), f"Package build refused: {expected_message}\n"
+        )
+        self.assertNotIn("GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE", stderr.getvalue())
+        self.assertNotIn("synthetic unsupported load layout", stderr.getvalue())
+
+    def test_native_legacy_profile_matcher_rejects_added_optional_fields(self):
+        default = nk_cli.title_manifest.validate_manifest(
+            native_legacy_experimental_manifest()
+        )
+        self.assertTrue(
+            nk_cli._is_native_legacy_experimental_manifest(
+                default, DISC_ID, TITLE_ID,
+                "Synthetic Experimental Disc", "NA",
+            )
+        )
+
+        changes = (
+            ("notes", lambda value: value.update(notes="Preserve this user-authored note.")),
+            ("display_name", lambda value: value.update(display_name="User title")),
+            ("disc.region", lambda value: value["disc"].update(region="EU")),
+            ("disc.revision_policy", lambda value: value["disc"].update(
+                revision_policy="compatible-revisions"
+            )),
+            ("disc.compatible_revisions", lambda value: value["disc"].update(
+                compatible_revisions=[DISC_ID]
+            )),
+        )
+        for field, change in changes:
+            with self.subTest(field=field):
+                customized = json.loads(json.dumps(default))
+                change(customized)
+                self.assertFalse(
+                    nk_cli._is_native_legacy_experimental_manifest(
+                        customized, DISC_ID, TITLE_ID,
+                        "Synthetic Experimental Disc", "NA",
+                    )
+                )
+
+    def test_legacy_profile_upgrade_refuses_changed_executable_before_rewrite(self):
+        import argparse
+        import contextlib
+        import io
+
+        iso_path = self.root / "legacy-profile-drift.iso"
+        original_executable = self.executable_bytes
+        create_test_iso_with_executables(
+            iso_path, original_executable, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        user_root = self.root / "legacy-profile-drift-user-data"
+        self.stage_library(
+            user_root, native_legacy_experimental_manifest(), iso_path,
+            original_executable,
+        )
+        profile_path = user_root / "experimental" / DISC_ID / "profile.json"
+        original_profile = profile_path.read_bytes()
+
+        changed_executable = bytearray(original_executable)
+        changed_executable[-1] ^= 1
+        create_test_iso_with_executables(
+            iso_path, bytes(changed_executable), disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        args = argparse.Namespace(
+            disc_id=DISC_ID,
+            user_data_root=user_root,
+            module_dir=None,
+            psp_header=None,
+            instruction_trace=False,
+            register_local_compatibility_record=False,
+            progress_json=user_root / "logs" / "drift.jsonl",
+            log_file=user_root / "logs" / "drift.log",
+        )
+        stderr = io.StringIO()
+        with patch.object(
+            nk_cli, "_current_package_cache_key",
+            side_effect=AssertionError("build continued after an executable drift"),
+        ), patch.object(
+            nk_cli, "write_experimental_profile",
+            wraps=nk_cli.write_experimental_profile,
+        ) as profile_writer, contextlib.redirect_stderr(stderr):
+            status = nk_cli.cmd_build_package(args)
+
+        self.assertNotEqual(status, 0)
+        self.assertIn("Selected executable SHA-256 differs", stderr.getvalue())
+        profile_writer.assert_not_called()
+        self.assertEqual(profile_path.read_bytes(), original_profile)
+
+    def test_nondefault_legacy_profile_without_codegen_setting_refuses_with_detail(self):
+        import argparse
+        import contextlib
+        import io
+
+        iso_path = self.root / "legacy-profile-custom.iso"
+        executable = self.executable_bytes
+        create_test_iso_with_executables(
+            iso_path, executable, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        manifest = native_legacy_experimental_manifest()
+        manifest["notes"] = "Preserve this user-authored profile note."
+        user_root = self.root / "legacy-profile-custom-user-data"
+        self.stage_library(user_root, manifest, iso_path, executable)
+        profile_path = user_root / "experimental" / DISC_ID / "profile.json"
+        original_profile = profile_path.read_bytes()
+        progress_path = user_root / "logs" / "missing-codegen.jsonl"
+        log_path = user_root / "logs" / "missing-codegen.log"
+        args = argparse.Namespace(
+            disc_id=DISC_ID,
+            user_data_root=user_root,
+            module_dir=None,
+            psp_header=None,
+            instruction_trace=False,
+            register_local_compatibility_record=False,
+            progress_json=progress_path,
+            log_file=log_path,
+        )
+        expected_message = (
+            "This experimental profile is missing its generic build setting; "
+            "re-import the disc to rebuild the profile, then retry."
+        )
+        stderr = io.StringIO()
+        with patch.object(
+            nk_cli, "_current_package_cache_key",
+            side_effect=AssertionError("custom profile was incorrectly upgraded"),
+        ), patch.object(
+            nk_cli, "write_experimental_profile",
+            wraps=nk_cli.write_experimental_profile,
+        ) as profile_writer, contextlib.redirect_stderr(stderr):
+            status = nk_cli.cmd_build_package(args)
+
+        self.assertNotEqual(status, 0)
+        events = [
+            json.loads(line) for line in progress_path.read_text(encoding="utf-8").splitlines()
+        ]
+        failure = next(event for event in events if event["status"] == "FAIL")
+        self.assertEqual(failure["message"], expected_message)
+        self.assertEqual(
+            failure["detail"],
+            "EXPERIMENTAL_CODEGEN_PROFILE_MISSING (#730, in the works): "
+            "codegen_profile is absent from a non-default experimental profile",
+        )
+        self.assertIn(failure["detail"], log_path.read_text(encoding="utf-8"))
+        self.assertEqual(stderr.getvalue(), f"Package build refused: {expected_message}\n")
+        profile_writer.assert_not_called()
+        self.assertEqual(profile_path.read_bytes(), original_profile)
 
     def test_catalogued_display_smoke_plan_matches_main_bytes(self):
         """Keep the catalogued package plan byte-identical to the current-main baseline."""

@@ -667,15 +667,34 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
 
 
 def _is_native_legacy_experimental_manifest(
-    manifest: dict, disc_id: str, title_id: str
+    manifest: dict,
+    disc_id: str,
+    title_id: str,
+    expected_display_name: str | None = None,
+    expected_region: str | None = None,
 ) -> bool:
     """Match only the generic zero-layout profile emitted by older native imports."""
     expected_id = f"experimental-{disc_id.lower()}"
+    expected_keys = {
+        "schema_version", "id", "game_name", "display_name", "kind", "disc",
+        "executable", "modules", "filesystem", "hle_profile",
+        "feature_requirements", "verification_profile",
+    }
+    disc = manifest.get("disc")
     return (
-        title_id == expected_id
+        set(manifest) == expected_keys
+        and manifest.get("schema_version") == 1
+        and title_id == expected_id
         and manifest.get("id") == expected_id
         and manifest.get("game_name") == expected_id
+        and (expected_display_name is None or
+             manifest.get("display_name") == expected_display_name)
         and manifest.get("kind") == "retail"
+        and isinstance(disc, dict)
+        and set(disc) == {"id", "region", "revision_policy"}
+        and disc.get("id") == disc_id
+        and (expected_region is None or disc.get("region") == expected_region)
+        and disc.get("revision_policy") == "exact-disc-id"
         and manifest.get("codegen_profile") is None
         and manifest.get("hle_profile") == "generic"
         and manifest.get("feature_requirements") == []
@@ -693,8 +712,6 @@ def _is_native_legacy_experimental_manifest(
             "device_prefixes": ["disc0:", "ms0:"],
             "loose_content_roots": [],
         }
-        and "runtime_bindings" not in manifest
-        and "required_runtime_bindings" not in manifest
     )
 
 
@@ -1305,8 +1322,14 @@ def _build_package(args: argparse.Namespace, stage_observer,
             user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
         )
         if entry.get("is_experimental") and "codegen_profile" not in manifest:
+            display_name = metadata.title.strip() if metadata.title else ""
+            if not display_name or any(ord(char) < 0x20 for char in display_name):
+                display_name = f"PSP Title ({disc_id})"
+            region = metadata.region if metadata.region in {
+                "JP", "NA", "EU", "KR", "ASIA", "OTHER"
+            } else "OTHER"
             if not _is_native_legacy_experimental_manifest(
-                manifest, disc_id, entry["title_id"]
+                manifest, disc_id, entry["title_id"], display_name, region
             ):
                 raise ExperimentalProfileBuildError(
                     "EXPERIMENTAL_CODEGEN_PROFILE_MISSING",
@@ -1315,6 +1338,24 @@ def _build_package(args: argparse.Namespace, stage_observer,
                     "re-import the disc to rebuild the profile, then retry.",
                     "codegen_profile is absent from a non-default experimental profile",
                 )
+            if expected_hash is not None:
+                if uses_decrypted_eboot:
+                    current_executable_hash = package_cache.sha256_file(
+                        Path(str(decrypted_eboot))
+                    )
+                else:
+                    with tempfile.TemporaryDirectory(
+                        prefix=".experimental-profile-check-", dir=user_root
+                    ) as temporary:
+                        current_executable_hash = _extract_iso_executable(
+                            iso_path, manifest_selected,
+                            Path(temporary) / "selected.elf",
+                        )
+                if current_executable_hash != expected_hash:
+                    raise PackageBuildError(
+                        "Selected executable SHA-256 differs from the experimental "
+                        "profile; re-import the ISO before rebuilding."
+                    )
             try:
                 # The player’s native importer predates the shared Python profile
                 # writer used by bring-up. Rebuild only its untouched zero-layout
@@ -1727,10 +1768,12 @@ def _build_package(args: argparse.Namespace, stage_observer,
     except (PackageBuildError, OSError, ValueError, KeyError, TypeError) as exc:
         if isinstance(exc, ExperimentalProfileBuildError):
             reporter.report_failure(exc.user_message, detail=exc.detail)
+            stderr_message = exc.user_message
         else:
             reporter.report_failure(str(exc))
+            stderr_message = str(exc)
         reporter.close()
-        sys.stderr.write(f"Package build refused: {exc}\n")
+        sys.stderr.write(f"Package build refused: {stderr_message}\n")
         return 1
 
 
