@@ -320,6 +320,9 @@ ifeq ($(CASE),kernel-misc)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o
 LIBS += -lpspctrl
 endif
+ifeq ($(CASE),wait-outcomes)
+OBJS += $(BUILD_DIR)/threadman_user_imports.o
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)

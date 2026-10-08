@@ -5615,7 +5615,7 @@ static int wait_for_thread_state(SceUID uid, int desired, uint32_t timeout_us,
         info.size = sizeof(info);
         if (sceKernelReferThreadStatus(uid, &info) == 0) {
             *observed = info.status;
-            if (info.status == (uint32_t)desired) return 1;
+            if (info.status == desired) return 1;
         }
         sceKernelDelayThread(1000u);
     } while (sceKernelGetSystemTimeWide() - started < timeout_us);
@@ -5754,6 +5754,10 @@ static void run_thread_scheduler(int emulated) {
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_WAIT_OUTCOMES
+int sceKernelCancelSema(SceUID semaid, int newCount, int *numWaitThreads);
+int sceKernelCancelEventFlag(SceUID evid, SceUInt newPattern,
+                             int *numWaitThreads);
+
 static int s_wait_mode;
 static int s_wait_result;
 static SceUID s_wait_object;
@@ -5768,7 +5772,7 @@ static int wait_outcomes_wait_thread_state(SceUID uid, int desired,
         memset(&info, 0, sizeof(info));
         info.size = sizeof(info);
         if (sceKernelReferThreadStatus(uid, &info) == 0 &&
-            info.status == (uint32_t)desired) return 1;
+            info.status == desired) return 1;
         sceKernelDelayThread(1000u);
     } while (sceKernelGetSystemTimeWide() - started < timeout_us);
     return 0;
