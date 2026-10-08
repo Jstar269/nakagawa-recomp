@@ -371,7 +371,7 @@ class LiveManifestTests(unittest.TestCase):
 
     def test_kernel_import_sweep_names_and_routes_every_target(self) -> None:
         expected = {
-            0xEA748E31: ("sceKernelChangeCurrentThreadAttr", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xEA748E31: ("sceKernelChangeCurrentThreadAttr", "h_ChangeCurrentThreadAttr", "dedicated"),
             0x912354A7: ("sceKernelRotateThreadReadyQueue", "h_ControlledUnsupported", "controlled_unsupported"),
             0x75156E8F: ("sceKernelResumeThread", "h_ControlledUnsupported", "controlled_unsupported"),
             0x9944F31F: ("sceKernelSuspendThread", "h_ControlledUnsupported", "controlled_unsupported"),
@@ -610,7 +610,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
                 "0xd4475aa8": ("sceRegGetKeyInfo", "0x80010086"),
                 "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
-                "0xea748e31": ("sceKernelChangeCurrentThreadAttr", "0x80020002"),
                 "0xfa8a5739": ("sceRegCloseRegistry", "0x80010086"),
             },
         )

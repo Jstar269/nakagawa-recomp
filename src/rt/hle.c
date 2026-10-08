@@ -2183,6 +2183,11 @@ static uint32_t h_DelayThreadCB(CpuState *s) {
  * several HLE objects below. */
 #define SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR 0x800200d3u
 
+/* Thread error codes from sched.c. */
+#define SCE_KERNEL_ERROR_ILLEGAL_THID       0x80020197u
+#define SCE_KERNEL_ERROR_UNKNOWN_THID       0x80020198u
+#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT    0x80020064u
+
 static uint32_t h_ReadSysClockDelay(uint32_t addr, uint64_t *usec_out) {
     if (!addr || !usec_out || !sr_guest_span_readable(addr, 8u))
         return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
@@ -2218,6 +2223,20 @@ static uint32_t h_ChangeThreadPriority(CpuState *s) {
     /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
     return sched_set_priority(A0, (int)A1);
 }
+
+/* sceKernelChangeCurrentThreadAttr: changes the current thread's attribute bits.
+ * PSPSDK signature: int sceKernelChangeCurrentThreadAttr(int unknown, SceUInt attr)
+ * First argument (A0): mask of bits to clear
+ * Second argument (A1): mask of bits to set
+ * Returns 0 on success, or an error code.
+ * Only the VFPU bit (0x00004000, the common call with set mask PSP_THREAD_ATTR_VFPU)
+ * is accepted and recorded; any other bit fails closed with ILLEGAL_ATTR until its
+ * semantics are evidenced. The runtime does not gate VFPU use on this bit. */
+static uint32_t h_ChangeCurrentThreadAttr(CpuState *s) {
+    (void)s;
+    return sched_change_current_thread_attr(A0, A1);
+}
+
 static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
@@ -18935,7 +18954,7 @@ static void hle_register_psmf_player_handlers(void) {
  * Keep this one mapping in both the executable harness and production registry;
  * facilities with missing lifecycle state are registered as explicit refusals. */
 static void hle_register_kernel_import_sweep_handlers(void) {
-    sr_hle_register_unsupported(0xea748e31, "sceKernelChangeCurrentThreadAttr", 0x80020002u);
+    sr_hle_register(0xea748e31, "sceKernelChangeCurrentThreadAttr", h_ChangeCurrentThreadAttr);
     sr_hle_register_unsupported(0x912354a7, "sceKernelRotateThreadReadyQueue", 0x80020002u);
     sr_hle_register_unsupported(0x75156e8f, "sceKernelResumeThread", 0x80020002u);
     sr_hle_register_unsupported(0x9944f31f, "sceKernelSuspendThread", 0x80020002u);

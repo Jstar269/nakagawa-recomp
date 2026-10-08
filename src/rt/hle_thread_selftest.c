@@ -2314,7 +2314,6 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {NID_SCE_KERNEL_CHANGE_CURRENT_THREAD_ATTR, 0x80020002u, "sceKernelChangeCurrentThreadAttr"},
         {NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0x80020002u, "sceKernelRotateThreadReadyQueue"},
         {NID_SCE_KERNEL_RESUME_THREAD, 0x80020002u, "sceKernelResumeThread"},
         {NID_SCE_KERNEL_SUSPEND_THREAD, 0x80020002u, "sceKernelSuspendThread"},
@@ -9275,6 +9274,70 @@ static void test_refer_thread_status(void) {
     s_cpu->r[5] = 0x0bfffff0u;
     expect(sr_syscall(s_cpu, NID_REFER_THREAD_STATUS) == TEST_ILLEGAL_ADDR,
            "ReferThreadStatus validates the complete output structure span");
+}
+
+static void test_change_current_thread_attr(void) {
+    enum {
+        NID_CHANGE_CURRENT_THREAD_ATTR = 0xea748e31u,
+        PSP_THREAD_ATTR_VFPU = 0x00004000u,
+    };
+    reset_fixture();
+    sr_hle_init();
+
+    /* Create and set a current thread for the test. */
+    TCB *main_t = fixture_thread(0x3400u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+
+    /* 1. Basic VFPU attribute change on current thread. */
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = PSP_THREAD_ATTR_VFPU;
+    uint32_t ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == 0u, "ChangeCurrentThreadAttr(clear=0, set=VFPU) succeeds on main thread");
+
+    /* 2. Clear VFPU attribute. */
+    s_cpu->r[4] = PSP_THREAD_ATTR_VFPU;
+    s_cpu->r[5] = 0;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == 0u, "ChangeCurrentThreadAttr(clear=VFPU, set=0) succeeds on main thread");
+
+    /* 3. Toggle VFPU attribute (clear and set in one call). */
+    s_cpu->r[4] = PSP_THREAD_ATTR_VFPU;
+    s_cpu->r[5] = PSP_THREAD_ATTR_VFPU;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == 0u, "ChangeCurrentThreadAttr(clear=VFPU, set=VFPU) succeeds on main thread");
+
+    /* 4. Invalid attribute bits (non-user-modifiable) should fail. */
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x80000000u; /* USER bit */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects USER bit");
+
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x00001000u; /* KERNEL bit */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects KERNEL bit");
+
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x00100000u; /* NO_FILLSTACK */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects NO_FILLSTACK bit");
+
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x00200000u; /* CLEAR_STACK */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects CLEAR_STACK bit");
+
+    /* 5. Unknown bits should fail. */
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0xFFFF0000u;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects unknown high bits");
+
+    s_cpu->r[4] = 0xFFFF0000u;
+    s_cpu->r[5] = 0;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects unknown clear bits");
 }
 
 static volatile uint32_t s_delay_zero_worker_runs;
@@ -21775,6 +21838,7 @@ int main(int argc, char **argv) {
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
     test_refer_thread_status();
+    test_change_current_thread_attr();
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();

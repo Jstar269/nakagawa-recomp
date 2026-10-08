@@ -2482,11 +2482,10 @@
     "status": "partial"
   },
   "0xea748e31": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_ChangeCurrentThreadAttr",
     "name": "sceKernelChangeCurrentThreadAttr",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xeadb1bd7": {
     "classification": "dedicated",
