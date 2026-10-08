@@ -170,8 +170,10 @@ crashes.
   substituting mismatched system fonts that cause text clipping. Guest
   translated `libfont` startup runs through its guest entry; when that startup is
   unavailable (an untranslated entry, or `SR_REAL_MODULE_START=0`), the runtime
-  reports `LIBFONT_STARTUP_UNAVAILABLE` and may apply the configured ready-flag
-  fallback. Completing that boundary is in the works
+  reports `LIBFONT_STARTUP_UNAVAILABLE`, fails closed, and leaves readiness
+  unchanged. Manifests that still set `libfont_ready_flag_addr` fail with
+  `LIBFONT_READY_FLAG_RETIRED`; remove the field and use translated guest startup.
+  Real-title validation of startup dependencies remains in the works
   ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)), as is the
   clean-room open-font converter
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).

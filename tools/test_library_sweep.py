@@ -352,6 +352,130 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertNotIn("DIAGNOSTIC_LAYOUT_SENTINEL", public_text)
         self.assertNotIn(str(work_dir), public_text)
 
+    def test_analysis_failure_keeps_first_diagnostic_only_in_private_report(self) -> None:
+        iso = _write_iso(
+            self.iso_dir, "analysis-failure.iso", "TEST00002", "Analyzer Diagnostic Fixture"
+        )
+        diagnostic = "ValueError: SYNTHETIC_ANALYZER_FAILURE"
+
+        for index, failure_class in enumerate((
+            "ANALYSIS_FAILED",
+            "ANALYZER_IMPORT_NID_TABLE_MISSING",
+        )):
+            work_dir = self.private_dir / f"analysis-failure-work-{index}"
+            work_dir.mkdir(parents=True)
+
+            class FailedAnalyze:
+                pid = 9004
+                returncode = 1
+
+                def __init__(self, command, _failure_class=failure_class, **_kwargs):
+                    self.command = command
+                    self.failure_class = _failure_class
+
+                def communicate(self, timeout=None):
+                    report_path = Path(self.command[self.command.index("--report") + 1])
+                    report = _bringup_report(failure=self.failure_class)
+                    report.update({
+                        "reached_stage": "analyze",
+                        "stages": {
+                            **report["stages"],
+                            "analyze": {"status": "FAIL", "duration_ms": 25},
+                            "codegen": {"status": "NOT_RUN", "duration_ms": 0},
+                            "compile": {"status": "NOT_RUN", "duration_ms": 0},
+                            "build_package": {"status": "NOT_RUN", "duration_ms": 0},
+                            "launch": {"status": "NOT_RUN", "duration_ms": 0},
+                        },
+                    })
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+                    sidecar = Path(
+                        self.command[self.command.index("--private-sweep-import-report") + 1]
+                    )
+                    sidecar.write_text(json.dumps({
+                        "schema_version": 1,
+                        "unsupported_imports": [],
+                        "analyzer_diagnostic": diagnostic,
+                    }), encoding="utf-8")
+                    return "", ""
+
+            with (
+                mock.patch.object(library_sweep.subprocess, "Popen", FailedAnalyze),
+                mock.patch.object(library_sweep, "_route_environment", return_value={}),
+            ):
+                outcome = library_sweep._run_bringup(
+                    iso,
+                    work_dir,
+                    work_dir / "bringup.json",
+                    work_dir / "sweep-imports.json",
+                    7,
+                )
+
+            self.assertEqual(outcome.report["failure_class"], failure_class)
+            self.assertEqual(outcome.analyzer_diagnostic, diagnostic)
+
+            private_dir = self.private_dir / f"analysis-failure-{index}"
+            with mock.patch.object(library_sweep, "_run_bringup", return_value=outcome):
+                library_sweep.run_sweep(
+                    self.iso_dir, private_dir, self.public_output, **self._run_kwargs(),
+                )
+            private = json.loads(
+                (private_dir / "library-sweep.json").read_text(encoding="utf-8")
+            )
+            public_text = self.public_output.read_text(encoding="utf-8")
+            self.assertEqual(private["rows"][0]["analyzer_diagnostic"], diagnostic)
+            self.assertEqual(private["rows"][0]["stopped_at_stage"], "analyze")
+            self.assertNotIn("SYNTHETIC_ANALYZER_FAILURE", public_text)
+
+    def test_private_sweep_sidecar_bounds_analyzer_diagnostic(self) -> None:
+        work_dir = self.private_dir / "sidecar-work"
+        work_dir.mkdir(parents=True)
+        sidecar = work_dir / "sweep-imports.json"
+
+        nk_cli._write_private_sweep_import_report(
+            sidecar,
+            work_dir,
+            [],
+            analyzer_diagnostic="  ValueError:\nSYNTHETIC_ANALYZER_FAILURE  ",
+        )
+
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        self.assertEqual(
+            payload["analyzer_diagnostic"],
+            "ValueError: SYNTHETIC_ANALYZER_FAILURE",
+        )
+
+    def test_private_sweep_sidecar_read_bounds(self) -> None:
+        work_dir = self.private_dir / "sidecar-work-bounds"
+        work_dir.mkdir(parents=True)
+        sidecar = work_dir / "sweep-imports.json"
+
+        nk_cli._write_private_sweep_import_report(
+            sidecar,
+            work_dir,
+            [],
+            analyzer_diagnostic="Valid diagnostic",
+        )
+        self.assertEqual(
+            library_sweep._read_private_analyzer_diagnostic(sidecar),
+            "Valid diagnostic",
+        )
+
+        oversized_payload = {
+            "schema_version": 1,
+            "analyzer_diagnostic": "Valid diagnostic",
+            "padding": "x" * (library_sweep._SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_BYTES + 100),
+        }
+        sidecar.write_text(json.dumps(oversized_payload), encoding="utf-8")
+        self.assertIsNone(library_sweep._read_private_analyzer_diagnostic(sidecar))
+
+        too_many_members = {
+            "schema_version": 1,
+            "analyzer_diagnostic": "Valid diagnostic",
+            **{f"k_{i}": i for i in range(library_sweep._SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_MEMBERS + 1)},
+        }
+        sidecar.write_text(json.dumps(too_many_members), encoding="utf-8")
+        self.assertIsNone(library_sweep._read_private_analyzer_diagnostic(sidecar))
+
     def test_legacy_schema_baseline_is_compared_without_exporting_old_family_names(self) -> None:
         previous = library_sweep._public_aggregate(
             [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1

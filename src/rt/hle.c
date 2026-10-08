@@ -960,6 +960,200 @@ static uint32_t h_GetSystemParamInt(CpuState *s) {
     return 0;
 }
 
+/* ---- sceReg: read-only virtual system registry ----
+ * Public reference: the PSPSDK Reg kernel library (pspdev.github.io/pspsdk, group__Reg and
+ * structRegParam). struct RegParam is 272 bytes: regtype u32 at +0, name[256] at +4 (documented
+ * as seemingly unused), namelen u32 at +260, unk2 u32 at +264, unk3 u32 at +268. Key types are
+ * DIR=1, INT=2, STR=3, BIN=4; REGHANDLE is a 32-bit handle. The reference documents no regtype
+ * values and no error codes, so regtype is not checked and the error codes below are errno-class
+ * choices, not hardware measurements.
+ *
+ * Read model: the writers (sceRegSetKeyValue and friends) are not registered, so a write fails
+ * closed as an unregistered import. Integer values come from systemparam_int_value(), the table
+ * sceUtilityGetSystemParamInt reads, so the two surfaces cannot disagree. The nickname is a
+ * project default because this runtime has no system-param string table yet. Nothing here
+ * touches the host filesystem. */
+#define SREG_REGPARAM_BYTES 272u
+#define SREG_SLOTS 4u
+#define SREG_TAG_REG 0x52470000u /* 'RG' registry handle; low byte = slot + 1 */
+#define SREG_TAG_CAT 0x52430000u /* 'RC' category handle; low byte = slot + 1 */
+#define SREG_TAG_KEY 0x524b0000u /* 'RK' key handle; bits 8..15 = category slot + 1, bits 0..7 = key index + 1 */
+#define SREG_ERR_ILLEGAL_ADDR 0x80000103u /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define SREG_ERR_BADF 0x80010009u /* EBADF: not an open handle of this kind */
+#define SREG_ERR_NOENT 0x80010002u /* ENOENT: unknown category or key */
+#define SREG_ERR_NOMEM 0x8001000cu /* ENOMEM: handle slots exhausted */
+#define SREG_ERR_INVAL 0x80010016u /* EINVAL: unsupported mode, or buffer smaller than the value */
+#define SREG_TYPE_INT 2u
+#define SREG_TYPE_STR 3u
+
+typedef struct {
+    const char *category; /* absolute path, exact match as passed to sceRegOpenCategory */
+    const char *key;
+    uint32_t type;        /* SREG_TYPE_INT or SREG_TYPE_STR */
+    int sysparam_id;      /* integer keys: PSP_SYSTEMPARAM_ID_INT_* read via systemparam_int_value() */
+    const char *str;      /* string keys: NUL-terminated value */
+} SregKey;
+
+static const SregKey s_sreg_keys[] = {
+    { "/CONFIG/SYSTEM/XMB",    "language",         SREG_TYPE_INT, 8, NULL },
+    { "/CONFIG/SYSTEM/XMB",    "button_assign",    SREG_TYPE_INT, 9, NULL },
+    { "/CONFIG/SYSTEM",        "nickname",         SREG_TYPE_STR, -1, "PSP" },
+    { "/CONFIG/DATE",          "date_format",      SREG_TYPE_INT, 4, NULL },
+    { "/CONFIG/DATE",          "time_format",      SREG_TYPE_INT, 5, NULL },
+    { "/CONFIG/DATE",          "time_zone_offset", SREG_TYPE_INT, 6, NULL },
+    { "/CONFIG/DATE",          "summer_time",      SREG_TYPE_INT, 7, NULL },
+    { "/CONFIG/NETWORK/ADHOC", "channel",          SREG_TYPE_INT, 2, NULL },
+};
+
+/* Categories that open successfully. CHARACTER_SET opens but has no modeled keys: its value source
+ * is not in this runtime yet, so key lookups under it fail closed. */
+static const char *const s_sreg_categories[] = {
+    "/CONFIG/SYSTEM", "/CONFIG/SYSTEM/XMB", "/CONFIG/SYSTEM/CHARACTER_SET",
+    "/CONFIG/DATE", "/CONFIG/NETWORK/ADHOC",
+};
+
+static uint8_t s_sreg_reg_open[SREG_SLOTS];
+static uint8_t s_sreg_cat_open[SREG_SLOTS];
+static int s_sreg_cat_index[SREG_SLOTS];
+
+static int sreg_slot_of(uint32_t h, uint32_t tag, const uint8_t *open) {
+    uint32_t n = h & 0xffu;
+    if ((h & 0xffff0000u) != tag || (h & 0xff00u) || n == 0u || n > SREG_SLOTS) return -1;
+    return open[n - 1u] ? (int)(n - 1u) : -1;
+}
+
+static int sreg_free_slot(const uint8_t *open) {
+    for (uint32_t i = 0; i < SREG_SLOTS; i++)
+        if (!open[i]) return (int)i;
+    return -1;
+}
+
+static int sreg_find_category(const char *path) {
+    for (uint32_t i = 0; i < sizeof(s_sreg_categories) / sizeof(s_sreg_categories[0]); i++)
+        if (strcmp(s_sreg_categories[i], path) == 0) return (int)i;
+    return -1;
+}
+
+static int sreg_find_key(int cat, const char *name) {
+    for (uint32_t i = 0; i < sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]); i++)
+        if (strcmp(s_sreg_keys[i].category, s_sreg_categories[cat]) == 0 &&
+            strcmp(s_sreg_keys[i].key, name) == 0)
+            return (int)i;
+    return -1;
+}
+
+static uint32_t sreg_key_size(const SregKey *k) {
+    return k->type == SREG_TYPE_INT ? 4u : (uint32_t)strlen(k->str) + 1u;
+}
+
+static int guest_cstr(uint32_t addr, char *out, int max);
+
+/* sceRegOpenRegistry(RegParam *reg, int mode, REGHANDLE *h): mode 1 only. */
+static uint32_t h_RegOpenRegistry(CpuState *s) {
+    uint32_t reg = A0, mode = A1, out = A2;
+    int slot;
+    if (!reg || !sr_guest_span_readable(reg, SREG_REGPARAM_BYTES)) return SREG_ERR_ILLEGAL_ADDR;
+    if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
+    if (mode != 1u) {
+        fprintf(stderr, "sceRegOpenRegistry: mode %u unsupported (the registry opens with mode 1)\n", mode);
+        return SREG_ERR_INVAL;
+    }
+    slot = sreg_free_slot(s_sreg_reg_open);
+    if (slot < 0) return SREG_ERR_NOMEM;
+    s_sreg_reg_open[slot] = 1;
+    MEM_W32(out, SREG_TAG_REG | (uint32_t)(slot + 1));
+    return 0;
+}
+
+/* sceRegOpenCategory(REGHANDLE h, const char *name, int mode, REGHANDLE *hd). Mode 2 (read/write)
+ * is accepted, but no writer is registered, so an open category cannot change any value. */
+static uint32_t h_RegOpenCategory(CpuState *s) {
+    uint32_t reg = A0, name = A1, mode = A2, out = A3;
+    char path[128];
+    int cat, slot;
+    if (sreg_slot_of(reg, SREG_TAG_REG, s_sreg_reg_open) < 0) return SREG_ERR_BADF;
+    if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
+    /* guest_cstr reports unreadable and unterminated names alike; both are refused as bad spans. */
+    if (!guest_cstr(name, path, (int)sizeof(path))) return SREG_ERR_ILLEGAL_ADDR;
+    if (mode != 1u && mode != 2u) return SREG_ERR_INVAL;
+    cat = sreg_find_category(path);
+    if (cat < 0) {
+        fprintf(stderr, "sceRegOpenCategory: unknown category \"%s\" (virtual system registry fails closed)\n",
+                path);
+        return SREG_ERR_NOENT;
+    }
+    slot = sreg_free_slot(s_sreg_cat_open);
+    if (slot < 0) return SREG_ERR_NOMEM;
+    s_sreg_cat_open[slot] = 1;
+    s_sreg_cat_index[slot] = cat;
+    MEM_W32(out, SREG_TAG_CAT | (uint32_t)(slot + 1));
+    return 0;
+}
+
+/* sceRegGetKeyInfo(REGHANDLE hd, const char *name, REGHANDLE *hk, unsigned int *type, SceSize *size).
+ * The fifth argument (t0/r8 under MIPS EABI) is the size pointer, read through stack_arg. */
+static uint32_t h_RegGetKeyInfo(CpuState *s) {
+    uint32_t cat = A0, name = A1, hk_out = A2, type_out = A3, size_out = stack_arg(s, 0);
+    char key[64];
+    int slot, idx;
+    slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
+    if (slot < 0) return SREG_ERR_BADF;
+    if (!hk_out || !sr_guest_span_writable(hk_out, 4u) || !type_out ||
+        !sr_guest_span_writable(type_out, 4u) || !size_out || !sr_guest_span_writable(size_out, 4u))
+        return SREG_ERR_ILLEGAL_ADDR;
+    if (!guest_cstr(name, key, (int)sizeof(key))) return SREG_ERR_ILLEGAL_ADDR;
+    idx = sreg_find_key(s_sreg_cat_index[slot], key);
+    if (idx < 0) {
+        fprintf(stderr, "sceRegGetKeyInfo: unknown key \"%s\" in category \"%s\" (virtual system registry fails closed)\n",
+                key, s_sreg_categories[s_sreg_cat_index[slot]]);
+        return SREG_ERR_NOENT;
+    }
+    MEM_W32(hk_out, SREG_TAG_KEY | ((uint32_t)(slot + 1) << 8) | (uint32_t)(idx + 1));
+    MEM_W32(type_out, s_sreg_keys[idx].type);
+    MEM_W32(size_out, sreg_key_size(&s_sreg_keys[idx]));
+    return 0;
+}
+
+/* sceRegGetKeyValue(REGHANDLE hd, REGHANDLE hk, void *buf, SceSize size): copies the value. A
+ * buffer smaller than the value is refused; a string value includes its terminating NUL. */
+static uint32_t h_RegGetKeyValue(CpuState *s) {
+    uint32_t cat = A0, keyh = A1, buf = A2, size = A3;
+    uint32_t kcat, kidx, need;
+    const SregKey *k;
+    int slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
+    if (slot < 0 || (keyh & 0xffff0000u) != SREG_TAG_KEY) return SREG_ERR_BADF;
+    kcat = (keyh >> 8) & 0xffu;
+    kidx = keyh & 0xffu;
+    if (kcat != (uint32_t)(slot + 1) || kidx == 0u || kidx > sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]))
+        return SREG_ERR_BADF;
+    k = &s_sreg_keys[kidx - 1u];
+    /* A stale key handle can name this slot after it was reopened on another category. */
+    if (strcmp(k->category, s_sreg_categories[s_sreg_cat_index[slot]]) != 0) return SREG_ERR_BADF;
+    need = sreg_key_size(k);
+    if (size < need) return SREG_ERR_INVAL;
+    if (!buf || !sr_guest_span_writable(buf, need)) return SREG_ERR_ILLEGAL_ADDR;
+    if (k->type == SREG_TYPE_INT) {
+        MEM_W32(buf, systemparam_int_value((uint32_t)k->sysparam_id));
+    } else {
+        for (uint32_t i = 0; i < need; i++) MEM_W8(buf + i, (uint8_t)k->str[i]);
+    }
+    return 0;
+}
+
+static uint32_t h_RegCloseCategory(CpuState *s) {
+    int slot = sreg_slot_of(A0, SREG_TAG_CAT, s_sreg_cat_open);
+    if (slot < 0) return SREG_ERR_BADF;
+    s_sreg_cat_open[slot] = 0;
+    return 0;
+}
+
+static uint32_t h_RegCloseRegistry(CpuState *s) {
+    int slot = sreg_slot_of(A0, SREG_TAG_REG, s_sreg_reg_open);
+    if (slot < 0) return SREG_ERR_BADF;
+    s_sreg_reg_open[slot] = 0;
+    return 0;
+}
+
 /* sceImpose: the impose language and confirm-button mode. The game sets this once during boot and
  * the impose surface (plus any dialog that follows the system convention) must agree with it, so
  * this is retained state rather than the h_ok fake success it used to be.
@@ -1059,6 +1253,19 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu   /* SCE_KERNEL_ERROR_ILLEGAL_SIZE */
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
+
+/* sceCtrlGetSamplingMode(int *pmode): report the mode retained by
+ * sceCtrlSetSamplingMode (power-on default digital, 0) through the required
+ * out-pointer, and return 0 as the PSPSDK pspctrl.h contract documents. The span
+ * is validated before anything is written, so a refused call leaves guest memory
+ * untouched; the refusal code is the same ILLEGAL_ADDR used by the clock getters.
+ * The pointer-error code itself is UNMEASURED on hardware. */
+static uint32_t h_CtrlGetSamplingMode(CpuState *s) {
+    (void)s;
+    if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A0, s_ctrl_sampling_mode);
+    return 0;
+}
 
 static int guest_cstr(uint32_t addr, char *out, int max);
 
@@ -2238,6 +2445,45 @@ static uint32_t h_ChangeCurrentThreadAttr(CpuState *s) {
     return sched_change_current_thread_attr(A0, A1);
 }
 
+/* sceKernelSuspendThread(thid) / sceKernelResumeThread(thid) /
+ * sceKernelRotateThreadReadyQueue(priority).  Public PSPSDK pspthreadman.h prototypes;
+ * semantics and error codes are documented at the sched_*_thread functions in sched.c.
+ * Resume applies strict-priority preemption once the thread is runnable again, like
+ * WakeupThread. */
+static uint32_t h_SuspendThread(CpuState *s) {
+    (void)s;
+    return sched_suspend_thread(A0);
+}
+static uint32_t h_ResumeThread(CpuState *s) {
+    (void)s;
+    uint32_t result = sched_resume_thread(A0);
+    if (result == 0) sched_preempt();
+    return result;
+}
+static uint32_t h_RotateThreadReadyQueue(CpuState *s) {
+    (void)s;
+    return sched_rotate_thread_ready_queue((int)A0);
+}
+
+/* sceKernelSetAlarm(SceUInt clock, SceKernelAlarmHandler handler, void *common) returns an
+ * alarm UID; once `clock` microseconds of guest time pass, the handler runs in interrupt
+ * context with `common` as its argument, and a non-zero return value re-arms it for that
+ * many microseconds (public PSPSDK pspthreadman.h prototypes).  The timer model and the
+ * unknown-id code live with the scheduler (sched_alarm_set / sched_alarm_cancel).  A NULL
+ * handler is refused with the project's invalid-guest-address code
+ * (SCE_KERNEL_ERROR_ILLEGAL_ADDR); the console's own code for it is not measured.  A zero
+ * clock is accepted and fires at the next interrupt-service point; the console's answer to
+ * it is not measured either. */
+static uint32_t h_SetAlarm(CpuState *s) {
+    (void)s;
+    if (A1 == 0u) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    return sched_alarm_set(A0, A1, A2);
+}
+static uint32_t h_CancelAlarm(CpuState *s) {
+    (void)s;
+    return sched_alarm_cancel(A0);
+}
+
 static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
@@ -2531,8 +2777,8 @@ static int real_module_start_enabled(void) {
  *   "1"    - translated/real module_start may run for any module.
  *   unset  - translated libfont module_start runs, so the guest owns its own
  *             readiness; every other module keeps the host bypass in h_StartModule.
- *   "0"    - no module_start runs for any module and libfont takes the named
- *             readiness fallback, which reports the boundary it hit.
+ *   "0"    - no module_start runs for any module; libfont reports a named refusal
+ *             instead of synthesizing guest readiness.
  * Any other value is refused rather than guessed, and the refusal is named once. */
 typedef enum {
     MODULE_START_ALLOW_ALL,
@@ -8377,6 +8623,19 @@ static uint32_t h_SysClock2USec(CpuState *s) {
     MEM_W32(A2, high);
     return 0;
 }
+/* sceKernelSysClock2USecWide(SceInt64 clock, unsigned *low, unsigned *high): the 64-bit
+ * clock is passed by value, so under the o32 convention its low word is $a0 and its high
+ * word is $a1, with the two output pointers in $a2 and $a3 (PSPSDK pspthreadman.h). It
+ * uses the same microsecond clock representation as h_SysClock2USec, so the split is the
+ * identity on the value. Both output spans are validated before either word is written. */
+static uint32_t h_SysClock2USecWide(CpuState *s) {
+    (void)s;
+    if (!A2 || !A3 || !sr_guest_span_writable(A2, 4u) || !sr_guest_span_writable(A3, 4u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A2, A0);
+    MEM_W32(A3, A1);
+    return 0;
+}
 static uint32_t h_RtcGetCurrentTick(CpuState *s) {
     (void)s;
     return rtc_write_u64(A0, rtc_now_tick()) ? 0u : RTC_ILLEGAL_ADDR;
@@ -8638,6 +8897,7 @@ static uint32_t h_StartModule(CpuState *s) {
     default:
         return SCE_ERROR_MODULE_BAD_ID;
     }
+    LoadedModuleState previous_state = mod->state;
     mod->start_entry_ran = 0;
 
     int is_libfont = module_path_is(path, "libfont.prx");
@@ -8645,8 +8905,8 @@ static uint32_t h_StartModule(CpuState *s) {
     int allow_entry = policy == MODULE_START_ALLOW_ALL ||
                       (policy == MODULE_START_LIBFONT_ONLY && is_libfont);
     /* A libfont module under the kill switch does not return here: startup is
-     * unavailable, so it falls through to the named readiness fallback below. */
-    int fallback_only = policy == MODULE_START_NONE && is_libfont;
+     * unavailable, so it reaches the fail-closed startup boundary below. */
+    int refuse_unavailable_libfont = policy == MODULE_START_NONE && is_libfont;
 
     /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
      * h_UtilityLoadModule): psmf.prx and libpsmfplayer.prx are fully host-side HLE'd, and their
@@ -8656,7 +8916,7 @@ static uint32_t h_StartModule(CpuState *s) {
      * sceKernelStartModule instead of sceUtilityLoadModule), so it needs the identical skip.
      * populate_known_module(path) was already called in h_LoadModule when the module was
      * recorded, so it is not repeated here. */
-    if (!allow_entry && !fallback_only) {
+    if (!allow_entry && !refuse_unavailable_libfont) {
         if (policy == MODULE_START_NONE) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> "
                             "SR_REAL_MODULE_START=0, module_start not executed\n",
@@ -8691,34 +8951,24 @@ static uint32_t h_StartModule(CpuState *s) {
     }
 
     /* Guest startup is unavailable: the entry is not translated, the image recorded none,
-     * or the operator disabled module_start. A configured ready word is a named fallback
-     * only for libfont; it never substitutes for translated startup. */
+     * or the operator disabled module_start. Libfont readiness belongs to guest code; do
+     * not synthesize it when translated startup cannot run. */
     if (is_libfont) {
-        uint32_t flag = 0;
         const char *reason = !allow_entry ? "SR_REAL_MODULE_START=0 disabled guest startup"
                          : (mod->module_start == 0) ? "no module_start entry recorded"
                                                     : "entry untranslated";
         unsigned reason_index = !allow_entry ? 0u : (mod->module_start == 0 ? 1u : 2u);
-        int configured = sr_title_config_libfont_ready_flag_addr(&flag);
-        int writable = configured && sr_guest_span_writable(flag, 4u);
-        if (writable) MEM_W32(flag, 1u);
-        /* The readiness write is not latched; the diagnostic is latched per named
-         * boundary, so a title that retries an unavailable libfont startup does not
-         * repeat the line while a different reason still gets its own name. */
+        /* The diagnostic is latched per named boundary while a failed start remains
+         * retryable in its previous module state. */
         static int s_logged_libfont_unavailable[3];
         if (!s_logged_libfont_unavailable[reason_index]) {
             s_logged_libfont_unavailable[reason_index] = 1;
-            if (writable) {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; using title-configured "
-                                "ready-flag fallback (#299)\n", reason);
-            } else if (configured) {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "target is not writable (#299)\n", reason);
-            } else {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "is unconfigured (#299)\n", reason);
-            }
+            fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; translated guest libfont "
+                            "startup is not supported yet on this route; refusing to "
+                            "synthesize readiness\n", reason);
         }
+        mod->state = previous_state;
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
     }
 
     static int s_logged_untranslated = 0;
@@ -15732,6 +15982,16 @@ void ge_finish_latch_assist(void) {
 }
 
 #define GE_LIST_MAX 64
+#define SCE_ERROR_NOT_FOUND 0x80000025u
+
+enum {
+    GE_LIST_FREE = 0,
+    GE_LIST_STALLED = 1,
+    GE_LIST_COMPLETED = 2,
+    GE_LIST_PAUSED = 3,
+    GE_LIST_CANCELLED = 4,
+};
+
 typedef struct {
     uint32_t uid;
     uint32_t start_pc;
@@ -15739,7 +15999,7 @@ typedef struct {
     uint32_t stall_addr;
     uint32_t cbid;
     uint32_t cbarg;
-    int status; // 0 = idle/free, 1 = stalled, 2 = completed
+    int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
 } GeListInfo;
 
@@ -15833,7 +16093,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
  * insertion yet. */
 static uint32_t h_GeListEnQueueHead(CpuState *s) {
     for (int i = 0; i < GE_LIST_MAX; i++) {
-        if (s_ge_lists[i].status == 1) {
+        if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
             fprintf(stderr, "UNSUPPORTED_IMPORT: sceGeListEnQueueHead queue ordering is not supported yet.\n");
             return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
         }
@@ -15850,7 +16110,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
         /* A list the GE already ran to its END is found too: the stall address
          * that follows its consumption is a defined no-op, not an unknown list. */
         if (s_ge_lists[i].uid == list_id &&
-            (s_ge_lists[i].status == 1 || s_ge_lists[i].executed)) {
+            (s_ge_lists[i].status == GE_LIST_STALLED ||
+             s_ge_lists[i].status == GE_LIST_PAUSED ||
+             s_ge_lists[i].executed)) {
             slot = i;
             break;
         }
@@ -15881,6 +16143,15 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
         ge_enqueue_trace_result(s, "update_stall", list_id, "already_executed", 0u, 0);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list_id=0x%08x already executed; stall=0x%08x ignored\n",
+                    list_id, new_stall);
+        return 0;
+    }
+
+    if (s_ge_lists[slot].status == GE_LIST_PAUSED) {
+        s_ge_lists[slot].stall_addr = new_stall;
+        ge_enqueue_trace_result(s, "update_stall", list_id, "paused", s_ge_lists[slot].current_pc, 0);
+        if (ge_log_on())
+            fprintf(stderr, "GE_UPDATE_STALL: list_id=0x%08x is paused; updated stall=0x%08x without resuming\n",
                     list_id, new_stall);
         return 0;
     }
@@ -15934,11 +16205,19 @@ static uint32_t h_GeListSync(CpuState *s) {
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
-            if (s_ge_lists[i].status == 2) return 0;
-            if (s_ge_lists[i].status == 1) {
-                if (syncType == 1) return 1;
+            if (s_ge_lists[i].status == GE_LIST_COMPLETED) return 0;
+            if (s_ge_lists[i].status == GE_LIST_STALLED) {
+                if (syncType == 1) return 1; /* PSP_GE_LIST_QUEUED */
                 sched_delay_current(1000);
                 return 0;
+            }
+            if (s_ge_lists[i].status == GE_LIST_PAUSED) {
+                if (syncType == 1) return 2; /* PSP_GE_LIST_DRAWING_DONE */
+                sched_delay_current(1000);
+                return 2;
+            }
+            if (s_ge_lists[i].status == GE_LIST_CANCELLED) {
+                return 4; /* PSP_GE_LIST_CANCEL_DONE */
             }
         }
     }
@@ -15970,21 +16249,122 @@ static uint32_t h_GeDrawSync(CpuState *s) {
      * PSPSDK GE interface (pspge.h) and PPSSPP Core/HLE/sceGe.cpp. The queue
      * state is the same s_ge_lists table h_GeListSync reads: status 1 is a
      * list still owned by the GE (stalled on its stall address), status 2 is
-     * completed. Peek reports the documented sync status (1 while any list is
-     * still owned, else 0); wait yields once through the scheduler -- the same
-     * pacing h_GeListSync's mode-0 path uses -- and reports completion,
-     * because a stalled list advances only on the game's UpdateStallAddr,
-     * never on time, so blocking here could never complete it. Which
-     * non-{0,1} modes firmware accepts is UNMEASURED: anything but the
-     * documented peek takes the wait path. */
+     * completed, status 3 is paused. Peek reports the documented sync status
+     * (2 while any list is paused, 1 while any list is stalled/owned, else 0);
+     * wait yields once through the scheduler -- the same pacing h_GeListSync's
+     * mode-0 path uses -- and reports completion, because a stalled list advances
+     * only on the game's UpdateStallAddr, never on time, so blocking here could
+     * never complete it. Which non-{0,1} modes firmware accepts is UNMEASURED:
+     * anything but the documented peek takes the wait path. */
     uint32_t mode = A0;
     int busy = 0;
-    for (int i = 0; i < GE_LIST_MAX; i++)
-        if (s_ge_lists[i].status == 1) { busy = 1; break; }
+    int paused = 0;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
+        if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
+    }
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
-                           mode, (uint32_t)busy, 0u, 0u);
-    if (mode == 1u) return busy ? 1u : 0u;
-    if (busy) sched_delay_current(1000);
+                           mode, (uint32_t)(busy || paused), 0u, 0u);
+    if (mode == 1u) {
+        if (paused) return 2u; /* PSP_GE_LIST_DRAWING_DONE */
+        return busy ? 1u : 0u;
+    }
+    if (busy || paused) sched_delay_current(1000);
+    return 0;
+}
+
+static uint32_t h_GeBreak(CpuState *s) {
+    uint32_t mode = A0;
+    uint32_t pparam = A1;
+
+    if (mode > 1u) {
+        return 0x800001feu; /* SCE_KERNEL_ERROR_INVALID_VALUE */
+    }
+    if (pparam != 0u && (!sr_guest_span_readable(pparam, 16u) || (pparam & 3u) != 0u)) {
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+
+    int active_slot = -1;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == GE_LIST_STALLED) {
+            active_slot = i;
+            break;
+        }
+    }
+
+    if (mode == 0u) {
+        /* Mode 0: pause current drawing list at command boundary */
+        if (active_slot == -1) {
+            return SCE_ERROR_NOT_FOUND;
+        }
+        s_ge_lists[active_slot].status = GE_LIST_PAUSED;
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                               s_ge_lists[active_slot].uid, s_ge_lists[active_slot].start_pc,
+                               s_ge_lists[active_slot].stall_addr, mode);
+        if (ge_log_on())
+            fprintf(stderr, "GE_BREAK: paused list_id=0x%08x cur_pc=0x%08x\n",
+                    s_ge_lists[active_slot].uid, s_ge_lists[active_slot].current_pc);
+        return 0;
+    } else {
+        /* Mode 1: cancel/reset all queues, returning stopped queue ID (or 0 if none) */
+        uint32_t stopped_id = (active_slot != -1) ? s_ge_lists[active_slot].uid : 0u;
+        if (stopped_id == 0u) {
+            for (int i = 0; i < GE_LIST_MAX; i++) {
+                if (s_ge_lists[i].status == GE_LIST_PAUSED) {
+                    stopped_id = s_ge_lists[i].uid;
+                    break;
+                }
+            }
+        }
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
+                s_ge_lists[i].status = GE_LIST_CANCELLED;
+                if (ge_log_on())
+                    fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
+            }
+        }
+        return stopped_id;
+    }
+}
+
+static uint32_t h_GeContinue(CpuState *s) {
+    int paused_slot = -1;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == GE_LIST_PAUSED) {
+            paused_slot = i;
+            break;
+        }
+    }
+    if (paused_slot == -1) {
+        return SCE_ERROR_NOT_FOUND;
+    }
+
+    s_ge_lists[paused_slot].status = GE_LIST_STALLED;
+    if (ge_log_on())
+        fprintf(stderr, "GE_CONTINUE: resuming list_id=0x%08x cur_pc=0x%08x stall=0x%08x\n",
+                s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].current_pc,
+                s_ge_lists[paused_slot].stall_addr);
+
+    if (s_ge_lists[paused_slot].stall_addr == 0 ||
+        s_ge_lists[paused_slot].current_pc != s_ge_lists[paused_slot].stall_addr) {
+        g_ge_stall_addr = s_ge_lists[paused_slot].stall_addr;
+        uint32_t next_pc = ge_run_list(s_ge_lists[paused_slot].current_pc, 1); /* 1 = resume */
+        g_ge_stall_addr = 0;
+
+        if (next_pc == 0) {
+            s_ge_lists[paused_slot].executed = 1;
+            s_ge_lists[paused_slot].status = GE_LIST_COMPLETED;
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                                   s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].start_pc,
+                                   s_ge_lists[paused_slot].stall_addr, next_pc);
+            ge_finish_callback(s, s_ge_lists[paused_slot].cbid,
+                               s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].cbarg);
+        } else {
+            s_ge_lists[paused_slot].current_pc = next_pc;
+            s_ge_lists[paused_slot].status = GE_LIST_STALLED;
+        }
+    }
+
     return 0;
 }
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }
@@ -17570,6 +17950,11 @@ static uint32_t h_CreateSema(CpuState *s) {
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
     m->initc = (int)A2;
+    /* Create-time name and attr for ReferSemaStatus. sync_new does not clear
+     * these fields, so both are written on every create (an unreadable name
+     * pointer yields an empty name, never a failed create). */
+    m->attr = A1;
+    guest_cstr(A0, m->name, sizeof(m->name));
     if (hle_log_on())
         fprintf(stderr, "HLE: CreateSema uid=0x%x init=%d max=%d (from uid=0x%x)\n", m->uid, (int)A2, (int)A3, sched_current_uid());
     return m->uid;
@@ -17763,12 +18148,30 @@ static uint32_t h_WaitSema(CpuState *s) {
     if (err) return err;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitSema uid=0x%x count=%d need=%d (from 0x%x)\n", uid, m->count, need, sched_current_uid());
+    /* The deadline is fixed by the first block; a wake that finds the count taken
+     * by another thread re-waits only for what is left, and a released waiter that
+     * resumes after the deadline times out instead of starting a fresh full wait. */
+    uint64_t wait_end = 0;
+    int wait_end_set = 0;
     while (m->count < need) {
         /* PSP-B3-01 (psp-hw-20260917): ReferThreadStatus reports sema waits as
          * waitType 3 with waitId = the semaphore UID. */
         sched_set_current_wait_kind(3);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
+            if (!wait_end_set) {
+                sched_vtime_refresh();
+                wait_end = sched_vtime_deadline_after((uint64_t)usec);
+                wait_end_set = 1;
+            } else {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                usec = now >= wait_end ? 0u : (uint32_t)(wait_end - now);
+                if (usec == 0u) {
+                    MEM_W32(toptr, 0u);
+                    return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+                }
+            }
             if (sched_block_on_timeout(uid, usec)) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired timed wait writes the
                  * remaining time (0 at the deadline) to *timeout and answers
@@ -17876,6 +18279,47 @@ static uint32_t h_PollSema(CpuState *s) {
     if (need <= 0 || need > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (m->count < need) return 0x800201adu;   /* SCE_KERNEL_ERROR_SEMA_ZERO */
     m->count -= need;
+    return 0;
+}
+/* sceKernelReferSemaStatus(semaid, SceKernelSemaInfo *info). The 56-byte struct is
+ * size(0), name[32](4), attr(36), initCount(40), currentCount(44), maxCount(48),
+ * numWaitThreads(52). Follows h_ReferMutexStatus: the caller's size word at info+0 bounds
+ * the write. Size 0 writes nothing and succeeds; otherwise only min(size, 56) bytes reach
+ * guest memory, copied from a locally built struct whose size field is 56. */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  initCount;
+    int32_t  currentCount;
+    int32_t  maxCount;
+    int32_t  numWaitThreads;
+} SceKernelSemaInfo;
+
+static uint32_t h_ReferSemaStatus(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    Sync *m = sync_find(uid);
+    if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelSemaInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelSemaInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SceKernelSemaInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelSemaInfo);
+    memcpy(info.name, m->name, sizeof(info.name));
+    info.attr = m->attr;
+    info.initCount = m->initc;
+    info.currentCount = m->count;
+    info.maxCount = m->maxc;
+    info.numWaitThreads = sched_count_waiters(uid);
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
     return 0;
 }
 
@@ -18908,11 +19352,27 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
     if (!sr_evf_matches(m->pattern, bits, mode) && !(m->attr & 0x200u) &&
         sched_count_waiters(uid) > 0)
         return 0x800201b0u;
+    uint64_t wait_end = 0;      /* fixed by the first block; see h_WaitSema */
+    int wait_end_set = 0;
     while (!sr_evf_matches(m->pattern, bits, mode)) {
         /* PSP-B3-01 (psp-hw-20260917): evf waits report waitType 4. */
         sched_set_current_wait_kind(4);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
+            if (!wait_end_set) {
+                sched_vtime_refresh();
+                wait_end = sched_vtime_deadline_after((uint64_t)usec);
+                wait_end_set = 1;
+            } else {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                usec = now >= wait_end ? 0u : (uint32_t)(wait_end - now);
+                if (usec == 0u) {
+                    MEM_W32(toptr, 0u);
+                    if (outp) MEM_W32(outp, m->pattern);
+                    return 0x800201A8;
+                }
+            }
             if (sched_block_on_timeout(uid, usec)) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired wait writes the
                  * remaining timeout (0) and reports the current pattern. */
@@ -19073,6 +19533,7 @@ static void hle_register_selftest_oracle_handlers(void) {
     sr_hle_register(0x28b6489c, "sceKernelDeleteSema", h_DeleteSema);
     sr_hle_register(0x3f53e640, "sceKernelSignalSema", h_SignalSema);
     sr_hle_register(0x58b1f937, "sceKernelPollSema", h_PollSema);
+    sr_hle_register(0xbc6febc5, "sceKernelReferSemaStatus", h_ReferSemaStatus);
 }
 
 /* Registry scope for the issue #88 wait/blocking-context conformance matrix
@@ -19440,6 +19901,7 @@ static void hle_register_ctrl_sampling_handlers(void) {
     sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
+    sr_hle_register(0xda6b76a1, "sceCtrlGetSamplingMode", h_CtrlGetSamplingMode);
     /* 0x687660fa is GetIdleCancelThreshold(int*,int*), NOT ReadBufferNegative -- the pad
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
@@ -19502,30 +19964,94 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
+/* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The registry reads the same
+ * integer table as the system-param getter, so both are registered here: the executable harness
+ * and the production registry then dispatch one mapping. */
+static void hle_register_sysreg_handlers(void) {
+    sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
+    sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_RegOpenRegistry);
+    sr_hle_register(0x1d8a762e, "sceRegOpenCategory", h_RegOpenCategory);
+    sr_hle_register(0xd4475aa8, "sceRegGetKeyInfo", h_RegGetKeyInfo);
+    sr_hle_register(0x28a8e98a, "sceRegGetKeyValue", h_RegGetKeyValue);
+    sr_hle_register(0x0cae832b, "sceRegCloseCategory", h_RegCloseCategory);
+    sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_RegCloseRegistry);
+}
+
 /* Public APIs reported as first-stop kernel imports in the library sweep.
  * Keep this one mapping in both the executable harness and production registry;
  * facilities with missing lifecycle state are registered as explicit refusals. */
 static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xea748e31, "sceKernelChangeCurrentThreadAttr", h_ChangeCurrentThreadAttr);
-    sr_hle_register_unsupported(0x912354a7, "sceKernelRotateThreadReadyQueue", 0x80020002u);
-    sr_hle_register_unsupported(0x75156e8f, "sceKernelResumeThread", 0x80020002u);
-    sr_hle_register_unsupported(0x9944f31f, "sceKernelSuspendThread", 0x80020002u);
-    sr_hle_register_unsupported(0x6652b8ca, "sceKernelSetAlarm", 0x80020002u);
+    sr_hle_register(0x912354a7, "sceKernelRotateThreadReadyQueue", h_RotateThreadReadyQueue);
+    sr_hle_register(0x75156e8f, "sceKernelResumeThread", h_ResumeThread);
+    sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
+    sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
-    sr_hle_register_unsupported(0x7e65b999, "sceKernelCancelAlarm", 0x80020002u);
+    sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
     sr_hle_register_unsupported(0x034a921f, "sceKernelGetVTimerTime", 0x80020002u);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
     sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
-    sr_hle_register_unsupported(0x4c06e472, "sceGeContinue", 0x80020002u);
-    sr_hle_register_unsupported(0xb448ec0d, "sceGeBreak", 0x80020002u);
+    sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
+    sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
+    /* sceGeSaveContext / sceGeRestoreContext are refused, not faked. The modeled GE state
+     * (GeState in ge_shared.h, 3364 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
+     * and derived fields, so it cannot fit a 2048-byte PspGeContext, and the 256-entry
+     * command register file alone does not capture matrices or CLUT contents. A restore
+     * therefore cannot reinstate what a save would need, so both refuse with the GE
+     * controlled-refusal code and write nothing to the guest buffer. */
+    sr_hle_register_unsupported(0x438a385au, "sceGeSaveContext", 0x80020002u);
+    sr_hle_register_unsupported(0x0bf608fbu, "sceGeRestoreContext", 0x80020002u);
     sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
     sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
-    sr_hle_register_unsupported(0x0cae832b, "sceRegCloseCategory", 0x80010086u);
-    sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u);
+}
+
+/* sceKernelReferThreadProfiler / sceKernelReferGlobalProfiler return a pointer to the
+ * profiler registers, or NULL when no profiler data is available. This runtime models no
+ * profiler, so the honest answer is always NULL, which is what firmware with profiling off
+ * reports. The handler writes nothing; a controlled refusal would instead return a non-NULL
+ * error value in $v0 that the title dereferences as a pointer. NULL-ness on retail firmware
+ * is not hardware-measured. */
+static uint32_t h_ReferProfilerNull(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
+/* Imports that were absent from the registry and stopped titles on an unknown NID. Each
+ * is either a real handler over state the runtime already models (sceKernelSysClock2USecWide
+ * and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
+ * named controlled refusal. A refusal is never fake success: no virtual timer, hold-mode,
+ * UMD popup, battery icon, sceNet, sceHttp, or audiocodec state exists to back these calls. ThreadMan and sceDisplay refusals use SCE_KERNEL_ERROR_NOTIMP, the code the
+ * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
+ * sceAudiocodec libraries use SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the code the
+ * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
+static void hle_register_unregistered_import_batch(void) {
+    sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
+    sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
+    sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
+    sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
+    sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
+    sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
+    sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
+    sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
+    sr_hle_register_unsupported(0x8c943191u, "sceImposeGetBatteryIconStatus", 0x80010086u);
+    sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    sr_hle_register_unsupported(0x0282a3bdu, "sceHttpGetContentLength", 0x80010086u);
+    sr_hle_register_unsupported(0x03d9526fu, "sceHttpSetResolveRetry", 0x80010086u);
+    sr_hle_register_unsupported(0x1f0fc3e3u, "sceHttpSetRecvTimeOut", 0x80010086u);
+    sr_hle_register_unsupported(0x2255551eu, "sceHttpGetNetworkPspError", 0x80010086u);
+    sr_hle_register_unsupported(0x3eaba285u, "sceHttpAddExtraHeader", 0x80010086u);
+    sr_hle_register_unsupported(0xab1abe07u, "sceHttpInit", 0x80010086u);
+    sr_hle_register_unsupported(0xd1c8945eu, "sceHttpEnd", 0x80010086u);
+    sr_hle_register_unsupported(0x29681260u, "sceAudiocodecReleaseEDRAM", 0x80010086u);
+    sr_hle_register_unsupported(0x3a20a200u, "sceAudiocodecGetEDRAM", 0x80010086u);
+    sr_hle_register_unsupported(0x5b37eb1du, "sceAudiocodecInit", 0x80010086u);
+    sr_hle_register_unsupported(0x70a703f8u, "sceAudiocodecDecode", 0x80010086u);
 }
 
 void sr_hle_init(void) {
@@ -19563,6 +20089,8 @@ void sr_hle_init(void) {
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_sysreg_handlers();
+    hle_register_unregistered_import_batch();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
@@ -19584,6 +20112,7 @@ void sr_hle_init(void) {
     hle_register_cancel_release_handlers();
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
+    hle_register_unregistered_import_batch();
     hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
     sr_hle_register(0x00061e74u, "newlibModuleStreamWrite", h_ModuleStreamWrite);
@@ -19612,7 +20141,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
     /* Boot setup batch (return success / reference value). */
     sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
-    sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
     /* sceImpose language/confirm-button mode: retained state shared with the system-param table
      * above (the getter had no registration at all before this). */
     hle_register_impose_handlers();
@@ -19802,12 +20330,9 @@ void sr_hle_init(void) {
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */
 
-    /* The registered registry calls below fail closed until their semantic model
-     * is available; the real sceRegExit NID (0x9b25edf1) remains unregistered. */
-    sr_hle_register_unsupported(0x28a8e98a, "sceRegGetKeyValue", 0x80010086u); /* function not supported */
-    sr_hle_register_unsupported(0x92e41280, "sceRegOpenRegistry", 0x80010086u); /* function not supported */
-    sr_hle_register_unsupported(0xd4475aa8, "sceRegGetKeyInfo", 0x80010086u); /* function not supported */
-    sr_hle_register_unsupported(0xfa8a5739, "sceRegCloseRegistry", 0x80010086u); /* function not supported */
+    /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers().
+     * The real sceRegExit NID (0x9b25edf1) remains unregistered. */
+    hle_register_sysreg_handlers();
     /* sceOpenPSID: returns 16-byte console unique ID; zero-fill is fine for boot. */
     sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);
 #endif

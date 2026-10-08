@@ -58,11 +58,11 @@ RUNTIME_BINDING_FIELDS = (
     "fallback_entry",
     "worker_thread_entry",
     "launcher_thread_entry",
-    "libfont_ready_flag_addr",
     "frame_ready_latch_addr",
 )
 
 RETIRED_RUNTIME_BINDING_FIELDS = (
+    "libfont_ready_flag_addr",
     "vblank_frame_counter_addr",
     "vblank_vsync_counter_addr",
 )
@@ -888,6 +888,13 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     if isinstance(value, dict):
         for retired in RETIRED_RUNTIME_BINDING_FIELDS:
             if retired in value:
+                if retired == "libfont_ready_flag_addr":
+                    fail(
+                        f"{path}.{retired}",
+                        "LIBFONT_READY_FLAG_RETIRED: host readiness injection is not "
+                        "supported yet; remove this field and provide translated guest "
+                        "libfont startup",
+                    )
                 fail(f"{path}.{retired}", f"{retired} is retired; runtime does not write guest VBLANK counters")
     value = obj(value, path,
                 {"schema_version", *RUNTIME_BINDING_FIELDS, *RUNTIME_BINDING_COLLECTIONS,

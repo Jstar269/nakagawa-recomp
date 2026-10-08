@@ -33,6 +33,7 @@ from analyze import (
 )
 from host_stubs import HST_SIMPLE_STUBS
 import entry_frame_balance
+from imports import ImportTableError, format_boundary
 
 
 CPU_STATE_ABI_VERSION = 2
@@ -2642,7 +2643,11 @@ def main(argv):
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     extra_spans = resolve_extra_spans(extra_span_arg)
-    analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    try:
+        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    except ImportTableError as exc:
+        sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
+        return 1
     if cfg_report_path is not None or cfg_gate:
         # This opt-in gate audits the primary image. Extra modules have their own
         # analyzer invocation below and remain a separate bring-up surface until
@@ -2651,7 +2656,11 @@ def main(argv):
         if not cfg_gate:
             # A report-only run describes gate-mode analysis but must not change
             # the entry set that feeds code emission.
-            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            try:
+                report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            except ImportTableError as exc:
+                sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
+                return 1
         cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
@@ -2691,6 +2700,9 @@ def main(argv):
         try:
             from imports import parse_imports
             impmap = parse_imports(elf)
+        except ImportTableError as e:
+            sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+            return 1
         except Exception as e:
             sys.stderr.write(f"warning: import table parse failed: {e}\n")
 
@@ -3014,7 +3026,11 @@ def main(argv):
                         )
                         return 2
         owned_exec_ranges.extend(extra_ranges)
-        extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
+        try:
+            extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
+        except ImportTableError as exc:
+            sys.stderr.write(f"codegen: {format_boundary(exc, extra_elf_path)}\n")
+            return 1
         extra_known = set(extra_analyzed)
         extra_known = set(a for a in extra_known if in_ranges(a, extra_ranges))
         if cfg_gate:
@@ -3037,10 +3053,13 @@ def main(argv):
             )
 
         extra_impmap = {}
-        if extra_elf.reloc is not None:
+        if extra_elf.reloc is not None or extra_elf.sec(".rodata.sceModuleInfo") is not None:
             try:
                 from imports import parse_imports
                 extra_impmap = parse_imports(extra_elf)
+            except ImportTableError as e:
+                sys.stderr.write(f"codegen: {format_boundary(e, extra_elf_path)}\n")
+                return 1
             except Exception as e:
                 sys.stderr.write(f"warning: import table parse failed for {extra_elf_path}: {e}\n")
 

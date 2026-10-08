@@ -501,6 +501,42 @@ One console is one data point; see §11. Nothing here closes issue #70
 > measured index above names live issues in words (`issue #23`); read every
 > other bare number as a historical identifier.
 
+## Pending PSP-3000 measurement campaign
+
+The following seven source-owned cases are built for a future PSP-3000 / 6.61
+session. Every row remains `NOT_RUN` until a complete physical capture is
+validated. Their parsers check record order, scalar fields, and completion;
+they do not encode expected PSP return values.
+
+| Case | Evidence id | Hardware status | Contract being measured |
+| --- | --- | --- | --- |
+| `kernel-alarm` | `PSP-ALARM-001` | `NOT_RUN` | Alarm creation with a null handler and zero clock; dynamic alarm-table exhaustion; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
+| `thread-scheduler` | `PSP-THREAD-003` | `NOT_RUN` | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
+| `wait-outcomes` | `PSP-WAIT-001` | `NOT_RUN` | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, and list/draw sync states for paused/cancelled lists. |
+| `refer-status-size` | `PSP-KERNEL-STATUS-001` | `NOT_RUN` | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
+| `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, and handle exhaustion. |
+| `kernel-misc` | `PSP-KERNEL-MISC-001` | `NOT_RUN` | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
+
+The registry probe opens the registry and categories in read mode and never
+calls a write, create, remove, or flush API. Values are emitted only for keys
+the runtime models (`language`, `button_assign`, date/time format, `timezone`,
+`summer_time`, and `adhoc_channel`); other keys emit name, type, and size only.
+The resulting registry and console-specific files remain in the private
+campaign output directory.
+
+The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
+with the host0 `transport-write` preflight, then the seven cases above, followed
+by the remaining README `NOT_RUN` cases: smoke, thread exit/delete, teardown,
+I/O matrix, display mask duty, display waits, FPU, cache alias, audio, GE
+non-finite, DMA cells, five invalid-tail cases, and four mutex cases. The
+already measured `delay-zero` case is excluded. The runner launches one PRX per
+boot, performs a PSPLink soft reset between completed cases, validates the
+whole private plan in offline dry-run mode, and checkpoints each case. A timed
+out or incomplete launch stops the queue. After the maintainer power-cycles
+and confirms that action, the runner resumes at the next case without
+reclassifying the interrupted capture.
+
 ## 1. The gap this closes
 
 With no pair of strict v2 hardware inputs, `tools/verify_gates.py` reports:

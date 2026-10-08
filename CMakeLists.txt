@@ -64,11 +64,17 @@ enable_testing()
 # directory in the CMake binary tree for out-of-source builds.
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")
 
-add_executable(test_core_catalog tests/native/test_core_catalog.c)
+add_executable(test_core_catalog
+    tests/native/test_core_catalog.c
+    tests/native/native_test_isolation.c
+)
 target_link_libraries(test_core_catalog PRIVATE nakagawa_core)
 add_test(NAME core_catalog_test COMMAND test_core_catalog)
 
-add_executable(test_parsers_hostile tests/native/test_parsers_hostile.c)
+add_executable(test_parsers_hostile
+    tests/native/test_parsers_hostile.c
+    tests/native/native_test_isolation.c
+)
 target_link_libraries(test_parsers_hostile PRIVATE nakagawa_core)
 add_test(NAME parsers_hostile_test COMMAND test_parsers_hostile)
 
@@ -76,7 +82,10 @@ add_executable(test_manifest_parser tests/native/test_manifest_parser.c)
 target_link_libraries(test_manifest_parser PRIVATE nakagawa_core)
 add_test(NAME manifest_parser_test COMMAND test_manifest_parser --check)
 
-add_executable(test_launch_resolution tests/native/test_launch_resolution.c)
+add_executable(test_launch_resolution
+    tests/native/test_launch_resolution.c
+    tests/native/native_test_isolation.c
+)
 target_link_libraries(test_launch_resolution PRIVATE nakagawa_core)
 add_test(NAME launch_resolution_test COMMAND test_launch_resolution)
 
@@ -106,6 +115,7 @@ add_test(NAME xb_parser_test COMMAND test_xb_parser)
 # links here without pulling the player application into the test build.
 add_executable(test_player_state
     tests/native/test_player_state.c
+    tests/native/native_test_isolation.c
     src/player/player_state.c
     src/player/input_settings.c
     src/player/iso_reader.c
@@ -127,6 +137,7 @@ set_tests_properties(player_state_test PROPERTIES
 
 add_executable(test_package_builder
     tests/native/test_package_builder.c
+    tests/native/native_test_isolation.c
     src/player/package_builder.c
 )
 target_include_directories(test_package_builder PRIVATE
@@ -141,6 +152,7 @@ set_tests_properties(package_builder_test PROPERTIES WORKING_DIRECTORY ${CMAKE_S
 
 add_executable(test_input_settings
     tests/native/test_input_settings.c
+    tests/native/native_test_isolation.c
     src/player/input_settings.c
 )
 target_include_directories(test_input_settings PRIVATE

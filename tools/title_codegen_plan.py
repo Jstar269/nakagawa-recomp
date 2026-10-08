@@ -675,7 +675,7 @@ def _make_input_images(
         import analyze
         import import_audit
         from hle_manifest import build_manifest as build_hle_manifest
-        from imports import _import_model
+        from imports import ImportTableError, _import_model
         from types import SimpleNamespace
 
         normalized = title_manifest.validate_manifest(manifest)
@@ -715,10 +715,15 @@ def _make_input_images(
         for source in sources:
             base = source["base"]
             elf = analyze.Elf(str(source["path"]), base=base)
-            starts, ranges = analyze.analyze(
-                elf,
-                extra_spans=extra_spans if source["name"] == "executable" else None,
-            )
+            try:
+                starts, ranges = analyze.analyze(
+                    elf,
+                    extra_spans=extra_spans if source["name"] == "executable" else None,
+                )
+            except ImportTableError as exc:
+                raise PackageRouteError(
+                    exc.code, f"{source['name']}: {exc}"
+                ) from exc
             if ranges == [(0, 0)]:
                 raise PackageRouteError(
                     "PACKAGE_NO_EXECUTABLE_REGIONS",
@@ -732,6 +737,10 @@ def _make_input_images(
 
             try:
                 stubs, findings = _import_model(elf)
+            except ImportTableError as exc:
+                raise PackageRouteError(
+                    exc.code, f"{source['name']}: {exc}"
+                ) from exc
             except (ValueError, RuntimeError) as exc:
                 raise PackageRouteError(
                     "PACKAGE_INVALID_IMPORT_TABLE",
@@ -764,6 +773,8 @@ def _make_input_images(
         return sources, analysis_summary, unsupported_imports, diagnostics
     except PackageRouteError:
         raise
+    except ImportTableError as exc:
+        raise PackageRouteError(exc.code, str(exc)) from exc
     except (OSError, ValueError, RuntimeError) as exc:
         raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
 

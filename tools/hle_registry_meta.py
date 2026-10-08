@@ -73,6 +73,12 @@ HANDLER_METADATA = {
     },
     # Stores g_sdk_version for SDK-dependent paths; the retained-state
     # contract for the variants routed to it is implemented.
+    # ReferSemaStatus reads the modeled semaphore: live count, create-time initCount,
+    # maxCount, attr and name recorded at create, and the blocked-waiter count.
+    "h_ReferSemaStatus": {
+        "status": "partial",
+        "limitation": "reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only",
+    },
     "h_SetCompiledSdkVersion": {
         "status": "complete",
         "evidence": [
@@ -85,6 +91,72 @@ HANDLER_METADATA = {
     "h_SysClock2USec": {
         "status": "partial",
         "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
+    },
+    # Suspend/Resume/Rotate are scheduler operations: suspension is a flag on a thread
+    # that keeps its wait semantics, rotation moves the head of one priority's ready
+    # queue behind its peers.  Measured cells are the DORMANT, double-suspend and
+    # resume-of-a-non-suspended-thread codes; the rest is project-defined.
+    "h_SuspendThread": {
+        "status": "partial",
+        "limitation": "suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread",
+            "src/rt/hle_thread_selftest.c:test_suspended_waiter_keeps_wait_semantics",
+            "src/rt/sched_selftest.c:test_suspended_wait_still_completes",
+        ],
+    },
+    "h_ResumeThread": {
+        "status": "partial",
+        "limitation": "resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread",
+            "src/rt/sched_selftest.c:test_suspend_resume_error_codes",
+        ],
+    },
+    "h_RotateThreadReadyQueue": {
+        "status": "partial",
+        "limitation": "rotates the cyclic slot-order ready queue of one priority (0 selects the caller's priority) and yields when the caller leads that queue; no range-error code is returned for an out-of-range priority because none is sourced, and ordering relative to threads that become ready after the rotation is not hardware measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rotate_ready_queue_selection_order",
+            "src/rt/hle_thread_selftest.c:test_rotate_equal_priority_yields_to_peers",
+            "src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers",
+        ],
+    },
+    "h_SysClock2USecWide": {
+        "status": "partial",
+        "limitation": "takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured",
+    },
+    "h_ReferProfilerNull": {
+        "status": "partial",
+        "limitation": "no profiler is modeled, so both sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler always report NULL, like firmware with profiling off; NULL-ness on retail firmware is not hardware-measured",
+    },
+    "h_CtrlGetSamplingMode": {
+        "status": "partial",
+        "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
+    },
+    # Kernel alarms are guest-time timers whose handlers run in interrupt context from the
+    # scheduler's interrupt-service step.  The only measured cells are the unknown-alarm-id
+    # code and "a non-zero handler return reschedules"; the rest is project-defined.
+    "h_SetAlarm": {
+        "status": "partial",
+        "limitation": "the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after delivery, which is hardware measured only as 'reschedules'; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument",
+            "src/rt/hle_thread_selftest.c:test_alarm_rearm_by_return_value",
+            "src/rt/hle_thread_selftest.c:test_alarm_handler_runs_under_interrupt_context_rules",
+            "src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline",
+            "src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context",
+            "src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler",
+        ],
+    },
+    "h_CancelAlarm": {
+        "status": "partial",
+        "limitation": "an unknown, cancelled or already-finished alarm UID returns the hardware-measured unknown-alarm code; treating a one-shot that has already fired as unknown (its UID is released when the handler returns 0) is the project's model and is not separately measured",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_alarm_registration_and_error_codes",
+            "src/rt/hle_thread_selftest.c:test_alarm_cancel_before_firing_prevents_the_handler",
+            "src/rt/sched_selftest.c:test_alarm_cancel_and_ordering",
+        ],
     },
     "h_AllocMemoryBlock": {
         "status": "partial",
@@ -151,6 +223,20 @@ HANDLER_METADATA = {
     "h_GeListEnQueueHead": {
         "status": "partial",
         "limitation": "idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled",
+    },
+    "h_GeBreak": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+        ],
+        "limitation": "models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured",
+    },
+    "h_GeContinue": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+        ],
+        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
@@ -470,6 +556,32 @@ HANDLER_METADATA = {
     "h_RtcGetWin32FileTime": {
         "status": "partial",
         "limitation": "cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)",
+    },
+    # sceReg virtual system registry (src/rt/hle.c, sceReg block). Read-only: writers are not
+    # registered. Integer values come from the table sceUtilityGetSystemParamInt reads.
+    "h_RegOpenRegistry": {
+        "status": "partial",
+        "limitation": "read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured",
+    },
+    "h_RegOpenCategory": {
+        "status": "partial",
+        "limitation": "serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured",
+    },
+    "h_RegGetKeyInfo": {
+        "status": "partial",
+        "limitation": "serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement",
+    },
+    "h_RegGetKeyValue": {
+        "status": "partial",
+        "limitation": "copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured",
+    },
+    "h_RegCloseCategory": {
+        "status": "partial",
+        "limitation": "frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured",
+    },
+    "h_RegCloseRegistry": {
+        "status": "partial",
+        "limitation": "frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured",
     },
 }
 

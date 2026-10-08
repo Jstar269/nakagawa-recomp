@@ -38,8 +38,9 @@ import title_manifest
 #: refuses to compile against a different value, so a stale generated header is a
 #: build failure rather than a silently wrong runtime.
 #: 8 splits the single profile macro into a diagnostic one and an honest
-#: compatibility-debt one (#363). Both are emitted from the same validated profile.
-GENERATED_SCHEMA_VERSION = 8
+#: compatibility-debt one (#363). Version 9 removes host libfont readiness
+#: injection from the generated runtime contract.
+GENERATED_SCHEMA_VERSION = 9
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -47,7 +48,6 @@ FIELD_BITS: dict[str, str] = {
     "fallback_entry": "SR_TITLE_CFG_FALLBACK_ENTRY",
     "worker_thread_entry": "SR_TITLE_CFG_WORKER_ENTRY",
     "launcher_thread_entry": "SR_TITLE_CFG_LAUNCHER_ENTRY",
-    "libfont_ready_flag_addr": "SR_TITLE_CFG_LIBFONT_READY",
     "frame_ready_latch_addr": "SR_TITLE_CFG_FRAME_LATCH",
 }
 
