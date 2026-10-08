@@ -83,6 +83,7 @@ extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
+extern int sr_hle_test_is_registered(uint32_t nid);
 extern uint32_t sr_hle_test_load_module(CpuState *s);
 extern uint32_t sr_hle_test_start_module(CpuState *s);
 extern uint32_t sr_hle_test_stop_module(CpuState *s);
@@ -97,6 +98,7 @@ extern uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
                                            uint32_t patch_nid, uint32_t patch_off);
 extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
 extern void ge_finish_latch_assist(void);
+static void reset_fixture(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
  * hle.c: the observation count and the vblanks-since-flip clock. */
@@ -146,6 +148,21 @@ extern uint32_t sr_hle_test_io_devctl_refusal_log_count(void);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
 extern uint32_t sr_hle_test_io_close_async(CpuState *s);
+extern uint32_t sr_hle_test_io_write_async(CpuState *s);
+extern uint32_t sr_hle_test_io_read_async(CpuState *s);
+extern uint32_t sr_hle_test_io_lseek_async(CpuState *s);
+extern uint32_t sr_hle_test_io_lseek32_async(CpuState *s);
+extern uint32_t sr_hle_test_io_ioctl_async(CpuState *s);
+extern uint32_t sr_hle_test_io_wait_async(CpuState *s);
+extern uint32_t sr_hle_test_io_poll_async(CpuState *s);
+extern uint32_t sr_hle_test_io_get_async_stat(CpuState *s);
+extern void sr_hle_test_io_async_import_boundary(void);
+extern uint32_t sr_hle_test_io_chdir(CpuState *s);
+extern uint32_t sr_hle_test_io_rmdir(CpuState *s);
+extern uint32_t sr_hle_test_io_chstat(CpuState *s);
+extern uint32_t sr_hle_test_io_sync(CpuState *s);
+extern uint32_t sr_hle_test_io_change_async_priority(CpuState *s);
+extern uint32_t sr_hle_test_io_set_async_callback(CpuState *s);
 extern uint32_t sr_hle_test_io_rename(CpuState *s);
 extern uint32_t sr_hle_test_io_mkdir(CpuState *s);
 extern uint32_t sr_hle_test_io_remove(CpuState *s);
@@ -153,6 +170,9 @@ extern uint32_t sr_hle_test_io_getstat(CpuState *s);
 extern uint32_t sr_hle_test_ms0_legacy_import_count(void);
 extern int sr_hle_test_fd_kind(uint32_t fd);
 extern int sr_callback_is_valid(uint32_t uid);
+extern uint32_t sr_callback_table_register(uint32_t name_addr, uint32_t entry,
+                                           uint32_t arg, uint32_t *error_out);
+extern int sr_callback_table_unregister(uint32_t uid);
 
 /* Extracted-data census preparation contract hooks (defined in hle.c,
  * selftest-only): preparation state machine, walk/build counters, a guest-start
@@ -215,6 +235,26 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW 0x369ed59du
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE 0x82bc5777u
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME 0xdb738f35u
+#define NID_SCE_KERNEL_SYS_CLOCK_TO_USEC 0xba6b92e2u
+#define NID_SCE_KERNEL_CHANGE_CURRENT_THREAD_ATTR 0xea748e31u
+#define NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE 0x912354a7u
+#define NID_SCE_KERNEL_RESUME_THREAD 0x75156e8fu
+#define NID_SCE_KERNEL_SUSPEND_THREAD 0x9944f31fu
+#define NID_SCE_KERNEL_SET_ALARM 0x6652b8cau
+#define NID_SCE_KERNEL_CANCEL_ALARM 0x7e65b999u
+#define NID_SCE_KERNEL_GET_VTIMER_TIME 0x034a921fu
+#define NID_SCE_KERNEL_FREE_MEMORY_BLOCK 0x50f61d8au
+#define NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR 0xdb83a952u
+#define NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK 0xfe707fdfu
+#define NID_SCE_KERNEL_SET_COMPILED_SDK_VERSION_370 0x342061e5u
+#define NID_SCE_GE_LIST_ENQUEUE_HEAD 0x1c0d95a6u
+#define NID_SCE_GE_CONTINUE 0x4c06e472u
+#define NID_SCE_GE_BREAK 0xb448ec0du
+#define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
+#define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
+#define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
+#define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
 #define NID_SCE_RTC_GET_CURRENT_TICK 0x3f7ad767u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL 0xe7c27d1bu
@@ -1454,6 +1494,371 @@ static void fd_set_write(CpuState *cpu, uint32_t fd, uint32_t source, uint32_t c
     cpu->r[6] = count;
 }
 
+static void test_io_async_and_path_imports(void) {
+    enum {
+        PATH_ADDR = 0x09010000u,
+        PAYLOAD_ADDR = 0x09011000u,
+        RESULT_ADDR = 0x09012000u,
+        IOCTL_OUT_ADDR = 0x09012200u,
+        PRIORITY_RESULT_ADDR = 0x09012300u,
+        STAT_ADDR = 0x09012100u,
+        STACK_ADDR = 0x09013000u,
+        CALLBACK_NAME_ADDR = 0x09014000u,
+        SCE_KERNEL_ERROR_ASYNC_BUSY = 0x80020329u,
+        IO_ERROR_FUNCTION_NOT_SUPPORTED = 0x80010086u,
+        IO_ERROR_DIRECTORY_NOT_EMPTY = 0x8001005au,
+    };
+    static const char async_guest[] = "ms0:/NAKAGAWA_IO_ASYNC.TXT";
+    static const char priority_guest[] = "ms0:/NAKAGAWA_IO_ASYNC_PRIORITY.TXT";
+    static const char directory_guest[] = "ms0:/NAKAGAWA_IO_ASYNC_DIR";
+    static const char relative_file[] = "RELATIVE.TXT";
+    static const uint8_t old_bytes[] = "old";
+    static const uint8_t new_bytes[] = "new";
+    char async_host[256], relative_host[256];
+    CpuState cpu;
+    uint32_t callback_error = 0u;
+    static const char callback_name[] = "io-async-test";
+    fd_guest_copy(CALLBACK_NAME_ADDR, callback_name, sizeof(callback_name));
+    uint32_t callback_uid = sr_callback_table_register(CALLBACK_NAME_ADDR, 0u, 0u,
+                                                        &callback_error);
+    expect(callback_uid != 0u && callback_error == 0u,
+           "synthetic file-I/O callback registers for the async completion test");
+
+    fd_host_path(async_host, sizeof(async_host), async_guest);
+    DeleteFileA(async_host);
+    fd_set_path(&cpu, PATH_ADDR, async_guest);
+    uint32_t fd = sr_hle_test_io_open(&cpu);
+    expect(fd == 3u, "async fixture opens under the synthetic Memory Stick root");
+    if (fd >= 64u) return;
+    fd_guest_copy(PAYLOAD_ADDR, old_bytes, sizeof(old_bytes) - 1u);
+    fd_set_write(&cpu, fd, PAYLOAD_ADDR, (uint32_t)(sizeof(old_bytes) - 1u));
+    expect(sr_hle_test_io_write(&cpu) == sizeof(old_bytes) - 1u,
+           "async fixture receives its initial bytes");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == 0u, "async fixture initial handle closes");
+
+    fd_set_path(&cpu, PATH_ADDR, async_guest);
+    cpu.r[5] = 3u; /* O_RDWR */
+    fd = sr_hle_test_io_open(&cpu);
+    expect(fd == 3u, "async fixture reopens read/write");
+    if (fd >= 64u) return;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = callback_uid;
+    cpu.r[6] = 0x12345678u;
+    expect(sr_hle_test_io_set_async_callback(&cpu) == 0u,
+           "sceIoSetAsyncCallback stores a validated callback and argument");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = (uint32_t)-10;
+    expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+           "sceIoChangeAsyncPriority stores the per-descriptor priority");
+
+    fd_guest_copy(PAYLOAD_ADDR, new_bytes, sizeof(new_bytes) - 1u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = PAYLOAD_ADDR;
+    cpu.r[6] = (uint32_t)(sizeof(new_bytes) - 1u);
+    expect(sr_hle_test_io_write_async(&cpu) == 0u,
+           "sceIoWriteAsync accepts a valid request and returns before it writes");
+    expect(fd_host_bytes_equal(async_host, old_bytes, sizeof(old_bytes) - 1u),
+           "sceIoWriteAsync leaves host bytes unchanged before completion");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = PAYLOAD_ADDR;
+    cpu.r[6] = (uint32_t)(sizeof(new_bytes) - 1u);
+    expect(sr_hle_test_io_write_async(&cpu) == SCE_KERNEL_ERROR_ASYNC_BUSY,
+           "a second asynchronous request on the same fd reports ASYNC_BUSY");
+
+    MEM_W32(RESULT_ADDR, 0xfeedfaceu);
+    MEM_W32(RESULT_ADDR + 4u, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    sr_hle_test_io_async_import_boundary();
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+               MEM_R32(RESULT_ADDR) == 0xfeedfaceu &&
+               fd_host_bytes_equal(async_host, old_bytes, sizeof(old_bytes) - 1u),
+           "first sceIoPollAsync reports pending without touching the result or file");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == sizeof(new_bytes) - 1u &&
+               fd_host_bytes_equal(async_host, new_bytes, sizeof(new_bytes) - 1u),
+           "second import boundary completes the write and reports its byte count");
+    expect(sr_thread_has_pending_callbacks(sched_current_uid()),
+           "async completion queues its per-fd callback for the owning thread");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 0u, "async fixture seeks to its beginning");
+    fd_guest_copy(PAYLOAD_ADDR + 16u, "???", 3u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = PAYLOAD_ADDR + 16u;
+    cpu.r[6] = 3u;
+    expect(sr_hle_test_io_read_async(&cpu) == 0u &&
+               MEM_R8(PAYLOAD_ADDR + 16u) == (uint8_t)'?',
+           "sceIoReadAsync defers guest-buffer writes until completion");
+    sr_hle_test_io_async_import_boundary();
+    MEM_W32(RESULT_ADDR, 0xfeedfaceu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+               MEM_R8(PAYLOAD_ADDR + 16u) == (uint8_t)'?',
+           "pending sceIoReadAsync keeps its destination unchanged during polling");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == 3u &&
+               MEM_R8(PAYLOAD_ADDR + 16u) == (uint8_t)'n' &&
+               MEM_R8(PAYLOAD_ADDR + 17u) == (uint8_t)'e' &&
+               MEM_R8(PAYLOAD_ADDR + 18u) == (uint8_t)'w',
+           "sceIoWaitAsync completes the read and writes the 64-bit result");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 1u;
+    cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+           "sceIoLseek32Async queues a 32-bit seek");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u,
+           "sceIoLseek32Async remains pending at its first poll");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 1u,
+           "sceIoLseek32Async returns the resulting file position");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0xfeedfaceu; /* alignment slot before the 64-bit SceOff */
+    cpu.r[6] = 2u;
+    cpu.r[7] = 0u;
+    cpu.r[8] = 0u; /* SEEK_SET */
+    expect(sr_hle_test_io_lseek_async(&cpu) == 0u,
+           "sceIoLseekAsync queues its aligned 64-bit offset and register whence");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u,
+           "sceIoLseekAsync remains pending before the completion boundary");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 2u,
+           "sceIoLseekAsync returns its resulting position through the async result");
+
+    MEM_W32(IOCTL_OUT_ADDR, 0xaaaaaaaau);
+    MEM_W32(RESULT_ADDR, 0xfeedfaceu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0x01020004u; /* get current byte offset */
+    cpu.r[29] = STACK_ADDR;
+    cpu.r[8] = IOCTL_OUT_ADDR;
+    cpu.r[9] = 4u;
+    expect(sr_hle_test_io_ioctl_async(&cpu) == 0u &&
+               MEM_R32(IOCTL_OUT_ADDR) == 0xaaaaaaaau,
+           "sceIoIoctlAsync defers ioctl output until request completion");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+               MEM_R32(IOCTL_OUT_ADDR) == 0xaaaaaaaau &&
+               MEM_R32(RESULT_ADDR) == 0xfeedfaceu,
+           "pending sceIoIoctlAsync leaves the output span unchanged");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == 0u && MEM_R32(IOCTL_OUT_ADDR) == 2u,
+           "sceIoIoctlAsync stores both its result and get-offset output");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 1u;
+    cpu.r[6] = RESULT_ADDR;
+    expect(sr_hle_test_io_get_async_stat(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 0u,
+           "sceIoGetAsyncStat returns a completed request without waiting");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 10u;
+    expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+           "sceIoChangeAsyncPriority updates the first descriptor priority");
+    fd_set_path(&cpu, PATH_ADDR, priority_guest);
+    cpu.r[5] = 0x602u; /* PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC */
+    cpu.r[6] = 0777u;
+    uint32_t priority_fd = sr_hle_test_io_open(&cpu);
+    expect(priority_fd == 4u, "priority fixture allocates an independent descriptor");
+    if (priority_fd < 64u) {
+        fd_guest_copy(PAYLOAD_ADDR, old_bytes, sizeof(old_bytes) - 1u);
+        fd_set_write(&cpu, priority_fd, PAYLOAD_ADDR,
+                     (uint32_t)(sizeof(old_bytes) - 1u));
+        expect(sr_hle_test_io_write(&cpu) == sizeof(old_bytes) - 1u,
+               "priority fixture has a contained seekable file");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = priority_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u,
+               "priority fixture seed handle closes");
+        fd_set_path(&cpu, PATH_ADDR, priority_guest);
+        cpu.r[5] = 3u; /* O_RDWR */
+        priority_fd = sr_hle_test_io_open(&cpu);
+        expect(priority_fd == 4u, "priority fixture reopens read/write");
+        if (priority_fd < 64u) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = (uint32_t)-10;
+            expect(sr_hle_test_io_change_async_priority(&cpu) == 0u,
+                   "sceIoChangeAsyncPriority stores a higher synthetic queue priority");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 1u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+                   "older lower-priority seek queues first");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = 2u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32_async(&cpu) == 0u,
+                   "newer higher-priority seek queues in the same import epoch");
+            sr_hle_test_io_async_import_boundary();
+            sr_hle_test_io_async_import_boundary();
+            MEM_W32(PRIORITY_RESULT_ADDR, 0xfeedfaceu);
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = PRIORITY_RESULT_ADDR;
+            expect(sr_hle_test_io_poll_async(&cpu) == 1u &&
+                       MEM_R32(PRIORITY_RESULT_ADDR) == 0xfeedfaceu,
+                   "higher numeric priority leaves the older seek pending");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            cpu.r[5] = PRIORITY_RESULT_ADDR;
+            expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+                       MEM_R32(PRIORITY_RESULT_ADDR) == 2u,
+                   "lower numeric priority completes before FIFO order");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = RESULT_ADDR;
+            expect(sr_hle_test_io_wait_async(&cpu) == 0u &&
+                       MEM_R32(RESULT_ADDR) == 1u,
+                   "wait completes the remaining lower-priority request");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = priority_fd;
+            expect(sr_hle_test_io_close(&cpu) == 0u,
+                   "priority fixture descriptor closes cleanly");
+        }
+    }
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close_async(&cpu) == 0u,
+           "sceIoCloseAsync queues descriptor teardown");
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 1u,
+           "sceIoCloseAsync retains the descriptor while the request is pending");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_wait_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 0u &&
+               sr_hle_test_fd_kind(fd) == 0,
+           "sceIoWaitAsync returns close success after releasing the descriptor");
+    if (callback_uid != 0u) (void)sr_callback_table_unregister(callback_uid);
+
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_mkdir(&cpu) == 0u, "sceIoMkdir creates the CWD fixture");
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    expect(sr_hle_test_io_chdir(&(CpuState){.r = {[4] = PATH_ADDR}}) == 0u,
+           "sceIoChdir accepts an existing absolute Memory Stick directory");
+    fd_set_path(&cpu, PATH_ADDR, relative_file);
+    uint32_t relative_fd = sr_hle_test_io_open(&cpu);
+    expect(relative_fd < 64u, "sceIoOpen resolves a relative path against sceIoChdir");
+    if (relative_fd < 64u) {
+        fd_guest_copy(PAYLOAD_ADDR, "mode", 4u);
+        fd_set_write(&cpu, relative_fd, PAYLOAD_ADDR, 4u);
+        expect(sr_hle_test_io_write(&cpu) == 4u,
+               "relative file path writes through the unified Memory Stick VFS");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = relative_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u, "relative file handle closes");
+    }
+    fd_host_path(relative_host, sizeof(relative_host), "ms0:/NAKAGAWA_IO_ASYNC_DIR/RELATIVE.TXT");
+    expect(fd_host_bytes_equal(relative_host, (const uint8_t *)"mode", 4u),
+           "relative-path file bytes remain inside the selected CWD");
+    MEM_W32(STAT_ADDR, 0x2000u | 0600u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    cpu.r[6] = 1u;
+    fd_guest_copy(PATH_ADDR, relative_file, sizeof(relative_file));
+    expect(sr_hle_test_io_chstat(&cpu) == 0u,
+           "sceIoChstat applies the supported mode bit to a contained file");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    expect(sr_hle_test_io_getstat(&cpu) == 0u &&
+               (MEM_R32(STAT_ADDR) & 0xf000u) == 0x2000u &&
+               MEM_R32(STAT_ADDR + 8u) == 4u,
+           "relative sceIoGetstat reports the updated file type and size");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = STAT_ADDR;
+    cpu.r[6] = 2u;
+    expect(sr_hle_test_io_chstat(&cpu) == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+           "sceIoChstat refuses unsupported attribute fields with its semantic-boundary error");
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_rmdir(&cpu) == IO_ERROR_DIRECTORY_NOT_EMPTY,
+           "sceIoRmdir refuses to delete a directory that still contains a file");
+    fd_set_path(&cpu, PATH_ADDR, relative_file);
+    expect(sr_hle_test_io_remove(&cpu) == 0u, "sceIoRemove resolves the relative CWD path");
+    fd_guest_copy(PATH_ADDR, directory_guest, sizeof(directory_guest));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_rmdir(&cpu) == 0u, "sceIoRmdir removes an empty contained directory");
+    fd_guest_copy(PATH_ADDR, "ms0:/", sizeof("ms0:/"));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_chdir(&cpu) == 0u, "sceIoChdir restores the Memory Stick root");
+    fd_guest_copy(PATH_ADDR, "ms0:", sizeof("ms0:"));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_sync(&cpu) == 0u, "sceIoSync accepts the Memory Stick device");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    cpu.r[5] = 1u;
+    expect(sr_hle_test_io_sync(&cpu) == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+           "sceIoSync refuses unknown nonzero arguments with its named boundary");
+    fd_guest_copy(PATH_ADDR, "disc0:", sizeof("disc0:"));
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = PATH_ADDR;
+    expect(sr_hle_test_io_sync(&cpu) == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+           "sceIoSync names unsupported device semantics with a real error");
+}
+
 static void test_fd_namespace(void) {
     enum {
         FD_KIND_STD = 1,
@@ -1788,6 +2193,10 @@ static void test_fd_namespace(void) {
     cpu.r[4] = async_fd;
     expect(sr_hle_test_io_close_async(&cpu) == 0u,
            "async close releases the ordinary descriptor through shared teardown");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = async_fd;
+    expect(sr_hle_test_io_wait_async(&cpu) == 0u,
+           "async close completes before descriptor reuse");
     fd_set_path(&cpu, path_addr, result_guest);
     expect(sr_hle_test_io_open(&cpu) == 3u,
            "a descriptor released by async close is available for reuse");
@@ -1795,6 +2204,8 @@ static void test_fd_namespace(void) {
     cpu.r[4] = 3u;
     expect(sr_hle_test_io_close(&cpu) == 0u,
            "the descriptor reused after async close closes cleanly");
+
+    test_io_async_and_path_imports();
 
     /* Fill every ordinary slot to cover the upper bound and prove std slots can
      * never be reached by allocation, even when the table is exhausted. */
@@ -2284,6 +2695,37 @@ static void test_controlled_unsupported_registration(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x4b85c861u) == 0u,
            "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
+}
+
+static void test_kernel_import_sweep_explicit_refusals(void) {
+    static const struct {
+        uint32_t nid;
+        uint32_t error;
+        const char *name;
+    } refused[] = {
+        {NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0x80020002u, "sceKernelRotateThreadReadyQueue"},
+        {NID_SCE_KERNEL_RESUME_THREAD, 0x80020002u, "sceKernelResumeThread"},
+        {NID_SCE_KERNEL_SUSPEND_THREAD, 0x80020002u, "sceKernelSuspendThread"},
+        {NID_SCE_KERNEL_SET_ALARM, 0x80020002u, "sceKernelSetAlarm"},
+        {NID_SCE_KERNEL_CANCEL_ALARM, 0x80020002u, "sceKernelCancelAlarm"},
+        {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
+        {NID_SCE_GE_CONTINUE, 0x80020002u, "sceGeContinue"},
+        {NID_SCE_GE_BREAK, 0x80020002u, "sceGeBreak"},
+        {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
+        {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
+        {NID_SCE_REG_CLOSE_CATEGORY, 0x80010086u, "sceRegCloseCategory"},
+        {NID_SCE_REG_OPEN_CATEGORY, 0x80010086u, "sceRegOpenCategory"},
+    };
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        expect(sr_hle_test_is_registered(refused[i].nid),
+               "kernel import sweep refusal has a production registration");
+        expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
+               "unsupported kernel import returns its explicit refusal code");
+    }
 }
 
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
@@ -3241,6 +3683,35 @@ static void test_time_domains_are_coherent(void) {
  * while an explicit guest-time advance must move both current and accumulated
  * positions.  The GE VBLANK bit shares the same rational frame phase, including
  * the interval just beyond the old integer-16667-us rollover. */
+static void test_kernel_import_sweep_sysclock_conversion(void) {
+    const uint32_t clock = 0x00270010u;
+    const uint32_t low_out = 0x00270020u;
+    const uint32_t high_out = 0x00270024u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W32(clock, 0x89abcdefu);
+    MEM_W32(clock + 4u, 0x12345678u);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = clock;
+    cpu.r[5] = low_out;
+    cpu.r[6] = high_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SYS_CLOCK_TO_USEC) == 0u &&
+               MEM_R32(low_out) == 0x89abcdefu && MEM_R32(high_out) == 0x12345678u,
+           "sceKernelSysClock2USec splits the modeled 64-bit microsecond value");
+
+    const uint32_t sentinel = 0xa57c3de1u;
+    MEM_W32(low_out, sentinel);
+    MEM_W32(high_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x0bfffffcu; /* 8-byte input crosses the guest-memory boundary */
+    cpu.r[5] = low_out;
+    cpu.r[6] = high_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SYS_CLOCK_TO_USEC) == 0x800200d3u &&
+               MEM_R32(low_out) == sentinel && MEM_R32(high_out) == sentinel,
+           "sceKernelSysClock2USec rejects an incomplete input span before writing outputs");
+}
+
 static void test_display_clock_reads_are_observational(void) {
     enum {
         NID_DISPLAY_CURRENT_HCOUNT = 0x773dd3a3u,
@@ -9194,6 +9665,70 @@ static void test_refer_thread_status(void) {
            "ReferThreadStatus validates the complete output structure span");
 }
 
+static void test_change_current_thread_attr(void) {
+    enum {
+        NID_CHANGE_CURRENT_THREAD_ATTR = 0xea748e31u,
+        PSP_THREAD_ATTR_VFPU = 0x00004000u,
+    };
+    reset_fixture();
+    sr_hle_init();
+
+    /* Create and set a current thread for the test. */
+    TCB *main_t = fixture_thread(0x3400u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+
+    /* 1. Basic VFPU attribute change on current thread. */
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = PSP_THREAD_ATTR_VFPU;
+    uint32_t ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == 0u, "ChangeCurrentThreadAttr(clear=0, set=VFPU) succeeds on main thread");
+
+    /* 2. Clear VFPU attribute. */
+    s_cpu->r[4] = PSP_THREAD_ATTR_VFPU;
+    s_cpu->r[5] = 0;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == 0u, "ChangeCurrentThreadAttr(clear=VFPU, set=0) succeeds on main thread");
+
+    /* 3. Toggle VFPU attribute (clear and set in one call). */
+    s_cpu->r[4] = PSP_THREAD_ATTR_VFPU;
+    s_cpu->r[5] = PSP_THREAD_ATTR_VFPU;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == 0u, "ChangeCurrentThreadAttr(clear=VFPU, set=VFPU) succeeds on main thread");
+
+    /* 4. Invalid attribute bits (non-user-modifiable) should fail. */
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x80000000u; /* USER bit */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects USER bit");
+
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x00001000u; /* KERNEL bit */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects KERNEL bit");
+
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x00100000u; /* NO_FILLSTACK */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects NO_FILLSTACK bit");
+
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0x00200000u; /* CLEAR_STACK */
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects CLEAR_STACK bit");
+
+    /* 5. Unknown bits should fail. */
+    s_cpu->r[4] = 0;
+    s_cpu->r[5] = 0xFFFF0000u;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects unknown high bits");
+
+    s_cpu->r[4] = 0xFFFF0000u;
+    s_cpu->r[5] = 0;
+    ret = sr_syscall(s_cpu, NID_CHANGE_CURRENT_THREAD_ATTR);
+    expect(ret == SCE_KERNEL_ERROR_ILLEGAL_ATTR, "ChangeCurrentThreadAttr rejects unknown clear bits");
+}
+
 static volatile uint32_t s_delay_zero_worker_runs;
 static void delay_zero_worker_guest_fn(CpuState *cpu) {
     (void)cpu;
@@ -11267,6 +11802,41 @@ static void test_ge_guest_sentinel(void) {
     /* Purple rectangle is now rendered */
     expect(fb[60 * fb_stride + 60] == purple_color,
            "resumed list rendered purple rectangle to completion");
+}
+
+static void test_kernel_import_sweep_ge_head(void) {
+    const uint32_t list = 0x08918000u;
+    const uint32_t second_list = list + 0x100u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W32(list, 0x0f000000u);        /* FINISH */
+    MEM_W32(list + 4u, 0x0c000000u);   /* END */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = 0u;
+    uint32_t complete_id = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD);
+    expect((complete_id & 0xff000000u) == 0x35000000u,
+           "sceGeListEnQueueHead runs a list when the modeled GE queue is idle");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = list; /* empty ring: keep this list stalled */
+    uint32_t stalled_id = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD);
+    expect((stalled_id & 0xff000000u) == 0x35000000u,
+           "sceGeListEnQueueHead records an empty-ring list as stalled");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = second_list;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD) == 0x80020002u,
+           "sceGeListEnQueueHead refuses when head ordering would affect a stalled queue");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = stalled_id;
+    cpu.r[5] = list + 8u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+           "the GE head-order boundary clears after the stalled list completes");
 }
 
 /* A display list the GE already ran to its END is consumed, and a stall address
@@ -15374,6 +15944,129 @@ static void test_td23_guest_pointer_validation(void) {
            "sceUtilitySavedataInitStart rejects param struct crossing arena boundary");
 }
 
+static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_compiled_sdk_version(void);
+    const uint32_t options = 0x00280000u;
+    const uint32_t addr_out = 0x00280004u;
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    MEM_W32(options, 4u);
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
+           "sceKernelFreeMemoryBlock rejects UID zero as unknown");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;          /* name is debug-only and may be NULL */
+    cpu.r[5] = 0u;          /* PSP_SMEM_Low */
+    cpu.r[6] = 0x240u;
+    cpu.r[7] = options;
+    uint32_t uid = sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK);
+    expect(uid != 0u && uid < 0x80000000u,
+           "sceKernelAllocMemoryBlock allocates its documented Low placement");
+    if (uid != 0u && uid < 0x80000000u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[5] = addr_out;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0u &&
+                   MEM_R32(addr_out) != 0u,
+               "sceKernelGetMemoryBlockAddr writes the allocated guest address");
+
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[5] = 0x0bffffffu; /* 4-byte output crosses the guest-memory boundary */
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200d3u,
+               "sceKernelGetMemoryBlockAddr rejects an invalid output span");
+
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0u,
+               "sceKernelFreeMemoryBlock releases its allocation");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[5] = addr_out;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200cbu,
+               "sceKernelGetMemoryBlockAddr rejects a freed UID");
+
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
+               "sceKernelFreeMemoryBlock rejects a freed UID");
+    }
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 1u;          /* valid PSP_SMEM_High, not modeled yet */
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
+           "sceKernelAllocMemoryBlock refuses valid placement kinds without modeled semantics");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 5u;          /* outside the documented kind enum */
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d8u,
+           "sceKernelAllocMemoryBlock reports ILLEGAL_MEMBLOCKTYPE for an unknown kind");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = 0xfffffffcu;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
+           "sceKernelAllocMemoryBlock rejects an unreadable options span");
+
+    MEM_W32(options, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800201bcu,
+           "sceKernelAllocMemoryBlock rejects an undersized options header");
+
+    MEM_W32(options, 8u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
+           "sceKernelAllocMemoryBlock refuses unmodeled options extensions");
+
+    MEM_W32(0x0bfffffcu, 8u); /* header fits, declared extension crosses guest RAM */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = 0x0bfffffcu;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
+           "sceKernelAllocMemoryBlock rejects an incomplete declared options span");
+
+    sr_hle_test_partition_reset();
+    MEM_W32(options, 4u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0xffffff00u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d9u,
+           "sceKernelAllocMemoryBlock returns MEMBLOCK_ALLOC_FAILED when partition space is exhausted");
+
+    const uint32_t sdk_version = 0x03070000u;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = sdk_version;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SET_COMPILED_SDK_VERSION_370) == 0u &&
+               sr_hle_test_compiled_sdk_version() == sdk_version,
+           "sceKernelSetCompiledSdkVersion370 updates shared SDK-version state");
+}
+
 static void test_td28_partition_free_reuse(void) {
     extern void sr_hle_test_partition_reset(void);
     extern int sr_hle_test_partition_free_block_count(void);
@@ -17690,7 +18383,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[640];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -17698,6 +18391,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
+                 "+ 1 vblank multi waiter "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -21233,6 +21927,7 @@ static void test_issue339_sysclock_delay_dispatch(void) {
 
 typedef struct {
     uint32_t nid;
+    uint32_t arg0;
     uint32_t ret;
     int returned;
 } SelftestVblankWaitCtx;
@@ -21241,9 +21936,67 @@ static void selftest_vblank_waiter_fiber_body(void *arg) {
     SelftestVblankWaitCtx *ctx = (SelftestVblankWaitCtx *)arg;
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ctx->arg0;
     ctx->ret = sr_syscall(&cpu, ctx->nid);
     ctx->returned = 1;
     selftest_park_on_scheduler();
+}
+
+static void test_kernel_import_sweep_display_multi(void) {
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) == 0x80020002u,
+           "sceDisplayWaitVblankStartMulti reports zero-period behavior as not implemented");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) ==
+               CNW_ERR,
+           "sceDisplayWaitVblankStartMulti refuses to report success without a current thread");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x40f0u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x40f1u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx wait;
+    memset(&wait, 0, sizeof(wait));
+    wait.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI;
+    wait.arg0 = 2u;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &wait,
+                                  (size_t)4 << 20);
+    expect(waiter->coro != NULL, "sceDisplayWaitVblankStartMulti waiter coroutine is created");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               s_vbl_count == 0u,
+           "sceDisplayWaitVblankStartMulti blocks on the first VBLANK period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    expect(waiter->state == TH_READY && s_vbl_count == 1u,
+           "the first delivered VBLANK wakes the multi-period waiter");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               s_vbl_count == 1u,
+           "sceDisplayWaitVblankStartMulti waits again for its remaining period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    expect(waiter->state == TH_READY && s_vbl_count == 2u,
+           "the second delivered VBLANK satisfies the requested count");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(wait.returned && wait.ret == 0u,
+           "sceDisplayWaitVblankStartMulti returns success after both periods");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
 }
 
 static void test_issue339_callback_wait_dispatch(void) {
@@ -21430,6 +22183,8 @@ int main(int argc, char **argv) {
     test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
+    test_kernel_import_sweep_explicit_refusals();
+    test_kernel_import_sweep_ge_head();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
     test_io_devctl_memory_stick();
@@ -21441,6 +22196,7 @@ int main(int argc, char **argv) {
     test_explicit_exit_status_exact(0x78, 0x78u);
     test_thread_delete_lifecycle_and_cleanup();
     test_issue339_wait_nids_production_dispatch();
+    test_kernel_import_sweep_display_multi();
     test_start_thread_error_semantics();
     test_exit_delete_lifecycle_and_join_result();
     test_wait_thread_end_invalid_targets();
@@ -21469,9 +22225,11 @@ int main(int argc, char **argv) {
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
     test_refer_thread_status();
+    test_change_current_thread_attr();
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
+    test_kernel_import_sweep_sysclock_conversion();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
     test_delay_zero_probe_semantics();
@@ -21542,6 +22300,7 @@ int main(int argc, char **argv) {
     test_msgpipe_callback_and_delete();
     test_msgpipe_nested_callback_wait_scopes();
     test_td23_guest_pointer_validation();
+    test_kernel_import_sweep_memory_blocks_and_sdk_alias();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
     test_fpl_delete_releases_partition();

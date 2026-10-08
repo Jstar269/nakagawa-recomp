@@ -82,6 +82,26 @@ HANDLER_METADATA = {
         ],
         "description": "Stores g_sdk_version for SDK-dependent paths; retained-state contract verified across all registered variants.",
     },
+    "h_SysClock2USec": {
+        "status": "partial",
+        "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
+    },
+    "h_AllocMemoryBlock": {
+        "status": "partial",
+        "limitation": "models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured",
+    },
+    "h_GetMemoryBlockAddr": {
+        "status": "partial",
+        "limitation": "resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured",
+    },
+    "h_FreeMemoryBlock": {
+        "status": "partial",
+        "limitation": "releases UIDs created by the modeled Low allocation path; invalid-UID result is source-tested but not hardware measured",
+    },
+    "h_DisplayWaitVblankStartMulti": {
+        "status": "partial",
+        "limitation": "waits the requested positive count of scheduler VBLANK periods; zero-count behavior fails closed as not implemented, while callback/context precedence and hardware timing are not measured",
+    },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
     # no parameters; the full observable contract is the float bits.
@@ -127,6 +147,10 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events",
         ],
         "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)",
+    },
+    "h_GeListEnQueueHead": {
+        "status": "partial",
+        "limitation": "idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
@@ -236,6 +260,93 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
             "src/rt/hle.c:h_IoRemove",
         ],
+    },
+    # Async IoFileMgr requests retain per-fd results and callbacks. Their
+    # deterministic import-boundary service interval is synthetic timing, not
+    # a PSP scheduler measurement; open also returns its descriptor at submit.
+    "h_IoOpenAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_fd_namespace"],
+        "limitation": "open completes its host lookup at submission to return the PSP-visible fd; async timing and callback ordering are synthetic, not hardware-measured",
+    },
+    "h_IoReadAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured",
+    },
+    "h_IoWriteAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured",
+    },
+    "h_IoLseekAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured",
+    },
+    "h_IoLseek32Async": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured",
+    },
+    "h_IoIoctlAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured",
+    },
+    "h_IoCloseAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_fd_namespace"],
+        "limitation": "request completion uses a deterministic synthetic import-boundary scheduler; close callback timing remains unmeasured",
+    },
+    "h_IoWaitAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the host operation runs when the guest waits; PSP blocking, wake, and callback interleaving remain unmeasured",
+    },
+    "h_IoWaitAsyncCB": {
+        "status": "partial",
+        "limitation": "callback dispatch is modeled at the wait boundary; PSP blocking and callback interleaving remain unmeasured",
+    },
+    "h_IoPollAsync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing",
+    },
+    "h_IoGetAsyncStat": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing",
+    },
+    "h_IoChangeAsyncPriority": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "priority selects queued host requests, but PSP priority ordering and its interaction with callbacks are not hardware-measured",
+    },
+    "h_IoSetAsyncCallback": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "completion queues the modeled thread callback; PSP callback argument and interleaving behavior remain unmeasured",
+    },
+    "h_IoRmdir": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "empty-directory removal and nonempty refusal are tested with synthetic roots; PSP error precedence beyond those cases remains unmeasured",
+    },
+    "h_IoChdir": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "the modeled current directory is per-thread and resolves contained Memory Stick paths; PSP behavior for other devices is not established",
+    },
+    "h_IoSync": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "Memory Stick handles are flushed and synced; other devices and nonzero unknown arguments fail closed with IO_SYNC_DEVICE or IO_SYNC_ARGUMENT",
+    },
+    "h_IoChstat": {
+        "status": "partial",
+        "evidence": ["src/rt/hle_thread_selftest.c:test_io_async_and_path_imports"],
+        "limitation": "only the mode field is supported; attribute, size, and timestamp fields fail closed with IO_CHSTAT_NON_MODE_FIELDS",
     },
     "h_Memset": {
         "status": "complete",

@@ -38,10 +38,41 @@ PSP_MODULE_HEAP_RESERVE = 0x00100000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
+PBP_MAGIC = b"\x00PBP"
+PBP_HEADER_SIZE = 40
+PBP_SECTION_COUNT = 8
+PBP_PARAM_SFO_SECTION = 0
+PBP_TITLE_MAX_BYTES = 128  # same bound as the native title_name field
+PBP_UNSUPPORTED_SENTENCE = (
+    "This is a PlayStation Store package (PBP), not a disc image. "
+    "Nakagawa Recomp can't use these yet."
+)
+PBP_HEADER_TRUNCATED_SENTENCE = (
+    "This file starts like a PlayStation Store package (PBP) but ends "
+    "before the 40-byte package header is complete."
+)
+PBP_OFFSETS_INVALID_SENTENCE = (
+    "This PlayStation Store package (PBP) has a section table that is not "
+    "ascending or that points past the end of the file."
+)
+PBP_SFO_INVALID_SENTENCE = (
+    "The title information (PARAM.SFO) inside this PlayStation Store "
+    "package (PBP) is missing, oversized, or malformed."
+)
 
 
 class IsoInspectionError(ValueError):
-    """Raised when an ISO image is unreadable or malformed."""
+    """Raised when an ISO image is unreadable or malformed.
+
+    ``boundary_code`` names a format boundary the file was identified as
+    (for example a PlayStation Store package Nakagawa cannot use). It is
+    carried beside the message, never inside it: ``str(exc)`` stays the
+    plain sentence shown to a person.
+    """
+
+    def __init__(self, message: str, *, boundary_code: str | None = None) -> None:
+        super().__init__(message)
+        self.boundary_code = boundary_code
 
 
 def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
@@ -286,6 +317,77 @@ def _canonical_disc_id(value: str) -> str:
     return normalized
 
 
+def _pbp_display_title(title: str) -> str:
+    """Show a package title the way the native reader would.
+
+    A C string stops at the first NUL, and ASCII control characters are
+    replaced with '?' so the sentence stays one plain single line.
+    """
+    visible = title.split("\0", 1)[0]
+    return "".join(
+        char if ord(char) >= 0x20 and ord(char) != 0x7F else "?" for char in visible
+    )
+
+
+def _pbp_package_sentence(disc_id: str, title: str) -> str:
+    if title:
+        return f"{PBP_UNSUPPORTED_SENTENCE} Title: {title} (ID: {disc_id})"
+    return f"{PBP_UNSUPPORTED_SENTENCE} ID: {disc_id}"
+
+
+def _reject_pbp_package(stream, size_bytes: int, header: bytes) -> None:
+    """Refuse a file already identified as a PBP package at a named boundary.
+
+    Always raises ``IsoInspectionError``: the ``\\0PBP`` magic was seen at
+    offset 0, so any ISO9660 reading of this file is a misread rather than a
+    format this function can fall back to. Only the PARAM.SFO section is
+    parsed, with the shared parser, so the sentence can name the title and
+    disc ID the package carries. No package section is extracted or executed.
+    """
+    if len(header) < PBP_HEADER_SIZE:
+        raise IsoInspectionError(
+            PBP_HEADER_TRUNCATED_SENTENCE, boundary_code="PBP_HEADER_TRUNCATED"
+        )
+    offsets = struct.unpack_from("<8I", header, 8)
+    ascending = all(
+        offsets[index] <= offsets[index + 1]
+        for index in range(PBP_SECTION_COUNT - 1)
+    )
+    if (
+        offsets[0] < PBP_HEADER_SIZE
+        or not ascending
+        or offsets[PBP_SECTION_COUNT - 1] > size_bytes
+    ):
+        raise IsoInspectionError(
+            PBP_OFFSETS_INVALID_SENTENCE, boundary_code="PBP_OFFSETS_INVALID"
+        )
+
+    sfo_start = offsets[PBP_PARAM_SFO_SECTION]
+    sfo_size = offsets[PBP_PARAM_SFO_SECTION + 1] - sfo_start
+    if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
+        raise IsoInspectionError(
+            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
+        )
+    stream.seek(sfo_start)
+    raw_sfo = stream.read(sfo_size)
+    try:
+        if len(raw_sfo) != sfo_size:
+            raise IsoInspectionError("PARAM.SFO section is truncated")
+        sfo = parse_param_sfo(raw_sfo)
+        disc_id = _canonical_disc_id(sfo.get("DISC_ID", ""))
+        title = sfo.get("TITLE", "")
+        if len(title.encode("utf-8")) >= PBP_TITLE_MAX_BYTES:
+            raise IsoInspectionError("PARAM.SFO TITLE is too long to display")
+    except IsoInspectionError as exc:
+        raise IsoInspectionError(
+            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
+        ) from exc
+    raise IsoInspectionError(
+        _pbp_package_sentence(disc_id, _pbp_display_title(title)),
+        boundary_code="PBP_PACKAGE_UNSUPPORTED",
+    )
+
+
 def inspect_iso(
     iso_path: Path | str,
     registry: Optional[TitleRegistry] = None,
@@ -298,6 +400,15 @@ def inspect_iso(
         raise IsoInspectionError(f"ISO file does not exist: {path}")
 
     size_bytes = path.stat().st_size
+
+    # A PlayStation Store package carries "\0PBP" at offset 0 and is not a
+    # disc image whatever its name or size says, so it is identified before
+    # any ISO9660 reading rather than reported as a broken disc.
+    with path.open("rb") as probe:
+        header = probe.read(PBP_HEADER_SIZE)
+        if header[: len(PBP_MAGIC)] == PBP_MAGIC:
+            _reject_pbp_package(probe, size_bytes, header)
+
     if size_bytes < 1024 * 1024:  # Under 1 MiB is not a valid PSP UMD image
         raise IsoInspectionError(f"File is too small to be a valid PSP ISO: {size_bytes} bytes")
 
@@ -750,8 +861,20 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
 
 
 def _elf32_mips_usable(
-    stream, file_size: int, lba: int, size: int, *, require_segment_alignment: bool = True
+    stream, file_size: int, lba: int, size: int, *,
+    require_segment_alignment: bool = True, module: bool = False,
 ) -> bool:
+    """Whether an ELF32/MIPS file is usable as a plain executable or guest module.
+
+    The executable rule (``module=False``) needs ``e_entry`` inside an
+    executable PT_LOAD, because the launcher starts at ``e_entry``.  A PSP PRX
+    (``e_type 0xFFA0``) checked as a guest module (``module=True``) is a
+    relocatable module whose start routine comes from its module info, so its
+    ``e_entry`` (commonly 0xFFFFFFFF) is not checked; it needs an executable
+    PT_LOAD that carries code bytes instead.  Header and program-header bounds
+    apply to both rules.  Mirrored by ``player_is_usable_mips_elf32`` and
+    ``player_iso_elf32_mips_usable`` in ``src/player/player_state.c``.
+    """
     if size < 52:
         return False
     header = _read_iso_extent(stream, file_size, lba, size, 0, 52)
@@ -778,6 +901,7 @@ def _elf32_mips_usable(
     table = _read_iso_extent(stream, file_size, lba, size, phoff, phentsize * phnum)
     have_load = False
     entry_executable = False
+    code_segment = False
     for index in range(phnum):
         p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags, p_align = struct.unpack_from(
             "<8I", table, index * phentsize
@@ -794,8 +918,13 @@ def _elf32_mips_usable(
         ):
             return False
         have_load = True
-        if p_flags & 1 and p_vaddr <= entry < memory_end:
+        executable = bool(p_flags & 1)
+        if executable and p_vaddr <= entry < memory_end:
             entry_executable = True
+        if executable and p_filesz > 0:
+            code_segment = True
+    if module and e_type == 0xFFA0:
+        return have_load and code_segment
     return have_load and entry_executable
 
 
@@ -933,7 +1062,9 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
                 stream, file_size, entry.lba, entry.size, 0, min(entry.size, 0x64)
             )
             if header.startswith(b"\x7fELF"):
-                if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
+                if not _elf32_mips_usable(
+                    stream, file_size, entry.lba, entry.size, module=True
+                ):
                     continue
                 blob = _read_iso_extent(
                     stream, file_size, entry.lba, entry.size, 0, entry.size
@@ -1037,7 +1168,7 @@ def decrypt_needed_modules(
                 for spelling in names:
                     candidate = module_dir / spelling
                     if candidate.is_file():
-                        if _classify_decrypted_elf_file(candidate) == "PLAIN_MIPS_ELF32":
+                        if _classify_decrypted_elf_file(candidate, module=True) == "PLAIN_MIPS_ELF32":
                             user_plain = candidate
                             break
                         if invalid_spelling is None:
@@ -1077,7 +1208,7 @@ def decrypt_needed_modules(
                 stream, file_size, lba, extent_size, 0, min(extent_size, 0x64)
             )
             if header.startswith(b"\x7fELF"):
-                if _elf32_mips_usable(stream, file_size, lba, extent_size):
+                if _elf32_mips_usable(stream, file_size, lba, extent_size, module=True):
                     result.update(status="skipped", reason="plain", detail="")
                     ready += 1
                 else:
@@ -1125,7 +1256,7 @@ def decrypt_needed_modules(
                     outcome.detail or "the container could not be decrypted",
                 ))
                 continue
-            if _classify_decrypted_elf_file(destination) != "PLAIN_MIPS_ELF32":
+            if _classify_decrypted_elf_file(destination, module=True) != "PLAIN_MIPS_ELF32":
                 destination.unlink(missing_ok=True)
                 results.append(_module_failure(
                     result, "boundary", "boundary output is not a usable MIPS ELF32",
@@ -1209,8 +1340,11 @@ def decrypted_module_dir(user_data_root: Path | str, disc_id: str) -> Path | Non
     return resolved
 
 
-def _classify_decrypted_elf_file(path: Path | str) -> str:
-    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans."""
+def _classify_decrypted_elf_file(path: Path | str, *, module: bool = False) -> str:
+    """Validate a user-supplied ELF32/MIPS analysis input and its guest spans.
+
+    ``module=True`` applies the guest-module rule (see ``_elf32_mips_usable``).
+    """
     candidate = Path(path)
     try:
         size = candidate.stat().st_size
@@ -1224,7 +1358,8 @@ def _classify_decrypted_elf_file(path: Path | str) -> str:
                 # The original ELF is read by the static analyzer, not a host
                 # ELF loader; its bounded guest spans remain required.
                 usable = _elf32_mips_usable(
-                    stream, size, 0, size, require_segment_alignment=False
+                    stream, size, 0, size, require_segment_alignment=False,
+                    module=module,
                 )
                 return "PLAIN_MIPS_ELF32" if usable else "UNKNOWN"
     except (OSError, IsoInspectionError, struct.error):
@@ -1633,6 +1768,37 @@ def inspect_compatibility_preflight(
             "issues": [296, 297],
         }
 
+    data_root_check: dict[str, object] | None = None
+    if metadata.matched_profile is not None:
+        declared_data_root = metadata.matched_profile.archive_relpath
+        if not declared_data_root:
+            data_root_check = {
+                "code": "DATA_ROOT", "status": "OK",
+                "message": "This game does not need a separate data folder.",
+                "issues": [],
+            }
+        else:
+            data_root_path = root / declared_data_root
+            extracted_data_root = (
+                Path(iso_path).resolve(strict=False).parent
+                / "EXTRACTED" / "PSP_GAME" / "USRDIR" / declared_data_root
+            )
+            if data_root_path.is_dir() or extracted_data_root.is_dir():
+                data_root_check = {
+                    "code": "DATA_ROOT", "status": "OK",
+                    "message": "This game's data folder is available.", "issues": [],
+                }
+            else:
+                data_root_check = {
+                    "code": "DATA_ROOT", "status": "MISSING",
+                    "message": (
+                        f"This game needs its '{declared_data_root}' data folder, but it is missing. "
+                        "Add the game's data files before playing; broader ISO-to-play support "
+                        "is in the works (#308)."
+                    ),
+                    "issues": [308],
+                }
+
     from .fonts import inspect_font_cache
 
     font_status, font_message = inspect_font_cache(user_data_root=root, fallback_root=root)
@@ -1679,7 +1845,10 @@ def inspect_compatibility_preflight(
     checks.append(executable_check)
     if modules_check is not None:
         checks.append(modules_check)
-    checks.extend((runtime_check, fonts_check, audio_check))
+    checks.append(runtime_check)
+    if data_root_check is not None:
+        checks.append(data_root_check)
+    checks.extend((fonts_check, audio_check))
     if experimental_check is not None:
         checks.insert(0, experimental_check)
     return {
