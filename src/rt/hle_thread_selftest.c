@@ -2731,7 +2731,8 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
     }
 }
 
-/* Set the five MIPS argument registers (a0-a3 and the stack-passed fifth argument in t0). */
+/* Set the five arguments; for sceRegGetKeyInfo, the fifth (t0/r8 under MIPS EABI) is the size
+ * pointer, read through stack_arg. */
 static void sysreg_args(CpuState *cpu, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
     memset(cpu, 0, sizeof(*cpu));
     cpu->r[4] = a0;
@@ -2758,6 +2759,7 @@ static void test_sysreg_virtual_registry(void) {
     const uint32_t VAL = 0x08b01000u, VAL2 = 0x08b01100u;
     CpuState cpu;
     uint32_t r, reg, cat, cat2, cat3, cat4, hk, hk_lang;
+    char long_category[129];
 
     reset_fixture();
     sr_hle_init();
@@ -2792,10 +2794,38 @@ static void test_sysreg_virtual_registry(void) {
     r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
     cat = MEM_R32(HANDLE_OUT);
     expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB");
+    {
+        uint32_t mode2_cat, mode2_hk;
+
+        title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
+        sysreg_args(&cpu, reg, NAME, 2u, HANDLE_OUT, 0u);
+        r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+        mode2_cat = MEM_R32(HANDLE_OUT);
+        expect(r == 0u && mode2_cat != 0u && mode2_cat != cat,
+               "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB with mode 2");
+        title_hle_write_cstr(NAME2, "language");
+        sysreg_args(&cpu, mode2_cat, NAME2, HK, TYPE, SIZE);
+        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+        mode2_hk = MEM_R32(HK);
+        expect(r == 0u && mode2_hk != 0u, "mode-2 category still provides readable key info");
+        sysreg_args(&cpu, mode2_cat, mode2_hk, VAL, 4u, 0u);
+        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+        expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+               "mode-2 category still provides readable values");
+        sysreg_args(&cpu, mode2_cat, 0u, 0u, 0u, 0u);
+        expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u,
+               "sceRegCloseCategory closes the mode-2 category");
+    }
     title_hle_write_cstr(NAME, "/CONFIG/NOPE");
     sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
     expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010002u,
            "sceRegOpenCategory refuses an unknown category with ENOENT");
+    memset(long_category, 'A', sizeof(long_category) - 1u);
+    long_category[sizeof(long_category) - 1u] = '\0';
+    title_hle_write_cstr(NAME, long_category);
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80000103u,
+           "sceRegOpenCategory refuses a 128-character category name with ILLEGAL_ADDR");
     sysreg_args(&cpu, 0x12345678u, NAME, 1u, HANDLE_OUT, 0u);
     expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010009u,
            "sceRegOpenCategory refuses a bad registry handle with EBADF");
@@ -2878,6 +2908,10 @@ static void test_sysreg_virtual_registry(void) {
     sysreg_args(&cpu, cat4, NAME2, HK, TYPE, SIZE);
     expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
            "CHARACTER_SET has no modeled keys and refuses lookups with ENOENT");
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x8001000cu,
+           "sceRegOpenCategory refuses a fifth open category handle with NO_MEMORY");
 
     /* Bad handles and spans on the key calls. */
     sysreg_args(&cpu, 0x12345678u, NAME2, HK, TYPE, SIZE);
@@ -2918,6 +2952,25 @@ static void test_sysreg_virtual_registry(void) {
     sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
     expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0x80010009u,
            "a closed registry handle is refused with EBADF");
+    {
+        uint32_t registry_handles[4];
+
+        for (uint32_t i = 0; i < 4u; i++) {
+            sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+            r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
+            registry_handles[i] = MEM_R32(HANDLE_OUT);
+            expect(r == 0u && registry_handles[i] != 0u,
+                   "sceRegOpenRegistry opens a handle while a slot is available");
+        }
+        sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+        expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x8001000cu,
+               "sceRegOpenRegistry refuses a fifth open registry handle with NO_MEMORY");
+        for (uint32_t i = 0; i < 4u; i++) {
+            sysreg_args(&cpu, registry_handles[i], 0u, 0u, 0u, 0u);
+            expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u,
+                   "sceRegCloseRegistry closes a handle opened for the exhaustion test");
+        }
+    }
 }
 
 /* sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler report NULL (no profiler data

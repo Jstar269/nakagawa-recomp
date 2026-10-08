@@ -1091,7 +1091,7 @@ static uint32_t h_RegOpenCategory(CpuState *s) {
 }
 
 /* sceRegGetKeyInfo(REGHANDLE hd, const char *name, REGHANDLE *hk, unsigned int *type, SceSize *size).
- * The fifth argument is the stack-passed size pointer, read through stack_arg. */
+ * The fifth argument (t0/r8 under MIPS EABI) is the size pointer, read through stack_arg. */
 static uint32_t h_RegGetKeyInfo(CpuState *s) {
     uint32_t cat = A0, name = A1, hk_out = A2, type_out = A3, size_out = stack_arg(s, 0);
     char key[64];

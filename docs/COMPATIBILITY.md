@@ -104,6 +104,6 @@ at a named semantic boundary rather than simulating phantom success.
 
 ### Issue #299: libfont registry import boundary
 
-`sceRegOpenRegistry` (NID `0x92e41280`, library `sceReg`) remains a controlled refusal. The public [PSPSDK Registry Kernel Library](https://pspdev.github.io/pspsdk/group__Reg.html) API opens a `REGHANDLE` and exposes separate category and key operations; this runtime has no registry handle or key object model to back a successful open, so the boundary stays fail-closed until that model is implemented. Status update: the `sceReg` family now runs against a read-only virtual system registry for the modeled `/CONFIG` keys (see the sceReg row in `docs/HLE_AND_WORKAROUND_INVENTORY.md`, section 3.3); unknown names and writes still fail closed.
+The runtime provides a read-only virtual system registry for modeled `/CONFIG` keys, and its integer values share the table used by `sceUtilityGetSystemParamInt`. Unknown categories and keys, and all writes, fail closed.
 
 Repeated `sceKernelStartModule` calls return `SCE_KERNEL_ERROR_ALREADY_STARTED` (`0x80020133`), matching the public [PSP kernel error table](https://github.com/pspdev/prxtool/blob/master/pspkerror.C). This source-backed value and the stopped-module restart rule have not been verified on physical hardware; restartability remains an inference.

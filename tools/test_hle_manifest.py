@@ -620,7 +620,7 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x03d9526f": ("sceHttpSetResolveRetry", "0x80010086"),
                 "0x0bf0a3ae": ("sceNetGetLocalEtherAddr", "0x80010086"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
-               "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
+                "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
                 "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
                 "0x1f0fc3e3": ("sceHttpSetRecvTimeOut", "0x80010086"),
                 "0x20fff560": ("sceKernelCreateVTimer", "0x80020002"),
@@ -651,8 +651,8 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xc68d9437": ("sceKernelStartVTimer", "0x80020002"),
                 "0xd1c8945e": ("sceHttpEnd", "0x80010086"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
-               "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
-           },
+                "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
+            },
         )
         self.assertEqual(
             [(r["nid"], r["name"], r["handler"], r["classification"], r["status"])
