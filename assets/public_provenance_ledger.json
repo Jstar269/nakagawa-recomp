@@ -5415,7 +5415,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b70ec13c4376380466b822fa2b94c525ae6c64c41a0c632c388120fcd4bb11d7"
+      "sha256": "838807de612db78bb4b7ed62f356ba0940a32dfcbea8ef351dbc682b9ee07368"
     },
     {
       "path": "tests/native/native_test_isolation.h",
@@ -5427,7 +5427,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a02b1bb2989fdf4b5e6d0149496841ce6c5ec0e78810c13b42b74844d9b20ae1"
+      "sha256": "94c49614c760dc04aa35c0e33d3d1cef98a92017b44f55cccdca1ce04a2951b6"
     },
     {
       "path": "tests/native/test_core_catalog.c",
