@@ -4,7 +4,7 @@
 
 <#
 .SYNOPSIS
-    Hermetic behavioral tests for the #183 manager safety primitives.
+    Hermetic behavioral tests for the manager safety primitives.
 .DESCRIPTION
     Driven by tools/test_manager_safety.py inside the standard Python suite. Uses
     temporary directories, junctions and mock process identities only -- never real user

@@ -1704,7 +1704,7 @@ def check_typography_runtime(
     imports_of: object = None,
     is_system: object = None,
 ) -> None:
-    """Report whether SDL3_ttf and its resolved closure sit beside the player (#421).
+    """Report whether SDL3_ttf and its resolved closure sit beside the player.
 
     The launcher resolves SDL3_ttf at run time and falls back to the SDL bitmap
     font only as a logged last resort, so an unstaged typography runtime is

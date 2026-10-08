@@ -25,8 +25,8 @@ class TestDebugC(unittest.TestCase):
         cls.tmp = Path(tempfile.mkdtemp(prefix="debugwatch_"))
         cls.exe = cls.tmp / "debug_selftest.exe"
         result = subprocess.run(
-            # debug.c depends on the derived watchpoints.json parser
-            # (issue #188); the harness compiles the real implementation.
+            # debug.c depends on the derived watchpoints.json parser;
+            # the harness compiles the real implementation.
             [CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
              f"-I{RT}", "-o", os.fspath(cls.exe),
              os.fspath(RT / "debug_selftest.c"), os.fspath(RT / "debug.c"),
