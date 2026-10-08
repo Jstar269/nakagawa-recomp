@@ -332,6 +332,27 @@ class LiveManifestTests(unittest.TestCase):
         self.assertNotEqual(sas[0x9EC3676A]["handler"], sas[0xCBCD4F79]["handler"])
         self.assertTrue(all(r["handler"] != "h_ok" for r in sas.values()))
 
+    def test_iofilemgr_sweep_imports_have_named_production_handlers(self) -> None:
+        """Common file-manager NIDs must resolve to named live handlers."""
+        expected = {
+            0x0FACAB19: ("sceIoWriteAsync", "h_IoWriteAsync"),
+            0x1117C65F: ("sceIoRmdir", "h_IoRmdir"),
+            0x55F4717D: ("sceIoChdir", "h_IoChdir"),
+            0xB293727F: ("sceIoChangeAsyncPriority", "h_IoChangeAsyncPriority"),
+            0x1B385D8F: ("sceIoLseek32Async", "h_IoLseek32Async"),
+            0xAB96437F: ("sceIoSync", "h_IoSync"),
+            0xB8A740F4: ("sceIoChstat", "h_IoChstat"),
+            0xE95A012B: ("sceIoIoctlAsync", "h_IoIoctlAsync"),
+            0xCB05F8D6: ("sceIoGetAsyncStat", "h_IoGetAsyncStat"),
+            0xA12A0514: ("sceIoSetAsyncCallback", "h_IoSetAsyncCallback"),
+        }
+        observed = {
+            nid: (r["name"], r["handler"])
+            for nid, r in self.regs.items()
+            if nid in expected
+        }
+        self.assertEqual(observed, expected)
+
     def test_all_classifications_present(self) -> None:
         classes = {r["classification"] for r in self.manifest["registrations"]}
         self.assertEqual(classes, {"dedicated", "fake_success", "controlled_unsupported"})

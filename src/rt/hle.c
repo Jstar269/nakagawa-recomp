@@ -38,8 +38,8 @@
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
-#include "vfs_contained.h"
 #endif
+#include "vfs_contained.h"
 #include "recomp.h"
 #include "iso.h"
 #include "pgf_api.h"
@@ -7692,11 +7692,13 @@ void sr_callback_unregister_owner(uint32_t thread_uid) {
 
 extern void sr_mutex_release_thread(uint32_t thread_uid);
 static void mbx_remove_thread_waiters(uint32_t thread_uid);
+static void io_cwd_release_thread(uint32_t thread_uid);
 
 
 void sr_hle_release_thread_resources(uint32_t thread_uid) {
     sr_mutex_release_thread(thread_uid);
     if (thread_uid) {
+        io_cwd_release_thread(thread_uid);
         mbx_remove_thread_waiters(thread_uid);
 
         for (int i = 0; i < FPL_MAX; i++) {
@@ -8595,6 +8597,35 @@ static uint32_t h_KernelPrintf(CpuState *s) {
 #define SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES 0x80020320u
 #define SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR 0x80020323u
 #define SCE_ERROR_KERNEL_INVALID_ARGUMENT    0x80020324u
+#define SCE_ERROR_KERNEL_ASYNC_BUSY          0x80020329u
+#define SCE_ERROR_KERNEL_NO_ASYNC            0x8002032au
+
+typedef enum {
+    IO_ASYNC_IDLE = 0,
+    IO_ASYNC_PENDING,
+    IO_ASYNC_COMPLETE,
+} IoAsyncState;
+
+typedef enum {
+    IO_ASYNC_NONE = 0,
+    IO_ASYNC_READ,
+    IO_ASYNC_WRITE,
+    IO_ASYNC_LSEEK32,
+    IO_ASYNC_LSEEK64,
+    IO_ASYNC_IOCTL,
+    IO_ASYNC_CLOSE,
+} IoAsyncOp;
+
+typedef struct {
+    IoAsyncState state;
+    IoAsyncOp op;
+    int64_t result;
+    uint64_t submitted_epoch;
+    uint64_t sequence;
+    int32_t priority;
+    uint32_t a1, a2, a3, stack0, stack1;
+    uint32_t callback_uid, callback_arg;
+} IoAsyncRequest;
 
 typedef enum {
     FD_KIND_UNUSED = 0,
@@ -8608,6 +8639,8 @@ typedef struct {
     uint8_t std_stream;          /* 0=stdin, 1=stdout, 2=stderr for FD_KIND_STD */
     uint32_t lba, size, off;
     int64_t async_res;
+    int writable;
+    IoAsyncRequest async;
     FILE *host;
     SrPgd *pgd;
     SrArchiveVfs *archive_vfs;
@@ -8616,6 +8649,64 @@ typedef struct {
 } Fd;
 static Fd s_fds[64];
 static int64_t s_closed_res[64];
+static IoAsyncState s_closed_async_state[64];
+static uint64_t s_io_dispatch_epoch;
+static uint64_t s_io_async_sequence;
+
+typedef struct {
+    uint32_t thread_uid;
+    char path[512];
+    int used;
+} IoCwd;
+static IoCwd s_io_cwds[64];
+
+static IoCwd *io_cwd_find(uint32_t thread_uid, int create) {
+    IoCwd *empty = NULL;
+    for (size_t i = 0; i < sizeof(s_io_cwds) / sizeof(s_io_cwds[0]); i++) {
+        if (s_io_cwds[i].used && s_io_cwds[i].thread_uid == thread_uid)
+            return &s_io_cwds[i];
+        if (!s_io_cwds[i].used && !empty) empty = &s_io_cwds[i];
+    }
+    if (!create || !empty) return NULL;
+    memset(empty, 0, sizeof(*empty));
+    empty->used = 1;
+    empty->thread_uid = thread_uid;
+    return empty;
+}
+
+static void io_cwd_release_thread(uint32_t thread_uid) {
+    for (size_t i = 0; i < sizeof(s_io_cwds) / sizeof(s_io_cwds[0]); i++) {
+        if (s_io_cwds[i].used && s_io_cwds[i].thread_uid == thread_uid)
+            memset(&s_io_cwds[i], 0, sizeof(s_io_cwds[i]));
+    }
+}
+
+/* PSP relative file-manager paths resolve against the calling thread's CWD.
+ * Device-qualified paths keep their explicit device and never pass through the
+ * host filesystem before the existing contained VFS validates them. */
+static uint32_t io_guest_path(uint32_t guest_addr, char *out, size_t capacity) {
+    char input[512];
+    if (!out || capacity == 0u || !guest_cstr(guest_addr, input, (int)sizeof(input)))
+        return 0x80010016u;
+    if (strchr(input, ':') || input[0] == '/' || input[0] == '\\') {
+        size_t len = strlen(input);
+        if (len >= capacity) return 0x80010024u;
+        memcpy(out, input, len + 1u);
+        return 0u;
+    }
+    IoCwd *cwd = io_cwd_find(sched_current_uid(), 1);
+    if (!cwd) return 0x8001000cu;
+    size_t cwd_len = strlen(cwd->path), input_len = strlen(input);
+    int separator = cwd_len != 0u && cwd->path[cwd_len - 1u] != '/' &&
+                    cwd->path[cwd_len - 1u] != '\\';
+    if (cwd_len + (size_t)separator + input_len + 1u > capacity)
+        return 0x80010024u;
+    memcpy(out, cwd->path, cwd_len);
+    size_t at = cwd_len;
+    if (separator) out[at++] = '/';
+    memcpy(out + at, input, input_len + 1u);
+    return 0u;
+}
 
 /* Standard descriptors are real reserved entries in the guest namespace.  A
  * closed standard descriptor keeps its kind (so ordinary allocation can never
@@ -8640,6 +8731,10 @@ static void hle_fd_init(void) {
         else memset(&s_fds[i], 0, sizeof(s_fds[i]));
     }
     memset(s_closed_res, 0, sizeof(s_closed_res));
+    memset(s_closed_async_state, 0, sizeof(s_closed_async_state));
+    memset(s_io_cwds, 0, sizeof(s_io_cwds));
+    s_io_dispatch_epoch = 0;
+    s_io_async_sequence = 0;
     for (uint8_t stream = 0; stream < 3; stream++) {
         Fd *f = &s_fds[stream];
         f->used = 1;
@@ -10595,29 +10690,26 @@ static int data_archive_guest_path_allowed(const char *guest_path) {
  * a full "disc0:/PSP_GAME/USRDIR/..." path. Returns the fd (>=1) on success or
  * -1 if the path is not in the extracted set (caller should fall through to the
  * real opener). The returned entry is owned by the immutable cache. */
-static uint32_t h_IoOpen(CpuState *s) {
-    /* a0=path, a1=flags, a2=mode. Returns an fd (>=0) or a negative error.
-     * PSP flags: WRONLY=2, RDWR=3, APPEND=0x100, CREAT=0x200, TRUNC=0x400. */
-    char path[256];
-    if (!guest_cstr(A0, path, sizeof(path)))
-        return 0x80010016u;
-    uint32_t flags = A1;
+static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot) {
+    /* PSP flags: WRONLY=2, RDWR=3, APPEND=0x100, CREAT=0x200, TRUNC=0x400. */
+    if (!path) return 0x80010016u;
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "HLE_IoOpen: opening '%s' flags=0x%x\n", path, flags);
-    if (getenv("SR_PATHHEX")) {
-        int bad = 0; for (int i = 0; path[i]; i++) if ((unsigned char)path[i] < 0x20 || (unsigned char)path[i] >= 0x7f) bad = 1;
-        if (bad || path[0] == 0) {
-            fprintf(stderr, "Open BAD path ptr=0x%08x bytes:", A0);
-            for (int i = 0; i < 24; i++) fprintf(stderr, " %02x", MEM_R8(A0 + (uint32_t)i));
-            fprintf(stderr, "\n");
-        }
+    int slot = forced_slot;
+    if (slot < 0) {
+        for (int i = 3; i < (int)(sizeof(s_fds) / sizeof(s_fds[0])); i++)
+            if (!s_fds[i].used && s_fds[i].async.state == IO_ASYNC_IDLE &&
+                s_closed_async_state[i] == IO_ASYNC_IDLE) {
+                slot = i;
+                break;
+            }
     }
-    int slot = -1;
-    for (int i = 3; i < (int)(sizeof(s_fds) / sizeof(s_fds[0])); i++)
-        if (!s_fds[i].used) { slot = i; break; }
+    if (slot < 3 || slot >= (int)(sizeof(s_fds) / sizeof(s_fds[0]))) slot = -1;
     if (slot < 0) return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;  /* too many open files */
     memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
     s_fds[slot].kind = FD_KIND_FILE;
+    s_closed_res[slot] = 0;
+    s_closed_async_state[slot] = IO_ASYNC_IDLE;
 
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
@@ -10676,6 +10768,7 @@ static uint32_t h_IoOpen(CpuState *s) {
                     if (loose_result > 0 && loose) {
                         s_fds[slot].used = 1; s_fds[slot].host = loose; s_fds[slot].lba = 0;
                         s_fds[slot].size = loose_size; s_fds[slot].off = 0;
+                        s_fds[slot].writable = writing || creating;
                         if (getenv("SR_IOLOG")) fprintf(stderr, "Open(%s) -> loose archive override size=%u\n",
                                                         path, (unsigned)loose_size);
                         free(key);
@@ -10703,6 +10796,7 @@ static uint32_t h_IoOpen(CpuState *s) {
                     s_fds[slot].used = 1; s_fds[slot].host = dfp; s_fds[slot].lba = 0;
                     s_fds[slot].size = actual_size;
                     s_fds[slot].off = 0;
+                    s_fds[slot].writable = writing || creating;
                     return (uint32_t)slot;
                 }
                 /* An indexed extracted asset must not silently fall through to an
@@ -10747,6 +10841,7 @@ static uint32_t h_IoOpen(CpuState *s) {
         }
         s_fds[slot].used = 1; s_fds[slot].host = fp; s_fds[slot].lba = 0;
         s_fds[slot].size = host_size; s_fds[slot].off = 0;
+        s_fds[slot].writable = writing || creating;
         return (uint32_t)slot;
     }
 from_iso:
@@ -10754,12 +10849,19 @@ from_iso:
     s_fds[slot].lba = lba; s_fds[slot].size = size; s_fds[slot].off = 0;
     return (uint32_t)slot;
 }
+static uint32_t h_IoOpen(CpuState *s) {
+    char path[512];
+    uint32_t rc = io_guest_path(A0, path, sizeof(path));
+    if (rc != 0u) return rc;
+    return h_io_open_path(path, A1, -1);
+}
 static uint32_t h_IoWrite(CpuState *s) {
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
+    if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
     if (hle_fd_is_std(fd)) {                          /* std streams: dump to stderr */
         uint8_t buf[1024]; uint32_t n = count < sizeof(buf) ? count : sizeof(buf) - 1;
         for (uint32_t k = 0; k < n; k++) buf[k] = (uint8_t)MEM_R8(src + k);
@@ -10791,6 +10893,7 @@ static uint32_t h_IoRead(CpuState *s) {
         return 0x80010009; /* baseline behavior preserved for standard streams */
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
+    if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
     uint64_t perf_started = sr_perf_now_ns();
     if (f->archive_vfs) {
         if (dst && !sr_guest_span_writable(dst, count)) return 0x80010016u;
@@ -10875,6 +10978,7 @@ static uint32_t h_IoLseek32(CpuState *s) {
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
     Fd *f = &s_fds[fd];
+    if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
     int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
     int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
     f->off = (uint32_t)np;
@@ -10890,6 +10994,10 @@ static uint32_t h_IoLseek(CpuState *s) {
         return 0x80010009; /* baseline behavior preserved for standard streams */
     }
     if (!hle_fd_is_file(fd)) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR; }
+    if (s_fds[fd].async.state == IO_ASYNC_PENDING) {
+        s->r[3] = 0xFFFFFFFF;
+        return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    }
     if (whence >= 3u) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_INVALID_ARGUMENT; }
     Fd *f = &s_fds[fd];
     int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
@@ -10908,14 +11016,13 @@ static uint32_t h_IoLseek(CpuState *s) {
  * plaintext files, and retail HST savedata is plaintext). Unknown commands
  * print one loud line per unique cmd and return FUNCTION_NOT_SUPPORTED
  * (0x80010086) exactly like the reference fallback. */
-static uint32_t h_IoIoctl(CpuState *s) {
-    /* a0=fd, a1=cmd, a2=indata, a3=inlen, t0=outdata, t1=outlen */
-    uint32_t fd = A0, cmd = A1, in = A2, inlen = A3;
-    uint32_t out = stack_arg(s, 0), outlen = stack_arg(s, 1);
+static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
+                                uint32_t inlen, uint32_t out, uint32_t outlen) {
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
+    if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "Ioctl fd=%u cmd=0x%08x in=0x%08x/%u out=0x%08x/%u\n",
                 fd, cmd, in, inlen, out, outlen);
@@ -11043,10 +11150,16 @@ static uint32_t h_IoIoctl(CpuState *s) {
     }
     }
 }
+static uint32_t h_IoIoctl(CpuState *s) {
+    /* a0=fd, a1=cmd, a2=indata, a3=inlen, t0=outdata, t1=outlen */
+    return h_io_ioctl_args(A0, A1, A2, A3, stack_arg(s, 0), stack_arg(s, 1));
+}
 static uint32_t h_IoClose(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (s_fds[fd].async.state == IO_ASYNC_PENDING)
+        return SCE_ERROR_KERNEL_ASYNC_BUSY;
     hle_fd_release(&s_fds[fd], s_fds[fd].kind == FD_KIND_STD);
     s_closed_res[fd] = 0;
     return 0;
@@ -11220,10 +11333,8 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
     return rc;
 }
 
-static uint32_t h_IoDopen(CpuState *s) {
-    char path[512];
-    if (!guest_cstr(A0, path, sizeof(path)))
-        return 0x80010016u;
+static uint32_t h_io_dopen_path(const char *path) {
+    if (!path) return 0x80010016u;
     if (getenv("SR_IOLOG")) fprintf(stderr, "HLE_IoDopen: path='%s'\n", path);
     for (uint32_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++) {
         if (!s_dirfds[i].used) {
@@ -11356,6 +11467,12 @@ static uint32_t h_IoDopen(CpuState *s) {
         }
     }
     return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;
+}
+
+static uint32_t h_IoDopen(CpuState *s) {
+    char path[512];
+    uint32_t rc = io_guest_path(A0, path, sizeof(path));
+    return rc != 0u ? rc : h_io_dopen_path(path);
 }
 
 static uint32_t h_IoDread(CpuState *s) {
@@ -11546,52 +11663,288 @@ static uint32_t h_IoDevctl(CpuState *s) {
     }
 }
 
-/* Async IO: the operation completes synchronously and the result is stashed per-fd for the
- * matching sceIoWaitAsync/PollAsync to return (the game streams data this way). */
+/* Asynchronous file requests wait in per-descriptor state. The runtime has no
+ * host I/O worker, so one due request is completed at each later HLE import;
+ * WaitAsync completes its target immediately because the guest explicitly
+ * requested a wait. The deterministic two-import delay is synthetic policy,
+ * not a measured PSP scheduling interval. */
+static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
+                                uint32_t a2, uint32_t a3,
+                                uint32_t stack0, uint32_t stack1) {
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used ||
+        (s_fds[fd].kind != FD_KIND_FILE &&
+         !(s_fds[fd].kind == FD_KIND_STD &&
+           (op == IO_ASYNC_WRITE || op == IO_ASYNC_CLOSE))))
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    IoAsyncRequest *request = &s_fds[fd].async;
+    if (request->state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    int32_t priority = request->priority;
+    uint32_t callback_uid = request->callback_uid;
+    uint32_t callback_arg = request->callback_arg;
+    memset(request, 0, sizeof(*request));
+    request->state = IO_ASYNC_PENDING;
+    request->op = op;
+    request->submitted_epoch = s_io_dispatch_epoch;
+    request->sequence = ++s_io_async_sequence;
+    request->priority = priority;
+    request->callback_uid = callback_uid;
+    request->callback_arg = callback_arg;
+    request->a1 = a1;
+    request->a2 = a2;
+    request->a3 = a3;
+    request->stack0 = stack0;
+    request->stack1 = stack1;
+    s_closed_async_state[fd] = IO_ASYNC_IDLE;
+    return 0u;
+}
+
 static uint32_t h_IoOpenAsync(CpuState *s) {
     uint32_t fd = h_IoOpen(s);
-    if (fd < 64) s_fds[fd].async_res = (int64_t)(int32_t)fd;   /* open result */
+    if (fd < sizeof(s_fds) / sizeof(s_fds[0])) {
+        s_fds[fd].async.state = IO_ASYNC_COMPLETE;
+        s_fds[fd].async.op = IO_ASYNC_NONE;
+        s_fds[fd].async.result = (int64_t)(int32_t)fd;
+        s_fds[fd].async_res = (int64_t)(int32_t)fd;
+    }
     return fd;
 }
+
 static uint32_t h_IoReadAsync(CpuState *s) {
     uint32_t fd = A0;
-    uint32_t off = (fd < 64) ? s_fds[fd].off : 0;
-    uint32_t n = h_IoRead(s);
-    if (getenv("SR_IOLOG")) fprintf(stderr, "ReadAsync fd=%u dst=0x%x size=%u (file off was %u) -> %u; first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-        fd, A1, A2, off, n, MEM_R8(A1), MEM_R8(A1+1), MEM_R8(A1+2), MEM_R8(A1+3), MEM_R8(A1+4), MEM_R8(A1+5), MEM_R8(A1+6), MEM_R8(A1+7));
-    if (fd < 64 && s_fds[fd].used) s_fds[fd].async_res = (int64_t)(uint64_t)n;
-    return 0;
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]))
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (!s_fds[fd].used)
+        return s_fds[fd].async.state == IO_ASYNC_PENDING ?
+               SCE_ERROR_KERNEL_ASYNC_BUSY : SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (s_fds[fd].kind == FD_KIND_STD) return 0x80010009u;
+    if (A2 != 0u && !sr_guest_span_writable(A1, A2)) return 0x80010016u;
+    return io_async_submit(fd, IO_ASYNC_READ, A1, A2, 0u, 0u, 0u);
 }
+
+static uint32_t h_IoWriteAsync(CpuState *s) {
+    uint32_t fd = A0;
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]))
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (!s_fds[fd].used)
+        return s_fds[fd].async.state == IO_ASYNC_PENDING ?
+               SCE_ERROR_KERNEL_ASYNC_BUSY : SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (A2 != 0u && !sr_guest_span_readable(A1, A2)) return 0x80010016u;
+    return io_async_submit(fd, IO_ASYNC_WRITE, A1, A2, 0u, 0u, 0u);
+}
+
 static uint32_t h_IoLseekAsync(CpuState *s) {
     uint32_t fd = A0;
-    uint32_t pos = h_IoLseek32(s);
-    if (fd < 64 && s_fds[fd].used) s_fds[fd].async_res = (int64_t)(uint64_t)pos;
-    return 0;
-}
-/* Result of the most recent async close per fd slot, so the customary
- * sceIoCloseAsync -> sceIoWaitAsync sequence reads 0 (success), not -1, after the slot is freed. */
-static uint32_t h_IoWaitAsync(CpuState *s) {
-    uint32_t fd = A0, resp = A1;
-    if (hle_log_on())
-        fprintf(stderr, "HLE: IoWaitAsync fd=0x%x (from 0x%x)\n", fd, sched_current_uid());
-    int64_t r = -1;
-    if (fd < 64) r = s_fds[fd].used ? s_fds[fd].async_res : s_closed_res[fd];
-    if (resp) { MEM_W32(resp, (uint32_t)r); MEM_W32(resp + 4, (uint32_t)((uint64_t)r >> 32)); }
-    return 0;   /* completed */
-}
-static uint32_t h_IoWaitAsyncCB(CpuState *s) {
-    if (sr_thread_has_pending_callbacks(sched_current_uid())) {
-        sr_thread_dispatch_callbacks();
-    }
-    return h_IoWaitAsync(s);
-}
-static uint32_t h_IoCloseAsync(CpuState *s) {
-    uint32_t fd = A0;
-    if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    hle_fd_release(&s_fds[fd], s_fds[fd].kind == FD_KIND_STD);
-    s_closed_res[fd] = 0;
-    return 0;
+    if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    if (s->r[29] > UINT32_MAX - 24u ||
+        !sr_guest_span_readable(s->r[29] + 16u, 4u)) return 0x80010016u;
+    return io_async_submit(fd, IO_ASYNC_LSEEK64, A2, A3, 0u, stack_arg(s, 0), 0u);
+}
+
+static uint32_t h_IoLseek32Async(CpuState *s) {
+    return io_async_submit(A0, IO_ASYNC_LSEEK32, A1, A2, 0u, 0u, 0u);
+}
+
+static uint32_t h_IoIoctlAsync(CpuState *s) {
+    uint32_t fd = A0, in = A2, inlen = A3;
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    if (s->r[29] > UINT32_MAX - 24u ||
+        !sr_guest_span_readable(s->r[29] + 16u, 8u)) return 0x80010016u;
+    uint32_t out = stack_arg(s, 0), outlen = stack_arg(s, 1);
+    if (inlen != 0u && !sr_guest_span_readable(in, inlen)) return 0x80010016u;
+    if (outlen != 0u && !sr_guest_span_writable(out, outlen)) return 0x80010016u;
+    return io_async_submit(fd, IO_ASYNC_IOCTL, A1, in, inlen, out, outlen);
+}
+
+static int64_t io_async_result_u32(uint32_t result) {
+    return (result & 0x80000000u) ? (int64_t)(int32_t)result : (int64_t)result;
+}
+
+static uint32_t io_async_complete_fd(uint32_t fd) {
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]))
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    Fd *entry = &s_fds[fd];
+    IoAsyncRequest request = entry->async;
+    if (request.state != IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_NO_ASYNC;
+    int64_t result = (int64_t)(int32_t)SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (request.op == IO_ASYNC_CLOSE) {
+        hle_fd_release(entry, entry->kind == FD_KIND_STD);
+        result = 0;
+        s_closed_res[fd] = result;
+        s_closed_async_state[fd] = IO_ASYNC_COMPLETE;
+    } else {
+        entry->async.state = IO_ASYNC_IDLE;
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        if (request.op == IO_ASYNC_READ) {
+            cpu.r[5] = request.a1;
+            cpu.r[6] = request.a2;
+            result = io_async_result_u32(h_IoRead(&cpu));
+        } else if (request.op == IO_ASYNC_WRITE) {
+            cpu.r[5] = request.a1;
+            cpu.r[6] = request.a2;
+            result = io_async_result_u32(h_IoWrite(&cpu));
+        } else if (request.op == IO_ASYNC_LSEEK32) {
+            cpu.r[5] = request.a1;
+            cpu.r[6] = request.a2;
+            result = io_async_result_u32(h_IoLseek32(&cpu));
+        } else if (request.op == IO_ASYNC_LSEEK64) {
+            if (!hle_fd_is_file(fd)) result = (int64_t)(int32_t)SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+            else if (request.stack0 >= 3u)
+                result = (int64_t)(int32_t)SCE_ERROR_KERNEL_INVALID_ARGUMENT;
+            else {
+                int64_t offset = (int64_t)(((uint64_t)request.a2 << 32) | request.a1);
+                Fd *file = &s_fds[fd];
+                int64_t base = request.stack0 == 1u ? file->off :
+                               request.stack0 == 2u ? file->size : 0;
+                int64_t position = base + offset;
+                if (position < 0) position = 0;
+                if (position > file->size) position = file->size;
+                file->off = (uint32_t)position;
+                result = position;
+            }
+        } else if (request.op == IO_ASYNC_IOCTL) {
+            result = (int64_t)(int32_t)h_io_ioctl_args(fd, request.a1, request.a2,
+                                                       request.a3, request.stack0,
+                                                       request.stack1);
+        }
+        entry = &s_fds[fd];
+        entry->async.state = IO_ASYNC_COMPLETE;
+        entry->async.result = result;
+        entry->async.op = request.op;
+        entry->async.sequence = request.sequence;
+    }
+    if (request.callback_uid && sr_callback_is_valid(request.callback_uid))
+        (void)sr_callback_notify(request.callback_uid, request.callback_arg);
+    if (fd < 64u && s_fds[fd].used && s_fds[fd].async.state == IO_ASYNC_COMPLETE)
+        s_fds[fd].async_res = result;
+    return 0u;
+}
+
+static void io_async_dispatch_tick(void) {
+    s_io_dispatch_epoch++;
+    uint32_t selected = UINT32_MAX;
+    int32_t selected_priority = INT32_MAX;
+    uint64_t selected_sequence = UINT64_MAX;
+    for (uint32_t fd = 0; fd < sizeof(s_fds) / sizeof(s_fds[0]); fd++) {
+        IoAsyncRequest *request = &s_fds[fd].async;
+        if (request->state != IO_ASYNC_PENDING ||
+            s_io_dispatch_epoch - request->submitted_epoch < 2u)
+            continue;
+        if (selected == UINT32_MAX || request->priority < selected_priority ||
+            (request->priority == selected_priority && request->sequence < selected_sequence)) {
+            selected = fd;
+            selected_priority = request->priority;
+            selected_sequence = request->sequence;
+        }
+    }
+    if (selected != UINT32_MAX) (void)io_async_complete_fd(selected);
+}
+
+static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait) {
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]))
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (result_addr != 0u && !sr_guest_span_writable(result_addr, 8u))
+        return 0x80010016u;
+    if (!s_fds[fd].used && s_closed_async_state[fd] == IO_ASYNC_IDLE)
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    IoAsyncState *state = (s_fds[fd].used ||
+                           s_fds[fd].async.state != IO_ASYNC_IDLE) ?
+                          &s_fds[fd].async.state : &s_closed_async_state[fd];
+    if (*state == IO_ASYNC_IDLE) return SCE_ERROR_KERNEL_NO_ASYNC;
+    if (*state == IO_ASYNC_PENDING) {
+        if (!wait) return 1u;
+        uint32_t rc = io_async_complete_fd(fd);
+        if (rc != 0u) return rc;
+        state = (s_fds[fd].used || s_fds[fd].async.state != IO_ASYNC_IDLE) ?
+                &s_fds[fd].async.state : &s_closed_async_state[fd];
+    }
+    int64_t result = (s_fds[fd].used || s_fds[fd].async.state != IO_ASYNC_IDLE) ?
+                     s_fds[fd].async.result : s_closed_res[fd];
+    if (result_addr != 0u) {
+        MEM_W32(result_addr, (uint32_t)result);
+        MEM_W32(result_addr + 4u, (uint32_t)((uint64_t)result >> 32));
+    }
+    if (!s_fds[fd].used) {
+        s_closed_async_state[fd] = IO_ASYNC_IDLE;
+        s_closed_res[fd] = 0;
+    }
+    return 0u;
+}
+
+static uint32_t h_IoWaitAsync(CpuState *s) {
+    if (hle_log_on())
+        fprintf(stderr, "HLE: IoWaitAsync fd=0x%x (from 0x%x)\n", A0, sched_current_uid());
+    return io_async_query(A0, A1, 1);
+}
+
+static uint32_t h_IoPollAsync(CpuState *s) {
+    return io_async_query(A0, A1, 0);
+}
+
+static uint32_t h_IoGetAsyncStat(CpuState *s) {
+    return io_async_query(A0, A2, A1 == 0u);
+}
+
+static uint32_t h_IoWaitAsyncCB(CpuState *s) {
+    uint32_t rc = io_async_query(A0, A1, 1);
+    if (rc == 0u && sr_thread_has_pending_callbacks(sched_current_uid()))
+        sr_thread_dispatch_callbacks();
+    return rc;
+}
+
+static uint32_t h_IoChangeAsyncPriority(CpuState *s) {
+    uint32_t fd = A0;
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    s_fds[fd].async.priority = (int32_t)A1;
+    return 0u;
+}
+
+static uint32_t h_IoSetAsyncCallback(CpuState *s) {
+    uint32_t fd = A0, callback = A1;
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (callback != 0u && !sr_callback_is_valid(callback)) return 0x800201a1u;
+    s_fds[fd].async.callback_uid = callback;
+    s_fds[fd].async.callback_arg = A2;
+    return 0u;
+}
+
+static uint32_t h_IoCloseAsync(CpuState *s) {
+    return io_async_submit(A0, IO_ASYNC_CLOSE, 0u, 0u, 0u, 0u, 0u);
+}
+
+static uint32_t h_IoSync(CpuState *s) {
+    char device[64];
+    if (!guest_cstr(A0, device, sizeof(device))) return 0x80010016u;
+    size_t device_len = strlen(device);
+    if (!((device_len == 4u && sr_vfs_strnicmp(device, "ms0:", 4u) == 0) ||
+          (device_len == 7u && sr_vfs_strnicmp(device, "fatms0:", 7u) == 0) ||
+          (device_len == 7u && sr_vfs_strnicmp(device, "msfat0:", 7u) == 0))) {
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: IO_SYNC_DEVICE: sceIoSync supports the Memory Stick "
+                "device only; this device is not supported yet (0x80010086)\n");
+        return 0x80010086u;
+    }
+    for (uint32_t fd = 3u; fd < sizeof(s_fds) / sizeof(s_fds[0]); fd++)
+        if (s_fds[fd].async.state == IO_ASYNC_PENDING) (void)io_async_complete_fd(fd);
+    for (size_t fd = 3u; fd < sizeof(s_fds) / sizeof(s_fds[0]); fd++) {
+        Fd *file = &s_fds[fd];
+        if (!file->used || !file->host || !file->writable) continue;
+        if (fflush(file->host) != 0) return 0x80010005u;
+#ifdef _WIN32
+        if (_commit(_fileno(file->host)) != 0) return 0x80010005u;
+#else
+        if (fsync(fileno(file->host)) != 0) return 0x80010005u;
+#endif
+    }
+    (void)A1;
+    return 0u;
 }
 /* Parent directory of a host path (last separator). Returns 0 if no parent. */
 #ifdef _WIN32
@@ -11636,7 +11989,8 @@ static uint32_t ms0_parent_contained_check(const char *hp, const wchar_t *canoni
 #ifdef _WIN32
 static uint32_t h_IoRename(CpuState *s) {
     char oldpath[256], newpath[256];
-    if (!guest_cstr(A0, oldpath, sizeof(oldpath)) || !guest_cstr(A1, newpath, sizeof(newpath)))
+    if (io_guest_path(A0, oldpath, sizeof(oldpath)) != 0u ||
+        io_guest_path(A1, newpath, sizeof(newpath)) != 0u)
         return 0x80010016u;
     char *old_hp = host_path_alloc(oldpath);
     char *new_hp = host_path_alloc(newpath);
@@ -11710,7 +12064,7 @@ static uint32_t h_IoRename(CpuState *s) {
 #ifdef _WIN32
 static uint32_t h_IoMkdir(CpuState *s) {
     char path[256];
-    if (!guest_cstr(A0, path, sizeof(path)))
+    if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
     char *hp = host_path_alloc(path);
     if (!hp) return 0x80010016u;
@@ -11750,8 +12104,8 @@ static uint32_t h_IoMkdir(CpuState *s) {
 static uint32_t h_IoRename(CpuState *s) {
     char old_guest[256], new_guest[256];
     char old_rel[SR_CD_REL_MAX], new_rel[SR_CD_REL_MAX];
-    if (!guest_cstr(A0, old_guest, sizeof(old_guest)) ||
-        !guest_cstr(A1, new_guest, sizeof(new_guest)))
+    if (io_guest_path(A0, old_guest, sizeof(old_guest)) != 0u ||
+        io_guest_path(A1, new_guest, sizeof(new_guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
     sr_cd_status st = ms0_posix_guest_relpath(old_guest, old_rel, sizeof(old_rel));
     if (st == SR_CD_OK)
@@ -11769,7 +12123,7 @@ static uint32_t h_IoRename(CpuState *s) {
 
 static uint32_t h_IoMkdir(CpuState *s) {
     char guest[256], rel[SR_CD_REL_MAX];
-    if (!guest_cstr(A0, guest, sizeof(guest)))
+    if (io_guest_path(A0, guest, sizeof(guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
     sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
     if (st != SR_CD_OK) return ms0_posix_psp_error(st);
@@ -11790,7 +12144,7 @@ static uint32_t h_IoMkdir(CpuState *s) {
 #ifdef _WIN32
 static uint32_t h_IoRemove(CpuState *s) {
     char path[256];
-    if (!guest_cstr(A0, path, sizeof(path)))
+    if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
     char *hp = host_path_alloc(path);
     if (!hp) return 0x80010016u;
@@ -11825,7 +12179,7 @@ static uint32_t h_IoRemove(CpuState *s) {
 #ifndef _WIN32
 static uint32_t h_IoRemove(CpuState *s) {
     char guest[256], rel[SR_CD_REL_MAX];
-    if (!guest_cstr(A0, guest, sizeof(guest)))
+    if (io_guest_path(A0, guest, sizeof(guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
     sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
     if (st != SR_CD_OK) return ms0_posix_psp_error(st);
@@ -11839,6 +12193,76 @@ static uint32_t h_IoRemove(CpuState *s) {
     return ms0_posix_psp_error(st);
 }
 #endif /* !_WIN32 */
+
+static uint32_t h_IoRmdir(CpuState *s) {
+    char guest[512], rel[SR_CD_REL_MAX];
+    uint32_t rc = io_guest_path(A0, guest, sizeof(guest));
+    if (rc != 0u) return rc;
+    sr_cd_status status = sr_cd_ms0_guest_relpath(guest, rel, sizeof(rel));
+    if (status != SR_CD_OK) return sr_cd_psp_error(status);
+    sr_cd_root root;
+    status = sr_cd_root_open(sr_ms0_root(), &root);
+    if (status == SR_CD_OK) {
+        status = sr_cd_remove_dir_empty(&root, rel);
+        sr_cd_root_close(&root);
+    }
+    return sr_cd_psp_error(status);
+}
+
+static uint32_t h_IoChdir(CpuState *s) {
+    char path[512];
+    uint32_t rc = io_guest_path(A0, path, sizeof(path));
+    if (rc != 0u) return rc;
+    uint32_t dirfd = h_io_dopen_path(path);
+    if (dirfd < 0x100u || dirfd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]))
+        return dirfd;
+    CpuState close_cpu;
+    memset(&close_cpu, 0, sizeof(close_cpu));
+    close_cpu.r[4] = dirfd;
+    rc = h_IoDclose(&close_cpu);
+    if (rc != 0u) return rc;
+    IoCwd *cwd = io_cwd_find(sched_current_uid(), 1);
+    if (!cwd) return 0x8001000cu;
+    size_t len = strlen(path);
+    if (len >= sizeof(cwd->path)) return 0x80010024u;
+    memcpy(cwd->path, path, len + 1u);
+    return 0u;
+}
+
+#define IO_CSTAT_MODE 0x00000001u
+#define IO_MODE_TYPE_MASK 0x0000f000u
+#define IO_MODE_REGULAR 0x00002000u
+#define IO_MODE_DIRECTORY 0x00001000u
+
+static uint32_t h_IoChstat(CpuState *s) {
+    char guest[512], rel[SR_CD_REL_MAX];
+    uint32_t rc = io_guest_path(A0, guest, sizeof(guest));
+    if (rc != 0u) return rc;
+    uint32_t bits = A2;
+    if ((bits & ~IO_CSTAT_MODE) != 0u) {
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: IO_CHSTAT_NON_MODE_FIELDS: sceIoChstat fields "
+                "other than mode are not supported yet (0x80010086)\n");
+        return 0x80010086u;
+    }
+    if (bits == 0u) return 0u;
+    if (!A1 || !sr_guest_span_readable(A1, 4u)) return 0x80010016u;
+    uint32_t requested_mode = MEM_R32(A1);
+    uint32_t type = requested_mode & IO_MODE_TYPE_MASK;
+    if (type != IO_MODE_REGULAR && type != IO_MODE_DIRECTORY)
+        return 0x80010016u;
+    uint32_t lba, size;
+    if (iso_lookup(guest, &lba, &size) == 0) return 0x8001001eu;
+    sr_cd_status status = sr_cd_ms0_guest_relpath(guest, rel, sizeof(rel));
+    if (status != SR_CD_OK) return sr_cd_psp_error(status);
+    sr_cd_root root;
+    status = sr_cd_root_open(sr_ms0_root(), &root);
+    if (status == SR_CD_OK) {
+        status = sr_cd_set_mode(&root, rel, requested_mode);
+        sr_cd_root_close(&root);
+    }
+    return sr_cd_psp_error(status);
+}
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* The focused native HLE harness exposes the small IoFileMgr slice under its
@@ -11870,6 +12294,23 @@ uint32_t sr_hle_test_io_devctl_refusal_log_count(void) {
 uint32_t sr_hle_test_io_close(CpuState *s) { return h_IoClose(s); }
 uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }
 uint32_t sr_hle_test_io_close_async(CpuState *s) { return h_IoCloseAsync(s); }
+uint32_t sr_hle_test_io_write_async(CpuState *s) { return h_IoWriteAsync(s); }
+uint32_t sr_hle_test_io_read_async(CpuState *s) { return h_IoReadAsync(s); }
+uint32_t sr_hle_test_io_lseek32_async(CpuState *s) { return h_IoLseek32Async(s); }
+uint32_t sr_hle_test_io_ioctl_async(CpuState *s) { return h_IoIoctlAsync(s); }
+uint32_t sr_hle_test_io_wait_async(CpuState *s) { return h_IoWaitAsync(s); }
+uint32_t sr_hle_test_io_poll_async(CpuState *s) { return h_IoPollAsync(s); }
+uint32_t sr_hle_test_io_get_async_stat(CpuState *s) { return h_IoGetAsyncStat(s); }
+uint32_t sr_hle_test_io_chdir(CpuState *s) { return h_IoChdir(s); }
+uint32_t sr_hle_test_io_rmdir(CpuState *s) { return h_IoRmdir(s); }
+uint32_t sr_hle_test_io_chstat(CpuState *s) { return h_IoChstat(s); }
+uint32_t sr_hle_test_io_sync(CpuState *s) { return h_IoSync(s); }
+uint32_t sr_hle_test_io_change_async_priority(CpuState *s) {
+    return h_IoChangeAsyncPriority(s);
+}
+uint32_t sr_hle_test_io_set_async_callback(CpuState *s) {
+    return h_IoSetAsyncCallback(s);
+}
 uint32_t sr_hle_test_io_rename(CpuState *s) { return h_IoRename(s); }
 uint32_t sr_hle_test_io_mkdir(CpuState *s) { return h_IoMkdir(s); }
 uint32_t sr_hle_test_io_remove(CpuState *s) { return h_IoRemove(s); }
@@ -11894,7 +12335,7 @@ static uint32_t h_IoGetstat(CpuState *s) {
      * a raw "sce_lbn0x<LBN>" path. Omitting it made the game read garbage and fetch the wrong
      * sector (e.g. REGFILE.CDI at LBN 0x5f20 was read as 0x80). */
     char path[256];
-    if (!guest_cstr(A0, path, sizeof(path)))
+    if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
     uint32_t lba, size, st = A1;
     if (iso_lookup(path, &lba, &size) != 0) {
@@ -18969,8 +19410,18 @@ void sr_hle_init(void) {
     sr_hle_register(0x89aa9906, "sceIoOpenAsync", h_IoOpenAsync);
     sr_hle_register(0xa0b5a7c2, "sceIoReadAsync", h_IoReadAsync);
     sr_hle_register(0x71b19e77, "sceIoLseekAsync", h_IoLseekAsync);
-    sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoWaitAsync);
+    sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoPollAsync);
     sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
+    sr_hle_register(0x0facab19, "sceIoWriteAsync", h_IoWriteAsync);
+    sr_hle_register(0x1117c65f, "sceIoRmdir", h_IoRmdir);
+    sr_hle_register(0x55f4717d, "sceIoChdir", h_IoChdir);
+    sr_hle_register(0xb293727f, "sceIoChangeAsyncPriority", h_IoChangeAsyncPriority);
+    sr_hle_register(0x1b385d8f, "sceIoLseek32Async", h_IoLseek32Async);
+    sr_hle_register(0xab96437f, "sceIoSync", h_IoSync);
+    sr_hle_register(0xb8a740f4, "sceIoChstat", h_IoChstat);
+    sr_hle_register(0xe95a012b, "sceIoIoctlAsync", h_IoIoctlAsync);
+    sr_hle_register(0xcb05f8d6, "sceIoGetAsyncStat", h_IoGetAsyncStat);
+    sr_hle_register(0xa12a0514, "sceIoSetAsyncCallback", h_IoSetAsyncCallback);
     sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
     sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
     sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
@@ -19103,6 +19554,7 @@ static int link_started_export(CpuState *s, uint32_t nid) {
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
+    io_async_dispatch_tick();
     /* A syscall is where a guest thread can stop making scheduler progress, so the
      * attribution of a late display period has to be able to name it. */
     const int rt_phase_saved = sr_rt_phase;
