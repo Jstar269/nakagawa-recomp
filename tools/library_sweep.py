@@ -1655,14 +1655,9 @@ def _merge_report_read_failure(exc: Exception) -> str:
     if isinstance(exc, PermissionError):
         return "cannot be opened (permission denied)"
     if isinstance(exc, package_cache.BoundedJsonError):
-        message = str(exc)
-        if "byte JSON artifact limit" in message:
-            return "is too large for a shard report"
-        if "not valid UTF-8" in message:
-            return "is not valid UTF-8 text"
-        if "not valid JSON" in message:
-            return "is not valid JSON"
-        return "is not valid shard-report JSON"
+        # The bounded reader's messages name the limit or syntax problem and never
+        # quote file contents, so they are safe to show as the reason.
+        return f"is not a usable shard report ({exc})"
     if isinstance(exc, OSError) and exc.strerror:
         return f"cannot be read ({exc.strerror})"
     return "cannot be read"

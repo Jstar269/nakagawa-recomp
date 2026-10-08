@@ -458,6 +458,45 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertIn("not valid JSON", message)
         self.assertNotIn("PRIVATE_TITLE_SENTINEL", message)
 
+    def _merge_failure_message(self, shard_dir) -> str:
+        with self.assertRaises(ValueError) as caught:
+            library_sweep.merge_private_reports(
+                [shard_dir], self.root / "merged-private", self.public_output
+            )
+        return str(caught.exception)
+
+    def test_merge_private_reports_names_each_bounded_reader_reason(self) -> None:
+        from unittest import mock
+
+        cases = {
+            "too-large": (b'{"schema_version": 2, "pad": "' + b"x" * 64 + b'"}',
+                          {"_SWEEP_RESUME_JSON_MAX_BYTES": 32}, "JSON artifact limit"),
+            "not-utf8": (b'{"schema_version": 2, "title": "' + bytes([0xFF, 0xFE]) + b'"}',
+                         {}, "UTF-8"),
+            "too-deep": (b'{"a": ' * 8 + b"1" + b"}" * 8,
+                         {"_SWEEP_RESUME_JSON_MAX_DEPTH": 4}, "nesting"),
+        }
+        for name, (payload, limits, reason) in cases.items():
+            with self.subTest(name=name):
+                shard_dir = self.root / f"shard-{name}"
+                shard_dir.mkdir()
+                report = shard_dir / "library-sweep.json"
+                report.write_bytes(payload)
+                with mock.patch.multiple(library_sweep, **limits) if limits else mock.patch.object(
+                    library_sweep, "_SWEEP_RESUME_JSON_MAX_BYTES",
+                    library_sweep._SWEEP_RESUME_JSON_MAX_BYTES,
+                ):
+                    message = self._merge_failure_message(shard_dir)
+                self.assertIn(str(report), message)
+                self.assertIn("not a usable shard report", message)
+                self.assertIn(reason, message)
+
+    def test_merge_private_reports_report_path_that_is_a_directory(self) -> None:
+        shard_dir = self.root / "shard-dir-report"
+        (shard_dir / "library-sweep.json").mkdir(parents=True)
+        message = self._merge_failure_message(shard_dir / "library-sweep.json")
+        self.assertIn("library-sweep.json", message)
+
     def test_merge_private_reports_unsupported_schema_names_path(self) -> None:
         shard_dir = self.root / "shard-schema"
         shard_dir.mkdir()
