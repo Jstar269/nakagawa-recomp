@@ -230,8 +230,22 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("hle_title_production_selftest:", output)
         self.assertIn("0 failures", output)
         self.assertIn("replaying title display-driver init", output)
-        self.assertIn("LIBFONT_STARTUP_UNAVAILABLE", output)
-        self.assertIn("ready-flag fallback (#299)", output)
+        boundary_lines = [
+            line for line in output.splitlines()
+            if "LIBFONT_STARTUP_UNAVAILABLE:" in line
+        ]
+        self.assertTrue(boundary_lines, output)
+        self.assertTrue(
+            all("guest libfont startup is not supported yet on this route" in line.lower()
+                for line in boundary_lines),
+            output,
+        )
+        self.assertTrue(
+            any("using title-configured ready-flag fallback" in line.lower()
+                for line in boundary_lines),
+            output,
+        )
+        self.assertTrue(all("#" not in line for line in boundary_lines), output)
 
     def test_libfont_guest_startup_routes_exports_without_ready_binding(self):
         make = shutil.which("mingw32-make")
@@ -255,7 +269,11 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("prx image: libfont -> [0x09f00000", output.lower())
         self.assertIn("PRX link:", output)
         self.assertIn("0 failures", output)
-        self.assertIn("ready-flag fallback is unconfigured (#299)", output)
+        self.assertIn(
+            "guest libfont startup is not supported yet on this route; "
+            "ready-flag fallback is unconfigured",
+            output.lower(),
+        )
         mutant_output = mutant.stdout + mutant.stderr
         self.assertNotEqual(mutant.returncode, 0, mutant_output)
         self.assertIn(

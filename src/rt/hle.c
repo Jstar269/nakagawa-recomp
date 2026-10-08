@@ -8735,14 +8735,17 @@ static uint32_t h_StartModule(CpuState *s) {
         if (!s_logged_libfont_unavailable[reason_index]) {
             s_logged_libfont_unavailable[reason_index] = 1;
             if (writable) {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; using title-configured "
-                                "ready-flag fallback (#299)\n", reason);
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; guest libfont startup "
+                                "is not supported yet on this route; using title-configured "
+                                "ready-flag fallback\n", reason);
             } else if (configured) {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "target is not writable (#299)\n", reason);
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; guest libfont startup "
+                                "is not supported yet on this route; ready-flag fallback "
+                                "target is not writable\n", reason);
             } else {
-                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "is unconfigured (#299)\n", reason);
+                fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; guest libfont startup "
+                                "is not supported yet on this route; ready-flag fallback "
+                                "is unconfigured\n", reason);
             }
         }
     }
