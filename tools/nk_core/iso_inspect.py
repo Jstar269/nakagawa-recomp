@@ -1633,6 +1633,37 @@ def inspect_compatibility_preflight(
             "issues": [308],
         }
 
+    data_root_check: dict[str, object] | None = None
+    if metadata.matched_profile is not None:
+        declared_data_root = metadata.matched_profile.archive_relpath
+        if not declared_data_root:
+            data_root_check = {
+                "code": "DATA_ROOT", "status": "OK",
+                "message": "This game does not need a separate data folder.",
+                "issues": [],
+            }
+        else:
+            data_root_path = root / declared_data_root
+            extracted_data_root = (
+                Path(iso_path).resolve(strict=False).parent
+                / "EXTRACTED" / "PSP_GAME" / "USRDIR" / declared_data_root
+            )
+            if data_root_path.is_dir() or extracted_data_root.is_dir():
+                data_root_check = {
+                    "code": "DATA_ROOT", "status": "OK",
+                    "message": "This game's data folder is available.", "issues": [],
+                }
+            else:
+                data_root_check = {
+                    "code": "DATA_ROOT", "status": "MISSING",
+                    "message": (
+                        f"This game needs its '{declared_data_root}' data folder, but it is missing. "
+                        "Add the game's data files before playing; broader ISO-to-play support "
+                        "is coming later."
+                    ),
+                    "issues": [308],
+                }
+
     from .fonts import inspect_font_cache
 
     font_status, font_message = inspect_font_cache(user_data_root=root, fallback_root=root)
@@ -1679,7 +1710,10 @@ def inspect_compatibility_preflight(
     checks.append(executable_check)
     if modules_check is not None:
         checks.append(modules_check)
-    checks.extend((runtime_check, fonts_check, audio_check))
+    checks.append(runtime_check)
+    if data_root_check is not None:
+        checks.append(data_root_check)
+    checks.extend((fonts_check, audio_check))
     if experimental_check is not None:
         checks.insert(0, experimental_check)
     return {

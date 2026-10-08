@@ -59,7 +59,10 @@ static bool player_populate_inspected_game(PlayerApp *app, const char *iso_path,
     snprintf(game->selected_executable, sizeof(game->selected_executable), "%s",
              result->executables.selected_path);
 
-    if (!result->is_supported && result->param_sfo_parsed) {
+    char refused_profile[512] = "";
+    bool profile_refused = player_app_title_profile_refusal_for_disc(
+        app, result->disc_id, refused_profile, sizeof(refused_profile));
+    if (!result->is_supported && result->param_sfo_parsed && !profile_refused) {
         char user_data_root[NK_MAX_PATH];
         char profile_id[64];
         if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root)) ||
@@ -1241,6 +1244,19 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
                  "Per-user data directory is unavailable; package discovery cannot run.");
     }
 
+    if (job->runtime_available) {
+        char data_reason[1024] = "";
+        NkLaunchDataRootStatus data_status = nk_launch_game_data_root_status(
+            root, &job->game, NULL, 0, data_reason, sizeof(data_reason));
+        if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+            data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+            job->runtime_available = false;
+            if (data_reason[0]) {
+                snprintf(job->reason, sizeof(job->reason), "%s", data_reason);
+            }
+        }
+    }
+
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     /* Every exit below reaches this loop, including the warm-cache shortcut
        above, so the UI thread's reload hand-off can never wait for a
@@ -1522,7 +1538,7 @@ static void player_package_status_finish(PlayerApp *app,
         player_app_runtime_package_worker_start_failed_clear(app, &job->game);
     }
     if (current_index >= 0 && cache_generation_matches) {
-        if (job->status == NK_RUNTIME_PACKAGE_OK) {
+        if (job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available) {
             app->games[current_index].is_prepared = true;
             app->games[current_index].status = NK_STATUS_PREPARED;
         } else if (!job->runtime_available &&
@@ -1575,7 +1591,7 @@ static void player_package_status_finish(PlayerApp *app,
         *build_check_session_generation = 0;
         *build_check_cache_generation = 0;
         build_check_disc_id[0] = '\0';
-        if (job->status == NK_RUNTIME_PACKAGE_OK) {
+        if (job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available) {
             app->games[current_index].is_prepared = true;
             app->games[current_index].status = NK_STATUS_PREPARED;
             nk_library_add_or_update(&app->library,
@@ -2095,6 +2111,20 @@ static int stage_iso_synchronously(PlayerApp *app) {
 
     if (nk_platform_dir_exists(final_root)) {
         if (adopt_existing_staged_root(app, final_root)) {
+            char data_reason[1024] = "";
+            NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
+                app, &app->inspecting_game, NULL, 0, data_reason,
+                sizeof(data_reason));
+            if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+                data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+                fprintf(stderr, "[PLAYER] %s\n", data_reason[0] ? data_reason :
+                        "This game's data folder could not be checked.");
+                printf("[PLAYER] STAGING_RESULT status=INCOMPLETE recovered=1 "
+                       "disc_id=%s assets=%u runtime=not-ready data_root=missing\n",
+                       app->inspecting_game.disc_id,
+                       (unsigned)app->inspecting_game.extracted_asset_count);
+                return 8;
+            }
             player_app_wizard_finish_extraction(
                 app, NK_OK, "Recovered the previously promoted staging tree.");
             printf("[PLAYER] STAGING_RESULT status=PASS recovered=1 disc_id=%s\n",
@@ -2133,8 +2163,14 @@ static int stage_iso_synchronously(PlayerApp *app) {
     app->inspecting_game.extracted_audio_count = summary.extracted_audio_count;
     app->inspecting_game.extracted_visual_count = summary.extracted_visual_count;
     app->inspecting_game.extracted_layout_count = summary.extracted_layout_count;
-    app->inspecting_game.is_prepared = player_app_validate_runtime_package(
-        app, &app->inspecting_game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
+    char data_reason[1024] = "";
+    NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
+        app, &app->inspecting_game, NULL, 0, data_reason, sizeof(data_reason));
+    app->inspecting_game.is_prepared =
+        player_app_validate_runtime_package(app, &app->inspecting_game,
+                                            NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK &&
+        (data_status == NK_LAUNCH_DATA_ROOT_READY ||
+         data_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
     app->inspecting_game.status = app->inspecting_game.is_prepared
         ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
     copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
@@ -2146,6 +2182,20 @@ static int stage_iso_synchronously(PlayerApp *app) {
             "Assets were staged, but the title could not be saved to the library.");
         fprintf(stderr, "[PLAYER] --stage-only could not save the staged title.\n");
         return 7;
+    }
+    if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+        data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+        fprintf(stderr, "[PLAYER] %s\n", data_reason[0] ? data_reason :
+                "This game's data folder could not be checked.");
+        printf("[PLAYER] STAGING_RESULT status=INCOMPLETE view=PLAYER_VIEW_READY_LIBRARY "
+               "disc_id=%s assets=%u audio=%u visual=%u layout=%u "
+               "runtime=not-ready data_root=missing\n",
+               app->inspecting_game.disc_id,
+               (unsigned)summary.extracted_asset_count,
+               (unsigned)summary.extracted_audio_count,
+               (unsigned)summary.extracted_visual_count,
+               (unsigned)summary.extracted_layout_count);
+        return 8;
     }
     player_app_wizard_finish_extraction(app, NK_OK, NULL);
     printf("[PLAYER] STAGING_RESULT status=PASS view=PLAYER_VIEW_READY_LIBRARY "
@@ -2575,6 +2625,10 @@ int main(int argc, char *argv[]) {
                                   user_data_root, nk_platform_path_separator()) > 0) {
             char report[2048];
             int loaded = nk_title_manifest_load_overlay_dir(manifest_dir, report, sizeof(report));
+            if (report[0]) {
+                snprintf(app.title_manifest_report,
+                         sizeof(app.title_manifest_report), "%s", report);
+            }
             if (loaded > 0) printf("[PLAYER] Loaded %d title manifest(s) from %s\n", loaded, manifest_dir);
             if (report[0]) fprintf(stderr, "[PLAYER] Title manifests not loaded:\n%s", report);
         }

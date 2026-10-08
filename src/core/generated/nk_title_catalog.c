@@ -358,7 +358,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0x088040ecU,
         0x088040ecU,
         "elf",
-        "data/showcase-scene-v1",
+        "",
         NULL,
         0,
         "build/showcase/memstick/TEST00007",

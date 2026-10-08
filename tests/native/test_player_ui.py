@@ -183,7 +183,7 @@ def synthetic_stale_package(runtime_root: Path) -> None:
     (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
 
 
-def synthetic_ready_package(runtime_root: Path) -> None:
+def synthetic_ready_package(runtime_root: Path, *, data_root_present: bool = True) -> None:
     """Write a source-owned package accepted by the real native validator."""
     disc_id = "TEST00006"
     title_id = "display-smoke-v1"
@@ -326,6 +326,8 @@ def synthetic_ready_package(runtime_root: Path) -> None:
         ],
     }
     write_json(package / "completion-manifest.json", completion)
+    if data_root_present:
+        (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
 
 
 def badge_rect(frame: dict[str, str]) -> tuple[int, int, int, int]:
@@ -431,6 +433,8 @@ class NativePlayerUiTests(unittest.TestCase):
         catalog_reload_count: int = 0,
         build_ready_test: bool = False,
         post_build_ready: bool = False,
+        data_root_present: bool = True,
+        profile_refusal: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
         width: int = 1280,
@@ -452,10 +456,46 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            if profile_refusal:
+                manifest_dir = runtime_root / "manifests"
+                manifest_dir.mkdir()
+                (manifest_dir / "retired-binding.json").write_text(
+                    json.dumps({
+                        "schema_version": 1,
+                        "id": "retired-profile-fixture-v1",
+                        "display_name": "Retired Profile Fixture",
+                        "kind": "retail",
+                        "disc": {
+                            "id": "TEST00001",
+                            "region": "NA",
+                            "revision_policy": "exact-disc-id",
+                        },
+                        "executable": {
+                            "base": "0x08800000",
+                            "entry": "0x08804000",
+                            "bss_metadata_source": "elf",
+                            "extra_executable_spans": [],
+                        },
+                        "modules": [],
+                        "filesystem": {
+                            "data_root": "fixtures/profile_zero",
+                            "memory_stick_root": "savedata",
+                            "device_prefixes": ["disc0:", "ms0:"],
+                        },
+                        "hle_profile": "generic",
+                        "feature_requirements": [],
+                        "verification_profile": "unverified",
+                        "runtime_bindings": {
+                            "schema_version": 1,
+                            "vblank_frame_counter_addr": "0x08804000",
+                        },
+                    }, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
             if build_ready_test:
-                synthetic_ready_package(runtime_root)
+                synthetic_ready_package(runtime_root, data_root_present=data_root_present)
             elif post_build_ready:
-                synthetic_ready_package(runtime_root)
+                synthetic_ready_package(runtime_root, data_root_present=data_root_present)
             catalog_overlay: Path | None = None
             if catalog_reload_count:
                 catalog_overlay = scratch / "catalog-overlay.json"
@@ -572,6 +612,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1.exe").write_bytes(b"")
                 (package / "display-smoke-v1").write_bytes(b"")
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
+                (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
             args.append(f"--runtime-root={runtime_root}")
 
             effective_timeout = compute_effective_timeout(event_script, timeout)
@@ -740,6 +781,36 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(ready_frame["selected_runtime"], "1")
         self.assertEqual(ready_frame["selected_prepared"], "0")
         self.assertNotEqual(missing_frame["pixels"], ready_frame["pixels"])
+
+    def test_valid_package_with_missing_data_root_is_not_marked_ready(self) -> None:
+        run = self.run_player(
+            "ready", (), post_build_ready=True, data_root_present=False,
+            wait_background=True,
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        ready_package_frames = [
+            frame for frame in frames if frame["selected_package_status"] == "0"
+        ]
+        self.assertTrue(ready_package_frames, run["stdout"])
+        self.assertTrue(
+            all(frame["selected_runtime"] == "0" for frame in ready_package_frames),
+            run["stdout"],
+        )
+        self.assertTrue(
+            all(frame["selected_prepared"] == "0" for frame in ready_package_frames),
+            run["stdout"],
+        )
+
+    def test_refused_local_title_profile_is_shown_on_the_game_card(self) -> None:
+        normal = self.run_player("supported")
+        refused = self.run_player("supported", profile_refusal=True)
+        normal_frames = normal["frames"]
+        refused_frames = refused["frames"]
+        assert isinstance(normal_frames, list) and isinstance(refused_frames, list)
+        self.assertEqual(refused_frames[0]["view"], "supported")
+        self.assertIn("vblank_frame_counter_addr", refused["stderr"])
+        self.assertNotEqual(normal_frames[0]["pixels"], refused_frames[0]["pixels"])
 
     def test_one_title_offline_art_and_stale_package_stay_off_frame_path(self) -> None:
         # The counters are the load-bearing gate: package validation and ISO
