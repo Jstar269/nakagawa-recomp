@@ -1777,7 +1777,7 @@ int main(int argc, char **argv) {
     assert(settings != NULL);
     nk_library_init(&settings->library);
     settings->settings.resolution_scale = 4;
-    settings->settings.fps_cap = 60;
+    settings->settings.fps_cap = -1;
     settings->settings.master_volume = 80;
     settings->settings.vsync = true;
     settings->settings.fullscreen = false;
@@ -1797,16 +1797,16 @@ int main(int argc, char **argv) {
     player_app_set_resolution_scale(settings, 8);
     assert(settings->settings.resolution_scale == 2);
 
-    player_app_set_fps_cap(settings, 30);
-    assert(settings->settings.fps_cap == 30);
+    player_app_set_fps_cap(settings, 0);
+    assert(settings->settings.fps_cap == 0);
     player_app_set_fps_cap(settings, 999);
-    assert(settings->settings.fps_cap == 30);
-    player_app_cycle_fps_cap(settings, 1);
-    assert(settings->settings.fps_cap == 60);
+    assert(settings->settings.fps_cap == 0);
+    player_app_set_fps_cap(settings, 30);
+    assert(settings->settings.fps_cap == 0);
+    player_app_cycle_fps_cap(settings, -1);
+    assert(settings->settings.fps_cap == -1);
     player_app_cycle_fps_cap(settings, 1);
     assert(settings->settings.fps_cap == 0);
-    player_app_cycle_fps_cap(settings, 1);
-    assert(settings->settings.fps_cap == 30);
 
     player_app_toggle_vsync(settings);
     assert(settings->settings.vsync == false);
@@ -1839,7 +1839,7 @@ int main(int argc, char **argv) {
         memset(&applied, 0, sizeof(applied));
         player_app_settings_init_default(&applied);
         applied.resolution_scale = 2;
-        applied.fps_cap = 30;
+        applied.fps_cap = -1;
         applied.vsync = false;
         applied.fullscreen = true;
         applied.master_volume = 55;
@@ -1850,7 +1850,7 @@ int main(int argc, char **argv) {
         cfg.gui_mode = true;
         player_app_apply_settings_to_session(&applied, &cfg);
         assert(cfg.resolution_scale == 2);
-        assert(cfg.fps_cap == 30);
+        assert(cfg.fps_cap == -1);
         assert(cfg.vsync == false);
         assert(cfg.fullscreen == true);
         assert(cfg.master_volume == 55);
@@ -2065,7 +2065,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 16); /* launcher fullscreen; 8x preset absent */
+        assert(player_app_focus_count(stops) == 15); /* two pacing modes; launcher fullscreen */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
@@ -2825,7 +2825,7 @@ int main(int argc, char **argv) {
         assert(s_app != NULL);
         player_app_settings_init_default(&s_app->settings);
         assert(s_app->settings.resolution_scale == 1);
-        assert(s_app->settings.fps_cap == 60);
+        assert(s_app->settings.fps_cap == -1);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
         assert(s_app->settings.launcher_fullscreen == false);
@@ -2837,7 +2837,7 @@ int main(int argc, char **argv) {
 
         /* Mutate all settings and round-trip */
         s_app->settings.resolution_scale = 2;
-        s_app->settings.fps_cap = 30;
+        s_app->settings.fps_cap = 0;
         s_app->settings.vsync = false;
         s_app->settings.fullscreen = true;
         s_app->settings.launcher_fullscreen = true;
@@ -2856,7 +2856,7 @@ int main(int argc, char **argv) {
         assert(s_app2 != NULL);
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.resolution_scale == 2);
-        assert(s_app2->settings.fps_cap == 30);
+        assert(s_app2->settings.fps_cap == 0);
         assert(s_app2->settings.vsync == false);
         assert(s_app2->settings.fullscreen == true);
         assert(s_app2->settings.launcher_fullscreen == true);
@@ -3083,11 +3083,26 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* Schema 1's 30/60 values capped host presentations, including the old
+         * 60 default. Migrate them to PSP scanout; preserve an explicit 0. */
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"fps_cap\": 60}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.fps_cap == -1);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"fps_cap\": 30}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.fps_cap == -1);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"fps_cap\": 0}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.fps_cap == 0);
+
         /* Corrupt JSON file resets to defaults and produces notice */
         write_text_file(test_settings_path, "{ invalid_json: [1, 2, ");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
         assert(s_app2->settings.resolution_scale == 1);
-        assert(s_app2->settings.fps_cap == 60);
+        assert(s_app2->settings.fps_cap == -1);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
         assert(s_app2->settings.reduce_motion == false);
@@ -3098,7 +3113,7 @@ int main(int argc, char **argv) {
         write_text_file(test_settings_path, "{\"schema_version\": 999, \"resolution_scale\": 8}");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_ERROR_GENERIC);
         assert(s_app2->settings.resolution_scale == 1);
-        assert(s_app2->settings.fps_cap == 60);
+        assert(s_app2->settings.fps_cap == -1);
         assert(s_app2->settings.vsync == true);
         assert(s_app2->settings.fullscreen == false);
         assert(s_app2->settings.reduce_motion == false);

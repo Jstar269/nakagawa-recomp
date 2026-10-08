@@ -266,7 +266,7 @@ class RuntimeLauncher:
         self,
         game_dir: Path | str,
         profile: str = "Standard",
-        fps_cap: int = 30,
+        fps_cap: int = -1,
         gpu_ge: bool = True,
         software_render: bool = False,
         no_gui: bool = False,
@@ -354,7 +354,7 @@ class RuntimeLauncher:
                     "Manifest field 'boot_executable' must be a PSP executable filename."
                 )
             env["SR_BOOT_PATH"] = boot_path
-        env["SR_FPS_CAP"] = str(fps_cap)
+        env["SR_FPS_CAP"] = "native" if fps_cap == -1 else str(fps_cap)
         env["SR_GPU_GE"] = "0" if software_render else ("1" if gpu_ge else "0")
         env.pop("SR_DATAROOT", None)
         data_root = self._resolve_data_root(title_profile, g_dir, iso_path)
