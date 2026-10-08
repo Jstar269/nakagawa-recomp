@@ -920,7 +920,7 @@ NkResult nk_launch_prepare_session(
     } else if (launch_package_directory_exists(root, game->disc_id)) {
         snprintf(session->last_error, sizeof(session->last_error), "%s",
                  package_error[0] ? package_error :
-                 "Runtime package cache entry is incomplete; rebuild is required (#308).");
+                 "Runtime package cache entry is incomplete; rebuild it from the library.");
         return package_status == NK_RUNTIME_PACKAGE_MISSING
             ? NK_ERROR_FILE_NOT_FOUND : NK_ERROR_UNSUPPORTED_TITLE;
     } else if (game->is_experimental) {
@@ -1071,7 +1071,8 @@ NkResult nk_launch_prepare_session(
                                             session->loose_content_roots,
                                             sizeof(session->loose_content_roots))) {
         snprintf(session->last_error, sizeof(session->last_error),
-                 "Loose-content root binding (in the works; #308) could not be resolved.");
+                 "Loose-content root binding could not be resolved; "
+                 "check the manifest's filesystem.loose_content_roots entries.");
         nk_title_catalog_snapshot_release(&title_snapshot);
         return NK_ERROR_FILE_NOT_FOUND;
     }

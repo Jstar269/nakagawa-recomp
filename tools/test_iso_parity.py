@@ -21,8 +21,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 from nk_core.iso_inspect import (
+    IsoInspectionError,
     inspect_compatibility_preflight,
     inspect_iso,
+    list_disc_module_candidates,
     plan_provisional_module_bindings,
     write_experimental_profile,
 )
@@ -253,6 +255,128 @@ def create_test_iso_with_modules(
     path.write_bytes(data)
 
 
+def create_test_iso_with_module_tree(
+    path: Path, modules: dict[str, bytes]
+) -> dict[tuple[str, ...], int]:
+    """Build a source-owned ISO carrying modules at arbitrary PSP_GAME paths."""
+    sector_size = 2048
+    sfo = build_param_sfo("TEST00001", "Synthetic Module Tree")
+    directories: set[tuple[str, ...]] = {
+        (), ("PSP_GAME",), ("PSP_GAME", "SYSDIR"), ("PSP_GAME", "USRDIR"),
+    }
+    files: dict[tuple[str, ...], bytes] = {
+        ("PSP_GAME", "PARAM.SFO"): sfo,
+    }
+    for member, contents in modules.items():
+        parts = tuple(member.split("/"))
+        if len(parts) == 2 and parts[0] == "PSP_GAME" and \
+                parts[1].casefold() in {"sysdir", "usrdir"}:
+            directories.discard(parts)
+            files[parts] = contents
+            continue
+        if len(parts) < 3 or parts[:2] not in {
+            ("PSP_GAME", "SYSDIR"), ("PSP_GAME", "USRDIR"),
+        }:
+            raise ValueError(f"module fixture path is outside SYSDIR/USRDIR: {member}")
+        for end in range(1, len(parts)):
+            directories.add(parts[:end])
+        if parts in files or parts in directories:
+            raise ValueError(f"duplicate module fixture path: {member}")
+        files[parts] = contents
+
+    def pack_records(records: list[bytes]) -> bytes:
+        output = bytearray()
+        for record in records:
+            sector_offset = len(output) % sector_size
+            if sector_offset + len(record) > sector_size:
+                output.extend(bytes(sector_size - sector_offset))
+            output.extend(record)
+        output.extend(bytes((-len(output)) % sector_size))
+        if not output:
+            output.extend(bytes(sector_size))
+        return bytes(output)
+
+    directory_children: dict[tuple[str, ...], list[tuple[str, tuple[str, ...], bool]]] = {
+        directory: [] for directory in directories
+    }
+    for directory in directories:
+        if directory:
+            directory_children[directory[:-1]].append((directory[-1], directory, True))
+    for file_path in files:
+        if file_path == ("PSP_GAME", "PARAM.SFO"):
+            continue
+        directory_children[file_path[:-1]].append((file_path[-1], file_path, False))
+
+    directory_sizes: dict[tuple[str, ...], int] = {}
+    for directory, children in directory_children.items():
+        placeholder = [
+            _dir_record(bytes([0]), 1, sector_size, True),
+            _dir_record(bytes([1]), 1, sector_size, True),
+        ]
+        for name, _child_path, is_directory in sorted(
+            children, key=lambda child: child[0].casefold()
+        ):
+            encoded = name.encode("ascii") if is_directory else name.encode("ascii") + b";1"
+            placeholder.append(_dir_record(encoded, 1, sector_size, is_directory))
+        directory_sizes[directory] = len(pack_records(placeholder))
+
+    directory_lbas = {(): 33, ("PSP_GAME",): 34}
+    next_lba = 35
+    for directory in sorted(
+        (item for item in directories if item not in directory_lbas),
+        key=lambda item: (len(item), item),
+    ):
+        directory_lbas[directory] = next_lba
+        next_lba += directory_sizes[directory] // sector_size
+
+    file_lbas = {("PSP_GAME", "PARAM.SFO"): 32}
+    file_sizes = {("PSP_GAME", "PARAM.SFO"): len(sfo)}
+    for file_path, contents in sorted(files.items()):
+        if file_path == ("PSP_GAME", "PARAM.SFO"):
+            continue
+        file_lbas[file_path] = next_lba
+        file_sizes[file_path] = len(contents)
+        next_lba += max(1, (len(contents) + sector_size - 1) // sector_size)
+
+    directory_payloads: dict[tuple[str, ...], bytes] = {}
+    for directory, children in directory_children.items():
+        parent = directory[:-1] if directory else ()
+        records = [
+            _dir_record(bytes([0]), directory_lbas[directory], directory_sizes[directory], True),
+            _dir_record(bytes([1]), directory_lbas[parent], directory_sizes[parent], True),
+        ]
+        for name, child_path, is_directory in sorted(
+            children, key=lambda child: child[0].casefold()
+        ):
+            encoded = name.encode("ascii") if is_directory else name.encode("ascii") + b";1"
+            records.append(_dir_record(
+                encoded,
+                directory_lbas[child_path] if is_directory else file_lbas[child_path],
+                directory_sizes[child_path] if is_directory else file_sizes[child_path],
+                is_directory,
+            ))
+        directory_payloads[directory] = pack_records(records)
+
+    data = bytearray(max(1024, next_lba) * sector_size)
+    pvd_offset = 16 * sector_size
+    data[pvd_offset] = 0x01
+    data[pvd_offset + 1:pvd_offset + 6] = b"CD001"
+    data[pvd_offset + 6] = 0x01
+    volume_id = b"MODULE_TREE"
+    data[pvd_offset + 40:pvd_offset + 40 + len(volume_id)] = volume_id
+    data[pvd_offset + 156:pvd_offset + 190] = _dir_record(
+        bytes([0]), 33, directory_sizes[()], True
+    )[:34]
+    for directory, payload in directory_payloads.items():
+        start = directory_lbas[directory] * sector_size
+        data[start:start + len(payload)] = payload
+    for file_path, contents in files.items():
+        start = file_lbas[file_path] * sector_size
+        data[start:start + len(contents)] = contents
+    path.write_bytes(data)
+    return directory_lbas
+
+
 def build_plain_mips_elf(
     e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4
 ) -> bytes:
@@ -312,7 +436,11 @@ class IsoParityTests(unittest.TestCase):
         # its own input/output directory below.
         cls._build_dir = Path(tempfile.mkdtemp(prefix="nk_parity_build_"))
         cls.harness_c = cls._build_dir / "parity_harness.c"
-        cls.exe_path = cls._build_dir / ("parity_harness.exe" if sys.platform == "win32" else "parity_harness")
+        executable_name = "parity_harness.exe" if sys.platform == "win32" else "parity_harness"
+        cls.exe_path = cls._build_dir / executable_name
+        cls.path_limit_exe = cls._build_dir / (
+            "parity_path_limit.exe" if sys.platform == "win32" else "parity_path_limit"
+        )
 
         has_launch = (ROOT / "src" / "core" / "nk_launch.c").is_file()
         core_srcs = [
@@ -329,7 +457,8 @@ class IsoParityTests(unittest.TestCase):
         else:
             core_srcs.append(ROOT / "src" / "core" / "nk_platform_posix.c")
 
-        harness_code = f"""#include <stdio.h>
+        harness_code = f"""#include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -340,9 +469,40 @@ class IsoParityTests(unittest.TestCase):
 #include "nk_launch.h"
 #endif
 
+static bool print_module_path(const char *path, const NkIsoDirEntry *entry,
+                              void *userdata) {{
+    (void)userdata;
+    size_t length = strlen(entry->name);
+    if (length >= 4 &&
+        tolower((unsigned char)entry->name[length - 4]) == '.' &&
+        tolower((unsigned char)entry->name[length - 3]) == 'p' &&
+        tolower((unsigned char)entry->name[length - 2]) == 'r' &&
+        tolower((unsigned char)entry->name[length - 1]) == 'x') {{
+        printf("MODULE_PATH:%s\\n", path);
+    }} else if (length >= 4 &&
+        tolower((unsigned char)entry->name[length - 4]) == '.' &&
+        tolower((unsigned char)entry->name[length - 3]) == 'e' &&
+        tolower((unsigned char)entry->name[length - 2]) == 'l' &&
+        tolower((unsigned char)entry->name[length - 1]) == 'f') {{
+        printf("MODULE_PATH:%s\\n", path);
+    }}
+    return true;
+}}
+
 int main(int argc, char **argv) {{
     if (argc < 2) return 1;
     const char *mode = argv[1];
+
+    if (strcmp(mode, "module_walk") == 0) {{
+        if (argc < 3) return 1;
+        NkIsoReader *reader = nk_iso_reader_open(argv[2]);
+        if (!reader) return 2;
+        NkIsoModuleWalkStatus status = nk_iso_reader_walk_module_tree(
+            reader, print_module_path, NULL);
+        printf("MODULE_WALK_STATUS:%d\\n", (int)status);
+        nk_iso_reader_close(reader);
+        return 0;
+    }}
 
     if (strcmp(mode, "inspect") == 0) {{
         if (argc < 3) return 1;
@@ -603,6 +763,11 @@ int main(int argc, char **argv) {{
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode:
             raise AssertionError(f"Compilation of parity harness failed: {res.stderr}")
+        path_limit_cmd = [cls.gcc, "-DNK_ISO_MODULE_TREE_MAX_PATH_BYTES=64", *cmd[1:-1],
+                          str(cls.path_limit_exe)]
+        res = subprocess.run(path_limit_cmd, capture_output=True, text=True)
+        if res.returncode:
+            raise AssertionError(f"Compilation of path-limit harness failed: {res.stderr}")
 
     def setUp(self) -> None:
         # Inputs and any application data remain isolated per test even though
@@ -633,6 +798,229 @@ int main(int argc, char **argv) {{
                 k, v = l.split(":", 1)
                 out[k] = v
         return out
+
+    def _run_native_module_walk(
+        self, iso_path: Path, executable: Path | None = None
+    ) -> tuple[int, list[str]]:
+        result = subprocess.run(
+            [str(executable or self.exe_path), "module_walk", str(iso_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="strict",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = None
+        paths = []
+        for line in result.stdout.splitlines():
+            if line.startswith("MODULE_WALK_STATUS:"):
+                status = int(line.split(":", 1)[1])
+            elif line.startswith("MODULE_PATH:"):
+                paths.append(line.split(":", 1)[1])
+        self.assertIsNotNone(status, result.stdout)
+        return status, paths
+
+    def test_module_discovery_covers_usrdir_module_and_nested_paths(self) -> None:
+        iso_file = self.temp_dir / "module-tree.iso"
+        paths = {
+            "PSP_GAME/USRDIR/module/sdk.prx": build_plain_mips_elf(0xFFA0),
+            "PSP_GAME/USRDIR/DATA/MODULE/MODULE/nested.prx": build_psp_container(),
+            "PSP_GAME/USRDIR/Mixed/SDK_VARIANT.PrX": build_psp_container(),
+        }
+        create_test_iso_with_module_tree(iso_file, paths)
+        candidates = list_disc_module_candidates(iso_file)
+        members = {candidate["members"][0] for candidate in candidates}
+        self.assertEqual(members, {tuple(path.split("/")) for path in paths})
+        package_candidates = nk_cli._discover_iso_module_candidates(
+            iso_file, "EBOOT.BIN"
+        )
+        package_members = {
+            tuple(candidate["directory"]) + (candidate["entry"].name,)
+            for candidate in package_candidates
+        }
+        self.assertEqual(package_members, members)
+        copied_modules = nk_cli._copy_optional_modules(
+            iso_file,
+            {"modules": [{
+                "name": "manifest-sdk.prx",
+                "guest_path": "disc0:/PSP_GAME/USRDIR/module/sdk.prx",
+                "role": "guest-prx", "required": True,
+            }]},
+            self.temp_dir / "manifest-package", None,
+        )
+        self.assertIsNotNone(copied_modules)
+        self.assertEqual(
+            (copied_modules / "manifest-sdk.prx").read_bytes(), paths[
+                "PSP_GAME/USRDIR/module/sdk.prx"
+            ],
+        )
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 0)
+        self.assertEqual(set(native_paths), set(paths))
+
+    def test_module_discovery_fails_closed_on_malformed_directory_tail(self) -> None:
+        iso_file = self.temp_dir / "malformed-module-directory.iso"
+        member = "PSP_GAME/USRDIR/before.prx"
+        directory_lbas = create_test_iso_with_module_tree(
+            iso_file, {member: build_psp_container()}
+        )
+        image = bytearray(iso_file.read_bytes())
+        record = _dir_record(b"before.prx;1", 1, 128, False)
+        malformed_offset = 2 * len(_dir_record(b"\0", 1, 2048, True)) + len(record)
+        image[directory_lbas[("PSP_GAME", "USRDIR")] * 2048 + malformed_offset] = 1
+        iso_file.write_bytes(image)
+
+        with self.assertRaisesRegex(IsoInspectionError, "DISC_MODULE_TREE_INVALID"):
+            list_disc_module_candidates(iso_file)
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 4)
+        self.assertEqual(native_paths, [member])
+
+    def test_module_discovery_rejects_dot_only_directory_name(self) -> None:
+        iso_file = self.temp_dir / "dot-only-module-directory.iso"
+        create_test_iso_with_module_tree(iso_file, {
+            "PSP_GAME/USRDIR/./sdk.prx": build_psp_container(),
+        })
+        with self.assertRaisesRegex(IsoInspectionError, "DISC_MODULE_TREE_INVALID"):
+            list_disc_module_candidates(iso_file)
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 4)
+        self.assertEqual(native_paths, [])
+
+    def test_module_discovery_fails_closed_when_a_root_is_a_file(self) -> None:
+        iso_file = self.temp_dir / "module-root-file.iso"
+        create_test_iso_with_module_tree(iso_file, {
+            "PSP_GAME/SYSDIR": b"not a directory",
+            "PSP_GAME/USRDIR/module/sdk.prx": build_psp_container(),
+        })
+        with self.assertRaisesRegex(IsoInspectionError, "DISC_MODULE_TREE_INVALID"):
+            list_disc_module_candidates(iso_file)
+        native_status, _native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 4)
+
+    def test_native_module_walk_reports_path_limit(self) -> None:
+        iso_file = self.temp_dir / "module-path-limit.iso"
+        directory_name = "d" * 50
+        member = f"PSP_GAME/USRDIR/{directory_name}/nested.prx"
+        create_test_iso_with_module_tree(iso_file, {member: build_psp_container()})
+
+        # The production depth and ISO record bounds put legal paths below 1200
+        # bytes. Compile this C harness with a smaller cap to execute the same
+        # fail-closed branch without changing the production bound.
+        native_status, native_paths = self._run_native_module_walk(
+            iso_file, type(self).path_limit_exe
+        )
+        self.assertEqual(native_status, 3)
+        self.assertEqual(native_paths, [])
+
+    def test_copy_optional_modules_falls_back_after_stale_manifest_path(self) -> None:
+        iso_file = self.temp_dir / "stale-module-path.iso"
+        member = "PSP_GAME/USRDIR/module/sdk.prx"
+        module_bytes = build_plain_mips_elf(0xFFA0)
+        create_test_iso_with_module_tree(iso_file, {member: module_bytes})
+        output = nk_cli._copy_optional_modules(
+            iso_file,
+            {"modules": [{
+                "name": "manifest-sdk.prx",
+                "role": "guest-prx",
+                "required": True,
+                "guest_path": "disc0:/PSP_GAME/SYSDIR/module/sdk.prx",
+            }]},
+            self.temp_dir / "stale-module-package", None,
+        )
+        self.assertIsNotNone(output)
+        self.assertEqual((output / "manifest-sdk.prx").read_bytes(), module_bytes)
+
+    def test_module_discovery_rejects_duplicate_basenames_with_both_paths(self) -> None:
+        iso_file = self.temp_dir / "duplicate-module-name.iso"
+        first = "PSP_GAME/USRDIR/module/shared.prx"
+        second = "PSP_GAME/USRDIR/BIN/SHARED.PRX"
+        create_test_iso_with_module_tree(iso_file, {
+            first: build_psp_container(), second: build_psp_container(),
+        })
+        with self.assertRaisesRegex(
+            IsoInspectionError,
+            "DUPLICATE_DISC_MODULE_BASENAME.*shared.prx.*SHARED.PRX",
+        ):
+            list_disc_module_candidates(iso_file)
+        with self.assertRaisesRegex(
+            nk_cli.PackageBuildError,
+            "DUPLICATE_DISC_MODULE_BASENAME.*shared.prx.*SHARED.PRX",
+        ):
+            nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        report = inspect_compatibility_preflight(
+            iso_file, metadata=inspect_iso(iso_file), runtime_root=self.temp_dir,
+        )
+        module_check = next(
+            check for check in report["checks"] if check["code"] == "GUEST_MODULES"
+        )
+        self.assertEqual(module_check["status"], "UNSUPPORTED")
+        self.assertIn(first, module_check["message"])
+        self.assertIn(second, module_check["message"])
+        self.assertEqual(module_check["issues"], [726])
+
+    def test_nonexperimental_bringup_keeps_module_boundary_detail_and_issue(self) -> None:
+        failure, issues, detail = nk_cli._bringup_import_failure(
+            nk_cli.PackageBuildError(
+                "DUPLICATE_DISC_MODULE_BASENAME: shared.prx occurs twice"
+            ),
+            {"EXECUTABLE": {"issue_numbers": [308]}},
+        )
+        self.assertEqual(failure, "GUEST_MODULE_DISCOVERY_FAILED")
+        self.assertEqual(issues, [726])
+        self.assertEqual(
+            detail, "DUPLICATE_DISC_MODULE_BASENAME: shared.prx occurs twice"
+        )
+
+    def test_module_discovery_accepts_more_than_32_candidates(self) -> None:
+        iso_file = self.temp_dir / "module-candidate-many.iso"
+        modules = {
+            f"PSP_GAME/USRDIR/MODULES/module-{index:02}.prx": build_psp_container()
+            for index in range(40)
+        }
+        create_test_iso_with_module_tree(iso_file, modules)
+        self.assertEqual(len(list_disc_module_candidates(iso_file)), 40)
+        self.assertEqual(
+            len(nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")), 40
+        )
+
+    def test_module_discovery_fails_closed_above_documented_candidate_cap(self) -> None:
+        iso_file = self.temp_dir / "module-candidate-cap.iso"
+        modules = {
+            f"PSP_GAME/USRDIR/module-{index:03}.prx": build_psp_container()
+            for index in range(257)
+        }
+        create_test_iso_with_module_tree(iso_file, modules)
+        with self.assertRaisesRegex(
+            IsoInspectionError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+        ):
+            list_disc_module_candidates(iso_file)
+        with self.assertRaisesRegex(
+            nk_cli.PackageBuildError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+        ):
+            nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+
+    def test_module_discovery_excludes_kmodule_but_keeps_usrdir_module(self) -> None:
+        iso_file = self.temp_dir / "kernel-module-exclusion.iso"
+        user_module = "PSP_GAME/USRDIR/module/user.prx"
+        kernel_module = "PSP_GAME/USRDIR/KMODULE/kernel.prx"
+        create_test_iso_with_module_tree(iso_file, {
+            user_module: build_psp_container(),
+            kernel_module: build_psp_container(),
+        })
+        candidates = list_disc_module_candidates(iso_file)
+        self.assertEqual(
+            {candidate["members"][0] for candidate in candidates},
+            {tuple(user_module.split("/"))},
+        )
+        package_candidates = nk_cli._discover_iso_module_candidates(
+            iso_file, "EBOOT.BIN"
+        )
+        self.assertEqual(
+            {candidate["directory"] + (candidate["entry"].name,)
+             for candidate in package_candidates},
+            {tuple(user_module.split("/"))},
+        )
+        native_status, native_paths = self._run_native_module_walk(iso_file)
+        self.assertEqual(native_status, 0)
+        self.assertEqual(native_paths, [user_module])
 
     def test_synthetic_iso_parity(self) -> None:
         """Verify Python and Native C inspector match on synthetic title."""
@@ -879,7 +1267,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(executable["status"], "UNSUPPORTED")
         self.assertIn(f"supply decrypted modules at {decrypted_dir}".lower(),
                       executable["message"].lower())
-        self.assertIn("#295", executable["message"])
+        self.assertNotRegex(executable["message"], r"#[0-9]+")
         cli = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
              str(iso_file), "--json", "--root", str(user_root)],
@@ -892,7 +1280,7 @@ int main(int argc, char **argv) {{
         self.assertIn(str(decrypted_dir), cli_executable["message"])
         self.assertIn("matching local key file", cli_executable["message"])
         self.assertNotIn("automatic decryption is in the works", cli_executable["message"].lower())
-        self.assertIn("#295", cli_executable["message"])
+        self.assertNotRegex(cli_executable["message"], r"#[0-9]+")
 
         decrypted_dir.mkdir(parents=True)
         eboot = decrypted_dir / "EBOOT.elf"
@@ -1131,8 +1519,8 @@ int main(int argc, char **argv) {{
                     "cache": {"format": "nakagawa-aot-cache", "schema_version": 1, "key": {}, "codegen_options": {}, "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True}},
                     "backends": "public" if public else "private",
                     "limits": [
-                        "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                        "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
                     ] if public else [],
                 }),
                 encoding="utf-8",
@@ -1158,14 +1546,14 @@ int main(int argc, char **argv) {{
             report = json.loads((user_root / "packages" / disc_id / "build-report.json").read_text(encoding="utf-8"))
             self.assertEqual(report.get("backends"), "public")
             self.assertEqual(report.get("limits"), [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ])
             completion = json.loads((user_root / "packages" / disc_id / "completion-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(completion.get("backends"), "public")
             self.assertEqual(completion.get("limits"), [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ])
 
         # Test private mode when private backends are present
@@ -1841,6 +2229,54 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
             "TEST00102", stderr, returncode=3, with_log=False)
         self.assertEqual(rc, 3)
         self.assertEqual(message, "PACKAGE_BUILD_FAILED: build exited with code 3")
+
+
+# nk_cli.py writes titles as UTF-8 whatever the host pipe encoding is (#732). On Windows a
+# redirected Python stdout uses the ANSI code page (cp1252), so trademark and registered
+# signs became single bytes and a UTF-8 reader saw U+FFFD. The child is forced to a cp1252
+# pipe so the failure reproduces on any host.
+CONSOLE_ENCODING_TITLE = "Café® ™"
+
+
+class NkCliConsoleEncodingTests(unittest.TestCase):
+    def run_inspect(self, iso: Path, pipe_encoding: str) -> bytes:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = pipe_encoding
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect", str(iso)],
+            cwd=str(ROOT), env=env, capture_output=True, timeout=120,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
+        return completed.stdout
+
+    def test_piped_title_with_trademark_and_registered_signs_is_utf8(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nk_cli_encoding_") as temp:
+            iso = Path(temp) / "sign-title.iso"
+            create_test_iso(iso, disc_id="TEST00002", title=CONSOLE_ENCODING_TITLE, volume_id="TEST00001")
+            # A legacy ANSI pipe is what a Windows parent process gets by default.
+            raw = self.run_inspect(iso, "cp1252")
+
+        text = raw.decode("utf-8")  # strict: a stray cp1252 byte must fail here
+        self.assertNotIn("�", text)
+        title_line = next(line for line in text.splitlines() if line.startswith("Title:"))
+        self.assertEqual(title_line, "Title:      " + CONSOLE_ENCODING_TITLE)
+
+    def test_output_written_to_a_file_is_utf8_too(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nk_cli_encoding_file_") as temp:
+            temp_root = Path(temp)
+            iso = temp_root / "sign-title.iso"
+            create_test_iso(iso, disc_id="TEST00002", title=CONSOLE_ENCODING_TITLE, volume_id="TEST00001")
+            out_path = temp_root / "inspect.txt"
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "cp1252"
+            with out_path.open("wb") as out:
+                completed = subprocess.run(
+                    [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect", str(iso)],
+                    cwd=str(ROOT), env=env, stdout=out, stderr=subprocess.PIPE, timeout=120,
+                )
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
+            text = out_path.read_bytes().decode("utf-8")
+        self.assertIn("Title:      " + CONSOLE_ENCODING_TITLE, text)
 
 
 if __name__ == "__main__":

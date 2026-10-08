@@ -172,7 +172,7 @@ class FontProvisioningTests(unittest.TestCase):
         status, msg = inspect_font_cache(user_data_root=user_data)
         self.assertEqual(status, "MISSING")
         self.assertIn("run fonts import <folder>", msg)
-        self.assertIn("#300", msg)
+        self.assertNotRegex(msg, r"#[0-9]+")
 
         # 2. OK (after import)
         dump_dir = self.temp_path / "dump"

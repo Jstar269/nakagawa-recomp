@@ -778,7 +778,7 @@ class TestPreflightIntegration(unittest.TestCase):
         self.assertEqual(executable["status"], "UNSUPPORTED")
         message = executable["message"]
         self.assertIn("supply decrypted modules at", message)
-        self.assertIn("#295", message)
+        self.assertNotRegex(message, r"#[0-9]+")
         key_hint = user_root / "keys" / "psp-keyfile.json"
         self.assertIn(str(key_hint), message)
         self.assertFalse((user_root / "titles" / "TEST00001" / "decrypted" /

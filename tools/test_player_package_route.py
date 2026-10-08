@@ -659,7 +659,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("[preflight] FAIL: Encrypted executable", encrypted.stdout)
         self.assertIn("supply decrypted modules at", encrypted.stdout)
         self.assertIn("local key file", encrypted.stdout)
-        self.assertNotIn("decryption support is in the works (#295)", encrypted.stdout.lower())
+        self.assertNotRegex(encrypted.stdout, r"#[0-9]+")
         self.assertNotIn("automatic decryption is in the works", encrypted.stdout.lower())
         self.assertFalse((encrypted_root / "packages" / DISC_ID).exists())
 
@@ -681,7 +681,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertNotEqual(header.returncode, 0)
         self.assertIn("PACKAGE_BUILD_ROUTE status=FAIL", header.stdout)
         self.assertIn("[extract] FAIL: This manifest reads BSS metadata", header.stdout)
-        self.assertIn("provide --psp-header (#296)", header.stdout)
+        self.assertIn("provide --psp-header", header.stdout)
         self.assertFalse((header_root / "packages" / DISC_ID).exists())
 
         self.assertEqual(tracked_status(), before)

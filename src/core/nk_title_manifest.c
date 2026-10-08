@@ -1269,13 +1269,13 @@ static bool nk_manifest_parse_locked(
         }
         JsonNode *retired_vf = obj_get(rb_node, "vblank_frame_counter_addr");
         if (retired_vf) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_frame_counter_addr: retired (#643); runtime does not write guest VBLANK counters");
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_frame_counter_addr: retired; runtime does not write guest VBLANK counters");
             json_free(root);
             return false;
         }
         JsonNode *retired_vs = obj_get(rb_node, "vblank_vsync_counter_addr");
         if (retired_vs) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_vsync_counter_addr: retired (#643); runtime does not write guest VBLANK counters");
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_vsync_counter_addr: retired; runtime does not write guest VBLANK counters");
             json_free(root);
             return false;
         }
@@ -3242,33 +3242,12 @@ static void package_validation_cache_put(
 }
 
 static void package_rebuild_reason(char *reason, size_t reason_size,
-                                   const char *detail, const char *root,
-                                   const char *disc_id) {
-    char manifest_path[NK_MAX_PATH * 2];
-    char executable_path[NK_MAX_PATH * 2];
-    char output_path[NK_MAX_PATH * 2];
-    char relative[NK_MAX_DISC_ID_LEN + 32];
-    snprintf(relative, sizeof(relative), "cache%cpackages%c%s%cmanifest.json",
-             nk_platform_path_separator(), nk_platform_path_separator(), disc_id,
-             nk_platform_path_separator());
-    (void)package_join_path(manifest_path, sizeof(manifest_path), root, relative);
-    snprintf(relative, sizeof(relative), "cache%cpackages%c%s%cselected.elf",
-             nk_platform_path_separator(), nk_platform_path_separator(), disc_id,
-             nk_platform_path_separator());
-    (void)package_join_path(executable_path, sizeof(executable_path), root, relative);
-    snprintf(relative, sizeof(relative), "cache%cpackages%c%s%cpackage",
-             nk_platform_path_separator(), nk_platform_path_separator(), disc_id,
-             nk_platform_path_separator());
-    (void)package_join_path(output_path, sizeof(output_path), root, relative);
+                                   const char *detail) {
     if (reason && reason_size) {
-        /* The short library command comes first: UI error fields are bounded
-           and the path-heavy developer route may be truncated. */
         snprintf(reason, reason_size,
-            "%s Cache component/epoch mismatch or incomplete entry (#308). "
-            "Build it with: python tools/nk_cli.py build-package %s (#296/#297). "
-            "Developer route: python tools/title_codegen_plan.py \"%s\" --package --game-elf \"%s\" --output-dir \"%s\".",
-            detail ? detail : "Runtime package needs rebuilding.",
-            disc_id, manifest_path, executable_path, output_path);
+            "%s Cache component/epoch mismatch or incomplete entry; "
+            "build it from the library.",
+            detail ? detail : "Runtime package needs rebuilding.");
     }
 }
 
@@ -4383,14 +4362,14 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         profile_id[22] = '\0';
         if (strcmp(title_id, profile_id) != 0) {
             package_rebuild_reason(reason, reason_size,
-                "Experimental package identity does not match the disc.", user_data_root, normalized);
+                "Experimental package identity does not match the disc.");
             return NK_RUNTIME_PACKAGE_STALE;
         }
     } else {
         if (!package_catalog_identity_matches(normalized, title_id,
                                               &catalog_epoch)) {
             package_rebuild_reason(reason, reason_size,
-                "Package title identity does not match the catalogued disc.", user_data_root, normalized);
+                "Package title identity does not match the catalogued disc.");
             return NK_RUNTIME_PACKAGE_STALE;
         }
     }
@@ -4402,7 +4381,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
              nk_platform_path_separator(), normalized);
     if (!package_join_path(package_root, sizeof(package_root), user_data_root, package_relative) ||
         !nk_platform_dir_exists(package_root)) {
-        package_rebuild_reason(reason, reason_size, "Runtime package is missing.", user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, "Runtime package is missing.");
         return NK_RUNTIME_PACKAGE_MISSING;
     }
     char resolved_package_root[NK_MAX_PATH * 2];
@@ -4410,8 +4389,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                                    sizeof(resolved_package_root)) ||
         !package_path_is_within(user_data_root, resolved_package_root)) {
         package_rebuild_reason(reason, reason_size,
-            "Package directory is outside the per-user data directory.",
-            user_data_root, normalized);
+            "Package directory is outside the per-user data directory.");
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     snprintf(package_root, sizeof(package_root), "%s", resolved_package_root);
@@ -4444,7 +4422,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     }
     if (!package_direct_file(package_root, "package.json", package_path,
                              sizeof(package_path))) {
-        package_rebuild_reason(reason, reason_size, "Runtime package package.json is missing.", user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, "Runtime package package.json is missing.");
         return NK_RUNTIME_PACKAGE_MISSING;
     }
 
@@ -4453,13 +4431,13 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     char parse_error[320] = "";
     if (!package_read_json(package_path, NK_MANIFEST_MAX_BYTES, NULL, &package_text,
                            &package_length, parse_error, sizeof(parse_error))) {
-        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, parse_error);
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     JsonNode *package = json_parse(package_text, package_length, parse_error, sizeof(parse_error));
     free(package_text);
     if (!package) {
-        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, parse_error);
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
 
@@ -4473,7 +4451,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     if (!contract_ok) {
         NkRuntimePackageStatus status = strstr(parse_error, "identity")
             ? NK_RUNTIME_PACKAGE_STALE : NK_RUNTIME_PACKAGE_INCOMPATIBLE;
-        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, parse_error);
         json_free(package);
         return status;
     }
@@ -4481,7 +4459,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     if (!package_validate_completion(package_root, package, obj_get(package, "cache"),
                                      exe_relative, exe_hash, package_identity_digest,
                                      parse_error, sizeof(parse_error))) {
-        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, parse_error);
         json_free(package);
         return NK_RUNTIME_PACKAGE_STALE;
     }
@@ -4494,7 +4472,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         strcmp(validated_identity_file_digest, current_identity_file_digest) != 0) {
         if (!parse_error[0]) snprintf(parse_error, sizeof(parse_error),
             "Title input identity changed during validation; rebuild the package from the current inputs.");
-        package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, parse_error);
         json_free(package);
         return NK_RUNTIME_PACKAGE_STALE;
     }
@@ -4505,15 +4483,13 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         if (!nk_title_manifest_read_experimental_profile(
                 user_data_root, normalized, title_id, selected_executable,
                 NULL, profile_hash, profile_error, sizeof(profile_error))) {
-            package_rebuild_reason(reason, reason_size, profile_error,
-                                   user_data_root, normalized);
+            package_rebuild_reason(reason, reason_size, profile_error);
             json_free(package);
             return NK_RUNTIME_PACKAGE_STALE;
         }
         if (strcmp(input_exe_hash, profile_hash) != 0) {
             package_rebuild_reason(reason, reason_size,
-                "Package executable input hash is stale for the experimental profile.",
-                user_data_root, normalized);
+                "Package executable input hash is stale for the experimental profile.");
             json_free(package);
             return NK_RUNTIME_PACKAGE_STALE;
         }
@@ -4523,8 +4499,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     if (!package_direct_file(package_root, exe_relative, resolved_executable,
                               sizeof(resolved_executable))) {
         package_rebuild_reason(reason, reason_size,
-            "Package executable path is missing or escapes its package directory.",
-            user_data_root, normalized);
+            "Package executable path is missing or escapes its package directory.");
         json_free(package);
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
@@ -4540,8 +4515,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
         !package_direct_file(package_root, image_relative, resolved_image,
                              sizeof(resolved_image))) {
         package_rebuild_reason(reason, reason_size,
-            "Package runtime image is missing or outside its package directory.",
-            user_data_root, normalized);
+            "Package runtime image is missing or outside its package directory.");
         json_free(package);
         return NK_RUNTIME_PACKAGE_MISSING;
     }
@@ -4561,12 +4535,11 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
             snprintf(report_error, sizeof(report_error),
                      "Package build-report.json exceeds the %zu MiB build-report limit.",
                      (size_t)NK_BUILD_REPORT_MAX_BYTES / (1024u * 1024u));
-            package_rebuild_reason(reason, reason_size, report_error,
-                                   user_data_root, normalized);
+            package_rebuild_reason(reason, reason_size, report_error);
             json_free(package);
             return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
         }
-        package_rebuild_reason(reason, reason_size, "Package build-report.json is missing or unreadable.", user_data_root, normalized);
+        package_rebuild_reason(reason, reason_size, "Package build-report.json is missing or unreadable.");
         json_free(package);
         return NK_RUNTIME_PACKAGE_MISSING;
     }
@@ -4577,8 +4550,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
             player_abi_version,
             parse_error, sizeof(parse_error))) {
         package_rebuild_reason(reason, reason_size,
-            parse_error[0] ? parse_error : "Package build report is invalid.",
-            user_data_root, normalized);
+            parse_error[0] ? parse_error : "Package build report is invalid.");
         if (report) json_free(report);
         json_free(package);
         return NK_RUNTIME_PACKAGE_STALE;
@@ -4591,8 +4563,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
                      strlen(resolved_image) < sizeof(resolved_info.image_path);
     if (out_info && !cacheable) {
         package_rebuild_reason(reason, reason_size,
-                               "Package paths exceed the player path limit.",
-                               user_data_root, normalized);
+                               "Package paths exceed the player path limit.");
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
     if (cacheable) {

@@ -9,7 +9,21 @@
 #include "package_builder.h"
 #include "nk_platform.h"
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
+#include <errno.h>
+#include <signal.h>
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#include <wchar.h>
+#else
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,11 +82,11 @@ static void test_progress_line_parsing(void) {
     assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PACKAGE);
     assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_PASS);
 
-    const char *line_fail = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#295)\"}";
+    const char *line_fail = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable\"}";
     assert(package_builder_parse_progress_line(line_fail, strlen(line_fail), &ev));
     assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PREFLIGHT);
     assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_FAIL);
-    assert(strstr(ev.message, "#295") != NULL);
+    assert(strcmp(ev.message, "Encrypted executable") == 0);
 
     /* 2. Malformed or invalid lines */
     assert(!package_builder_parse_progress_line(NULL, 0, &ev));
@@ -193,13 +207,13 @@ static void test_state_machine_transitions(void) {
     /* Test failure transition */
     PackageBuildSession fail_session;
     package_builder_init_session(&fail_session, "ULES00123", "Encrypted Title");
-    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#308). Supply a matching local key or decrypted modules.\"}";
+    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable. Supply a matching local key or decrypted modules.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
     assert(fail_session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
     assert(fail_session.is_failed);
     assert(!fail_session.is_complete);
-    assert(strcmp(fail_session.failure_boundary, "Encrypted executable (#308). Supply a matching local key or decrypted modules.") == 0);
+    assert(strcmp(fail_session.failure_boundary, "Encrypted executable. Supply a matching local key or decrypted modules.") == 0);
 }
 
 static void test_output_line_circular_buffer(void) {
@@ -628,6 +642,235 @@ static void test_native_download_verification(void) {
 }
 #endif
 
+static void set_environment_value(const char *name, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, value) == 0);
+#else
+    assert(setenv(name, value, 1) == 0);
+#endif
+}
+
+/* Per-run cache isolation (#735 item 8).
+ *
+ * The native tests must never write synthetic fixtures into the developer's
+ * real per-user directories (%LOCALAPPDATA%\Nakagawa on Windows). Each run
+ * creates its own temporary root under the system temp directory, points the
+ * per-user variables into that root before any fixture is written, and removes
+ * the root at exit. Removal also runs from a SIGABRT handler, because assert()
+ * reaches abort(), which skips atexit handlers. */
+#define NATIVE_TEST_PATH_MAX 1024
+
+static char g_test_root[NATIVE_TEST_PATH_MAX];
+static bool g_test_root_owned = false;
+
+static bool native_path_within(const char *child, const char *parent) {
+    size_t parent_length = strlen(parent);
+    if (strlen(child) < parent_length) return false;
+    if (strncmp(child, parent, parent_length) != 0) return false;
+    return child[parent_length] == '\0' || child[parent_length] == '/' ||
+           child[parent_length] == '\\';
+}
+
+/* Removes a directory tree without following links: a symlink or a Win32
+ * reparse point is removed as itself, never descended into. */
+#if defined(_WIN32) || defined(_WIN64)
+static void remove_test_tree_wide(const WCHAR *dir) {
+    WCHAR pattern[NATIVE_TEST_PATH_MAX];
+    WCHAR child[NATIVE_TEST_PATH_MAX];
+    size_t dir_length = wcslen(dir);
+    if (dir_length + 3 >= NATIVE_TEST_PATH_MAX) return;
+    memcpy(pattern, dir, dir_length * sizeof(WCHAR));
+    pattern[dir_length] = L'\\';
+    pattern[dir_length + 1] = L'*';
+    pattern[dir_length + 2] = L'\0';
+
+    WIN32_FIND_DATAW found;
+    HANDLE handle = FindFirstFileW(pattern, &found);
+    if (handle != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(found.cFileName, L".") == 0 ||
+                wcscmp(found.cFileName, L"..") == 0) continue;
+            size_t name_length = wcslen(found.cFileName);
+            if (dir_length + 1 + name_length >= NATIVE_TEST_PATH_MAX) continue;
+            memcpy(child, dir, dir_length * sizeof(WCHAR));
+            child[dir_length] = L'\\';
+            memcpy(child + dir_length + 1, found.cFileName,
+                   (name_length + 1) * sizeof(WCHAR));
+            bool is_directory =
+                (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            bool is_link =
+                (found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+            if (is_directory && !is_link) remove_test_tree_wide(child);
+            else if (is_directory) RemoveDirectoryW(child);
+            else DeleteFileW(child);
+        } while (FindNextFileW(handle, &found));
+        FindClose(handle);
+    }
+    RemoveDirectoryW(dir);
+}
+
+static void remove_test_tree(const char *path) {
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            (int)(sizeof(wide) / sizeof(wide[0]))) > 0) {
+        remove_test_tree_wide(wide);
+    }
+}
+#else
+static void remove_test_tree(const char *path) {
+    /* Attempt the removal before any inspection, so no earlier check can go
+     * stale. unlink() removes a symlink as itself and fails on a directory
+     * (EISDIR on Linux, EPERM on BSD/macOS); ENOENT means nothing to remove. */
+    if (unlink(path) == 0 || errno == ENOENT) return;
+    /* O_NOFOLLOW makes open() refuse a symlink swapped in for the directory,
+     * so the walk below cannot descend outside the root. */
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (fd >= 0) {
+        DIR *dir = fdopendir(fd);
+        if (dir) {
+            struct dirent *entry;
+            while ((entry = readdir(dir)) != NULL) {
+                if (strcmp(entry->d_name, ".") == 0 ||
+                    strcmp(entry->d_name, "..") == 0) continue;
+                char child[NATIVE_TEST_PATH_MAX];
+                int written = snprintf(child, sizeof(child), "%s/%s", path,
+                                       entry->d_name);
+                if (written > 0 && (size_t)written < sizeof(child)) {
+                    remove_test_tree(child);
+                }
+            }
+            closedir(dir);
+        } else {
+            close(fd);
+        }
+    }
+    rmdir(path);
+}
+#endif
+
+static void cleanup_test_root(void) {
+    if (!g_test_root_owned) return;
+    g_test_root_owned = false;
+#if defined(_WIN32) || defined(_WIN64)
+    /* Win32 cannot remove a directory that is a process's working directory,
+     * and a failing assertion can leave the working directory inside the root.
+     * Move it to the temporary directory first. */
+    WCHAR temp[NATIVE_TEST_PATH_MAX];
+    DWORD temp_length = GetTempPathW((DWORD)(sizeof(temp) / sizeof(temp[0])), temp);
+    if (temp_length > 0 && temp_length < sizeof(temp) / sizeof(temp[0])) {
+        SetCurrentDirectoryW(temp);
+    }
+#endif
+    remove_test_tree(g_test_root);
+}
+
+static void cleanup_test_root_on_abort(int signal_number) {
+    cleanup_test_root();
+    signal(signal_number, SIG_DFL);
+    raise(signal_number);
+}
+
+static bool native_temp_directory(char *out, size_t max_len) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    DWORD count = GetTempPathW((DWORD)(sizeof(wide) / sizeof(wide[0])), wide);
+    if (count == 0 || count >= sizeof(wide) / sizeof(wide[0])) return false;
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, (int)max_len,
+                            NULL, NULL) <= 0) return false;
+#else
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    if (strlen(tmp) >= max_len) return false;
+    memcpy(out, tmp, strlen(tmp) + 1);
+#endif
+    size_t length = strlen(out);
+    while (length > 1 && (out[length - 1] == '\\' || out[length - 1] == '/')) {
+        out[--length] = '\0';
+    }
+    return length > 0;
+}
+
+/* Creates one directory with a single exclusive create: 1 when this call made
+ * it, 0 when the name is already taken, -1 on any other failure. Nothing is
+ * checked before the create, so a name planted in the temporary directory is
+ * never trusted or raced. */
+static int create_exclusive_directory(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            (int)(sizeof(wide) / sizeof(wide[0]))) <= 0) return -1;
+    if (CreateDirectoryW(wide, NULL)) return 1;
+    return GetLastError() == ERROR_ALREADY_EXISTS ? 0 : -1;
+#else
+    if (mkdir(path, 0700) == 0) return 1;
+    return errno == EEXIST ? 0 : -1;
+#endif
+}
+
+/* Creates this run's root, named by tag and process id, and arranges for it
+ * to be removed at exit and on SIGABRT. Each candidate name is claimed by the
+ * exclusive create itself; a name that is already taken moves to the next. */
+static void create_test_root(const char *tag) {
+    char temp_dir[NATIVE_TEST_PATH_MAX];
+    assert(native_temp_directory(temp_dir, sizeof(temp_dir)));
+#if defined(_WIN32) || defined(_WIN64)
+    unsigned long process_id = (unsigned long)GetCurrentProcessId();
+#else
+    unsigned long process_id = (unsigned long)getpid();
+#endif
+    char sep = nk_platform_path_separator();
+    bool created = false;
+    for (unsigned attempt = 0; attempt < 1000u && !created; ++attempt) {
+        int written = snprintf(g_test_root, sizeof(g_test_root),
+                               "%s%cnk-native-%s-%lu-%u", temp_dir, sep, tag,
+                               process_id, attempt);
+        assert(written > 0 && (size_t)written < sizeof(g_test_root));
+        int result = create_exclusive_directory(g_test_root);
+        assert(result >= 0);
+        created = result == 1;
+    }
+    assert(created);
+    g_test_root_owned = true;
+    (void)atexit(cleanup_test_root);
+    (void)signal(SIGABRT, cleanup_test_root_on_abort);
+}
+
+/* Points every per-user root into this run's temporary root. Win32 reads an
+ * explicit LOCALAPPDATA ahead of the Known Folder; POSIX reads the XDG_* and
+ * HOME variables. */
+static void isolate_user_data_roots(void) {
+    assert(g_test_root_owned);
+#if defined(_WIN32) || defined(_WIN64)
+    set_environment_value("LOCALAPPDATA", g_test_root);
+#else
+    static const char *const variables[] = {
+        "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"};
+    static const char *const subdirs[] = {"cache", "config", "data", "state"};
+    set_environment_value("HOME", g_test_root);
+    for (size_t i = 0; i < sizeof(variables) / sizeof(variables[0]); ++i) {
+        char path[NATIVE_TEST_PATH_MAX + 32];
+        int written = snprintf(path, sizeof(path), "%s/%s", g_test_root,
+                               subdirs[i]);
+        assert(written > 0 && (size_t)written < sizeof(path));
+        set_environment_value(variables[i], path);
+    }
+#endif
+}
+
+/* Guard (#735 item 8): fails when the per-user cache resolves outside this
+ * run's temporary root, which is how a test reaches the real profile. */
+static void assert_cache_root_isolated(void) {
+    char cache_dir[NATIVE_TEST_PATH_MAX];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+    if (!native_path_within(cache_dir, g_test_root)) {
+        fprintf(stderr,
+                "NATIVE_TEST_GUARD: cache root is outside the temporary root "
+                "(cache root '%s', temporary root '%s')\n",
+                cache_dir, g_test_root);
+        exit(EXIT_FAILURE);
+    }
+}
+
 int main(int argc, char *argv[]) {
     if (argc == 3 && strcmp(argv[1], "--find-cli") == 0) {
         char cli_path[NK_MAX_PATH];
@@ -641,6 +884,13 @@ int main(int argc, char *argv[]) {
     if (argc == 6 && strcmp(argv[1], "--build-package") == 0) {
         return run_build_package_route(argv[2], argv[3], argv[4], argv[5]);
     }
+    /* Per-run cache isolation (#735 item 8): the fixtures below resolve their
+     * cache paths inside a temporary root. The modes above return before any
+     * fixture is written, and their child processes inherit this isolation. */
+    create_test_root("package-builder");
+    isolate_user_data_roots();
+    assert_cache_root_isolated();
+
     test_progress_line_parsing();
     test_elapsed_time_advances_while_building();
     test_reused_session_restarts_the_clock();

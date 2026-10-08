@@ -542,7 +542,7 @@ bool package_builder_download_verified(
     if (!open_transport) {
         if (error_code && error_code_size) snprintf(error_code, error_code_size, "PLATFORM_UNSUPPORTED");
         if (error_message && error_message_size) snprintf(error_message, error_message_size,
-            "Automatic prerequisite downloads currently support Windows x64 only. Linux build-tool installation is in the works (#306).");
+            "Automatic prerequisite downloads currently support Windows x64 only. Linux build-tool installation is in the works.");
         return false;
     }
 #endif

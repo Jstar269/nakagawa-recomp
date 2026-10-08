@@ -387,7 +387,7 @@ class TitleManifestTests(unittest.TestCase):
             data_root.mkdir()
             with self.assertRaisesRegex(
                 title_manifest.TitleManifestError,
-                "Loose-content root binding #289.*resolved",
+                "Loose-content root binding: configured loose-content root is not an existing directory",
             ):
                 title_manifest.encode_loose_content_roots(validated, data_root)
 

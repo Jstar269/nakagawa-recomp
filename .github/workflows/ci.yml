@@ -53,6 +53,9 @@ jobs:
       security_publication: ${{ steps.paths.outputs.security_publication }}
       run_markdown: ${{ steps.paths.outputs.run_markdown }}
       run_python: ${{ steps.paths.outputs.run_python }}
+      python_scope: ${{ steps.paths.outputs.python_scope }}
+      python_num_shards: ${{ steps.paths.outputs.python_num_shards }}
+      python_shards: ${{ steps.paths.outputs.python_shards }}
       run_native: ${{ steps.paths.outputs.run_native }}
       run_windows: ${{ steps.paths.outputs.run_windows }}
       run_main_smoke: ${{ steps.paths.outputs.run_main_smoke }}
@@ -180,14 +183,21 @@ jobs:
     name: Python tooling gates
     runs-on: ubuntu-24.04
     needs: [classify, hygiene]
-    # The suite is ~6 minutes serially. Four runners take the test files
-    # round-robin (sorted), so every file runs exactly once across the shards
-    # and shards never share a working tree. needs.python_tools.result is the
-    # aggregate of all shards, so ci_required is unchanged.
+    # The suite is ~10 minutes serially. Four runners split the test files with
+    # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
+    # measured per-module durations in tools/ci_test_weights.json (#693). Every
+    # file runs exactly once across the shards, shards never share a working
+    # tree, and modules that mutate tracked state never share a shard.
+    # needs.python_tools.result is the aggregate of all shards, so ci_required is
+    # unchanged. The shard list comes from the classifier: four shards over every
+    # module, or -- when a recipe-only Makefile edit is the only reason to run
+    # Python (#702) -- two shards over the modules that can observe that edit.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        # The fallback only keeps the expression parseable when classify produced no
+        # outputs; the job's own condition skips it in that case.
+        shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
@@ -217,12 +227,25 @@ jobs:
           python -m pip install --disable-pip-version-check --require-hashes -r tools/requirements-lock.txt
           python -m pip install --disable-pip-version-check --no-deps .
 
-      - name: Run Python unit tests (shard ${{ matrix.shard }} of 4)
+      - name: >-
+          Run Python unit tests (shard ${{ matrix.shard }} of
+          ${{ needs.classify.outputs.python_num_shards }}, ${{ needs.classify.outputs.python_scope }})
         # Same files and sys.path as `python -m unittest discover -s tools -p "test_*.py"`.
         env:
           SHARD: ${{ matrix.shard }}
+          NUM_SHARDS: ${{ needs.classify.outputs.python_num_shards }}
+          PYTHON_SCOPE: ${{ needs.classify.outputs.python_scope }}
+        # The list is captured before use so a failing planner stops the step: a
+        # process substitution would hide its exit status, and unittest given no
+        # module names falls back to discovery from the repository root.
         run: |
-          mapfile -t mods < <(ls tools/test_*.py | sort | awk -v s="$SHARD" '(NR-1)%4==s' | xargs -n1 basename | sed 's/\.py$//')
+          set -euo pipefail
+          listing="$(python tools/ci_test_shards.py --shard "$SHARD" --num-shards "$NUM_SHARDS" --select "$PYTHON_SCOPE")"
+          mapfile -t mods <<<"$listing"
+          if [ "${#mods[@]}" -eq 0 ] || [ -z "${mods[0]}" ]; then
+            echo "shard $SHARD received no test modules" >&2
+            exit 1
+          fi
           echo "shard $SHARD: ${#mods[@]} test files"
           PYTHONPATH=tools python -m unittest -v "${mods[@]}"
 
@@ -555,13 +578,22 @@ jobs:
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
-    # The synthetic VFPU fuzzer build is ~5.5 of the job's ~11 minutes, so it runs
-    # as its own matrix part in parallel with the other steps. Both parts repeat the
-    # cheap setup/compile steps; needs.windows_runtime.result aggregates both.
+    # The gates are split into parallel matrix parts of comparable length (#694),
+    # measured on hosted runners: the serial job took ~16 minutes, of which ~1.5
+    # is shared setup. Every part repeats the cheap setup and the runtime-object
+    # compile gate; each other step runs in exactly one part, and steps that
+    # depend on one another (the staged smoke on the production smoke) share it.
+    # tools/test_public_ci_wiring.py pins that every gate the serial job ran still
+    # runs in exactly one part. needs.windows_runtime.result aggregates all parts.
+    #   smoke:     production pipeline, AOT-gap, staged smoke, player, UI, display
+    #   ladder:    full platform ladder
+    #   routes:    profile-zero production routes, native core tests
+    #   selftests: cosimulation + mutants, scheduler, dispatch, FP, strbuf, HLE thread
+    #   fuzz:      synthetic VFPU fuzzer build
     strategy:
       fail-fast: false
       matrix:
-        part: [main, fuzz]
+        part: [smoke, ladder, routes, selftests, fuzz]
     timeout-minutes: 25
     # This job's MSYS2 shell has no git on PATH, so the Makefile cannot resolve a
     # revision here; it used to log a raw `process_begin: CreateProcess(NULL, git
@@ -643,11 +675,13 @@ jobs:
           grep -Fx 'CC=clang' <<<"$override_info"
           grep -Fx 'CC_ORIGIN=command line' <<<"$override_info"
 
+      # -j2 uses both vCPUs of the hosted runner for these independent object
+      # compiles (#694); the gate is the same target and the same objects.
       - name: Compile Windows runtime objects through the default compiler path
         shell: msys2 {0}
         run: |
           unset CC
-          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+          mingw32-make -j2 GAME_NAME=ci BUILD_DIR=build/windows-runtime \
             VULKAN_SDK=/ucrt64 runtime-objects
 
       # This is the executable production-path gate. It generates a public
@@ -655,7 +689,7 @@ jobs:
       # links every production runtime object with the real driver, and reaches
       # a real HLE NID through the scheduler before checking the guest sentinel.
       - name: Build and run full production pipeline smoke
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         # The ordinary compile target invokes the repository's PowerShell 7.4
         # asset-copy script after linking. Keep the broader Windows PATH scoped
@@ -674,7 +708,7 @@ jobs:
       # ownership gates interpretation, and the run must hand off to registered
       # AOT region B before the final production-driver assertion can pass.
       - name: Build and run AOT-gap dispatch-seam smoke
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -684,7 +718,7 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke-gap
 
       - name: Run native core test suite on Windows
-        if: matrix.part == 'main'
+        if: matrix.part == 'routes'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -693,7 +727,7 @@ jobs:
       # Hosted build/link gate for the public player/launcher (#294). Link-only
       # proof: the player's GUI smoke remains a developer/display gate.
       - name: Build and link the native player
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -704,7 +738,7 @@ jobs:
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-tests
 
       - name: Run native player UI regressions headlessly on Windows
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -718,7 +752,7 @@ jobs:
       # build-tree spelling. Depends on the production-smoke step above; the
       # rebuild underneath is incremental, so this re-runs only generate/verify/run.
       - name: Stage and run production smoke outside its build directory
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -731,7 +765,7 @@ jobs:
       # ladder-fs-only step: zero/reloc/gap/sched/fpu/fs/fs-negative/title2/
       # title2-negative.
       - name: Build and run the full platform ladder
-        if: matrix.part == 'main'
+        if: matrix.part == 'ladder'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -748,7 +782,7 @@ jobs:
       # SKIP is a missing host multimedia dependency (Vulkan SDK / SDL3), printed
       # with the reason.
       - name: Build and run profile-zero production routes
-        if: matrix.part == 'main'
+        if: matrix.part == 'routes'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -766,7 +800,7 @@ jobs:
       # SR_VIDEO=offscreen: the assertions are the guest-visible framebuffer
       # word and accepted offscreen-present ordering, so no display is required.
       - name: Build and run display presentation smoke
-        if: matrix.part == 'main'
+        if: matrix.part == 'smoke'
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
@@ -782,7 +816,7 @@ jobs:
       # Without this in CI, the only thing standing between a codegen semantic
       # regression and a title run is a developer remembering to run it.
       - name: Build and run AOT/interpreter cosimulation gate
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -793,14 +827,14 @@ jobs:
       # the gate must fail for every one, and a mutant that only breaks the build
       # is rejected as INVALID rather than counted as a kill.
       - name: Prove the cosimulation comparator is load-bearing
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: |
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-mutants
 
       - name: Build and run scheduler selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -812,21 +846,21 @@ jobs:
       # rather than the scheduler. Without it in CI, the isolation claim rests
       # on a gate that only ever ran on a developer's machine.
       - name: Build and run dispatch isolation selftest matrix
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest
 
       - name: Build and run portable FPU/VFPU conversion selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest
 
       - name: Build and run strbuf checked-append formatting selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
@@ -838,7 +872,7 @@ jobs:
       # #315 added the ATRAC3+ bridge; that failure then hid #326 breaking the
       # same target again. Building it in CI is what stops the third recurrence.
       - name: Build and run HLE thread selftest
-        if: matrix.part == 'main'
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime

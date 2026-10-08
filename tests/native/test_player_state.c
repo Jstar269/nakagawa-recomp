@@ -31,8 +31,15 @@
 #include "nk_platform.h"
 #include "../../src/rt/recomp.h"
 
+/* The per-run root setup and its recursive cleanup run inside assert(); keep
+ * them even in a build that defines NDEBUG (#735). */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,10 +49,12 @@
 #include <direct.h>
 #include <process.h>
 #include <windows.h>
+#include <wchar.h>
 #define test_rmdir _rmdir
 #define nk_ps_chdir _chdir
 #define nk_ps_getcwd _getcwd
 #else
+#include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -107,6 +116,251 @@ static void write_text_file(const char *path, const char *text) {
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
     assert(fclose(file) == 0);
+}
+
+#define TEST_ISO_SECTOR_BYTES 2048u
+#define TEST_ISO_MAX_NODES 2048u
+#define TEST_ISO_MODULE_BYTES 128u
+
+typedef struct {
+    char name[256];
+    size_t parent;
+    uint32_t lba;
+    uint32_t size;
+    bool is_directory;
+} TestIsoNode;
+
+static void test_iso_put_both32(uint8_t *out, uint32_t value) {
+    for (unsigned i = 0; i < 4; i++) {
+        out[i] = (uint8_t)(value >> (i * 8u));
+        out[4u + i] = (uint8_t)(value >> ((3u - i) * 8u));
+    }
+}
+
+static size_t test_iso_record_size(size_t name_size) {
+    size_t record_size = 33u + name_size;
+    return record_size + (record_size & 1u);
+}
+
+static size_t test_iso_record_end(size_t offset, size_t name_size) {
+    size_t record_size = test_iso_record_size(name_size);
+    size_t sector_offset = offset % TEST_ISO_SECTOR_BYTES;
+    if (sector_offset + record_size > TEST_ISO_SECTOR_BYTES) {
+        offset += TEST_ISO_SECTOR_BYTES - sector_offset;
+    }
+    return offset + record_size;
+}
+
+static size_t test_iso_write_record(uint8_t *directory, size_t offset,
+                                    const uint8_t *name, size_t name_size,
+                                    uint32_t lba, uint32_t size,
+                                    bool is_directory) {
+    size_t record_size = test_iso_record_size(name_size);
+    assert(record_size <= UINT8_MAX);
+    memset(directory + offset, 0, record_size);
+    directory[offset] = (uint8_t)record_size;
+    test_iso_put_both32(directory + offset + 2, lba);
+    test_iso_put_both32(directory + offset + 10, size);
+    directory[offset + 25] = is_directory ? 0x02u : 0u;
+    directory[offset + 28] = 1;
+    directory[offset + 31] = 1;
+    directory[offset + 32] = (uint8_t)name_size;
+    memcpy(directory + offset + 33, name, name_size);
+    return record_size;
+}
+
+static size_t test_iso_add_node(TestIsoNode *nodes, size_t *node_count,
+                                size_t parent, const char *name,
+                                bool is_directory) {
+    assert(*node_count < TEST_ISO_MAX_NODES);
+    assert(strlen(name) < sizeof(nodes[*node_count].name));
+    size_t index = (*node_count)++;
+    memset(&nodes[index], 0, sizeof(nodes[index]));
+    snprintf(nodes[index].name, sizeof(nodes[index].name), "%s", name);
+    nodes[index].parent = parent;
+    nodes[index].is_directory = is_directory;
+    return index;
+}
+
+static void write_module_scan_iso(const char *path, size_t candidate_count,
+                                  bool duplicate_name, size_t child_directories,
+                                  bool malformed_usrdir) {
+    TestIsoNode *nodes = (TestIsoNode *)calloc(TEST_ISO_MAX_NODES,
+                                                sizeof(*nodes));
+    assert(nodes != NULL);
+    size_t node_count = 1;
+    nodes[0].is_directory = true;
+    nodes[0].parent = 0;
+    size_t psp_game = test_iso_add_node(nodes, &node_count, 0, "PSP_GAME", true);
+    size_t sysdir = test_iso_add_node(nodes, &node_count, psp_game, "SYSDIR", true);
+    size_t usrdir = test_iso_add_node(nodes, &node_count, psp_game, "USRDIR", true);
+    if (duplicate_name) {
+        test_iso_add_node(nodes, &node_count, sysdir, "shared.prx", false);
+        test_iso_add_node(nodes, &node_count, usrdir, "SHARED.PRX", false);
+    }
+    for (size_t i = 0; i < candidate_count; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "module-%03lu.prx", (unsigned long)i);
+        test_iso_add_node(nodes, &node_count, usrdir, name, false);
+    }
+    for (size_t i = 0; i < child_directories; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "directory-%04lu", (unsigned long)i);
+        test_iso_add_node(nodes, &node_count, usrdir, name, true);
+    }
+
+    for (size_t i = 0; i < node_count; i++) {
+        if (!nodes[i].is_directory) continue;
+        size_t bytes = test_iso_record_end(0, 1);
+        bytes = test_iso_record_end(bytes, 1);
+        for (size_t child = 1; child < node_count; child++) {
+            if (nodes[child].parent != i) continue;
+            size_t name_size = strlen(nodes[child].name) +
+                               (nodes[child].is_directory ? 0u : 2u);
+            bytes = test_iso_record_end(bytes, name_size);
+        }
+        size_t sectors = (bytes + TEST_ISO_SECTOR_BYTES - 1u) /
+                         TEST_ISO_SECTOR_BYTES;
+        nodes[i].size = (uint32_t)(sectors * TEST_ISO_SECTOR_BYTES);
+    }
+    uint32_t next_lba = 33;
+    for (size_t i = 0; i < node_count; i++) {
+        if (!nodes[i].is_directory) continue;
+        nodes[i].lba = next_lba;
+        next_lba += nodes[i].size / TEST_ISO_SECTOR_BYTES;
+    }
+    for (size_t i = 0; i < node_count; i++) {
+        if (nodes[i].is_directory) continue;
+        nodes[i].lba = next_lba++;
+        nodes[i].size = TEST_ISO_MODULE_BYTES;
+    }
+    size_t image_size = (size_t)next_lba * TEST_ISO_SECTOR_BYTES;
+    uint8_t *image = (uint8_t *)calloc(1, image_size);
+    assert(image != NULL);
+
+    uint8_t *pvd = image + 16u * TEST_ISO_SECTOR_BYTES;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    (void)test_iso_write_record(pvd, 156, (const uint8_t *)"\0", 1,
+                                nodes[0].lba, nodes[0].size, true);
+
+    for (size_t i = 0; i < node_count; i++) {
+        if (nodes[i].is_directory) {
+            uint8_t *directory = image + (size_t)nodes[i].lba * TEST_ISO_SECTOR_BYTES;
+            size_t offset = 0;
+            const uint8_t self_name[] = { 0 };
+            const uint8_t parent_name[] = { 1 };
+            size_t parent = i == 0 ? 0 : nodes[i].parent;
+            offset += test_iso_write_record(directory, offset, self_name, 1,
+                                            nodes[i].lba, nodes[i].size, true);
+            offset += test_iso_write_record(directory, offset, parent_name, 1,
+                                            nodes[parent].lba, nodes[parent].size,
+                                            true);
+            for (size_t child = 1; child < node_count; child++) {
+                if (nodes[child].parent != i) continue;
+                char versioned_name[260];
+                const char *entry_name = nodes[child].name;
+                if (!nodes[child].is_directory) {
+                    int written = snprintf(versioned_name, sizeof(versioned_name),
+                                           "%s;1", entry_name);
+                    assert(written > 0 && (size_t)written < sizeof(versioned_name));
+                    entry_name = versioned_name;
+                }
+                size_t record_size = test_iso_record_size(strlen(entry_name));
+                size_t sector_offset = offset % TEST_ISO_SECTOR_BYTES;
+                if (sector_offset + record_size > TEST_ISO_SECTOR_BYTES) {
+                    offset += TEST_ISO_SECTOR_BYTES - sector_offset;
+                }
+                offset += test_iso_write_record(
+                    directory, offset, (const uint8_t *)entry_name,
+                    strlen(entry_name), nodes[child].lba, nodes[child].size,
+                    nodes[child].is_directory);
+            }
+            if (i == usrdir && malformed_usrdir) {
+                assert(offset < nodes[i].size);
+                directory[offset] = 1;
+            }
+        } else {
+            uint8_t *module = image + (size_t)nodes[i].lba * TEST_ISO_SECTOR_BYTES;
+            memcpy(module, "~PSP", 4);
+            module[0x27] = 1;
+            module[0x54] = 0x40;
+        }
+    }
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, image_size, file) == image_size);
+    assert(fclose(file) == 0);
+    free(image);
+    free(nodes);
+}
+
+static bool test_remove_tree(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    char pattern[1024];
+    WIN32_FIND_DATAA data;
+    int written = snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    if (written < 0 || (size_t)written >= sizeof(pattern)) return false;
+    HANDLE find = FindFirstFileA(pattern, &data);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+                continue;
+            }
+            char child[1024];
+            written = snprintf(child, sizeof(child), "%s\\%s", path,
+                               data.cFileName);
+            if (written < 0 || (size_t)written >= sizeof(child)) {
+                FindClose(find);
+                return false;
+            }
+            bool removed;
+            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+                (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+                removed = test_remove_tree(child);
+            } else if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                removed = RemoveDirectoryA(child) != 0;
+            } else {
+                removed = DeleteFileA(child) != 0;
+            }
+            if (!removed) {
+                FindClose(find);
+                return false;
+            }
+        } while (FindNextFileA(find, &data));
+        FindClose(find);
+    }
+    return RemoveDirectoryA(path) != 0 || GetLastError() == ERROR_PATH_NOT_FOUND;
+#else
+    DIR *directory = opendir(path);
+    if (directory == NULL) return errno == ENOENT;
+    bool ok = true;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char child[1024];
+        int written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+        if (written < 0 || (size_t)written >= sizeof(child)) {
+            ok = false;
+            break;
+        }
+        /* Act first, then classify the failure: no stat precedes the removal. */
+        if (unlink(child) != 0) {
+            bool removed = (errno == EISDIR || errno == EPERM) ? test_remove_tree(child)
+                                                                : errno == ENOENT;
+            if (!removed) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    closedir(directory);
+    return ok && (rmdir(path) == 0 || errno == ENOENT);
+#endif
 }
 
 static void append_json_whitespace(const char *path, size_t count) {
@@ -809,6 +1063,23 @@ static const PlayerPreflightCheck *find_preflight_check(
     return NULL;
 }
 
+static void assert_module_scan_boundary(PlayerApp *app, const char *iso_path,
+                                        const NkIsoExecutableReport *executables,
+                                        const char *message_fragment) {
+    snprintf(app->inspecting_game.iso_path,
+             sizeof(app->inspecting_game.iso_path), "%s", iso_path);
+    player_app_build_compatibility_preflight(app, true, true, executables);
+    const PlayerPreflightCheck *check = find_preflight_check(
+        &app->wizard.preflight, "GUEST_MODULES");
+    assert(check != NULL && check->status == PREFLIGHT_UNSUPPORTED);
+    if (strstr(check->message, message_fragment) == NULL) {
+        fprintf(stderr, "expected module boundary %s, got: %s\n",
+                message_fragment, check->message);
+    }
+    assert(strstr(check->message, message_fragment) != NULL);
+    assert(check->issue_count == 1 && check->issue_numbers[0] == 726);
+}
+
 /* The package-status identity the validator itself computes for *user_root*
  * (nk_launch_runtime_package_cache_identity) - the digest a package-validation
  * cache entry is bound to. Re-measuring it is how this test tells "the identity
@@ -982,6 +1253,227 @@ static void force_catalog_reload_at_publication(void *ctx) {
 }
 #endif /* NK_TITLE_MANIFEST_TEST_SEAMS */
 
+/* Per-run cache isolation (#735 item 8).
+ *
+ * The native tests must never write synthetic fixtures into the developer's
+ * real per-user directories (%LOCALAPPDATA%\Nakagawa on Windows). Each run
+ * creates its own temporary root under the system temp directory, points the
+ * per-user variables into that root before any fixture is written, and removes
+ * the root at exit. Removal also runs from a SIGABRT handler, because assert()
+ * reaches abort(), which skips atexit handlers. */
+#define NATIVE_TEST_PATH_MAX 1024
+
+static char g_test_root[NATIVE_TEST_PATH_MAX];
+static bool g_test_root_owned = false;
+
+static bool native_path_within(const char *child, const char *parent) {
+    size_t parent_length = strlen(parent);
+    if (strlen(child) < parent_length) return false;
+    if (strncmp(child, parent, parent_length) != 0) return false;
+    return child[parent_length] == '\0' || child[parent_length] == '/' ||
+           child[parent_length] == '\\';
+}
+
+/* Removes a directory tree without following links: a symlink or a Win32
+ * reparse point is removed as itself, never descended into. */
+#if defined(_WIN32) || defined(_WIN64)
+static void remove_test_tree_wide(const WCHAR *dir) {
+    WCHAR pattern[NATIVE_TEST_PATH_MAX];
+    WCHAR child[NATIVE_TEST_PATH_MAX];
+    size_t dir_length = wcslen(dir);
+    if (dir_length + 3 >= NATIVE_TEST_PATH_MAX) return;
+    memcpy(pattern, dir, dir_length * sizeof(WCHAR));
+    pattern[dir_length] = L'\\';
+    pattern[dir_length + 1] = L'*';
+    pattern[dir_length + 2] = L'\0';
+
+    WIN32_FIND_DATAW found;
+    HANDLE handle = FindFirstFileW(pattern, &found);
+    if (handle != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(found.cFileName, L".") == 0 ||
+                wcscmp(found.cFileName, L"..") == 0) continue;
+            size_t name_length = wcslen(found.cFileName);
+            if (dir_length + 1 + name_length >= NATIVE_TEST_PATH_MAX) continue;
+            memcpy(child, dir, dir_length * sizeof(WCHAR));
+            child[dir_length] = L'\\';
+            memcpy(child + dir_length + 1, found.cFileName,
+                   (name_length + 1) * sizeof(WCHAR));
+            bool is_directory =
+                (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            bool is_link =
+                (found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+            if (is_directory && !is_link) remove_test_tree_wide(child);
+            else if (is_directory) RemoveDirectoryW(child);
+            else DeleteFileW(child);
+        } while (FindNextFileW(handle, &found));
+        FindClose(handle);
+    }
+    RemoveDirectoryW(dir);
+}
+
+static void remove_test_tree(const char *path) {
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            (int)(sizeof(wide) / sizeof(wide[0]))) > 0) {
+        remove_test_tree_wide(wide);
+    }
+}
+#else
+static void remove_test_tree(const char *path) {
+    /* Attempt the removal before any inspection, so no earlier check can go
+     * stale. unlink() removes a symlink as itself and fails on a directory
+     * (EISDIR on Linux, EPERM on BSD/macOS); ENOENT means nothing to remove. */
+    if (unlink(path) == 0 || errno == ENOENT) return;
+    /* O_NOFOLLOW makes open() refuse a symlink swapped in for the directory,
+     * so the walk below cannot descend outside the root. */
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (fd >= 0) {
+        DIR *dir = fdopendir(fd);
+        if (dir) {
+            struct dirent *entry;
+            while ((entry = readdir(dir)) != NULL) {
+                if (strcmp(entry->d_name, ".") == 0 ||
+                    strcmp(entry->d_name, "..") == 0) continue;
+                char child[NATIVE_TEST_PATH_MAX];
+                int written = snprintf(child, sizeof(child), "%s/%s", path,
+                                       entry->d_name);
+                if (written > 0 && (size_t)written < sizeof(child)) {
+                    remove_test_tree(child);
+                }
+            }
+            closedir(dir);
+        } else {
+            close(fd);
+        }
+    }
+    rmdir(path);
+}
+#endif
+
+static void cleanup_test_root(void) {
+    if (!g_test_root_owned) return;
+    g_test_root_owned = false;
+#if defined(_WIN32) || defined(_WIN64)
+    /* Win32 cannot remove a directory that is a process's working directory,
+     * and a failing assertion can leave the working directory inside the root.
+     * Move it to the temporary directory first. */
+    WCHAR temp[NATIVE_TEST_PATH_MAX];
+    DWORD temp_length = GetTempPathW((DWORD)(sizeof(temp) / sizeof(temp[0])), temp);
+    if (temp_length > 0 && temp_length < sizeof(temp) / sizeof(temp[0])) {
+        SetCurrentDirectoryW(temp);
+    }
+#endif
+    remove_test_tree(g_test_root);
+}
+
+static void cleanup_test_root_on_abort(int signal_number) {
+    cleanup_test_root();
+    signal(signal_number, SIG_DFL);
+    raise(signal_number);
+}
+
+static bool native_temp_directory(char *out, size_t max_len) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    DWORD count = GetTempPathW((DWORD)(sizeof(wide) / sizeof(wide[0])), wide);
+    if (count == 0 || count >= sizeof(wide) / sizeof(wide[0])) return false;
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, (int)max_len,
+                            NULL, NULL) <= 0) return false;
+#else
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    if (strlen(tmp) >= max_len) return false;
+    memcpy(out, tmp, strlen(tmp) + 1);
+#endif
+    size_t length = strlen(out);
+    while (length > 1 && (out[length - 1] == '\\' || out[length - 1] == '/')) {
+        out[--length] = '\0';
+    }
+    return length > 0;
+}
+
+/* Creates one directory with a single exclusive create: 1 when this call made
+ * it, 0 when the name is already taken, -1 on any other failure. Nothing is
+ * checked before the create, so a name planted in the temporary directory is
+ * never trusted or raced. */
+static int create_exclusive_directory(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            (int)(sizeof(wide) / sizeof(wide[0]))) <= 0) return -1;
+    if (CreateDirectoryW(wide, NULL)) return 1;
+    return GetLastError() == ERROR_ALREADY_EXISTS ? 0 : -1;
+#else
+    if (mkdir(path, 0700) == 0) return 1;
+    return errno == EEXIST ? 0 : -1;
+#endif
+}
+
+/* Creates this run's root, named by tag and process id, and arranges for it
+ * to be removed at exit and on SIGABRT. Each candidate name is claimed by the
+ * exclusive create itself; a name that is already taken moves to the next. */
+static void create_test_root(const char *tag) {
+    char temp_dir[NATIVE_TEST_PATH_MAX];
+    assert(native_temp_directory(temp_dir, sizeof(temp_dir)));
+#if defined(_WIN32) || defined(_WIN64)
+    unsigned long process_id = (unsigned long)GetCurrentProcessId();
+#else
+    unsigned long process_id = (unsigned long)getpid();
+#endif
+    char sep = nk_platform_path_separator();
+    bool created = false;
+    for (unsigned attempt = 0; attempt < 1000u && !created; ++attempt) {
+        int written = snprintf(g_test_root, sizeof(g_test_root),
+                               "%s%cnk-native-%s-%lu-%u", temp_dir, sep, tag,
+                               process_id, attempt);
+        assert(written > 0 && (size_t)written < sizeof(g_test_root));
+        int result = create_exclusive_directory(g_test_root);
+        assert(result >= 0);
+        created = result == 1;
+    }
+    assert(created);
+    g_test_root_owned = true;
+    (void)atexit(cleanup_test_root);
+    (void)signal(SIGABRT, cleanup_test_root_on_abort);
+}
+
+/* Points every per-user root into this run's temporary root. Win32 reads an
+ * explicit LOCALAPPDATA ahead of the Known Folder; POSIX reads the XDG_* and
+ * HOME variables. */
+static void isolate_user_data_roots(void) {
+    assert(g_test_root_owned);
+#if defined(_WIN32) || defined(_WIN64)
+    set_environment_value("LOCALAPPDATA", g_test_root);
+#else
+    static const char *const variables[] = {
+        "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"};
+    static const char *const subdirs[] = {"cache", "config", "data", "state"};
+    set_environment_value("HOME", g_test_root);
+    for (size_t i = 0; i < sizeof(variables) / sizeof(variables[0]); ++i) {
+        char path[NATIVE_TEST_PATH_MAX + 32];
+        int written = snprintf(path, sizeof(path), "%s/%s", g_test_root,
+                               subdirs[i]);
+        assert(written > 0 && (size_t)written < sizeof(path));
+        set_environment_value(variables[i], path);
+    }
+#endif
+}
+
+/* Guard (#735 item 8): fails when the per-user cache resolves outside this
+ * run's temporary root, which is how a test reaches the real profile. */
+static void assert_cache_root_isolated(void) {
+    char cache_dir[NATIVE_TEST_PATH_MAX];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
+    if (!native_path_within(cache_dir, g_test_root)) {
+        fprintf(stderr,
+                "NATIVE_TEST_GUARD: cache root is outside the temporary root "
+                "(cache root '%s', temporary root '%s')\n",
+                cache_dir, g_test_root);
+        exit(EXIT_FAILURE);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -1008,6 +1500,13 @@ int main(int argc, char **argv) {
         free(probe);
         return 0;
     }
+
+    /* Per-run cache isolation (#735 item 8): every fixture below resolves its
+     * cache, save and boot-event paths inside a temporary root, never inside
+     * the developer's real per-user directories. */
+    create_test_root("player-state");
+    isolate_user_data_roots();
+    assert_cache_root_isolated();
 
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
@@ -1700,9 +2199,16 @@ int main(int argc, char **argv) {
            fallback and every current pre-launch boundary without touching a
            real title or runtime package. */
         char preflight_root[640], font_dir[720], font_path[800];
+        unsigned long preflight_run_id;
+#if defined(_WIN32) || defined(_WIN64)
+        preflight_run_id = (unsigned long)_getpid();
+#else
+        preflight_run_id = (unsigned long)getpid();
+#endif
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_dir, sizeof(cache_dir)));
-        snprintf(preflight_root, sizeof(preflight_root), "%s%cplayer-preflight-synthetic",
-                 cache_dir, nk_platform_path_separator());
+        snprintf(preflight_root, sizeof(preflight_root),
+                 "%s%cplayer-preflight-synthetic-%lu", cache_dir,
+                 nk_platform_path_separator(), preflight_run_id);
         assert(nk_platform_mkdir_p(preflight_root));
         snprintf(font_dir, sizeof(font_dir), "%s%cfont", preflight_root,
                  nk_platform_path_separator());
@@ -1747,6 +2253,7 @@ int main(int argc, char **argv) {
                  "%s", synthetic_disc_id);
         snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
                  "synthetic-allegrex-v1");
+        wiz->inspecting_game.iso_path[0] = '\0';
         NkIsoExecutableReport executable_report;
         memset(&executable_report, 0, sizeof(executable_report));
         executable_report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
@@ -1769,6 +2276,41 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_MISSING);
         check = find_preflight_check(&wiz->wizard.preflight, "AUDIO_OUTPUT");
         assert(check && check->status == PREFLIGHT_OK);
+
+        /* Exercise the production ISO module scan through player preflight,
+           using only generated synthetic images. Each assertion protects a
+           named fail-closed boundary. */
+        char module_iso_path[900];
+        snprintf(wiz->inspecting_game.selected_executable,
+                 sizeof(wiz->inspecting_game.selected_executable), "EBOOT.BIN");
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-duplicate.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 0, true, 0, false);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DUPLICATE_DISC_MODULE_BASENAME");
+        assert(remove(module_iso_path) == 0);
+
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-candidate-limit.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 257, false, 0, false);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DISC_MODULE_CANDIDATE_LIMIT");
+        assert(remove(module_iso_path) == 0);
+
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-directory-limit.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 0, false, 1023, false);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DISC_MODULE_DIRECTORY_LIMIT");
+        assert(remove(module_iso_path) == 0);
+
+        snprintf(module_iso_path, sizeof(module_iso_path), "%s%cmodules-invalid-tree.iso",
+                 preflight_root, nk_platform_path_separator());
+        write_module_scan_iso(module_iso_path, 1, false, 0, true);
+        assert_module_scan_boundary(wiz, module_iso_path, &executable_report,
+                                    "DISC_MODULE_TREE_INVALID");
+        assert(remove(module_iso_path) == 0);
+        wiz->inspecting_game.iso_path[0] = '\0';
 
         assert(nk_platform_mkdir_p(build_dir));
         write_file(runtime_exe);
@@ -1995,7 +2537,8 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_STALE);
-        assert(strstr(check->message, "#308") != NULL);
+        assert(strstr(check->message, "build it from the library") != NULL);
+        assert(strstr(check->message, "#") == NULL);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
@@ -2042,13 +2585,15 @@ int main(int argc, char **argv) {
         wiz->game_count = 1;
         assert(!player_app_launch_game(wiz, 0));
         assert(strcmp(wiz->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
-        assert(strstr(wiz->last_error.message, "build-package") != NULL);
+        assert(strstr(wiz->last_error.message, "build it from the library") != NULL);
+        assert(strstr(wiz->last_error.message, "#") == NULL);
         player_app_set_view(wiz, VIEW_EXPERIMENTAL_TITLE);
         assert(player_app_focus_count(wiz) == 2);
 
         remove(runtime_exe);
         remove(runtime_image);
         remove(font_path);
+        assert(test_remove_tree(preflight_root));
 
         free(wiz);
     }
@@ -2586,12 +3131,12 @@ int main(int argc, char **argv) {
 
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
-                                   "Encrypted executable: supply decrypted modules (#295).",
+                                   "Encrypted executable: supply decrypted modules.",
                                    "C:/logs/build_ULUS10041.log");
         assert(bapp->active_view == VIEW_ERROR);
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
-        assert(strstr(bapp->last_error.boundary_text, "#295") != NULL);
+        assert(strstr(bapp->last_error.boundary_text, "supply decrypted modules") != NULL);
         assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_ULUS10041.log") == 0);
 
         /* Cancellation transitions session */
@@ -3162,17 +3707,25 @@ int main(int argc, char **argv) {
 
         char memstick1[NK_MAX_PATH];
         memstick1[0] = '\0';
+        char slot_sentinel[NK_MAX_PATH + 64];
+        slot_sentinel[0] = '\0';
 
-        /* The per-disc save slot survives between runs of this test, so clear
-           this fixture's own savedata first: launch 1 must observe an empty
-           save root. Resolving the session here is the same preparation the
-           launch path performs. */
+        /* The per-disc save slot is created here, inside this run's temporary
+           root, as the pre-existing state the repeat contract starts from. A
+           sentinel file in it must still exist after the second launch. Launch
+           1 must observe an empty save root, so this fixture's own marker is
+           cleared first. Resolving the session here is the same preparation
+           the launch path performs. */
         {
             NkLaunchSession probe;
             assert(nk_launch_prepare_session(&probe, &rep->games[0], user_root) == NK_OK);
             assert(probe.memstick_root[0] != '\0');
             snprintf(memstick1, sizeof(memstick1), "%s", probe.memstick_root);
             nk_launch_stop(&probe);
+            assert(nk_platform_mkdir_p(memstick1));
+            snprintf(slot_sentinel, sizeof(slot_sentinel), "%s%cpre_existing_slot.txt",
+                     memstick1, sep);
+            write_text_file(slot_sentinel, "pre-existing per-disc savedata\n");
             char stale_marker[1200];
             snprintf(stale_marker, sizeof(stale_marker), "%s%cf511_repeat.marker",
                      memstick1, sep);
@@ -3223,6 +3776,8 @@ int main(int argc, char **argv) {
             assert(report.marker_present == true);
             assert(strcmp(report.memstick, memstick1) == 0);
         }
+        /* The pre-existing per-disc slot survives both launches. */
+        assert(nk_platform_file_exists(slot_sentinel));
 
         /* Early failure A: the staged executable vanishes. The player must
            report a structured, actionable error and leave no stuck state. */
@@ -3466,9 +4021,13 @@ int main(int argc, char **argv) {
         char prior_override[1024];
         nk_ps_copy_env("NK_INSTALL_ROOT", prior_override, sizeof(prior_override));
         nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+        /* The card repeats the install root three times in a 512-byte message.
+           The per-run temporary root makes the absolute probe path longer than
+           the cache path this subtest used to get, which pushed the checkout
+           hint past that limit. A relative root keeps the whole message while
+           discovery still searches the working directory and its parent. */
         assert(nk_ps_chdir(probe) == 0);
-        snprintf(capp->install_root, sizeof(capp->install_root), "%.*s",
-                 (int)sizeof(capp->install_root) - 1, probe);
+        snprintf(capp->install_root, sizeof(capp->install_root), "%s", ".");
 
         /* CLI_NOT_FOUND: the card must name NK_INSTALL_ROOT and the checkout fix. */
         assert(!player_app_start_package_build(capp, 0));
@@ -3506,9 +4065,10 @@ int main(int argc, char **argv) {
         assert(capp->active_view == VIEW_LIBRARY);
 #else
         /* Automatic installation is Windows x64 only for now: other hosts are
-           refused with the tracking issue, and nothing is downloaded. */
+           refused with a clear message, and nothing is downloaded. */
         assert(!player_app_start_package_build(capp, 0));
-        assert(strstr(capp->last_error.message, "#306") != NULL);
+        assert(strstr(capp->last_error.message, "in the works") != NULL);
+        assert(strstr(capp->last_error.message, "#") == NULL);
         assert(capp->prerequisites.phase != PLAYER_PREREQ_CONSENT);
 #endif
         assert(capp->build_session.is_building == false);

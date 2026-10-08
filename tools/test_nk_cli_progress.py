@@ -22,6 +22,26 @@ CLI_PATH = ROOT / "tools" / "nk_cli.py"
 
 
 class NkCliProgressTests(unittest.TestCase):
+    def test_sweep_progress_writer_persists_stage_start_and_finish(self) -> None:
+        import nk_cli
+
+        with tempfile.TemporaryDirectory(prefix="nk_cli_sweep_progress_") as temp:
+            progress_path = Path(temp) / "bringup-progress.json"
+            writer = nk_cli._BringupProgressWriter(progress_path)
+            writer.start("analyze")
+            running = json.loads(progress_path.read_text(encoding="utf-8"))
+            self.assertEqual(running["stages"]["analyze"]["status"], "RUNNING")
+            started_at = running["stages"]["analyze"]["started_at_unix_ms"]
+            self.assertIsNone(running["stages"]["analyze"]["finished_at_unix_ms"])
+
+            writer.finish("analyze", "PASS", 123)
+            finished = json.loads(progress_path.read_text(encoding="utf-8"))
+            stage = finished["stages"]["analyze"]
+            self.assertEqual(stage["status"], "PASS")
+            self.assertEqual(stage["started_at_unix_ms"], started_at)
+            self.assertGreaterEqual(stage["finished_at_unix_ms"], started_at)
+            self.assertEqual(stage["duration_ms"], 123)
+
     def test_launch_anchors_runtime_lookup_to_cli_checkout(self) -> None:
         import argparse
         from contextlib import redirect_stderr, redirect_stdout
@@ -214,7 +234,7 @@ class NkCliProgressTests(unittest.TestCase):
             fail_event = events[-1]
             self.assertEqual(fail_event["status"], "FAIL")
             self.assertIn("in the works", fail_event["message"])
-            self.assertIn("#295", fail_event["message"])
+            self.assertNotRegex(fail_event["message"], r"#[0-9]+")
 
 
 class NkCliVramTests(unittest.TestCase):
