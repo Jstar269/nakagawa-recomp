@@ -227,7 +227,7 @@ def synthetic_stale_package(runtime_root: Path) -> None:
     (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
 
 
-def synthetic_ready_package(runtime_root: Path) -> None:
+def synthetic_ready_package(runtime_root: Path, *, data_root_present: bool = True) -> None:
     """Write a source-owned package accepted by the real native validator."""
     disc_id = "TEST00006"
     title_id = "display-smoke-v1"
@@ -370,6 +370,8 @@ def synthetic_ready_package(runtime_root: Path) -> None:
         ],
     }
     write_json(package / "completion-manifest.json", completion)
+    if data_root_present:
+        (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
 
 
 def badge_rect(frame: dict[str, str]) -> tuple[int, int, int, int]:
@@ -476,6 +478,9 @@ class NativePlayerUiTests(unittest.TestCase):
         catalog_reload_count: int = 0,
         build_ready_test: bool = False,
         post_build_ready: bool = False,
+        downloaded_tool_payload: bool = False,
+        data_root_present: bool = True,
+        profile_refusal: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
         width: int = 1280,
@@ -497,10 +502,51 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            tool_marker: Path | None = None
+            if downloaded_tool_payload:
+                tool_marker = runtime_root / "prerequisites" / "synthetic-tool" / "marker.txt"
+                tool_marker.parent.mkdir(parents=True)
+                tool_marker.write_text("synthetic downloaded tool", encoding="utf-8")
+            if profile_refusal:
+                manifest_dir = runtime_root / "manifests"
+                manifest_dir.mkdir()
+                (manifest_dir / "retired-binding.json").write_text(
+                    json.dumps({
+                        "schema_version": 1,
+                        "id": "retired-profile-fixture-v1",
+                        "display_name": "Retired Profile Fixture",
+                        "kind": "retail",
+                        "disc": {
+                            "id": "TEST00001",
+                            "region": "NA",
+                            "revision_policy": "exact-disc-id",
+                        },
+                        "executable": {
+                            "base": "0x08800000",
+                            "entry": "0x08804000",
+                            "bss_metadata_source": "elf",
+                            "extra_executable_spans": [],
+                        },
+                        "modules": [],
+                        "filesystem": {
+                            "data_root": "fixtures/profile_zero",
+                            "memory_stick_root": "savedata",
+                            "device_prefixes": ["disc0:", "ms0:"],
+                        },
+                        "hle_profile": "generic",
+                        "feature_requirements": [],
+                        "verification_profile": "unverified",
+                        "runtime_bindings": {
+                            "schema_version": 1,
+                            "vblank_frame_counter_addr": "0x08804000",
+                        },
+                    }, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
             if build_ready_test:
-                synthetic_ready_package(runtime_root)
+                synthetic_ready_package(runtime_root, data_root_present=data_root_present)
             elif post_build_ready:
-                synthetic_ready_package(runtime_root)
+                synthetic_ready_package(runtime_root, data_root_present=data_root_present)
             catalog_overlay: Path | None = None
             if catalog_reload_count:
                 catalog_overlay = scratch / "catalog-overlay.json"
@@ -621,6 +667,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 (package / "display-smoke-v1.exe").write_bytes(b"")
                 (package / "display-smoke-v1").write_bytes(b"")
                 (package / "display-smoke-v1_image.bin").write_bytes(b"")
+                (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
             args.append(f"--runtime-root={runtime_root}")
 
             effective_timeout = compute_effective_timeout(event_script, timeout)
@@ -652,6 +699,15 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertTrue(screenshot.is_file())
             bmp = read_bmp(screenshot)
             self.assertEqual((bmp[0], bmp[1]), (width, height))
+            persisted_settings = None
+            for settings_path in scratch.rglob("settings.json"):
+                try:
+                    candidate = json.loads(settings_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(candidate, dict) and "fps_cap" in candidate:
+                    persisted_settings = candidate
+                    break
             return {
                 "frames": frames,
                 "bmp": bmp,
@@ -661,6 +717,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 "stderr": completed.stderr,
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
+                "settings": persisted_settings,
+                "downloaded_tool_marker_exists": (
+                    tool_marker.is_file() if tool_marker is not None else None
+                ),
             }
 
     def test_compute_effective_timeout(self) -> None:
@@ -720,6 +780,47 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["focus"], "1")
         self.assertEqual(frames[2]["view"], "library")
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
+
+    def test_settings_presentation_choice_saves_with_native_default_schema(self) -> None:
+        events = ("KEY_TAB",) * 4 + ("KEY_RETURN",) + ("KEY_TAB",) * 10 + ("KEY_RETURN",)
+        run = self.run_player("settings", events)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "15")
+        self.assertEqual(frames[4]["focus"], "4")
+        self.assertEqual(frames[5]["focus"], "4")
+        self.assertNotEqual(frames[4]["pixels"], frames[5]["pixels"])
+        self.assertEqual(frames[-1]["view"], "library")
+        settings = run["settings"]
+        self.assertIsInstance(settings, dict)
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("schema_version"), 2)
+        self.assertEqual(settings.get("fps_cap"), 0)
+        renderer_source = (ROOT / "src" / "player" / "ui_renderer.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('case -1: return "PSP TIMING";', renderer_source)
+        self.assertIn('case 0:  return "NO EXTRA CAP";', renderer_source)
+        self.assertNotIn("30 FPS CAP", renderer_source)
+        self.assertNotIn("60 FPS CAP", renderer_source)
+
+    def test_settings_about_opens_the_pinned_license_list(self) -> None:
+        run = self.run_player("settings", ("KEY_TAB",) * 12 + ("KEY_RETURN",))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "15")
+        self.assertEqual(frames[12]["focus"], "12")
+        self.assertEqual(frames[-1]["view"], "prereq_about")
+
+    def test_settings_removal_requires_confirmation_and_keeps_other_app_data(self) -> None:
+        events = ("KEY_TAB",) * 13 + ("KEY_RETURN", "KEY_RETURN")
+        run = self.run_player("settings", events, downloaded_tool_payload=True)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[13]["focus"], "13")
+        self.assertEqual(frames[14]["view"], "confirm_remove_tools")
+        self.assertEqual(frames[-1]["view"], "settings")
+        self.assertFalse(run["downloaded_tool_marker_exists"])
 
     def test_settings_layout_avoids_launcher_save_overlap_at_client_widths(self) -> None:
         cases = (
@@ -789,6 +890,36 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(ready_frame["selected_runtime"], "1")
         self.assertEqual(ready_frame["selected_prepared"], "0")
         self.assertNotEqual(missing_frame["pixels"], ready_frame["pixels"])
+
+    def test_valid_package_with_missing_data_root_is_not_marked_ready(self) -> None:
+        run = self.run_player(
+            "ready", (), post_build_ready=True, data_root_present=False,
+            wait_background=True,
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        ready_package_frames = [
+            frame for frame in frames if frame["selected_package_status"] == "0"
+        ]
+        self.assertTrue(ready_package_frames, run["stdout"])
+        self.assertTrue(
+            all(frame["selected_runtime"] == "0" for frame in ready_package_frames),
+            run["stdout"],
+        )
+        self.assertTrue(
+            all(frame["selected_prepared"] == "0" for frame in ready_package_frames),
+            run["stdout"],
+        )
+
+    def test_refused_local_title_profile_is_shown_on_the_game_card(self) -> None:
+        normal = self.run_player("supported")
+        refused = self.run_player("supported", profile_refusal=True)
+        normal_frames = normal["frames"]
+        refused_frames = refused["frames"]
+        assert isinstance(normal_frames, list) and isinstance(refused_frames, list)
+        self.assertEqual(refused_frames[0]["view"], "supported")
+        self.assertIn("vblank_frame_counter_addr", refused["stderr"])
+        self.assertNotEqual(normal_frames[0]["pixels"], refused_frames[0]["pixels"])
 
     def test_one_title_offline_art_and_stale_package_stay_off_frame_path(self) -> None:
         # The counters are the load-bearing gate: package validation and ISO
@@ -1539,6 +1670,28 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[1]["view"], "error")
         self.assertEqual(frames[1]["error"], "PBP_PACKAGE_UNSUPPORTED")
         self.assertEqual(frames[2]["picker"], "1")
+
+    def test_long_error_text_fits_at_minimum_window(self) -> None:
+        run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
+                              width=960, height=540)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "UI_TEST_LONG_ERROR")
+        self.assertEqual(frames[0]["error_text_complete"], "1",
+                         "the error view clipped a long message")
+        self.assertGreater(int(frames[0]["error_text_lines"]), 4)
+
+    def test_cli_not_found_error_text_fits_at_minimum_window(self) -> None:
+        run = self.run_player("error", error_code="CLI_NOT_FOUND",
+                              width=960, height=540)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "CLI_NOT_FOUND")
+        self.assertEqual(frames[0]["error_text_complete"], "1",
+                         "the error view clipped the CLI_NOT_FOUND message")
+        self.assertEqual(frames[0]["error_details_complete"], "1")
+        self.assertGreater(int(frames[0]["error_details_lines"]), 0)
+        self.assertEqual(frames[0]["error_details_available"], "1")
 
     def test_per_title_controller_mapping_choice(self) -> None:
         """A disc can get its own mapping, or go back to the global one."""

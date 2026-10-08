@@ -1628,24 +1628,62 @@ def run_sweep(
     return result
 
 
+def _merge_report_file(path: Path) -> Path:
+    """Resolve one ``--merge-private-reports`` argument to its report file.
+
+    A shard's private directory (the ``--private-dir`` the shard was run with)
+    is the natural argument, so a directory resolves to the ``library-sweep.json``
+    inside it; a report file is used as given.
+    """
+    if path.is_dir():
+        report = path / "library-sweep.json"
+        if not report.is_file():
+            raise ValueError(
+                f"private shard report {path} is a directory without a "
+                "library-sweep.json report file"
+            )
+        return report
+    return path
+
+
+def _merge_report_read_failure(exc: Exception) -> str:
+    """Plain-language reason for one unreadable shard report, never its contents."""
+    if isinstance(exc, FileNotFoundError):
+        return "does not exist"
+    if isinstance(exc, IsADirectoryError):
+        return "is a directory, not a report file"
+    if isinstance(exc, PermissionError):
+        return "cannot be opened (permission denied)"
+    if isinstance(exc, package_cache.BoundedJsonError):
+        # The bounded reader's messages name the limit or syntax problem and never
+        # quote file contents, so they are safe to show as the reason.
+        return f"is not a usable shard report ({exc})"
+    if isinstance(exc, OSError) and exc.strerror:
+        return f"cannot be read ({exc.strerror})"
+    return "cannot be read"
+
+
 def _read_private_report_for_merge(path: Path) -> dict:
+    report_file = _merge_report_file(path)
     try:
         payload = package_cache.read_bounded_json(
-            path,
+            report_file,
             max_bytes=_SWEEP_RESUME_JSON_MAX_BYTES,
             max_depth=_SWEEP_RESUME_JSON_MAX_DEPTH,
             max_members=_SWEEP_RESUME_JSON_MAX_MEMBERS,
             max_items=_SWEEP_RESUME_JSON_MAX_ITEMS,
             max_nodes=_SWEEP_RESUME_JSON_MAX_NODES,
         )
-    except (OSError, ValueError) as exc:
-        raise ValueError("private shard report is unreadable") from exc
+    except (OSError, package_cache.BoundedJsonError) as exc:
+        raise ValueError(
+            f"private shard report {report_file} {_merge_report_read_failure(exc)}"
+        ) from exc
     if (
         not isinstance(payload, dict)
         or type(payload.get("schema_version")) is not int
         or payload["schema_version"] not in {1, 2}
     ):
-        raise ValueError("private shard report has an unsupported schema")
+        raise ValueError(f"private shard report {report_file} has an unsupported schema")
     source_commit = payload.get("source_commit")
     source_fingerprint = payload.get("source_fingerprint")
     if (
@@ -1656,22 +1694,27 @@ def _read_private_report_for_merge(path: Path) -> dict:
         or len(source_fingerprint) != 64
         or any(char not in "0123456789abcdef" for char in source_fingerprint)
     ):
-        raise ValueError("private shard report source identity is invalid")
+        raise ValueError(f"private shard report {report_file} source identity is invalid")
     time_budget = payload.get("time_budget_seconds")
     if type(time_budget) is not int or time_budget < 1:
-        raise ValueError("private shard report time budget is invalid")
+        raise ValueError(f"private shard report {report_file} time budget is invalid")
     coverage = payload.get("coverage")
     if not isinstance(coverage, dict) or set(coverage) != {
         "iso_count", "ran_this_invocation", "resumed_this_invocation"
     }:
-        raise ValueError("private shard report coverage is invalid")
+        raise ValueError(f"private shard report {report_file} coverage is invalid")
     for field, value in coverage.items():
         if type(value) is not int or value < 0:
-            raise ValueError(f"private shard report coverage.{field} is invalid")
+            raise ValueError(
+                f"private shard report {report_file} coverage.{field} is invalid"
+            )
     rows = payload.get("rows")
-    _validate_sweep_rows(rows)
+    try:
+        _validate_sweep_rows(rows)
+    except ValueError as exc:
+        raise ValueError(f"private shard report {report_file} has invalid rows: {exc}") from exc
     if len(rows) > coverage["iso_count"]:
-        raise ValueError("private shard report has more rows than inputs")
+        raise ValueError(f"private shard report {report_file} has more rows than inputs")
     return payload
 
 
@@ -1761,7 +1804,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--time-budget", type=_positive_int, default=DEFAULT_TIME_BUDGET_SECONDS,
                         help="Hard per-title route limit in seconds (default: 120)")
     parser.add_argument("--merge-private-reports", nargs="+", type=Path,
-                        help="Merge private shard checkpoints and write one aggregate")
+                        help="Merge private shard checkpoints and write one aggregate; "
+                             "each argument is a shard's library-sweep.json file or the "
+                             "shard's private directory that contains it")
     args = parser.parse_args(argv)
     try:
         if args.merge_private_reports:
