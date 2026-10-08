@@ -123,7 +123,7 @@ pass `--extra-span=LO,HI` to `codegen.py` for a direct Make build.
 
 ## Step 2: Supply a plain (unencrypted) ELF
 
-The direct recompiler/codegen input must be a **plain** PSP ELF: a file that begins with the ELF magic bytes `7F 45 4C 46`; a `~PSP` or `~SCE` container is rejected at that boundary. For player and CLI disc workflows, the built-in boundary can decrypt supported executable and PRX containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The project ships no keys, and missing key entries or unsupported containers fail closed. When a disc carries an unencrypted `BOOT.BIN`, the player and CLI select it automatically. For a direct Make/codegen route, supply a plain ELF such as a lawful user-decrypted executable.
+The direct recompiler/codegen input must be a **plain** PSP ELF: a file that begins with the ELF magic bytes `7F 45 4C 46`; a `~PSP` or `~SCE` container is rejected at that boundary. For player and CLI disc workflows, the built-in boundary can decrypt supported executable and PRX containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The project ships no keys, and missing key entries or unsupported containers fail closed. When a disc carries an unencrypted `BOOT.BIN`, the player and CLI select it automatically. For a direct Make/codegen route, supply a plain ELF such as an executable that you decrypted yourself.
 
 Keep the result in a Git-ignored private-input location such as `place_game_here/EBOOT.elf`, or pass its actual path to Make. Do not commit the decrypted game executable.
 
@@ -276,7 +276,7 @@ tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98), n
 previously cited #20, which is a merged pull request about `sceSasCore` routing and has
 no relation to this surface — so the surface had no tracker at all.)
 
-**Readiness criterion.** A newly supplied, lawfully obtained PSP executable should be
+**Readiness criterion.** A newly supplied PSP executable from your own copy of a game should be
 able to receive a profile, run analysis, produce its target/import/capability census,
 attempt compilation, and expose its first unsupported semantic boundary **without
 title-specific edits to generic core**.
