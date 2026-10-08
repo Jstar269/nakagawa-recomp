@@ -313,7 +313,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c93df6824bebd1f781964208abaa8573059bb39e3e469d8c452d4590d1e3a69a"
+      "sha256": "dbaaebeac2fb18cf3437242887d89f37828fc31c412620c6146343d241e33134"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "db08a1b5a5cb492226c3b8cc51205a567d1778a3c808d1e8a59bc5a8083bad9e"
+      "sha256": "e8fe86deee1c4e08c4600a3de0f42505a4e12e836ee2676aac8aaa79734afe9e"
     },
     {
       "path": "REVIEW.md",
@@ -1336,7 +1336,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0004568d385cce9c1ed06208618b763dea84d35597907ad4437261d8fffff55d"
+      "sha256": "e3e7f083920288ec85bf3610b5edf0a9b4f92eb841a848574cf4704fede83236"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1399,7 +1399,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b59f3934df825969d3948f64e30f3d11d00681a5e9a4ef74722775130143aef3"
+      "sha256": "37c2514a3b4d0a5a65cdbb856333e4a3ca1c5b14e990f152f2b93ec7a2d2a241"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -6449,7 +6449,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2aa874d7d74dfa463be940c96fe89b74eee5bb51074bcd3f183c6a8c963487e7"
+      "sha256": "e7d491321f06759ec61053b15c1b0cd8aeb0d7eef35a94630bd9e4a4ab7f06da"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8590,7 +8590,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55f307b582fbc876bb69097cf1dae5c0f68fbcb5c2f2258eeca7c94236a154bf"
+      "sha256": "36f689b93c1154933abaf16f2878fe9bac091bbfdd8b25dbf46e6ff39b230c19"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
