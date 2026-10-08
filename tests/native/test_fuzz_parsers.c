@@ -1537,7 +1537,7 @@ static void test_fuzz_library(unsigned iters) {
 }
 
 /* -----------------------------------------------------------------------------
- * 7. Built-in PSP decryption boundary (issue #295, fuzz coverage for #319)
+ * 7. Built-in PSP decryption boundary fuzz coverage
  *
  * Every parser the decryption boundary exposes to user-supplied bytes gets a
  * seeded mutation harness here: the container probe/framing (~PSP, ~SCE,

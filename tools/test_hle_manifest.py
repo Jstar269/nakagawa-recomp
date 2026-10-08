@@ -654,15 +654,15 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
     def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
         source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn(
-            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)",
+            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn(
-            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)",
+            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn(
-            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)",
+            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn("hle_devctl_refusal_first(device, command)", source)
@@ -678,7 +678,7 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
             "at source offset %llu; no further access unit is decoded and the player keeps ",
             source,
         )
-        self.assertIn("its current status; in the works (#288)", source)
+        self.assertIn("its current status; in the works (#286)", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):

@@ -10,7 +10,7 @@ listed in ``assets/public_source_profile.json`` (same profile consumed by
 ``tools/public_candidate.py``), records an export provenance manifest, and
 re-audits the materialized candidate tree before clearing the export.
 
-Candidate immutability invariant (#293): the export materializes the exact
+Candidate immutability invariant: the export materializes the exact
 Git **index** the publication gates bind to (``git write-tree``), establishes
 ``PUBLIC_EXPORT.json`` over those exact bytes, and never mutates any
 provenance-pinned candidate file afterwards. The candidate is built in a

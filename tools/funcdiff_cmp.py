@@ -8,7 +8,7 @@
 # starts at <entry-step>. Step numbers are ignored; pc/op and the set of register/memory
 # writes must match. Reports the first divergence, or confirms N matching steps.
 #
-# Fail-closed contract (issue #381): exit 0 requires that at least one valid recomp step
+# Fail-closed contract (issue #354): exit 0 requires that at least one valid recomp step
 # was compared AND that the oracle supplied the complete required slice from <entry-step>
 # AND that every compared step matched. The oracle may legitimately continue beyond the
 # requested recomp-length slice; oracle coverage must be >= recomp coverage from
@@ -67,7 +67,7 @@ def load_oracle_slice(path, entry, need):
     selected record must carry exactly <entry> + len(cur). Any gap, duplicate,
     backwards step, or shifted start fails explicitly with expected/observed step
     numbers so a deleted-but-parseable oracle record can never silently shrink or
-    shift the compared coverage (issue #381).
+    shift the compared coverage (issue #354).
     """
     cur = []
     started = False

@@ -245,7 +245,10 @@ class PrivateInputTests(unittest.TestCase):
             warnings = [result for result in report.results if result.code == "MIGRATE_LOOSE_CONTENT_ROOTS"]
             self.assertEqual(len(warnings), 1)
             self.assertEqual(warnings[0].status, "WARN")
-            self.assertIn("#289 is in the works", warnings[0].summary)
+            self.assertIn(
+                "Loose files beside the manifest data root are not bound",
+                warnings[0].summary,
+            )
 
     def test_parent_loose_migration_binding_suppresses_doctor_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1120,7 +1123,7 @@ class LongPathDiagnosticTests(unittest.TestCase):
 
 
 class TypographyRuntimeCheckTests(unittest.TestCase):
-    """The player's SDL3_ttf runtime is a reported workspace fact, never silent (#421)."""
+    """The player's SDL3_ttf runtime is a reported workspace fact, never silent."""
 
     def player_root(self, tmp: str) -> Path:
         root = Path(tmp)

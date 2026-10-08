@@ -21592,7 +21592,7 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
 
     expect(count_occurrences(captured, boundary) == 2,
            "psmf: every rejected stream names the demuxer refusal, the reason, and the offset");
-    expect(strstr(captured, "in the works (#288)") != NULL,
+    expect(strstr(captured, "in the works (#286)") != NULL,
            "psmf: the media boundary carries its tracking issue");
     expect(strstr(captured, "MPEG_CONTRACT") == NULL,
            "psmf: the rejection is not reported as some other media boundary");

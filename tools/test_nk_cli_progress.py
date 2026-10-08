@@ -261,7 +261,7 @@ class NkCliProgressTests(unittest.TestCase):
             fail_event = events[-1]
             self.assertEqual(fail_event["status"], "FAIL")
             self.assertIn("in the works", fail_event["message"])
-            self.assertIn("#295", fail_event["message"])
+            self.assertNotRegex(fail_event["message"], r"#[0-9]+")
 
 
 class NkCliVramTests(unittest.TestCase):

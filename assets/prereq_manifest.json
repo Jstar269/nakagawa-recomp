@@ -872,7 +872,7 @@
       "tracking_issue": 300,
       "decryption_issue": 295,
       "download_in_tests": false,
-      "failure_message": "Font extraction needs the built-in decryption and your key file (#295)."
+      "failure_message": "Font extraction needs the built-in decryption and your key file."
     }
   ]
 }
