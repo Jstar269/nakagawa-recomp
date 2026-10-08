@@ -17,6 +17,31 @@ In accordance with the authentic guest execution doctrine, Nakagawa Recomp track
 For every existing or proposed HLE routine, developers and agents must answer:
 > **"Why can this behavior not instead be implemented one layer lower?"**
 
+## 1.1 IoFileMgrForUser behavior and timing
+
+The IoFileMgr NID names added in this route match the project's NID corpus and
+the public [PSPSDK IoFileMgr header](https://github.com/pspdev/pspsdk/blob/master/src/user/pspiofilemgr.h).
+The contained Memory Stick VFS supplies per-thread `sceIoChdir` state, relative
+path resolution, empty-directory-only `sceIoRmdir`, mode-only `sceIoChstat`, and
+`sceIoSync` flushing for `ms0:`. `sceIoChstat` refuses non-mode fields with the
+named `IO_CHSTAT_NON_MODE_FIELDS` boundary and error `0x80010086`; those fields
+are not supported yet. `sceIoSync` similarly names unsupported devices with
+`IO_SYNC_DEVICE` and error `0x80010086`. Nonzero values of its unknown second
+argument fail closed with `IO_SYNC_ARGUMENT` and the same error.
+
+Async requests are retained per descriptor, with at most one pending operation
+per descriptor. `sceIoOpenAsync` performs the contained host open at submission
+because it must return a usable descriptor. Read, write, seek, ioctl, and close
+requests remain pending until service; the synthetic host model services one
+ready request at each later HLE import boundary, after two such boundaries,
+using lower numeric priority first and FIFO order for ties. Poll returns `1`
+while pending and `0` with the 64-bit result when complete. Wait services its
+requested operation directly, `sceIoGetAsyncStat` selects wait or poll from its
+flag, and completion queues a registered callback for the owning thread.
+`sceIoWaitAsyncCB` dispatches queued callbacks after the wait. This timing and
+callback interleaving are synthetic policy, not PSP measurements; the native
+selftests use synthetic VFS roots and do not establish hardware equivalence.
+
 ---
 
 ## 2. Quantitative Census of the Current Codebase
@@ -43,10 +68,10 @@ Semantic handler census: **390** handlers across **21** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 17 |
-| `partial` | 29 | 29 |
+| `partial` | 46 | 46 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 348 | 377 |
+| `unreviewed` | 331 | 360 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -60,7 +85,7 @@ Semantic handler census: **390** handlers across **21** API families, covering *
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
 | `sceGe` | 0 | 1 | 0 | 0 | 8 | 9 | 9 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
-| `sceIo` | 2 | 1 | 0 | 0 | 29 | 32 | 32 |
+| `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
 | `sceKernel` | 2 | 9 | 0 | 0 | 133 | 144 | 167 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
@@ -71,7 +96,7 @@ Semantic handler census: **390** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **29** | **1** | **2** | **348** | **390** | **430** |
+| **Total** | **10** | **46** | **1** | **2** | **331** | **390** | **430** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -143,8 +168,58 @@ Semantic handler census: **390** handlers across **21** API families, covering *
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:flight_smoke
   - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
+- **`h_IoChangeAsyncPriority`** (`sceIo`): `sceIoChangeAsyncPriority` (0xb293727f)
+  - Limitation: priority selects queued host requests, but PSP priority ordering and its interaction with callbacks are not hardware-measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoChdir`** (`sceIo`): `sceIoChdir` (0x55f4717d)
+  - Limitation: the modeled current directory is per-thread and resolves contained Memory Stick paths; PSP behavior for other devices is not established
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoChstat`** (`sceIo`): `sceIoChstat` (0xb8a740f4)
+  - Limitation: only the mode field is supported; attribute, size, and timestamp fields fail closed with IO_CHSTAT_NON_MODE_FIELDS
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoCloseAsync`** (`sceIo`): `sceIoCloseAsync` (0xff5940b6)
+  - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; close callback timing remains unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_fd_namespace
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
   - Limitation: Memory Stick devctl callback events unmodeled (#281, #341)
+- **`h_IoGetAsyncStat`** (`sceIo`): `sceIoGetAsyncStat` (0xcb05f8d6)
+  - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoIoctlAsync`** (`sceIo`): `sceIoIoctlAsync` (0xe95a012b)
+  - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoLseek32Async`** (`sceIo`): `sceIoLseek32Async` (0x1b385d8f)
+  - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoLseekAsync`** (`sceIo`): `sceIoLseekAsync` (0x71b19e77)
+  - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoOpenAsync`** (`sceIo`): `sceIoOpenAsync` (0x89aa9906)
+  - Limitation: open completes its host lookup at submission to return the PSP-visible fd; async timing and callback ordering are synthetic, not hardware-measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_fd_namespace
+- **`h_IoPollAsync`** (`sceIo`): `sceIoPollAsync` (0x3251ea56)
+  - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoReadAsync`** (`sceIo`): `sceIoReadAsync` (0xa0b5a7c2)
+  - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoRmdir`** (`sceIo`): `sceIoRmdir` (0x1117c65f)
+  - Limitation: empty-directory removal and nonempty refusal are tested with synthetic roots; PSP error precedence beyond those cases remains unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoSetAsyncCallback`** (`sceIo`): `sceIoSetAsyncCallback` (0xa12a0514)
+  - Limitation: completion queues the modeled thread callback; PSP callback argument and interleaving behavior remain unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoSync`** (`sceIo`): `sceIoSync` (0xab96437f)
+  - Limitation: Memory Stick handles are flushed and synced; other devices and nonzero unknown arguments fail closed with IO_SYNC_DEVICE or IO_SYNC_ARGUMENT
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoWaitAsync`** (`sceIo`): `sceIoWaitAsync` (0xe23eec33)
+  - Limitation: the host operation runs when the guest waits; PSP blocking, wake, and callback interleaving remain unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+- **`h_IoWaitAsyncCB`** (`sceIo`): `sceIoWaitAsyncCB` (0x35dbd746)
+  - Limitation: callback dispatch is modeled at the wait boundary; PSP blocking and callback interleaving remain unmeasured
+- **`h_IoWriteAsync`** (`sceIo`): `sceIoWriteAsync` (0x0facab19)
+  - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)

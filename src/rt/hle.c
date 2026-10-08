@@ -11143,7 +11143,10 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
         for (int i = 0; i < nseen; i++) if (seen[i] == cmd) { new_cmd = 0; break; }
         if (new_cmd && nseen < 16) {
             seen[nseen++] = cmd;
-            fprintf(stderr, "sceIoIoctl: UNIMPL cmd=0x%08x fd=%u in=0x%08x/%u out=0x%08x/%u\n",
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: IO_IOCTL_COMMAND: sceIoIoctl command "
+                    "0x%08x is not supported yet (fd=%u in=0x%08x/%u "
+                    "out=0x%08x/%u; 0x80010086)\n",
                     cmd, fd, in, inlen, out, outlen);
         }
         return 0x80010086;  /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
@@ -11737,8 +11740,6 @@ static uint32_t h_IoLseekAsync(CpuState *s) {
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
-    if (s->r[29] > UINT32_MAX - 24u ||
-        !sr_guest_span_readable(s->r[29] + 16u, 4u)) return 0x80010016u;
     return io_async_submit(fd, IO_ASYNC_LSEEK64, A2, A3, 0u, stack_arg(s, 0), 0u);
 }
 
@@ -11751,8 +11752,6 @@ static uint32_t h_IoIoctlAsync(CpuState *s) {
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
-    if (s->r[29] > UINT32_MAX - 24u ||
-        !sr_guest_span_readable(s->r[29] + 16u, 8u)) return 0x80010016u;
     uint32_t out = stack_arg(s, 0), outlen = stack_arg(s, 1);
     if (inlen != 0u && !sr_guest_span_readable(in, inlen)) return 0x80010016u;
     if (outlen != 0u && !sr_guest_span_writable(out, outlen)) return 0x80010016u;
@@ -11922,6 +11921,12 @@ static uint32_t h_IoCloseAsync(CpuState *s) {
 static uint32_t h_IoSync(CpuState *s) {
     char device[64];
     if (!guest_cstr(A0, device, sizeof(device))) return 0x80010016u;
+    if (A1 != 0u) {
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: IO_SYNC_ARGUMENT: nonzero sceIoSync unk "
+                "values are not supported yet (0x80010086)\n");
+        return 0x80010086u;
+    }
     size_t device_len = strlen(device);
     if (!((device_len == 4u && sr_vfs_strnicmp(device, "ms0:", 4u) == 0) ||
           (device_len == 7u && sr_vfs_strnicmp(device, "fatms0:", 7u) == 0) ||
@@ -11931,8 +11936,11 @@ static uint32_t h_IoSync(CpuState *s) {
                 "device only; this device is not supported yet (0x80010086)\n");
         return 0x80010086u;
     }
-    for (uint32_t fd = 3u; fd < sizeof(s_fds) / sizeof(s_fds[0]); fd++)
-        if (s_fds[fd].async.state == IO_ASYNC_PENDING) (void)io_async_complete_fd(fd);
+    for (uint32_t fd = 3u; fd < sizeof(s_fds) / sizeof(s_fds[0]); fd++) {
+        Fd *file = &s_fds[fd];
+        if (file->host && file->async.state == IO_ASYNC_PENDING)
+            (void)io_async_complete_fd(fd);
+    }
     for (size_t fd = 3u; fd < sizeof(s_fds) / sizeof(s_fds[0]); fd++) {
         Fd *file = &s_fds[fd];
         if (!file->used || !file->host || !file->writable) continue;
@@ -11943,7 +11951,6 @@ static uint32_t h_IoSync(CpuState *s) {
         if (fsync(fileno(file->host)) != 0) return 0x80010005u;
 #endif
     }
-    (void)A1;
     return 0u;
 }
 /* Parent directory of a host path (last separator). Returns 0 if no parent. */
@@ -12296,11 +12303,13 @@ uint32_t sr_hle_test_io_open_async(CpuState *s) { return h_IoOpenAsync(s); }
 uint32_t sr_hle_test_io_close_async(CpuState *s) { return h_IoCloseAsync(s); }
 uint32_t sr_hle_test_io_write_async(CpuState *s) { return h_IoWriteAsync(s); }
 uint32_t sr_hle_test_io_read_async(CpuState *s) { return h_IoReadAsync(s); }
+uint32_t sr_hle_test_io_lseek_async(CpuState *s) { return h_IoLseekAsync(s); }
 uint32_t sr_hle_test_io_lseek32_async(CpuState *s) { return h_IoLseek32Async(s); }
 uint32_t sr_hle_test_io_ioctl_async(CpuState *s) { return h_IoIoctlAsync(s); }
 uint32_t sr_hle_test_io_wait_async(CpuState *s) { return h_IoWaitAsync(s); }
 uint32_t sr_hle_test_io_poll_async(CpuState *s) { return h_IoPollAsync(s); }
 uint32_t sr_hle_test_io_get_async_stat(CpuState *s) { return h_IoGetAsyncStat(s); }
+void sr_hle_test_io_async_import_boundary(void) { io_async_dispatch_tick(); }
 uint32_t sr_hle_test_io_chdir(CpuState *s) { return h_IoChdir(s); }
 uint32_t sr_hle_test_io_rmdir(CpuState *s) { return h_IoRmdir(s); }
 uint32_t sr_hle_test_io_chstat(CpuState *s) { return h_IoChstat(s); }

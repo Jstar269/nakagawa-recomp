@@ -149,7 +149,7 @@
     "classification": "dedicated",
     "handler": "h_IoWriteAsync",
     "name": "sceIoWriteAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x0fae370e": {
     "classification": "dedicated",
@@ -179,7 +179,7 @@
     "classification": "dedicated",
     "handler": "h_IoRmdir",
     "name": "sceIoRmdir",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x1181e963": {
     "classification": "dedicated",
@@ -283,7 +283,7 @@
     "classification": "dedicated",
     "handler": "h_IoLseek32Async",
     "name": "sceIoLseek32Async",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x1b4217bc": {
     "classification": "dedicated",
@@ -550,7 +550,7 @@
     "classification": "dedicated",
     "handler": "h_IoPollAsync",
     "name": "sceIoPollAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x328c546a": {
     "classification": "dedicated",
@@ -610,7 +610,7 @@
     "classification": "dedicated",
     "handler": "h_IoWaitAsyncCB",
     "name": "sceIoWaitAsyncCB",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x369ed59d": {
     "classification": "dedicated",
@@ -940,7 +940,7 @@
     "classification": "dedicated",
     "handler": "h_IoChdir",
     "name": "sceIoChdir",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x56202973": {
     "classification": "dedicated",
@@ -1230,7 +1230,7 @@
     "classification": "dedicated",
     "handler": "h_IoLseekAsync",
     "name": "sceIoLseekAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x71bc9871": {
     "classification": "dedicated",
@@ -1500,7 +1500,7 @@
     "classification": "dedicated",
     "handler": "h_IoOpenAsync",
     "name": "sceIoOpenAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x89b3d48c": {
     "classification": "dedicated",
@@ -1723,7 +1723,7 @@
     "classification": "dedicated",
     "handler": "h_IoReadAsync",
     "name": "sceIoReadAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa0b8ca55": {
     "classification": "dedicated",
@@ -1747,7 +1747,7 @@
     "classification": "dedicated",
     "handler": "h_IoSetAsyncCallback",
     "name": "sceIoSetAsyncCallback",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa14f40b2": {
     "classification": "dedicated",
@@ -1861,7 +1861,7 @@
     "classification": "dedicated",
     "handler": "h_IoSync",
     "name": "sceIoSync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xace946e8": {
     "classification": "dedicated",
@@ -1915,7 +1915,7 @@
     "classification": "dedicated",
     "handler": "h_IoChangeAsyncPriority",
     "name": "sceIoChangeAsyncPriority",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb29ddf9c": {
     "classification": "dedicated",
@@ -1993,7 +1993,7 @@
     "classification": "dedicated",
     "handler": "h_IoChstat",
     "name": "sceIoChstat",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb9848a74": {
     "classification": "dedicated",
@@ -2131,7 +2131,7 @@
     "classification": "dedicated",
     "handler": "h_IoGetAsyncStat",
     "name": "sceIoGetAsyncStat",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xcb2e439e": {
     "classification": "dedicated",
@@ -2361,7 +2361,7 @@
     "classification": "dedicated",
     "handler": "h_IoWaitAsync",
     "name": "sceIoWaitAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe2d56b2d": {
     "classification": "dedicated",
@@ -2427,7 +2427,7 @@
     "classification": "dedicated",
     "handler": "h_IoIoctlAsync",
     "name": "sceIoIoctlAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe9b3061e": {
     "classification": "dedicated",
@@ -2680,7 +2680,7 @@
     "classification": "dedicated",
     "handler": "h_IoCloseAsync",
     "name": "sceIoCloseAsync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xffc36a14": {
     "classification": "dedicated",
