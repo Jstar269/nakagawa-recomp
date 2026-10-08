@@ -341,6 +341,21 @@ class TestSourceMediaIdentity(unittest.TestCase):
             ):
                 nk_cli._source_media_identity(Path("synthetic.iso"), "EBOOT.BIN", manifest)
 
+    def test_required_guest_path_rejects_empty_components(self):
+        manifest = {"modules": [{
+            "name": "fixture.prx",
+            "role": "guest-prx",
+            "required": True,
+            "guest_path": "disc0:/PSP_GAME//USRDIR/fixture.prx",
+        }]}
+        with patch.object(nk_cli, "_hash_iso_member", return_value="1" * 64):
+            with self.assertRaisesRegex(
+                nk_cli.PackageBuildError, "Guest module path contains an empty component"
+            ):
+                nk_cli._source_media_identity(
+                    Path("synthetic.iso"), "EBOOT.BIN", manifest
+                )
+
 
 class TestPlayerPackageRoute(unittest.TestCase):
     def setUp(self):

@@ -230,7 +230,8 @@ def _validate_source_iso_path(value: Any, field: str) -> str:
     """Accept only an ISO-relative PSP_GAME path, never a host path."""
     if (not isinstance(value, str) or not value or len(value) > 512 or
         "\\" in value or ":" in value or value.startswith("/") or
-        any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)):
+        any(ord(character) < 0x20 or ord(character) > 0x7E or
+            character in '?*"<>|' for character in value)):
         raise PackageCacheError(f"{field} is invalid")
     parts = value.split("/")
     if (len(parts) < 3 or parts[0].casefold() != "psp_game" or

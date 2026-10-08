@@ -1563,19 +1563,41 @@ static void assert_cache_root_isolated(void) {
 }
 
 #if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
+static const struct {
+    const char *path;
+    bool valid;
+} source_iso_path_cases[] = {
+    {"PSP_GAME/SYSDIR/EBOOT.BIN", true},
+    {"psp_game/USRDIR/module/fixture.prx", true},
+    {"PSP_GAME/USRDIR/space in name.prx", true},
+    {"PSP_GAME/USRDIR/punctuation_#%!+.prx", true},
+    {"PSP_GAME/EBOOT.BIN", false},
+    {"OTHER_GAME/USRDIR/fixture.prx", false},
+    {"PSP_GAME//USRDIR/fixture.prx", false},
+    {"PSP_GAME/USRDIR/../SYSDIR/EBOOT.BIN", false},
+    {"PSP_GAME/USRDIR/./fixture.prx", false},
+    {"C:/PSP_GAME/USRDIR/fixture.prx", false},
+    {"/PSP_GAME/USRDIR/fixture.prx", false},
+    {"PSP_GAME/USRDIR/back\\\\slash.prx", false},
+    {"PSP_GAME/USRDIR/fixture?.prx", false},
+    {"PSP_GAME/USRDIR/fixture*.prx", false},
+    {"PSP_GAME/USRDIR/fixture\".prx", false},
+    {"PSP_GAME/USRDIR/fixture<.prx", false},
+    {"PSP_GAME/USRDIR/fixture>.prx", false},
+    {"PSP_GAME/USRDIR/fixture|.prx", false},
+    {"PSP_GAME/USRDIR/control\x1f.prx", false},
+    {"PSP_GAME/USRDIR/del\x7f.prx", false},
+    {"PSP_GAME/USRDIR/non-ascii-\xc3\xa9.prx", false},
+};
+
 static void test_source_iso_member_path_validation(void) {
-    assert(nk_title_manifest_test_source_iso_path_valid(
-        "PSP_GAME/SYSDIR/EBOOT.BIN"));
-    assert(nk_title_manifest_test_source_iso_path_valid(
-        "PSP_GAME/USRDIR/module/fixture.prx"));
-    assert(!nk_title_manifest_test_source_iso_path_valid(
-        "PSP_GAME/USRDIR/../SYSDIR/EBOOT.BIN"));
-    assert(!nk_title_manifest_test_source_iso_path_valid(
-        "C:/PSP_GAME/USRDIR/fixture.prx"));
-    assert(!nk_title_manifest_test_source_iso_path_valid(
-        "/PSP_GAME/USRDIR/fixture.prx"));
-    assert(!nk_title_manifest_test_source_iso_path_valid(
-        "PSP_GAME/USRDIR/fixture?.prx"));
+    for (size_t i = 0;
+         i < sizeof(source_iso_path_cases) / sizeof(source_iso_path_cases[0]);
+         i++) {
+        assert(nk_title_manifest_test_source_iso_path_valid(
+                   source_iso_path_cases[i].path) ==
+               source_iso_path_cases[i].valid);
+    }
     char too_long[600];
     const char prefix[] = "PSP_GAME/USRDIR/";
     size_t prefix_length = sizeof(prefix) - 1u;

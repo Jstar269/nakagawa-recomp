@@ -412,6 +412,23 @@ def _hash_iso_member(iso_path: Path, member: tuple[str, ...]) -> str | None:
         raise PackageBuildError(f"Could not read the source media for title identity: {exc}") from exc
 
 
+def _source_iso_guest_components(guest_path: object) -> tuple[str, ...] | None:
+    if not isinstance(guest_path, str) or ":" not in guest_path:
+        return None
+    device, relative = guest_path.split(":", 1)
+    if relative.startswith("/"):
+        relative = relative[1:]
+    components = relative.split("/")
+    if not relative or any(not component for component in components):
+        raise PackageBuildError(
+            "Guest module path contains an empty component."
+        )
+    if device.casefold() not in {"disc0", "umd0"} or \
+            components[0].casefold() != "psp_game":
+        return None
+    return tuple(components)
+
+
 def _source_media_identity(iso_path: Path, selected: str,
                            manifest: dict) -> dict:
     executable_path = f"PSP_GAME/SYSDIR/{selected}"
@@ -427,25 +444,21 @@ def _source_media_identity(iso_path: Path, selected: str,
     required_modules = []
     for module in manifest.get("modules", []):
         if not isinstance(module, dict):
-            raise PackageBuildError("A guest-prx manifest record is invalid (#315).")
+            raise PackageBuildError("A guest-prx manifest record is invalid.")
         if module.get("role") != "guest-prx" or not module.get("required", False):
             continue
         name = module.get("name")
         if not isinstance(name, str) or not name:
             raise PackageBuildError(
-                "A required guest-prx manifest record is missing its name (#315)."
+                "A required guest-prx manifest record is missing its name."
             )
         required_modules.append((name, module))
 
     for name, module in sorted(required_modules, key=lambda item: item[0]):
         members = []
-        guest_path = module.get("guest_path")
-        if isinstance(guest_path, str) and ":" in guest_path:
-            device, relative = guest_path.split(":", 1)
-            guest_components = tuple(component for component in relative.split("/") if component)
-            if device.casefold() in {"disc0", "umd0"} and \
-                    guest_components[:1] and guest_components[0].casefold() == "psp_game":
-                members.append(guest_components)
+        guest_components = _source_iso_guest_components(module.get("guest_path"))
+        if guest_components:
+            members.append(guest_components)
         members.extend((
             ("PSP_GAME", "SYSDIR", name),
             ("PSP_GAME", "SYSDIR", "PRX", name),
@@ -812,13 +825,9 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             continue
         extracted = False
         members = []
-        guest_path = module.get("guest_path")
-        if isinstance(guest_path, str) and ":" in guest_path:
-            device, relative = guest_path.split(":", 1)
-            guest_components = tuple(component for component in relative.split("/") if component)
-            if device.casefold() in {"disc0", "umd0"} and \
-                    guest_components[:1] and guest_components[0].casefold() == "psp_game":
-                members.append(guest_components)
+        guest_components = _source_iso_guest_components(module.get("guest_path"))
+        if guest_components:
+            members.append(guest_components)
         if members:
             file_size = iso_path.stat().st_size
             with iso_path.open("rb") as stream:

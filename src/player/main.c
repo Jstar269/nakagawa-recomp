@@ -2912,6 +2912,14 @@ int main(int argc, char *argv[]) {
                  sizeof(app.games[app.selected_game_index].iso_path), "%s",
                  ui_test_iso_path);
     }
+    if (ui_test_iso_path) {
+        for (int i = 0; i < app.game_count; i++) {
+            if (strcmp(app.games[i].disc_id, "TEST00006") == 0) {
+                snprintf(app.games[i].iso_path, sizeof(app.games[i].iso_path),
+                         "%s", ui_test_iso_path);
+            }
+        }
+    }
     if (ui_test_fake_game_running) app.is_game_running = true;
     if (ui_test_error_code) {
         player_app_set_error(&app, ui_test_error_code, ui_test_error_code,

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -311,6 +312,33 @@ class PackageCacheTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(package_cache.PackageCacheError, "source executable path"):
             package_cache.validate_title_input_identity(invalid)
+
+    def test_source_iso_paths_match_native_validator_table(self) -> None:
+        native_test = (ROOT / "tests/native/test_player_state.c").read_text(
+            encoding="utf-8"
+        )
+        table = re.search(
+            r"(?ms)^\s*\} source_iso_path_cases\[\] = \{(?P<cases>.*?)^\};",
+            native_test,
+        )
+        self.assertIsNotNone(table)
+        cases = re.findall(
+            r'^\s*\{"((?:\\.|[^"\\])*)",\s*(true|false)\},?\s*$',
+            table.group("cases"),
+            re.MULTILINE,
+        )
+        self.assertGreaterEqual(len(cases), 20)
+        for encoded_path, expected_text in cases:
+            with self.subTest(path=encoded_path):
+                path = ast.literal_eval(f'"{encoded_path}"')
+                expected_valid = expected_text == "true"
+                if expected_valid:
+                    self.assertEqual(
+                        package_cache._validate_source_iso_path(path, "test"), path
+                    )
+                else:
+                    with self.assertRaises(package_cache.PackageCacheError):
+                        package_cache._validate_source_iso_path(path, "test")
 
     def test_cache_key_differs_by_public_safe_mode(self) -> None:
         key_public = self.key(compile_flags=package_cache.native_compile_flags(public_safe=True))

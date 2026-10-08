@@ -102,12 +102,15 @@ def corrupt_png_header() -> bytes:
 
 
 def synthetic_art_iso(
-    path: Path, *, include_picture: bool = True, icon_bytes: bytes | None = None
+    path: Path, *, include_picture: bool = True, icon_bytes: bytes | None = None,
+    source_executable: bytes | None = None,
 ) -> None:
     sector_size = 2048
     icon_image = png_pixel(50, 190, 120) if icon_bytes is None else icon_bytes
     assert len(icon_image) <= sector_size, "the synthetic icon must fit one sector"
-    image = bytearray(22 * sector_size)
+    image = bytearray((23 if source_executable is not None else 22) * sector_size)
+    if source_executable is not None:
+        assert len(source_executable) <= sector_size, "the synthetic executable must fit one sector"
 
     def both_endian(value: int) -> bytes:
         return struct.pack("<I", value) + struct.pack(">I", value)
@@ -149,11 +152,21 @@ def synthetic_art_iso(
     if include_picture:
         game_records += record(b"PIC1.PNG;1", 20, len(png_pixel(50, 100, 190)), False)
         picture_size = len(png_pixel(50, 100, 190))
+    if source_executable is not None:
+        game_records += record(b"SYSDIR", 21, sector_size, True)
     image[17 * sector_size : 17 * sector_size + len(root_records)] = root_records
     image[18 * sector_size : 18 * sector_size + len(game_records)] = game_records
     image[19 * sector_size : 19 * sector_size + len(icon_image)] = icon_image
     if picture_size:
         image[20 * sector_size : 20 * sector_size + picture_size] = png_pixel(50, 100, 190)
+    if source_executable is not None:
+        sysdir_records = (
+            record(b"\x00", 21, sector_size, True)
+            + record(b"\x01", 18, sector_size, True)
+            + record(b"EBOOT.BIN;1", 22, len(source_executable), False)
+        )
+        image[21 * sector_size : 21 * sector_size + len(sysdir_records)] = sysdir_records
+        image[22 * sector_size : 22 * sector_size + len(source_executable)] = source_executable
     path.write_bytes(image)
 
 
@@ -183,7 +196,7 @@ def synthetic_stale_package(runtime_root: Path) -> None:
     (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
 
 
-def synthetic_ready_package(runtime_root: Path) -> None:
+def synthetic_ready_package(runtime_root: Path, source_executable: bytes) -> None:
     """Write a source-owned package accepted by the real native validator."""
     disc_id = "TEST00006"
     title_id = "display-smoke-v1"
@@ -192,7 +205,7 @@ def synthetic_ready_package(runtime_root: Path) -> None:
     executable_name = f"{title_id}.exe"
     image_name = f"{title_id}_image.bin"
     executable_bytes = b"synthetic ready package executable\n"
-    input_executable_hash = hashlib.sha256(b"synthetic input executable\n").hexdigest()
+    input_executable_hash = hashlib.sha256(source_executable).hexdigest()
     executable_hash = hashlib.sha256(executable_bytes).hexdigest()
     zero_hash = "0" * 64
 
@@ -213,7 +226,13 @@ def synthetic_ready_package(runtime_root: Path) -> None:
         "param_sfo": None,
         "psp_header": None,
         "schema_version": 2,
-        "source_media": None,
+        "source_media": {
+            "executable": {
+                "path": "PSP_GAME/SYSDIR/EBOOT.BIN",
+                "sha256": input_executable_hash,
+            },
+            "modules": [],
+        },
     }
     identity_text = json.dumps(identity, separators=(",", ":")) + "\n"
     identity_digest = canonical_hash(identity)
@@ -453,10 +472,21 @@ class NativePlayerUiTests(unittest.TestCase):
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
             runtime_root = scratch / "runtime"
             runtime_root.mkdir()
+            ready_source_iso: Path | None = None
             if build_ready_test:
-                synthetic_ready_package(runtime_root)
+                source_executable = b"synthetic input executable\n"
+                ready_source_iso = scratch / "ready-source.iso"
+                synthetic_art_iso(
+                    ready_source_iso, source_executable=source_executable
+                )
+                synthetic_ready_package(runtime_root, source_executable)
             elif post_build_ready:
-                synthetic_ready_package(runtime_root)
+                source_executable = b"synthetic input executable\n"
+                ready_source_iso = scratch / "ready-source.iso"
+                synthetic_art_iso(
+                    ready_source_iso, source_executable=source_executable
+                )
+                synthetic_ready_package(runtime_root, source_executable)
             catalog_overlay: Path | None = None
             if catalog_reload_count:
                 catalog_overlay = scratch / "catalog-overlay.json"
@@ -517,6 +547,8 @@ class NativePlayerUiTests(unittest.TestCase):
                         ui_iso_path = scratch / "late-mounted-synthetic.iso"
                     elif art_iso not in ("available", "icon-only", "undecodable", "corrupt"):
                         raise ValueError(f"unknown synthetic ISO mode: {art_iso}")
+            if ready_source_iso is not None:
+                ui_iso_path = ready_source_iso
             if stale_package:
                 synthetic_stale_package(runtime_root)
 
