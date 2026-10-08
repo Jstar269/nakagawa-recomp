@@ -1712,16 +1712,31 @@ uint32_t iso_physical_lba(uint32_t lba_or_token) { return lba_or_token; }
 #define AV_VIDEO  0x08604000u   /* ScePsmfPlayerVideoData: frameWidth, displaybuf, displaypts */
 #define AV_AUDIO  0x08605000u   /* one 8192-byte PCM sink */
 
-/* The authored timelines.  Video spacing *is* PSMF_VIDEO_PTS_STEP, so the video series is
- * exact.  Audio is the real 44.1 kHz mapping (2048 * 90000 / 44100 = 4180.95...), which the
- * player's integer PSMF_AUDIO_PTS_STEP can only approximate between PTS anchors -- so a
- * delivered audio pts that stays within one anchor interval of this series across the whole
- * run is the evidence that the truncation re-syncs instead of accumulating. */
+/* The authored timelines.  Video spacing *is* PSMF_VIDEO_PTS_STEP: 90000 * 1001 / 30000 = 3003
+ * ticks exactly at 29.97 fps (30000/1001), so video PTS drift is identically 0.
+ *
+ * Audio presentation timing in 90 kHz ticks:
+ *   2048 samples * 90000 / 44100 = 204800 / 49 = 4179 + 29/49 = 4179.5918367... ticks.
+ * The player advances unanchored audio access units by integer PSMF_AUDIO_PTS_STEP = 4180 ticks,
+ * over-advancing by +20/49 (~0.40816) ticks per block.
+ *
+ * PES packets carry PTS anchors every AV_AUDIO_ANCHOR = 8 blocks, resetting the clock to the
+ * authored timeline.  Between anchors, at most AV_AUDIO_ANCHOR - 1 = 7 blocks are extrapolated,
+ * accumulating at most 7 * (20/49) = 140/49 = 20/7 ≈ 2.857 ticks of step error.
+ * With integer rounding of anchor timestamps (+-0.5 tick), the worst-case deviation between
+ * the player's clock and the authored timeline is ceil(20/7 + 0.5) = 3 ticks.
+ *
+ * Because video PTS drift is 0, the A/V gap drift (avgap - authored) equals the audio PTS
+ * drift exactly (|avgap - authored| <= 3 ticks).
+ *
+ * AV_AUDIO_PTS_DRIFT_TICKS = 7LL is therefore provably conservative: the theoretical maximum
+ * drift is 3 ticks (AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT), leaving 4 ticks of safety margin. */
 #define AV_PICTURES      90                 /* ~3.0 s of 29.97 fps pictures */
 #define AV_AUDIO_BLOCKS  65                 /* ~3.0 s of 2048-sample blocks at 44.1 kHz */
 #define AV_VIDEO_ANCHOR  4                  /* pictures whose PES packet carries a PTS */
 #define AV_AUDIO_ANCHOR  8                  /* audio blocks whose PES packet carries a PTS */
-#define AV_AUDIO_PTS_DRIFT_TICKS 7LL        /* max truncation between 8-block PTS anchors */
+#define AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT 3LL /* first-principles maximum audio / gap drift */
+#define AV_AUDIO_PTS_DRIFT_TICKS 7LL        /* conservative tolerance bound (4-tick margin) */
 
 static int64_t av_video_pts(int picture) { return (int64_t)picture * PSMF_VIDEO_PTS_STEP; }
 static int64_t av_audio_pts(int block) {
@@ -1865,6 +1880,8 @@ static void av_sample_summaries(void) {
     if (aout > 0 && ats >= 0) {
         CHECK(llabs(ats - av_audio_pts((int)aout - 1)) <= AV_AUDIO_PTS_DRIFT_TICKS,
               "published audio pts stays within the 90 kHz anchor-drift bound");
+        CHECK(llabs(ats - av_audio_pts((int)aout - 1)) <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "published audio pts stays within the theoretical 3-tick drift bound");
         /* One checkpoint per delivered block: two samples taken between two deliveries
          * repeat the same presentation point, and comparing a point with itself would
          * claim the series stopped advancing when nothing was delivered yet. */
@@ -1880,9 +1897,80 @@ static void av_sample_summaries(void) {
         int64_t authored = av_video_pts((int)frames - 1) - av_audio_pts((int)aout - 1);
         CHECK(llabs(avgap - authored) <= AV_AUDIO_PTS_DRIFT_TICKS,
               "the published A/V gap equals the two authored positions at comparable points");
+        CHECK(llabs(avgap - authored) <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "the published A/V gap stays within theoretical 3-tick drift bound");
         CHECK(llabs(avgap) <= PSMF_AUDIO_PTS_STEP + 3 * PSMF_VIDEO_PTS_STEP,
               "the presentation-boundary A/V gap stays within a block plus a picture of slack");
     }
+}
+
+/* First-principles verification of the audio clock, video clock, and A/V gap drift bounds.
+ * Demonstrates mathematically and empirically that:
+ * 1. Video presentation step is exact (3003 ticks per frame at 29.97 fps, zero drift).
+ * 2. Integer PSMF_AUDIO_PTS_STEP (4180) over-advances by 20/49 (~0.40816) ticks per block
+ *    relative to exact 44.1 kHz mapping (4179 + 29/49 ticks).
+ * 3. Over at most 7 unanchored blocks between 8-block PES anchors, accumulated drift is
+ *    7 * (20/49) = 2.857 ticks, which with +-0.5 tick anchor rounding never exceeds 3 ticks.
+ * 4. The terminal audio block (block 64) carries an anchor, so terminal drift is 0 ticks.
+ * 5. Because video drift is 0, the A/V gap drift equals audio drift (<= 3 ticks).
+ * 6. The 7-tick AV_AUDIO_PTS_DRIFT_TICKS bound has a comfortable 4-tick margin above the
+ *    3-tick theoretical maximum drift. */
+static void test_psmf_av_timing_first_principles(void) {
+    /* 1. Video step is exact in 90 kHz ticks: 29.97 fps is 30000 / 1001 fps. */
+    CHECK((int64_t)PSMF_VIDEO_PTS_STEP * 30000LL == 90000LL * 1001LL,
+          "psmf first-principles: video PTS step 3003 is exact with zero drift");
+
+    /* 2. Audio exact step: 2048 * 90000 / 44100 = 204800 / 49 = 4179 + 29/49 ticks.
+     * The player integer step 4180 over-advances by 20/49 (~0.40816) ticks per block. */
+    const uint64_t num = 2048ull * 90000ull;
+    const uint64_t den = 44100ull;
+    CHECK(num / den == 4179ull && num % den == 26100ull,
+          "psmf first-principles: exact audio step quotient is 4179 ticks (remainder 26100)");
+    CHECK((uint64_t)PSMF_AUDIO_PTS_STEP * den - num == 18000ull,
+          "psmf first-principles: integer step 4180 exceeds exact step by 18000/44100 (20/49)");
+
+    /* 3. Simulate audio clock across all blocks of the test stream. */
+    int64_t clock = 0;
+    int valid = 0;
+    int64_t max_audio_drift = 0;
+    for (int j = 0; j < AV_AUDIO_BLOCKS; j++) {
+        int has_pts = (j % AV_AUDIO_ANCHOR) == 0;
+        int64_t authored = av_audio_pts(j);
+        if (has_pts) {
+            clock = authored;
+            valid = 1;
+        } else if (valid) {
+            clock += PSMF_AUDIO_PTS_STEP;
+        }
+        int64_t drift = llabs(clock - authored);
+        if (drift > max_audio_drift) max_audio_drift = drift;
+        CHECK(drift <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "psmf first-principles: simulated audio drift stays <= theoretical max (3 ticks)");
+        CHECK(drift <= AV_AUDIO_PTS_DRIFT_TICKS,
+              "psmf first-principles: simulated audio drift stays <= tolerance (7 ticks)");
+    }
+    CHECK(max_audio_drift == AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+          "psmf first-principles: maximum audio drift across the authored stream is exactly 3 ticks");
+
+    /* 4. Terminal audio block (block 64) is an anchor: drift is identically zero. */
+    CHECK((AV_AUDIO_BLOCKS - 1) % AV_AUDIO_ANCHOR == 0,
+          "psmf first-principles: terminal audio block is a PTS anchor");
+    CHECK(clock == av_audio_pts(AV_AUDIO_BLOCKS - 1),
+          "psmf first-principles: terminal audio block has zero drift");
+
+    /* 5. Exhaustive check across 10000 arbitrary anchor points and unanchored offsets. */
+    int64_t worst_offset_drift = 0;
+    for (int j0 = 0; j0 < 10000; j0++) {
+        int64_t anchor_pts = av_audio_pts(j0);
+        for (int k = 0; k < AV_AUDIO_ANCHOR; k++) {
+            int64_t sim = anchor_pts + (int64_t)k * PSMF_AUDIO_PTS_STEP;
+            int64_t target = av_audio_pts(j0 + k);
+            int64_t d = llabs(sim - target);
+            if (d > worst_offset_drift) worst_offset_drift = d;
+        }
+    }
+    CHECK(worst_offset_drift <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+          "psmf first-principles: worst-case drift across 10000 anchor spans never exceeds 3 ticks");
 }
 
 /* Drive the production scePsmfPlayer end to end over the source-owned A/V stream and
@@ -2048,6 +2136,9 @@ static void test_player_av_presentation_timing(void) {
         CHECK(llabs(avgap - (av_video_pts(AV_PICTURES - 1) - av_audio_pts(AV_AUDIO_BLOCKS - 1))) <=
                   AV_AUDIO_PTS_DRIFT_TICKS,
               "psmf-av: the terminal A/V gap equals the authored interleave of the two tracks");
+        CHECK(llabs(avgap - (av_video_pts(AV_PICTURES - 1) - av_audio_pts(AV_AUDIO_BLOCKS - 1))) <=
+                  AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "psmf-av: terminal A/V gap stays within theoretical 3-tick bound");
     } else {
         fprintf(stderr, "SKIP: guest video presentation assertions need an H.264 backend\n");
         CHECK(vsub == 0 && (long long)frames == 0 && vts == 0,
@@ -2055,6 +2146,9 @@ static void test_player_av_presentation_timing(void) {
         CHECK(ats == av_audio_pts(AV_AUDIO_BLOCKS - 1) ||
                   llabs(ats - av_audio_pts(AV_AUDIO_BLOCKS - 1)) <= AV_AUDIO_PTS_DRIFT_TICKS,
               "psmf-av: the terminal audio presentation pts is the last authored block time");
+        CHECK(ats == av_audio_pts(AV_AUDIO_BLOCKS - 1) ||
+                  llabs(ats - av_audio_pts(AV_AUDIO_BLOCKS - 1)) <= AV_AUDIO_PTS_THEORETICAL_MAX_DRIFT,
+              "psmf-av: terminal audio pts stays within theoretical 3-tick bound");
     }
 
 cleanup:
@@ -2097,6 +2191,7 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
     test_psmf_log_tick_instance_isolation();
+    test_psmf_av_timing_first_principles();
     test_player_av_presentation_timing();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 

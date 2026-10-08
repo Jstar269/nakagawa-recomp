@@ -3302,6 +3302,9 @@ static void psmf_log_summary(SrPsmfPlayer *p) {
     if (!p || !psmf_log_on()) return;
     extern uint32_t sr_audio_vbl(void);   /* defined later in this file; same local extern audio.c uses */
     SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+    /* Host-stack line buffer: runs on native host thread stack (1 MB on Win32, 2+ MB on POSIX),
+     * not guest MIPS stack. Shallow leaf call; reentrant across concurrent player instances
+     * without static TLS overhead or per-player struct bloat when SR_MPEGLOG is off. */
     char line[PSMF_SUMMARY_LINE_CAPACITY];
     int formatted = psmf_format_summary(line, sizeof(line), sr_audio_vbl(), &st, p);
     if (!psmf_summary_fits(formatted, sizeof(line))) {

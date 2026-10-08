@@ -163,7 +163,7 @@ int sr_psmf_producer_resolve_warmup_hold(SrPsmfProducer *producer,
  * This is the generic rule that makes a measured video/audio PTS separation mean
  * pipeline distance rather than rate error: every anchor re-syncs the clock to the
  * authored timeline, so between two anchors the worst deviation is one step and a
- * truncating step (e.g. PSMF_AUDIO_PTS_STEP = 4180 for 4180.95) cannot accumulate
+ * truncating/rounding step (e.g. PSMF_AUDIO_PTS_STEP = 4180 for 4179.59...) cannot accumulate
  * across anchors.  Returns the clock's new value, or -1 while it is still unknown. */
 int64_t sr_psmf_pts_advance(int64_t *clock, int *valid, int has_pts,
                             int64_t pts, int64_t step);
