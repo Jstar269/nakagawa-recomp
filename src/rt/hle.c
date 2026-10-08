@@ -1130,6 +1130,7 @@ static uint32_t h_FreePartitionMemory(CpuState *s) {
 }
 
 static HleMemoryBlock *memory_block_find(uint32_t uid) {
+    if (uid == 0u) return NULL;
     for (int i = 0; i < HLE_MAX_MEMORY_BLOCKS; i++)
         if (s_memory_blocks[i].uid == uid) return &s_memory_blocks[i];
     return NULL;
@@ -1151,6 +1152,8 @@ static uint32_t h_AllocMemoryBlock(CpuState *s) {
         uint32_t options_size = MEM_R32(A3);
         if (options_size < 4u) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
         if (options_size > 4u) {
+            if (!sr_guest_span_readable(A3, options_size))
+                return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
             fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock option extensions are not supported yet.\n");
             return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
         }

@@ -15504,6 +15504,11 @@ static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
 
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
+           "sceKernelFreeMemoryBlock rejects UID zero as unknown");
+
+    memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;          /* name is debug-only and may be NULL */
     cpu.r[5] = 0u;          /* PSP_SMEM_Low */
     cpu.r[6] = 0x240u;
@@ -15582,6 +15587,15 @@ static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
     cpu.r[7] = options;
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
            "sceKernelAllocMemoryBlock refuses unmodeled options extensions");
+
+    MEM_W32(0x0bfffffcu, 8u); /* header fits, declared extension crosses guest RAM */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = 0x0bfffffcu;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
+           "sceKernelAllocMemoryBlock rejects an incomplete declared options span");
 
     sr_hle_test_partition_reset();
     MEM_W32(options, 4u);
