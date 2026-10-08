@@ -2238,6 +2238,26 @@ static uint32_t h_ChangeCurrentThreadAttr(CpuState *s) {
     return sched_change_current_thread_attr(A0, A1);
 }
 
+/* sceKernelSuspendThread(thid) / sceKernelResumeThread(thid) /
+ * sceKernelRotateThreadReadyQueue(priority).  Public PSPSDK pspthreadman.h prototypes;
+ * semantics and error codes are documented at the sched_*_thread functions in sched.c.
+ * Resume applies strict-priority preemption once the thread is runnable again, like
+ * WakeupThread. */
+static uint32_t h_SuspendThread(CpuState *s) {
+    (void)s;
+    return sched_suspend_thread(A0);
+}
+static uint32_t h_ResumeThread(CpuState *s) {
+    (void)s;
+    uint32_t result = sched_resume_thread(A0);
+    if (result == 0) sched_preempt();
+    return result;
+}
+static uint32_t h_RotateThreadReadyQueue(CpuState *s) {
+    (void)s;
+    return sched_rotate_thread_ready_queue((int)A0);
+}
+
 static uint32_t h_TerminateDeleteThread(CpuState *s) {
     uint32_t result = sched_terminate_thread(A0);
     if (result != 0) return result;
@@ -19057,9 +19077,9 @@ static void hle_register_psmf_player_handlers(void) {
  * facilities with missing lifecycle state are registered as explicit refusals. */
 static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xea748e31, "sceKernelChangeCurrentThreadAttr", h_ChangeCurrentThreadAttr);
-    sr_hle_register_unsupported(0x912354a7, "sceKernelRotateThreadReadyQueue", 0x80020002u);
-    sr_hle_register_unsupported(0x75156e8f, "sceKernelResumeThread", 0x80020002u);
-    sr_hle_register_unsupported(0x9944f31f, "sceKernelSuspendThread", 0x80020002u);
+    sr_hle_register(0x912354a7, "sceKernelRotateThreadReadyQueue", h_RotateThreadReadyQueue);
+    sr_hle_register(0x75156e8f, "sceKernelResumeThread", h_ResumeThread);
+    sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
     sr_hle_register_unsupported(0x6652b8ca, "sceKernelSetAlarm", 0x80020002u);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register_unsupported(0x7e65b999, "sceKernelCancelAlarm", 0x80020002u);

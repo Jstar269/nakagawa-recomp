@@ -84,7 +84,10 @@ atomic_int_least32_t sr_timeslice = 0;
 #define MAXTHREADS 128
 
 enum { TH_DORMANT = 0, TH_READY, TH_RUNNING, TH_WAIT_DELAY, TH_WAIT_OBJ };
-enum { PSP_THREAD_RUNNING = 1, PSP_THREAD_READY = 2, PSP_THREAD_WAITING = 4, PSP_THREAD_STOPPED = 16 };
+/* Status bits as documented by the public PSPSDK pspthreadman.h (PSP_THREAD_SUSPEND = 8).
+ * A suspended thread reports its underlying state ORed with the suspend bit. */
+enum { PSP_THREAD_RUNNING = 1, PSP_THREAD_READY = 2, PSP_THREAD_WAITING = 4,
+       PSP_THREAD_SUSPEND = 8, PSP_THREAD_STOPPED = 16 };
 enum { PSP_WAIT_NONE = 0, PSP_WAIT_SLEEP = 1, PSP_WAIT_DELAY = 2, PSP_WAIT_OBJECT = 3 };
 
 #define SCE_KERNEL_ERROR_ILLEGAL_THID      0x80020197u
@@ -92,6 +95,11 @@ enum { PSP_WAIT_NONE = 0, PSP_WAIT_SLEEP = 1, PSP_WAIT_DELAY = 2, PSP_WAIT_OBJEC
 #define SCE_KERNEL_ERROR_UNKNOWN_THID      0x80020198u
 #define SCE_KERNEL_ERROR_DORMANT           0x800201a2u
 #define SCE_KERNEL_ERROR_NOT_DORMANT       0x800201a4u
+/* Thread suspend/resume statuses.  Values are the measured "Threads / Status codes"
+ * cells in docs/HARDWARE_ORACLE.md (double suspend, resume of a thread that is not
+ * suspended); the symbolic names are local labels. */
+#define SCE_KERNEL_ERROR_SUSPEND           0x800201a3u
+#define SCE_KERNEL_ERROR_NOT_SUSPEND       0x800201a5u
 #define SCE_KERNEL_ERROR_THREAD_TERMINATED 0x800201acu
 #define SCE_KERNEL_ERROR_WAIT_DELETE       0x800201b5u
 #define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT   0x80020064u
@@ -161,6 +169,13 @@ typedef struct {
                                   * would be blamed for the code that ran next */
     int      is_cb_wait;         /* 1 when thread is in callback-aware wait */
     int      deleted;             /* kernel object has been removed; slot may be recycled */
+    int      suspended;           /* sceKernelSuspendThread is in effect.  Orthogonal to `state`:
+                                   * a suspended thread keeps its READY/WAIT state (a wait still
+                                   * completes and records its outcome) but is never selected to
+                                   * run, and is never TH_RUNNING because only s_cur is on the CPU. */
+    int      rot_head;            /* sceKernelRotateThreadReadyQueue moved this thread to the back of
+                                   * its priority's queue: the next selection at that priority
+                                   * starts scanning after it.  One-shot, cleared by that selection. */
     SrWaitHandle active_wait;    /* only the currently attached semantic block */
     int      resources_released;  /* libc/reent/callback ownership released exactly once */
     int      stack_released;      /* guest stack reservation returned exactly once */
@@ -273,7 +288,7 @@ static void sched_liveness_observe_pick(int selected) {
     if (selected < 0 || selected >= s_ntcb) return;
     int selected_priority = s_tcb[selected].priority;
     for (int i = 0; i < s_ntcb; i++) {
-        if (s_tcb[i].state != TH_READY || i == selected ||
+        if (s_tcb[i].state != TH_READY || s_tcb[i].suspended || i == selected ||
             s_tcb[i].priority >= selected_priority) {
             s_sched_liveness_starvation_ages[i] = 0;
             continue;
@@ -2221,6 +2236,8 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     t->join_result_valid = 0;
     t->join_target = 0;
     t->join_result = 0;
+    t->suspended = 0;
+    t->rot_head = 0;
     t->state = TH_READY;
     return 0;
 }
@@ -2253,6 +2270,25 @@ static void sched_promote_expired_waits(void) {
     }
 }
 
+/* Where the equal-priority scan at `priority` begins.  Normally one slot after the previous
+ * winner; a thread that sceKernelRotateThreadReadyQueue moved to the back of this priority's
+ * queue (rot_head) takes precedence, so the scan starts after it and it is reached last. */
+static int sched_rotation_scan_start(int priority) {
+    if (s_ntcb <= 0) return 0;
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].rot_head && !s_tcb[i].deleted && s_tcb[i].priority == priority)
+            return (i + 1) % s_ntcb;
+    return (s_last_pick >= 0) ? (s_last_pick + 1) % s_ntcb : 0;
+}
+
+/* Record `head` as the thread rotated to the back of its priority's queue, replacing any
+ * earlier record at the same priority. */
+static void sched_rotation_mark(int head) {
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].priority == s_tcb[head].priority) s_tcb[i].rot_head = 0;
+    s_tcb[head].rot_head = 1;
+}
+
 /* Pick the highest-priority runnable thread (lowest PSP priority number). Wakes delayed
  * threads whose deadline has passed.
  *
@@ -2277,7 +2313,7 @@ static int pick_next(void) {
     int best_pri = 0;
     int have_ready = 0;
     for (int i = 0; i < s_ntcb; i++) {
-        if (s_tcb[i].state != TH_READY) continue;
+        if (s_tcb[i].state != TH_READY || s_tcb[i].suspended) continue;
         if (!have_ready || s_tcb[i].priority < best_pri) best_pri = s_tcb[i].priority;
         have_ready = 1;
     }
@@ -2289,11 +2325,14 @@ static int pick_next(void) {
                                 s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u, 0u, 0u, 0u);
         return -1;
     }
-    int start = (s_last_pick >= 0) ? (s_last_pick + 1) % s_ntcb : 0;
+    int start = sched_rotation_scan_start(best_pri);
     for (int step = 0; step < s_ntcb; step++) {
         int i = (start + step) % s_ntcb;
-        if (s_tcb[i].state == TH_READY && s_tcb[i].priority == best_pri) {
+        if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended && s_tcb[i].priority == best_pri) {
             s_last_pick = i;
+            /* A rotation at this priority is consumed by this selection. */
+            for (int j = 0; j < s_ntcb; j++)
+                if (s_tcb[j].priority == best_pri) s_tcb[j].rot_head = 0;
             SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PICK, i, 0u);
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK,
                                     s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u,
@@ -2471,7 +2510,7 @@ void sr_yield(CpuState *s) {
     /* Only switch if someone else could run; otherwise keep going (avoids pointless churn). */
     int other = 0;
     for (int i = 0; i < s_ntcb; i++)
-        if (i != s_cur && (s_tcb[i].state == TH_READY ||
+        if (i != s_cur && !s_tcb[i].suspended && (s_tcb[i].state == TH_READY ||
             ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
              s_vtime_us >= s_tcb[i].wake))) { other = 1; break; }
     /* If no other thread is runnable AND nothing is sleeping on a small timer, TURBO mode
@@ -2602,7 +2641,8 @@ void sched_preempt(void) {
     int best = -1;
     for (int i = 0; i < s_ntcb; i++) {
         if (i == s_cur) continue;
-        if (s_tcb[i].state == TH_READY && (best < 0 || s_tcb[i].priority < s_tcb[best].priority))
+        if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended &&
+            (best < 0 || s_tcb[i].priority < s_tcb[best].priority))
             best = i;
     }
     if (best >= 0 && s_tcb[best].priority < cur->priority) {   /* strictly higher priority ready */
@@ -3196,14 +3236,16 @@ int sched_thread_cancel_wakeup(uint32_t uid) {
 }
 
 static uint32_t psp_thread_status(const TCB *t) {
+    uint32_t status;
     switch (t->state) {
-        case TH_RUNNING: return PSP_THREAD_RUNNING;
-        case TH_READY: return PSP_THREAD_READY;
+        case TH_RUNNING: status = PSP_THREAD_RUNNING; break;
+        case TH_READY: status = PSP_THREAD_READY; break;
         case TH_WAIT_DELAY:
-        case TH_WAIT_OBJ: return PSP_THREAD_WAITING;
+        case TH_WAIT_OBJ: status = PSP_THREAD_WAITING; break;
         case TH_DORMANT:
         default: return PSP_THREAD_STOPPED;
     }
+    return t->suspended ? (status | PSP_THREAD_SUSPEND) : status;
 }
 
 static uint32_t psp_wait_type(const TCB *t) {
@@ -3303,6 +3345,8 @@ static void sched_exit_current_impl(int32_t status, int delete_object) {
      * fiber (see sched_run's relaunch path -- it already deletes on restart -- and
      * the reaper loop added below). */
     t->state = TH_DORMANT;
+    t->suspended = 0;
+    t->rot_head = 0;
     t->sleeping = 0;
     t->wait_obj = 0;
     t->wake = 0;
@@ -3363,6 +3407,7 @@ uint32_t sched_set_priority(uint32_t uid, int priority) {
      * target answers DORMANT (0x800201A2). */
     if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
     t->priority = priority;
+    t->rot_head = 0;   /* a queue position belongs to the old priority */
     return 0;
 }
 
@@ -3409,6 +3454,7 @@ uint32_t sched_terminate_thread(uint32_t uid) {
      * the dormant object until the corresponding DeleteThread operation. */
     if (t->coro) { sr_coro_destroy(t->coro); t->coro = NULL; }
     t->state = TH_DORMANT;
+    t->suspended = 0; t->rot_head = 0;   /* termination ends a suspension */
     t->exit_status = (int32_t)SCE_KERNEL_ERROR_THREAD_TERMINATED;
     t->sleeping = 0; t->wait_obj = 0; t->wake = 0;
     t->wait_kind = 0; t->pending_wait_kind = 0;
@@ -3442,6 +3488,8 @@ uint32_t sched_delete_thread(uint32_t uid) {
     t->arglen = 0;
     t->argp = 0;
     t->exit_status = (int32_t)SCE_KERNEL_ERROR_DORMANT;
+    t->suspended = 0;
+    t->rot_head = 0;
     t->sleeping = 0;
     t->wait_obj = 0;
     t->wake = 0;
@@ -3450,6 +3498,107 @@ uint32_t sched_delete_thread(uint32_t uid) {
     t->join_waiting = 0;
     t->join_result_valid = 0;
     t->deleted = 1;
+    return 0;
+}
+
+/* sceKernelSuspendThread(thid).
+ *
+ * Model: suspension is a flag orthogonal to the thread's scheduling state.  A suspended
+ * thread is never selected to run (pick_next), never takes the CPU by preemption
+ * (sched_preempt) and does not count as a switch candidate (sr_yield).  Its wait is
+ * unaffected: a delay or timed wait still expires on the shared virtual clock and a
+ * signal still readies it, recording the outcome exactly as for any waiter -- the thread
+ * simply stays READY-but-suspended until sceKernelResumeThread, and then observes that
+ * recorded outcome.  Only s_cur is ever TH_RUNNING, and the running thread cannot be
+ * suspended, so no thread is left RUNNING while off the CPU.
+ *
+ * Errors: UNKNOWN_THID for a UID that names no thread (project-defined, as for every
+ * other thread call); DORMANT for a stopped thread and SUSPEND for a double suspend
+ * (both measured, docs/HARDWARE_ORACLE.md "Threads / Status codes"); ILLEGAL_THID for
+ * UID 0 or the calling thread, the code the project already returns for the same
+ * "operate on yourself" refusal in TerminateThread and WaitThreadEnd (not separately
+ * measured for suspend). */
+uint32_t sched_suspend_thread(uint32_t uid) {
+    if (uid == 0) return SCE_KERNEL_ERROR_ILLEGAL_THID;
+    TCB *t = tcb_by_uid(uid);
+    if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
+    if (s_cur >= 0 && t == &s_tcb[s_cur]) return SCE_KERNEL_ERROR_ILLEGAL_THID;
+    if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
+    if (t->suspended) return SCE_KERNEL_ERROR_SUSPEND;
+    t->suspended = 1;
+    /* Defensive: only s_cur may be RUNNING.  A thread that is not on the CPU is READY. */
+    if (t->state == TH_RUNNING) t->state = TH_READY;
+    return 0;
+}
+
+/* sceKernelResumeThread(thid).  Clears the suspension; the thread's own state (READY, or
+ * still waiting) is untouched, so a waiter whose wait has not completed keeps waiting and
+ * one whose wait completed meanwhile is runnable now.  The caller applies strict-priority
+ * preemption (sched_preempt) after a successful resume.
+ *
+ * Errors: UNKNOWN_THID, DORMANT and NOT_SUSPEND (resume of a thread that is not
+ * suspended; measured, docs/HARDWARE_ORACLE.md "Threads / Status codes").  UID 0 names
+ * the calling thread, which is running and therefore not suspended (not separately
+ * measured). */
+uint32_t sched_resume_thread(uint32_t uid) {
+    uid = resolve_thread_uid(uid);
+    TCB *t = tcb_by_uid(uid);
+    if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
+    if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
+    if (!t->suspended) return SCE_KERNEL_ERROR_NOT_SUSPEND;
+    t->suspended = 0;
+    return 0;
+}
+
+/* sceKernelRotateThreadReadyQueue(priority); priority 0 means the calling thread's
+ * priority (the public PSPSDK convention for this call).
+ *
+ * The ready queue of a priority is the cyclic slot order that pick_next scans, starting
+ * after the previous winner.  Rotating moves the head of that queue to the back:
+ *   - if the caller runs at that priority it IS the head (the running thread leads its
+ *     priority's queue), so it goes behind its ready peers and yields to the first of
+ *     them;
+ *   - otherwise the head is the first ready, non-suspended thread of that priority; it is
+ *     recorded as rotated so the next selection at that priority starts after it.
+ * Suspended threads are not in the ready queue and are never rotated.  The yield is
+ * deferred, like every other switch, while interrupts or dispatch are disabled; the
+ * rotation itself still takes effect.  A priority with no ready thread is a successful
+ * no-op; no range-error code is returned because none is sourced. */
+uint32_t sched_rotate_thread_ready_queue(int priority) {
+    if (priority == 0) {
+        if (s_cur < 0) return 0;   /* no calling thread, so no queue to rotate */
+        priority = s_tcb[s_cur].priority;
+    }
+    sched_promote_expired_waits();
+    int head = -1;
+    if (s_cur >= 0 && s_tcb[s_cur].priority == priority) {
+        head = s_cur;
+    } else {
+        int start = sched_rotation_scan_start(priority);
+        for (int step = 0; step < s_ntcb; step++) {
+            int i = (start + step) % s_ntcb;
+            if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended && s_tcb[i].priority == priority) {
+                head = i;
+                break;
+            }
+        }
+    }
+    if (head < 0) return 0;
+    sched_rotation_mark(head);
+    if (head != s_cur) {
+        sched_preempt();   /* a rotated stronger queue may now owe the CPU */
+        return 0;
+    }
+    if (!s_interrupts_enabled || !s_dispatch_enabled) return 0;
+    int peer_ready = 0;
+    for (int i = 0; i < s_ntcb; i++)
+        if (i != s_cur && s_tcb[i].state == TH_READY && !s_tcb[i].suspended &&
+            s_tcb[i].priority <= priority) { peer_ready = 1; break; }
+    if (!peer_ready) return 0;   /* nobody to yield to: the queue is just the caller */
+    TCB *cur = &s_tcb[s_cur];
+    memcpy(&cur->saved, s_cpu, sizeof(CpuState));
+    cur->state = TH_READY;
+    switch_to_scheduler();
     return 0;
 }
 
