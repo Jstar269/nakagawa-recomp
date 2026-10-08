@@ -1028,7 +1028,7 @@ NkResult nk_launch_prepare_session(
     } else if (launch_package_directory_exists(root, game->disc_id)) {
         snprintf(session->last_error, sizeof(session->last_error), "%s",
                  package_error[0] ? package_error :
-                 "Runtime package cache entry is incomplete; rebuild is required (#316).");
+                 "Runtime package cache entry is incomplete; rebuild is required (#308).");
         return package_status == NK_RUNTIME_PACKAGE_MISSING
             ? NK_ERROR_FILE_NOT_FOUND : NK_ERROR_UNSUPPORTED_TITLE;
     } else if (game->is_experimental) {

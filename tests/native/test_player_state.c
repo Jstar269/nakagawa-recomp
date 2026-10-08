@@ -27,6 +27,7 @@
 #include "player_state.h"
 #include "iso_reader.h"
 #include "nk_font.h"
+#include "nk_title_manifest.h"
 #include "nk_platform.h"
 #include "../../src/rt/recomp.h"
 
@@ -105,6 +106,19 @@ static void write_text_file(const char *path, const char *text) {
     assert(file != NULL);
     size_t length = strlen(text);
     assert(fwrite(text, 1, length, file) == length);
+    assert(fclose(file) == 0);
+}
+
+static void append_json_whitespace(const char *path, size_t count) {
+    FILE *file = fopen(path, "ab");
+    assert(file != NULL);
+    char spaces[4096];
+    memset(spaces, ' ', sizeof(spaces));
+    while (count > 0) {
+        size_t chunk = count < sizeof(spaces) ? count : sizeof(spaces);
+        assert(fwrite(spaces, 1, chunk, file) == chunk);
+        count -= chunk;
+    }
     assert(fclose(file) == 0);
 }
 
@@ -535,13 +549,11 @@ static void write_synthetic_pgf(const char *path, uint16_t header_offset, uint16
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
-static void write_runtime_package_fixture(const char *user_root,
-                                          const char *disc_id,
-                                          const char *title_id,
-                                          uint32_t abi_version,
-                                          const char *executable_relative_path,
-                                          const char *input_executable_sha256,
-                                          const char *seed_executable_path) {
+static void write_runtime_package_fixture_with_report_size(
+    const char *user_root, const char *disc_id, const char *title_id,
+    uint32_t abi_version, const char *executable_relative_path,
+    const char *input_executable_sha256, const char *seed_executable_path,
+    size_t report_target_size) {
     char packages[768], package_dir[896], executable[1100], image[1100];
     char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
     char aot_components_json[2048], native_components_json[2048], identity_json[2048];
@@ -643,6 +655,11 @@ static void write_runtime_package_fixture(const char *user_root,
     snprintf(report_path, sizeof(report_path), "%s%cbuild-report.json", package_dir,
              nk_platform_path_separator());
     write_text_file(report_path, report_json);
+    assert(report_target_size == 0 || report_target_size >= (size_t)report_length);
+    if (report_target_size > (size_t)report_length) {
+        append_json_whitespace(report_path,
+                               report_target_size - (size_t)report_length);
+    }
 
     int package_length = snprintf(package_json, sizeof(package_json),
         "{\"format\":\"nakagawa-aot-package\",\"schema_version\":2,\"cache\":%s,"
@@ -692,6 +709,18 @@ static void write_runtime_package_fixture(const char *user_root,
     snprintf(completion_path, sizeof(completion_path), "%s%ccompletion-manifest.json",
              package_dir, nk_platform_path_separator());
     write_text_file(completion_path, completion_json);
+}
+
+static void write_runtime_package_fixture(const char *user_root,
+                                          const char *disc_id,
+                                          const char *title_id,
+                                          uint32_t abi_version,
+                                          const char *executable_relative_path,
+                                          const char *input_executable_sha256,
+                                          const char *seed_executable_path) {
+    write_runtime_package_fixture_with_report_size(
+        user_root, disc_id, title_id, abi_version, executable_relative_path,
+        input_executable_sha256, seed_executable_path, 0);
 }
 
 /* Remove exactly what write_runtime_package_fixture() writes under *user_root*
@@ -1892,6 +1921,9 @@ int main(int argc, char **argv) {
                  sizeof(wiz->inspecting_game.selected_executable), "EBOOT.BIN");
         snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
                  "experimental-ulus99998");
+        /* A prior interrupted run may have left this synthetic package. */
+        remove_runtime_package_fixture(preflight_root, "ULUS99998",
+                                       "experimental-ulus99998");
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         assert(wiz->wizard.preflight.count == 7);
         check = find_preflight_check(&wiz->wizard.preflight, "EXPERIMENTAL");
@@ -2042,7 +2074,7 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_STALE);
-        assert(strstr(check->message, "#316") != NULL);
+        assert(strstr(check->message, "#308") != NULL);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
                                       "experimental-ulus99998", 2,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
@@ -2770,9 +2802,11 @@ int main(int argc, char **argv) {
         remove_runtime_package_fixture(validation_root, cached_disc_id,
                                        "synthetic-allegrex-v1");
         assert(nk_platform_mkdir_p(package_dir));
-        write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        write_runtime_package_fixture_with_report_size(
+            validation_root, cached_disc_id, "synthetic-allegrex-v1", 2,
+            "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
+            (size_t)NK_MANIFEST_MAX_BYTES + 1u);
+        assert(fixture_file_size(report_json) > NK_MANIFEST_MAX_BYTES);
 
         NkGameEntry game;
         memset(&game, 0, sizeof(game));
@@ -2931,6 +2965,21 @@ int main(int argc, char **argv) {
                     "[PLAYER_STATE_TEST] Same-size edit shared the filesystem "
                     "change-value tick; metadata cache identity cannot distinguish it.\n");
         }
+
+        write_runtime_package_fixture_with_report_size(
+            validation_root, cached_disc_id, "synthetic-allegrex-v1", 2,
+            "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
+            (size_t)NK_BUILD_REPORT_MAX_BYTES + 1u);
+        assert(fixture_file_size(report_json) ==
+               (long)(NK_BUILD_REPORT_MAX_BYTES + 1u));
+        NkRuntimePackageInfo oversized_report_info;
+        NkRuntimePackageStatus oversized_report_status =
+            nk_launch_validate_runtime_package(
+                validation_root, &game, &oversized_report_info, reason,
+                sizeof(reason));
+        assert(oversized_report_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(strstr(reason,
+                      "Package build-report.json exceeds the 4 MiB build-report limit") != NULL);
 
         /* Leave the machine as found. These five removes already ran here, but
            the root they cleaned still held the fixture's

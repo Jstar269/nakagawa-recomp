@@ -8201,6 +8201,21 @@ static uint32_t h_RtcGetWin32FileTime(CpuState *s) {
         MEM_W32(A1, 0u); MEM_W32(A1 + 4u, 0u);
         return RTC_INVALID_VALUE;
     }
+    /* Component lower bounds are part of the declared contract (psprtc.h
+     * pspRtcCheckValidErrors: PSP_TIME_INVALID_MONTH / _DAY document the
+     * ranges), but the measured corpus pins only the year bound for this
+     * path, and month 0/13 or day 0 previously reached rtc_datetime_to_tick()
+     * unchallenged: `day - 1` underflows to a modular garbage tick and an
+     * empty or full month sum can return a fabricated success.  Fail closed
+     * with this function's measured invalid-input class (convert.expected
+     * "Zeroed time: 0 (800001fe)", output written 0) until firmware behavior
+     * for these fields is measured.  The day-in-month UPPER bound stays
+     * unchecked on purpose: convert.expected measures 2005-11-31 accepted
+     * (a 31st in a 30-day month), so only the lower bound is enforced here. */
+    if (value.month < 1u || value.month > 12u || value.day < 1u) {
+        MEM_W32(A1, 0u); MEM_W32(A1 + 4u, 0u);
+        return RTC_INVALID_VALUE;
+    }
     uint64_t tick = rtc_datetime_to_tick(&value);
     if (tick < RTC_FILETIME_EPOCH_TICK) {
         MEM_W32(A1, 0u); MEM_W32(A1 + 4u, 0u);
