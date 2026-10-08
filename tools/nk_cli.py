@@ -1712,7 +1712,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             args.iso, metadata=meta, runtime_root=user_data_root
         )
     except Exception as exc:
-        sys.stderr.write(f"Error inspecting ISO: {exc}\n")
+        boundary = getattr(exc, "boundary_code", None)
+        sys.stderr.write(
+            f"Error inspecting ISO{' [' + boundary + ']' if boundary else ''}: {exc}\n"
+        )
         return 1
 
     payload = {
@@ -2121,6 +2124,12 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
+    elif report["failure_class"] == "PBP_PACKAGE_UNSUPPORTED":
+        detail = (" (the file is a PlayStation Store package (PBP), not a disc image, "
+                  "and Nakagawa Recomp cannot use it yet)")
+    elif str(report["failure_class"]).startswith("PBP_"):
+        detail = (" (the file is a PlayStation Store package (PBP) whose embedded title "
+                  "information could not be read)")
     elif report["failure_class"] == "LAUNCH_FAILED":
         kind = report.get("runtime_output_kind")
         if kind == "EMPTY":
@@ -2520,9 +2529,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         preflight = inspect_compatibility_preflight(
             iso_path, metadata=metadata, runtime_root=user_root
         )
-    except Exception:
+    except Exception as exc:
         elapsed = int((time.perf_counter() - started) * 1000)
-        fail_stage(report, "inspect", "INVALID_ISO", duration_ms=elapsed)
+        fail_stage(report, "inspect",
+                   getattr(exc, "boundary_code", None) or "INVALID_ISO",
+                   duration_ms=elapsed)
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1

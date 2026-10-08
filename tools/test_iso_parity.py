@@ -423,6 +423,37 @@ def create_custom_sfo_iso(path: Path, sfo_bytes: bytes, volume_id: str = "CUSTOM
     create_test_iso(path, volume_id=volume_id, sfo_bytes=sfo_bytes)
 
 
+def build_pbp_package(
+    path: Path,
+    *,
+    disc_id: str = "TEST00001",
+    title: str = "PBP Test Package",
+    sfo_bytes: bytes | None = None,
+    offsets: list[int] | None = None,
+    header: bytes | None = None,
+    padding: bytes = b"",
+) -> None:
+    """Write a synthetic PlayStation Store package (PBP).
+
+    The default layout is a 40-byte header, PARAM.SFO in the first section and
+    every other section empty. ``offsets`` or a whole ``header`` override that
+    layout so a caller can build a hostile package.
+    """
+    if sfo_bytes is None:
+        sfo_bytes = build_param_sfo(disc_id, title)
+    if header is None:
+        built = bytearray(40)
+        built[:4] = b"\x00PBP"
+        struct.pack_into("<I", built, 4, 0x00010000)
+        if offsets is None:
+            sfo_end = 40 + len(sfo_bytes)
+            offsets = [40] + [sfo_end] * 7
+        for index, value in enumerate(offsets):
+            struct.pack_into("<I", built, 8 + index * 4, value)
+        header = bytes(built)
+    path.write_bytes(header + sfo_bytes + padding)
+
+
 class IsoParityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -511,6 +542,8 @@ int main(int argc, char **argv) {{
         NkResult res = nk_iso_inspect(iso_path, &meta);
         if (res != NK_OK) {{
             printf("RESULT:ERROR:%d:%s\\n", (int)res, meta.error_message);
+            printf("BOUNDARY:%s\\n", meta.boundary_code);
+            printf("MESSAGE:%s\\n", meta.error_message);
             return 0;
         }}
         printf("RESULT:OK\\n");
@@ -1787,6 +1820,61 @@ int main(int argc, char **argv) {{
         self.assertEqual(native.returncode, 0, native.stderr)
         self.assertIn("PROFILE_RESULT:ERROR:Experimental profiles require", native.stdout)
         self.assertFalse((native_root / "experimental").exists())
+
+    def test_pbp_package_is_named_identically_in_both_tiers(self) -> None:
+        """A PBP package is refused by boundary code and one plain sentence."""
+        package = self.temp_dir / "store-package.iso"
+        build_pbp_package(package, disc_id="TEST00424", title="Store Package")
+
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(package)
+        message = str(caught.exception)
+        self.assertEqual(caught.exception.boundary_code, "PBP_PACKAGE_UNSUPPORTED")
+        self.assertEqual(
+            message,
+            "This is a PlayStation Store package (PBP), not a disc image. "
+            "Nakagawa Recomp can't use these yet. Title: Store Package (ID: TEST00424)",
+        )
+        self.assertNotRegex(message, r"#\d+")
+        self.assertNotIn("ISO9660", message)
+
+        native = self._run_native_inspect(package)
+        self.assertEqual(native.get("BOUNDARY"), caught.exception.boundary_code)
+        self.assertEqual(native.get("MESSAGE"), message)
+        self.assertTrue(native.get("RESULT", "").startswith("ERROR:-3:"), native)
+
+    def test_pbp_hostile_packages_fail_closed_in_both_tiers(self) -> None:
+        """Every hostile package gets the same boundary code and sentence in both tiers."""
+        oversized_sfo = build_param_sfo("TEST00424", "Oversized") + bytes(70000)
+        past_eof = 40 + len(build_param_sfo("TEST00424", "Past EOF"))
+        cases: list[tuple[str, dict]] = [
+            ("header-truncated", {"header": b"\x00PBP\x00\x00\x01\x00", "sfo_bytes": b""}),
+            ("offsets-descending", {"offsets": [40, 16, 40, 40, 40, 40, 40, 40]}),
+            ("offset-past-eof", {"offsets": [40, past_eof, past_eof, past_eof,
+                                             past_eof, past_eof, past_eof, past_eof + 64]}),
+            ("empty-sfo", {"offsets": [40] * 8, "sfo_bytes": b""}),
+            ("sfo-bad-magic", {"sfo_bytes": bytes(32)}),
+            ("sfo-oversized", {"sfo_bytes": oversized_sfo}),
+            ("disc-id-invalid", {"disc_id": "NODISCID"}),
+            ("title-absent", {"sfo_bytes": build_custom_param_sfo(
+                [("DISC_ID", 0x0204, b"TEST00424\0")])}),
+            ("title-controls", {"title": "Line\tBreak\nTitle"}),
+        ]
+        for name, kwargs in cases:
+            with self.subTest(name=name):
+                package = self.temp_dir / f"{name}.iso"
+                build_pbp_package(package, **kwargs)
+                with self.assertRaises(IsoInspectionError) as caught:
+                    inspect_iso(package)
+                message = str(caught.exception)
+                self.assertIsNotNone(caught.exception.boundary_code)
+                self.assertRegex(caught.exception.boundary_code or "", r"^PBP_[A-Z_]+$")
+                self.assertNotRegex(message, r"#\d+")
+                native = self._run_native_inspect(package)
+                self.assertEqual(
+                    native.get("BOUNDARY"), caught.exception.boundary_code, native
+                )
+                self.assertEqual(native.get("MESSAGE"), message, native)
 
     def test_unsupported_iso_parity(self) -> None:
         """Verify Python and Native C inspector match on unsupported disc ID."""

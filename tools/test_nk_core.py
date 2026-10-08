@@ -241,14 +241,47 @@ class NkCoreTests(unittest.TestCase):
         # File too small
         tiny_file = self.temp_dir / "tiny.iso"
         tiny_file.write_bytes(b"short data")
-        with self.assertRaises(IsoInspectionError):
+        with self.assertRaises(IsoInspectionError) as caught:
             inspect_iso(tiny_file)
+        self.assertIsNone(caught.exception.boundary_code)
 
         # Missing PVD magic
         bad_pvd = self.temp_dir / "bad_pvd.iso"
         bad_pvd.write_bytes(b"\0" * (2 * 1024 * 1024))
-        with self.assertRaises(IsoInspectionError):
+        with self.assertRaises(IsoInspectionError) as caught:
             inspect_iso(bad_pvd)
+        self.assertIsNone(caught.exception.boundary_code)
+
+        # A PlayStation Store package named ".iso" is identified by its magic
+        # and refused at a named boundary, never as a disc with a missing PVD.
+        from test_iso_parity import build_pbp_package
+
+        package = self.temp_dir / "store-package.iso"
+        build_pbp_package(package, disc_id="TEST00424", title="Store Package")
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(package)
+        self.assertEqual(caught.exception.boundary_code, "PBP_PACKAGE_UNSUPPORTED")
+        self.assertIn("Title: Store Package (ID: TEST00424)", str(caught.exception))
+        self.assertNotRegex(str(caught.exception), r"#\d+")
+        self.assertNotIn("ISO9660", str(caught.exception))
+
+        truncated = self.temp_dir / "truncated-package.iso"
+        truncated.write_bytes(b"\0PBP\0\0\x01\0")
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(truncated)
+        self.assertEqual(caught.exception.boundary_code, "PBP_HEADER_TRUNCATED")
+
+        bad_offsets = self.temp_dir / "bad-offsets-package.iso"
+        build_pbp_package(bad_offsets, offsets=[40, 16, 40, 40, 40, 40, 40, 40])
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(bad_offsets)
+        self.assertEqual(caught.exception.boundary_code, "PBP_OFFSETS_INVALID")
+
+        bad_sfo = self.temp_dir / "bad-sfo-package.iso"
+        build_pbp_package(bad_sfo, offsets=[40] * 8, sfo_bytes=b"")
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(bad_sfo)
+        self.assertEqual(caught.exception.boundary_code, "PBP_SFO_INVALID")
 
     def test_preparation_engine_transactional_flow(self) -> None:
         iso_file = self.temp_dir / "synthetic.iso"
@@ -301,6 +334,21 @@ class NkCoreTests(unittest.TestCase):
         stages = [e.stage.value for e in events]
         self.assertIn("INSPECTING_ISO", stages)
         self.assertIn("READY", stages)
+
+    def test_preparation_names_a_pbp_package_boundary(self) -> None:
+        """A PBP package reaches the caller as a named boundary, not PREPARATION_FAILED."""
+        from test_iso_parity import build_pbp_package
+
+        package = self.temp_dir / "store-package.iso"
+        build_pbp_package(package, disc_id="TEST00424", title="Store Package")
+
+        result = PreparationEngine(base_dir=self.temp_dir).prepare_game(
+            package, destination_root=self.temp_dir / "installed-games-pbp"
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "PBP_PACKAGE_UNSUPPORTED")
+        self.assertIn("Title: Store Package (ID: TEST00424)", result.error_message or "")
+        self.assertNotRegex(result.error_message or "", r"#\d+")
 
     def test_preparation_records_the_selected_boot_executable(self) -> None:
         from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables

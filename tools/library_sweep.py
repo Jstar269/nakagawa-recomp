@@ -1515,7 +1515,7 @@ def run_sweep(
             disc_id = metadata.disc_id.upper()
             title_name = metadata.title
         except Exception as exc:  # the bring-up route still runs and names its own boundary
-            inspect_error = type(exc).__name__
+            inspect_error = getattr(exc, "boundary_code", None) or type(exc).__name__
             print(f"[{index}/{len(paths)}] ISO inspection failed ({inspect_error}); "
                   "running the route without decrypted-input staging", file=sys.stderr)
         safe_key = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]

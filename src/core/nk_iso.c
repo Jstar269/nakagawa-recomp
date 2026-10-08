@@ -809,6 +809,98 @@ bool nk_iso_parse_sfo_buffer(const uint8_t *sfo, size_t sfo_size, NkIsoMetadata 
     return true;
 }
 
+#define PBP_HEADER_SIZE 40u
+#define PBP_SECTION_COUNT 8u
+static const uint8_t PBP_MAGIC[4] = { 0x00, 'P', 'B', 'P' };
+
+/* Identify a PlayStation Store package and refuse it at a named boundary.
+ * A PBP package is not a disc image regardless of its file name or extension,
+ * so reading it as ISO9660 can only produce a misleading error. Only the
+ * PARAM.SFO section header is parsed, through the shared parser, so the
+ * message can name the title and disc ID the package carries. No package
+ * section is extracted or executed.
+ *
+ * Always returns a failure code with meta->boundary_code and
+ * meta->error_message set. */
+static NkResult nk_iso_inspect_pbp(FILE *f, uint64_t file_size,
+                                   const uint8_t *header, size_t header_len,
+                                   NkIsoMetadata *meta) {
+    if (header_len < PBP_HEADER_SIZE) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_HEADER_TRUNCATED");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "This file starts like a PlayStation Store package (PBP) but ends "
+                 "before the 40-byte package header is complete.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    uint32_t offsets[PBP_SECTION_COUNT];
+    for (uint32_t index = 0; index < PBP_SECTION_COUNT; index++) {
+        offsets[index] = read_le32(header + 8u + index * 4u);
+    }
+    bool ascending = true;
+    for (uint32_t index = 0; index + 1 < PBP_SECTION_COUNT; index++) {
+        if (offsets[index] > offsets[index + 1]) ascending = false;
+    }
+    if (offsets[0] < PBP_HEADER_SIZE || !ascending ||
+        (uint64_t)offsets[PBP_SECTION_COUNT - 1] > file_size) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_OFFSETS_INVALID");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "This PlayStation Store package (PBP) has a section table that is not "
+                 "ascending or that points past the end of the file.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    uint64_t sfo_start = offsets[0];
+    uint64_t sfo_size = (uint64_t)offsets[1] - (uint64_t)offsets[0];
+    if (sfo_size < 20u || sfo_size > (uint64_t)NK_ISO_MAX_SFO_BYTES ||
+        sfo_size > file_size - sfo_start) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_SFO_INVALID");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "The title information (PARAM.SFO) inside this PlayStation Store "
+                 "package (PBP) is missing, oversized, or malformed.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    uint8_t *sfo = (uint8_t *)malloc((size_t)sfo_size);
+    if (!sfo) {
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "Could not allocate %llu bytes to read the package title information",
+                 (unsigned long long)sfo_size);
+        return NK_ERROR_OUT_OF_MEMORY;
+    }
+    bool parsed =
+        nk_fseek64(f, (int64_t)sfo_start, SEEK_SET) == 0 &&
+        fread(sfo, 1, (size_t)sfo_size, f) == (size_t)sfo_size &&
+        nk_iso_parse_sfo_buffer(sfo, (size_t)sfo_size, meta) &&
+        meta->disc_id[0] != '\0' && sfo_disc_id_valid(meta->disc_id);
+    free(sfo);
+    if (!parsed) {
+        snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_SFO_INVALID");
+        snprintf(meta->error_message, sizeof(meta->error_message),
+                 "The title information (PARAM.SFO) inside this PlayStation Store "
+                 "package (PBP) is missing, oversized, or malformed.");
+        return NK_ERROR_INVALID_ISO;
+    }
+
+    char title[NK_MAX_TITLE_LEN];
+    snprintf(title, sizeof(title), "%s", meta->title_name);
+    for (size_t index = 0; title[index] != '\0'; index++) {
+        unsigned char c = (unsigned char)title[index];
+        if (c < 0x20u || c == 0x7fu) title[index] = '?';
+    }
+    char tail[156];
+    if (title[0] != '\0') {
+        snprintf(tail, sizeof(tail), " Title: %s (ID: %.9s)", title, meta->disc_id);
+    } else {
+        snprintf(tail, sizeof(tail), " ID: %.9s", meta->disc_id);
+    }
+    snprintf(meta->error_message, sizeof(meta->error_message),
+             "This is a PlayStation Store package (PBP), not a disc image. "
+             "Nakagawa Recomp can't use these yet.%s", tail);
+    snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_PACKAGE_UNSUPPORTED");
+    return NK_ERROR_INVALID_ISO;
+}
+
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     if (!iso_path || !out_meta) return NK_ERROR_GENERIC;
     memset(out_meta, 0, sizeof(*out_meta));
@@ -835,6 +927,19 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     nk_fseek64(f, 0, SEEK_SET);
 
     uint64_t file_size = (uint64_t)out_meta->file_size_bytes;
+
+    uint8_t pbp_header[PBP_HEADER_SIZE];
+    size_t pbp_header_len = 0;
+    if (file_size >= sizeof(PBP_MAGIC)) {
+        pbp_header_len = fread(pbp_header, 1, sizeof(pbp_header), f);
+    }
+    if (pbp_header_len >= sizeof(PBP_MAGIC) &&
+        memcmp(pbp_header, PBP_MAGIC, sizeof(PBP_MAGIC)) == 0) {
+        NkResult pbp_result = nk_iso_inspect_pbp(f, file_size, pbp_header,
+                                                 pbp_header_len, out_meta);
+        fclose(f);
+        return pbp_result;
+    }
 
     if (file_size < (uint64_t)(PVD_SECTOR + 1) * SECTOR_SIZE) {
         fclose(f);
