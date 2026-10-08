@@ -170,6 +170,50 @@ def synthetic_art_iso(
     path.write_bytes(image)
 
 
+def synthetic_pbp_package(path: Path, *, disc_id: str = "TEST00424",
+                          title: str = "Store Package") -> None:
+    """Write a synthetic PlayStation Store package named like a disc image.
+
+    The package carries "\0PBP" at offset 0 and a PARAM.SFO in its first
+    section. Nothing in it is executed or extracted; it exists only so the
+    player has a file whose extension lies about its format.
+    """
+    entries = sorted([
+        ("DISC_ID", disc_id.encode("utf-8") + b"\0"),
+        ("TITLE", title.encode("utf-8") + b"\0"),
+    ])
+    key_table = bytearray()
+    data_table = bytearray()
+    entry_table = bytearray()
+    for key, value in entries:
+        key_offset = len(key_table)
+        key_table.extend(key.encode("utf-8") + b"\0")
+        data_offset = len(data_table)
+        data_table.extend(value)
+        while len(data_table) % 4:
+            data_table.append(0)
+        entry_table.extend(
+            struct.pack("<HHIII", key_offset, 0x0204, len(value), len(value), data_offset)
+        )
+    key_table_start = 20 + len(entry_table)
+    data_table_start = key_table_start + len(key_table)
+    while data_table_start % 4:
+        key_table.append(0)
+        data_table_start += 1
+    sfo = bytes(
+        struct.pack("<4s4sIII", b"\x00PSF", b"\x01\x01\x00\x00",
+                    key_table_start, data_table_start, len(entries))
+    ) + bytes(entry_table) + bytes(key_table) + bytes(data_table)
+
+    header = bytearray(40)
+    header[:4] = b"\x00PBP"
+    struct.pack_into("<I", header, 4, 0x00010000)
+    offsets = [40] + [40 + len(sfo)] * 7
+    for index, value in enumerate(offsets):
+        struct.pack_into("<I", header, 8 + index * 4, value)
+    path.write_bytes(bytes(header) + sfo)
+
+
 def synthetic_stale_package(runtime_root: Path) -> None:
     package = runtime_root / "packages" / "TEST00006"
     package.mkdir(parents=True)
@@ -449,6 +493,7 @@ class NativePlayerUiTests(unittest.TestCase):
         runtime_ready: bool = False,
         invalid_profile: bool = False,
         drop_invalid_iso: bool = False,
+        drop_pbp_iso: bool = False,
         art_iso: str | None = None,
         stale_package: bool = False,
         wait_background: bool = False,
@@ -630,6 +675,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 invalid_iso = scratch / "source-owned-invalid.iso"
                 invalid_iso.write_bytes(b"synthetic invalid PSP disc image\n")
                 event_script.insert(0, f"DROP_FILE={invalid_iso}")
+            elif drop_pbp_iso:
+                package_iso = scratch / "source-owned-store-package.iso"
+                synthetic_pbp_package(package_iso)
+                event_script.insert(0, f"DROP_FILE={package_iso}")
             args.append("--ui-test-events=" + ";".join(event_script))
             screenshot = scratch / "last-frame.bmp"
             args.append(f"--ui-test-screenshot={screenshot}")
@@ -1648,6 +1697,21 @@ class NativePlayerUiTests(unittest.TestCase):
                 expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
                 self.assertEqual(frames[1]["picker"], expected_picker)
 
+    def test_pbp_package_error_card_names_the_package_boundary(self) -> None:
+        """A store package dropped as an ISO is named as a package, not a broken disc.
+
+        Reading it as ISO9660 only ever said the volume descriptor was missing,
+        which points a person at repairing a file that was never a disc. The
+        card must carry the package boundary, and its recovery action must still
+        reopen the file picker so another file can be chosen.
+        """
+        package = self.run_player("library", ("KEY_RETURN",), drop_pbp_iso=True)
+        frames = package["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["view"], "error")
+        self.assertEqual(frames[1]["error"], "PBP_PACKAGE_UNSUPPORTED")
+        self.assertEqual(frames[2]["picker"], "1")
+
     def test_long_error_text_fits_at_minimum_window(self) -> None:
         run = self.run_player("error", error_code="UI_TEST_LONG_ERROR",
                               width=960, height=540)
@@ -1860,7 +1924,8 @@ class FirstRunRouteTests(unittest.TestCase):
         self.assertTrue(frames, completed.stdout)
         self.assertEqual(frames[0]["view"], "error")
         self.assertEqual(frames[0]["error"], "EXPERIMENTAL_LAUNCH_UNAVAILABLE")
-        self.assertIn("in the works (#308)", completed.stderr)
+        self.assertIn("in the works.", completed.stderr)
+        self.assertNotIn("(#308)", completed.stderr)
         self.assertEqual(library_disc_ids(scratch), [])
 
     def test_launch_index_on_an_empty_library_fails_with_a_clear_message(self) -> None:

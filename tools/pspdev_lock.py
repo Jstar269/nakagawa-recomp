@@ -211,7 +211,7 @@ def validate_lock(data: dict[str, Any], *, require_local: bool = False) -> list[
     if not RELEASE_RE.fullmatch(release):
         raise LockError("distribution.release must have the form vYYYYMMDD")
     # The archive asset name makes the distribution asset class (Debian vs
-    # Ubuntu vs container packaging) explicit instead of implicit (#708).
+    # Ubuntu vs container packaging) explicit instead of implicit.
     _expect_string(
         distribution["archive_asset"], "distribution.archive_asset"
     )

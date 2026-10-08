@@ -428,6 +428,37 @@ def create_custom_sfo_iso(path: Path, sfo_bytes: bytes, volume_id: str = "CUSTOM
     create_test_iso(path, volume_id=volume_id, sfo_bytes=sfo_bytes)
 
 
+def build_pbp_package(
+    path: Path,
+    *,
+    disc_id: str = "TEST00001",
+    title: str = "PBP Test Package",
+    sfo_bytes: bytes | None = None,
+    offsets: list[int] | None = None,
+    header: bytes | None = None,
+    padding: bytes = b"",
+) -> None:
+    """Write a synthetic PlayStation Store package (PBP).
+
+    The default layout is a 40-byte header, PARAM.SFO in the first section and
+    every other section empty. ``offsets`` or a whole ``header`` override that
+    layout so a caller can build a hostile package.
+    """
+    if sfo_bytes is None:
+        sfo_bytes = build_param_sfo(disc_id, title)
+    if header is None:
+        built = bytearray(40)
+        built[:4] = b"\x00PBP"
+        struct.pack_into("<I", built, 4, 0x00010000)
+        if offsets is None:
+            sfo_end = 40 + len(sfo_bytes)
+            offsets = [40] + [sfo_end] * 7
+        for index, value in enumerate(offsets):
+            struct.pack_into("<I", built, 8 + index * 4, value)
+        header = bytes(built)
+    path.write_bytes(header + sfo_bytes + padding)
+
+
 class IsoParityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -516,6 +547,8 @@ int main(int argc, char **argv) {{
         NkResult res = nk_iso_inspect(iso_path, &meta);
         if (res != NK_OK) {{
             printf("RESULT:ERROR:%d:%s\\n", (int)res, meta.error_message);
+            printf("BOUNDARY:%s\\n", meta.boundary_code);
+            printf("MESSAGE:%s\\n", meta.error_message);
             return 0;
         }}
         printf("RESULT:OK\\n");
@@ -1000,7 +1033,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(module_check["status"], "UNSUPPORTED")
         self.assertIn(first, module_check["message"])
         self.assertIn(second, module_check["message"])
-        self.assertEqual(module_check["issues"], [726])
+        self.assertEqual(module_check["issues"], [308])
 
     def test_nonexperimental_bringup_keeps_module_boundary_detail_and_issue(self) -> None:
         failure, issues, detail = nk_cli._bringup_import_failure(
@@ -1010,7 +1043,7 @@ int main(int argc, char **argv) {{
             {"EXECUTABLE": {"issue_numbers": [308]}},
         )
         self.assertEqual(failure, "GUEST_MODULE_DISCOVERY_FAILED")
-        self.assertEqual(issues, [726])
+        self.assertEqual(issues, [308])
         self.assertEqual(
             detail, "DUPLICATE_DISC_MODULE_BASENAME: shared.prx occurs twice"
         )
@@ -1035,11 +1068,13 @@ int main(int argc, char **argv) {{
         }
         create_test_iso_with_module_tree(iso_file, modules)
         with self.assertRaisesRegex(
-            IsoInspectionError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+            IsoInspectionError,
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
         ):
             list_disc_module_candidates(iso_file)
         with self.assertRaisesRegex(
-            nk_cli.PackageBuildError, "DISC_MODULE_CANDIDATE_LIMIT.*256.*#726"
+            nk_cli.PackageBuildError,
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
         ):
             nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
 
@@ -1375,7 +1410,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(executable["status"], "UNSUPPORTED")
         self.assertIn(f"supply decrypted modules at {decrypted_dir}".lower(),
                       executable["message"].lower())
-        self.assertIn("#295", executable["message"])
+        self.assertNotRegex(executable["message"], r"#[0-9]+")
         cli = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
              str(iso_file), "--json", "--root", str(user_root)],
@@ -1388,7 +1423,7 @@ int main(int argc, char **argv) {{
         self.assertIn(str(decrypted_dir), cli_executable["message"])
         self.assertIn("matching local key file", cli_executable["message"])
         self.assertNotIn("automatic decryption is in the works", cli_executable["message"].lower())
-        self.assertIn("#295", cli_executable["message"])
+        self.assertNotRegex(cli_executable["message"], r"#[0-9]+")
 
         decrypted_dir.mkdir(parents=True)
         eboot = decrypted_dir / "EBOOT.elf"
@@ -1627,8 +1662,8 @@ int main(int argc, char **argv) {{
                     "cache": {"format": "nakagawa-aot-cache", "schema_version": 1, "key": {}, "codegen_options": {}, "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True}},
                     "backends": "public" if public else "private",
                     "limits": [
-                        "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                        "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
                     ] if public else [],
                 }),
                 encoding="utf-8",
@@ -1654,14 +1689,14 @@ int main(int argc, char **argv) {{
             report = json.loads((user_root / "packages" / disc_id / "build-report.json").read_text(encoding="utf-8"))
             self.assertEqual(report.get("backends"), "public")
             self.assertEqual(report.get("limits"), [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ])
             completion = json.loads((user_root / "packages" / disc_id / "completion-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(completion.get("backends"), "public")
             self.assertEqual(completion.get("limits"), [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ])
 
         # Test private mode when private backends are present
@@ -1754,10 +1789,10 @@ int main(int argc, char **argv) {{
         )
         self.assertTrue(preflight["is_experimental"])
         by_code = {check["code"]: check for check in preflight["checks"]}
-        self.assertEqual(by_code["EXPERIMENTAL"]["issues"], [285, 308])
+        self.assertEqual(by_code["EXPERIMENTAL"]["issues"], [308])
         self.assertIn("Compatibility is unknown", by_code["EXPERIMENTAL"]["message"])
         self.assertEqual(by_code["RUNTIME_PACKAGE"]["status"], "MISSING")
-        self.assertEqual(by_code["RUNTIME_PACKAGE"]["issues"], [296, 297])
+        self.assertEqual(by_code["RUNTIME_PACKAGE"]["issues"], [308])
 
         python_root = self.temp_dir / "python-user-data"
         python_profile_path = write_experimental_profile(
@@ -1896,6 +1931,61 @@ int main(int argc, char **argv) {{
         self.assertIn("PROFILE_RESULT:ERROR:Experimental profiles require", native.stdout)
         self.assertFalse((native_root / "experimental").exists())
 
+    def test_pbp_package_is_named_identically_in_both_tiers(self) -> None:
+        """A PBP package is refused by boundary code and one plain sentence."""
+        package = self.temp_dir / "store-package.iso"
+        build_pbp_package(package, disc_id="TEST00424", title="Store Package")
+
+        with self.assertRaises(IsoInspectionError) as caught:
+            inspect_iso(package)
+        message = str(caught.exception)
+        self.assertEqual(caught.exception.boundary_code, "PBP_PACKAGE_UNSUPPORTED")
+        self.assertEqual(
+            message,
+            "This is a PlayStation Store package (PBP), not a disc image. "
+            "Nakagawa Recomp can't use these yet. Title: Store Package (ID: TEST00424)",
+        )
+        self.assertNotRegex(message, r"#\d+")
+        self.assertNotIn("ISO9660", message)
+
+        native = self._run_native_inspect(package)
+        self.assertEqual(native.get("BOUNDARY"), caught.exception.boundary_code)
+        self.assertEqual(native.get("MESSAGE"), message)
+        self.assertTrue(native.get("RESULT", "").startswith("ERROR:-3:"), native)
+
+    def test_pbp_hostile_packages_fail_closed_in_both_tiers(self) -> None:
+        """Every hostile package gets the same boundary code and sentence in both tiers."""
+        oversized_sfo = build_param_sfo("TEST00424", "Oversized") + bytes(70000)
+        past_eof = 40 + len(build_param_sfo("TEST00424", "Past EOF"))
+        cases: list[tuple[str, dict]] = [
+            ("header-truncated", {"header": b"\x00PBP\x00\x00\x01\x00", "sfo_bytes": b""}),
+            ("offsets-descending", {"offsets": [40, 16, 40, 40, 40, 40, 40, 40]}),
+            ("offset-past-eof", {"offsets": [40, past_eof, past_eof, past_eof,
+                                             past_eof, past_eof, past_eof, past_eof + 64]}),
+            ("empty-sfo", {"offsets": [40] * 8, "sfo_bytes": b""}),
+            ("sfo-bad-magic", {"sfo_bytes": bytes(32)}),
+            ("sfo-oversized", {"sfo_bytes": oversized_sfo}),
+            ("disc-id-invalid", {"disc_id": "NODISCID"}),
+            ("title-absent", {"sfo_bytes": build_custom_param_sfo(
+                [("DISC_ID", 0x0204, b"TEST00424\0")])}),
+            ("title-controls", {"title": "Line\tBreak\nTitle"}),
+        ]
+        for name, kwargs in cases:
+            with self.subTest(name=name):
+                package = self.temp_dir / f"{name}.iso"
+                build_pbp_package(package, **kwargs)
+                with self.assertRaises(IsoInspectionError) as caught:
+                    inspect_iso(package)
+                message = str(caught.exception)
+                self.assertIsNotNone(caught.exception.boundary_code)
+                self.assertRegex(caught.exception.boundary_code or "", r"^PBP_[A-Z_]+$")
+                self.assertNotRegex(message, r"#\d+")
+                native = self._run_native_inspect(package)
+                self.assertEqual(
+                    native.get("BOUNDARY"), caught.exception.boundary_code, native
+                )
+                self.assertEqual(native.get("MESSAGE"), message, native)
+
     def test_unsupported_iso_parity(self) -> None:
         """Verify Python and Native C inspector match on unsupported disc ID."""
         iso_file = self.temp_dir / "unsupported.iso"
@@ -1999,7 +2089,7 @@ int main(int argc, char **argv) {{
     def test_native_launch_plan(self) -> None:
         """Native launch resolution is identity-bound to the selected title.
 
-        #366 failing-before contract: this fixture used to PROVE the defect --
+        Failing-before contract: this fixture used to PROVE the defect --
         a stale build/<retail>/<retail> runtime satisfied an unrelated
         selected title (display-smoke-v1) and the session paired that binary
         with another title's session data. The stale artifact now must be

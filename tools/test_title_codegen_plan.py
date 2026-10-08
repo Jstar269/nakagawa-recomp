@@ -56,6 +56,16 @@ class TitleCodegenPlanTests(unittest.TestCase):
         selected = self.synthetic if manifest is None else manifest
         return title_codegen_plan.build_plan(selected, **values)
 
+    def test_package_build_command_enables_bounded_parallel_compilation(self) -> None:
+        self.assertEqual(
+            title_codegen_plan._make_build_command("mingw32-make", native_only=False),
+            ["mingw32-make", "--no-print-directory", "-j2", "all"],
+        )
+        self.assertEqual(
+            title_codegen_plan._make_build_command("make", native_only=True),
+            ["make", "--no-print-directory", "-j2", "compile"],
+        )
+
     def test_hst_plan_matches_current_makefile_contract(self) -> None:
         if self.hst is None:
             self.skipTest("private HST title manifest is unavailable in the sanitized public tree")

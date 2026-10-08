@@ -172,7 +172,7 @@ TEMP_PATH = re.compile(
     re.IGNORECASE,
 )
 
-#: Technical debt management ceilings (Issue #188 Finding 11 O-11).
+#: Technical debt management ceilings (Finding 11 O-11).
 #: Ceilings are non-increasing: counts must not rise without explicit budget edit and rationale.
 DEBT_BUDGETS: dict[str, int] = {
     "ruff_select_rule_families": 4,
@@ -935,7 +935,7 @@ def _forbidden_path(path: str) -> str | None:
         PurePosixPath(name).suffix.lower() in KEY_FILE_DATA_SUFFIXES
         and KEY_FILE_NAME.search(name)
     ):
-        return "local-only key file (issue #295)"
+        return "local-only key file"
     if name in ("vfpu_words.txt", "vfpu_words_local.txt", "nidseq_mine.txt", "pgd_keys.txt"):
         return "private/game-derived data artifact"
     if re.fullmatch(r"EBOOT\.BIN\.dec(?:\..+)?", name, re.IGNORECASE):
@@ -951,8 +951,8 @@ def _approved_binary_matches(reason: str, disp: str, manifest_comp: dict | None,
                              sha256: str) -> bool:
     """A prohibited-extension path passes only as a reviewed release-manifest binary.
 
-    Project-authored build output (for example the profile-zero PSPDEV fixture,
-    #557) may carry a guest-executable suffix. It is accepted only when the release
+    Project-authored build output (for example the profile-zero PSPDEV fixture)
+    may carry a guest-executable suffix. It is accepted only when the release
     manifest records it as ``approved_binary`` and its bytes match the pinned
     SHA-256, so a different file under an approved name is still reported.
     """
@@ -1504,7 +1504,7 @@ def _action_pin_findings(repo_root: Path = ROOT, audited_paths: set[str] | None 
 
 
 def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None) -> list[Finding]:
-    """Audit unmanaged debt surfaces against non-increasing budgets (Issue #188 Finding 11 O-11).
+    """Audit unmanaged debt surfaces against non-increasing budgets (Finding 11 O-11).
 
     Fails when any of the three measured surfaces (ruff select families,
     first-party debt markers, or PowerShell SilentlyContinue) exceeds its configured ceiling.

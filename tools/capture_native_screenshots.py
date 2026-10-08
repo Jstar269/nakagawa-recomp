@@ -35,7 +35,7 @@ def capture_matrix(player_exe: Path | None = None):
     repo_root = Path(__file__).resolve().parent.parent
     # Resolve whatever spelling the caller used: the player is spawned by
     # absolute path so a cwd change (or a cwd-relative `build/...` spelling)
-    # can never change which binary runs or fail with WinError 2 (#294).
+    # can never change which binary runs or fail with WinError 2.
     player_exe = Path(player_exe).resolve() if player_exe else default_player_path(repo_root)
     out_dir = repo_root / "docs" / "ui-baseline"
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -332,6 +332,27 @@ class LiveManifestTests(unittest.TestCase):
         self.assertNotEqual(sas[0x9EC3676A]["handler"], sas[0xCBCD4F79]["handler"])
         self.assertTrue(all(r["handler"] != "h_ok" for r in sas.values()))
 
+    def test_iofilemgr_sweep_imports_have_named_production_handlers(self) -> None:
+        """Common file-manager NIDs must resolve to named live handlers."""
+        expected = {
+            0x0FACAB19: ("sceIoWriteAsync", "h_IoWriteAsync"),
+            0x1117C65F: ("sceIoRmdir", "h_IoRmdir"),
+            0x55F4717D: ("sceIoChdir", "h_IoChdir"),
+            0xB293727F: ("sceIoChangeAsyncPriority", "h_IoChangeAsyncPriority"),
+            0x1B385D8F: ("sceIoLseek32Async", "h_IoLseek32Async"),
+            0xAB96437F: ("sceIoSync", "h_IoSync"),
+            0xB8A740F4: ("sceIoChstat", "h_IoChstat"),
+            0xE95A012B: ("sceIoIoctlAsync", "h_IoIoctlAsync"),
+            0xCB05F8D6: ("sceIoGetAsyncStat", "h_IoGetAsyncStat"),
+            0xA12A0514: ("sceIoSetAsyncCallback", "h_IoSetAsyncCallback"),
+        }
+        observed = {
+            nid: (r["name"], r["handler"])
+            for nid, r in self.regs.items()
+            if nid in expected
+        }
+        self.assertEqual(observed, expected)
+
     def test_all_classifications_present(self) -> None:
         classes = {r["classification"] for r in self.manifest["registrations"]}
         self.assertEqual(classes, {"dedicated", "fake_success", "controlled_unsupported"})
@@ -636,15 +657,15 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
     def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
         source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn(
-            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)",
+            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn(
-            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)",
+            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn(
-            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)",
+            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#341)",
             source,
         )
         self.assertIn("hle_devctl_refusal_first(device, command)", source)
@@ -660,7 +681,7 @@ class ControlledRefusalDiagnosticTests(unittest.TestCase):
             "at source offset %llu; no further access unit is decoded and the player keeps ",
             source,
         )
-        self.assertIn("its current status; in the works (#288)", source)
+        self.assertIn("its current status; in the works (#286)", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):

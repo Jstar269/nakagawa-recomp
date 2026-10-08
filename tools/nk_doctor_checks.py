@@ -1438,7 +1438,7 @@ def check_private_inputs(
         ):
             report.warn(
                 "MIGRATE_LOOSE_CONTENT_ROOTS",
-                "Loose files beside the manifest data root need filesystem.loose_content_roots (#289 is in the works)",
+                "Loose files beside the manifest data root are not bound; declare their root in filesystem.loose_content_roots.",
                 path=manifest_data_root.parent,
                 remediation=(
                     "Declare each loose-content root in filesystem.loose_content_roots so the runtime can bind it explicitly."
@@ -1704,7 +1704,7 @@ def check_typography_runtime(
     imports_of: object = None,
     is_system: object = None,
 ) -> None:
-    """Report whether SDL3_ttf and its resolved closure sit beside the player (#421).
+    """Report whether SDL3_ttf and its resolved closure sit beside the player.
 
     The launcher resolves SDL3_ttf at run time and falls back to the SDL bitmap
     font only as a logged last resort, so an unstaged typography runtime is
