@@ -958,14 +958,12 @@ class TestPlayerPackageRoute(unittest.TestCase):
             usrdir_modules={"fixture.prx": self.module_bytes},
             disc_id=DISC_ID,
         )
-        changed_iso_boot_log = self.sandbox / "changed-iso-boot-events.log"
-        changed_iso_launch = self.run_launch(
-            changed_iso_boot_log, self.sandbox / "changed-iso-perf.csv"
-        )
+        boot_events_before_changed_iso = self.player_boot_event_files()
+        changed_iso_launch = self.run_launch(self.sandbox / "changed-iso-perf.csv")
         self.assertNotEqual(changed_iso_launch.returncode, 0,
                             changed_iso_launch.stdout + changed_iso_launch.stderr)
-        self.assertFalse(
-            changed_iso_boot_log.exists(),
+        self.assertEqual(
+            self.player_boot_event_files(), boot_events_before_changed_iso,
             "a same-ID, same-version source ISO with changed executable bytes must stop before guest execution",
         )
         create_test_iso_with_modules(
@@ -985,15 +983,14 @@ class TestPlayerPackageRoute(unittest.TestCase):
             usrdir_modules={"fixture.prx": bytes(changed_iso_module)},
             disc_id=DISC_ID,
         )
-        changed_iso_module_boot_log = self.sandbox / "changed-iso-module-boot-events.log"
+        boot_events_before_changed_module = self.player_boot_event_files()
         changed_iso_module_launch = self.run_launch(
-            changed_iso_module_boot_log,
-            self.sandbox / "changed-iso-module-perf.csv",
+            self.sandbox / "changed-iso-module-perf.csv"
         )
         self.assertNotEqual(changed_iso_module_launch.returncode, 0,
                             changed_iso_module_launch.stdout + changed_iso_module_launch.stderr)
-        self.assertFalse(
-            changed_iso_module_boot_log.exists(),
+        self.assertEqual(
+            self.player_boot_event_files(), boot_events_before_changed_module,
             "a same-ID, same-version source ISO with changed required module bytes must stop before guest execution",
         )
         create_test_iso_with_modules(
