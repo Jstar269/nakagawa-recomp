@@ -688,7 +688,7 @@ static void test_remove_downloaded_tools_preserves_other_app_data(void) {
     assert(!nk_platform_dir_exists(prerequisites_root));
     assert(nk_platform_file_exists(retained_file));
     assert(nk_remove_utf8(retained_file) == 0);
-    native_test_remove_tree(data_root);
+    assert(native_test_remove_tree(data_root));
 }
 
 int main(int argc, char *argv[]) {

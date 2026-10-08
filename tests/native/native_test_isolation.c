@@ -7,8 +7,17 @@
  * real per-user directories (%LOCALAPPDATA%\Nakagawa on Windows). Each run
  * creates its own temporary root under the system temp directory, points the
  * per-user variables into that root before any fixture is written, and removes
- * the root at exit. Removal also runs from a SIGABRT handler, because assert()
- * reaches abort(), which skips atexit handlers.
+ * the root at exit via atexit.
+ *
+ * Abort cleanup design:
+ * Cleanup is registered strictly via atexit() for normal process exits. A
+ * SIGABRT signal handler is intentionally not used because recursive filesystem
+ * deletion, string formatting, and Win32/POSIX directory APIs are not
+ * async-signal-safe. Calling them from a signal handler during abort() / assert()
+ * can deadlock on CRT or heap locks or cause undefined behavior. Furthermore, leaving
+ * the temporary directory intact upon assertion failure facilitates post-mortem
+ * debugging, while exclusive per-process-id and attempt naming ensures no
+ * collision with subsequent test runs.
  */
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -28,7 +37,7 @@
 
 #include <assert.h>
 #include <errno.h>
-#include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,27 +59,32 @@ static char g_real_config_probe[NATIVE_TEST_PATH_MAX];
 static bool g_real_config_captured = false;
 static bool g_real_config_existed_before = false;
 static bool g_real_input_profiles_existed_before = false;
+static size_t g_real_input_profiles_file_count = 0;
 static bool g_real_disc_profile_existed_before = false;
+static int64_t g_real_disc_profile_size = -1;
+static uint64_t g_real_disc_profile_mtime = 0;
 
 void native_test_set_env(const char *name, const char *value) {
+    bool is_clear = (value == NULL || value[0] == '\0');
 #if defined(_WIN32) || defined(_WIN64)
-    assert(_putenv_s(name, value ? value : "") == 0);
-    WCHAR wname[256];
-    WCHAR wval[NATIVE_TEST_PATH_MAX];
-    if (MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 256) > 0) {
-        if (value) {
-            if (MultiByteToWideChar(CP_UTF8, 0, value, -1, wval, NATIVE_TEST_PATH_MAX) > 0) {
-                SetEnvironmentVariableW(wname, wval);
-            }
-        } else {
-            SetEnvironmentVariableW(wname, NULL);
-        }
+    WCHAR wname[NATIVE_TEST_PATH_MAX];
+    int name_converted = MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, NATIVE_TEST_PATH_MAX);
+    assert(name_converted > 0);
+    if (is_clear) {
+        assert(_putenv_s(name, "") == 0);
+        SetEnvironmentVariableW(wname, NULL);
+    } else {
+        assert(_putenv_s(name, value) == 0);
+        WCHAR wval[NATIVE_TEST_PATH_MAX];
+        int val_converted = MultiByteToWideChar(CP_UTF8, 0, value, -1, wval, NATIVE_TEST_PATH_MAX);
+        assert(val_converted > 0);
+        SetEnvironmentVariableW(wname, wval);
     }
 #else
-    if (value) {
-        assert(setenv(name, value, 1) == 0);
-    } else {
+    if (is_clear) {
         assert(unsetenv(name) == 0);
+    } else {
+        assert(setenv(name, value, 1) == 0);
     }
 #endif
 }
@@ -87,16 +101,20 @@ bool native_test_path_within(const char *child, const char *parent) {
 /* Removes a directory tree without following links: a symlink or a Win32
  * reparse point is removed as itself, never descended into. */
 #if defined(_WIN32) || defined(_WIN64)
-static void remove_test_tree_wide(const WCHAR *dir) {
+static bool remove_test_tree_wide(const WCHAR *dir) {
     WCHAR pattern[NATIVE_TEST_PATH_MAX];
     WCHAR child[NATIVE_TEST_PATH_MAX];
     size_t dir_length = wcslen(dir);
-    if (dir_length + 3 >= NATIVE_TEST_PATH_MAX) return;
+    if (dir_length + 3 >= NATIVE_TEST_PATH_MAX) {
+        fprintf(stderr, "NATIVE_TEST_ERROR: directory path too long for pattern: %ls\n", dir);
+        return false;
+    }
     memcpy(pattern, dir, dir_length * sizeof(WCHAR));
     pattern[dir_length] = L'\\';
     pattern[dir_length + 1] = L'*';
     pattern[dir_length + 2] = L'\0';
 
+    bool success = true;
     WIN32_FIND_DATAW found;
     HANDLE handle = FindFirstFileW(pattern, &found);
     if (handle != INVALID_HANDLE_VALUE) {
@@ -104,7 +122,12 @@ static void remove_test_tree_wide(const WCHAR *dir) {
             if (wcscmp(found.cFileName, L".") == 0 ||
                 wcscmp(found.cFileName, L"..") == 0) continue;
             size_t name_length = wcslen(found.cFileName);
-            if (dir_length + 1 + name_length >= NATIVE_TEST_PATH_MAX) continue;
+            if (dir_length + 1 + name_length >= NATIVE_TEST_PATH_MAX) {
+                fprintf(stderr, "NATIVE_TEST_ERROR: child path exceeds buffer: %ls\\%ls\n",
+                        dir, found.cFileName);
+                success = false;
+                continue;
+            }
             memcpy(child, dir, dir_length * sizeof(WCHAR));
             child[dir_length] = L'\\';
             memcpy(child + dir_length + 1, found.cFileName,
@@ -113,51 +136,84 @@ static void remove_test_tree_wide(const WCHAR *dir) {
                 (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
             bool is_link =
                 (found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-            if (is_directory && !is_link) remove_test_tree_wide(child);
-            else if (is_directory) RemoveDirectoryW(child);
-            else DeleteFileW(child);
+            if (is_directory && !is_link) {
+                if (!remove_test_tree_wide(child)) success = false;
+            } else if (is_directory) {
+                if (!RemoveDirectoryW(child)) success = false;
+            } else {
+                if (!DeleteFileW(child)) success = false;
+            }
         } while (FindNextFileW(handle, &found));
         FindClose(handle);
     }
-    RemoveDirectoryW(dir);
+    if (!RemoveDirectoryW(dir)) {
+        DWORD err = GetLastError();
+        if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) {
+            success = false;
+        }
+    }
+    return success;
 }
 
-void native_test_remove_tree(const char *path) {
+bool native_test_remove_tree(const char *path) {
+    if (!path || !*path) return false;
     WCHAR wide[NATIVE_TEST_PATH_MAX];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
-                            (int)(sizeof(wide) / sizeof(wide[0]))) > 0) {
-        remove_test_tree_wide(wide);
+                            (int)(sizeof(wide) / sizeof(wide[0]))) <= 0) {
+        fprintf(stderr,
+                "NATIVE_TEST_ERROR: native_test_remove_tree failed to convert path '%s' to UTF-16 (error %lu)\n",
+                path, (unsigned long)GetLastError());
+        return false;
     }
+    return remove_test_tree_wide(wide);
 }
 #else
-void native_test_remove_tree(const char *path) {
+bool native_test_remove_tree(const char *path) {
+    if (!path || !*path) return false;
     /* Attempt the removal before any inspection, so no earlier check can go
      * stale. unlink() removes a symlink as itself and fails on a directory
      * (EISDIR on Linux, EPERM on BSD/macOS); ENOENT means nothing to remove. */
-    if (unlink(path) == 0 || errno == ENOENT) return;
+    if (unlink(path) == 0 || errno == ENOENT) return true;
     /* O_NOFOLLOW makes open() refuse a symlink swapped in for the directory,
      * so the walk below cannot descend outside the root. */
     int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-    if (fd >= 0) {
-        DIR *dir = fdopendir(fd);
-        if (dir) {
-            struct dirent *entry;
-            while ((entry = readdir(dir)) != NULL) {
-                if (strcmp(entry->d_name, ".") == 0 ||
-                    strcmp(entry->d_name, "..") == 0) continue;
-                char child[NATIVE_TEST_PATH_MAX];
-                int written = snprintf(child, sizeof(child), "%s/%s", path,
-                                       entry->d_name);
-                if (written > 0 && (size_t)written < sizeof(child)) {
-                    native_test_remove_tree(child);
-                }
-            }
-            closedir(dir);
+    if (fd < 0) {
+        if (errno == ENOENT) return true;
+        if (rmdir(path) == 0 || errno == ENOENT) return true;
+        fprintf(stderr, "NATIVE_TEST_ERROR: failed to open directory '%s': %s\n",
+                path, strerror(errno));
+        return false;
+    }
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        close(fd);
+        fprintf(stderr, "NATIVE_TEST_ERROR: fdopendir failed on '%s': %s\n",
+                path, strerror(errno));
+        return false;
+    }
+    bool success = true;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0) continue;
+        char child[NATIVE_TEST_PATH_MAX];
+        int written = snprintf(child, sizeof(child), "%s/%s", path,
+                               entry->d_name);
+        if (written > 0 && (size_t)written < sizeof(child)) {
+            if (!native_test_remove_tree(child)) success = false;
         } else {
-            close(fd);
+            fprintf(stderr, "NATIVE_TEST_ERROR: child path overflow in '%s/%s'\n",
+                    path, entry->d_name);
+            success = false;
         }
     }
-    rmdir(path);
+    closedir(dir);
+    if (rmdir(path) != 0 && errno != ENOENT) {
+        fprintf(stderr, "NATIVE_TEST_ERROR: rmdir failed on '%s': %s\n",
+                path, strerror(errno));
+        success = false;
+    }
+    return success;
 }
 #endif
 
@@ -174,13 +230,7 @@ static void cleanup_test_root(void) {
         SetCurrentDirectoryW(temp);
     }
 #endif
-    native_test_remove_tree(g_test_root);
-}
-
-static void cleanup_test_root_on_abort(int signal_number) {
-    cleanup_test_root();
-    signal(signal_number, SIG_DFL);
-    raise(signal_number);
+    (void)native_test_remove_tree(g_test_root);
 }
 
 static bool native_temp_directory(char *out, size_t max_len) {
@@ -243,7 +293,6 @@ void native_test_create_root(const char *tag) {
     assert(created);
     g_test_root_owned = true;
     (void)atexit(cleanup_test_root);
-    (void)signal(SIGABRT, cleanup_test_root_on_abort);
 }
 
 void native_test_isolate_user_data_roots(void) {
@@ -290,17 +339,56 @@ void native_test_assert_config_root_isolated(void) {
     }
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+static bool get_file_metadata(const char *path, int64_t *out_size, uint64_t *out_mtime) {
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            (int)(sizeof(wide) / sizeof(wide[0]))) <= 0) return false;
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExW(wide, GetFileExInfoStandard, &fad)) return false;
+    if (out_size) {
+        LARGE_INTEGER size;
+        size.LowPart = fad.nFileSizeLow;
+        size.HighPart = (LONG)fad.nFileSizeHigh;
+        *out_size = (int64_t)size.QuadPart;
+    }
+    if (out_mtime) {
+        ULARGE_INTEGER mtime;
+        mtime.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+        mtime.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+        *out_mtime = mtime.QuadPart;
+    }
+    return true;
+}
+#else
+static bool get_file_metadata(const char *path, int64_t *out_size, uint64_t *out_mtime) {
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    if (out_size) *out_size = (int64_t)st.st_size;
+    if (out_mtime) *out_mtime = (uint64_t)st.st_mtime;
+    return true;
+}
+#endif
+
+static bool count_files_callback(const char *name, void *ctx) {
+    (void)name;
+    size_t *count = (size_t *)ctx;
+    (*count)++;
+    return true;
+}
+
 void native_test_capture_real_config_probe(void) {
     if (g_real_config_captured) return;
     g_real_config_captured = true;
     g_real_config_probe[0] = '\0';
+    char sep = nk_platform_path_separator();
 #if defined(_WIN32) || defined(_WIN64)
     const char *env_lad = getenv("LOCALAPPDATA");
     const char *env_ad = getenv("APPDATA");
     const char *base = (env_lad && env_lad[0]) ? env_lad : ((env_ad && env_ad[0]) ? env_ad : NULL);
     if (base) {
         snprintf(g_real_config_probe, sizeof(g_real_config_probe),
-                 "%s\\Nakagawa\\config", base);
+                 "%s%cNakagawa%cconfig", base, sep, sep);
     }
 #elif defined(__APPLE__)
     const char *env_home = getenv("HOME");
@@ -320,14 +408,20 @@ void native_test_capture_real_config_probe(void) {
     }
 #endif
     if (g_real_config_probe[0]) {
-        char sep = nk_platform_path_separator();
         char probe[NATIVE_TEST_PATH_MAX + 64];
         g_real_config_existed_before = nk_platform_dir_exists(g_real_config_probe);
         snprintf(probe, sizeof(probe), "%s%cinput_profiles", g_real_config_probe, sep);
         g_real_input_profiles_existed_before = nk_platform_dir_exists(probe);
+        if (g_real_input_profiles_existed_before) {
+            g_real_input_profiles_file_count = 0;
+            nk_platform_list_files(probe, count_files_callback, &g_real_input_profiles_file_count);
+        }
         snprintf(probe, sizeof(probe), "%s%cinput_profiles%cUCUS98701.json",
                  g_real_config_probe, sep, sep);
         g_real_disc_profile_existed_before = nk_platform_file_exists(probe);
+        if (g_real_disc_profile_existed_before) {
+            assert(get_file_metadata(probe, &g_real_disc_profile_size, &g_real_disc_profile_mtime));
+        }
     }
 }
 
@@ -335,15 +429,33 @@ void native_test_assert_real_config_untouched(void) {
     if (!g_real_config_probe[0]) return;
     char sep = nk_platform_path_separator();
     char probe[NATIVE_TEST_PATH_MAX + 64];
+
+    /* Disc profile assertion: must not be created if absent before; if it
+     * existed before the run, its size and mtime must be unchanged. */
     snprintf(probe, sizeof(probe), "%s%cinput_profiles%cUCUS98701.json",
              g_real_config_probe, sep, sep);
     if (!g_real_disc_profile_existed_before) {
         assert(!nk_platform_file_exists(probe));
+    } else {
+        int64_t current_size = -1;
+        uint64_t current_mtime = 0;
+        assert(get_file_metadata(probe, &current_size, &current_mtime));
+        assert(current_size == g_real_disc_profile_size);
+        assert(current_mtime == g_real_disc_profile_mtime);
     }
+
+    /* Input profiles directory assertion: must not be created if absent;
+     * if it existed before, total file count within must be unchanged. */
     snprintf(probe, sizeof(probe), "%s%cinput_profiles", g_real_config_probe, sep);
     if (!g_real_input_profiles_existed_before) {
         assert(!nk_platform_dir_exists(probe));
+    } else {
+        size_t current_count = 0;
+        nk_platform_list_files(probe, count_files_callback, &current_count);
+        assert(current_count == g_real_input_profiles_file_count);
     }
+
+    /* Real config directory assertion: must not be created if absent. */
     if (!g_real_config_existed_before) {
         assert(!nk_platform_dir_exists(g_real_config_probe));
     }

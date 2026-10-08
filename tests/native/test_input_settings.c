@@ -368,6 +368,58 @@ static void test_sr_padscript_semantics_untouched(void) {
 }
 
 /* -----------------------------------------------------------------------------
+ * 8b. Environment Variable Clearing Consistency
+ * -------------------------------------------------------------------------- */
+static void test_env_clearing_consistency(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 8b: Environment variable clearing consistency...\n");
+
+    const char *test_var = "NK_TEST_ISOLATION_CLEAR_VAR";
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wvar[NATIVE_TEST_PATH_MAX];
+    assert(MultiByteToWideChar(CP_UTF8, 0, test_var, -1, wvar, NATIVE_TEST_PATH_MAX) > 0);
+    WCHAR wbuf[64];
+#endif
+
+    /* 1. Set variable to a non-empty value */
+    native_test_set_env(test_var, "val_active");
+    assert(getenv(test_var) != NULL && strcmp(getenv(test_var), "val_active") == 0);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    DWORD len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len > 0 && wcscmp(wbuf, L"val_active") == 0);
+#endif
+
+    /* 2. Clear variable with NULL: must be absent via both getenv and GetEnvironmentVariableW */
+    native_test_set_env(test_var, NULL);
+    assert(getenv(test_var) == NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND);
+#endif
+
+    /* 3. Set variable again */
+    native_test_set_env(test_var, "val_active_again");
+    assert(getenv(test_var) != NULL && strcmp(getenv(test_var), "val_active_again") == 0);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len > 0 && wcscmp(wbuf, L"val_active_again") == 0);
+#endif
+
+    /* 4. Clear variable with "": must be absent via both getenv and GetEnvironmentVariableW */
+    native_test_set_env(test_var, "");
+    assert(getenv(test_var) == NULL);
+#if defined(_WIN32) || defined(_WIN64)
+    SetLastError(0);
+    len = GetEnvironmentVariableW(wvar, wbuf, (DWORD)(sizeof(wbuf) / sizeof(wbuf[0])));
+    assert(len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND);
+#endif
+
+    printf("[INPUT_SETTINGS_TEST] Subtest 8b PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
  * 9. Guided Calibration and Resting/Extreme Transform Math
  * -------------------------------------------------------------------------- */
 static void test_guided_calibration_and_resting_extremes(void) {
@@ -868,6 +920,7 @@ int main(void) {
     test_reset_to_defaults();
     test_save_load_roundtrip();
     test_sr_padscript_semantics_untouched();
+    test_env_clearing_consistency();
     test_guided_calibration_and_resting_extremes();
     test_per_title_scope_and_atomic_save();
     test_hostile_profile_files();
