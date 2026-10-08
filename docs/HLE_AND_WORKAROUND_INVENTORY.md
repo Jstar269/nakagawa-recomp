@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **454** (dedicated **422**, fake_success **3**, controlled_unsupported **29**).
-Semantic handler census: **386** handlers across **21** API families, covering **428** handler-associated NID registrations.
+Registered NIDs: **454** (dedicated **424**, fake_success **3**, controlled_unsupported **27**).
+Semantic handler census: **388** handlers across **21** API families, covering **430** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 35 | 35 |
+| `partial` | 37 | 37 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 338 | 368 |
@@ -58,7 +58,7 @@ Semantic handler census: **386** handlers across **21** API families, covering *
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 2 | 0 | 0 | 8 | 10 | 10 |
+| `sceGe` | 0 | 4 | 0 | 0 | 8 | 12 | 12 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 1 | 0 | 0 | 18 | 21 | 22 |
 | `sceKernel` | 2 | 13 | 0 | 0 | 134 | 149 | 173 |
@@ -71,7 +71,7 @@ Semantic handler census: **386** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **35** | **1** | **2** | **338** | **386** | **428** |
+| **Total** | **10** | **37** | **1** | **2** | **338** | **388** | **430** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -140,6 +140,12 @@ Semantic handler census: **386** handlers across **21** API families, covering *
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+- **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
+  - Limitation: models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, and asynchronous hardware command boundary timing remains unmodeled (#341)
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+- **`h_GeContinue`** (`sceGe`): `sceGeContinue` (0x4c06e472)
+  - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341)
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
   - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
