@@ -257,6 +257,11 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
 #define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
 #define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
+#define NID_SCE_REG_OPEN_REGISTRY 0x92e41280u
+#define NID_SCE_REG_GET_KEY_INFO 0xd4475aa8u
+#define NID_SCE_REG_GET_KEY_VALUE 0x28a8e98au
+#define NID_SCE_REG_CLOSE_REGISTRY 0xfa8a5739u
+#define NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT 0xa5da2406u
 #define NID_SCE_RTC_GET_CURRENT_TICK 0x3f7ad767u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL 0xe7c27d1bu
@@ -339,6 +344,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_BAD_ID 0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
+#define SCE_KERNEL_ERROR_NOT_IMPLEMENTED 0x80020002u
 #define SCE_KERNEL_ERROR_ALREADY_STARTED 0x80020133u
 #define SCE_KERNEL_ERROR_NOT_STARTED 0x80020134u
 #define SCE_KERNEL_ERROR_ALREADY_STOPPED 0x80020135u
@@ -824,9 +830,8 @@ static void test_title_config_hle_bindings(void) {
     int has_bringup = sr_title_config_display_bringup(&bringup);
     int has_sync = sr_title_config_runtime_sync(&sync_base, &sync_name,
                                                 &wrappers, &wrapper_count);
-    uint32_t libfont_flag = 0, frame_latch = 0;
+    uint32_t frame_latch = 0;
     uint32_t libfont_uid = 0;
-    int has_libfont = sr_title_config_libfont_ready_flag_addr(&libfont_flag);
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
     SrTitleReentBindings reent;
     int has_reent = sr_title_config_reent_bindings(&reent);
@@ -843,8 +848,8 @@ static void test_title_config_hle_bindings(void) {
                "title diagnostic profile matches the explicit selftest expectation");
     }
 
-    expect((has_bringup && has_sync && has_libfont && has_latch) ||
-           (!has_bringup && !has_sync && !has_libfont && !has_latch),
+    expect((has_bringup && has_sync && has_latch) ||
+           (!has_bringup && !has_sync && !has_latch),
            "migrated HLE groups are all configured together or all absent");
     expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
            "HST reent compatibility is selected only by the validated HST title config");
@@ -866,7 +871,7 @@ static void test_title_config_hle_bindings(void) {
                "generic DisplaySetMode keeps its PSP success result");
         expect(s_title_hle_guest_calls == 0u,
                "generic DisplaySetMode dispatches no title guest body");
-        expect(!has_sync && !has_libfont && !has_latch,
+        expect(!has_sync && !has_latch,
                "generic HLE probe has no migrated address bindings");
 
         title_hle_write_cstr(0x08906000u, "libfont.prx");
@@ -885,8 +890,8 @@ static void test_title_config_hle_bindings(void) {
     } else {
         expect(has_sync && wrappers != NULL && wrapper_count >= 2u,
                "configured display bringup has mode-keyed runtime sync wrappers");
-        expect(has_libfont && has_latch,
-               "configured display bringup has libfont and frame-latch bindings");
+        expect(has_latch,
+               "configured display bringup has a frame-latch binding");
 
         title_hle_write_cstr(sync_name, "synthetic-sync");
         MEM_W32(sync_base + 0x30u, 99u);
@@ -919,18 +924,18 @@ static void test_title_config_hle_bindings(void) {
         title_hle_write_cstr(0x08906000u, "libfont.prx");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 0x08906000u;
-        MEM_W32(libfont_flag, 0u);
+        MEM_W32(0x08906010u, 0u);
         libfont_uid = sr_hle_test_load_module(&cpu);
         expect(libfont_uid != 0u,
                "configured LoadModule returns a module uid");
-        expect(MEM_R32(libfont_flag) == 0u,
-               "configured LoadModule defers the libfont-ready fallback until startup is unavailable");
+        expect(MEM_R32(0x08906010u) == 0u,
+               "configured LoadModule leaves readiness to guest startup");
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = libfont_uid;
-        expect(sr_hle_test_start_module(&cpu) == 0u,
-               "configured StartModule keeps the missing libfont entry boundary nonfatal");
-        expect(MEM_R32(libfont_flag) == 1u,
-               "configured ready-flag fallback applies only after unavailable libfont startup");
+        expect(sr_hle_test_start_module(&cpu) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+               "configured StartModule refuses unavailable libfont startup");
+        expect(MEM_R32(0x08906010u) == 0u,
+               "configured StartModule never synthesizes libfont readiness");
 
         MEM_W32(frame_latch, 5u);
         ge_finish_latch_assist();
@@ -1180,7 +1185,6 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     const char *root = getenv("SR_MODULE_DIR");
     char path[1024];
     int written;
-    uint32_t configured_flag = 0;
     CpuState cpu;
 
     expect(strcmp(name, "libfont.prx") == 0,
@@ -1189,8 +1193,6 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "libfont startup uses the manifest guest path");
     expect(base == SYNTH_LIBFONT_BASE && required == 1,
            "libfont startup uses its required synthetic manifest base");
-    expect(!sr_title_config_libfont_ready_flag_addr(&configured_flag),
-           "libfont startup fixture disables manifest ready-flag injection");
     if (base != SYNTH_LIBFONT_BASE || !guest_path || !name) return;
 
     written = snprintf(path, sizeof(path), "%s/%s", root ? root : "", name);
@@ -1262,9 +1264,8 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "SR_REAL_MODULE_START=1 runs the translated libfont module_start");
 
     /* Phase 4: SR_REAL_MODULE_START=0 is the environmental kill switch. It has to cover
-     * libfont too: no entry runs, the call stays nonfatal, and the unconfigured fallback
-     * writes nothing. Phase 5 repeats the unavailable start, so both phases share one
-     * capture window that also proves the boundary line is latched once. */
+     * libfont too: no entry runs, the call fails closed, and readiness remains guest-owned.
+     * Phase 5 repeats unavailable startup so the diagnostic latch is observed. */
     _putenv("SR_REAL_MODULE_START=0");
     sr_hle_test_module_reset();
     uint32_t uid_off = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/libfont.prx",
@@ -1277,31 +1278,38 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     int capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
     expect(capturing, "libfont gate: stderr capture for the unavailable-start boundary");
     expect(uid_off != 0u, "libfont gate: a third libfont handle is registered");
-    expect(libfont_start_call(&cpu, uid_off) == 0u,
-           "SR_REAL_MODULE_START=0 keeps StartModule nonfatal for libfont");
+    expect(libfont_start_call(&cpu, uid_off) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+           "SR_REAL_MODULE_START=0 refuses unavailable libfont startup");
     expect(s_synth_libfont_start_calls == starts_before,
            "SR_REAL_MODULE_START=0 does not execute translated module_start");
     expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0u,
-           "SR_REAL_MODULE_START=0 writes no host readiness fallback when unconfigured");
+           "SR_REAL_MODULE_START=0 never synthesizes host readiness");
     expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
            "the kill switch leaves libfont exports unauthorized");
-    expect(libfont_start_call(&cpu, uid_off) == 0u,
-           "a repeated kill-switched libfont StartModule stays nonfatal");
+    expect(libfont_start_call(&cpu, uid_off) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+           "a repeated kill-switched libfont StartModule keeps failing closed");
 
-    /* Phase 5: an untranslated libfont entry takes the same named fallback. */
+    _putenv("SR_REAL_MODULE_START=1");
+    expect(libfont_start_call(&cpu, uid_off) == 0u &&
+               s_synth_libfont_start_calls == starts_before + 1u &&
+               MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u,
+           "translated startup can establish readiness after a refused attempt");
+
+    /* Phase 5: an untranslated libfont entry takes the same named refusal. */
     _putenv("SR_REAL_MODULE_START=");
     sr_hle_test_module_reset();
     uint32_t uid_untranslated = sr_hle_test_register_module("disc0:/PSP_GAME/SYSDIR/libfont.prx",
                                                             0x089b0000u, 0u);
     expect(uid_untranslated != 0u,
            "libfont gate: a handle with an untranslated entry is registered");
-    expect(libfont_start_call(&cpu, uid_untranslated) == 0u &&
-               libfont_start_call(&cpu, uid_untranslated) == 0u,
-           "repeated untranslated libfont starts stay nonfatal");
+    expect(libfont_start_call(&cpu, uid_untranslated) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               libfont_start_call(&cpu, uid_untranslated) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
+           "repeated untranslated libfont starts fail closed");
 
     /* Phase 6: the gate matches a whole path element, not a substring of a longer name. */
     _putenv("SR_REAL_MODULE_START=0");
     sr_hle_test_module_reset();
+    starts_before = s_synth_libfont_start_calls;
     uint32_t uid_lookalike = sr_hle_test_register_module("mylibfont.prx.bak",
                                                          base + 0x70u, 0u);
     expect(uid_lookalike != 0u, "libfont gate: a look-alike module name is registered");
@@ -2710,8 +2718,6 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
-        {NID_SCE_REG_CLOSE_CATEGORY, 0x80010086u, "sceRegCloseCategory"},
-        {NID_SCE_REG_OPEN_CATEGORY, 0x80010086u, "sceRegOpenCategory"},
     };
     reset_fixture();
     sr_hle_init();
@@ -2722,6 +2728,248 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
                "kernel import sweep refusal has a production registration");
         expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
                "unsupported kernel import returns its explicit refusal code");
+    }
+}
+
+/* Set the five arguments; for sceRegGetKeyInfo, the fifth (t0/r8 under MIPS EABI) is the size
+ * pointer, read through stack_arg. */
+static void sysreg_args(CpuState *cpu, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    cpu->r[7] = a3;
+    cpu->r[8] = a4;
+}
+
+/* True when sceUtilityGetSystemParamInt(id) succeeds and writes its value to out. */
+static int sysreg_sysparam_int_check(uint32_t id, uint32_t out) {
+    CpuState cpu;
+    sysreg_args(&cpu, id, out, 0u, 0u, 0u);
+    return sr_syscall(&cpu, NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT) == 0u;
+}
+
+/* sceReg virtual system registry (read model in hle.c): handle lifecycle, typed key info, value
+ * copies, refusals for unknown names, bad handles, bad spans, and short buffers, plus agreement
+ * with sceUtilityGetSystemParamInt. Guest scratch lives in the arena at 0x08b00000. */
+static void test_sysreg_virtual_registry(void) {
+    const uint32_t REGPARAM = 0x08b00000u, HANDLE_OUT = 0x08b00400u;
+    const uint32_t NAME = 0x08b00800u, NAME2 = 0x08b00900u;
+    const uint32_t HK = 0x08b00c00u, TYPE = 0x08b00c04u, SIZE = 0x08b00c08u;
+    const uint32_t VAL = 0x08b01000u, VAL2 = 0x08b01100u;
+    CpuState cpu;
+    uint32_t r, reg, cat, cat2, cat3, cat4, hk, hk_lang;
+    char long_category[129];
+
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_SCE_REG_OPEN_REGISTRY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_OPEN_CATEGORY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_INFO) &&
+               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_VALUE) &&
+               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_CATEGORY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_REGISTRY) &&
+               sr_hle_test_is_registered(NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT),
+           "sceReg family and sceUtilityGetSystemParamInt have production registrations");
+
+    /* Registry handle: mode 1 only; RegParam and out pointers must be guest spans. */
+    MEM_W32(REGPARAM, 1u);
+    sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
+    reg = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry with mode 1");
+    sysreg_args(&cpu, REGPARAM, 3u, HANDLE_OUT, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80010016u,
+           "sceRegOpenRegistry refuses an unsupported mode with EINVAL");
+    sysreg_args(&cpu, 0u, 1u, HANDLE_OUT, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+           "sceRegOpenRegistry refuses a NULL RegParam pointer");
+    sysreg_args(&cpu, REGPARAM, 1u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+           "sceRegOpenRegistry refuses a NULL handle output");
+
+    /* Category handles: unknown names fail closed with ENOENT. */
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB");
+    {
+        uint32_t mode2_cat, mode2_hk;
+
+        title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
+        sysreg_args(&cpu, reg, NAME, 2u, HANDLE_OUT, 0u);
+        r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+        mode2_cat = MEM_R32(HANDLE_OUT);
+        expect(r == 0u && mode2_cat != 0u && mode2_cat != cat,
+               "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB with mode 2");
+        title_hle_write_cstr(NAME2, "language");
+        sysreg_args(&cpu, mode2_cat, NAME2, HK, TYPE, SIZE);
+        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+        mode2_hk = MEM_R32(HK);
+        expect(r == 0u && mode2_hk != 0u, "mode-2 category still provides readable key info");
+        sysreg_args(&cpu, mode2_cat, mode2_hk, VAL, 4u, 0u);
+        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+        expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+               "mode-2 category still provides readable values");
+        sysreg_args(&cpu, mode2_cat, 0u, 0u, 0u, 0u);
+        expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u,
+               "sceRegCloseCategory closes the mode-2 category");
+    }
+    title_hle_write_cstr(NAME, "/CONFIG/NOPE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010002u,
+           "sceRegOpenCategory refuses an unknown category with ENOENT");
+    memset(long_category, 'A', sizeof(long_category) - 1u);
+    long_category[sizeof(long_category) - 1u] = '\0';
+    title_hle_write_cstr(NAME, long_category);
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80000103u,
+           "sceRegOpenCategory refuses a 128-character category name with ILLEGAL_ADDR");
+    sysreg_args(&cpu, 0x12345678u, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010009u,
+           "sceRegOpenCategory refuses a bad registry handle with EBADF");
+
+    /* Integer key: type and size, then the value must equal the system-param table. */
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    expect(r == 0u && MEM_R32(TYPE) == 2u && MEM_R32(SIZE) == 4u && hk != 0u,
+           "sceRegGetKeyInfo reports language as an INT of 4 bytes");
+    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+           "registry language agrees with sceUtilityGetSystemParamInt(LANGUAGE)");
+    sysreg_args(&cpu, cat, hk, VAL, 2u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
+           "sceRegGetKeyValue refuses a buffer smaller than the INT value with EINVAL");
+    hk_lang = hk;
+
+    title_hle_write_cstr(NAME2, "button_assign");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
+    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && sysreg_sysparam_int_check(9u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+           "registry button_assign agrees with sceUtilityGetSystemParamInt(BUTTON_PREFERENCE)");
+
+    /* Keys under the date and network categories agree with the same table. */
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat2 = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && cat2 != 0u && cat2 != cat, "sceRegOpenCategory opens /CONFIG/DATE in its own slot");
+    {
+        static const char *const date_keys[] = { "date_format", "time_format", "time_zone_offset", "summer_time" };
+        static const uint32_t date_ids[] = { 4u, 5u, 6u, 7u };
+        for (uint32_t i = 0; i < 4u; i++) {
+            title_hle_write_cstr(NAME2, date_keys[i]);
+            sysreg_args(&cpu, cat2, NAME2, HK, TYPE, SIZE);
+            r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+            hk = MEM_R32(HK);
+            sysreg_args(&cpu, cat2, hk, VAL, 4u, 0u);
+            r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+            expect(r == 0u && sysreg_sysparam_int_check(date_ids[i], VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+                   "registry date and time keys agree with sceUtilityGetSystemParamInt");
+        }
+    }
+
+    /* String key: the nickname is a NUL-terminated STR of 4 bytes; a 3-byte buffer is too small. */
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat3 = MEM_R32(HANDLE_OUT);
+    title_hle_write_cstr(NAME2, "nickname");
+    sysreg_args(&cpu, cat3, NAME2, HK, TYPE, SIZE);
+    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    expect(r == 0u && MEM_R32(TYPE) == 3u && MEM_R32(SIZE) == 4u, "sceRegGetKeyInfo reports nickname as a STR of 4 bytes");
+    sysreg_args(&cpu, cat3, hk, VAL, 3u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
+           "sceRegGetKeyValue refuses a 3-byte buffer for a 4-byte string with EINVAL");
+    sysreg_args(&cpu, cat3, hk, VAL, 4u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && MEM_R8(VAL) == 'P' && MEM_R8(VAL + 1u) == 'S' && MEM_R8(VAL + 2u) == 'P' &&
+               MEM_R8(VAL + 3u) == 0u,
+           "sceRegGetKeyValue copies the nickname with its terminating NUL");
+
+    /* Unknown key and the CHARACTER_SET category, which opens but models no keys. */
+    title_hle_write_cstr(NAME2, "no_such_key");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
+           "sceRegGetKeyInfo refuses an unknown key with ENOENT");
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/CHARACTER_SET");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u, "sceRegOpenCategory opens CHARACTER_SET");
+    cat4 = MEM_R32(HANDLE_OUT);
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat4, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
+           "CHARACTER_SET has no modeled keys and refuses lookups with ENOENT");
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x8001000cu,
+           "sceRegOpenCategory refuses a fifth open category handle with NO_MEMORY");
+
+    /* Bad handles and spans on the key calls. */
+    sysreg_args(&cpu, 0x12345678u, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010009u,
+           "sceRegGetKeyInfo refuses a bad category handle with EBADF");
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat, NAME2, HK, 0u, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80000103u,
+           "sceRegGetKeyInfo refuses a NULL type output");
+    sysreg_args(&cpu, cat2, hk_lang, VAL, 4u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
+           "a key handle from /CONFIG/SYSTEM/XMB is refused under /CONFIG/DATE with EBADF");
+
+    /* A stale key handle must not survive reopening its slot on a different category. */
+    sysreg_args(&cpu, cat, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the XMB category");
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0x80010009u,
+           "a closed category handle is refused with EBADF");
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u && MEM_R32(HANDLE_OUT) == cat,
+           "the reopened slot reuses the closed category handle value");
+    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), hk_lang, VAL, 4u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
+           "a stale language key handle is refused on the reopened DATE slot with EBADF");
+
+    /* Close everything and confirm the registry handle is then refused. */
+    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the DATE category");
+    sysreg_args(&cpu, cat2, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the second DATE handle");
+    sysreg_args(&cpu, cat3, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the SYSTEM category");
+    sysreg_args(&cpu, cat4, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes CHARACTER_SET");
+    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u, "sceRegCloseRegistry closes the registry");
+    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0x80010009u,
+           "a closed registry handle is refused with EBADF");
+    {
+        uint32_t registry_handles[4];
+
+        for (uint32_t i = 0; i < 4u; i++) {
+            sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+            r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
+            registry_handles[i] = MEM_R32(HANDLE_OUT);
+            expect(r == 0u && registry_handles[i] != 0u,
+                   "sceRegOpenRegistry opens a handle while a slot is available");
+        }
+        sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+        expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x8001000cu,
+               "sceRegOpenRegistry refuses a fifth open registry handle with NO_MEMORY");
+        for (uint32_t i = 0; i < 4u; i++) {
+            sysreg_args(&cpu, registry_handles[i], 0u, 0u, 0u, 0u);
+            expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u,
+                   "sceRegCloseRegistry closes a handle opened for the exhaustion test");
+        }
     }
 }
 
@@ -23501,6 +23749,7 @@ int main(int argc, char **argv) {
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
+    test_sysreg_virtual_registry();
     test_unregistered_batch_refusals();
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -44,10 +45,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from psp_oracle.run_psplink import (
+    CAMPAIGN_QUEUE_CASES,
     CampaignCase,
     PsplinkCampaignRunner,
     _campaign_host0_log_path,
     _parse_campaign_records,
+    _FIXED_CAMPAIGN_CASES,
+    _campaign_queue_summary,
     _parse_usbipd_psplink_devices,
     _snapshot_host0_output,
     _wait_for_host0_output,
@@ -55,6 +59,7 @@ from psp_oracle.run_psplink import (
     PsplinkProcessTransport,
     UnsafeHost0OutputError,
     _run_command,
+    run_campaign_plan,
     parse_psplink_meminfo,
     parse_psplink_module_list,
     parse_psplink_module_threads,
@@ -239,6 +244,7 @@ class SimulatedPsplinkTransport:
         write_host0_logs: bool = True,
         stale_host0_mtime: bool = False,
         fail_host0_roundtrip_cases: set[str] | None = None,
+        transport_file_cases: set[str] | None = None,
         fail_snapshot_call: dict[str, int] | None = None,
     ):
         self.timeout_cases = timeout_cases or set()
@@ -259,6 +265,7 @@ class SimulatedPsplinkTransport:
         self.write_host0_logs = write_host0_logs
         self.stale_host0_mtime = stale_host0_mtime
         self.fail_host0_roundtrip_cases = fail_host0_roundtrip_cases or set()
+        self.transport_file_cases = transport_file_cases
         self.fail_snapshot_call = dict(fail_snapshot_call or {})
         self.snapshot_command_calls: dict[str, int] = {}
         self.post_case_ver_failed = False
@@ -416,6 +423,7 @@ class SimulatedPsplinkTransport:
             if (
                 self.host0_root is not None
                 and case_id not in self.fail_host0_roundtrip_cases
+                and (self.transport_file_cases is None or case_id in self.transport_file_cases)
             ):
                 pattern = bytes(
                     (0x5A ^ (index * 0x25 + (index >> 3))) & 0xFF
@@ -2906,6 +2914,140 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertIsNone(verification)
         self.assertEqual(calls, [["usbipd", "list"]])
 
+
+    def test_fixed_campaign_contracts_reject_truncation_and_wrong_fields(self):
+        for case_id, (test_id, contract) in _FIXED_CAMPAIGN_CASES.items():
+            rows = []
+            for row_id, out_count, statuses in contract:
+                status = sorted(statuses)[0]
+                fields = " ".join(
+                    f"out{index}=0x{index + 1:08x}" for index in range(out_count)
+                )
+                rows.append(
+                    f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} "
+                    f"case_id={row_id} status={status} result=0x00000000 {fields}\n"
+                )
+            stream = CAMPAIGN_META + "".join(rows)
+            self.assertTrue(
+                run_psplink_module._campaign_stream_complete(stream, case_id),
+                case_id,
+            )
+            with self.assertRaises(PspProtocolError, msg=case_id):
+                _parse_campaign_records(CAMPAIGN_META + "".join(rows[:-1]), case_id)
+            malformed = stream.replace(" out0=0x00000001", "", 1)
+            with self.assertRaises(PspProtocolError, msg=case_id):
+                _parse_campaign_records(malformed, case_id)
+
+    def test_campaign_queue_dry_run_validates_all_staged_cases_without_launching(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-plan-dry-run-", dir=fixture_dir
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            host0_root = scratch / "host0"
+            output_root = scratch / "output"
+            host0_root.mkdir()
+            output_root.mkdir()
+            cases = []
+            for case_id in CAMPAIGN_QUEUE_CASES:
+                (host0_root / f"{case_id}.prx").write_bytes(b"synthetic PRX")
+                cases.append({
+                    "case_id": case_id,
+                    "prx": f"{case_id}.prx",
+                    "timeout_seconds": 30,
+                })
+            plan_path = scratch / "campaign-plan.json"
+            plan_path.write_text(json.dumps({
+                "schema": 1,
+                "campaign_id": "synthetic-campaign",
+                "session_id": "synthetic-session",
+                "source_commit": SOURCE_COMMIT,
+                "console_model": "PSP-3000",
+                "host0_root": "host0",
+                "report_path": "output/report.json",
+                "checkpoint_path": "output/checkpoint.json",
+                "cases": cases,
+            }), encoding="utf-8")
+            with patch.object(run_psplink_module, "_check_source_tree", return_value=None):
+                code, report = run_campaign_plan(
+                    plan_path,
+                    dry_run=True,
+                    confirm_power_cycle=False,
+                    pspsh_argv=["pspsh", "-e", "{remote_command}"],
+                    usbhostfs_argv=["usbhostfs_pc", "{host0_root}"],
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(report["status"], "VALIDATED_OFFLINE")
+            self.assertFalse(report["hardware_started"])
+            self.assertEqual(report["case_count"], len(CAMPAIGN_QUEUE_CASES))
+            self.assertEqual(
+                report["estimated_total_seconds"],
+                _campaign_queue_summary()["estimated_total_seconds"],
+            )
+            self.assertFalse((output_root / "checkpoint.json").exists())
+
+    def test_campaign_resets_between_cases_and_reuses_preflight_qualification(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-reset-between-", dir=fixture_dir
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "model-profile"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+            transport = SimulatedPsplinkTransport(
+                transport_file_cases={"transport-write"}
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases, reset_between_cases=True, stop_on_incomplete=True)
+
+        commands = [command for command, _timeout in transport.commands]
+        self.assertIsNone(report["terminal_reason"])
+        self.assertEqual(commands.count("reset"), 1)
+        self.assertEqual(sum(command.startswith("ldstart ") for command in commands), 2)
+        self.assertTrue(report["envelopes"][0]["ACCEPTANCE_ELIGIBLE"])
+        self.assertTrue(report["envelopes"][1]["ACCEPTANCE_ELIGIBLE"])
+        self.assertTrue(transport.stopped)
+
+    def test_campaign_timeout_stops_without_cleanup_or_automatic_reset(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-timeout-stop-", dir=fixture_dir
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "model-profile", "smoke"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 0.01))
+            transport = SimulatedPsplinkTransport(
+                timeout_cases={"model-profile"},
+                transport_file_cases={"transport-write"},
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases, reset_between_cases=True, stop_on_incomplete=True)
+
+        commands = [command for command, _timeout in transport.commands]
+        second_launch = commands.index("ldstart host0:/model-profile.prx")
+        self.assertEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+        self.assertEqual(report["intervention_case_id"], "model-profile")
+        self.assertEqual(report["resume_case_index"], 2)
+        self.assertEqual(commands.count("ldstart host0:/smoke.prx"), 0)
+        self.assertNotIn("reset", commands[second_launch + 1:])
+        self.assertNotIn("modstun 0x04280001", commands[second_launch + 1:])
 
 
 class Host0RemotePathTests(unittest.TestCase):

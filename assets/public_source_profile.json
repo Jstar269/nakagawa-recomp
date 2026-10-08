@@ -598,6 +598,8 @@
     "src/rt/watchpoints_file.h",
     "src/rt/watchpoints_file_selftest.c",
     "tests/native/argv_echo_helper.c",
+    "tests/native/native_test_isolation.c",
+    "tests/native/native_test_isolation.h",
     "tests/native/test_core_catalog.c",
     "tests/native/test_fuzz_parsers.c",
     "tests/native/test_input_profile.c",
