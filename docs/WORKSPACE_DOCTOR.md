@@ -137,7 +137,7 @@ reports as private diagnostic material unless paths have been reviewed and redac
 
 The doctor does not determine whether a user is legally entitled to decrypt, adapt, or use a game in
 a particular jurisdiction. It verifies only the project's technical input contract. Users must
-supply their own lawfully obtained copy and are responsible for applicable copyright,
+supply their own copy of the game and are responsible for applicable copyright,
 anti-circumvention, contract, and local-law questions. See `NOTICE.md` and
 `docs/PUBLICATION_READINESS.md`.
 
