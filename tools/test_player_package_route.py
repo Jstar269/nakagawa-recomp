@@ -423,6 +423,9 @@ class TestPlayerPackageRoute(unittest.TestCase):
                 "is_experimental": True,
             }],
         }), encoding="utf-8")
+        data_root = manifest.get("filesystem", {}).get("data_root")
+        if data_root:
+            (user_root / data_root).mkdir(parents=True, exist_ok=True)
 
     def write_player_library(self) -> Path:
         """Put the library entry where the player reads it: its own data dir."""
@@ -484,10 +487,9 @@ class TestPlayerPackageRoute(unittest.TestCase):
             cwd=ROOT, capture_output=True, text=True,
         )
 
-    def run_launch(self, boot_log: Path, perf_csv: Path) -> subprocess.CompletedProcess:
+    def run_launch(self, perf_csv: Path) -> subprocess.CompletedProcess:
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = str(self.local_appdata)
-        environment["SR_BOOT_EVENT_FILE"] = str(boot_log)
         # The opt-in child evidence channels. SR_PERF_CSV is how a launcher
         # proves the guest consumed vblanks without reading the child's stderr,
         # which is not a stable API of either process backend.
@@ -502,6 +504,10 @@ class TestPlayerPackageRoute(unittest.TestCase):
             cwd=ROOT, env=environment, capture_output=True, text=True,
             timeout=LAUNCH_TIMEOUT_MS / 1000,  # subprocess.run takes seconds
         )
+
+    def player_boot_event_files(self) -> set[Path]:
+        cache = self.local_appdata / "Nakagawa" / "cache"
+        return set(cache.glob("player-boot-*.events"))
 
     def test_release_package_layout_finds_public_cli(self):
         self.skip_if_toolchain_unavailable()
@@ -521,7 +527,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         discovered = completed.stdout.partition("path=")[2].strip()
         self.assertEqual(Path(discovered).resolve(), cli.resolve())
 
-    def test_source_owned_showcase_iso_without_companion_assets_stages(self):
+    def test_source_owned_showcase_without_data_root_stages_without_data(self):
         self.skip_if_toolchain_unavailable()
         demo = next(item for item in SHOWCASE_DEMOS if item["disc_id"] == "TEST00007")
         executable = align_executable((self.fixture_dir / "guest.prx").read_bytes())
@@ -546,6 +552,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertEqual(completed.returncode, 0,
                          completed.stdout + completed.stderr)
         self.assertIn("STAGING_RESULT status=PASS", completed.stdout)
+        self.assertNotIn("STAGING_RESULT status=INCOMPLETE", completed.stdout)
 
     def test_uncatalogued_player_route_builds_with_generic_profile(self):
         """The package action upgrades the native profile through bring-up's writer."""
@@ -876,30 +883,29 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("main executable changed", same_disc_stale.stdout)
         self.assertIn("rebuild the package from the current inputs", same_disc_stale.stdout)
         self.assertNotIn("#315", same_disc_stale.stdout)
-        second_boot_log = self.sandbox / "second-input-boot-events.log"
-        second_launch = self.run_launch(
-            second_boot_log, self.sandbox / "second-input-perf.csv"
-        )
+        second_boot_events = self.player_boot_event_files()
+        second_launch = self.run_launch(self.sandbox / "second-input-perf.csv")
         self.assertNotEqual(second_launch.returncode, 0)
-        self.assertFalse(second_boot_log.exists(),
+        self.assertEqual(self.player_boot_event_files(), second_boot_events,
                          "a same-DISC_ID executable mismatch must stop before guest execution")
         package_cache.write_local_title_input_identity(self.user_root, original_identity)
 
         # 3. PLAY, headless, through the player's own launch session. The player
         #    reads its library from its own per-user data directory, so the
         #    entry the build half consumed is the entry the launch half sees.
-        boot_log = self.sandbox / "boot-events.log"
         perf_csv = self.sandbox / "perf.csv"
-        launched = self.run_launch(boot_log, perf_csv)
+        launched = self.run_launch(perf_csv)
         self.assertEqual(launched.returncode, 0,
                          launched.stdout[-4000:] + launched.stderr[-4000:])
         self.assertIn("[PLAYER] Launch index 0: PLAY NOW available", launched.stdout)
         self.assertIn("[PLAYER] Launch argv contains --gui: no", launched.stdout)
         self.assertIn("[PLAYER] Headless launch child exited with code 0", launched.stdout)
 
-        # 4. Guest-visible startup state, from the child's own evidence file.
-        self.assertTrue(boot_log.is_file(), "the child runtime wrote no boot evidence")
-        events = boot_log.read_text(encoding="utf-8", errors="replace")
+        # 4. Guest-visible startup state, from the player-owned child event file.
+        boot_logs = self.player_boot_event_files()
+        self.assertEqual(len(boot_logs), 1,
+                         "the player did not retain the child's boot evidence")
+        events = next(iter(boot_logs)).read_text(encoding="utf-8", errors="replace")
         for milestone in (
             "BOOT_EVENT phase=init public_safe=1",
             "BOOT_EVENT phase=image_loaded",
@@ -933,12 +939,12 @@ class TestPlayerPackageRoute(unittest.TestCase):
         stale = self.run_validator()
         self.assertEqual(stale.returncode, 0, stale.stdout + stale.stderr)
         self.assertIn("PACKAGE_STATUS=STALE", stale.stdout)
-        refused_boot_log = self.sandbox / "refused-boot-events.log"
-        refused = self.run_launch(refused_boot_log, self.sandbox / "refused-perf.csv")
+        boot_logs_before_refusal = self.player_boot_event_files()
+        refused = self.run_launch(self.sandbox / "refused-perf.csv")
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("PLAY NOW is unavailable", refused.stdout + refused.stderr)
-        self.assertFalse(refused_boot_log.exists(),
-                         "a stale package must not reach a guest run")
+        self.assertEqual(self.player_boot_event_files(), boot_logs_before_refusal,
+                         "a stale package must not create guest boot evidence")
         self.assertEqual(tracked_status(), before)
 
     def test_missing_prerequisites_fail_closed_with_documented_codes(self):
