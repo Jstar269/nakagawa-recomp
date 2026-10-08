@@ -1239,7 +1239,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             raise PackageBuildError(
                 "This disc image was modified by a custom-firmware patch. The game "
                 "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
-                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
+                "copy of your disc. The project does not provide decrypted executables. "
                 "This boundary is "
                 "in the works."
             )
@@ -2080,7 +2081,8 @@ def _bringup_human_summary(report: dict) -> str:
         return (
             "Bring-up stopped at inspect: this disc image was modified by a custom-firmware "
             "patch. The game executable is EBOOT.OLD (encrypted); supply its decrypted "
-            "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use a clean dump. "
+            "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
+            "copy of your disc. The project does not provide decrypted executables. "
             "This boundary is in the works."
         )
     suffix = (

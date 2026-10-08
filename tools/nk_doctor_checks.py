@@ -1070,7 +1070,7 @@ def _check_elf_file(report: Report, code: str, path: Path, description: str) -> 
             f"Invalid {description}",
             path=path,
             detail=error,
-            remediation="Supply a decrypted 32-bit little-endian MIPS ELF produced from your own lawful game copy.",
+            remediation="Supply a decrypted 32-bit little-endian MIPS ELF produced from your own copy of the game.",
         )
         return None
     assert metadata is not None
@@ -1348,7 +1348,7 @@ def check_private_inputs(
                     "Invalid original EBOOT.BIN PSP header",
                     path=psp_header_path,
                     detail=error,
-                    remediation="Re-extract PSP_GAME/SYSDIR/EBOOT.BIN from the same lawful ISO used by this workspace.",
+                    remediation="Re-extract PSP_GAME/SYSDIR/EBOOT.BIN from the same ISO used by this workspace.",
                 )
             else:
                 report.pass_("INPUT_EBOOT_BIN", "Validated original EBOOT.BIN PSP header", path=psp_header_path, metadata=psp_meta or {})
@@ -1397,7 +1397,7 @@ def check_private_inputs(
             report.fail(
                 "INPUT_ISO",
                 "The selected title manifest does not declare filesystem.disc_image",
-                remediation="Declare the lawful local ISO path in the title manifest.",
+                remediation="Declare the local ISO path in the title manifest.",
             )
         elif not selected.is_file():
             report.fail(
@@ -2241,11 +2241,10 @@ def check_repository_contract(report: Report) -> None:
             ),
             "NOTICE_PRIVATE_INPUT": (
                 (
-                    "users must supply their own legally obtained",
-                    "users must supply any lawful external inputs",
+                    "users must supply any external inputs",
                     "user-supplied",
                 ),
-                "lawful user-supplied input requirement",
+                "user-supplied input requirement",
             ),
             "NOTICE_LEGAL_REVIEW": (
                 ("legal review", "not legal advice", "qualified review"),
