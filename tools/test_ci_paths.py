@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import json
 import re
+import subprocess
+import tempfile
 import textwrap
 import unittest
 from unittest import mock
@@ -276,7 +279,8 @@ class CiPathAdversarialTests(unittest.TestCase):
                 self.assertEqual(result["docs_only"], "false")
 
     def test_workflow_and_classifier_changes_force_full_validation(self) -> None:
-        for path in (".github/workflows/ci.yml", "tools/ci_paths.py", "tools/test_ci_paths.py"):
+        for path in (".github/workflows/ci.yml", "tools/ci_paths.py", "tools/test_ci_paths.py",
+                     "tools/ci_test_shards.py", "tools/test_ci_test_shards.py"):
             with self.subTest(path=path):
                 result = classify([path])
                 self.assertEqual(result["workflow_ci"], "true")
@@ -544,6 +548,262 @@ class PublicSurfaceRoutingRegressionTests(unittest.TestCase):
 
     def test_a_new_public_path_still_fails_closed_to_full_validation(self) -> None:
         self.assertEqual(classify(["src/rt/brand_new_thing.c"])["run_python"], "true")
+
+
+_SYNTHETIC_MAKEFILE = textwrap.dedent(
+    """\
+    # Synthetic Makefile for the recipe-only classifier.
+    CC ?= gcc
+    CFLAGS := -O2 -Wall
+    PUBLIC_TARGETS := lint-docs ui-tests
+    .PHONY: $(PUBLIC_TARGETS) report
+
+    build/%.o: src/%.c
+    \t$(CC) $(CFLAGS) -c $< -o $@
+
+    build/app: build/main.o
+    \t$(CC) $^ -o $@
+
+    lint-docs:
+    \tpython tools/lint_docs.py \\
+    \t  --strict
+    ifeq ($(OS),Windows_NT)
+    \techo windows
+    endif
+
+    ui-tests: export UI_EXE := build/app
+    ui-tests: build/app
+    \tpython -m unittest discover -s tests/native -p "test_ui.py"
+
+    report:
+    \tpython tools/report.py
+    """
+).replace("\\t", "\t")
+
+
+class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
+    """#702: a recipe-only edit of phony targets must not route the full build matrix,
+    and every other Makefile edit must still fail safe to it."""
+
+    analyse = staticmethod(ci_paths_module.makefile_recipe_only_targets)
+
+    def edit(self, old: str, new: str) -> tuple[str, ...] | None:
+        self.assertIn(old, _SYNTHETIC_MAKEFILE)
+        return self.analyse(_SYNTHETIC_MAKEFILE, _SYNTHETIC_MAKEFILE.replace(old, new, 1))
+
+    def test_synthetic_fixture_parses_as_intended(self) -> None:
+        kinds, phony = ci_paths_module._makefile_line_kinds(_SYNTHETIC_MAKEFILE)
+        self.assertEqual(phony, frozenset({"lint-docs", "ui-tests", "report"}))
+        recipe_targets = {kind[1] for kind in kinds if kind[0] == "recipe"}
+        self.assertEqual(
+            recipe_targets,
+            {("build/%.o",), ("build/app",), ("lint-docs",), ("ui-tests",), ("report",)},
+        )
+        self.assertEqual(self.analyse(_SYNTHETIC_MAKEFILE, _SYNTHETIC_MAKEFILE), ())
+
+    def test_recipe_edits_of_phony_targets_are_narrow(self) -> None:
+        cases = {
+            "rewrite": ('-p "test_ui.py"', '-p "test_ui*.py"', ("ui-tests",)),
+            "continuation line": ("\t  --strict", "\t  --strict --verbose", ("lint-docs",)),
+            "recipe inside a conditional": ("\techo windows", "\techo win32", ("lint-docs",)),
+            "added line": (
+                "\tpython tools/report.py",
+                "\tpython tools/report.py\n\tpython tools/report.py --json",
+                ("report",),
+            ),
+            "two targets": ("\tpython tools/report.py", "\tpython3 tools/report.py", ("report",)),
+            "comment only": ("# Synthetic Makefile", "# A synthetic Makefile", ()),
+        }
+        for label, (old, new, expected) in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.edit(old, new), expected)
+
+    def test_every_structural_edit_keeps_full_routing(self) -> None:
+        cases = {
+            "compiler flag": ("CFLAGS := -O2 -Wall", "CFLAGS := -O3 -Wall"),
+            "default variable": ("CC ?= gcc", "CC ?= clang"),
+            "pattern-rule recipe": ("\t$(CC) $(CFLAGS) -c $< -o $@", "\t$(CC) $(CFLAGS) -g -c $< -o $@"),
+            "file-target recipe": ("\t$(CC) $^ -o $@", "\t$(CC) $^ -lm -o $@"),
+            "prerequisite": ("ui-tests: build/app", "ui-tests: build/app lint-docs"),
+            "rule header": ("report:", "report: FORCE"),
+            "target-specific variable": ("export UI_EXE := build/app", "export UI_EXE := build/app2"),
+            "conditional": ("ifeq ($(OS),Windows_NT)", "ifeq ($(OS),Linux)"),
+            "phony list": ("PUBLIC_TARGETS := lint-docs ui-tests", "PUBLIC_TARGETS := lint-docs"),
+            "phony declaration": (".PHONY: $(PUBLIC_TARGETS) report", ".PHONY: $(PUBLIC_TARGETS)"),
+            "new include": ("# Synthetic Makefile", "include extra.mk"),
+            "recipe-prefix change": ("# Synthetic Makefile", ".RECIPEPREFIX := >"),
+        }
+        for label, (old, new) in cases.items():
+            with self.subTest(label):
+                self.assertIsNone(self.edit(old, new))
+
+    def test_an_edit_that_reshapes_an_unchanged_line_keeps_full_routing(self) -> None:
+        # A recipe continuation line need not start with a tab. Dropping the backslash
+        # on the line above leaves it byte-identical but turns it into a top-level
+        # line, so only the unchanged-line comparison can see the change.
+        base = _SYNTHETIC_MAKEFILE.replace(
+            "\tpython tools/report.py\n", "\tpython tools/report.py \\\n  --json\n"
+        )
+        kinds, _ = ci_paths_module._makefile_line_kinds(base)
+        line = base.split("\n").index("  --json")
+        self.assertEqual(kinds[line], ("recipe", ("report",), True))
+        edited = base.replace("python tools/report.py \\", "python tools/report.py")
+        self.assertEqual(ci_paths_module._makefile_line_kinds(edited)[0][line][0], "other")
+        self.assertIsNone(self.analyse(base, edited))
+
+    def test_even_trailing_backslashes_do_not_continue_a_line(self) -> None:
+        """GNU make joins a line only on an odd number of trailing backslashes."""
+        flag_base = "# keep C:\\\\\nCFLAGS = -O2\n.PHONY: t\nt:\n\techo $(CFLAGS)\n"
+        kinds, _ = ci_paths_module._makefile_line_kinds(flag_base)
+        self.assertEqual(kinds[1], ("other", "assignment"))
+        self.assertIsNone(self.analyse(flag_base, flag_base.replace("-O2", "-O3")))
+        rule_base = ".PHONY: t\nt:\n\techo C:\\\\\nall: foo\n\tcc foo\n"
+        kinds, _ = ci_paths_module._makefile_line_kinds(rule_base)
+        self.assertEqual(kinds[3][:3], ("other", "rule-header", ("all",)))
+        self.assertIsNone(self.analyse(rule_base, rule_base.replace("all: foo", "all: foo bar")))
+        # An odd count still continues: the next line belongs to the recipe.
+        odd = ".PHONY: t\nt:\n\techo a \\\n  b\n"
+        self.assertEqual(ci_paths_module._makefile_line_kinds(odd)[0][3], ("recipe", ("t",), True))
+
+    def test_nested_define_fails_safe(self) -> None:
+        nested = "define A\ndefine B\nx\nendef\n.PHONY: t\nt:\n\ta\nendef\n"
+        self.assertIsNone(self.analyse(nested, nested.replace("\ta\n", "\tb\n")))
+
+    def test_define_directive_is_recognised_by_words_not_spaces(self) -> None:
+        # A tab-separated prefix still opens a define block, so a rule-shaped body
+        # line is define text, not a recipe that could narrow routing.
+        tabbed = ".PHONY: t\noverride\tdefine BODY\nt:\n\techo a\nendef\n"
+        self.assertEqual(ci_paths_module._makefile_line_kinds(tabbed)[0][3], ("other", "define"))
+        self.assertIsNone(self.analyse(tabbed, tabbed.replace("echo a", "echo b")))
+        # A body line that merely contains the word is not a nested define.
+        worded = "define BODY\nfoo define bar\nendef\n.PHONY: t\nt:\n\techo a\n"
+        self.assertEqual(self.analyse(worded, worded.replace("echo a", "echo b")), ("t",))
+
+    def test_static_pattern_rules_are_conservatively_shared(self) -> None:
+        base = _SYNTHETIC_MAKEFILE + ".PHONY: check-a check-b\ncheck-a check-b: check-%:\n\techo $*\n"
+        self.assertEqual(ci_paths_module._makefile_line_kinds(base)[1] >= {"check-a", "check-b"}, True)
+        self.assertIsNone(self.analyse(base, base.replace("\techo $*", "\techo $* done")))
+
+    def test_appended_or_conditional_phony_lists_are_not_trusted(self) -> None:
+        appended = _SYNTHETIC_MAKEFILE.replace(
+            "PUBLIC_TARGETS := lint-docs ui-tests", "PUBLIC_TARGETS := lint-docs\nPUBLIC_TARGETS += ui-tests"
+        )
+        edited = appended.replace('-p "test_ui.py"', '-p "test_ui*.py"')
+        self.assertIsNone(self.analyse(appended, edited))
+        conditional = _SYNTHETIC_MAKEFILE.replace(
+            ".PHONY: $(PUBLIC_TARGETS) report", ".PHONY: $(PUBLIC_TARGETS)\nifdef X\n.PHONY: report\nendif"
+        )
+        edited = conditional.replace("\tpython tools/report.py", "\tpython3 tools/report.py")
+        self.assertIsNone(self.analyse(conditional, edited))
+        conditional_list = _SYNTHETIC_MAKEFILE.replace(
+            "PUBLIC_TARGETS := lint-docs ui-tests", "ifdef X\nPUBLIC_TARGETS := lint-docs ui-tests\nendif"
+        )
+        edited = conditional_list.replace('-p "test_ui.py"', '-p "test_ui*.py"')
+        self.assertIsNone(self.analyse(conditional_list, edited))
+
+    def test_unmodelled_constructs_fail_safe(self) -> None:
+        orphan = "\techo orphan\n" + _SYNTHETIC_MAKEFILE
+        self.assertIsNone(self.analyse(orphan, orphan.replace("orphan", "orphan2")))
+        unterminated = _SYNTHETIC_MAKEFILE + "define BODY\n\tline\n"
+        self.assertIsNone(self.analyse(unterminated, unterminated.replace("report.py", "report2.py")))
+
+    def test_live_makefile_recipe_edit_narrows_and_flag_edit_does_not(self) -> None:
+        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        recipe = '\t$(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v\n'
+        self.assertIn(recipe, makefile)
+        self.assertEqual(
+            self.analyse(makefile, makefile.replace(recipe, recipe.replace(" -v", " -v -f"), 1)),
+            ("player-ui-regressions",),
+        )
+        flag = re.search(r"(?m)^PLAYER_EXE \?= .*$", makefile)
+        self.assertIsNotNone(flag)
+        self.assertIsNone(self.analyse(makefile, makefile.replace(flag.group(0), flag.group(0) + " ", 1)))
+        file_recipe = "-DNK_PLAYER_UI_REGRESSION_TEST"
+        self.assertIn(file_recipe, makefile)
+        self.assertIsNone(self.analyse(makefile, makefile.replace(file_recipe, file_recipe + " -O0", 1)))
+
+    def test_recipe_only_change_routes_native_windows_and_the_coupled_python_subset(self) -> None:
+        result = classify(["Makefile"], makefile_change=("player-ui-regressions",))
+        self.assertEqual(result["makefile_recipe_only"], "true")
+        self.assertEqual(result["build_system"], "false")
+        self.assertEqual(result["run_native"], "true")
+        self.assertEqual(result["run_windows"], "true")
+        self.assertEqual(result["run_python"], "true")
+        self.assertEqual(result["python_scope"], "makefile")
+        self.assertEqual(json.loads(result["python_shards"]), [0, 1])
+        self.assertEqual(result["python_num_shards"], "2")
+
+    def test_any_other_python_routing_restores_the_full_suite(self) -> None:
+        for other in ("tools/codegen.py", "src/rt/hle.c", ".github/workflows/ci.yml",
+                      "tools/publish_audit.py", "mk/build_common.mk", "brand_new_file.xyz"):
+            with self.subTest(other=other):
+                result = classify(["Makefile", other], makefile_change=("player-ui-regressions",))
+                self.assertEqual(result["python_scope"], "all")
+                self.assertEqual(json.loads(result["python_shards"]), [0, 1, 2, 3])
+                self.assertEqual(result["run_native"], "true")
+
+    def test_unproven_or_absent_analysis_keeps_build_system_routing(self) -> None:
+        result = classify(["Makefile"])
+        self.assertEqual(result["build_system"], "true")
+        self.assertEqual(result["makefile_recipe_only"], "false")
+        self.assertEqual(result["python_scope"], "all")
+        self.assertEqual(json.loads(result["python_shards"]), [0, 1, 2, 3])
+        # The analysis result is ignored when the Makefile is not among the changes,
+        # and a manual dispatch is always the full matrix.
+        self.assertEqual(classify(["docs/CI.md"], makefile_change=())["run_native"], "false")
+        dispatch = classify([], event_name="workflow_dispatch", makefile_change=())
+        self.assertEqual(dispatch["python_scope"], "all")
+        self.assertEqual(dispatch["build_system"], "true")
+
+    def test_main_reads_both_makefile_revisions_from_git(self) -> None:
+        """Production path: the workflow's classify step diffs real revisions."""
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=ci-paths-test", "-c", "user.email=ci-paths-test@invalid", *args],
+                cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = Path(scratch)
+            git("init", "-q")
+            (repo / "Makefile").write_text(_SYNTHETIC_MAKEFILE, encoding="utf-8")
+            git("add", "Makefile")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            outputs: dict[str, dict[str, str]] = {}
+            for label, old, new in (
+                ("recipe", '-p "test_ui.py"', '-p "test_ui*.py"'),
+                ("flag", "CFLAGS := -O2 -Wall", "CFLAGS := -O3 -Wall"),
+            ):
+                git("checkout", "-q", base)
+                (repo / "Makefile").write_text(_SYNTHETIC_MAKEFILE.replace(old, new), encoding="utf-8")
+                git("commit", "-q", "-am", label)
+                head = git("rev-parse", "HEAD")
+                event = repo / "event.json"
+                event.write_text(json.dumps({"pull_request": {"base": {"sha": base}}}), encoding="utf-8")
+                github_output = repo / f"{label}.out"
+                with mock.patch.object(ci_paths_module, "ROOT", repo), \
+                        mock.patch.dict(os.environ, {"GITHUB_SHA": head}), \
+                        mock.patch("sys.stdout"):
+                    ci_paths_module.main([
+                        "--event-name", "pull_request", "--event-path", str(event),
+                        "--github-output", str(github_output),
+                    ])
+                outputs[label] = dict(
+                    line.split("=", 1) for line in github_output.read_text(encoding="utf-8").splitlines()
+                )
+        self.assertEqual(outputs["recipe"]["python_scope"], "makefile")
+        self.assertEqual(outputs["recipe"]["build_system"], "false")
+        self.assertEqual(outputs["recipe"]["run_windows"], "true")
+        self.assertEqual(outputs["flag"]["python_scope"], "all")
+        self.assertEqual(outputs["flag"]["build_system"], "true")
+
+    def test_missing_revision_fails_safe(self) -> None:
+        with mock.patch.object(
+            ci_paths_module.subprocess, "run", side_effect=subprocess.CalledProcessError(128, "git")
+        ):
+            self.assertIsNone(ci_paths_module.makefile_change_from_git("base", "head"))
 
 
 class PublicationCoverageInvariantTests(unittest.TestCase):
