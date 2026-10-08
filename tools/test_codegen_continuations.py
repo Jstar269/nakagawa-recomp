@@ -20,6 +20,21 @@ class FakeElf:
         return self.words[addr].to_bytes(4, "little")
 
 
+class IterationTrackingKnownEntries:
+    """Membership-only view that detects a full entry-set copy per function."""
+
+    def __init__(self, entries):
+        self.entries = set(entries)
+        self.iterations = 0
+
+    def __contains__(self, entry):
+        return entry in self.entries
+
+    def __iter__(self):
+        self.iterations += 1
+        return iter(self.entries)
+
+
 def jal(target):
     return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
 
@@ -38,6 +53,18 @@ def beq(rs, rt, pc, target):
 
 
 class ContinuationFlowTests(unittest.TestCase):
+    def test_emission_does_not_copy_the_complete_known_entry_set(self):
+        known = IterationTrackingKnownEntries(
+            {0x1000, *range(0x4000, 0x8000, 4)}
+        )
+        text = codegen.emit_function(
+            FakeElf({0x1000: 0x03E00008, 0x1004: 0}),
+            0x1000, [(0x1000, 0x1008)], known,
+        )
+
+        self.assertTrue(any("void f_00001000" in line for line in text))
+        self.assertEqual(known.iterations, 0)
+
     def test_linked_transfers_carry_the_native_resume_boundary(self):
         linked_jal = "\n".join(
             codegen.emit_function(
