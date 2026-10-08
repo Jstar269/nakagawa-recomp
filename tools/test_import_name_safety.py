@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import shutil
 import struct
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -21,6 +24,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import tomllib  # noqa: E402
+import analyze as analyze_tool  # noqa: E402
 import imports as imports_tool  # noqa: E402
 
 
@@ -194,6 +198,272 @@ class TestImportNameSafety(unittest.TestCase):
         parsed = imports_tool.parse_imports(FakeElf(b"sceDisplay"))
         self.assertEqual(parsed[FakeElf.FIRST_SYM], ("sceDisplay", 0x12345678))
 
+    def test_null_nid_pointer_has_a_named_analyzer_boundary(self):
+        elf = FakeElf(b"sceDisplay")
+        struct.pack_into("<I", elf.mem, FakeElf.STUB - FakeElf.BASE + 12, 0)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_variable_only_imports_have_a_named_unsupported_boundary(self):
+        elf = FakeElf(b"sceDisplay")
+        struct.pack_into("<B", elf.mem, FakeElf.STUB - FakeElf.BASE + 9, 1)
+        struct.pack_into("<H", elf.mem, FakeElf.STUB - FakeElf.BASE + 10, 0)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED")
+
+    def test_misaligned_import_regions_have_a_named_boundary(self):
+        class MismatchedRegionElf(FakeElf):
+            def sec(self, name: str):
+                if name == ".sceStub.text":
+                    return {"addr": self.FIRST_SYM - 8, "size": 16}
+                if name == ".rodata.sceNid":
+                    return {"addr": self.NIDS, "size": 4}
+                return super().sec(name)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(MismatchedRegionElf(b"sceDisplay"))
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_REGIONS_MISMATCH")
+
+    def test_analyzer_does_not_swallow_a_named_import_boundary(self):
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+        malformed_elf = imports_tool.Elf(bytes(malformed), base=base)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            analyze_tool.analyze(malformed_elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_analyzer_checks_import_metadata_when_section_names_are_missing(self):
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        image = bytearray(blob)
+        # Match a stripped retail ELF: segment addresses are absolute, but the
+        # section-name table no longer identifies .sceStub.text.
+        struct.pack_into("<H", image, 16, 2)
+        struct.pack_into("<I", image, 24, base)
+        phoff = struct.unpack_from("<I", image, 28)[0]
+        struct.pack_into("<II", image, phoff + 8, base, base)
+        module_info = 0x100 + 0x40
+        image[module_info + 4:module_info + 13] = b"Synthetic"
+        struct.pack_into("<I", image, module_info + 32, 4)
+        elf = imports_tool.Elf(bytes(image), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        struct.pack_into("<I", image, import_section["off"] + 12, 0)
+        struct.pack_into("<H", image, 50, 0)
+        shoff = struct.unpack_from("<I", image, 32)[0]
+        shentsize, shnum = struct.unpack_from("<HH", image, 46)
+        for index in range(shnum):
+            struct.pack_into("<I", image, shoff + index * shentsize, 0)
+        stripped_elf = imports_tool.Elf(bytes(image), base=base)
+        self.assertIsNone(stripped_elf.sec(".sceStub.text"))
+        self.assertIsNotNone(stripped_elf.sec(".rodata.sceModuleInfo"))
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            analyze_tool.analyze(stripped_elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_analyzer_cli_names_unsupported_import_layout(self):
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="analyzer-import-boundary-") as temp:
+            path = Path(temp) / "synthetic.elf"
+            path.write_bytes(malformed)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = analyze_tool.main([
+                    "analyze.py", os.fspath(path), f"--base={base:08x}", "--quiet"
+                ])
+
+        self.assertEqual(status, 1)
+        self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", stderr.getvalue())
+        self.assertIn("not supported yet", stderr.getvalue())
+
+    def test_analyzer_rejects_unaligned_and_out_of_range_import_stubs(self):
+        base = 0x08804000
+        blob, stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+
+        out_of_range_stub = 0x09000000
+        unaligned_stub = base + 0x201
+        valid_stub = stub
+
+        hostile_impmap = {
+            out_of_range_stub: ("sceSynthetic", 0x11111111),
+            unaligned_stub: ("sceSynthetic", 0x22222222),
+            valid_stub: ("sceSynthetic", 0x33333333),
+        }
+
+        with mock.patch("imports.parse_imports", return_value=hostile_impmap):
+            starts, ranges = analyze_tool.analyze(elf)
+
+        self.assertIn(valid_stub, starts)
+        self.assertNotIn(out_of_range_stub, starts)
+        self.assertNotIn(unaligned_stub, starts)
+
+    def test_codegen_traps_named_analyzer_import_boundary(self):
+        import codegen
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="codegen-import-boundary-") as temp:
+            path = Path(temp) / "synthetic.elf"
+            path.write_bytes(malformed)
+            out_c = Path(temp) / "out.c"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = codegen.main([
+                    "codegen.py", os.fspath(path), os.fspath(out_c), f"--base={base:08x}",
+                ])
+
+        self.assertEqual(status, 1)
+        self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", stderr.getvalue())
+
+    def test_codegen_extra_module_named_analyzer_import_boundary_names_failing_module(self):
+        import codegen
+        base = 0x08804000
+        extra_bad_base = 0x08900000
+        extra_good_base = 0x08a00000
+        main_blob, _ = build_synthetic_import_prx(b"sceSynthetic", base)
+        bad_blob, _ = build_synthetic_import_prx(b"sceSynthetic", extra_bad_base)
+        good_blob, _ = build_synthetic_import_prx(b"sceSynthetic", extra_good_base)
+
+        elf = imports_tool.Elf(bytes(bad_blob), base=extra_bad_base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(bad_blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="codegen-extra-boundary-") as temp:
+            main_path = Path(temp) / "main.elf"
+            main_path.write_bytes(main_blob)
+            extra_bad = Path(temp) / "extra_failing.elf"
+            extra_bad.write_bytes(malformed)
+            extra_good = Path(temp) / "extra_valid.elf"
+            extra_good.write_bytes(good_blob)
+
+            out_c = Path(temp) / "out.c"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = codegen.main([
+                    "codegen.py",
+                    os.fspath(main_path),
+                    os.fspath(out_c),
+                    f"--base={base:08x}",
+                    f"--extra-elf={os.fspath(extra_bad)}@{extra_bad_base:08x}",
+                    f"--extra-elf={os.fspath(extra_good)}@{extra_good_base:08x}",
+                ])
+
+        self.assertEqual(status, 1)
+        err = stderr.getvalue()
+        self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", err)
+        self.assertIn(os.fspath(extra_bad), err)
+        self.assertNotIn(os.fspath(extra_good), err)
+
+    def test_import_table_error_format_boundary(self):
+        err = imports_tool.ImportTableError("ANALYZER_TEST_CODE", "test error message")
+        self.assertEqual(
+            err.format_boundary(),
+            "ANALYZER_TEST_CODE: test error message",
+        )
+        self.assertEqual(
+            err.format_boundary("module.prx"),
+            "ANALYZER_TEST_CODE: module.prx: test error message",
+        )
+        self.assertEqual(
+            imports_tool.format_boundary(err),
+            "ANALYZER_TEST_CODE: test error message",
+        )
+        self.assertEqual(
+            imports_tool.format_boundary(err, "extra.elf"),
+            "ANALYZER_TEST_CODE: extra.elf: test error message",
+        )
+
+    def test_decompme_export_traps_named_analyzer_import_boundary(self):
+        import decompme_export
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="decompme-import-boundary-") as temp:
+            path = Path(temp) / "synthetic.elf"
+            path.write_bytes(malformed)
+            with self.assertRaises(SystemExit) as raised:
+                decompme_export.export_function(os.fspath(path), base, base + 0x10, temp, "func")
+            self.assertTrue(str(raised.exception).startswith("ANALYZER_"))
+
+    def test_entry_frame_balance_traps_named_analyzer_import_boundary(self):
+        import entry_frame_balance
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="efb-import-boundary-") as temp:
+            path = Path(temp) / "synthetic.elf"
+            path.write_bytes(malformed)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = entry_frame_balance.main([
+                    "entry_frame_balance.py", os.fspath(path), f"--base=0x{base:08x}",
+                ])
+            self.assertEqual(status, 1)
+            self.assertIn("ANALYZER_IMPORT_NID_TABLE_MISSING", stderr.getvalue())
+
+    def test_ghidra_crosscheck_traps_named_analyzer_import_boundary(self):
+        import ghidra_crosscheck
+        base = 0x08804000
+        blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        import_section = elf.sec(".lib.stub")
+        self.assertIsNotNone(import_section)
+        malformed = bytearray(blob)
+        struct.pack_into("<I", malformed, import_section["off"] + 12, 0)
+
+        with tempfile.TemporaryDirectory(prefix="ghidra-import-boundary-") as temp:
+            path = Path(temp) / "synthetic.elf"
+            path.write_bytes(malformed)
+            csv_path = Path(temp) / "dummy.csv"
+            csv_path.write_text("# imageBase=0x08804000\nentry,size,name,thunk\n0x08804000,16,func,0\n", encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = ghidra_crosscheck.main([
+                    "ghidra_crosscheck.py", "--elf", os.fspath(path), "--csv", os.fspath(csv_path),
+                ])
+            self.assertEqual(status, 1)
+            self.assertTrue(stderr.getvalue().startswith("ANALYZER_"))
+
     def test_psp_import_table_is_reconstructed_when_section_names_are_missing(self):
         base = 0x08804000
         image, _stub = build_synthetic_import_prx(b"sceSynthetic", base)
@@ -253,8 +523,10 @@ class TestImportNameSafety(unittest.TestCase):
         last_addr = elf.BASE + len(elf.mem) - 1
         struct.pack_into("<I", elf.mem, elf.STUB - elf.BASE, last_addr)
         elf.mem[-1] = ord("X")
-        with self.assertRaisesRegex(ValueError, "leaves mapped input"):
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
             imports_tool.parse_imports(elf)
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED")
+        self.assertIn("leaves mapped input", str(raised.exception))
 
     def test_truncated_module_info_is_rejected(self):
         elf = FakeElf(b"sceDisplay")

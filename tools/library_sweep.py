@@ -40,6 +40,13 @@ _SWEEP_TITLE_JSON_MAX_DEPTH = 32
 _SWEEP_TITLE_JSON_MAX_MEMBERS = 262144
 _SWEEP_TITLE_JSON_MAX_ITEMS = 262144
 _SWEEP_TITLE_JSON_MAX_NODES = 1048576
+# The analyzer-diagnostic sidecar is a small private payload containing only
+# metadata and a diagnostic trimmed to 300 characters.
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_BYTES = 8 * 1024
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_DEPTH = 8
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_MEMBERS = 32
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_ITEMS = 32
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_NODES = 64
 # Resume reports have one row per discovered ISO and no input-count ceiling.
 # The limits admit the tested 10,000 rich-row checkpoint and larger sweeps; the
 # writer applies the same limits before replacing files.
@@ -208,6 +215,7 @@ class RouteOutcome:
     stage_durations_ms: dict | None = None
     build_log_path: str | None = None
     build_diagnostic: str | None = None
+    analyzer_diagnostic: str | None = None
 
 
 def _utc_now() -> str:
@@ -664,6 +672,10 @@ def _run_bringup(
         )
     progress = _read_bringup_progress(progress_path)
     _active_stage, _active_elapsed_ms, durations = _progress_stage_details(progress)
+    report_stages = report.get("stages")
+    analyze_stage = (
+        report_stages.get("analyze") if isinstance(report_stages, dict) else None
+    )
     return RouteOutcome(
         report,
         return_code=process.returncode,
@@ -671,6 +683,11 @@ def _run_bringup(
         stage_durations_ms=durations,
         build_log_path=str(build_log_path),
         build_diagnostic=_first_build_diagnostic(build_log_path),
+        analyzer_diagnostic=(
+            _read_private_analyzer_diagnostic(private_import_report_path)
+            if isinstance(analyze_stage, dict) and analyze_stage.get("status") == "FAIL"
+            else None
+        ),
     )
 
 
@@ -744,6 +761,27 @@ def _read_private_nid_rows(sidecar_path: Path, report: dict | None) -> tuple[lis
         if isinstance(stages, dict) and stages.get("analyze", {}).get("status") == "PASS":
             return [], "UNAVAILABLE"
     return [], "NOT_REACHED"
+
+
+def _read_private_analyzer_diagnostic(sidecar_path: Path) -> str | None:
+    """Read the bounded first analyzer diagnostic from the private sidecar."""
+    try:
+        payload = package_cache.read_bounded_json(
+            sidecar_path,
+            max_bytes=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_BYTES,
+            max_depth=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_DEPTH,
+            max_members=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_MEMBERS,
+            max_items=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_ITEMS,
+            max_nodes=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_NODES,
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return None
+    diagnostic = payload.get("analyzer_diagnostic")
+    if not isinstance(diagnostic, str) or not diagnostic.strip() or len(diagnostic) > 300:
+        return None
+    return " ".join(diagnostic.split())
 
 
 def _furthest_stage(report: dict | None, progress: dict | None = None) -> str:
@@ -1229,6 +1267,11 @@ def _validate_sweep_rows(rows: object) -> None:
             not isinstance(diagnostic, str) or len(diagnostic) > 300
         ):
             raise ValueError(f"sweep row {index} build_diagnostic is invalid")
+        analyzer_diagnostic = row.get("analyzer_diagnostic")
+        if analyzer_diagnostic is not None and (
+            not isinstance(analyzer_diagnostic, str) or len(analyzer_diagnostic) > 300
+        ):
+            raise ValueError(f"sweep row {index} analyzer_diagnostic is invalid")
         log_path = row.get("build_log_path")
         if log_path is not None and (
             not isinstance(log_path, str) or not log_path or len(log_path) > 4096
@@ -1601,6 +1644,13 @@ def run_sweep(
             ):
                 row["build_log_path"] = outcome.build_log_path
                 row["build_diagnostic"] = outcome.build_diagnostic
+            analyze_stage = stages.get("analyze")
+            if (
+                isinstance(analyze_stage, dict)
+                and analyze_stage.get("status") == "FAIL"
+                and outcome.analyzer_diagnostic
+            ):
+                row["analyzer_diagnostic"] = outcome.analyzer_diagnostic
         rows_by_key[key] = row
         run_count += 1
         _write_outputs(

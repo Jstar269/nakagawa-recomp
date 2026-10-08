@@ -36,6 +36,7 @@ are produced.  No instruction text is reproduced.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from analyze import (
@@ -47,6 +48,7 @@ from analyze import (
     is_hard_terminator,
     trace_function,
 )
+from imports import ImportTableError, format_boundary
 
 SP = 29
 RA = 31
@@ -1089,7 +1091,11 @@ def main(argv):  # pragma: no cover - operator entry point
     args = parser.parse_args(argv[1:])
 
     elf = Elf(args.elf, base=args.base)
-    starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
+    try:
+        starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
+    except ImportTableError as exc:
+        sys.stderr.write(f"{format_boundary(exc)}\n")
+        return 1
     print(f"analyzer starts: {len(starts)}")
 
     for addr in args.addr:

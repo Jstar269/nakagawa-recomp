@@ -233,9 +233,13 @@ def export_function(elf_path: str, addr: int, base: int, outdir: Path,
     if TOOLS_DIR not in sys.path:
         sys.path.insert(0, TOOLS_DIR)
     import analyze  # noqa: E402  (repo tool, resolved via sys.path above)
+    from imports import ImportTableError, format_boundary  # noqa: E402
 
     elf = analyze.Elf(elf_path, base=base)
-    starts, ranges = analyze.analyze(elf, extra_spans=analyze.analyzer_span_from_env())
+    try:
+        starts, ranges = analyze.analyze(elf, extra_spans=analyze.analyzer_span_from_env())
+    except ImportTableError as exc:
+        raise SystemExit(format_boundary(exc)) from exc
     if addr not in set(starts):
         near = sorted(s for s in starts if abs(s - addr) <= 0x400)
         hint = ", ".join(f"{s:#x}" for s in near[:6]) or "none within 0x400"

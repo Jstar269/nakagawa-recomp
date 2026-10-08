@@ -2269,11 +2269,37 @@ def _sanitized_checks(preflight: dict) -> list[dict]:
 _STAGE_FAILURE_CLASS = {
     "inspect": "INVALID_ISO",
     "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
-    "analyze": "ANALYSIS_FAILED",
+    "analyze": "ANALYZER_FAILURE_UNCLASSIFIED",
     "codegen": "CODEGEN_FAILED",
     "compile": "COMPILE_FAILED",
     "build_package": "BUILD_PACKAGE_FAILED",
     "launch": "LAUNCH_FAILED",
+}
+
+_ANALYZER_BOUNDARY_MESSAGES = {
+    "ANALYZER_FAILURE_UNCLASSIFIED": (
+        "The analyzer cannot classify this input yet. "
+        "This input is not supported yet."
+    ),
+    "ANALYZER_IMPORT_NID_TABLE_MISSING": (
+        "The PSP import table declares functions without NID data. "
+        "This import-table layout is not supported yet."
+    ),
+    "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED": (
+        "The PSP import table points to a library name outside file-backed input data. "
+        "This import-table layout is not supported yet."
+    ),
+    "ANALYZER_IMPORT_REGIONS_MISMATCH": (
+        "The PSP import stub and NID regions do not pair one-to-one. "
+        "This import-table layout is not supported yet."
+    ),
+    "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED": (
+        "PSP variable imports are not supported yet."
+    ),
+    "ANALYZER_IMPORT_TABLE_INVALID": (
+        "The PSP import table is invalid or outside mapped data. "
+        "This import-table layout is not supported yet."
+    ),
 }
 
 
@@ -2343,8 +2369,14 @@ def _write_bringup_report(report: dict, path: Path) -> bool:
     return True
 
 
-def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list[dict]) -> None:
-    """Write raw unsupported import NIDs for the private compatibility sweep only."""
+def _write_private_sweep_import_report(
+    path: Path,
+    work_dir: Path,
+    imports: list[dict],
+    *,
+    analyzer_diagnostic: str | None = None,
+) -> None:
+    """Write private sweep import evidence and an optional analyzer diagnostic."""
     resolved_work_dir = work_dir.resolve(strict=False)
     resolved_path = path.expanduser().resolve(strict=False)
     if not resolved_path.is_relative_to(resolved_work_dir):
@@ -2369,6 +2401,8 @@ def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list
             "nid_name": item.get("name"),
         })
     payload = {"schema_version": 1, "unsupported_imports": rows}
+    if analyzer_diagnostic:
+        payload["analyzer_diagnostic"] = " ".join(analyzer_diagnostic.split())[:300]
     _write_private_file(
         resolved_path,
         (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8"),
@@ -2407,6 +2441,12 @@ def _bringup_human_summary(report: dict) -> str:
             "form at titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
             "copy of your disc. The project does not provide decrypted executables. "
             "This boundary is in the works."
+        )
+    analyzer_message = _ANALYZER_BOUNDARY_MESSAGES.get(report["failure_class"])
+    if analyzer_message is not None:
+        return (
+            f"{cfw_prefix}Bring-up stopped at analyze: "
+            f"{report['failure_class']}. {analyzer_message}"
         )
     suffix = (
         "; related support is in the works"
@@ -3119,8 +3159,32 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 # that its NID detail was unavailable without changing the
                 # production bring-up result.
                 pass
-    except Exception:
-        fail_stage(report, "analyze", "ANALYSIS_FAILED", [308],
+    except Exception as exc:
+        analyzer_boundary = getattr(exc, "code", None)
+        failure = (
+            analyzer_boundary
+            if isinstance(analyzer_boundary, str)
+            and analyzer_boundary in _ANALYZER_BOUNDARY_MESSAGES
+            else "ANALYZER_FAILURE_UNCLASSIFIED"
+        )
+        diagnostic = (
+            f"{analyzer_boundary}: {type(exc).__name__}: {exc}"
+            if isinstance(analyzer_boundary, str)
+            else f"{type(exc).__name__}: {exc}"
+        )
+        if private_sweep_import_report is not None:
+            try:
+                _write_private_sweep_import_report(
+                    private_sweep_import_report,
+                    work_dir,
+                    [],
+                    analyzer_diagnostic=diagnostic,
+                )
+            except (OSError, ValueError):
+                # Private analyzer telemetry is optional and cannot change the
+                # fail-closed bring-up result.
+                pass
+        fail_stage(report, "analyze", failure, [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
