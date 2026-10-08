@@ -385,6 +385,103 @@ def _extract_iso_executable(iso_path: Path, selected: str, destination: Path) ->
         raise PackageBuildError(f"Could not extract the selected executable to the private cache: {exc}") from exc
 
 
+def _hash_iso_member(iso_path: Path, member: tuple[str, ...]) -> str | None:
+    """Hash one bounded ISO member without copying its contents into memory."""
+    try:
+        file_size = iso_path.stat().st_size
+        with iso_path.open("rb") as source:
+            extent = _lookup_iso_file(source, file_size, member)
+            if extent is None:
+                return None
+            lba, size = extent
+            if size <= 0 or size > MAX_EXECUTABLE_BYTES:
+                raise PackageBuildError("A source-media identity member exceeds the supported size bound.")
+            digest = hashlib.sha256()
+            offset = 0
+            while offset < size:
+                count = min(64 * 1024, size - offset)
+                block = _read_iso_extent(source, file_size, lba, size, offset, count)
+                if len(block) != count:
+                    raise PackageBuildError("A source-media identity member could not be read completely.")
+                digest.update(block)
+                offset += count
+            return digest.hexdigest()
+    except IsoInspectionError as exc:
+        raise PackageBuildError(f"Source-media identity member could not be read: {exc}") from exc
+    except OSError as exc:
+        raise PackageBuildError(f"Could not read the source media for title identity: {exc}") from exc
+
+
+def _source_iso_guest_components(guest_path: object) -> tuple[str, ...] | None:
+    if not isinstance(guest_path, str) or ":" not in guest_path:
+        return None
+    device, relative = guest_path.split(":", 1)
+    if relative.startswith("/"):
+        relative = relative[1:]
+    components = relative.split("/")
+    if not relative or any(not component for component in components):
+        raise PackageBuildError(
+            "Guest module path contains an empty component."
+        )
+    if device.casefold() not in {"disc0", "umd0"} or \
+            components[0].casefold() != "psp_game":
+        return None
+    return tuple(components)
+
+
+def _source_media_identity(iso_path: Path, selected: str,
+                           manifest: dict) -> dict:
+    executable_path = f"PSP_GAME/SYSDIR/{selected}"
+    executable_hash = _hash_iso_member(
+        iso_path, ("PSP_GAME", "SYSDIR", selected)
+    )
+    if executable_hash is None:
+        raise PackageBuildError(
+            f"Selected executable {selected} is not reachable in the source ISO."
+        )
+
+    source_modules = []
+    required_modules = []
+    for module in manifest.get("modules", []):
+        if not isinstance(module, dict):
+            raise PackageBuildError("A guest-prx manifest record is invalid.")
+        if module.get("role") != "guest-prx" or not module.get("required", False):
+            continue
+        name = module.get("name")
+        if not isinstance(name, str) or not name:
+            raise PackageBuildError(
+                "A required guest-prx manifest record is missing its name."
+            )
+        required_modules.append((name, module))
+
+    for name, module in sorted(required_modules, key=lambda item: item[0]):
+        members = []
+        guest_components = _source_iso_guest_components(module.get("guest_path"))
+        if guest_components:
+            members.append(guest_components)
+        members.extend((
+            ("PSP_GAME", "SYSDIR", name),
+            ("PSP_GAME", "SYSDIR", "PRX", name),
+            ("PSP_GAME", "USRDIR", name),
+            ("PSP_GAME", "USRDIR", "PRX", name),
+        ))
+        for member in dict.fromkeys(members):
+            digest = _hash_iso_member(iso_path, member)
+            if digest is None:
+                continue
+            source_modules.append({
+                "name": name,
+                "path": "/".join(member),
+                "sha256": digest,
+            })
+            break
+
+    return {
+        "executable": {"path": executable_path, "sha256": executable_hash},
+        "modules": source_modules,
+    }
+
+
 def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
     """Find bounded ELF/PRX candidates below the title's module roots."""
     file_size = iso_path.stat().st_size
@@ -408,7 +505,9 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     stream, file_size, entry.lba, entry.size, 0, header_size
                 )
                 if header.startswith(b"\x7fELF"):
-                    if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
+                    if not _elf32_mips_usable(
+                        stream, file_size, entry.lba, entry.size, module=True
+                    ):
                         kind = "unsupported"
                     else:
                         module_bytes = _read_iso_extent(
@@ -659,6 +758,22 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
     return manifest_path, manifest, None
 
 
+def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) -> None:
+    """Refuse a staged guest module the module checklist would not accept (#729).
+
+    Extraction and the checklist share one rule (``module=True``), so a module
+    the checklist reports as not ready is never packaged.  The rejected file is
+    removed so no half-usable copy stays in the package cache.
+    """
+    if _classify_decrypted_elf_file(path, module=True) == "PLAIN_MIPS_ELF32":
+        return
+    path.unlink(missing_ok=True)
+    raise PackageBuildError(
+        f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32 (#295); "
+        "supply a valid decrypted module."
+    )
+
+
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            module_dir_arg: Path | None,
                            default_module_dir: Path | None = None,
@@ -725,16 +840,13 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                 )
             if not copied_by_boundary:
                 _write_private_file(destination, source_path.read_bytes())
+            _require_plain_guest_module(destination, name, disc_name)
             continue
         extracted = False
         members = []
-        guest_path = module.get("guest_path")
-        if isinstance(guest_path, str) and ":" in guest_path:
-            device, relative = guest_path.split(":", 1)
-            guest_components = tuple(component for component in relative.split("/") if component)
-            if device.casefold() in {"disc0", "umd0"} and \
-                    guest_components[:1] and guest_components[0].casefold() == "psp_game":
-                members.append(guest_components)
+        guest_components = _source_iso_guest_components(module.get("guest_path"))
+        if guest_components:
+            members.append(guest_components)
         if members:
             file_size = iso_path.stat().st_size
             with iso_path.open("rb") as stream:
@@ -805,6 +917,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                                     _write_private_file(
                                         destination, title_target.read_bytes()
                                     )
+                                    _require_plain_guest_module(destination, name, disc_name)
                                     extracted = True
                                     break
                         else:
@@ -823,6 +936,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                             f"plain ELF; supply decrypted modules at {suggested} (#295). "
                             f"{boundary_detail or 'The disc copy is not a plain ELF.'}{key_hint}"
                         )
+                    _require_plain_guest_module(temporary, name, disc_name)
                     os.replace(temporary, destination)
                     extracted = True
                     break
@@ -1385,6 +1499,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             disc_version=metadata.version,
             param_sfo=dict(metadata.param_sfo_facts),
             container=dict(metadata.container_metadata),
+            source_media=_source_media_identity(iso_path, manifest_selected, manifest),
         )
         if requires_local_identity and recorded_identity is not None and not register_local_identity:
             identity_changes = package_cache.title_input_identity_changes(
@@ -1707,7 +1822,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         user_data_root = _user_data_root(
             Path(args.root) if args.root is not None else None
         )
-        meta = inspect_iso(args.iso)
+        from nk_core.title_registry import TitleRegistry
+
+        registry = TitleRegistry(include_defaults=True)
+        registry.load_local_manifests(user_data_root / "manifests")
+        meta = inspect_iso(args.iso, registry=registry,
+                           user_data_root=user_data_root)
+        profile_validation = registry.profile_refusal_for_disc(meta.disc_id)
         preflight = inspect_compatibility_preflight(
             args.iso, metadata=meta, runtime_root=user_data_root
         )
@@ -1722,8 +1843,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "region": meta.region,
         "volume_id": meta.volume_id,
         "size_bytes": meta.size_bytes,
+        "catalogued": meta.matched_profile is not None,
         "supported": meta.is_supported,
         "matched_profile": meta.matched_profile.id if meta.matched_profile else None,
+        "profile_validation": profile_validation,
         "compatibility_preflight": preflight,
     }
     if args.json:
@@ -1732,9 +1855,12 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         print(f"Disc ID:    {meta.disc_id}")
         print(f"Title:      {meta.title}")
         print(f"Region:     {meta.region}")
-        print(f"Catalogued: {'YES' if meta.is_supported else 'NO'}")
+        print(f"Catalogued: {'YES' if meta.matched_profile else 'NO'}")
+        print(f"Supported:  {'YES' if meta.is_supported else 'NO'}")
         if meta.matched_profile:
             print(f"Profile:    {meta.matched_profile.name} ({meta.matched_profile.id})")
+        if profile_validation:
+            print(f"Profile validation: {profile_validation}")
         if preflight.get("modified_dump_cfw_loader"):
             print(f"Game executable: {preflight['selected_executable_source']}")
             print(f"Analysis input: {preflight['selected_executable'] or 'none'}")
@@ -2012,12 +2138,85 @@ def _sanitized_checks(preflight: dict) -> list[dict]:
     return checks
 
 
-def _write_bringup_report(report: dict, path: Path) -> None:
-    validate_bringup_report(report)
+#: Failure class recorded when a report carries a class the schema does not know.
+#: The stage reached still names where the run stopped; the report itself cannot
+#: repeat a class outside its closed vocabulary, so REPORT_SCHEMA_INVALID names the
+#: discrepancy in this run's output instead.
+_STAGE_FAILURE_CLASS = {
+    "inspect": "INVALID_ISO",
+    "prepare_import": "EXPERIMENTAL_IMPORT_FAILED",
+    "analyze": "ANALYSIS_FAILED",
+    "codegen": "CODEGEN_FAILED",
+    "compile": "COMPILE_FAILED",
+    "build_package": "BUILD_PACKAGE_FAILED",
+    "launch": "LAUNCH_FAILED",
+}
+
+
+def _minimal_valid_bringup_report(report: dict) -> dict:
+    """Return a schema-valid report carrying every field of ``report`` that validates.
+
+    A schema violation must not erase the evidence the run did collect: the stage
+    reached, its status and its failure class survive whenever they are legal, and
+    so do the other valid fields.  A class the schema does not know is replaced by
+    the stage's failure class so the report never claims success for a failed run.
+    """
+    minimal = _new_bringup_report()
+    schema = json.loads(BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
+    properties = schema.get("properties", {})
+    for key, value in report.items():
+        property_schema = properties.get(key)
+        if property_schema is None:
+            continue
+        try:
+            _validate_schema_value(value, property_schema, schema, f"report.{key}")
+        except ValueError:
+            continue
+        minimal[key] = value
+    original_class = report.get("failure_class")
+    if (
+        isinstance(original_class, str)
+        and original_class != "NONE"
+        and minimal["failure_class"] == "NONE"
+    ):
+        stage = minimal["reached_stage"]
+        minimal["failure_class"] = _STAGE_FAILURE_CLASS.get(stage, "INVALID_ISO")
+        if stage in minimal["stages"] and minimal["stages"][stage]["status"] != "FAIL":
+            minimal["stages"][stage] = {"status": "FAIL", "duration_ms": 0}
+    return minimal
+
+
+def _write_bringup_file(report: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _write_bringup_report(report: dict, path: Path) -> bool:
+    """Write ``report``, degrading to a minimal valid report when validation fails.
+
+    Returns True only when the complete report was written.  A schema violation is
+    reported under the REPORT_SCHEMA_INVALID boundary together with its validation
+    error and never escapes as a traceback that would leave the run with no report.
+    """
+    try:
+        validate_bringup_report(report)
+    except ValueError as exc:
+        minimal = _minimal_valid_bringup_report(report)
+        _write_bringup_file(minimal, path)
+        detail = str(exc)
+        original_class = report.get("failure_class")
+        if isinstance(original_class, str) and original_class != minimal["failure_class"]:
+            detail = f"{detail}; failure class {original_class} is not in the report schema"
+        print(
+            "REPORT_SCHEMA_INVALID: the bring-up report failed schema validation "
+            f"({detail}); a minimal report naming the stage reached was written "
+            "instead, so the full result for this run is not available."
+        )
+        return False
+    _write_bringup_file(report, path)
+    return True
 
 
 def _write_private_sweep_import_report(path: Path, work_dir: Path, imports: list[dict]) -> None:
@@ -2447,6 +2646,21 @@ def _count_instructions(sources: list[dict]) -> int:
                for start, end in source.get("ranges", []))
 
 
+def _opcode_identity_report_name(mnemonic) -> str:
+    """Project an analyzer opcode identity onto the report schema's key pattern.
+
+    ``assets/bringup_report.schema.json`` allows only ``^[A-Z][A-Z0-9_.]*$`` as a
+    ``counts.unsupported_opcodes`` key, while analyzer identities carry separators
+    (``regimm-other``).  The projection is deterministic: upper-case, then every
+    character outside ``[A-Z0-9_.]`` becomes ``_``, so the same identity always
+    reports the same name.
+    """
+    token = re.sub(r"[^A-Z0-9_.]", "_", str(mnemonic).upper())
+    if not token or not ("A" <= token[0] <= "Z"):
+        token = f"OP_{token}"
+    return token
+
+
 def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dict[str, int]:
     import analyze
     import title_codegen_plan
@@ -2459,7 +2673,7 @@ def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dic
         if row.get("word") is None:
             continue
         word = int(row["word"], 16)
-        mnemonic = analyze._cfg_opcode_identity(word)["mnemonic"].upper()
+        mnemonic = _opcode_identity_report_name(analyze._cfg_opcode_identity(word)["mnemonic"])
         counts[mnemonic] += 1
     return dict(sorted(counts.items()))
 
@@ -2622,7 +2836,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 if title_folder is not None:
                     candidate_file = title_folder / candidate["name"]
                     if candidate_file.is_file() and \
-                            _classify_decrypted_elf_file(candidate_file) == "PLAIN_MIPS_ELF32":
+                            _classify_decrypted_elf_file(candidate_file, module=True) == "PLAIN_MIPS_ELF32":
                         folder_copy = candidate_file
                 if folder_copy is not None:
                     module_sources.append((candidate, "folder", folder_copy))
@@ -3030,8 +3244,10 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         fail_stage(report, "launch", "LAUNCH_FAILED", [297],
                       int((time.perf_counter() - started) * 1000))
 
-    _write_bringup_report(report, report_path)
+    report_written = _write_bringup_report(report, report_path)
     print(_bringup_human_summary(report))
+    if not report_written:
+        return 1
     return 0 if report["failure_class"] == "NONE" else 1
 
 
@@ -3082,7 +3298,8 @@ def main() -> int:
     p_launch = subparsers.add_parser("launch", help="Plan launch arguments for a prepared game")
     p_launch.add_argument("game_dir", help="Path to prepared game directory (containing manifest.json)")
     p_launch.add_argument("--profile", default="Standard", choices=["Standard", "Performance", "Benchmark", "Diagnostics"])
-    p_launch.add_argument("--fps-cap", type=int, default=30)
+    p_launch.add_argument("--fps-cap", type=int, default=-1,
+                          help="Host presentation cap (-1 uses PSP scanout pacing)")
     p_launch.add_argument("--software", action="store_true", help="Use software GE rasterizer")
     p_launch.set_defaults(func=cmd_launch)
 

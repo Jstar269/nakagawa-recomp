@@ -134,7 +134,7 @@ typedef struct {
     bool fullscreen;
     bool launcher_fullscreen;
     bool vsync;
-    int fps_cap;          /* 30, 60, 0 = uncapped */
+    int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
     bool launcher_window_maximized;
@@ -279,6 +279,10 @@ typedef struct {
        launcher's normal current-directory default. Keeping it on the app makes
        demo and test launches use the same root as PLAY NOW. */
     char runtime_root[MAX_PATH_LEN];
+    /* Validation report for refused user title profiles. Lines are keyed by
+       their declared disc ID so inspection and the CLI can explain the same
+       profile decision without treating it as a catalog entry. */
+    char title_manifest_report[2048];
     /* Directory holding the player executable; the package builder finds
        tools/nk_cli.py relative to it. Empty when unknown. */
     char install_root[MAX_PATH_LEN];
@@ -370,6 +374,20 @@ int player_app_ttf_library_candidates(const char *exe_dir,
 bool player_module_name_is_safe(const char *name);
 bool player_game_is_showcase(const GameRecord *game);
 void player_app_set_runtime_root(PlayerApp *app, const char *root);
+bool player_app_title_profile_refusal_for_disc(
+    const PlayerApp *app,
+    const char *disc_id,
+    char *reason,
+    size_t reason_size
+);
+NkLaunchDataRootStatus player_app_game_data_root_status(
+    const PlayerApp *app,
+    const GameRecord *game,
+    char *resolved_path,
+    size_t resolved_path_size,
+    char *reason,
+    size_t reason_size
+);
 NkRuntimePackageStatus player_app_validate_runtime_package(
     const PlayerApp *app,
     const GameRecord *game,
@@ -410,7 +428,7 @@ void player_app_runtime_package_cache_store(
 uint64_t player_app_ui_test_validation_calls(void);
 #endif
 
-#define NK_PLAYER_SETTINGS_SCHEMA_VERSION 1
+#define NK_PLAYER_SETTINGS_SCHEMA_VERSION 2
 
 /* Settings mutations. All values are validated and clamped; invalid inputs
  * are ignored so a stray click or keypress can never corrupt launch config.

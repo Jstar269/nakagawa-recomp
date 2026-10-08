@@ -1523,6 +1523,84 @@ static void test_conformance_corpus(void) {
         run_corpus_case(&cases[i]);
 }
 
+/* Issue #279: the presentation clock must stay on the authored timeline for a whole
+ * synthetic run, not just for a handful of samples.  The step between two consecutive
+ * timestamps is a truncated integer (2048 samples at 44100 Hz is 4179.59 ticks, so the
+ * audio step is 4180), and a clock that only ever extrapolated would accumulate that
+ * truncation forever.  The anchor rule -- a packet that carries a timestamp re-times the
+ * clock -- is what bounds the error, so this drives ~74 minutes of audio blocks and ~55
+ * minutes of pictures through the rule and asserts on every single step that the time is
+ * known once anchored, never moves backwards at a delivery boundary, and stays within a
+ * few ticks of the sample-accurate authored time at the end of the run as well as in the
+ * middle: no accumulation, no drift. */
+static void test_pts_advance_no_drift_over_long_run(void) {
+    const int64_t blocks = 100000;          /* ~74 min of 2048-sample blocks at 44.1 kHz */
+    const int64_t anchor_every = 8;         /* the authored A/V fixture's anchor spacing */
+
+    /* Time is unknown until the first timestamp: extrapolating before an anchor would
+     * invent a presentation time for a picture the stream never timed. */
+    int64_t c = 0;
+    int valid = 0;
+    for (int i = 0; i < 1000; i++)
+        if (sr_psmf_pts_advance(&c, &valid, 0, 0, PSMF_AUDIO_PTS_STEP) != -1) valid = -1;
+    CHECK(valid == 0, "a clock with no timestamp stays unknown instead of inventing a time");
+
+    /* Audio: anchored every 8 blocks on the authored (sample-accurate) cadence. */
+    int64_t clock = 0, prev = 0, worst_dev = 0, first_back = -1;
+    valid = 0;
+    for (int64_t j = 0; j < blocks; j++) {
+        int64_t authored = (int64_t)(((uint64_t)j * 2048ull * 90000ull + 22050ull) / 44100ull);
+        int64_t at = sr_psmf_pts_advance(&clock, &valid, (j % anchor_every) == 0,
+                                         authored, PSMF_AUDIO_PTS_STEP);
+        if (at != clock || !valid) { first_back = -2; break; }
+        if (j > 0 && clock <= prev && first_back < 0) first_back = j;
+        int64_t dev = clock - authored;
+        if (dev < 0) dev = -dev;
+        if (dev > worst_dev) worst_dev = dev;
+        prev = clock;
+    }
+    CHECK(first_back != -2, "the anchored clock reports its value at every block");
+    CHECK(first_back < 0,
+          "the audio presentation time never moves backwards at a delivery boundary");
+    CHECK(worst_dev <= 4,
+          "100000 anchored audio blocks stay within 4 ticks of the authored timeline: "
+          "anchors re-sync, the truncated step cannot accumulate");
+
+    /* Video: one anchor, then a long unanchored stretch of pictures.  The frame step is
+     * exact, so the extrapolated series must equal the authored one bit for bit. */
+    int64_t vc = 0;
+    int vvalid = 0, off_by_one = -1;
+    if (sr_psmf_pts_advance(&vc, &vvalid, 1, 0, PSMF_VIDEO_PTS_STEP) != 0 || !vvalid)
+        off_by_one = -2;
+    for (int64_t k = 1; k < blocks; k++) {
+        if (sr_psmf_pts_advance(&vc, &vvalid, 0, 0, PSMF_VIDEO_PTS_STEP) !=
+            k * PSMF_VIDEO_PTS_STEP) { off_by_one = (int)k; break; }
+    }
+    CHECK(off_by_one == -1,
+          "100000 pictures extrapolated from one anchor keep the authored frame time exactly");
+
+    /* Sparse anchors: the further apart anchors are, the more the truncated step can lean
+     * away from the authored cadence before each anchor corrects it.  The deviation must
+     * stay under the anchor spacing -- it is bounded by the gap, never by the run length. */
+    for (int64_t gap = 64; gap <= 4096; gap *= 64) {
+        int64_t ac = 0, aprev = 0, aworst = 0, aback = -1;
+        valid = 0;
+        for (int64_t j = 0; j < blocks; j++) {
+            int64_t authored = (int64_t)(((uint64_t)j * 2048ull * 90000ull + 22050ull) / 44100ull);
+            sr_psmf_pts_advance(&ac, &valid, (j % gap) == 0, authored, PSMF_AUDIO_PTS_STEP);
+            if (!valid) { aback = -2; break; }
+            if (j > 0 && ac <= aprev && aback < 0) aback = j;
+            int64_t dev = ac - authored;
+            if (dev < 0) dev = -dev;
+            if (dev > aworst) aworst = dev;
+            aprev = ac;
+        }
+        CHECK(aback == -1, "a sparsely anchored clock still never moves backwards");
+        CHECK(aworst < gap + 2,
+              "deviation between anchors stays under the anchor spacing, not the run length");
+    }
+}
+
 int main(int argc, char **argv) {
     unsigned fuzz_iterations = 0;
     for (int i = 1; i < argc; i++) {
@@ -1548,6 +1626,7 @@ int main(int argc, char **argv) {
     test_mpeg1_pack_does_not_read_past_stream();
     test_reserved_pack_prefix_fails_closed();
     test_presentation_base_bounds();
+    test_pts_advance_no_drift_over_long_run();
     test_conformance_corpus();
     if (fuzz_iterations) test_seeded_mutation(fuzz_iterations);
     printf("psmf_producer_selftest: %d checks, %d failures\n", checks, failures);

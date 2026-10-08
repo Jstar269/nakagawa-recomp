@@ -10,9 +10,11 @@ import contextlib
 from dataclasses import replace
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -908,8 +910,11 @@ class TestProductionSmokePackage(unittest.TestCase):
             self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
 
         env = os.environ.copy()
+        selected_executable = self.root / "EBOOT.BIN"
+        shutil.copyfile(self.fixture_dir / "guest.prx", selected_executable)
+        command = self.package_command(executable=selected_executable)
         first = subprocess.run(
-            self.package_command(), cwd=ROOT, env=env, capture_output=True, text=True
+            command, cwd=ROOT, env=env, capture_output=True, text=True
         )
         self.skip_if_toolchain_unusable(first)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
@@ -952,7 +957,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         )
 
         second = subprocess.run(
-            self.package_command(), cwd=ROOT, env=env, capture_output=True, text=True
+            command, cwd=ROOT, env=env, capture_output=True, text=True
         )
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         self.assertEqual(package_path.read_bytes(), package_bytes)
@@ -1341,6 +1346,7 @@ class TestSanitizedBringup(unittest.TestCase):
     def _run_case(
         self, failure=None, *, launch_code=0, launch_output="", timeout=False,
         flight_events=None, flight_dropped=0, instruction_trace=False,
+        unsupported_opcodes=None,
     ):
         case_root = self.root / (failure or "success")
         report_path = case_root / "bringup.json"
@@ -1421,6 +1427,10 @@ class TestSanitizedBringup(unittest.TestCase):
             stack.enter_context(mock.patch.object(
                 nk_cli, "cmd_build_package", side_effect=fake_package_build
             ))
+            if unsupported_opcodes is not None:
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "_count_unsupported_opcodes", return_value=unsupported_opcodes
+                ))
             if failure == "prepare_import":
                 stack.enter_context(mock.patch.object(
                     nk_cli, "write_experimental_profile", side_effect=RuntimeError("synthetic refusal")
@@ -2374,6 +2384,123 @@ class TestSanitizedBringup(unittest.TestCase):
         report["unsupported_imports"] = [{"library": "sceKernel", "nid_name": "0x08800000"}]
         with self.assertRaises(ValueError):
             nk_cli.validate_bringup_report(report)
+
+    def test_illegal_opcode_key_never_crashes_the_route_or_loses_the_report(self):
+        status, report = self._run_case(unsupported_opcodes={"REGIMM-OTHER": 1})
+        self.assertNotEqual(status, 0)
+        nk_cli.validate_bringup_report(report)
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["counts"]["unsupported_opcodes"], {})
+        self.assertTrue(
+            all(stage["status"] == "PASS" for stage in report["stages"].values())
+        )
+
+
+class TestBringupReportOpcodeNames(unittest.TestCase):
+    """A bring-up report must always land, with schema-legal opcode keys.
+
+    The library sweep classifies a title from that report, so a report rejected by
+    its own schema hides the stage and class the run reached.  The
+    ``counts.unsupported_opcodes`` keys come from analyzer opcode identities, and
+    some identities (``regimm-other``) carry characters the schema's
+    ``^[A-Z][A-Z0-9_.]*$`` key pattern forbids.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="nk-bringup-opcodes-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def _key_pattern(self) -> str:
+        schema = json.loads(nk_cli.BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
+        return (
+            schema["properties"]["counts"]["properties"]["unsupported_opcodes"]
+            ["propertyNames"]["pattern"]
+        )
+
+    def test_every_cfg_opcode_identity_normalizes_to_a_schema_legal_name(self):
+        pattern = self._key_pattern()
+        names = set()
+        for op in range(64):
+            rs_values = range(32) if op in (0x11, 0x12) else range(1)
+            for rs in rs_values:
+                for rt in range(32):
+                    for funct in range(64):
+                        word = (op << 26) | (rs << 21) | (rt << 16) | funct
+                        mnemonic = analyze._cfg_opcode_identity(word)["mnemonic"]
+                        name = nk_cli._opcode_identity_report_name(mnemonic)
+                        if re.fullmatch(pattern, name) is None:
+                            self.fail(
+                                f"opcode identity {mnemonic!r} reports as {name!r}, "
+                                f"which is outside {pattern}"
+                            )
+                        names.add(name)
+        self.assertIn("REGIMM_OTHER", names)
+        self.assertIn("OP_3F", names)
+
+    def test_regimm_other_opcode_word_produces_a_valid_report(self):
+        word = 0x041F0000  # REGIMM with an unhandled rt: identity "regimm-other"
+
+        class FakeElf:
+            def read_at_vaddr(self, address, size):
+                return word.to_bytes(4, "little")
+
+        sources = [{
+            "name": "executable region",
+            "ranges": [(0x08800000, 0x08800040)],
+            "elf": FakeElf(),
+        }]
+        stubs = self.root / "synthetic_recomp_stubs.txt"
+        stubs.write_text("08800000 unsupported opcode at 0x08800004\n", encoding="ascii")
+
+        counts = nk_cli._count_unsupported_opcodes(stubs, sources)
+        self.assertEqual(counts, {"REGIMM_OTHER": 1})
+
+        report = nk_cli._new_bringup_report()
+        report["counts"]["unsupported_opcodes"] = counts
+        report_path = self.root / "bringup.json"
+        self.assertTrue(nk_cli._write_bringup_report(report, report_path))
+        written = json.loads(report_path.read_text(encoding="utf-8"))
+        nk_cli.validate_bringup_report(written)
+        self.assertEqual(written["counts"]["unsupported_opcodes"], {"REGIMM_OTHER": 1})
+
+    def test_forced_schema_violation_still_writes_a_valid_minimal_report(self):
+        report = nk_cli._new_bringup_report()
+        report["counts"]["functions"] = 4
+        report["counts"]["unsupported_opcodes"] = {"REGIMM-OTHER": 1}
+        nk_cli._fail_bringup(report, "codegen", "CODEGEN_FAILED", [296], 12)
+        report_path = self.root / "schema-invalid.json"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            written = nk_cli._write_bringup_report(report, report_path)
+
+        self.assertFalse(written)
+        message = stdout.getvalue()
+        self.assertIn("REPORT_SCHEMA_INVALID", message)
+        self.assertIn("report.counts.unsupported_opcodes property name", message)
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        nk_cli.validate_bringup_report(payload)
+        self.assertEqual(payload["reached_stage"], "codegen")
+        self.assertEqual(payload["stages"]["codegen"], {"status": "FAIL", "duration_ms": 12})
+        self.assertEqual(payload["failure_class"], "CODEGEN_FAILED")
+        self.assertEqual(payload["issue_numbers"], [296])
+
+    def test_unknown_failure_class_is_named_and_replaced_by_a_stage_class(self):
+        report = nk_cli._new_bringup_report()
+        nk_cli._fail_bringup(report, "launch", "SYNTHETIC_UNREPRESENTABLE_CLASS", [297], 5)
+        report_path = self.root / "unknown-class.json"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            written = nk_cli._write_bringup_report(report, report_path)
+
+        self.assertFalse(written)
+        self.assertIn("REPORT_SCHEMA_INVALID", stdout.getvalue())
+        self.assertIn("SYNTHETIC_UNREPRESENTABLE_CLASS", stdout.getvalue())
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        nk_cli.validate_bringup_report(payload)
+        self.assertEqual(payload["reached_stage"], "launch")
+        self.assertEqual(payload["stages"]["launch"]["status"], "FAIL")
+        self.assertEqual(payload["failure_class"], "LAUNCH_FAILED")
 
 
 class TestProductStatusCopy(unittest.TestCase):

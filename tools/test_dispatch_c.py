@@ -186,8 +186,17 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertIn("test_historical_target_shapes_fail_closed", isolation)
 
     def test_rejections_name_the_semantic_boundary_and_tracker(self):
-        self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #285", RECOMP_C)
+        self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #308", RECOMP_C)
         self.assertIn('return "target-not-executable";', RECOMP_C)
+        self.assertIn('getenv("SR_BOOT_EVENT_FILE")', RECOMP_C)
+        self.assertIn(
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=308",
+            RECOMP_C,
+        )
+        self.assertIn(
+            "dispatch_record_semantic_stop(dispatch_semantic_boundary_name(interp_result));",
+            RECOMP_C,
+        )
 
     def test_broad_swallow_mutation_is_detected(self):
         # Mutation proof: inserting one representative old-style range predicate into

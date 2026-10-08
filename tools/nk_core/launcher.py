@@ -118,6 +118,35 @@ class RuntimeLauncher:
                 )
         return names
 
+    def _resolve_data_root(
+        self, title_profile: Any, game_dir: Path, iso_path: str
+    ) -> Optional[Path]:
+        """Resolve the selected title's declared host-data directory.
+
+        Keep the candidate order aligned with nk_launch_prepare_session:
+        prepared title data, the runtime root, then the extracted ISO tree.
+        An empty declaration means the title has no separate data directory.
+        """
+        declared = title_profile.archive_relpath
+        if not declared:
+            return None
+        relative = Path(*declared.split("/"))
+        candidates = [game_dir / relative, self.repo_root / relative]
+        if iso_path:
+            iso_dir = Path(iso_path).resolve(strict=False).parent
+            candidates.append(
+                iso_dir / "EXTRACTED" / "PSP_GAME" / "USRDIR" / relative
+            )
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate.resolve()
+        raise RuntimeLaunchError(
+            f"This game needs its data folder, but '{declared}' was not found "
+            "beside its staged files, in the runtime data folder, or under "
+            "the extracted disc folder. Add the game's data files and try "
+            "again (#308)."
+        )
+
     def _resolve_identity(self, manifest: Dict[str, Any]) -> Any:
         """Bind the session manifest to exactly one validated title profile.
 
@@ -237,7 +266,7 @@ class RuntimeLauncher:
         self,
         game_dir: Path | str,
         profile: str = "Standard",
-        fps_cap: int = 30,
+        fps_cap: int = -1,
         gpu_ge: bool = True,
         software_render: bool = False,
         no_gui: bool = False,
@@ -325,11 +354,12 @@ class RuntimeLauncher:
                     "Manifest field 'boot_executable' must be a PSP executable filename."
                 )
             env["SR_BOOT_PATH"] = boot_path
-        env["SR_FPS_CAP"] = str(fps_cap)
+        env["SR_FPS_CAP"] = "native" if fps_cap == -1 else str(fps_cap)
         env["SR_GPU_GE"] = "0" if software_render else ("1" if gpu_ge else "0")
         env.pop("SR_DATAROOT", None)
-        data_root = g_dir / "extracted"
-        env["SR_DATAROOT"] = str(data_root)
+        data_root = self._resolve_data_root(title_profile, g_dir, iso_path)
+        if data_root is not None:
+            env["SR_DATAROOT"] = str(data_root)
         env.pop("SR_LOOSE_CONTENT_ROOTS", None)
         try:
             import title_manifest
