@@ -2921,7 +2921,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b58a84a809f3110b9c8675abadf5ff3114e621581d2c491cc1db8a49e82954a6"
+      "sha256": "e3af40ca8b196a83ae57a8587ee5517fdc3db57a3e459f9e848a8ec913e3ea29"
     },
     {
       "path": "src/player/player_state.h",
@@ -5002,7 +5002,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b00ade2e5101b188433d6c6c435c9b6d17fdd2f62bf441e02b4470426e292a69"
+      "sha256": "633160405bbe1401ad4460cfcc233ff98406c785a34967103c62b51904908bef"
     },
     {
       "path": "src/rt/recomp.h",
@@ -5535,7 +5535,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7df8648257f7f7a9f9f9e17ba278a148fd48fecda69eb85d6464a0c8b1007ad"
+      "sha256": "4c4b50d9832eb31b513db558603fef19e77ec7c2a486c2a3fa39744f33ecab52"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -8410,7 +8410,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "27ec8ead7b1063a5e282c04a03c65117b3a6b58d00f9ce1db4944fac844ffd01"
+      "sha256": "b51a11579d52011f104821a93e20fbab371cd80506e8a0e54ca5e599d5da52f2"
     },
     {
       "path": "tools/test_nk_core.py",
