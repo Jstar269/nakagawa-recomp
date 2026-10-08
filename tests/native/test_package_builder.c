@@ -82,11 +82,11 @@ static void test_progress_line_parsing(void) {
     assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PACKAGE);
     assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_PASS);
 
-    const char *line_fail = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#295)\"}";
+    const char *line_fail = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable\"}";
     assert(package_builder_parse_progress_line(line_fail, strlen(line_fail), &ev));
     assert(ev.stage_enum == PACKAGE_BUILD_STAGE_PREFLIGHT);
     assert(ev.status_enum == PACKAGE_PROGRESS_STATUS_FAIL);
-    assert(strstr(ev.message, "#295") != NULL);
+    assert(strcmp(ev.message, "Encrypted executable") == 0);
 
     /* 2. Malformed or invalid lines */
     assert(!package_builder_parse_progress_line(NULL, 0, &ev));
@@ -207,13 +207,13 @@ static void test_state_machine_transitions(void) {
     /* Test failure transition */
     PackageBuildSession fail_session;
     package_builder_init_session(&fail_session, "ULES00123", "Encrypted Title");
-    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable (#308). Supply a matching local key or decrypted modules.\"}";
+    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable. Supply a matching local key or decrypted modules.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
     assert(fail_session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
     assert(fail_session.is_failed);
     assert(!fail_session.is_complete);
-    assert(strcmp(fail_session.failure_boundary, "Encrypted executable (#308). Supply a matching local key or decrypted modules.") == 0);
+    assert(strcmp(fail_session.failure_boundary, "Encrypted executable. Supply a matching local key or decrypted modules.") == 0);
 }
 
 static void test_output_line_circular_buffer(void) {

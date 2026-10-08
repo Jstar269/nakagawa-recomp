@@ -167,7 +167,7 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
 
     def test_prohibited_extension_passes_only_as_a_pinned_approved_binary(self):
-        # #557: project-authored PSPDEV build output may carry a guest-executable
+        # Project-authored PSPDEV build output may carry a guest-executable
         # suffix, but only as a reviewed release-manifest binary with matching bytes.
         rel = "fixtures/profile_zero/prebuilt/profile_zero_guest.prx"
         reason = publish_audit._forbidden_path(rel)
@@ -188,7 +188,7 @@ class TestPublishAudit(unittest.TestCase):
             "private/generated path", "approved_binary", comp, pinned))
 
     def test_local_only_keystore_path_class_fails_closed(self):
-        # Issue #295: a key file can never be committed or packaged, under
+        # A key file can never be committed or packaged, under
         # any directory, whatever it is called.
         for path in (
             "assets/psp-keyfile.json",
@@ -203,11 +203,11 @@ class TestPublishAudit(unittest.TestCase):
         # Outside the forbidden-prefix class, the key-file class names itself.
         self.assertEqual(
             publish_audit._forbidden_path("assets/psp-keyfile.json"),
-            "local-only key file (issue #295)",
+            "local-only key file",
         )
         self.assertEqual(
             publish_audit._forbidden_path("docs/example_keystore.json"),
-            "local-only key file (issue #295)",
+            "local-only key file",
         )
         # Engine sources and docs may carry the vocabulary without being key files.
         for path in (
@@ -511,7 +511,7 @@ class TestPublishAudit(unittest.TestCase):
             self.assertTrue(any(f.code == "LFS_MISMATCH" for f in findings))
 
     def test_lfs_attribute_policy_follows_selected_content_source(self):
-        # Issue #293: .gitattributes decides LFS findings, so it must be read
+        # .gitattributes decides LFS findings, so it must be read
         # from the SAME content source as the audited bytes. An index-vs-worktree
         # divergence in .gitattributes must change the verdict exactly when the
         # selected source changes, never silently.
@@ -2080,7 +2080,7 @@ class TestPrivateRootDetection(unittest.TestCase):
         self.assertEqual(violations, [], f"Tracked files contain configured private roots: {violations}")
 
     def test_out_of_band_private_root_boundary_matching(self):
-        """Issue #188 Finding 1 (O-01): out-of-band private root boundary lookahead."""
+        """Finding 1 (O-01): out-of-band private root boundary lookahead."""
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
             policy_file, export_file = hermetic_policy(repo, ["src/doc.md"])
@@ -2129,7 +2129,7 @@ class TestPrivateRootDetection(unittest.TestCase):
                     )
 
     def test_out_of_band_private_root_env_and_mode_support(self):
-        """Issue #188 Finding 1 (O-01): environment variable and index/worktree mode verification."""
+        """Finding 1 (O-01): environment variable and index/worktree mode verification."""
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
             policy_file, export_file = hermetic_policy(repo, ["src/app.py"])
@@ -2155,12 +2155,12 @@ class TestPrivateRootDetection(unittest.TestCase):
                 self.assertTrue(any(f.code == "LOCAL_PATH" and "out-of-band private root" in f.detail for f in findings_wt))
 
     def test_debt_budgets_pass_on_current_repo(self):
-        """Issue #188 Finding 11 (O-11): all current debt surfaces meet non-increasing budgets."""
+        """Finding 11 (O-11): all current debt surfaces meet non-increasing budgets."""
         findings = publish_audit._debt_budget_findings(publish_audit.ROOT)
         self.assertEqual(findings, [], f"Debt budget findings on current repo: {findings}")
 
     def test_debt_budgets_fail_on_ruff_increase(self):
-        """Issue #188 Finding 11 (O-11): Ruff rule-family growth fails the debt gate."""
+        """Finding 11 (O-11): Ruff rule-family growth fails the debt gate."""
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
             (repo / "pyproject.toml").write_text("[tool.ruff.lint]\nselect = ['E9', 'F63', 'F7', 'F82', 'F811']\n", encoding="utf-8")
@@ -2172,7 +2172,7 @@ class TestPrivateRootDetection(unittest.TestCase):
             self.assertIn("Ruff select rule families count 5 exceeds debt ceiling 4", details)
 
     def test_workspace_topology_conformance(self):
-        """Issue #188 Finding 9 (O-04): workspace topology conforms to CANONICAL_TREES.md."""
+        """Finding 9 (O-04): workspace topology conforms to CANONICAL_TREES.md."""
         ws_root = publish_audit.ROOT.parent
         if not (ws_root / "CANONICAL_TREES.md").is_file():
             self.skipTest("Parent directory is not Nakagawa workspace (running in isolated CI)")

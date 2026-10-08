@@ -160,7 +160,7 @@ Semantic handler census: **397** handlers across **21** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; close callback timing remains unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_fd_namespace
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
-  - Limitation: Memory Stick devctl callback events unmodeled (#281, #341)
+  - Limitation: Memory Stick devctl callback events unmodeled (#341)
 - **`h_IoGetAsyncStat`** (`sceIo`): `sceIoGetAsyncStat` (0xcb05f8d6)
   - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
@@ -220,7 +220,7 @@ Semantic handler census: **397** handlers across **21** API families, covering *
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
 - **`h_ReferThreadStatus`** (`sceKernel`): `sceKernelReferThreadStatus` (0x17c1684e)
-  - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#309)
+  - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
 - **`h_SysClock2USec`** (`sceKernel`): `sceKernelSysClock2USec` (0xba6b92e2)
@@ -257,7 +257,7 @@ Semantic handler census: **397** handlers across **21** API families, covering *
 #### Compatibility Handlers (Named Limitations)
 
 - **`h_UmdGetErrorStat`** (`sceUmd`): `sceUmdGetErrorStat` (0x20628e6f)
-  - Limitation: returns no error under virtual ISO drive; other drive-error states unmodeled (#281, #341)
+  - Limitation: returns no error under virtual ISO drive; other drive-error states unmodeled (#341)
 
 #### Controlled Unsupported Dedicated Handlers
 
