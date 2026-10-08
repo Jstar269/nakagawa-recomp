@@ -43,8 +43,18 @@ _Static_assert(
 #include <pspaudio.h>
 #include <pspgu.h>
 #include <pspgum.h>
+#if PSP_ORACLE_CASE == 66
+#include <pspreg.h>
+#endif
+#if PSP_ORACLE_CASE == 67
+#include <pspimpose_driver.h>
+int sceDisplaySetHoldMode(int mode);
+int sceDisplayWaitVblankStartMultiCB(unsigned int count);
+int sceImposeGetBatteryIconStatus(int *charging, int *icon_status);
+#endif
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* source_commit is device-reported build identity, not a host-side rewrite.
@@ -94,6 +104,13 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_DMAC_CELLS 58
 #define PSP_ORACLE_CASE_DELAY_ZERO 59
 #define PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0 60
+#define PSP_ORACLE_CASE_KERNEL_ALARM 61
+#define PSP_ORACLE_CASE_THREAD_SCHEDULER 62
+#define PSP_ORACLE_CASE_WAIT_OUTCOMES 63
+#define PSP_ORACLE_CASE_GE_BREAK_CONTINUE 64
+#define PSP_ORACLE_CASE_REFER_STATUS_SIZE 65
+#define PSP_ORACLE_CASE_REGISTRY_READONLY 66
+#define PSP_ORACLE_CASE_KERNEL_MISC 67
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -239,6 +256,20 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/dmac_cells_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
 #define PROBE_HOST0_LOG "host0:/delay_zero_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_ALARM
+#define PROBE_HOST0_LOG "host0:/kernel_alarm_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_SCHEDULER
+#define PROBE_HOST0_LOG "host0:/thread_scheduler_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_WAIT_OUTCOMES
+#define PROBE_HOST0_LOG "host0:/wait_outcomes_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
+#define PROBE_HOST0_LOG "host0:/ge_break_continue_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REFER_STATUS_SIZE
+#define PROBE_HOST0_LOG "host0:/refer_status_size_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
+#define PROBE_HOST0_LOG "host0:/registry_readonly_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
+#define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
 #endif
 
 #define PROBE_TEARDOWN_CAPACITY 64u
@@ -2589,7 +2620,8 @@ static void run_display_mask_duty(int emulated) {
 }
 #endif
 
-#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 
 /* Does the PSP GE make forward progress while CPU interrupt delivery is masked?
  *
@@ -2636,11 +2668,13 @@ static void run_display_mask_duty(int emulated) {
 
 static uint32_t s_ge_list[GE_TILES * 10 + 8] __attribute__((aligned(64)));
 static uint32_t s_ge_src[GE_TILE_W * GE_TILE_H] __attribute__((aligned(64)));
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
 static volatile int s_ge_finish_calls;
 static volatile int s_ge_signal_calls;
 
 static void ge_finish_cb(int id, void *arg) { (void)id; (void)arg; s_ge_finish_calls++; }
 static void ge_signal_cb(int id, void *arg) { (void)id; (void)arg; s_ge_signal_calls++; }
+#endif
 
 static uint32_t ge_cmd(uint32_t cmd, uint32_t payload) {
     return (cmd << 24) | (payload & 0x00ffffffu);
@@ -2672,6 +2706,7 @@ static uint32_t ge_build_list(uint32_t src, uint32_t dst_base) {
     return (uint32_t)((char *)w - (char *)s_ge_list);
 }
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK
 /* Paint every destination tile with the sentinel through the uncached mirror and
    confirm it reads back, so a failed pre-fill can never look like GE progress. */
 static int ge_prime_dst(uint32_t dst_base) {
@@ -2856,6 +2891,7 @@ static void run_display_ge_mask(int emulated) {
     ge_run_case(emulated, 1, "ge-mask-controlA-stall-held");
     ge_run_case(emulated, 0, "ge-mask-primary-masked-release");
 }
+#endif
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TRANSPORT_WRITE
@@ -5360,6 +5396,1028 @@ static void probe_teardown(int emulated) {
     for (;;) sceKernelSleepThread();
 }
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_ALARM
+static volatile uint32_t s_alarm_fired;
+static volatile uint32_t s_alarm_first_us;
+static volatile uint32_t s_alarm_second_us;
+static volatile uint32_t s_alarm_handler_us;
+static volatile uint32_t s_alarm_spin_sink;
+static SceUID s_alarm_blocking_sema;
+static volatile int s_alarm_blocking_rc;
+static volatile int s_alarm_intr_enabled;
+
+#define ALARM_REARM_DELAY_US 50000u
+#define ALARM_HANDLER_WORK_US 100000u
+
+static SceUInt alarm_count_handler(void *common) {
+    volatile uint32_t *count = (volatile uint32_t *)common;
+    (*count)++;
+    return 0;
+}
+
+static SceUInt alarm_rearm_handler(void *common) {
+    (void)common;
+    uint32_t current = ++s_alarm_fired;
+    uint32_t now = sceKernelGetSystemTimeLow();
+    if (current == 1u) {
+        s_alarm_first_us = now;
+        while ((uint32_t)(sceKernelGetSystemTimeLow() - now) <
+               ALARM_HANDLER_WORK_US) {
+            s_alarm_spin_sink++;
+        }
+        s_alarm_handler_us = (uint32_t)(sceKernelGetSystemTimeLow() - now);
+        return ALARM_REARM_DELAY_US;
+    } else {
+        s_alarm_second_us = now;
+    }
+    return 0;
+}
+
+static SceUInt alarm_blocking_handler(void *common) {
+    (void)common;
+    s_alarm_intr_enabled = sceKernelIsCpuIntrEnable();
+    SceUInt timeout = 1000u;
+    s_alarm_blocking_rc = sceKernelWaitSema(s_alarm_blocking_sema, 1, &timeout);
+    s_alarm_fired++;
+    return 0;
+}
+
+static int wait_for_alarm_count(volatile uint32_t *count, uint32_t wanted,
+                                uint32_t timeout_us) {
+    SceInt64 start = sceKernelGetSystemTimeWide();
+    while (*count < wanted && sceKernelGetSystemTimeWide() - start < timeout_us) {
+        sceKernelDelayThread(1000u);
+    }
+    return *count >= wanted;
+}
+
+static void emit_alarm_case(int emulated, const char *case_id, uint32_t result,
+                            const uint32_t *out, size_t count) {
+    emit_record_extended(emulated, "PSP-ALARM-001", case_id, "PASS", result,
+                         out, count);
+}
+
+static void run_kernel_alarm(int emulated) {
+    uint32_t out[5];
+    SceUID uid = sceKernelSetAlarm(1000000u, NULL, NULL);
+    out[0] = (uint32_t)uid;
+    out[1] = uid >= 0 ? (uint32_t)sceKernelCancelAlarm(uid) : 0xffffffffu;
+    emit_alarm_case(emulated, "alarm-null-handler", (uint32_t)uid, out, 2);
+
+    s_alarm_fired = 0;
+    uid = sceKernelSetAlarm(0u, alarm_count_handler, (void *)&s_alarm_fired);
+    out[0] = (uint32_t)uid;
+    out[1] = wait_for_alarm_count(&s_alarm_fired, 1u, 500000u);
+    out[2] = (uint32_t)s_alarm_fired;
+    emit_alarm_case(emulated, "alarm-zero-clock", (uint32_t)uid, out, 3);
+
+    SceUID *alarms = NULL;
+    size_t alarm_count = 0;
+    size_t alarm_capacity = 0;
+    uint32_t storage_failed = 0;
+    int first_alarm_error = 0;
+    for (;;) {
+        SceUID alarm = sceKernelSetAlarm(0x7fffffffu, alarm_count_handler,
+                                         (void *)&s_alarm_fired);
+        if (alarm < 0) {
+            first_alarm_error = alarm;
+            break;
+        }
+        if (alarm_count == alarm_capacity) {
+            size_t next_capacity = alarm_capacity == 0 ? 32u : alarm_capacity * 2u;
+            if (next_capacity > (size_t)-1 / sizeof(*alarms)) {
+                storage_failed = 1;
+                (void)sceKernelCancelAlarm(alarm);
+                break;
+            }
+            SceUID *next = (SceUID *)realloc(alarms, next_capacity * sizeof(*alarms));
+            if (next == NULL) {
+                storage_failed = 1;
+                (void)sceKernelCancelAlarm(alarm);
+                break;
+            }
+            alarms = next;
+            alarm_capacity = next_capacity;
+        }
+        alarms[alarm_count++] = alarm;
+    }
+    for (size_t i = 0; i < alarm_count; i++) {
+        (void)sceKernelCancelAlarm(alarms[i]);
+    }
+    free(alarms);
+    out[0] = (uint32_t)alarm_count;
+    out[1] = (uint32_t)first_alarm_error;
+    out[2] = storage_failed;
+    emit_alarm_case(emulated, "alarm-table-exhaustion", (uint32_t)first_alarm_error,
+                    out, 3);
+
+    s_alarm_fired = 0;
+    uid = sceKernelSetAlarm(1000u, alarm_count_handler, (void *)&s_alarm_fired);
+    const uint32_t fired = (uint32_t)wait_for_alarm_count(&s_alarm_fired, 1u, 500000u);
+    const int fired_cancel = uid >= 0 ? sceKernelCancelAlarm(uid) : uid;
+    out[0] = (uint32_t)uid;
+    out[1] = fired;
+    out[2] = (uint32_t)fired_cancel;
+    emit_alarm_case(emulated, "alarm-cancel-fired-once", (uint32_t)fired_cancel, out, 3);
+
+    uid = sceKernelSetAlarm(1000000u, alarm_count_handler, (void *)&s_alarm_fired);
+    const int cancel_first = uid >= 0 ? sceKernelCancelAlarm(uid) : uid;
+    const int cancel_second = uid >= 0 ? sceKernelCancelAlarm(uid) : uid;
+    out[0] = (uint32_t)uid;
+    out[1] = (uint32_t)cancel_first;
+    out[2] = (uint32_t)cancel_second;
+    emit_alarm_case(emulated, "alarm-cancel-cancelled", (uint32_t)cancel_first, out, 3);
+
+    const int unknown_cancel = sceKernelCancelAlarm((SceUID)-1);
+    out[0] = (uint32_t)unknown_cancel;
+    emit_alarm_case(emulated, "alarm-cancel-unknown", (uint32_t)unknown_cancel, out, 1);
+
+    s_alarm_fired = 0;
+    s_alarm_first_us = 0;
+    s_alarm_second_us = 0;
+    s_alarm_handler_us = 0;
+    s_alarm_spin_sink = 0;
+    uid = sceKernelSetAlarm(20000u, alarm_rearm_handler, NULL);
+    const uint32_t rearm_complete = (uint32_t)wait_for_alarm_count(&s_alarm_fired, 2u, 750000u);
+    out[0] = (uint32_t)uid;
+    out[1] = s_alarm_fired;
+    out[2] = s_alarm_handler_us;
+    out[3] = rearm_complete ? s_alarm_second_us - s_alarm_first_us : 0xffffffffu;
+    out[4] = ALARM_REARM_DELAY_US;
+    if (uid >= 0) (void)sceKernelCancelAlarm(uid);
+    emit_alarm_case(emulated, "alarm-rearm-base", (uint32_t)uid, out, 5);
+
+    s_alarm_fired = 0;
+    s_alarm_blocking_rc = (int)0xdeadbeefu;
+    s_alarm_intr_enabled = -1;
+    s_alarm_blocking_sema = sceKernelCreateSema("oracle-alarm-block", 0, 0, 1, NULL);
+    uid = sceKernelSetAlarm(1000u, alarm_blocking_handler, NULL);
+    const uint32_t blocking_complete = (uint32_t)wait_for_alarm_count(&s_alarm_fired, 1u, 500000u);
+    if (uid >= 0) (void)sceKernelCancelAlarm(uid);
+    out[0] = (uint32_t)uid;
+    out[1] = (uint32_t)s_alarm_intr_enabled;
+    out[2] = (uint32_t)s_alarm_blocking_rc;
+    out[3] = (uint32_t)s_alarm_fired;
+    out[4] = blocking_complete;
+    emit_alarm_case(emulated, "alarm-blocking-in-handler", (uint32_t)s_alarm_blocking_rc,
+                    out, 5);
+    uint32_t done = 8;
+    emit_record_extended(emulated, "PSP-ALARM-001", "kernel-alarm-done", "PASS",
+                         0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_SCHEDULER
+static SceUID s_thread_control_sema;
+static SceUID s_thread_wait_sema;
+static SceUID s_thread_done_sema;
+static SceUID s_thread_main_uid;
+static SceUID s_thread_suspend_target;
+static volatile int s_thread_action_rc;
+static volatile int s_thread_wait_rc;
+static volatile uint32_t s_thread_ready_order[3];
+static volatile uint32_t s_thread_ready_count;
+static uint32_t s_thread_order_args[3];
+
+static int thread_self_suspend_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    (void)sceKernelSignalSema(s_thread_control_sema, 1);
+    SceUID target = s_thread_suspend_target == 0 ? 0 : sceKernelGetThreadId();
+    s_thread_action_rc = sceKernelSuspendThread(target);
+    (void)sceKernelSignalSema(s_thread_done_sema, 1);
+    return 0;
+}
+
+static int thread_order_entry(SceSize args, void *argp) {
+    (void)args;
+    uint32_t index = s_thread_ready_count++;
+    if (index < 3u) s_thread_ready_order[index] = *(const uint32_t *)argp;
+    if (s_thread_ready_count == 3u) (void)sceKernelWakeupThread(s_thread_main_uid);
+    return 0;
+}
+
+static int thread_timed_wait_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    SceUInt timeout = 50000u;
+    s_thread_wait_rc = sceKernelWaitSema(s_thread_wait_sema, 1, &timeout);
+    (void)sceKernelSignalSema(s_thread_done_sema, 1);
+    return 0;
+}
+
+static int wait_for_thread_state(SceUID uid, int desired, uint32_t timeout_us,
+                                 uint32_t *observed) {
+    SceInt64 started = sceKernelGetSystemTimeWide();
+    do {
+        SceKernelThreadInfo info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (sceKernelReferThreadStatus(uid, &info) == 0) {
+            *observed = info.status;
+            if (info.status == desired) return 1;
+        }
+        sceKernelDelayThread(1000u);
+    } while (sceKernelGetSystemTimeWide() - started < timeout_us);
+    return 0;
+}
+
+static void emit_thread_scheduler(int emulated, const char *case_id,
+                                  uint32_t result, const uint32_t *out,
+                                  size_t count) {
+    emit_record_extended(emulated, "PSP-THREAD-003", case_id, "PASS", result,
+                         out, count);
+}
+
+static void run_suspend_target(int emulated, const char *case_id, SceUID target) {
+    s_thread_control_sema = sceKernelCreateSema("oracle-suspend-enter", 0, 0, 1, NULL);
+    s_thread_done_sema = sceKernelCreateSema("oracle-suspend-done", 0, 0, 1, NULL);
+    s_thread_suspend_target = target;
+    s_thread_action_rc = (int)0xdeadbeefu;
+    SceUID thread = sceKernelCreateThread("oracle-suspend-target",
+        thread_self_suspend_entry, 64, 0x1000, THREAD_ATTR_USER, NULL);
+    int start_rc = thread >= 0 ? sceKernelStartThread(thread, 0, NULL) : thread;
+    if (start_rc >= 0) (void)sceKernelWaitSema(s_thread_control_sema, 1, NULL);
+    uint32_t observed = 0xffffffffu;
+    uint32_t suspended = thread >= 0 ?
+        (uint32_t)wait_for_thread_state(thread, PSP_THREAD_SUSPEND, 100000u,
+                                       &observed) : 0u;
+    int resume_rc = thread >= 0 ? sceKernelResumeThread(thread) : thread;
+    SceUInt done_timeout = 1000000u;
+    int done_rc = thread >= 0 ?
+        sceKernelWaitSema(s_thread_done_sema, 1, &done_timeout) : thread;
+    uint32_t out[4] = {
+        (uint32_t)start_rc, suspended, (uint32_t)resume_rc,
+        (uint32_t)s_thread_action_rc,
+    };
+    emit_thread_scheduler(emulated, case_id, (uint32_t)done_rc, out, 4);
+    if (thread >= 0 && done_rc >= 0) {
+        SceUInt join_timeout = 1000000u;
+        (void)sceKernelWaitThreadEnd(thread, &join_timeout);
+        (void)sceKernelDeleteThread(thread);
+    }
+}
+
+static void run_thread_scheduler(int emulated) {
+    uint32_t out[7] = {0};
+    run_suspend_target(emulated, "thread-suspend-idle", 0);
+    run_suspend_target(emulated, "thread-suspend-self", -1);
+
+    int rc = sceKernelResumeThread(0);
+    out[0] = (uint32_t)rc;
+    emit_thread_scheduler(emulated, "thread-resume-idle", (uint32_t)rc, out, 1);
+
+    rc = sceKernelRotateThreadReadyQueue(0xff);
+    out[0] = 0xffu;
+    emit_thread_scheduler(emulated, "thread-rotate-range", (uint32_t)rc, out, 1);
+
+    s_thread_main_uid = sceKernelGetThreadId();
+    s_thread_ready_count = 0;
+    s_thread_ready_order[0] = 0xffffffffu;
+    s_thread_ready_order[1] = 0xffffffffu;
+    s_thread_ready_order[2] = 0xffffffffu;
+    s_thread_order_args[0] = 0u;
+    s_thread_order_args[1] = 1u;
+    s_thread_order_args[2] = 2u;
+    SceUID order_a = sceKernelCreateThread("oracle-ready-a", thread_order_entry,
+        64, 0x1000, THREAD_ATTR_USER, NULL);
+    SceUID order_b = sceKernelCreateThread("oracle-ready-b", thread_order_entry,
+        64, 0x1000, THREAD_ATTR_USER, NULL);
+    SceUID order_c = sceKernelCreateThread("oracle-ready-c", thread_order_entry,
+        64, 0x1000, THREAD_ATTR_USER, NULL);
+    int start_a = order_a >= 0 ? sceKernelStartThread(
+        order_a, sizeof(s_thread_order_args[0]), &s_thread_order_args[0]) : order_a;
+    int start_b = order_b >= 0 ? sceKernelStartThread(
+        order_b, sizeof(s_thread_order_args[1]), &s_thread_order_args[1]) : order_b;
+    int rotate_rc = sceKernelRotateThreadReadyQueue(64);
+    int start_c = order_c >= 0 ? sceKernelStartThread(
+        order_c, sizeof(s_thread_order_args[2]), &s_thread_order_args[2]) : order_c;
+    if (order_a >= 0 && order_b >= 0 && order_c >= 0) (void)sceKernelSleepThread();
+    out[0] = (uint32_t)start_a;
+    out[1] = (uint32_t)start_b;
+    out[2] = (uint32_t)rotate_rc;
+    out[3] = (uint32_t)start_c;
+    out[4] = s_thread_ready_order[0];
+    out[5] = s_thread_ready_order[1];
+    out[6] = s_thread_ready_order[2];
+    emit_thread_scheduler(emulated, "thread-ready-order-after-rotate",
+                          (uint32_t)rotate_rc, out, 7);
+    if (order_a >= 0) {
+        SceUInt timeout = 1000000u;
+        (void)sceKernelWaitThreadEnd(order_a, &timeout);
+        (void)sceKernelDeleteThread(order_a);
+    }
+    if (order_b >= 0) {
+        SceUInt timeout = 1000000u;
+        (void)sceKernelWaitThreadEnd(order_b, &timeout);
+        (void)sceKernelDeleteThread(order_b);
+    }
+    if (order_c >= 0) {
+        SceUInt timeout = 1000000u;
+        (void)sceKernelWaitThreadEnd(order_c, &timeout);
+        (void)sceKernelDeleteThread(order_c);
+    }
+
+    s_thread_wait_sema = sceKernelCreateSema("oracle-suspend-wait", 0, 0, 1, NULL);
+    s_thread_done_sema = sceKernelCreateSema("oracle-suspend-wait-done", 0, 0, 1, NULL);
+    s_thread_wait_rc = (int)0xdeadbeefu;
+    SceUID waiting = sceKernelCreateThread("oracle-suspend-wait", thread_timed_wait_entry,
+        64, 0x1000, THREAD_ATTR_USER, NULL);
+    int waiting_start = waiting >= 0 ? sceKernelStartThread(waiting, 0, NULL) : waiting;
+    uint32_t waiting_state = 0xffffffffu;
+    uint32_t entered_wait = waiting >= 0 ?
+        (uint32_t)wait_for_thread_state(waiting, PSP_THREAD_WAITING, 100000u,
+                                       &waiting_state) : 0u;
+    int suspend_rc = waiting >= 0 ? sceKernelSuspendThread(waiting) : waiting;
+    sceKernelDelayThread(100000u);
+    int resume_rc = waiting >= 0 ? sceKernelResumeThread(waiting) : waiting;
+    SceUInt done_timeout = 1000000u;
+    int wait_done = waiting >= 0 ?
+        sceKernelWaitSema(s_thread_done_sema, 1, &done_timeout) : waiting;
+    out[0] = (uint32_t)waiting_start;
+    out[1] = entered_wait;
+    out[2] = (uint32_t)suspend_rc;
+    out[3] = (uint32_t)resume_rc;
+    out[4] = (uint32_t)s_thread_wait_rc;
+    emit_thread_scheduler(emulated, "thread-suspend-wait-timeout",
+                          (uint32_t)wait_done, out, 5);
+    if (waiting >= 0 && wait_done >= 0) {
+        SceUInt timeout = 1000000u;
+        (void)sceKernelWaitThreadEnd(waiting, &timeout);
+        (void)sceKernelDeleteThread(waiting);
+    }
+
+    uint32_t done = 6;
+    emit_record_extended(emulated, "PSP-THREAD-003", "thread-scheduler-done",
+                         "PASS", 0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_WAIT_OUTCOMES
+int sceKernelCancelSema(SceUID semaid, int newCount, int *numWaitThreads);
+int sceKernelCancelEventFlag(SceUID evid, SceUInt newPattern,
+                             int *numWaitThreads);
+
+static int s_wait_mode;
+static int s_wait_result;
+static SceUID s_wait_object;
+static SceUID s_wait_done_sema;
+static volatile SceInt64 s_wait_entered;
+
+static int wait_outcomes_wait_thread_state(SceUID uid, int desired,
+                                          uint32_t timeout_us) {
+    SceInt64 started = sceKernelGetSystemTimeWide();
+    do {
+        SceKernelThreadInfo info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (sceKernelReferThreadStatus(uid, &info) == 0 &&
+            info.status == desired) return 1;
+        sceKernelDelayThread(1000u);
+    } while (sceKernelGetSystemTimeWide() - started < timeout_us);
+    return 0;
+}
+
+static int wait_outcomes_entry(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    SceUInt timeout = 50000u;
+    s_wait_entered = sceKernelGetSystemTimeWide();
+    if (s_wait_mode == 0) {
+        s_wait_result = sceKernelWaitSema(s_wait_object, 1, &timeout);
+    } else {
+        s_wait_result = sceKernelWaitEventFlag(s_wait_object, 1u,
+            PSP_EVENT_WAITOR, NULL, &timeout);
+    }
+    (void)sceKernelSignalSema(s_wait_done_sema, 1);
+    return 0;
+}
+
+static void run_wait_outcome(int emulated, const char *case_id,
+                             int mode, int cancel) {
+    s_wait_mode = mode;
+    s_wait_result = (int)0xdeadbeefu;
+    s_wait_entered = 0;
+    s_wait_object = mode == 0 ?
+        sceKernelCreateSema("oracle-late-sema", 0, 0, 1, NULL) :
+        sceKernelCreateEventFlag("oracle-late-event", 0, 0, NULL);
+    s_wait_done_sema = sceKernelCreateSema("oracle-late-done", 0, 0, 1, NULL);
+    SceUID thread = sceKernelCreateThread("oracle-late-wait", wait_outcomes_entry,
+        64, 0x1000, THREAD_ATTR_USER, NULL);
+    int start_rc = thread >= 0 ? sceKernelStartThread(thread, 0, NULL) : thread;
+    uint32_t waiting = thread >= 0 ?
+        (uint32_t)wait_outcomes_wait_thread_state(thread, PSP_THREAD_WAITING,
+                                                 100000u) : 0u;
+    int action_rc = s_wait_object;
+    if (waiting && mode == 0 && cancel) {
+        action_rc = sceKernelCancelSema(s_wait_object, 0, NULL);
+    } else if (waiting && mode == 0) {
+        action_rc = sceKernelSignalSema(s_wait_object, 1);
+    } else if (waiting && cancel) {
+        action_rc = sceKernelCancelEventFlag(s_wait_object, 0, NULL);
+    } else if (waiting) {
+        action_rc = sceKernelSetEventFlag(s_wait_object, 1u);
+    }
+    SceInt64 deadline = s_wait_entered + 75000;
+    while (s_wait_entered != 0 && sceKernelGetSystemTimeWide() < deadline) {
+        /* Keep the higher-priority controller runnable until after the wait deadline. */
+    }
+    SceInt64 dispatched = sceKernelGetSystemTimeWide();
+    SceUInt done_timeout = 1000000u;
+    int done_rc = thread >= 0 ?
+        sceKernelWaitSema(s_wait_done_sema, 1, &done_timeout) : thread;
+    uint32_t out[5] = {
+        (uint32_t)start_rc,
+        waiting,
+        (uint32_t)action_rc,
+        (uint32_t)s_wait_result,
+        (uint32_t)(waiting && dispatched >= deadline),
+    };
+    emit_record_extended(emulated, "PSP-WAIT-001", case_id,
+                         waiting && done_rc >= 0 ? "PASS" : "SKIP",
+                         (uint32_t)action_rc, out, 5);
+    if (thread >= 0 && done_rc >= 0) {
+        SceUInt join_timeout = 1000000u;
+        (void)sceKernelWaitThreadEnd(thread, &join_timeout);
+        (void)sceKernelDeleteThread(thread);
+    }
+}
+
+static void run_wait_outcomes(int emulated) {
+    run_wait_outcome(emulated, "sema-signal-before-deadline-late-dispatch", 0, 0);
+    run_wait_outcome(emulated, "event-signal-before-deadline-late-dispatch", 1, 0);
+    run_wait_outcome(emulated, "sema-cancel-before-deadline-late-dispatch", 0, 1);
+    run_wait_outcome(emulated, "event-cancel-before-deadline-late-dispatch", 1, 1);
+    uint32_t done = 4;
+    emit_record_extended(emulated, "PSP-WAIT-001", "wait-outcomes-done", "PASS",
+                         0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_REFER_STATUS_SIZE
+typedef int (*ReferStatusFn)(SceUID, void *);
+
+static int refer_sema_status(SceUID uid, void *info) {
+    return sceKernelReferSemaStatus(uid, (SceKernelSemaInfo *)info);
+}
+
+static int refer_event_status(SceUID uid, void *info) {
+    return sceKernelReferEventFlagStatus(uid, (SceKernelEventFlagInfo *)info);
+}
+
+static int refer_mbx_status(SceUID uid, void *info) {
+    return sceKernelReferMbxStatus(uid, (SceKernelMbxInfo *)info);
+}
+
+static void run_status_size_cell(int emulated, const char *case_id, SceUID uid,
+                                 size_t full_size, ReferStatusFn refer,
+                                 uint32_t requested) {
+    uint8_t bytes[64];
+    uint8_t before[64];
+    memset(bytes, 0xa5, sizeof(bytes));
+    *(SceSize *)bytes = (SceSize)requested;
+    memcpy(before, bytes, sizeof(bytes));
+    int rc = refer(uid, bytes);
+    uint32_t low_mask = 0;
+    uint32_t high_mask = 0;
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < sizeof(bytes); i++) {
+        if (bytes[i] != before[i]) {
+            if (i < 32u) low_mask |= 1u << i;
+            else high_mask |= 1u << (i - 32u);
+            changed++;
+        }
+    }
+    uint32_t out[5] = {
+        requested,
+        *(SceSize *)bytes,
+        low_mask,
+        high_mask,
+        changed,
+    };
+    const char *status = full_size <= sizeof(bytes) ? "PASS" : "FAIL";
+    emit_record_extended(emulated, "PSP-KERNEL-STATUS-001", case_id,
+                         status, (uint32_t)rc, out, 5);
+}
+
+static void run_refer_status_size(int emulated) {
+    SceUID sema = sceKernelCreateSema("oracle-size-sema", 0, 1, 2, NULL);
+    SceUID event = sceKernelCreateEventFlag("oracle-size-event", 0, 0x12u, NULL);
+    SceUID mbx = sceKernelCreateMbx("oracle-size-mbx", 0, NULL);
+    const uint32_t requests[] = {0u, 8u, 40u, 0xffffffffu};
+    const char *labels[] = {"zero", "8", "40", "full"};
+    char case_id[48];
+    for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+        uint32_t size = requests[i] == 0xffffffffu ? sizeof(SceKernelSemaInfo) : requests[i];
+        snprintf(case_id, sizeof(case_id), "sema-size-%s", labels[i]);
+        run_status_size_cell(emulated, case_id, sema, sizeof(SceKernelSemaInfo),
+                             refer_sema_status, size);
+    }
+    for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+        uint32_t size = requests[i] == 0xffffffffu ? sizeof(SceKernelEventFlagInfo) : requests[i];
+        snprintf(case_id, sizeof(case_id), "event-size-%s", labels[i]);
+        run_status_size_cell(emulated, case_id, event, sizeof(SceKernelEventFlagInfo),
+                             refer_event_status, size);
+    }
+    for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+        uint32_t size = requests[i] == 0xffffffffu ? sizeof(SceKernelMbxInfo) : requests[i];
+        snprintf(case_id, sizeof(case_id), "mbx-size-%s", labels[i]);
+        run_status_size_cell(emulated, case_id, mbx, sizeof(SceKernelMbxInfo),
+                             refer_mbx_status, size);
+    }
+    uint32_t done = 12;
+    emit_record_extended(emulated, "PSP-KERNEL-STATUS-001", "refer-status-size-done",
+                         "PASS", 0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
+static uint32_t s_registry_categories;
+static uint32_t s_registry_keys;
+static uint32_t s_registry_records;
+
+static int registry_name_is_modeled(const char *name) {
+    static const char *const modeled[] = {
+        "language", "button_assign", "date_format", "time_format",
+        "timezone", "summer_time", "adhoc_channel",
+    };
+    for (size_t i = 0; i < sizeof(modeled) / sizeof(modeled[0]); i++) {
+        if (strcmp(name, modeled[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+static int registry_name_is_safe(const char *name) {
+    if (name == NULL || name[0] == '\0') return 0;
+    for (size_t i = 0; name[i] != '\0'; i++) {
+        char c = name[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) return 0;
+    }
+    return 1;
+}
+
+static int registry_write_all(SceUID fd, const char *data, size_t size) {
+    size_t offset = 0;
+    while (offset < size) {
+        int wrote = sceIoWrite(fd, data + offset, (SceSize)(size - offset));
+        if (wrote <= 0) return 0;
+        offset += (size_t)wrote;
+    }
+    return 1;
+}
+
+static void emit_registry_record(int emulated, const char *case_id,
+                                 const char *status, uint32_t result,
+                                 const uint32_t *out, size_t out_count,
+                                 const char *detail, const uint8_t *value,
+                                 size_t value_bytes) {
+    if (detail == NULL && value == NULL && value_bytes == 0u) {
+        emit_record_extended(emulated, "PSP-REGISTRY-001", case_id, status,
+                             result, out, out_count);
+        return;
+    }
+    size_t capacity = 512u;
+    if (detail != NULL && strlen(detail) <= (size_t)-1 - capacity) {
+        capacity += strlen(detail);
+    }
+    if (value != NULL && value_bytes <= ((size_t)-1 - capacity) / 2u) {
+        capacity += value_bytes * 2u;
+    } else if (value_bytes != 0u) {
+        return;
+    }
+    char *line = (char *)malloc(capacity);
+    if (line == NULL) return;
+    int used = snprintf(line, capacity,
+        "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 case_id=%s "
+        "status=%s result=0x%08x", case_id, status, (unsigned int)result);
+    for (size_t i = 0; i < out_count && used > 0 && (size_t)used < capacity; i++) {
+        int wrote = snprintf(line + used, capacity - (size_t)used,
+                             " out%u=0x%08x", (unsigned int)i,
+                             (unsigned int)out[i]);
+        if (wrote < 0) break;
+        used += wrote;
+    }
+    if (detail != NULL && used > 0 && (size_t)used < capacity) {
+        int wrote = snprintf(line + used, capacity - (size_t)used,
+                             " detail=%s", detail);
+        if (wrote < 0) used = -1;
+        else used += wrote;
+    }
+    if (value != NULL && used > 0 && (size_t)used < capacity) {
+        int wrote = snprintf(line + used, capacity - (size_t)used, " value_hex=");
+        if (wrote < 0) used = -1;
+        else used += wrote;
+        for (size_t i = 0; i < value_bytes && used > 0 && (size_t)used + 2u < capacity; i++) {
+            int count = snprintf(line + used, capacity - (size_t)used, "%02x", value[i]);
+            if (count != 2) { used = -1; break; }
+            used += count;
+        }
+    }
+    if (used > 0 && (size_t)used + 1u < capacity) {
+        line[used++] = '\n';
+        line[used] = '\0';
+        emit(emulated, line);
+        if (!emulated) {
+            SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+            if (fd >= 0) {
+                (void)registry_write_all(fd, line, (size_t)used);
+                (void)sceIoClose(fd);
+            }
+        }
+        s_registry_records++;
+    }
+    free(line);
+}
+
+static int registry_read_key(int emulated, REGHANDLE category, const char *path,
+                             const char *name, uint32_t index) {
+    REGHANDLE key = 0;
+    unsigned int type = 0;
+    SceSize size = 0;
+    int info_rc = sceRegGetKeyInfo(category, name, &key, &type, &size);
+    uint32_t out[4] = {
+        (uint32_t)type, (uint32_t)size, 0u, 0xffffffffu,
+    };
+    uint8_t *value = NULL;
+    size_t value_bytes = 0;
+    int modeled = registry_name_is_modeled(name) && type != REG_TYPE_DIR;
+    int safe_size = size > 0u && (size_t)size <= (size_t)-1 / 2u;
+    int value_rc = (int)0xffffffffu;
+    if (info_rc == 0 && modeled && safe_size) {
+        value = (uint8_t *)malloc((size_t)size);
+        if (value != NULL) {
+            value_rc = sceRegGetKeyValue(category, key, value, size);
+            out[3] = (uint32_t)value_rc;
+            if (value_rc == 0) {
+                out[2] = 1u;
+                value_bytes = size;
+            }
+        }
+    }
+    char record_id[48];
+    char detail[512];
+    snprintf(record_id, sizeof(record_id), "registry-key-%04u",
+             (unsigned int)index);
+    snprintf(detail, sizeof(detail), "%s/%s", path, name);
+    emit_registry_record(emulated, record_id, "PASS", (uint32_t)info_rc,
+                         out, 4, detail, value_bytes ? value : NULL, value_bytes);
+    free(value);
+    s_registry_keys++;
+    return type == REG_TYPE_DIR;
+}
+
+static int registry_probe_small_buffer(REGHANDLE category) {
+    int count = -1;
+    if (sceRegGetKeysNum(category, &count) != 0 || count <= 0 ||
+        (size_t)count > (size_t)-1 / REG_KEYNAME_SIZE) return (int)0xffffffffu;
+    size_t bytes = (size_t)count * REG_KEYNAME_SIZE;
+    char *names = (char *)calloc(bytes, 1u);
+    if (names == NULL) return (int)0xffffffffu;
+    int keys_rc = sceRegGetKeys(category, names, count);
+    int result = (int)0xffffffffu;
+    if (keys_rc == 0) {
+        for (int i = 0; i < count; i++) {
+            char *name = names + (size_t)i * REG_KEYNAME_SIZE;
+            if (memchr(name, '\0', REG_KEYNAME_SIZE) == NULL ||
+                !registry_name_is_safe(name)) continue;
+            REGHANDLE key = 0;
+            unsigned int type = 0;
+            SceSize size = 0;
+            if (sceRegGetKeyInfo(category, name, &key, &type, &size) == 0 &&
+                type != REG_TYPE_DIR && size > 1u) {
+                uint8_t one_byte = 0;
+                result = sceRegGetKeyValue(category, key, &one_byte, 1u);
+                break;
+            }
+        }
+    }
+    free(names);
+    return result;
+}
+
+static void walk_registry_category(int emulated, REGHANDLE registry,
+                                   const char *api_path, const char *display_path) {
+    REGHANDLE category = 0;
+    int open_rc = sceRegOpenCategory(registry, api_path, 1, &category);
+    if (open_rc < 0) return;
+    int key_count = -1;
+    int count_rc = sceRegGetKeysNum(category, &key_count);
+    uint32_t category_count = key_count < 0 ? 0xffffffffu : (uint32_t)key_count;
+    char record_id[48];
+    snprintf(record_id, sizeof(record_id), "registry-category-%04u",
+             (unsigned int)s_registry_categories);
+    uint32_t out[2] = {category_count, (uint32_t)0xffffffffu};
+    if (count_rc != 0 || key_count < 0 ||
+        (size_t)key_count > (size_t)-1 / REG_KEYNAME_SIZE) {
+        emit_registry_record(emulated, record_id, "FAIL", (uint32_t)count_rc,
+                             out, 2, display_path, NULL, 0);
+        s_registry_categories++;
+        (void)sceRegCloseCategory(category);
+        return;
+    }
+    size_t bytes = (size_t)key_count * REG_KEYNAME_SIZE;
+    char *names = bytes ? (char *)calloc(bytes, 1u) : NULL;
+    if (bytes != 0u && names == NULL) {
+        emit_registry_record(emulated, record_id, "FAIL", (uint32_t)count_rc,
+                             out, 2, display_path, NULL, 0);
+        s_registry_categories++;
+        (void)sceRegCloseCategory(category);
+        return;
+    }
+    int keys_rc = sceRegGetKeys(category, names, key_count);
+    out[1] = (uint32_t)keys_rc;
+    emit_registry_record(emulated, record_id,
+                         count_rc == 0 && keys_rc == 0 ? "PASS" : "FAIL",
+                         (uint32_t)count_rc, out, 2, display_path, NULL, 0);
+    s_registry_categories++;
+    if (keys_rc == 0) {
+        for (int i = 0; i < key_count; i++) {
+            char *name = names + (size_t)i * REG_KEYNAME_SIZE;
+            if (memchr(name, '\0', REG_KEYNAME_SIZE) == NULL ||
+                !registry_name_is_safe(name)) continue;
+            int is_directory = registry_read_key(emulated, category, display_path, name,
+                                                  s_registry_keys);
+            if (is_directory) {
+                size_t api_length = strlen(api_path);
+                size_t name_length = strlen(name);
+                size_t display_length = strlen(display_path);
+                if (api_length > (size_t)-1 - name_length - 2u ||
+                    display_length > (size_t)-1 - name_length - 2u) continue;
+                char *next_api = (char *)malloc(api_length + name_length + 2u);
+                char *next_display = (char *)malloc(display_length + name_length + 2u);
+                if (next_api != NULL && next_display != NULL) {
+                    snprintf(next_api, api_length + name_length + 2u,
+                             "%s/%s", api_path, name);
+                    snprintf(next_display, display_length + name_length + 2u,
+                             "%s/%s", display_path, name);
+                    walk_registry_category(emulated, registry, next_api, next_display);
+                }
+                free(next_api);
+                free(next_display);
+            }
+        }
+    }
+    free(names);
+    (void)sceRegCloseCategory(category);
+}
+
+static void run_registry_readonly(int emulated) {
+    struct RegParam param;
+    memset(&param, 0, sizeof(param));
+    param.regtype = 1u;
+    memcpy(param.name, SYSTEM_REGISTRY, sizeof(SYSTEM_REGISTRY));
+    param.namelen = sizeof(SYSTEM_REGISTRY) - 1u;
+    param.unk2 = 1u;
+    param.unk3 = 1u;
+    REGHANDLE registry = 0;
+    const int open_rc = sceRegOpenRegistry(&param, 1, &registry);
+    uint32_t open_out[2] = {1u, param.regtype};
+    emit_registry_record(emulated, "registry-open", open_rc == 0 ? "PASS" : "FAIL",
+                         (uint32_t)open_rc, open_out, 2, NULL, NULL, 0);
+
+    int unknown_category_rc = (int)0xffffffffu;
+    int unknown_key_rc = (int)0xffffffffu;
+    int bad_handle_rc = (int)0xffffffffu;
+    int small_buffer_rc = (int)0xffffffffu;
+    int handle_exhaustion_rc = (int)0xffffffffu;
+    uint32_t handle_storage_failed = 0;
+    uint32_t opened_handles = 0;
+    REGHANDLE config = 0;
+    int config_rc = (int)0xffffffffu;
+    if (open_rc == 0) {
+        REGHANDLE unknown = 0;
+        unknown_category_rc = sceRegOpenCategory(registry,
+            "/CONFIG/__NAKAGAWA_ORACLE_UNKNOWN_CATEGORY__", 1, &unknown);
+        if (unknown_category_rc == 0) (void)sceRegCloseCategory(unknown);
+        int unknown_count = -1;
+        bad_handle_rc = sceRegGetKeysNum((REGHANDLE)0xffffffffu, &unknown_count);
+        config_rc = sceRegOpenCategory(registry, "/CONFIG", 1, &config);
+        if (config_rc == 0) {
+            REGHANDLE key = 0;
+            unsigned int type = 0;
+            SceSize size = 0;
+            unknown_key_rc = sceRegGetKeyInfo(config,
+                "__NAKAGAWA_ORACLE_UNKNOWN_KEY__", &key, &type, &size);
+        }
+
+        REGHANDLE *handles = NULL;
+        size_t count = 0;
+        size_t capacity = 0;
+        for (;;) {
+            REGHANDLE handle = 0;
+            int rc = sceRegOpenRegistry(&param, 1, &handle);
+            if (rc < 0) {
+                handle_exhaustion_rc = rc;
+                break;
+            }
+            if (count == capacity) {
+                size_t next_capacity = capacity == 0 ? 16u : capacity * 2u;
+                if (next_capacity > (size_t)-1 / sizeof(*handles)) {
+                    handle_exhaustion_rc = (int)0xffffffffu;
+                    handle_storage_failed = 1;
+                    (void)sceRegCloseRegistry(handle);
+                    break;
+                }
+                REGHANDLE *next = (REGHANDLE *)realloc(handles,
+                    next_capacity * sizeof(*handles));
+                if (next == NULL) {
+                    handle_exhaustion_rc = (int)0xffffffffu;
+                    handle_storage_failed = 1;
+                    (void)sceRegCloseRegistry(handle);
+                    break;
+                }
+                handles = next;
+                capacity = next_capacity;
+            }
+            handles[count++] = handle;
+        }
+        opened_handles = count > 0xffffffffu ? 0xffffffffu : (uint32_t)count;
+        for (size_t i = 0; i < count; i++) (void)sceRegCloseRegistry(handles[i]);
+        free(handles);
+        if (config_rc == 0) small_buffer_rc = registry_probe_small_buffer(config);
+    }
+    uint32_t error_out[7] = {
+        (uint32_t)unknown_category_rc,
+        (uint32_t)unknown_key_rc,
+        (uint32_t)bad_handle_rc,
+        (uint32_t)small_buffer_rc,
+        (uint32_t)handle_exhaustion_rc,
+        opened_handles,
+        handle_storage_failed,
+    };
+    emit_registry_record(emulated, "registry-errors", "PASS", (uint32_t)open_rc,
+                         error_out, 7, NULL, NULL, 0);
+    if (config_rc == 0) walk_registry_category(emulated, registry, "/CONFIG", "CONFIG");
+    if (config_rc == 0) (void)sceRegCloseCategory(config);
+    if (open_rc == 0) (void)sceRegCloseRegistry(registry);
+    uint32_t done_out[3] = {
+        s_registry_categories,
+        s_registry_keys,
+        s_registry_records,
+    };
+    emit_registry_record(emulated, "registry-done", "PASS", 0,
+                         done_out, 3, NULL, NULL, 0);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
+static void emit_ge_control(int emulated, const char *case_id, const char *status,
+                            uint32_t result, const uint32_t *out, size_t count) {
+    emit_record_extended(emulated, "PSP-GE-CONTROL-001", case_id, status,
+                         result, out, count);
+}
+
+static void run_ge_break_continue(int emulated) {
+    PspGeBreakParam param;
+    memset(&param, 0xa5, sizeof(param));
+    int rc = sceGeBreak(0, &param);
+    uint32_t out2[3] = {(uint32_t)rc, param.buf[0], (uint32_t)sizeof(param)};
+    emit_ge_control(emulated, "ge-break-no-active-list", "PASS",
+                    (uint32_t)rc, out2, 2);
+
+    rc = sceGeContinue();
+    uint32_t out1[1] = {(uint32_t)rc};
+    emit_ge_control(emulated, "ge-continue-no-paused-list", "PASS",
+                    (uint32_t)rc, out1, 1);
+
+    memset(&param, 0xa5, sizeof(param));
+    rc = sceGeBreak(-1, &param);
+    out2[0] = (uint32_t)rc;
+    out2[1] = param.buf[0];
+    emit_ge_control(emulated, "ge-break-invalid-mode", "PASS",
+                    (uint32_t)rc, out2, 2);
+
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    const uint32_t src = (uint32_t)(uintptr_t)s_ge_src;
+    const uint32_t dst = vram + 0x00100000u;
+    for (uint32_t i = 0; i < GE_TILE_W * GE_TILE_H; i++) {
+        s_ge_src[i] = 0x5a5a5a5au;
+    }
+    sceKernelDcacheWritebackAll();
+    const uint32_t list_bytes = ge_build_list(src, dst);
+    const uint32_t list = (uint32_t)(uintptr_t)s_ge_list;
+    int qid = sceGeListEnQueue((const void *)(uintptr_t)list, NULL, -1, NULL);
+    int break_rc = qid >= 0 ? sceGeBreak(0, &param) : qid;
+    int list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+    int draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
+    uint32_t list_out[3] = {(uint32_t)qid, (uint32_t)break_rc,
+                            (uint32_t)list_state};
+    uint32_t draw_out[3] = {(uint32_t)qid, (uint32_t)break_rc,
+                            (uint32_t)draw_state};
+    const char *paused_status = qid >= 0 ? "PASS" : "SKIP";
+    emit_ge_control(emulated, "ge-list-sync-paused", paused_status,
+                    (uint32_t)list_state, list_out, 3);
+    emit_ge_control(emulated, "ge-draw-sync-paused", paused_status,
+                    (uint32_t)draw_state, draw_out, 3);
+    if (qid >= 0) {
+        (void)sceGeContinue();
+        (void)sceGeListUpdateStallAddr(qid,
+            (void *)(uintptr_t)(list + list_bytes));
+        (void)sceGeListSync(qid, 0);
+        (void)sceGeDrawSync(0);
+    }
+
+    qid = sceGeListEnQueue((const void *)(uintptr_t)list,
+                           (void *)(uintptr_t)list, -1, NULL);
+    const int cancel_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
+    list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+    draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
+    list_out[0] = (uint32_t)qid;
+    list_out[1] = (uint32_t)cancel_rc;
+    list_out[2] = (uint32_t)list_state;
+    draw_out[0] = (uint32_t)qid;
+    draw_out[1] = (uint32_t)cancel_rc;
+    draw_out[2] = (uint32_t)draw_state;
+    const char *cancel_status = qid >= 0 && cancel_rc >= 0 ? "PASS" : "SKIP";
+    emit_ge_control(emulated, "ge-list-sync-cancelled", cancel_status,
+                    (uint32_t)list_state, list_out, 3);
+    emit_ge_control(emulated, "ge-draw-sync-cancelled", cancel_status,
+                    (uint32_t)draw_state, draw_out, 3);
+
+    uint32_t done = 7;
+    emit_record_extended(emulated, "PSP-GE-CONTROL-001", "ge-break-continue-done",
+                         "PASS", 0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
+static void run_kernel_misc(int emulated) {
+    const SceInt64 clock = (SceInt64)1234567890;
+    unsigned int usec_low = 0;
+    unsigned int usec_high = 0;
+    int rc = sceKernelSysClock2USecWide(clock, &usec_low, &usec_high);
+    uint32_t clock_out[4] = {
+        (uint32_t)clock, (uint32_t)((uint64_t)clock >> 32),
+        (uint32_t)usec_low, (uint32_t)usec_high,
+    };
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "sysclock-wide",
+                         "PASS", (uint32_t)rc, clock_out, 4);
+
+    int mode = -1;
+    rc = sceCtrlGetSamplingMode(&mode);
+    uint32_t ctrl_out[2] = {(uint32_t)mode, 0u};
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "ctrl-sampling-mode",
+                         "PASS", (uint32_t)rc, ctrl_out, 2);
+
+    PspDebugProfilerRegs *profiler = sceKernelReferThreadProfiler();
+    uint32_t profiler_out[2] = {
+        (uint32_t)(uintptr_t)profiler, profiler != NULL ? 1u : 0u,
+    };
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "thread-profiler",
+                         "PASS", (uint32_t)(uintptr_t)profiler, profiler_out, 2);
+    profiler = sceKernelReferGlobalProfiler();
+    profiler_out[0] = (uint32_t)(uintptr_t)profiler;
+    profiler_out[1] = profiler != NULL ? 1u : 0u;
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "global-profiler",
+                         "PASS", (uint32_t)(uintptr_t)profiler, profiler_out, 2);
+
+    SceUID timer = sceKernelCreateVTimer("oracle-vtimer", NULL);
+    SceKernelSysClock before = {0};
+    SceKernelSysClock after = {0};
+    SceKernelSysClock stopped = {0};
+    int before_rc = sceKernelGetVTimerTime(timer, &before);
+    int start_rc = sceKernelStartVTimer(timer);
+    sceKernelDelayThread(10000u);
+    int after_rc = sceKernelGetVTimerTime(timer, &after);
+    int stop_rc = sceKernelStopVTimer(timer);
+    int stopped_rc = sceKernelGetVTimerTime(timer, &stopped);
+    int delete_rc = sceKernelDeleteVTimer(timer);
+    uint32_t timer_out[13] = {
+        (uint32_t)timer, (uint32_t)before_rc, before.low, before.hi,
+        (uint32_t)start_rc, (uint32_t)after_rc, after.low, after.hi,
+        (uint32_t)stop_rc, (uint32_t)stopped_rc, stopped.low, stopped.hi,
+        (uint32_t)delete_rc,
+    };
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "vtimer-basic",
+                         "PASS", (uint32_t)timer, timer_out, 13);
+
+    int hold_rc = sceDisplaySetHoldMode(0);
+    int wait_rc = sceDisplayWaitVblankStartMultiCB(1u);
+    uint32_t display_out[4] = {0u, (uint32_t)hold_rc, 1u, (uint32_t)wait_rc};
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "display-basic",
+                         "PASS", (uint32_t)wait_rc, display_out, 4);
+
+    int charging = (int)0x5a5a5a5a;
+    int icon_status = (int)0x5a5a5a5a;
+    int battery_rc = sceImposeGetBatteryIconStatus(&charging, &icon_status);
+    int popup_before = sceImposeGetUMDPopup();
+    int popup_set_rc = popup_before >= 0 ?
+        sceImposeSetUMDPopup(popup_before) : popup_before;
+    uint32_t impose_out[5] = {
+        (uint32_t)charging, (uint32_t)icon_status, (uint32_t)popup_before,
+        (uint32_t)popup_set_rc, popup_before >= 0 ? 1u : 0u,
+    };
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "impose-basic",
+                         "PASS", (uint32_t)battery_rc, impose_out, 5);
+
+    uint32_t done = 7;
+    emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "kernel-misc-done",
+                         "PASS", 0, &done, 1);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -5530,6 +6588,20 @@ int main(int argc, char *argv[]) {
     run_dmac_cells(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
     run_delay_zero(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_ALARM
+    run_kernel_alarm(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_SCHEDULER
+    run_thread_scheduler(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_WAIT_OUTCOMES
+    run_wait_outcomes(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
+    run_ge_break_continue(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REFER_STATUS_SIZE
+    run_refer_status_size(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
+    run_registry_readonly(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
+    run_kernel_misc(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
