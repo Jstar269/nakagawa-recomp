@@ -91,23 +91,176 @@ def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
     )
 
 
-def _is_kernel_mode_module(elf_bytes: bytes) -> bool:
-    """Return whether a validated ELF module is marked kernel-mode or imports kernel libraries."""
-    if _has_cfw_or_kernel_only_imports(elf_bytes):
-        return True
+def _extract_prx_module_info(elf_bytes: bytes) -> tuple[str, list[str]] | None:
+    """Extract (modname, exported_libraries) from .rodata.sceModuleInfo if present."""
     try:
         from analyze import Elf
 
         elf = Elf(elf_bytes)
         sec = elf.sec(".rodata.sceModuleInfo")
-        if sec:
-            b = elf.read_at_vaddr(sec["addr"], 2)
-            if b and len(b) >= 2:
-                modattribute = struct.unpack_from("<H", b, 0)[0]
-                if (modattribute & 0x1000) != 0:
+        if not sec:
+            return None
+        raw = elf.read_at_vaddr(sec["addr"], 52)
+        if not raw or len(raw) < 44:
+            return None
+        name_bytes = raw[4:32]
+        nul = name_bytes.find(b"\0")
+        modname = (
+            name_bytes[:nul].decode("ascii", "replace")
+            if nul >= 0
+            else name_bytes.decode("ascii", "replace")
+        )
+        ent_top, ent_end = struct.unpack_from("<2I", raw, 36)
+        exports: list[str] = []
+        pos = ent_top
+        max_entries = 128
+        while pos < ent_end and len(exports) < max_entries:
+            entry_bytes = elf.read_at_vaddr(pos, 20)
+            if not entry_bytes or len(entry_bytes) < 20:
+                break
+            val_name_ptr, _ver, _flags, val_size, _num_vars, _num_funcs = struct.unpack_from(
+                "<IHHBBH", entry_bytes, 0
+            )
+            entry_size = val_size * 4 if val_size else 20
+            if entry_size <= 0:
+                break
+            if val_name_ptr:
+                str_bytes = bytearray()
+                for cur in range(val_name_ptr, val_name_ptr + 64):
+                    ch = elf.read_at_vaddr(cur, 1)
+                    if not ch or ch[0] == 0:
+                        break
+                    str_bytes.append(ch[0])
+                if str_bytes:
+                    exports.append(str_bytes.decode("ascii", "replace"))
+            pos += entry_size
+        return modname, exports
+    except Exception:
+        return None
+
+
+HLE_SERVED_MODULE_NAMES = {
+    "audiocodec.prx",
+    "cert_loader.prx",
+    "chkreg.prx",
+    "ifhandle.prx",
+    "libaac.prx",
+    "libasf.prx",
+    "libaudiocodec.prx",
+    "libaudiocodec2.prx",
+    "libmp3.prx",
+    "libwma.prx",
+    "memab.prx",
+    "mpegbase.prx",
+    "pspnet_adhoc_auth.prx",
+    "sc_sascore.prx",
+    "usbacc.prx",
+    "usbcam.prx",
+    "usbgps.prx",
+    "usbmic.prx",
+    "usbpspcm.prx",
+    "videocodec.prx",
+}
+
+HLE_SERVED_MODNAMES = {
+    "sceaudiocodec_driver",
+    "sceaudiocodec2_driver",
+    "scecert_loader",
+    "scenetifhandle_service",
+    "scememab",
+    "scempegbase_driver",
+    "scenetadhocauth_service",
+    "scesascore",
+    "sceusb_acc_driver",
+    "sceusb_cam_driver",
+    "sceusb_gps_driver",
+    "sceusb_mic_driver",
+    "sceusb_pspcomm_driver",
+    "scevideocodec_driver",
+}
+
+HLE_SERVED_LIBRARIES = {
+    "sceaudiocodec",
+    "sceaudiocodec2",
+    "scecertloader",
+    "scenetifhandle",
+    "scememab",
+    "scempegbase",
+    "scenetadhocauth",
+    "scesascore",
+    "sceusbacc",
+    "sceusbcam",
+    "sceusbgps",
+    "sceusbmic",
+    "scevideocodec",
+}
+
+
+def _is_hle_served_module(name: str, elf_bytes: bytes | None = None) -> bool:
+    """Return whether a module is a PSP firmware library served host-side by HLE."""
+    clean_name = Path(name).name.casefold()
+    if clean_name in HLE_SERVED_MODULE_NAMES:
+        return True
+    if elf_bytes is not None:
+        info = _extract_prx_module_info(elf_bytes)
+        if info is not None:
+            modname, exports = info
+            if modname.casefold() in HLE_SERVED_MODNAMES:
+                return True
+            for exp in exports:
+                cf = exp.casefold()
+                if any(cf.startswith(lib) for lib in HLE_SERVED_LIBRARIES):
                     return True
-    except (ImportError, IndexError, OSError, TypeError, ValueError, struct.error):
-        pass
+    return False
+
+
+def _is_kernel_mode_module(elf_bytes: bytes) -> bool:
+    """Return whether a module is marked kernel-mode or imports kernel libraries.
+
+    Corrupt or unparseable ELF/PRX headers raise IsoInspectionError.
+    Plain ELFs without .rodata.sceModuleInfo are treated as user-mode.
+    """
+    if len(elf_bytes) < 4:
+        raise IsoInspectionError(
+            "module image is truncated",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        )
+    if elf_bytes[:4] in (b"~PSP", b"~SCE"):
+        raise IsoInspectionError(
+            "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+            boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+        )
+    try:
+        from analyze import Elf
+
+        elf = Elf(elf_bytes)
+    except Exception as exc:
+        raise IsoInspectionError(
+            f"corrupt or unparseable ELF header: {exc}",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        ) from exc
+
+    if _has_cfw_or_kernel_only_imports(elf_bytes):
+        return True
+
+    sec = elf.sec(".rodata.sceModuleInfo")
+    if sec is not None:
+        try:
+            b = elf.read_at_vaddr(sec["addr"], 2)
+            if not b or len(b) < 2:
+                raise IsoInspectionError(
+                    "corrupt .rodata.sceModuleInfo section",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            modattribute = struct.unpack_from("<H", b, 0)[0]
+            if (modattribute & 0x1000) != 0:
+                return True
+        except (IndexError, OSError, TypeError, ValueError, struct.error) as exc:
+            raise IsoInspectionError(
+                f"corrupt .rodata.sceModuleInfo section: {exc}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            ) from exc
+
     return False
 
 
@@ -279,12 +432,14 @@ def plan_provisional_module_bindings(
                 f"guest module could not be read: {name}",
                 boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
             ) from exc
+        if _is_hle_served_module(name, mod_bytes):
+            continue
+        module_type, module_low, module_high = _elf32_load_span(module_path)
         if _is_kernel_mode_module(mod_bytes):
             raise IsoInspectionError(
                 f"guest module requires PSP kernel mode: {name}",
                 boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
             )
-        module_type, module_low, module_high = _elf32_load_span(module_path)
         span = module_high - module_low
         if module_type in (3, 0xFFA0) and module_low == 0:
             reloc_modules.append((name, guest_path, span))

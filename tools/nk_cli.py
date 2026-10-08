@@ -61,6 +61,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     _read_iso_extent,
     _classify_decrypted_elf_file,
     _has_cfw_or_kernel_only_imports,
+    _is_hle_served_module,
     decrypted_module_dir,
     inspect_compatibility_preflight,
     plan_provisional_module_bindings,
@@ -2974,6 +2975,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             module_sources: list[tuple[dict, str, Path | None]] = []
             unready: list[dict] = []
             for candidate in module_candidates:
+                if _is_hle_served_module(candidate["name"]):
+                    continue
                 folder_copy = None
                 if title_folder is not None:
                     candidate_file = title_folder / candidate["name"]
@@ -2981,6 +2984,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                             _classify_decrypted_elf_file(candidate_file, module=True) == "PLAIN_MIPS_ELF32":
                         folder_copy = candidate_file
                 if folder_copy is not None:
+                    if _is_hle_served_module(candidate["name"], folder_copy.read_bytes()):
+                        continue
                     module_sources.append((candidate, "folder", folder_copy))
                 elif candidate["kind"] == "plain-elf":
                     module_sources.append((candidate, "iso", None))

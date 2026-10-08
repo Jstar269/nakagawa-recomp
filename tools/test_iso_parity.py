@@ -417,6 +417,68 @@ def build_overlapping_mips_elf(
     return bytes(elf)
 
 
+def build_synthetic_prx(
+    *,
+    e_type: int = 0xFFA0,
+    modattribute: int = 0,
+    modname: str = "TestMod",
+    exported_lib: str | None = None,
+    vaddr: int = 0,
+    memsz: int = 0x200,
+) -> bytes:
+    """Build a synthetic PRX ELF with .rodata.sceModuleInfo and optional exported library."""
+    segment = bytearray(memsz)
+    modname_bytes = modname.encode("ascii")[:27] + b"\0"
+    modname_padded = modname_bytes.ljust(28, b"\0")
+    struct.pack_into("<HH28s", segment, 0, modattribute, 0x0101, modname_padded)
+
+    if exported_lib:
+        ent_off = 0x80
+        libname_off = 0xC0
+        libname_bytes = exported_lib.encode("ascii") + b"\0"
+        segment[libname_off : libname_off + len(libname_bytes)] = libname_bytes
+        struct.pack_into(
+            "<IHHBBHII",
+            segment,
+            ent_off,
+            vaddr + libname_off,
+            0x0101,
+            0,
+            5,
+            0,
+            1,
+            vaddr + 0x100,
+            vaddr + 0x110,
+        )
+        struct.pack_into("<2I", segment, 36, vaddr + ent_off, vaddr + ent_off + 20)
+
+    data_off = 0x100
+    names = b"\0.text\0.rodata.sceModuleInfo\0.shstrtab\0"
+    shstr_off = data_off + len(segment)
+    shoff = (shstr_off + len(names) + 3) & ~3
+
+    header = bytearray(52)
+    header[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", header, 16, e_type, 8, 1)
+    struct.pack_into("<III", header, 24, vaddr, 52, shoff)
+    struct.pack_into("<HHHHHH", header, 40, 52, 32, 1, 40, 4, 3)
+
+    phdr = bytearray(32)
+    struct.pack_into(
+        "<8I", phdr, 0, 1, data_off, vaddr, vaddr, len(segment), len(segment), 7, 0x1000
+    )
+
+    prefix = bytes(header + phdr) + b"\0" * (data_off - len(header) - len(phdr))
+    padding = b"\0" * (shoff - shstr_off - len(names))
+
+    sh0 = struct.pack("<10I", *([0] * 10))
+    sh_text = struct.pack("<10I", 1, 1, 6, vaddr, data_off, 8, 0, 0, 4, 0)
+    sh_modinfo = struct.pack("<10I", 7, 1, 2, vaddr, data_off, 52, 0, 0, 4, 0)
+    sh_shstrtab = struct.pack("<10I", 29, 3, 0, 0, shstr_off, len(names), 0, 0, 1, 0)
+
+    return prefix + bytes(segment) + names + padding + sh0 + sh_text + sh_modinfo + sh_shstrtab
+
+
 def _both_endian32(value: int) -> bytes:
     """ECMA-119 7.3.3: a 32-bit value recorded little-endian then big-endian."""
     return value.to_bytes(4, "little") + value.to_bytes(4, "big")
@@ -1973,6 +2035,59 @@ int main(int argc, char **argv) {{
                 [("fixed_bad.prx", fixed_bad, "disc0:/PSP_GAME/USRDIR/fixed_bad.prx")],
             )
         self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_LOAD_BINDING_REQUIRED")
+
+    def test_provisional_guest_module_placement_hle_served_module_is_excluded_without_blocking(self) -> None:
+        main_elf = self.temp_dir / "placement-main-hle.elf"
+        user_mod = self.temp_dir / "user.prx"
+        fw_by_name = self.temp_dir / "audiocodec.prx"
+        fw_by_export = self.temp_dir / "custom_audio.prx"
+
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        user_mod.write_bytes(build_synthetic_prx(modattribute=0, modname="UserModule"))
+        fw_by_name.write_bytes(build_synthetic_prx(modattribute=0x1000, modname="FirmwareAudio"))
+        fw_by_export.write_bytes(
+            build_synthetic_prx(
+                modattribute=0x1006,
+                modname="MyDriver",
+                exported_lib="sceAudiocodec",
+            )
+        )
+
+        placed = plan_provisional_module_bindings(
+            main_elf,
+            [
+                ("audiocodec.prx", fw_by_name, "disc0:/PSP_GAME/USRDIR/audiocodec.prx"),
+                ("custom_audio.prx", fw_by_export, "disc0:/PSP_GAME/USRDIR/custom_audio.prx"),
+                ("user.prx", user_mod, "disc0:/PSP_GAME/USRDIR/user.prx"),
+            ],
+        )
+        self.assertEqual(len(placed), 1)
+        self.assertEqual(placed[0]["name"], "user.prx")
+
+    def test_provisional_guest_module_placement_kernel_mode_module_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-km.elf"
+        km_module = self.temp_dir / "title_driver.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        km_module.write_bytes(build_synthetic_prx(modattribute=0x1000, modname="TitleDriver"))
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("title_driver.prx", km_module, "disc0:/PSP_GAME/USRDIR/title_driver.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("requires PSP kernel mode", str(ctx.exception))
+
+    def test_provisional_guest_module_placement_corrupt_elf_header_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-corrupt.elf"
+        corrupt_module = self.temp_dir / "corrupt.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        corrupt_module.write_bytes(b"\x7fELF\x01\x01\x01\x00" + b"\x00" * 30)
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("corrupt.prx", corrupt_module, "disc0:/PSP_GAME/USRDIR/corrupt.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
 
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
