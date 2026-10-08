@@ -386,6 +386,99 @@ class PrivateInputTests(unittest.TestCase):
             self.assertEqual(code, 1)
 
 
+class BuildScopeGameElfTests(unittest.TestCase):
+    """--scope build must not FAIL a fresh checkout for the synthetic title's ELF.
+
+    The default manifest is synthetic and nothing in this checkout generates
+    build/fixtures/synthetic.elf, so the build-scope message reports the absence as
+    informational without promising that a build will create it. A retail title's
+    missing ELF stays a FAIL at every scope, and the inputs scope still checks the
+    synthetic ELF.
+    """
+
+    def synthetic_manifest(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "id": "synthetic-allegrex-v1",
+            "display_name": "Nakagawa Synthetic Allegrex Fixture",
+            "kind": "synthetic",
+            "game_name": "synthetic",
+            "filesystem": {"data_root": "fixtures/profile_zero"},
+            "executable": {"bss_metadata_source": "none"},
+            "modules": [],
+        }
+
+    def retail_manifest(self) -> dict[str, object]:
+        manifest = self.synthetic_manifest()
+        manifest.update({"id": "mygame-v1", "kind": "retail", "game_name": "mygame"})
+        return manifest
+
+    def eboot_result(self, root: Path, scope: str, manifest: dict[str, object]):
+        context = nk_doctor_checks.title_diagnostic_context(root, manifest)
+        report = nk_doctor.Report(root, scope)
+        nk_doctor_checks.check_private_inputs(
+            report,
+            need_iso=False,
+            need_assets=False,
+            title_manifest=manifest,
+            title_context=context,
+        )
+        return next(result for result in report.results if result.code == "INPUT_EBOOT_ELF")
+
+    def test_missing_synthetic_elf_is_informational_at_build_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.eboot_result(Path(tmp), "build", self.synthetic_manifest())
+        self.assertEqual(result.status, "INFO", result)
+        self.assertIn("does not require it", result.summary)
+        self.assertIn("No additional title-specific files are required", result.summary)
+        self.assertNotIn("will be generated", result.summary)
+
+    def test_build_scope_elf_summary_names_other_required_title_inputs(self) -> None:
+        manifest = self.synthetic_manifest()
+        manifest["executable"] = {"bss_metadata_source": "psp-header"}
+        manifest["modules"] = [
+            {"role": "guest-prx", "name": "libsample.prx", "required": True}
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.eboot_result(Path(tmp), "build", manifest)
+        self.assertEqual(result.status, "INFO", result)
+        self.assertIn("EBOOT.BIN", result.summary)
+        self.assertIn("libsample.prx", result.summary)
+        self.assertIn("--scope inputs", result.summary)
+
+    def test_declared_synthetic_fixture_path_still_fails_at_build_scope(self) -> None:
+        for path in ("build/fixtures/alternate.elf", "fixtures/alternate.elf"):
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as tmp:
+                manifest = self.synthetic_manifest()
+                manifest["executable"] = {"path": path, "bss_metadata_source": "none"}
+                result = self.eboot_result(Path(tmp), "build", manifest)
+            self.assertEqual(result.status, "FAIL", result)
+
+    def test_declared_synthetic_executable_still_fails_at_build_scope(self) -> None:
+        manifest = self.synthetic_manifest()
+        manifest["executable"] = {"path": "place_game_here/EBOOT.elf", "bss_metadata_source": "none"}
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.eboot_result(Path(tmp), "build", manifest)
+        self.assertEqual(result.status, "FAIL", result)
+
+    def test_missing_synthetic_elf_still_fails_at_inputs_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.eboot_result(Path(tmp), "inputs", self.synthetic_manifest())
+        self.assertEqual(result.status, "FAIL", result)
+
+    def test_missing_retail_elf_still_fails_at_build_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.eboot_result(Path(tmp), "build", self.retail_manifest())
+        self.assertEqual(result.status, "FAIL", result)
+
+    def test_present_synthetic_elf_is_still_validated_at_build_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_elf(root / "build" / "fixtures" / "synthetic.elf")
+            result = self.eboot_result(root, "build", self.synthetic_manifest())
+        self.assertEqual(result.status, "PASS", result)
+
+
 class RepositoryContractTests(unittest.TestCase):
     def make_docs(self, root: Path, *, manifest_license: str = "GPL-3.0-or-later") -> None:
         (root / "docs").mkdir(parents=True)

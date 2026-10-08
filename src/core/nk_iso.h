@@ -25,7 +25,30 @@ typedef struct {
     uint32_t lba;
     uint32_t size;
     bool is_directory;
+    bool multi_extent;
 } NkIsoDirEntry;
+
+/* PSP guest-module source roots are traversed recursively with this shared
+ * bound. Depth is measured below SYSDIR/USRDIR; depth 4 includes the observed
+ * USRDIR/DATA/MODULE/MODULE layout (depth 3). */
+#define NK_ISO_MODULE_TREE_MAX_DEPTH 4u
+#define NK_ISO_MODULE_TREE_MAX_DIRECTORIES 1024u
+#ifndef NK_ISO_MODULE_TREE_MAX_PATH_BYTES
+#define NK_ISO_MODULE_TREE_MAX_PATH_BYTES 1200u
+#endif
+
+typedef enum {
+    NK_ISO_MODULE_WALK_OK = 0,
+    NK_ISO_MODULE_WALK_INVALID_ARGUMENT,
+    NK_ISO_MODULE_WALK_DIRECTORY_LIMIT,
+    NK_ISO_MODULE_WALK_PATH_LIMIT,
+    NK_ISO_MODULE_WALK_INVALID_TREE,
+    NK_ISO_MODULE_WALK_CALLBACK_STOPPED
+} NkIsoModuleWalkStatus;
+
+typedef bool (*NkIsoModuleWalkCallback)(const char *member_path,
+                                        const NkIsoDirEntry *entry,
+                                        void *userdata);
 
 /* Open an ISO image for reading. Returns NULL on failure. */
 NkIsoReader *nk_iso_reader_open(const char *iso_path);
@@ -48,6 +71,12 @@ int nk_iso_reader_read(NkIsoReader *reader, uint32_t lba, uint64_t offset, void 
  * Returns 1 on success, 0 on end of directory, -1 on invalid / not a directory.
  */
 int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index, NkIsoDirEntry *out_entry);
+
+/* Visit files recursively below PSP_GAME/SYSDIR and PSP_GAME/USRDIR. The
+ * walk skips KMODULE subtrees, bounds depth and directory count, and reports
+ * each member's complete ISO path. A callback returning false stops the walk. */
+NkIsoModuleWalkStatus nk_iso_reader_walk_module_tree(
+    NkIsoReader *reader, NkIsoModuleWalkCallback callback, void *userdata);
 
 /* Return volume ID of reader */
 const char *nk_iso_reader_volume_id(const NkIsoReader *reader);
