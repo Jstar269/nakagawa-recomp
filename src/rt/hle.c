@@ -3120,10 +3120,6 @@ static uint32_t h_ModuleStreamWrite(CpuState *s) {
 #define PSMF_ERR_INVALID_POINTER 0x80000103u
 #define PSMF_ERR_INVALID_VALUE 0x800001feu
 #define PSMF_ERR_PRIV_REQUIRED 0x80000023u
-#define PSMF_AUDIO_SAMPLES 2048
-#define PSMF_AUDIO_BYTES (PSMF_AUDIO_SAMPLES * 4)   /* stereo s16, the size GetAudioData fills */
-#define PSMF_AUDIO_MAX_CHANNELS 8
-#define PSMF_Q_DEPTH 4
 /* scePsmfPlayerStart playMode values (PSMF_PLAYER_MODE_*). */
 #define PSMF_PLAY_MODE_PAUSE 3u
 /* Pictures the reference player always reports as "not yet" before the first frame.  Guest
@@ -3165,6 +3161,7 @@ typedef struct {
     int64_t audioClock; int audioClockValid;
     uint32_t videoFramesOut, audioBlocksOut, videoErrors, audioErrors;
     uint32_t audioUpmixBlocks, audioFormatRejects;
+    uint32_t logTickCalls, logTickBlocks;
     int videoDrained;
     /* The demuxer refusal has already been named on stderr for this stream.  Latched
      * with the same lifetime as the producer's own failure state, so one rejected
@@ -3220,10 +3217,13 @@ static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEG
  * a run writes on stderr -- without scraping a shared stream.  psmf_log_summary() records
  * the last line it printed here and counts them, so a test can tell a fresh line from a
  * stale one.  Test-only; the production build carries neither the buffer nor the count. */
-static char s_psmf_last_summary[2048];
+#define PSMF_SUMMARY_LINE_CAPACITY 4096u
+static char s_psmf_last_summary[PSMF_SUMMARY_LINE_CAPACITY];
 static uint32_t s_psmf_summary_count;
 const char *sr_hle_test_psmf_last_summary(void) { return s_psmf_last_summary; }
 uint32_t sr_hle_test_psmf_summary_count(void) { return s_psmf_summary_count; }
+#else
+#define PSMF_SUMMARY_LINE_CAPACITY 4096u
 #endif
 
 /* The bounded SR_MPEGLOG counter line, printed as one summary.  Every clock on the line
@@ -3237,54 +3237,81 @@ uint32_t sr_hle_test_psmf_summary_count(void) { return s_psmf_summary_count; }
  * error in a run.  -1 means the pair has not been measured yet.  vlost is the number of
  * presentation times the ring was forced to discard; the submit gate in psmf_video_pump()
  * keeps it at zero, so vlost > 0 on a run means that rule was violated. */
-static void psmf_log_summary(SrPsmfPlayer *p) {
-    if (!p || !psmf_log_on()) return;
-    extern uint32_t sr_audio_vbl(void);   /* defined later in this file; same local extern audio.c uses */
-    SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+static int psmf_format_summary(char *line, size_t line_size, unsigned vbl,
+                               const SrPsmfProducerStats *st,
+                               const SrPsmfPlayer *p) {
     int64_t avgap = (p->displayPtsValid && p->audioDisplayPtsValid)
                         ? p->displayPts - p->audioDisplayPts : -1;
     int64_t vlead = (p->videoClockValid && p->displayPtsValid)
                         ? p->videoClock - p->displayPts : -1;
-    char line[2048];
-    snprintf(line, sizeof(line), "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
+    return snprintf(line, line_size, "PSMF producer vb=%u bytes=%llu packs=%llu pes=%llu video_pes=%llu audio_pes=%llu"
                     " video_aus=%llu audio_aus=%llu no_pts=%llu dts_pes=%llu resync=%llu qv=%u qa=%u eof=%d failed=%d"
                     " vsub=%llu vdec=%llu vout=%llu vhold=%llu veos=%llu vrej=%llu"
                     " asub=%llu adec=%llu aout=%llu ahold=%llu aeos=%llu arej=%llu"
                     " arejf=%u aupm=%u"
                     " fail_at=%llu frames=%u audio_blocks=%u verr=%u aerr=%u"
                     " vpts=%lld apts=%lld vts=%lld ats=%lld avgap=%lld vlead=%lld vclk=%d drained=%d vlost=%llu\n",
-                    (unsigned)sr_audio_vbl(),
-                    (unsigned long long)st.bytes_read, (unsigned long long)st.packs,
-                    (unsigned long long)st.pes_packets, (unsigned long long)st.video_pes,
-                    (unsigned long long)st.audio_pes, (unsigned long long)st.video_aus,
-                    (unsigned long long)st.audio_aus, (unsigned long long)st.aus_without_pts,
-                    (unsigned long long)st.pes_with_dts,
-                    (unsigned long long)st.audio_resync_bytes,
+                    vbl,
+                    (unsigned long long)st->bytes_read, (unsigned long long)st->packs,
+                    (unsigned long long)st->pes_packets, (unsigned long long)st->video_pes,
+                    (unsigned long long)st->audio_pes, (unsigned long long)st->video_aus,
+                    (unsigned long long)st->audio_aus, (unsigned long long)st->aus_without_pts,
+                    (unsigned long long)st->pes_with_dts,
+                    (unsigned long long)st->audio_resync_bytes,
                     p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
-                    p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st.eof, st.failed,
-                    (unsigned long long)st.video_submitted,
-                    (unsigned long long)st.video_decoded,
-                    (unsigned long long)st.video_delivered,
-                    (unsigned long long)st.video_warmup_held,
-                    (unsigned long long)st.video_eos_drained,
-                    (unsigned long long)st.video_rejected,
-                    (unsigned long long)st.audio_submitted,
-                    (unsigned long long)st.audio_decoded,
-                    (unsigned long long)st.audio_delivered,
-                    (unsigned long long)st.audio_warmup_held,
-                    (unsigned long long)st.audio_eos_drained,
-                    (unsigned long long)st.audio_rejected,
+                    p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count, st->eof, st->failed,
+                    (unsigned long long)st->video_submitted,
+                    (unsigned long long)st->video_decoded,
+                    (unsigned long long)st->video_delivered,
+                    (unsigned long long)st->video_warmup_held,
+                    (unsigned long long)st->video_eos_drained,
+                    (unsigned long long)st->video_rejected,
+                    (unsigned long long)st->audio_submitted,
+                    (unsigned long long)st->audio_decoded,
+                    (unsigned long long)st->audio_delivered,
+                    (unsigned long long)st->audio_warmup_held,
+                    (unsigned long long)st->audio_eos_drained,
+                    (unsigned long long)st->audio_rejected,
                     p->audioFormatRejects, p->audioUpmixBlocks,
-                    (unsigned long long)st.fail_offset, p->videoFramesOut, p->audioBlocksOut,
+                    (unsigned long long)st->fail_offset, p->videoFramesOut, p->audioBlocksOut,
                     p->videoErrors, p->audioErrors,
                     (long long)p->videoClock, (long long)p->audioClock,
                     (long long)p->displayPts, (long long)p->audioDisplayPts,
                     (long long)avgap, (long long)vlead,
                     p->videoClockValid, p->videoDrained,
                     (unsigned long long)p->auPtsLost);
+}
+
+static int psmf_summary_fits(int formatted, size_t capacity) {
+    return formatted >= 0 && (size_t)formatted < capacity;
+}
+
+#ifdef SR_MPEG_MEDIA_SELFTEST
+int sr_hle_test_psmf_summary_rejects_truncation(void) {
+    SrPsmfProducerStats st;
+    SrPsmfPlayer p;
+    char tiny[16];
+    memset(&st, 0, sizeof(st));
+    memset(&p, 0, sizeof(p));
+    int formatted = psmf_format_summary(tiny, sizeof(tiny), 0u, &st, &p);
+    return !psmf_summary_fits(formatted, sizeof(tiny));
+}
+#endif
+
+static void psmf_log_summary(SrPsmfPlayer *p) {
+    if (!p || !psmf_log_on()) return;
+    extern uint32_t sr_audio_vbl(void);   /* defined later in this file; same local extern audio.c uses */
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+    char line[PSMF_SUMMARY_LINE_CAPACITY];
+    int formatted = psmf_format_summary(line, sizeof(line), sr_audio_vbl(), &st, p);
+    if (!psmf_summary_fits(formatted, sizeof(line))) {
+        fprintf(stderr, "PSMF_COUNTER_SUMMARY_TRUNCATED: required=%d capacity=%zu\n",
+                formatted, sizeof(line));
+        return;
+    }
     fputs(line, stderr);
 #ifdef SR_MPEG_MEDIA_SELFTEST
-    snprintf(s_psmf_last_summary, sizeof(s_psmf_last_summary), "%s", line);
+    memcpy(s_psmf_last_summary, line, (size_t)formatted + 1u);
     s_psmf_summary_count++;
 #endif
 }
@@ -3294,15 +3321,29 @@ static void psmf_log_summary(SrPsmfPlayer *p) {
  * observable *through* a run instead of only at its start. */
 static void psmf_log_tick(SrPsmfPlayer *p) {
     if (!p || !psmf_log_on()) return;
-    static int n = 0;
-    static uint32_t logged_blocks = 0;
-    int due = n++ < 8 || (n & 0xff) == 0;
-    if (p->audioBlocksOut / 16u != logged_blocks / 16u) {
-        logged_blocks = p->audioBlocksOut;
+    int due = p->logTickCalls++ < 8u || (p->logTickCalls & 0xffu) == 0;
+    if (p->audioBlocksOut / 16u != p->logTickBlocks / 16u) {
+        p->logTickBlocks = p->audioBlocksOut;
         due = 1;
     }
     if (due) psmf_log_summary(p);
 }
+
+#ifdef SR_MPEG_MEDIA_SELFTEST
+void sr_hle_test_psmf_log_tick(uint32_t guest) {
+    SrPsmfPlayer *p = psmf_find(guest, 1);
+    if (p) psmf_log_tick(p);
+}
+
+void sr_hle_test_psmf_log_release(uint32_t guest) {
+    SrPsmfPlayer *p = psmf_find(guest, 0);
+    if (!p) return;
+    psmf_flush(p);
+    if (p->producer) sr_psmf_producer_close(p->producer);
+    memset(p, 0, sizeof(*p));
+    p->h264 = -1;
+}
+#endif
 
 /* A rejected stream is a product boundary, not a debug event.  The producer fails closed
  * and never reaches EOF, so without a named boundary the consumer only sees the picture
@@ -3502,7 +3543,7 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
             if (frame_size == slot->bytes) {
                 uint32_t data = frame_size - 8u;
                 int channels = (int)p->audioChannels;
-                if (channels < 1 || channels > PSMF_AUDIO_MAX_CHANNELS) {
+                if (channels < 1 || channels > (int)PSMF_AUDIO_MAX_CHANNELS) {
                     p->audioFormatRejects++;
                 } else {
                     if (!p->atrac || p->atracAlign != (int)data || p->atracChannels != channels) {

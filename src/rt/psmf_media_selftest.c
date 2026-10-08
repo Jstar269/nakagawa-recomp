@@ -1,3 +1,8 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE 1
+#endif
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
@@ -46,6 +51,9 @@ static int checks, failures;
  * fresh line from a stale one. */
 const char *sr_hle_test_psmf_last_summary(void);
 uint32_t sr_hle_test_psmf_summary_count(void);
+int sr_hle_test_psmf_summary_rejects_truncation(void);
+void sr_hle_test_psmf_log_tick(uint32_t guest);
+void sr_hle_test_psmf_log_release(uint32_t guest);
 
 static void check_media_conservation(const char *track, uint64_t decoded,
                                     uint64_t delivered, uint64_t held,
@@ -1615,12 +1623,8 @@ static void test_mpeg_ycbcr_guest_contract(void) {
 /* ---- scePsmfPlayer: A/V presentation timing at the guest boundaries (issue #279) -------- */
 
 /* Latch SR_MPEGLOG before the player's first produce call: hle.c caches the flag the first
- * time it is consulted, and this test is the first caller of psmf_produce() in the process.
- * Strict C11 hides the POSIX putenv prototype, so it is declared locally off Windows; the
- * Windows CRT name (_putenv) is already declared by <stdlib.h>. */
-#ifndef _WIN32
-int putenv(char *);
-#endif
+ * time it is consulted.  The feature-test macro above exposes the platform putenv prototype
+ * on POSIX; the Windows CRT name (_putenv) comes from <stdlib.h>. */
 static char s_av_mpeglog_env[] = "SR_MPEGLOG=1";
 static void av_latch_mpeglog(void) {
 #ifdef _WIN32
@@ -1628,6 +1632,26 @@ static void av_latch_mpeglog(void) {
 #else
     putenv(s_av_mpeglog_env);
 #endif
+}
+
+static void test_psmf_log_tick_instance_isolation(void) {
+    const uint32_t first_guest = 0x085f0000u;
+    const uint32_t second_guest = 0x085f0004u;
+    av_latch_mpeglog();
+    CHECK(sr_hle_test_psmf_summary_rejects_truncation(),
+          "psmf counters detect a summary that cannot fit its destination");
+    uint32_t before = sr_hle_test_psmf_summary_count();
+    for (int i = 0; i < 8; i++) sr_hle_test_psmf_log_tick(first_guest);
+    CHECK(sr_hle_test_psmf_summary_count() == before + 8u,
+          "each player's first eight counter ticks are published");
+    sr_hle_test_psmf_log_tick(first_guest);
+    CHECK(sr_hle_test_psmf_summary_count() == before + 8u,
+          "the periodic counter interval is per player");
+    sr_hle_test_psmf_log_tick(second_guest);
+    CHECK(sr_hle_test_psmf_summary_count() == before + 9u,
+          "a second player starts with its own counter sampling interval");
+    sr_hle_test_psmf_log_release(first_guest);
+    sr_hle_test_psmf_log_release(second_guest);
 }
 
 /* The player's only source boundary is iso_lookup/iso_read.  While the player test runs,
@@ -1697,6 +1721,7 @@ uint32_t iso_physical_lba(uint32_t lba_or_token) { return lba_or_token; }
 #define AV_AUDIO_BLOCKS  65                 /* ~3.0 s of 2048-sample blocks at 44.1 kHz */
 #define AV_VIDEO_ANCHOR  4                  /* pictures whose PES packet carries a PTS */
 #define AV_AUDIO_ANCHOR  8                  /* audio blocks whose PES packet carries a PTS */
+#define AV_AUDIO_PTS_DRIFT_TICKS 7LL        /* max truncation between 8-block PTS anchors */
 
 static int64_t av_video_pts(int picture) { return (int64_t)picture * PSMF_VIDEO_PTS_STEP; }
 static int64_t av_audio_pts(int block) {
@@ -1838,8 +1863,8 @@ static void av_sample_summaries(void) {
               "submitted-minus-delivered stays inside the presentation ring: pipeline distance");
     }
     if (aout > 0 && ats >= 0) {
-        CHECK(llabs(ats - av_audio_pts((int)aout - 1)) <= AV_AUDIO_ANCHOR,
-              "published audio pts stays within one anchor interval of the authored timeline");
+        CHECK(llabs(ats - av_audio_pts((int)aout - 1)) <= AV_AUDIO_PTS_DRIFT_TICKS,
+              "published audio pts stays within the 90 kHz anchor-drift bound");
         /* One checkpoint per delivered block: two samples taken between two deliveries
          * repeat the same presentation point, and comparing a point with itself would
          * claim the series stopped advancing when nothing was delivered yet. */
@@ -1853,7 +1878,7 @@ static void av_sample_summaries(void) {
     }
     if (frames > 0 && aout > 0) {
         int64_t authored = av_video_pts((int)frames - 1) - av_audio_pts((int)aout - 1);
-        CHECK(llabs(avgap - authored) <= AV_AUDIO_ANCHOR,
+        CHECK(llabs(avgap - authored) <= AV_AUDIO_PTS_DRIFT_TICKS,
               "the published A/V gap equals the two authored positions at comparable points");
         CHECK(llabs(avgap) <= PSMF_AUDIO_PTS_STEP + 3 * PSMF_VIDEO_PTS_STEP,
               "the presentation-boundary A/V gap stays within a block plus a picture of slack");
@@ -1872,7 +1897,8 @@ static void test_player_av_presentation_timing(void) {
     av_latch_mpeglog();
     s_player_image = image;
     s_player_image_size = size;
-    s_av_ckpt_n = 0; s_av_eof_seen = 0; s_av_seen_summaries = 0;
+    s_av_ckpt_n = 0; s_av_eof_seen = 0;
+    s_av_seen_summaries = sr_hle_test_psmf_summary_count();
 
     MEM_W32(AV_CREATE + 0, 0x08700000u);      /* player read buffer (never dereferenced here) */
     MEM_W32(AV_CREATE + 4, 0x00285800u);      /* the size scePsmfPlayerCreate requires */
@@ -2020,14 +2046,14 @@ static void test_player_av_presentation_timing(void) {
         CHECK(vts == av_video_pts(AV_PICTURES - 1),
               "psmf-av: the terminal displaypts is the last authored picture time");
         CHECK(llabs(avgap - (av_video_pts(AV_PICTURES - 1) - av_audio_pts(AV_AUDIO_BLOCKS - 1))) <=
-                  AV_AUDIO_ANCHOR,
+                  AV_AUDIO_PTS_DRIFT_TICKS,
               "psmf-av: the terminal A/V gap equals the authored interleave of the two tracks");
     } else {
         fprintf(stderr, "SKIP: guest video presentation assertions need an H.264 backend\n");
         CHECK(vsub == 0 && (long long)frames == 0 && vts == 0,
               "psmf-av: without a backend no picture is submitted, delivered, or timed");
         CHECK(ats == av_audio_pts(AV_AUDIO_BLOCKS - 1) ||
-                  llabs(ats - av_audio_pts(AV_AUDIO_BLOCKS - 1)) <= AV_AUDIO_ANCHOR,
+                  llabs(ats - av_audio_pts(AV_AUDIO_BLOCKS - 1)) <= AV_AUDIO_PTS_DRIFT_TICKS,
               "psmf-av: the terminal audio presentation pts is the last authored block time");
     }
 
@@ -2070,6 +2096,7 @@ int main(int argc, char **argv) {
     test_backend_malformed_input();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
+    test_psmf_log_tick_instance_isolation();
     test_player_av_presentation_timing();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 

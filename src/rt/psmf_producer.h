@@ -25,6 +25,13 @@
 #define PSMF_VIDEO_PTS_STEP 3003
 #define PSMF_AUDIO_PTS_STEP 4180
 
+/* Shared scePsmfPlayer decode and queue dimensions.  The producer's AU queue
+ * depth above is a separate layer from the player's per-stage queues. */
+#define PSMF_AUDIO_SAMPLES 2048u
+#define PSMF_AUDIO_BYTES (PSMF_AUDIO_SAMPLES * 4u) /* stereo s16 */
+#define PSMF_AUDIO_MAX_CHANNELS 8u
+#define PSMF_Q_DEPTH 4u
+
 /* How many submitted pictures' presentation times the player (src/rt/hle.c) can hold ahead * of the getter.  Published here because it is the bound that makes the measured pipeline
  * lead meaningful: submitted-minus-delivered can never exceed it, so a vpts-vts separation
  * inside this bound is queue distance by construction, not synchronization error. */
