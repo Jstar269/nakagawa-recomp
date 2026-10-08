@@ -60,8 +60,10 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
 
 try:
     from .parse_golden import (
+        CAMPAIGN_PROBE_CASES,
         DMAC_INVALID_CASES,
         parse_cache_alias_output,
+        parse_campaign_probe_output,
         parse_audio_query_output,
         parse_delay_zero_output,
         parse_dmac_cells_output,
@@ -70,11 +72,14 @@ try:
         parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
+        parse_registry_readonly_output,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
     from psp_oracle.parse_golden import (
+        CAMPAIGN_PROBE_CASES,
         DMAC_INVALID_CASES,
         parse_cache_alias_output,
+        parse_campaign_probe_output,
         parse_audio_query_output,
         parse_delay_zero_output,
         parse_dmac_cells_output,
@@ -83,6 +88,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
+        parse_registry_readonly_output,
     )
 
 
@@ -101,6 +107,137 @@ HOST0_MTIME_TOLERANCE_NS = 1_000_000_000
 _FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 _FULL_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _ALL_ZERO_RE = re.compile(r"0+")
+
+
+def _fixed_campaign_rows(test_id: str, cases: list[tuple[str, int, frozenset[str]]]):
+    return test_id, tuple(cases)
+
+
+_PASS = frozenset({"PASS"})
+_PASS_OR_SKIP = frozenset({"PASS", "SKIP"})
+_FIXED_CAMPAIGN_CASES = {
+    "smoke": _fixed_campaign_rows(
+        "PSP-SMOKE-001", [("sum-1-to-100", 1, _PASS)]
+    ),
+    "thread-exit-delete": _fixed_campaign_rows(
+        "PSP-THREAD-EXIT-001",
+        [(case_id, 6, _PASS) for case_id in (
+            "ED-R77", "ED-R00", "ED-RNEG", "ED-RERR",
+            "ED-X77", "ED-X00", "ED-XNEG", "ED-XERR",
+            "ED-D77", "ED-D00", "ED-DNEG", "ED-DERR",
+        )],
+    ),
+    "teardown-test": _fixed_campaign_rows(
+        "PSP-TEARDOWN-001", [("exitdelete-main", 1, frozenset({"SKIP"}))]
+    ),
+    "display-mask-duty": _fixed_campaign_rows(
+        "PSP-DISPLAY-001",
+        [(f"display-mask-duty-{duration}us", 13, _PASS)
+         for duration in (33000, 66000)],
+    ),
+    "display-wait-late": _fixed_campaign_rows(
+        "PSP-DISPLAY-002",
+        [("calibration", 5, _PASS)]
+        + [
+            (f"late-{api}-{offset}eighths", 22, _PASS)
+            for api in ("waitvblankstart", "waitvblank")
+            for offset in (2, 6, 10, 14, 20)
+        ]
+        + [(f"invblank-{api}", 22, _PASS_OR_SKIP)
+           for api in ("waitvblankstart", "waitvblank")],
+    ),
+    "display-wait-priority": _fixed_campaign_rows(
+        "PSP-DISPLAY-003",
+        [("calibration", 5, _PASS),
+         ("priority-control", 16, _PASS),
+         ("priority-experiment", 16, _PASS)],
+    ),
+    "display-vblank-window": _fixed_campaign_rows(
+        "PSP-DISPLAY-004", [("vblank-window", 14, _PASS)]
+    ),
+    "mutex-refer-unlocked": _fixed_campaign_rows(
+        "PSP-MUTEX-001", [("mutex-refer-unlocked", 5, _PASS)]
+    ),
+    "mutex-timeout-quanta": _fixed_campaign_rows(
+        "PSP-MUTEX-001", [("mutex-timeout-quanta", 17, _PASS)]
+    ),
+    "mutex-priority-inheritance": _fixed_campaign_rows(
+        "PSP-MUTEX-001", [("mutex-priority-inheritance", 7, _PASS)]
+    ),
+    "mutex-interrupt-context": _fixed_campaign_rows(
+        "PSP-MUTEX-001",
+        [("mutex-interrupt-context", 3, _PASS)]
+        + [(f"mutex-interrupt-context-t{index:02d}", 7, _PASS)
+           for index in range(20)],
+    ),
+}
+
+
+CAMPAIGN_QUEUE_CASES = (
+    "transport-write",
+    "kernel-alarm",
+    "thread-scheduler",
+    "wait-outcomes",
+    "ge-break-continue",
+    "refer-status-size",
+    "registry-readonly",
+    "kernel-misc",
+    "smoke",
+    "thread-exit-delete",
+    "teardown-test",
+    "io-matrix",
+    "display-mask-duty",
+    "display-wait-late",
+    "display-wait-priority",
+    "display-vblank-window",
+    "fpu-vector",
+    "cache-alias",
+    "audio-query",
+    "ge-nan",
+    "dma-cells",
+    "dma-invalid-tail-s0",
+    "dma-invalid-tail-memcpy-dst",
+    "dma-invalid-tail-memcpy-src",
+    "dma-invalid-tail-try-dst",
+    "dma-invalid-tail-try-src",
+    "mutex-refer-unlocked",
+    "mutex-timeout-quanta",
+    "mutex-priority-inheritance",
+    "mutex-interrupt-context",
+)
+
+CAMPAIGN_CASE_ESTIMATE_SECONDS = {
+    "transport-write": 90,
+    "kernel-alarm": 120,
+    "thread-scheduler": 90,
+    "wait-outcomes": 90,
+    "ge-break-continue": 180,
+    "refer-status-size": 120,
+    "registry-readonly": 240,
+    "kernel-misc": 90,
+    "smoke": 60,
+    "thread-exit-delete": 180,
+    "teardown-test": 60,
+    "io-matrix": 180,
+    "display-mask-duty": 300,
+    "display-wait-late": 240,
+    "display-wait-priority": 180,
+    "display-vblank-window": 180,
+    "fpu-vector": 90,
+    "cache-alias": 90,
+    "audio-query": 180,
+    "ge-nan": 240,
+    "dma-cells": 180,
+    "dma-invalid-tail-s0": 120,
+    "dma-invalid-tail-memcpy-dst": 120,
+    "dma-invalid-tail-memcpy-src": 120,
+    "dma-invalid-tail-try-dst": 120,
+    "dma-invalid-tail-try-src": 120,
+    "mutex-refer-unlocked": 90,
+    "mutex-timeout-quanta": 120,
+    "mutex-priority-inheritance": 120,
+    "mutex-interrupt-context": 120,
+}
 
 
 class UnsafeHost0OutputError(OSError):
@@ -599,6 +736,39 @@ def _campaign_host0_log_path(host0_root: Path, case_id: str) -> Path:
     return host0_root / f"{stem}_log.txt"
 
 
+def _parse_fixed_campaign_records(text: str, case_id: str):
+    """Validate the exact record order and scalar fields of legacy fixed probes."""
+
+    try:
+        test_id, contract = _FIXED_CAMPAIGN_CASES[case_id]
+    except KeyError as exc:
+        raise ProtocolError(f"{case_id}: no fixed campaign contract") from exc
+    parsed = parse_output(text)
+    if any(record.test_id != test_id for record in parsed.results):
+        raise ProtocolError(f"{case_id}: stream contains a foreign test_id")
+    expected_cases = tuple(item[0] for item in contract)
+    observed_cases = tuple(record.case_id for record in parsed.results)
+    if observed_cases != expected_cases:
+        raise ProtocolError(
+            f"{case_id}: expected ordered cases {expected_cases}, got {observed_cases}"
+        )
+    for record, (expected_case, out_count, statuses) in zip(
+        parsed.results, contract, strict=True
+    ):
+        if record.case_id != expected_case or record.status not in statuses:
+            raise ProtocolError(
+                f"{case_id}: {record.case_id} has an unexpected status or position"
+            )
+        values = dict(record.values)
+        expected_fields = {"result", *(f"out{index}" for index in range(out_count))}
+        if set(values) != expected_fields:
+            raise ProtocolError(
+                f"{case_id}: {record.case_id} fields must be "
+                f"{sorted(expected_fields)}, got {sorted(values)}"
+            )
+    return parsed
+
+
 def _parse_campaign_records(text: str, case_id: str):
     """Validate a campaign's known completion contract, then parse its rows."""
 
@@ -609,6 +779,12 @@ def _parse_campaign_records(text: str, case_id: str):
     match = re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id)
     if match:
         return validate_dmac_size_matrix_size(text, int(match.group(1), 16))
+    if case_id in CAMPAIGN_PROBE_CASES:
+        return parse_campaign_probe_output(text, case_id, require_complete=True)
+    if case_id == "registry-readonly":
+        return parse_registry_readonly_output(text, require_complete=True)
+    if case_id in _FIXED_CAMPAIGN_CASES:
+        return _parse_fixed_campaign_records(text, case_id)
 
     parsed = parse_output(text)
     complete_parser = {
@@ -712,6 +888,10 @@ def _normalise_unbound_identity_fields(text: str) -> str:
 
 
 def _campaign_completeness_contract(case_id: str) -> str:
+    if case_id in CAMPAIGN_PROBE_CASES or case_id == "registry-readonly":
+        return "strict-golden-sequence"
+    if case_id in _FIXED_CAMPAIGN_CASES:
+        return "strict-fixed-record-sequence"
     if case_id in {"dma-size-matrix", "dmac-size-matrix"} or re.fullmatch(
         r"dmac-size-matrix-size-0x[0-9a-f]{8}", case_id
     ):
@@ -1033,6 +1213,8 @@ class PsplinkCampaignRunner:
         self.firmware: str | None = None
         self.host0_qualified = False
         self.source_tree_problem: str | None = None
+        self.intervention_case_id: str | None = None
+        self.resume_case_index: int | None = None
         self._l0_cleanup_attempted = False
         self._l1_attempted = False
         self._l1_active = False
@@ -1231,7 +1413,12 @@ class PsplinkCampaignRunner:
             )
         except (ProtocolError, OSError, UnicodeError, ValueError):
             return False
-        return bool(parsed.results) and all(item.status == "PASS" for item in parsed.results)
+        # A probe's explicit SKIP is a completed safety outcome, not evidence
+        # of the skipped semantic. The envelope keeps SKIP ineligible as a
+        # measured result while teardown may still be checked normally.
+        return bool(parsed.results) and all(
+            item.status in {"PASS", "SKIP"} for item in parsed.results
+        )
 
     def _enforce_teardown_check(
         self,
@@ -1682,8 +1869,24 @@ class PsplinkCampaignRunner:
             "RETURN_CODE": result[0],
         }
 
-    def run(self, cases: list[CampaignCase]) -> dict[str, object]:
-        if not cases or cases[0].case_id != "transport-write":
+    def run(
+        self,
+        cases: list[CampaignCase],
+        *,
+        require_transport_preflight: bool = True,
+        reset_between_cases: bool = False,
+        stop_on_incomplete: bool = False,
+        case_index_offset: int = 0,
+        on_case_start: Callable[[int, CampaignCase, str], None] | None = None,
+        on_case_complete: Callable[[int, dict[str, object]], None] | None = None,
+    ) -> dict[str, object]:
+        if not cases or (
+            require_transport_preflight and cases[0].case_id != "transport-write"
+        ):
+            self.state = "STOPPED"
+            self.terminal_reason = "HOST0_ROUNDTRIP_REQUIRED"
+            return self._report()
+        if not require_transport_preflight and not self.host0_qualified:
             self.state = "STOPPED"
             self.terminal_reason = "HOST0_ROUNDTRIP_REQUIRED"
             return self._report()
@@ -1714,7 +1917,24 @@ class PsplinkCampaignRunner:
                         "manual commands: `usbipd list`, `pspsh -e ver`"
                     )
                 return self._report()
-            for case in cases:
+            for local_index, case in enumerate(cases):
+                case_index = case_index_offset + local_index
+                if reset_between_cases and local_index > 0:
+                    if on_case_start is not None:
+                        try:
+                            on_case_start(case_index, case, "RESET_BEFORE_CASE")
+                        except (OSError, ValueError, TypeError):
+                            self.state = "STOPPED"
+                            self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+                            break
+                    self._l2_reset_attempted = False
+                    self._l2_transport_reattach_attempted = False
+                    if not self._reset_once(
+                        f"campaign soft reset before {case.case_id}"
+                    ):
+                        self.intervention_case_id = cases[local_index - 1].case_id
+                        self.resume_case_index = case_index
+                        break
                 case_host0_log = (
                     _campaign_host0_log_path(host0_path, case.case_id)
                     if isinstance(host0_path, Path) else None
@@ -1804,6 +2024,13 @@ class PsplinkCampaignRunner:
                     )
                     break
                 run_started_ns = time.time_ns()
+                if on_case_start is not None:
+                    try:
+                        on_case_start(case_index, case, "CASE_ACTIVE")
+                    except (OSError, ValueError, TypeError):
+                        self.state = "STOPPED"
+                        self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+                        break
                 self.state = "RUN_CASE"
                 result = self._request(f"ldstart host0:/{remote_path}", case.timeout)
                 uid_match = self._MODULE_UID_RE.search(result[1])
@@ -1861,6 +2088,48 @@ class PsplinkCampaignRunner:
                     if partial_problem:
                         host0_capture_problem += f"; {partial_problem}"
 
+                if stop_on_incomplete and (
+                    result[0] != 0
+                    or result[3] != "PROCESS_EXITED"
+                    or captured_host0_text is None
+                    or parse_probe_completion_sentinel(captured_host0_text) is None
+                    or not _campaign_stream_complete(captured_host0_text, case.case_id)
+                ):
+                    self._physical_intervention(
+                        f"campaign stopped after incomplete or uncertain case {case.case_id}; "
+                        "maintainer power-cycle confirmation is required before continuing"
+                    )
+                    self.intervention_case_id = case.case_id
+                    self.resume_case_index = case_index + 1
+                    run_finished_ns = time.time_ns()
+                    teardown_report = {
+                        "status": "BLOCKED",
+                        "stage": "PROBE",
+                        "issues": [host0_capture_problem or "complete case stream was not observed"],
+                        "recovery_status": "NOT_RUN",
+                    }
+                    envelope = self._envelope(
+                        case,
+                        result,
+                        module_uid,
+                        False,
+                        host0_log_path=case_host0_log,
+                        run_started_ns=run_started_ns,
+                        run_finished_ns=run_finished_ns,
+                        host0_log_cleared=host0_log_cleared,
+                        captured_host0_text=captured_host0_text,
+                        captured_host0_mtime_ns=captured_host0_mtime_ns,
+                        host0_capture_problem=host0_capture_problem,
+                        teardown_check=teardown_report,
+                    )
+                    self.envelopes.append(envelope)
+                    if on_case_complete is not None:
+                        try:
+                            on_case_complete(case_index, envelope)
+                        except (OSError, ValueError, TypeError):
+                            self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+                    break
+
                 after_probe, s1_problem = self._take_snapshot()
                 module_threads: frozenset[tuple[str, str]] = frozenset()
                 module_thread_problem: str | None = None
@@ -1875,7 +2144,11 @@ class PsplinkCampaignRunner:
                 after_unload, s2_problem = self._take_snapshot()
                 shell_qualified = self._shell_qualified()
                 exprint = self._request("exprint", self.cleanup_timeout)
-                host0_roundtrip_ok = self._verify_host0_roundtrip()
+                host0_roundtrip_ok = (
+                    self._verify_host0_roundtrip()
+                    if case.case_id == "transport-write" or not reset_between_cases
+                    else self.host0_qualified
+                )
                 probe_succeeded = self._probe_case_succeeded(
                     case,
                     result,
@@ -1923,15 +2196,26 @@ class PsplinkCampaignRunner:
                     )
                 cleanup_ok = unload_status == "PASS" and teardown_report["status"] == "PASS"
                 if teardown_report["status"] != "PASS":
-                    self._enforce_teardown_check(
-                        teardown_report,
-                        module_uid,
-                        probe_succeeded=probe_succeeded,
-                    )
+                    if stop_on_incomplete:
+                        self._physical_intervention(
+                            f"campaign stopped after teardown check failed for {case.case_id}; "
+                            "maintainer power-cycle confirmation is required before continuing"
+                        )
+                        self.intervention_case_id = case.case_id
+                        self.resume_case_index = case_index + 1
+                        teardown_report["recovery_status"] = "NOT_RUN"
+                    else:
+                        self._enforce_teardown_check(
+                            teardown_report,
+                            module_uid,
+                            probe_succeeded=probe_succeeded,
+                        )
                 run_finished_ns = time.time_ns()
                 if case.case_id == "transport-write":
                     self.host0_qualified = bool(host0_roundtrip_ok)
                 if (
+                    (case.case_id == "transport-write" or not reset_between_cases)
+                    and
                     not host0_roundtrip_ok
                     and self.terminal_reason in {
                         None, "TEARDOWN_CHECK_BLOCKED",
@@ -1940,8 +2224,7 @@ class PsplinkCampaignRunner:
                 ):
                     self.state = "STOPPED"
                     self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
-                self.envelopes.append(
-                    self._envelope(
+                envelope = self._envelope(
                         case,
                         result,
                         module_uid,
@@ -1955,7 +2238,13 @@ class PsplinkCampaignRunner:
                         host0_capture_problem=host0_capture_problem,
                         teardown_check=teardown_report,
                     )
-                )
+                self.envelopes.append(envelope)
+                if on_case_complete is not None:
+                    try:
+                        on_case_complete(case_index, envelope)
+                    except (OSError, ValueError, TypeError):
+                        self.state = "STOPPED"
+                        self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
                 if self.terminal_reason:
                     break
                 self.state = "READY"
@@ -1969,10 +2258,345 @@ class PsplinkCampaignRunner:
             "mode": "campaign",
             "state": self.state,
             "terminal_reason": self.terminal_reason,
+            "intervention_case_id": self.intervention_case_id,
+            "resume_case_index": self.resume_case_index,
             "firmware": self.firmware,
             "recovery_events": list(self.recovery_events),
             "envelopes": list(self.envelopes),
         }
+
+
+CAMPAIGN_RESET_ESTIMATE_SECONDS = 45
+HARDWARE_LOCK_PATH = Path(r"C:\nk\HARDWARE_LOCK.json")
+
+
+def _read_campaign_plan(path: Path) -> dict[str, object]:
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"campaign plan could not be read ({type(exc).__name__})") from exc
+    if not isinstance(plan, dict) or plan.get("schema") != 1:
+        raise ValueError("campaign plan must be a schema 1 JSON object")
+    for key in ("campaign_id", "session_id", "source_commit", "console_model",
+                "host0_root", "report_path", "checkpoint_path", "cases"):
+        if key not in plan:
+            raise ValueError(f"campaign plan is missing {key}")
+    if not isinstance(plan["campaign_id"], str) or not re.fullmatch(
+        r"[A-Za-z0-9._-]{1,64}", plan["campaign_id"]
+    ):
+        raise ValueError("campaign_id must be a simple identifier")
+    if not isinstance(plan["session_id"], str) or not re.fullmatch(
+        r"[A-Za-z0-9._-]{1,64}", plan["session_id"]
+    ):
+        raise ValueError("session_id must be a simple identifier")
+    if not isinstance(plan["source_commit"], str) or not _FULL_COMMIT_RE.fullmatch(
+        plan["source_commit"]
+    ):
+        raise ValueError("source_commit must be a full 40- or 64-digit object id")
+    if not isinstance(plan["console_model"], str) or not re.fullmatch(
+        r"[A-Za-z0-9._-]{1,48}", plan["console_model"]
+    ):
+        raise ValueError("console_model must be a non-identifying model label")
+    return plan
+
+
+def _campaign_plan_paths(plan_path: Path, plan: dict[str, object]):
+    private_root = plan_path.resolve().parent
+    paths: dict[str, Path] = {}
+    for key in ("host0_root", "report_path", "checkpoint_path"):
+        value = plan.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{key} must be a nonempty path")
+        path = Path(value)
+        if not path.is_absolute():
+            path = private_root / path
+        path = path.resolve()
+        try:
+            path.relative_to(private_root)
+        except ValueError as exc:
+            raise ValueError(f"{key} must stay under the private plan directory") from exc
+        paths[key] = path
+    if not paths["host0_root"].is_dir():
+        raise ValueError("host0_root must be an existing private directory")
+    if not paths["report_path"].parent.is_dir() or not paths["checkpoint_path"].parent.is_dir():
+        raise ValueError("report and checkpoint parent directories must already exist")
+    return paths
+
+
+def _campaign_plan_cases(
+    plan: dict[str, object], host0_root: Path
+) -> list[CampaignCase]:
+    raw_cases = plan.get("cases")
+    if not isinstance(raw_cases, list):
+        raise ValueError("cases must be an ordered JSON array")
+    case_ids: list[str] = []
+    cases: list[CampaignCase] = []
+    for row in raw_cases:
+        if not isinstance(row, dict):
+            raise ValueError("each campaign case must be a JSON object")
+        case_id = row.get("case_id")
+        binary_name = row.get("prx")
+        timeout = row.get("timeout_seconds")
+        if not isinstance(case_id, str) or not isinstance(binary_name, str):
+            raise ValueError("case_id and prx must be strings")
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(f"{case_id}: timeout_seconds must be finite and positive")
+        binary = (host0_root / binary_name).resolve()
+        try:
+            binary.relative_to(host0_root.resolve())
+        except ValueError as exc:
+            raise ValueError(f"{case_id}: PRX must stay inside host0_root") from exc
+        if binary.suffix.lower() != ".prx" or not binary.is_file():
+            raise ValueError(f"{case_id}: staged PRX is missing or not a .prx file")
+        cases.append(CampaignCase(case_id, binary, float(timeout)))
+        case_ids.append(case_id)
+    if tuple(case_ids) != CAMPAIGN_QUEUE_CASES:
+        raise ValueError("campaign cases do not match the complete ordered oracle queue")
+    return cases
+
+
+def _campaign_queue_summary() -> dict[str, object]:
+    queue = [
+        {"index": index, "case_id": case_id,
+         "estimated_seconds": CAMPAIGN_CASE_ESTIMATE_SECONDS[case_id]}
+        for index, case_id in enumerate(CAMPAIGN_QUEUE_CASES)
+    ]
+    case_seconds = sum(CAMPAIGN_CASE_ESTIMATE_SECONDS.values())
+    reset_count = len(CAMPAIGN_QUEUE_CASES) - 1
+    reset_seconds = reset_count * CAMPAIGN_RESET_ESTIMATE_SECONDS
+    return {
+        "queue": queue,
+        "case_time_seconds": case_seconds,
+        "reset_count": reset_count,
+        "reset_time_seconds": reset_seconds,
+        "estimated_total_seconds": case_seconds + reset_seconds,
+    }
+
+
+def _write_campaign_json(path: Path, value: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    rendered = dump_json(value)
+    temporary.write_text(rendered, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _read_hardware_lock(session_id: str) -> tuple[bool, str]:
+    try:
+        lock = json.loads(HARDWARE_LOCK_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return False, f"HARDWARE_LOCK_UNAVAILABLE:{type(exc).__name__}"
+    if not isinstance(lock, dict) or lock.get("state") != "HELD":
+        return False, "HARDWARE_LOCK_NOT_HELD"
+    if lock.get("power_cycle_confirmed") is not True:
+        return False, "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED"
+    if lock.get("holder_session") != session_id:
+        return False, "HARDWARE_LOCK_SESSION_MISMATCH"
+    return True, "HELD_AND_CONFIRMED"
+
+
+def run_campaign_plan(
+    plan_path: Path,
+    *,
+    dry_run: bool,
+    confirm_power_cycle: bool,
+    pspsh_argv: list[str],
+    usbhostfs_argv: list[str],
+) -> tuple[int, dict[str, object]]:
+    """Validate or execute the resumable, one-launch-per-boot campaign queue."""
+
+    try:
+        plan = _read_campaign_plan(plan_path)
+        paths = _campaign_plan_paths(plan_path, plan)
+        cases = _campaign_plan_cases(plan, paths["host0_root"])
+    except ValueError as exc:
+        return 2, {"status": "REFUSED", "reason": str(exc)}
+
+    summary = _campaign_queue_summary()
+    if dry_run:
+        source_problem = _check_source_tree(str(plan["source_commit"]))
+        if source_problem:
+            return 2, {"status": "REFUSED", "reason": source_problem, **summary}
+        return 0, {
+            "status": "VALIDATED_OFFLINE",
+            "campaign_id": plan["campaign_id"],
+            "case_count": len(cases),
+            "hardware_started": False,
+            **summary,
+        }
+
+    held, lock_status = _read_hardware_lock(str(plan["session_id"]))
+    if not held:
+        return 2, {"status": "REFUSED", "reason": lock_status, **summary}
+
+    checkpoint_path = paths["checkpoint_path"]
+    checkpoint: dict[str, object] | None = None
+    if checkpoint_path.is_file():
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return 2, {
+                "status": "REFUSED",
+                "reason": f"campaign checkpoint is unreadable ({type(exc).__name__})",
+                **summary,
+            }
+        if not isinstance(checkpoint, dict) or any(
+            checkpoint.get(key) != expected
+            for key, expected in (
+                ("campaign_id", plan["campaign_id"]),
+                ("source_commit", plan["source_commit"]),
+                ("session_id", plan["session_id"]),
+                ("queue", list(CAMPAIGN_QUEUE_CASES)),
+            )
+        ):
+            return 2, {"status": "REFUSED", "reason": "checkpoint identity mismatch", **summary}
+        if checkpoint.get("state") == "COMPLETE":
+            return 0, {"status": "COMPLETE", "case_count": len(cases), **summary}
+        if checkpoint.get("state") == "RUNNING":
+            if not confirm_power_cycle:
+                return 2, {
+                    "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
+                    "reason": "previous launch stopped before a durable case completion",
+                    "active_case_id": checkpoint.get("active_case_id"),
+                    **summary,
+                }
+            phase = checkpoint.get("phase")
+            active_index = checkpoint.get("active_case_index")
+            if not isinstance(active_index, int) or not 0 <= active_index < len(cases):
+                return 2, {"status": "REFUSED", "reason": "invalid active case index", **summary}
+            start_index = active_index + 1 if phase == "CASE_ACTIVE" else active_index
+            completed = list(checkpoint.get("completed_cases", []))
+        elif checkpoint.get("state") == "WAITING_FOR_POWER_CYCLE":
+            if not confirm_power_cycle:
+                return 2, {
+                    "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
+                    "failed_case_id": checkpoint.get("failed_case_id"),
+                    "resume_case_index": checkpoint.get("next_case_index"),
+                    **summary,
+                }
+            start_index = checkpoint.get("next_case_index")
+            completed = list(checkpoint.get("completed_cases", []))
+        elif checkpoint.get("state") == "IN_PROGRESS":
+            if confirm_power_cycle:
+                return 2, {
+                    "status": "REFUSED",
+                    "reason": "power-cycle confirmation is only accepted after an interrupted case",
+                    **summary,
+                }
+            start_index = checkpoint.get("next_case_index")
+            completed = list(checkpoint.get("completed_cases", []))
+        else:
+            return 2, {"status": "REFUSED", "reason": "unknown checkpoint state", **summary}
+        if not isinstance(start_index, int) or not 0 <= start_index <= len(cases):
+            return 2, {"status": "REFUSED", "reason": "invalid resume case index", **summary}
+    else:
+        if confirm_power_cycle:
+            return 2, {"status": "REFUSED", "reason": "no interrupted campaign needs confirmation", **summary}
+        start_index = 0
+        completed = []
+        checkpoint = None
+
+    if start_index >= len(cases):
+        return 0, {"status": "COMPLETE", "case_count": len(cases), **summary}
+
+    state: dict[str, object] = {
+        "schema": 1,
+        "campaign_id": plan["campaign_id"],
+        "source_commit": plan["source_commit"],
+        "session_id": plan["session_id"],
+        "queue": list(CAMPAIGN_QUEUE_CASES),
+        "state": "IN_PROGRESS",
+        "completed_cases": completed,
+        "next_case_index": start_index,
+        "active_case_index": None,
+        "active_case_id": None,
+        "phase": None,
+        "failed_case_id": None,
+    }
+    _write_campaign_json(checkpoint_path, state)
+    transport = PsplinkProcessTransport(
+        pspsh_argv=pspsh_argv,
+        usbhostfs_argv=usbhostfs_argv,
+        host0_root=paths["host0_root"],
+    )
+    runner = PsplinkCampaignRunner(
+        transport,
+        console_model=str(plan["console_model"]),
+        source_commit=str(plan["source_commit"]),
+        model_code=plan.get("model_code") if isinstance(plan.get("model_code"), int) else None,
+        expected_firmware=(
+            plan.get("expected_firmware")
+            if isinstance(plan.get("expected_firmware"), str) else None
+        ),
+    )
+    runner.host0_qualified = start_index > 0
+    remaining = cases[start_index:]
+
+    def record_start(index: int, case: CampaignCase, phase: str) -> None:
+        state.update({
+            "state": "RUNNING",
+            "active_case_index": index,
+            "active_case_id": case.case_id,
+            "phase": phase,
+            "next_case_index": index,
+        })
+        _write_campaign_json(checkpoint_path, state)
+
+    def record_complete(index: int, envelope: dict[str, object]) -> None:
+        if runner.intervention_case_id is not None:
+            state.update({
+                "state": "WAITING_FOR_POWER_CYCLE",
+                "failed_case_id": runner.intervention_case_id,
+                "next_case_index": runner.resume_case_index,
+                "active_case_index": None,
+                "active_case_id": None,
+                "phase": None,
+            })
+        else:
+            completed.append(str(envelope["CASE_ID"]))
+            state.update({
+                "state": "IN_PROGRESS",
+                "completed_cases": list(completed),
+                "next_case_index": index + 1,
+                "active_case_index": None,
+                "active_case_id": None,
+                "phase": None,
+            })
+        _write_campaign_json(checkpoint_path, state)
+
+    report = runner.run(
+        remaining,
+        require_transport_preflight=start_index == 0,
+        reset_between_cases=True,
+        stop_on_incomplete=True,
+        case_index_offset=start_index,
+        on_case_start=record_start,
+        on_case_complete=record_complete,
+    )
+    if runner.terminal_reason == "PHYSICAL_INTERVENTION_REQUIRED" and state.get("state") != "WAITING_FOR_POWER_CYCLE":
+        state.update({
+            "state": "WAITING_FOR_POWER_CYCLE",
+            "failed_case_id": runner.intervention_case_id,
+            "next_case_index": runner.resume_case_index,
+            "active_case_index": None,
+            "active_case_id": None,
+            "phase": None,
+        })
+        _write_campaign_json(checkpoint_path, state)
+    elif not report.get("terminal_reason") and state.get("next_case_index") == len(cases):
+        state.update({"state": "COMPLETE", "active_case_index": None, "active_case_id": None})
+        _write_campaign_json(checkpoint_path, state)
+
+    report.update({
+        "campaign_id": plan["campaign_id"],
+        "queue_case_count": len(cases),
+        "start_case_index": start_index,
+        "checkpoint_state": state.get("state"),
+        **summary,
+    })
+    _write_campaign_json(paths["report_path"], report)
+    return (3 if report.get("terminal_reason") == "PHYSICAL_INTERVENTION_REQUIRED" else
+            2 if report.get("terminal_reason") else
+            0 if state.get("state") == "COMPLETE" else 2), report
 
 
 def _record_summary(text: str) -> tuple[str, int]:
@@ -2443,6 +3067,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="CASE_ID=PRX_PATH",
         help="run an existing source-owned PRX from the host0 root; may be repeated",
     )
+    parser.add_argument(
+        "--campaign-plan",
+        type=Path,
+        help="execute or validate a private, resumable complete oracle campaign plan",
+    )
+    parser.add_argument(
+        "--confirm-power-cycle",
+        action="store_true",
+        help="confirm a maintainer power cycle before resuming after an interrupted case",
+    )
     parser.add_argument("--host0-root", type=Path, help="scratch directory shared by usbhostfs_pc")
     parser.add_argument(
         "--pspsh-argv-json",
@@ -2472,6 +3106,7 @@ def main(argv: list[str] | None = None) -> int:
             args.prx, args.remote_command, args.command, args.psp_output, args.nakagawa_output,
             args.host0_output, args.validate_dmac_size_matrix, args.binary, args.source_commit,
             args.model, args.model_code is not None, args.firmware, args.campaign_case,
+            args.campaign_plan, args.confirm_power_cycle,
             args.host0_root, args.out, args.annotate_report, args.observed_terminal_outcome,
             args.dry_run,
         )):
@@ -2516,6 +3151,37 @@ def main(argv: list[str] | None = None) -> int:
         report = ge_corpus_report(corpus, schema, results_root if results_root.is_dir() else None)
         sys.stdout.write(dump_json(report))
         return 2 if report["status"] == "REFUSED" else 0
+
+    if args.campaign_plan:
+        if any((
+            args.prx, args.remote_command, args.command, args.psp_output,
+            args.nakagawa_output, args.host0_output, args.validate_dmac_size_matrix,
+            args.binary, args.source_commit, args.model, args.model_code is not None,
+            args.firmware, args.campaign_case, args.host0_root, args.out,
+            args.annotate_report, args.observed_terminal_outcome,
+        )):
+            parser.error("campaign-plan mode cannot be combined with single-run or manual campaign options")
+        if args.confirm_power_cycle and args.dry_run:
+            parser.error("--confirm-power-cycle cannot be combined with --dry-run")
+        try:
+            pspsh_argv = _argv_json(parser, args.pspsh_argv_json, "--pspsh-argv-json")
+            usbhostfs_argv = _argv_json(
+                parser, args.usbhostfs_argv_json, "--usbhostfs-argv-json"
+            )
+        except SystemExit:
+            raise
+        code, report = run_campaign_plan(
+            args.campaign_plan.resolve(),
+            dry_run=args.dry_run,
+            confirm_power_cycle=args.confirm_power_cycle,
+            pspsh_argv=pspsh_argv,
+            usbhostfs_argv=usbhostfs_argv,
+        )
+        sys.stdout.write(dump_json(report))
+        return code
+    if args.confirm_power_cycle:
+        parser.error("--confirm-power-cycle requires --campaign-plan")
+
     args.results_directory = args.results_directory.resolve()
     try:
         args.results_directory.relative_to(ROOT.resolve())

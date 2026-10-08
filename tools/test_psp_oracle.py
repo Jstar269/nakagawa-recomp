@@ -35,6 +35,7 @@ from psp_oracle.protocol import (
 from psp_oracle.run_psplink import (
     PsplinkCampaignRunner,
     PsplinkSnapshot,
+    _campaign_completeness_contract,
     _campaign_stream_complete,
     _parse_campaign_records,
     _record_summary,
@@ -52,6 +53,7 @@ from psp_oracle.run_psplink import (
 from psp_oracle.parse_golden import (
     AUDIO_OUT_COUNTS,
     AUDIO_SPEC,
+    CAMPAIGN_PROBE_CASES,
     DELAY_ZERO_OUT_COUNTS,
     DELAY_ZERO_SPEC,
     DMAC_CELL_OUT_COUNTS,
@@ -61,10 +63,12 @@ from psp_oracle.parse_golden import (
     GE_NAN_SPEC,
     GE_NAN_WORDS,
     parse_audio_query_output,
+    parse_campaign_probe_output,
     parse_delay_zero_output,
     parse_dmac_cells_output,
     parse_dmac_invalid_tail_output,
     parse_ge_nan_output,
+    parse_registry_readonly_output,
 )
 
 
@@ -633,6 +637,75 @@ class NewProbeResultParserTests(unittest.TestCase):
         )
         with self.assertRaises(ProtocolError):
             parse_dmac_invalid_tail_output(claimed_intact, campaign_case)
+
+
+    def test_campaign_probe_parsers_accept_complete_synthetic_records(self) -> None:
+        for campaign_case, (spec, out_counts) in CAMPAIGN_PROBE_CASES.items():
+            rows = [
+                self._row(
+                    spec.test_id, case_id, out_counts[case_id],
+                    values={0: spec.terminal_count} if case_id == spec.terminal_case else None,
+                )
+                for case_id in spec.ordered_cases
+            ]
+            with self.subTest(campaign_case=campaign_case):
+                parsed = parse_campaign_probe_output(self._stream(rows), campaign_case)
+                self.assertTrue(parsed.complete)
+                self.assertEqual(parsed.record_count, len(spec.ordered_cases))
+
+    def test_campaign_probe_parser_rejects_incomplete_and_malformed_records(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["kernel-alarm"]
+        complete = self._stream([
+            self._row(
+                spec.test_id, case_id, counts[case_id],
+                values={0: spec.terminal_count} if case_id == spec.terminal_case else None,
+            )
+            for case_id in spec.ordered_cases
+        ])
+        incomplete = "\n".join(complete.splitlines()[:-1]) + "\n"
+        self.assertFalse(
+            parse_campaign_probe_output(
+                incomplete, "kernel-alarm", require_complete=False
+            ).complete
+        )
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(incomplete, "kernel-alarm")
+        malformed = complete.replace("out0=0x00000000", "out9=0x00000000", 1)
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(malformed, "kernel-alarm")
+
+    def test_registry_parser_never_accepts_unmodeled_key_values(self) -> None:
+        rows = [
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-open status=PASS result=0x0 out0=0x1 out1=0x1\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-errors status=PASS result=0x0 out0=0x1 out1=0x2 "
+            "out2=0x3 out3=0x4 out4=0x5 out5=0x6 out6=0x7\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-category-0000 status=PASS result=0x0 out0=0x2 out1=0x0 "
+            "detail=CONFIG\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-key-0000 status=PASS result=0x0 out0=0x2 out1=0x4 "
+            "out2=0x1 out3=0x0 detail=CONFIG/language value_hex=01000000\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-key-0001 status=PASS result=0x0 out0=0x3 out1=0x8 "
+            "out2=0x0 out3=0xffffffff detail=CONFIG/nickname\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-done status=PASS result=0x0 out0=0x1 out1=0x2 out2=0x5\n",
+        ]
+        report = parse_registry_readonly_output(self._stream(rows))
+        self.assertTrue(report.complete)
+        self.assertEqual(report.categories, ("CONFIG",))
+        self.assertEqual(
+            report.keys,
+            ("CONFIG/language", "CONFIG/nickname"),
+        )
+        leaked = rows[4].replace("out2=0x0", "out2=0x1").replace(
+            "detail=CONFIG/nickname", "detail=CONFIG/nickname "
+            "value_hex=6e69636b6e616d65"
+        )
+        with self.assertRaises(ProtocolError):
+            parse_registry_readonly_output(self._stream(rows[:4] + [leaked, rows[5]]))
 
 
 class GeCorpusGateTests(unittest.TestCase):
@@ -1913,18 +1986,32 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         self.fixture = self.root / "fixtures" / "psp_oracle"
 
+    def test_alarm_oracle_case_is_buildable_and_has_a_campaign_parser(self) -> None:
+        self.assertRegex(
+            self.makefile,
+            r"(?m)^else ifeq \(\$\(CASE\),kernel-alarm\)$\nCASE_ID = \d+$",
+        )
+        runner = (self.root / "tools" / "psp_oracle" / "run_psplink.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("CAMPAIGN_PROBE_CASES", runner)
+        self.assertEqual(
+            _campaign_completeness_contract("kernel-alarm"),
+            "strict-golden-sequence",
+        )
+
     def test_supported_case_names_map_to_unique_case_ids(self) -> None:
         routes = re.findall(
             r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 60)
+        self.assertEqual(len(routes), 67)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 61)))
+        self.assertEqual(set(ids), set(range(1, 68)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)

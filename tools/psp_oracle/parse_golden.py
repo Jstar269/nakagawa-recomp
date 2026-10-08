@@ -30,6 +30,7 @@ than a lenient pass.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from .protocol import ProtocolError, SequenceReport, StreamSpec, TestResult, parse_output, parse_sequence
 
@@ -524,6 +525,224 @@ def parse_delay_zero_output(text: str, *, require_complete: bool = True) -> Sequ
                 "ready thread and pending callback"
             )
     return sequence
+
+
+# ---------------------------------------------------------------------------
+# Campaign cases whose measurements are intentionally still NOT_RUN.
+# ---------------------------------------------------------------------------
+
+CAMPAIGN_PROBE_CASES: dict[str, tuple[StreamSpec, dict[str, int]]] = {}
+
+
+def _register_campaign_probe(
+    campaign_case: str,
+    test_id: str,
+    semantic_cases: tuple[str, ...],
+    out_counts: dict[str, int],
+) -> None:
+    spec = StreamSpec(test_id, semantic_cases, f"{campaign_case}-done")
+    counts = dict(out_counts)
+    counts[spec.terminal_case] = 1
+    CAMPAIGN_PROBE_CASES[campaign_case] = (spec, counts)
+
+
+_register_campaign_probe(
+    "kernel-alarm", "PSP-ALARM-001",
+    ("alarm-null-handler", "alarm-zero-clock", "alarm-table-exhaustion",
+     "alarm-cancel-fired-once", "alarm-cancel-cancelled", "alarm-cancel-unknown",
+     "alarm-rearm-base", "alarm-blocking-in-handler"),
+    {"alarm-null-handler": 2, "alarm-zero-clock": 3, "alarm-table-exhaustion": 3,
+     "alarm-cancel-fired-once": 3, "alarm-cancel-cancelled": 3,
+     "alarm-cancel-unknown": 1, "alarm-rearm-base": 5,
+     "alarm-blocking-in-handler": 5},
+)
+_register_campaign_probe(
+    "thread-scheduler", "PSP-THREAD-003",
+    ("thread-suspend-idle", "thread-suspend-self", "thread-resume-idle",
+     "thread-rotate-range", "thread-ready-order-after-rotate",
+     "thread-suspend-wait-timeout"),
+    {"thread-suspend-idle": 4, "thread-suspend-self": 4,
+     "thread-resume-idle": 1, "thread-rotate-range": 1,
+     "thread-ready-order-after-rotate": 7, "thread-suspend-wait-timeout": 5},
+)
+_register_campaign_probe(
+    "wait-outcomes", "PSP-WAIT-001",
+    ("sema-signal-before-deadline-late-dispatch",
+     "event-signal-before-deadline-late-dispatch",
+     "sema-cancel-before-deadline-late-dispatch",
+     "event-cancel-before-deadline-late-dispatch"),
+    {case_id: 5 for case_id in (
+        "sema-signal-before-deadline-late-dispatch",
+        "event-signal-before-deadline-late-dispatch",
+        "sema-cancel-before-deadline-late-dispatch",
+        "event-cancel-before-deadline-late-dispatch",
+    )},
+)
+_register_campaign_probe(
+    "refer-status-size", "PSP-KERNEL-STATUS-001",
+    tuple(f"{kind}-size-{size}" for kind in ("sema", "event", "mbx")
+          for size in ("zero", "8", "40", "full")),
+    {f"{kind}-size-{size}": 5
+     for kind in ("sema", "event", "mbx")
+     for size in ("zero", "8", "40", "full")},
+)
+_register_campaign_probe(
+    "ge-break-continue", "PSP-GE-CONTROL-001",
+    ("ge-break-no-active-list", "ge-continue-no-paused-list",
+     "ge-break-invalid-mode", "ge-list-sync-paused", "ge-draw-sync-paused",
+     "ge-list-sync-cancelled", "ge-draw-sync-cancelled"),
+    {"ge-break-no-active-list": 2, "ge-continue-no-paused-list": 1,
+     "ge-break-invalid-mode": 2, "ge-list-sync-paused": 3,
+     "ge-draw-sync-paused": 3, "ge-list-sync-cancelled": 3,
+     "ge-draw-sync-cancelled": 3},
+)
+_register_campaign_probe(
+    "kernel-misc", "PSP-KERNEL-MISC-001",
+    ("sysclock-wide", "ctrl-sampling-mode", "thread-profiler",
+     "global-profiler", "vtimer-basic", "display-basic", "impose-basic"),
+    {"sysclock-wide": 4, "ctrl-sampling-mode": 2, "thread-profiler": 3,
+     "global-profiler": 3, "vtimer-basic": 13, "display-basic": 4,
+     "impose-basic": 5},
+)
+
+
+def parse_campaign_probe_output(
+    text: str, campaign_case: str, *, require_complete: bool = True
+) -> SequenceReport:
+    """Parse one fixed-size campaign stream without asserting PSP outcomes."""
+
+    try:
+        spec, counts = CAMPAIGN_PROBE_CASES[campaign_case]
+    except KeyError as exc:
+        raise ProtocolError(f"unknown campaign probe {campaign_case!r}") from exc
+    sequence = parse_sequence(text, spec, require_complete=require_complete)
+    _validate_scalar_shape(sequence, counts)
+    return sequence
+
+
+REGISTRY_MODELED_KEYS = frozenset({
+    "language", "button_assign", "date_format", "time_format", "timezone",
+    "summer_time", "adhoc_channel",
+})
+REGISTRY_TEST_ID = "PSP-REGISTRY-001"
+REGISTRY_HOST0_LOG = "host0:/registry_readonly_log.txt"
+
+
+@dataclass(frozen=True)
+class RegistryReadOnlyReport:
+    parsed: object
+    complete: bool
+    categories: tuple[str, ...]
+    keys: tuple[str, ...]
+
+
+def parse_registry_readonly_output(
+    text: str, *, require_complete: bool = True
+) -> RegistryReadOnlyReport:
+    """Validate the ordered, dynamically sized, read-only registry census."""
+
+    parsed = parse_output(text)
+    records = [record for record in parsed.results if record.test_id == REGISTRY_TEST_ID]
+    if len(records) != len(parsed.results):
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: foreign test_id in registry stream")
+    if not records:
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: registry stream has no records")
+
+    expected_fixed = ("registry-open", "registry-errors")
+    if tuple(record.case_id for record in records[:min(len(records), 2)]) != \
+            expected_fixed[:min(len(records), 2)]:
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: stream must start with {list(expected_fixed)}")
+    if len(records) > 0:
+        _validate_registry_fields(records[0], {"result", "out0", "out1"})
+    if len(records) > 1:
+        _validate_registry_fields(
+            records[1], {
+                "result", "out0", "out1", "out2", "out3", "out4", "out5", "out6"
+            }
+        )
+
+    categories: list[str] = []
+    keys: list[str] = []
+    terminal = records[-1].case_id == "registry-done"
+    for record in records[2: -1 if terminal else None]:
+        values = dict(record.values)
+        if record.case_id.startswith("registry-category-"):
+            if set(values) != {"result", "out0", "out1", "detail"}:
+                raise ProtocolError(f"{REGISTRY_TEST_ID}: {record.case_id} has invalid fields")
+            _validate_registry_name(values["detail"], category=True)
+            categories.append(values["detail"])
+        elif record.case_id.startswith("registry-key-"):
+            common = {"result", "out0", "out1", "out2", "out3", "detail"}
+            if set(values) not in (common, common | {"value_hex"}):
+                raise ProtocolError(f"{REGISTRY_TEST_ID}: {record.case_id} has invalid fields")
+            _validate_registry_name(values["detail"], category=False)
+            name = values["detail"].rsplit("/", 1)[-1]
+            has_value = int(values["out2"], 0) == 1
+            if name in REGISTRY_MODELED_KEYS:
+                if has_value != ("value_hex" in values):
+                    raise ProtocolError(
+                        f"{REGISTRY_TEST_ID}: modeled key value presence disagrees for {name}"
+                    )
+            elif "value_hex" in values or has_value:
+                raise ProtocolError(
+                    f"{REGISTRY_TEST_ID}: non-modeled key value must not be recorded"
+                )
+            if "value_hex" in values and not re.fullmatch(r"(?:[0-9a-fA-F]{2})*", values["value_hex"]):
+                raise ProtocolError(f"{REGISTRY_TEST_ID}: value_hex is not byte encoded")
+            keys.append(values["detail"])
+        else:
+            raise ProtocolError(f"{REGISTRY_TEST_ID}: unexpected record {record.case_id!r}")
+
+    if terminal:
+        done = records[-1]
+        _validate_registry_fields(done, {"result", "out0", "out1", "out2"})
+        done_values = {key: int(value, 0) for key, value in done.values if key != "detail"}
+        if done_values["out0"] != len(categories) or done_values["out1"] != len(keys) or \
+                done_values["out2"] != len(records) - 1:
+            raise ProtocolError(f"{REGISTRY_TEST_ID}: registry completion counts disagree")
+    elif require_complete:
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: registry stream is missing registry-done")
+
+    ordered = [record.case_id for record in records]
+    if ordered[0:2] != list(expected_fixed):
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: registry header order is invalid")
+    if terminal and ordered[-1] != "registry-done":
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: registry-done must be last")
+    if len(set(ordered)) != len(ordered):
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: duplicate record case_id")
+    return RegistryReadOnlyReport(
+        parsed=parsed,
+        complete=terminal,
+        categories=tuple(categories),
+        keys=tuple(keys),
+    )
+
+
+def _validate_registry_fields(record, expected: set[str]) -> None:
+    values = dict(record.values)
+    if set(values) != expected:
+        raise ProtocolError(
+            f"{REGISTRY_TEST_ID}: {record.case_id} fields must be {sorted(expected)}, "
+            f"got {sorted(values)}"
+        )
+    for field, value in values.items():
+        if field != "detail":
+            try:
+                int(value, 0)
+            except ValueError as exc:
+                raise ProtocolError(
+                    f"{REGISTRY_TEST_ID}: {record.case_id} {field} is not an integer"
+                ) from exc
+
+
+def _validate_registry_name(value: str, *, category: bool) -> None:
+    parts = value.split("/")
+    if not value or value.startswith("/") or ".." in parts or any(
+        not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", part) for part in parts
+    ):
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: unsafe registry name {value!r}")
+    if category and value != "CONFIG" and not value.startswith("CONFIG/"):
+        raise ProtocolError(f"{REGISTRY_TEST_ID}: category is outside /CONFIG: {value!r}")
 
 
 # ---------------------------------------------------------------------------
