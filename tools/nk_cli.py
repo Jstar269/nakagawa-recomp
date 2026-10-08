@@ -3001,7 +3001,26 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     return 0 if report["failure_class"] == "NONE" else 1
 
 
+def _use_utf8_standard_streams() -> None:
+    """Write UTF-8 to stdout and stderr whether they are a console, a pipe or a file.
+
+    Titles are UTF-8 (PARAM.SFO TITLE is validated as UTF-8). A redirected Windows
+    stream defaults to the ANSI code page, which wrote a title's trademark and
+    registered signs as single bytes 0x99 and 0xAE; a UTF-8 reader then saw
+    U+FFFD. The same mapping nk_doctor.py applies, so every tool agrees.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main() -> int:
+    _use_utf8_standard_streams()
     parser = argparse.ArgumentParser(description="Nakagawa Recomp Headless CLI")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 

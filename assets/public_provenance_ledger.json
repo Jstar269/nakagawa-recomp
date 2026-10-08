@@ -2885,7 +2885,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3804a76220723635addc341c602f0bc8054b22dae459e9cd10a8649d8ac9e25d"
+      "sha256": "032c4bf8ab24b6c284594f15030554483bc38510ac0285cf74922f8c7608bd18"
     },
     {
       "path": "src/player/package_builder.c",
@@ -5547,7 +5547,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70e0c4bdabbe5cf3c13fa453b2c872c37bb1aeb2d6dcee4226e7e5d6b0a3315f"
+      "sha256": "cc06bbefe0cda14420ce55efd8201441022bf0027867270bdfe25aa3dfa87efb"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -6449,7 +6449,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f712612f869878f20e3dbf600112a10070dc826760e2274f85b0de43c3b9bf4"
+      "sha256": "8cced72513d0cea7e62b8e6017435d5faf79fe5fc100389f079c37d2a494fa08"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6641,7 +6641,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce82e969137f0509b8ee673813a702a594f1c0cd62e48e45c4e46fb7ab524352"
+      "sha256": "ce9f41d981d192258ced4798165d0c332c50e6182043070233d80bfd91cf634b"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -8086,7 +8086,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ad72cb1f12388cf0cf168c5845e720fb057fa17dbe18e1f3529249400b53afe"
+      "sha256": "802f92a1b25e6184d78384f9108042a3a4d6f59df50cc3d011087bf38350316b"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -8194,7 +8194,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6fdf786c37321f9edd95fc260d9bfa8b3c098d341677324871343fab5f839733"
+      "sha256": "b9ba5f3d75a0414e15df228607aff24f8c363b8de6d41a4b2fa39d3dcf58c3be"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
