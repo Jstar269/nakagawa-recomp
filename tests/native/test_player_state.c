@@ -38,6 +38,7 @@
 #endif
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1058,26 +1059,31 @@ static void remove_test_tree(const char *path) {
 }
 #else
 static void remove_test_tree(const char *path) {
-    struct stat st;
-    if (lstat(path, &st) != 0) return;
-    if (!S_ISDIR(st.st_mode)) {
-        unlink(path);
-        return;
-    }
-    DIR *dir = opendir(path);
-    if (dir) {
-        struct dirent *entry;
-        while ((entry = readdir(dir)) != NULL) {
-            if (strcmp(entry->d_name, ".") == 0 ||
-                strcmp(entry->d_name, "..") == 0) continue;
-            char child[NATIVE_TEST_PATH_MAX];
-            int written = snprintf(child, sizeof(child), "%s/%s", path,
-                                   entry->d_name);
-            if (written > 0 && (size_t)written < sizeof(child)) {
-                remove_test_tree(child);
+    /* Attempt the removal before any inspection, so no earlier check can go
+     * stale. unlink() removes a symlink as itself and fails on a directory
+     * (EISDIR on Linux, EPERM on BSD/macOS); ENOENT means nothing to remove. */
+    if (unlink(path) == 0 || errno == ENOENT) return;
+    /* O_NOFOLLOW makes open() refuse a symlink swapped in for the directory,
+     * so the walk below cannot descend outside the root. */
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (fd >= 0) {
+        DIR *dir = fdopendir(fd);
+        if (dir) {
+            struct dirent *entry;
+            while ((entry = readdir(dir)) != NULL) {
+                if (strcmp(entry->d_name, ".") == 0 ||
+                    strcmp(entry->d_name, "..") == 0) continue;
+                char child[NATIVE_TEST_PATH_MAX];
+                int written = snprintf(child, sizeof(child), "%s/%s", path,
+                                       entry->d_name);
+                if (written > 0 && (size_t)written < sizeof(child)) {
+                    remove_test_tree(child);
+                }
             }
+            closedir(dir);
+        } else {
+            close(fd);
         }
-        closedir(dir);
     }
     rmdir(path);
 }
@@ -1125,8 +1131,26 @@ static bool native_temp_directory(char *out, size_t max_len) {
     return length > 0;
 }
 
+/* Creates one directory with a single exclusive create: 1 when this call made
+ * it, 0 when the name is already taken, -1 on any other failure. Nothing is
+ * checked before the create, so a name planted in the temporary directory is
+ * never trusted or raced. */
+static int create_exclusive_directory(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide[NATIVE_TEST_PATH_MAX];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            (int)(sizeof(wide) / sizeof(wide[0]))) <= 0) return -1;
+    if (CreateDirectoryW(wide, NULL)) return 1;
+    return GetLastError() == ERROR_ALREADY_EXISTS ? 0 : -1;
+#else
+    if (mkdir(path, 0700) == 0) return 1;
+    return errno == EEXIST ? 0 : -1;
+#endif
+}
+
 /* Creates this run's root, named by tag and process id, and arranges for it
- * to be removed at exit and on SIGABRT. */
+ * to be removed at exit and on SIGABRT. Each candidate name is claimed by the
+ * exclusive create itself; a name that is already taken moves to the next. */
 static void create_test_root(const char *tag) {
     char temp_dir[NATIVE_TEST_PATH_MAX];
     assert(native_temp_directory(temp_dir, sizeof(temp_dir)));
@@ -1136,17 +1160,17 @@ static void create_test_root(const char *tag) {
     unsigned long process_id = (unsigned long)getpid();
 #endif
     char sep = nk_platform_path_separator();
-    bool fresh = false;
-    for (unsigned attempt = 0; attempt < 1000u && !fresh; ++attempt) {
+    bool created = false;
+    for (unsigned attempt = 0; attempt < 1000u && !created; ++attempt) {
         int written = snprintf(g_test_root, sizeof(g_test_root),
                                "%s%cnk-native-%s-%lu-%u", temp_dir, sep, tag,
                                process_id, attempt);
         assert(written > 0 && (size_t)written < sizeof(g_test_root));
-        fresh = !nk_platform_file_exists(g_test_root) &&
-                !nk_platform_dir_exists(g_test_root);
+        int result = create_exclusive_directory(g_test_root);
+        assert(result >= 0);
+        created = result == 1;
     }
-    assert(fresh);
-    assert(nk_platform_mkdir_p(g_test_root));
+    assert(created);
     g_test_root_owned = true;
     (void)atexit(cleanup_test_root);
     (void)signal(SIGABRT, cleanup_test_root_on_abort);
