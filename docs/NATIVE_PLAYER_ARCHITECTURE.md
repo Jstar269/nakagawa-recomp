@@ -33,7 +33,7 @@ Download / Install Nakagawa Recomp
    ↓
 Double-click standalone executable (nakagawa.exe)
    ↓
-Select lawfully obtained PSP game ISO
+Select a PSP game ISO you own
    ↓
 Nakagawa identifies supported title from PARAM.SFO
    ↓
@@ -145,7 +145,7 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
 ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
 1. **Immediate Window Appearance**: The SDL3 window initializes and presents the UI in under 100 milliseconds.
-2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select your legally obtained PSP ISO"*.
+2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select a PSP ISO you own"*.
 3. **Native File Selection**: Clicking *"Add Game"* invokes SDL3's native file-dialog API; the platform backend supplies the operating-system picker behavior.
 4. **Instant ISO Qualification**: The inspector reads the ISO9660 PVD and `PARAM.SFO` in memory, extracting `DISC_ID` (e.g. `UCUS98701`), Title, and Region.
 5. **Transactional Preparation**:

@@ -10,9 +10,10 @@ in the works.
   drivers. Windows is the only supported player platform today; other platforms
   are in the works ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329), [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)).
 - **A disc image of a game you own, in uncompressed standard `.iso` format.**
-  Use an ISO made from your own UMD, or your own PlayStation Store purchase.
-  Nakagawa Recomp never downloads games and contains no game data. Don't use
-  copies you don't own.
+  The project does not make or supply images. Whether you may make an image of
+  a disc, or of a digital purchase, depends on where you live and on the terms
+  you accepted. Check both. Nakagawa Recomp never downloads games and contains no
+  game data. Don't use copies you don't own.
 - **The game's executable in unencrypted form, for most commercial games.**
   Nakagawa recompiles the game's own program code into a native program on your
   computer, so it has to be able to read that code. Most retail PSP executables
@@ -21,8 +22,9 @@ in the works.
   put your own unencrypted files in the per-title folder.
 - **PSP system fonts (optional but recommended for text).** Authentic in-game
   typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped
-  from a real PSP console. They cannot legally be bundled and must be
-  user-provided ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300));
+  from a real PSP console. The project does not include or distribute these
+  files; you provide them from your own PSP (see the import step below)
+  ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300));
   a clean-room open-font converter is in the works
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 
@@ -68,10 +70,13 @@ the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
 ## Supplying unencrypted files
 
-There are community tools that produce an unencrypted copy of a game's
-executable and modules from your own copy. Some run on your own PSP, others on
-a PC. Nakagawa Recomp doesn't include, endorse or link to any of them. It
-contains no decryption keys and needs none.
+Some people use third-party tools to produce unencrypted copies of a game's
+executable and modules from their own copy. Some run on your own PSP, others on
+a PC. The project does not include, endorse or link to these tools and cannot
+check what they do. It contains no decryption keys and needs none.
+
+This is not legal advice. Laws on decrypting and copying games differ by
+country. Check the rules where you live.
 
 Put the unencrypted files in the per-title folder the player shows on the game
 card:
@@ -87,7 +92,8 @@ player resolves `%LOCALAPPDATA%` first, then Windows `FOLDERID_LocalAppData`,
 then `%APPDATA%`; it never falls back to the profile root. If the old
 `%USERPROFILE%\Nakagawa\data` exists and the current root does not, the player
 and Doctor report its exact path so you can move it manually. A usable file
-starts with the ELF signature bytes `7F 45 4C 46`. A file that starts with
+is a 32-bit little-endian MIPS ELF. It starts with `7F 45 4C 46`, and the
+player checks its headers before using it. A file that starts with
 `~PSP` or `~SCE` is still encrypted, and the player will say so. The player
 picks up the folder automatically the next time it checks the game.
 
@@ -109,9 +115,6 @@ The player loads every `.json` manifest in this directory on start-up (sorted
 alphabetically, up to 8 manifests). The command-line tool `tools/nk_cli.py
 build-package` also inspects this folder after checking repository titles,
 resolving the title identically.
-
-Laws on decrypting software differ between countries, and some restrict it
-even for copies you own. Check the rules where you live.
 
 ## Keep it to your own games
 

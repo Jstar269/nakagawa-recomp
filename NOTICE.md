@@ -158,7 +158,7 @@ upstream author.
 
 ## Private inputs and history
 
-Users must supply any lawful external inputs locally. Private inputs, keys, saves,
+Users must supply any external inputs locally. Private inputs, keys, saves,
 captures, extracted assets, generated output and private repository history must
 not be committed, attached to issues, or included in a release. A clean current
 tree is not historical clearance: the exact proposed history must pass the

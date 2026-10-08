@@ -1939,7 +1939,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn("custom-firmware patch", summary)
         self.assertIn("EBOOT.OLD (encrypted)", summary)
         self.assertIn("decrypted/EBOOT.elf", summary)
-        self.assertIn("clean dump", summary)
+        self.assertIn("does not provide decrypted executables", summary)
         nk_cli.validate_bringup_report(report)
 
     def test_cfw_loader_uses_user_original_and_excludes_patch_module(self):
