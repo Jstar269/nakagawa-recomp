@@ -326,8 +326,7 @@ def resolve_exe_argument(exe):
 
     An absolute value is taken verbatim; a relative value is resolved
     against the repository root (not the caller's cwd) so the same
-    invocation means the same executable from any working directory
-    (#294)."""
+    invocation means the same executable from any working directory."""
     return exe if os.path.isabs(exe) else os.path.join(find_repo_root(), exe)
 
 
@@ -385,7 +384,7 @@ def get_symbol_rvas(exe_path):
         return rvas, "fallback"
     # Resolve the caller's spelling to an absolute path before spawning tools:
     # a cwd-relative program path is resolved by the child against a cwd that
-    # is not the caller's frame (#294).
+    # is not the caller's frame.
     exe_path = os.path.abspath(exe_path)
 
     nm_candidate = os.environ.get("NM")

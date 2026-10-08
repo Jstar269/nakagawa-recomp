@@ -34,7 +34,7 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
 - **`verify_gates.py`** — orchestrates the optional codegen and microtest gates used by
   `make verify`; it reports blocked when their external inputs are absent.
 - **`funcdiff_cmp.py <oracle-trace> <my-trace> <entry-step>`** — compares per-function
-  traces supplied by the developer. Fail-closed evidence gate (issue #381): exit 0 requires
+  traces supplied by the developer. Fail-closed evidence gate (issue #354): exit 0 requires
   at least one compared step, oracle coverage of every recomp step from `<entry-step>`
   onward (the oracle may continue beyond that slice), and all steps matched. Empty traces,
   oracle truncation, entry beyond the oracle, or malformed records exit nonzero.
@@ -46,7 +46,7 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
 - **`nidseq.py`, `gen_nidnames.py`** — NID-table tooling. `nidseq.py <imports.toml>
   <trace>` is informational extraction (no equivalence claim, exit 0). With a second trace,
   `nidseq.py <imports.toml> <trace> <oracle-trace>` is verification: exit 0 means exact
-  import-sequence equality with at least one import compared (issue #381); divergence,
+  import-sequence equality with at least one import compared (issue #354); divergence,
   zero compared imports, either-side sequence mismatch, or malformed data exit nonzero.
   `--allow-prefix` explicitly accepts strict-prefix agreement for documented prefix
   analysis and is never the default.

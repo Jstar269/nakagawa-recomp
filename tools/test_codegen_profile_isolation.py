@@ -99,7 +99,7 @@ def _addiu_sp(imm: int) -> int:
 # --- the address-coupled inventory, taken from codegen's own tables ---------
 
 # The SR_BOOT_DIAG entry and inline probes were retired with the generic-runtime
-# HST cleanup (#285); codegen no longer emits them in either profile.
+# HST cleanup (#363); codegen no longer emits them in either profile.
 HST_DIAG_PROBES = (0x0010433C, 0x0006E9BC)
 HST_FASTPATHS = (0x0006EA1C, 0x00108630)
 HST_ABORT = (0x00000A1C,)
@@ -463,7 +463,7 @@ class ProfileHstLegacyTests(unittest.TestCase):
         # under hst, which is the production default this slice must not change.
         self.assertNotIn("TOKENSCAN_DIAG", self.combined)
         self.assertNotIn("F3G_ENTRY", self.combined)
-        # The SR_BOOT_DIAG probes were retired with the generic-runtime HST cleanup (#285).
+        # The SR_BOOT_DIAG probes were retired with the generic-runtime HST cleanup (#363).
         self.assertNotIn("sr_boot_probe", self.combined)
 
 
