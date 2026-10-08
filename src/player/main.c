@@ -2643,7 +2643,7 @@ int main(int argc, char *argv[]) {
             if (launch_now && app.inspecting_game.is_experimental) {
                 const char *message =
                     "Launch now is unavailable for experimental titles. Generic ISO-to-Play "
-                    "support is in the works (#308). This title was not added; review its "
+                    "support is in the works. This title was not added; review its "
                     "compatibility checks before adding it to the library.";
                 fprintf(stderr, "[PLAYER] EXPERIMENTAL_LAUNCH_UNAVAILABLE: %s\n", message);
                 player_app_set_error(&app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",

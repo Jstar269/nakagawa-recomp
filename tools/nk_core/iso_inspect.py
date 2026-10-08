@@ -521,7 +521,7 @@ def write_experimental_profile(
                 raise IsoInspectionError("selected executable is not a supported MIPS ELF32 image")
             if e_type not in (2, 3, 0xFFA0):
                 raise IsoInspectionError(
-                    "experimental import needs a user-supplied load binding for unsupported relocatable ELF input (#308)"
+                    "experimental import needs a user-supplied load binding for unsupported relocatable ELF input"
                 )
             executable_entry = struct.unpack_from("<I", header, 24)[0]
             if e_type in (3, 0xFFA0):
@@ -697,7 +697,7 @@ def list_iso_directory(
                     if require_final_directory and index == len(path) - 1:
                         raise IsoInspectionError(
                             "DISC_MODULE_TREE_INVALID: module root "
-                            f"{'/'.join(path)} is not a directory (#726)."
+                            f"{'/'.join(path)} is not a directory."
                         )
                     return None
                 lba, size = found.lba, found.size
@@ -848,12 +848,12 @@ def walk_disc_module_entries(
                 raise
             raise IsoInspectionError(
                 "DISC_MODULE_TREE_INVALID: module directory "
-                f"{'/'.join(directory)} could not be listed safely (#726): {exc}"
+                f"{'/'.join(directory)} could not be listed safely: {exc}"
             ) from exc
         if entries is None and not module_root:
             raise IsoInspectionError(
                 "DISC_MODULE_TREE_INVALID: listed module directory could not "
-                "be reopened safely (#726)."
+                "be reopened safely."
             )
         return entries
 
@@ -869,13 +869,13 @@ def walk_disc_module_entries(
             raise IsoInspectionError(
                 "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
                 f"{MAX_MODULE_DIRECTORIES} directories; broader discovery is "
-                "in the works (#726)."
+                "in the works."
             )
         entries = read_module_directory(directory)
         if entries is None:
             raise IsoInspectionError(
                 "DISC_MODULE_TREE_INVALID: listed module directory could not "
-                "be reopened safely (#726)."
+                "be reopened safely."
             )
         for entry in entries:
             if entry.is_directory:
@@ -887,7 +887,7 @@ def walk_disc_module_entries(
                         raise IsoInspectionError(
                             "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery "
                             f"exceeds {MAX_MODULE_DIRECTORIES} directories; "
-                            "broader discovery is in the works (#726)."
+                            "broader discovery is in the works."
                         )
                     directories.append((directory + (entry.name,), depth + 1))
                 continue
@@ -957,7 +957,7 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
                     "DUPLICATE_DISC_MODULE_BASENAME: module filename "
                     f"{name!r} occurs at {prior_path} and {member_path}; "
                     "the decrypted module folder is keyed by filename; "
-                    "path-aware duplicate handling is in the works (#726)."
+                    "path-aware duplicate handling is in the works."
                 )
             seen_names[folded_name] = member_path
             candidates.append({
@@ -971,7 +971,7 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
                 raise IsoInspectionError(
                     "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
                     f"{MAX_MODULE_CANDIDATES} guest-module candidates; larger "
-                    "module sets are in the works (#726)."
+                    "module sets are in the works."
                 )
     return candidates
 
@@ -1169,7 +1169,7 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
             "code": "GUEST_MODULES", "status": "MISSING",
             "message": (
                 f"Guest modules: {ready} of {total} ready; {label} is encrypted{more}. "
-                f"Supply decrypted modules at {module_dir} (#295), or a local key file "
+                f"Supply decrypted modules at {module_dir}, or a local key file "
                 f"at {key_hint} to enable the built-in boundary."
             ),
             "issues": [295],
@@ -1180,7 +1180,7 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
             "message": (
                 f"Guest modules: {ready} of {total} ready; {label} could not be "
                 f"decrypted ({first['detail']}){more}. Supply decrypted modules at "
-                f"{module_dir} (#295), or add the missing entry to your local key file."
+                f"{module_dir}, or add the missing entry to your local key file."
             ),
             "issues": [295],
         }
@@ -1188,7 +1188,7 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
         "code": "GUEST_MODULES", "status": "UNSUPPORTED",
         "message": (
             f"Guest modules: {ready} of {total} ready; {label} is not ready "
-            f"({first['detail']}){more}. Supply decrypted modules at {module_dir} (#295)."
+            f"({first['detail']}){more}. Supply decrypted modules at {module_dir}."
         ),
         "issues": [295],
     }
@@ -1497,7 +1497,7 @@ def inspect_compatibility_preflight(
                 "Custom-firmware-patched dump detected; EBOOT.OLD is the game executable "
                 "but is still encrypted. Supply its decrypted form at "
                 "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake is "
-                "in the works (#308)."
+                "in the works."
             ),
             "issues": [308],
         }
@@ -1547,7 +1547,7 @@ def inspect_compatibility_preflight(
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
                 f"Encrypted executable: the built-in decryption boundary failed "
-                f"({boundary_outcome.detail}); supply decrypted modules at {module_dir} (#295). "
+                f"({boundary_outcome.detail}); supply decrypted modules at {module_dir}. "
                 f"Check the local key file at {boundary_outcome.key_path}."
             ),
             "issues": [295],
@@ -1556,17 +1556,17 @@ def inspect_compatibility_preflight(
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
             "message": (
-                f"Encrypted executable: supply decrypted modules at {module_dir} (#295). "
+                f"Encrypted executable: supply decrypted modules at {module_dir}. "
                 f"A matching local key file at {key_hint} enables built-in decryption "
                 "for supported formats. The project ships no keys; broader ISO-to-Play "
-                "support is in the works (#308)."
+                "support is in the works."
             ),
             "issues": [295],
         }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Encrypted executable format is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "message": "Encrypted executable format is not supported yet; broader ISO-to-Play support is in the works.",
             "issues": [308],
         }
     elif eboot_kind == "EMPTY_OR_ZERO_FILLED":
@@ -1577,19 +1577,19 @@ def inspect_compatibility_preflight(
     elif eboot_kind == "SCE_WRAPPER":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "~SCE wrapper could not be analyzed; broader ISO-to-Play support is in the works (#308).",
+            "message": "~SCE wrapper could not be analyzed; broader ISO-to-Play support is in the works.",
             "issues": [308],
         }
     elif eboot_kind == "PBP":
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "PBP executable unpacking is not supported yet; broader ISO-to-Play support is in the works (#308).",
+            "message": "PBP executable unpacking is not supported yet; broader ISO-to-Play support is in the works.",
             "issues": [308],
         }
     else:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Unknown/malformed executable boundary; broader title support is in the works (#308).",
+            "message": "Unknown/malformed executable boundary; broader title support is in the works.",
             "issues": [308],
         }
 
@@ -1605,20 +1605,20 @@ def inspect_compatibility_preflight(
     experimental_check = {
         "code": "EXPERIMENTAL",
         "status": "IN_PROGRESS",
-        "message": "Experimental: this game has not been verified. Compatibility is unknown. Second-title verification is in the works (#285); generic title intake is in the works (#308).",
+        "message": "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
         "issues": [285, 308],
     } if is_experimental else None
 
     if is_experimental:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
-            "message": "Experimental title runtime package is missing; build it from the library (#296/#297).",
+            "message": "Experimental title runtime package is missing; build it from the library.",
             "issues": [296, 297],
         }
     elif metadata.matched_profile is None:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "UNSUPPORTED",
-            "message": "Title profile missing; generic title support is in the works (#308).",
+            "message": "Title profile missing; generic title support is in the works.",
             "issues": [308],
         }
     elif package_present:
@@ -1629,7 +1629,7 @@ def inspect_compatibility_preflight(
     else:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
-            "message": "Runtime package missing; build it from the library (#296/#297).",
+            "message": "Runtime package missing; build it from the library.",
             "issues": [296, 297],
         }
 
@@ -1667,12 +1667,12 @@ def inspect_compatibility_preflight(
                 "is the game executable selected through the supplied decrypted EBOOT.elf. "
                 "The EBOOT.BIN loader and "
                 "custom-firmware patch modules are excluded. Broader CFW dump support "
-                "is in the works (#308)."
+                "is in the works."
                 if selected == "EBOOT.elf"
                 else "Custom-firmware-patched dump detected; EBOOT.OLD is the game "
                      "executable but is still encrypted. Supply its decrypted form at "
                      "titles/<DISC_ID>/decrypted/EBOOT.elf in user data. CFW dump intake "
-                     "is in the works (#308)."
+                     "is in the works."
             ),
             "issues": [308],
         })

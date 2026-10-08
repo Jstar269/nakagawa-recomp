@@ -2705,8 +2705,7 @@ static bool player_scan_module_entry(const char *member_path,
             context->status = PLAYER_MODULE_SCAN_DUPLICATE_NAME;
             snprintf(context->boundary_message, context->boundary_message_size,
                      "DUPLICATE_DISC_MODULE_BASENAME: %.128s occurs at %.900s "
-                     "and %.900s; automatic module intake is in the works "
-                     "(#726).",
+                     "and %.900s; automatic module intake is in the works.",
                      entry->name, context->modules[i].rel_path, member_path);
             return false;
         }
@@ -2715,8 +2714,7 @@ static bool player_scan_module_entry(const char *member_path,
         context->status = PLAYER_MODULE_SCAN_CANDIDATE_LIMIT;
         snprintf(context->boundary_message, context->boundary_message_size,
                  "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than %u "
-                 "guest-module candidates; larger module sets are in the "
-                 "works (#726).",
+                 "guest-module candidates; larger module sets are in the works.",
                  PLAYER_MAX_GUEST_MODULES);
         return false;
     }
@@ -2745,7 +2743,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     if (reader == NULL) {
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
-                     "DISC_MODULE_TREE_OPEN_FAILED: ISO could not be opened (#726).");
+                     "DISC_MODULE_TREE_OPEN_FAILED: ISO could not be opened.");
         }
         return PLAYER_MODULE_SCAN_OPEN_FAILED;
     }
@@ -2769,8 +2767,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
-                     "%u directories; broader discovery is in the works "
-                     "(#726).",
+                     "%u directories; broader discovery is in the works.",
                      NK_ISO_MODULE_TREE_MAX_DIRECTORIES);
         }
         return PLAYER_MODULE_SCAN_DIRECTORY_LIMIT;
@@ -2778,7 +2775,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_PATH_LIMIT: ISO member path exceeds %u bytes; "
-                     "broader path-aware intake is in the works (#726).",
+                     "broader path-aware intake is in the works.",
                      NK_ISO_MODULE_TREE_MAX_PATH_BYTES);
         }
         return PLAYER_MODULE_SCAN_PATH_LIMIT;
@@ -2786,28 +2783,28 @@ static PlayerModuleScanStatus player_scan_disc_modules(
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_TREE_INVALID: ISO module directories could "
-                     "not be listed safely (#726).");
+                     "not be listed safely.");
         }
         return PLAYER_MODULE_SCAN_INVALID_TREE;
     case NK_ISO_MODULE_WALK_INVALID_ARGUMENT:
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_SCAN_INVALID_ARGUMENT: ISO module scan "
-                     "received invalid reader state (#726).");
+                     "received invalid reader state.");
         }
         return PLAYER_MODULE_SCAN_INVALID_ARGUMENT;
     case NK_ISO_MODULE_WALK_CALLBACK_STOPPED:
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_SCAN_CALLBACK_STOPPED: ISO module scan "
-                     "stopped without a candidate boundary (#726).");
+                     "stopped without a candidate boundary.");
         }
         return PLAYER_MODULE_SCAN_CALLBACK_STOPPED;
     }
     if (boundary_message && boundary_message_size) {
         snprintf(boundary_message, boundary_message_size,
                  "DISC_MODULE_SCAN_STATUS_UNKNOWN: ISO module scan returned "
-                 "an unknown status (#726).");
+                 "an unknown status.");
     }
     return PLAYER_MODULE_SCAN_INVALID_TREE;
 }
@@ -2843,7 +2840,7 @@ static void player_check_guest_modules(PlayerApp *app,
         static const unsigned int issues[] = { 726 };
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                              "DISC_MODULE_SCAN_ALLOCATION_FAILED: module discovery "
-                             "could not allocate its bounded scan table (#726).",
+                             "could not allocate its bounded scan table.",
                              issues, 1);
         return;
     }
@@ -2856,7 +2853,7 @@ static void player_check_guest_modules(PlayerApp *app,
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                              discovery_message[0] ? discovery_message :
                                  "DISC_MODULE_SCAN_FAILED: module discovery failed "
-                                 "closed (#726).",
+                                 "closed.",
                              issues, 1);
         free(modules);
         return;
