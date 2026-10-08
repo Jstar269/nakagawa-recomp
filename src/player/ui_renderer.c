@@ -1479,25 +1479,6 @@ static bool draw_button(SDL_Renderer *ren, float x, float y, float w, float h, c
     return draw_button_focused(ren, x, y, w, h, label, is_accent, in, false);
 }
 
-static float draw_issue_links(SDL_Renderer *ren, float x, float y,
-                              const unsigned int *issues, size_t issue_count,
-                              const UiInput *in) {
-    for (size_t i = 0; issues && i < issue_count; i++) {
-        char label[16];
-        char url[128];
-        snprintf(label, sizeof(label), "#%u", issues[i]);
-        float width = 48.0f;
-        if (draw_button(ren, x, y, width, 22.0f, label, false, in)) {
-            snprintf(url, sizeof(url),
-                     "https://github.com/Jstar269/nakagawa-recomp/issues/%u",
-                     issues[i]);
-            (void)SDL_OpenURL(url);
-        }
-        x += width + 6.0f;
-    }
-    return x;
-}
-
 /* Non-interactive status pill drawn where a button could be misread as one.
  * A pending primary action can retain its focus outline while validation runs. */
 static void draw_status_pill_focused(SDL_Renderer *ren, float x, float y,
@@ -1976,21 +1957,14 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf (#295). Build the runtime package from the library (#296/#297).");
+                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "%s selected. Build the runtime package from the library (#296/#297).",
+                     "%s selected. Build the runtime package from the library.",
                      game->selected_executable);
         } else {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "No analyzable executable selected. Build the runtime package from the library (#296/#297).");
-        }
-        unsigned int issues[5] = { 285, 308, 296, 297, 0 };
-        size_t issue_count = 4;
-        if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
-            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
-            issues[4] = 295;
-            issue_count++;
+                     "No analyzable executable selected. Build the runtime package from the library.");
         }
         if (hero_h <= 215.0f) {
             char compact_summary[400];
@@ -2008,9 +1982,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 156.0f,
                                  experimental_reason, 0.95f, hero_w - 64.0f,
                                  COLOR_TEXT_MUTED);
-            draw_issue_links(ren, hero_x + 32.0f,
-                             hero_y + (hero_h >= 300.0f ? 184.0f : 174.0f),
-                             issues, issue_count, in);
         }
     } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
@@ -2151,7 +2122,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "PACKAGE INCOMPATIBLE (#297)");
+                         "PACKAGE INCOMPATIBLE");
     } else if (game->assets_staged) {
         /* Disc extraction is useful progress, but it is not a runnable
          * recompiled title. Keep this state visible without exposing a
@@ -2507,17 +2478,11 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
                              status_text, 0.82f, 82.0f, status_color);
         draw_text_ellipsized(ren, card_x + 120.0f, row_y,
                              check->code, 0.82f, 116.0f, COLOR_TEXT_WHITE);
-        float issue_width = (float)check->issue_count * 54.0f;
-        float message_width = card_w - 300.0f - issue_width;
+        float message_width = card_w - 300.0f;
         if (message_width < 120.0f) message_width = 120.0f;
         draw_text_ellipsized(ren, card_x + 244.0f, row_y,
                              check->message, 0.78f, message_width,
                              COLOR_TEXT_MUTED);
-        if (check->issue_count) {
-            draw_issue_links(ren, card_x + card_w - 32.0f - issue_width,
-                             row_y - 2.0f, check->issue_numbers,
-                             check->issue_count, in);
-        }
     }
 
     float button_y = card_y + card_h - 60.0f;
@@ -3738,7 +3703,7 @@ static void render_prerequisite_consent(SDL_Renderer *ren, PlayerApp *app,
     for (size_t i = 0; i < count; i++) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (#304 license review in the works)" : item->license;
+            ? "NOASSERTION (license review in the works)" : item->license;
         char row[640];
         snprintf(row, sizeof(row), "%s %s | %s | %llu bytes | %s",
                  item->name, item->version, item->host,
@@ -3841,7 +3806,7 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
         if (!item->installed) continue;
         const char *license = strcmp(item->license, "NOASSERTION") == 0
-            ? "NOASSERTION (#304 license review in the works)" : item->license;
+            ? "NOASSERTION (license review in the works)" : item->license;
         char row[384];
         snprintf(row, sizeof(row), "%s %s | %s", item->name,
                  item->version, license);
@@ -4123,9 +4088,8 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • A PSP game ISO you own\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "This build decrypts encrypted executables with a local key file (#295). It builds runtime "
-                              "packages from the library (#296/#297). Verify also lists font (#300) and audio "
-                              "(#301) status.",
+                              "This build decrypts encrypted executables with a local key file. It builds runtime "
+                              "packages from the library. Verify also lists font and audio status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 
             bool get_started_foc = (app->focus_index == focus++);
@@ -4293,15 +4257,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                                          status_text, 0.8f, 80.0f, status_color);
                     draw_text_ellipsized(ren, card_x + 132.0f, row_y,
                                          check->code, 0.8f, 122.0f, COLOR_TEXT_WHITE);
-                    float issue_width = (float)check->issue_count * 54.0f;
                     draw_text_ellipsized(ren, card_x + 260.0f, row_y,
-                                         check->message, 0.78f, card_w - 308.0f - issue_width,
+                                         check->message, 0.78f, card_w - 308.0f,
                                          COLOR_TEXT_MUTED);
-                    if (check->issue_count) {
-                        draw_issue_links(ren, card_x + card_w - 48.0f - issue_width,
-                                         row_y - 2.0f, check->issue_numbers,
-                                         check->issue_count, in);
-                    }
                 }
             }
 

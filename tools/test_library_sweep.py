@@ -419,7 +419,7 @@ class LibrarySweepTests(unittest.TestCase):
         failure_row = {
             **_sweep_row("analyze"),
             "boundary_code": "ANALYSIS_FAILED",
-            "issue_numbers": [296],
+            "issue_numbers": [308],
             "stopped_at_stage": "analyze",
             "stage_duration_ms": {**durations, "analyze": 1200},
         }

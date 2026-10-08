@@ -263,7 +263,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     char cache_dir[NK_MAX_PATH];
     if (!nk_font_get_cache_dir(user_data_root, cache_dir, sizeof(cache_dir))) {
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font jpn0.pgf missing; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font jpn0.pgf missing; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_MISSING;
     }
@@ -283,7 +283,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
             }
         }
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font jpn0.pgf missing; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font jpn0.pgf missing; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_MISSING;
     }
@@ -292,7 +292,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     FILE *mf = nk_fopen_utf8(manifest_path, "rb");
     if (!mf) {
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font cache manifest unreadable; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font cache manifest unreadable; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_INVALID;
     }
@@ -301,7 +301,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     if (mlen <= 0 || mlen > 1024 * 1024) {
         fclose(mf);
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font cache manifest size invalid; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font cache manifest size invalid; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_INVALID;
     }
@@ -321,7 +321,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     if (!root || !nk_json_is_object(root)) {
         if (root) nk_json_free(root);
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font cache manifest is malformed JSON; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font cache manifest is malformed JSON; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_INVALID;
     }
@@ -331,7 +331,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     if (!ver_node || !nk_json_get_int64(ver_node, &schema_ver) || schema_ver != 1) {
         nk_json_free(root);
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font cache manifest schema version unsupported; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font cache manifest schema version unsupported; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_INVALID;
     }
@@ -340,7 +340,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     if (!files_node || !nk_json_is_object(files_node)) {
         nk_json_free(root);
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font cache manifest missing 'files' object; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font cache manifest missing 'files' object; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_INVALID;
     }
@@ -349,7 +349,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
     if (!jpn_entry) {
         nk_json_free(root);
         if (out_message && message_max_len > 0) {
-            snprintf(out_message, message_max_len, "PSP font cache manifest does not declare jpn0.pgf; run fonts import <folder> (#300).");
+            snprintf(out_message, message_max_len, "PSP font cache manifest does not declare jpn0.pgf; run fonts import <folder>.");
         }
         return NK_FONT_STATUS_INVALID;
     }
@@ -362,7 +362,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
         if (!fname || !finfo || !nk_json_is_object(finfo)) {
             nk_json_free(root);
             if (out_message && message_max_len > 0) {
-                snprintf(out_message, message_max_len, "PSP font cache manifest entry is invalid; run fonts import <folder> (#300).");
+                snprintf(out_message, message_max_len, "PSP font cache manifest entry is invalid; run fonts import <folder>.");
             }
             return NK_FONT_STATUS_INVALID;
         }
@@ -373,7 +373,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
         if (!sz_node || !nk_json_get_int64(sz_node, &exp_size) || !exp_sha || strlen(exp_sha) != 64) {
             nk_json_free(root);
             if (out_message && message_max_len > 0) {
-                snprintf(out_message, message_max_len, "PSP font cache manifest entry '%s' missing size or sha256; run fonts import <folder> (#300).", fname);
+                snprintf(out_message, message_max_len, "PSP font cache manifest entry '%s' missing size or sha256; run fonts import <folder>.", fname);
             }
             return NK_FONT_STATUS_INVALID;
         }
@@ -385,7 +385,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
         if (!nk_font_validate_pgf(file_path, &act_size, act_sha, val_err, sizeof(val_err))) {
             nk_json_free(root);
             if (out_message && message_max_len > 0) {
-                snprintf(out_message, message_max_len, "PSP font file '%s' invalid in cache (%s); run fonts import <folder> (#300).",
+                snprintf(out_message, message_max_len, "PSP font file '%s' invalid in cache (%s); run fonts import <folder>.",
                          fname, val_err[0] ? val_err : "validation failed");
             }
             return NK_FONT_STATUS_INVALID;
@@ -393,7 +393,7 @@ NkFontStatus nk_font_check_cache(const char *user_data_root,
         if ((int64_t)act_size != exp_size || strcmp(act_sha, exp_sha) != 0) {
             nk_json_free(root);
             if (out_message && message_max_len > 0) {
-                snprintf(out_message, message_max_len, "PSP font file '%s' checksum/size mismatch in cache; run fonts import <folder> (#300).", fname);
+                snprintf(out_message, message_max_len, "PSP font file '%s' checksum/size mismatch in cache; run fonts import <folder>.", fname);
             }
             return NK_FONT_STATUS_INVALID;
         }

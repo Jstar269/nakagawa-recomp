@@ -18,7 +18,7 @@ class HstTitleManifestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.path = ROOT / "assets" / "titles" / "hst-ucus98701.json"
-        # Opt-in by *tracked bytes*, never by directory presence (#335): an
+        # Opt-in by *tracked bytes*, never by directory presence: an
         # ignored developer lookalike must not silently stand in for the
         # private fixture.
         if not test_public_title_isolation.private_title_tests_enabled("assets/titles/hst-ucus98701.json"):

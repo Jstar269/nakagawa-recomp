@@ -888,7 +888,7 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     if isinstance(value, dict):
         for retired in RETIRED_RUNTIME_BINDING_FIELDS:
             if retired in value:
-                fail(f"{path}.{retired}", f"{retired} is retired (#643); runtime does not write guest VBLANK counters")
+                fail(f"{path}.{retired}", f"{retired} is retired; runtime does not write guest VBLANK counters")
     value = obj(value, path,
                 {"schema_version", *RUNTIME_BINDING_FIELDS, *RUNTIME_BINDING_COLLECTIONS,
                  *RUNTIME_BINDING_OBJECTS, *RUNTIME_BINDING_COUNTS})
@@ -1101,7 +1101,7 @@ def encode_loose_content_roots(
     Rows end in LF. An empty declaration produces an empty
     value, matching the native launcher's explicit inherited-value mask.
     """
-    boundary = "Loose-content root binding #289 (in the works)"
+    boundary = "Loose-content root binding"
     if not isinstance(validated_manifest, dict):
         raise TitleManifestError(f"{boundary}: validated manifest must be an object")
     filesystem = validated_manifest.get("filesystem")
@@ -1160,6 +1160,8 @@ def encode_loose_content_roots(
                 host_root = Path(os.path.abspath(candidate_text))
             else:
                 host_root = candidate.resolve(strict=True)
+        except TitleManifestError:
+            raise
         except (OSError, RuntimeError, ValueError) as exc:
             fail(f"configured loose-content root could not be resolved: {exc}")
         host_text = os.fspath(host_root)
@@ -1201,7 +1203,7 @@ def validate_required_runtime_bindings(value: Any, path: str) -> list[str]:
     for index, name in enumerate(array(value, path, len(DECLARABLE_BINDING_FAMILIES))):
         name = identifier(name, f"{path}[{index}]")
         if name in RETIRED_RUNTIME_BINDING_FIELDS:
-            fail(f"{path}[{index}]", f"{name} is retired (#643); runtime does not write guest VBLANK counters")
+            fail(f"{path}[{index}]", f"{name} is retired; runtime does not write guest VBLANK counters")
         if name not in DECLARABLE_BINDING_FAMILIES:
             fail(f"{path}[{index}]",
                  f"is not a runtime binding family (known: {', '.join(sorted(DECLARABLE_BINDING_FAMILIES))})")

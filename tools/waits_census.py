@@ -9,7 +9,7 @@ Maps every exact ``sce*`` / ``__sce*`` API name named in
 defaulter owner issue:
 
     missing               -- no static HLE registration (#339 object-model gap)
-    registered            -- registered only as fake success (#281)
+    registered            -- registered only as fake success (#363)
     implemented           -- dedicated handler (status from HANDLER_STATUS;
                              ``unreviewed`` matures under #341)
     controlled-unsupported-- deliberate refusal with a documented PSP error
@@ -46,7 +46,7 @@ _API_RE = re.compile(r"^(?:sce|__sce)[A-Za-z0-9_]+$")
 
 # Defaulter owners by exclusive disposition (and maturity for implemented).
 OWNER_MISSING = "#339"
-OWNER_FAKE_SUCCESS = "#281"
+OWNER_FAKE_SUCCESS = "#363"
 OWNER_UNREVIEWED = "#341"
 OWNER_NONE = "-"
 
@@ -161,7 +161,7 @@ def render_markdown(census: dict) -> str:
         "| disposition | meaning | default owner |",
         "| --- | --- | --- |",
         "| `missing` | no static HLE registration | #339 (object-model gap) |",
-        "| `registered` | registered only as fake success | #281 |",
+        "| `registered` | registered only as fake success | #363 |",
         "| `implemented` | dedicated handler; `status` is the semantic maturity | #341 when `unreviewed`, else - |",
         "| `controlled-unsupported` | deliberate refusal with a documented PSP error | - |",
         "",

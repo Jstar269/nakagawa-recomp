@@ -65,7 +65,7 @@ class CiPathClassificationTests(unittest.TestCase):
         self.assertEqual(classify(["tools/TRACE_FORMAT.md"])["run_python"], "false")
 
     def test_generated_public_metadata_is_recognised_and_preserves_docs_only(self) -> None:
-        """Issue #188 Finding 13 (O-13): generated public metadata must not trigger force_full."""
+        """Finding 13 (O-13): generated public metadata must not trigger force_full."""
         result = classify([
             "docs/CI.md",
             "PUBLIC_EXPORT.json",

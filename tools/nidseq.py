@@ -9,7 +9,7 @@
 # recompiled run's import sequence against the oracle's -- the functional-equivalence
 # metric for HLE, which tolerates UID/address value differences the trace-diff cannot.
 #
-# Modes (issue #381):
+# Modes (issue #354):
 #   informational (one trace):  nidseq.py <imports.toml> <trace>
 #       Prints the import sequence and exits 0. No equivalence claim is made.
 #   verification (two traces):  nidseq.py <imports.toml> <trace> <oracle-trace> [--allow-prefix]
@@ -75,7 +75,7 @@ def nid_seq(trace, imp, s0, s1, limit=None):
 
     Every non-comment line must be a structurally valid trace record; blank, short,
     or malformed lines are hard errors so truncation/corruption can never silently
-    shrink the observed import sequence (issue #381).
+    shrink the observed import sequence (issue #354).
     """
     seq = []
     with open(trace) as fh:
@@ -103,7 +103,7 @@ def verify_sequences(mine, orac, imp, allow_prefix):
     """Exact-equality verification by default; --allow-prefix permits strict prefixes.
 
     Returns the process exit code. Fail-closed: zero compared imports, length mismatch,
-    or divergence is nonzero (issue #381).
+    or divergence is nonzero (issue #354).
     """
     n = min(len(mine), len(orac))
     if n == 0:
