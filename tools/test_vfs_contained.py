@@ -77,7 +77,7 @@ class TestContainedDeleteSelftest(unittest.TestCase):
         if "backend=windows-verified-handle" in out:
             expected_checks = 239  # +6: invalid UTF-8 leaf refusal (Windows only)
         elif "backend=posix-descriptor-relative" in out:
-            expected_checks = 311  # includes the Linux guest path and file-operation matrix
+            expected_checks = 319  # includes the Linux guest path and file-operation matrix
         else:
             self.fail("selftest did not identify a supported containment backend:\n" + out)
         self.assertIn(f": {expected_checks} checks, 0 skipped hostile case(s)", out)
