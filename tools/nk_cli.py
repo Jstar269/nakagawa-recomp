@@ -672,7 +672,7 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
         return
     path.unlink(missing_ok=True)
     raise PackageBuildError(
-        f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32 (#295); "
+        f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32; "
         "supply a valid decrypted module."
     )
 
