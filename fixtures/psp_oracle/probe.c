@@ -5957,11 +5957,26 @@ static int registry_name_is_safe(const char *name) {
     return 1;
 }
 
+static int registry_write_all(SceUID fd, const char *data, size_t size) {
+    size_t offset = 0;
+    while (offset < size) {
+        int wrote = sceIoWrite(fd, data + offset, (SceSize)(size - offset));
+        if (wrote <= 0) return 0;
+        offset += (size_t)wrote;
+    }
+    return 1;
+}
+
 static void emit_registry_record(int emulated, const char *case_id,
                                  const char *status, uint32_t result,
                                  const uint32_t *out, size_t out_count,
                                  const char *detail, const uint8_t *value,
                                  size_t value_bytes) {
+    if (detail == NULL && value == NULL && value_bytes == 0u) {
+        emit_record_extended(emulated, "PSP-REGISTRY-001", case_id, status,
+                             result, out, out_count);
+        return;
+    }
     size_t capacity = 512u;
     if (detail != NULL && strlen(detail) <= (size_t)-1 - capacity) {
         capacity += strlen(detail);
@@ -5975,7 +5990,7 @@ static void emit_registry_record(int emulated, const char *case_id,
     if (line == NULL) return;
     int used = snprintf(line, capacity,
         "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 case_id=%s "
-        "status=%s result=0x%08x", case_id, status, result);
+        "status=%s result=0x%08x", case_id, status, (unsigned int)result);
     for (size_t i = 0; i < out_count && used > 0 && (size_t)used < capacity; i++) {
         int wrote = snprintf(line + used, capacity - (size_t)used,
                              " out%u=0x%08x", (unsigned int)i,
@@ -6007,7 +6022,7 @@ static void emit_registry_record(int emulated, const char *case_id,
             SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
                 PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
             if (fd >= 0) {
-                (void)write_bytes(fd, line, used);
+                (void)registry_write_all(fd, line, (size_t)used);
                 (void)sceIoClose(fd);
             }
         }
@@ -6043,7 +6058,8 @@ static int registry_read_key(int emulated, REGHANDLE category, const char *path,
     }
     char record_id[48];
     char detail[512];
-    snprintf(record_id, sizeof(record_id), "registry-key-%04u", index);
+    snprintf(record_id, sizeof(record_id), "registry-key-%04u",
+             (unsigned int)index);
     snprintf(detail, sizeof(detail), "%s/%s", path, name);
     emit_registry_record(emulated, record_id, "PASS", (uint32_t)info_rc,
                          out, 4, detail, value_bytes ? value : NULL, value_bytes);
