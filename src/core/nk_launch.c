@@ -896,7 +896,7 @@ NkResult nk_launch_prepare_session(
     snprintf(session->prepared_root, sizeof(session->prepared_root), "%s", game->prepared_root);
 
     session->config.resolution_scale = 1;
-    session->config.fps_cap = 60;
+    session->config.fps_cap = -1;
     session->config.fullscreen = false;
     session->config.vsync = true;
     session->config.benchmark_mode = false;
@@ -1280,7 +1280,11 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_input_profile[NK_MAX_PATH + 32];
     char sep = nk_platform_path_separator();
 
-    snprintf(env_fps, sizeof(env_fps), "SR_FPS_CAP=%d", session->config.fps_cap);
+    if (session->config.fps_cap == -1) {
+        snprintf(env_fps, sizeof(env_fps), "SR_FPS_CAP=native");
+    } else {
+        snprintf(env_fps, sizeof(env_fps), "SR_FPS_CAP=%d", session->config.fps_cap);
+    }
     snprintf(env_ge, sizeof(env_ge), "SR_GPU_GE=1");
     snprintf(env_scale, sizeof(env_scale), "SR_RESOLUTION_SCALE=%d", session->config.resolution_scale);
     snprintf(env_vsync, sizeof(env_vsync), "SR_VSYNC=%d", session->config.vsync ? 1 : 0);

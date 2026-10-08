@@ -495,6 +495,56 @@ static void test_pinned_prerequisite_manifest(void) {
 }
 
 #if defined(_WIN32) || defined(_WIN64)
+static void test_remove_downloaded_tools_preserves_other_app_data(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 10: downloaded-tool removal boundary\n");
+    char temp_root[MAX_PATH];
+    char data_root[NK_MAX_PATH];
+    char prerequisites_root[NK_MAX_PATH];
+    char nested_tool_dir[NK_MAX_PATH];
+    char tool_marker[NK_MAX_PATH];
+    char retained_file[NK_MAX_PATH];
+    DWORD temp_length = GetTempPathA((DWORD)sizeof(temp_root), temp_root);
+    assert(temp_length > 0 && temp_length < sizeof(temp_root));
+    assert(GetTempFileNameA(temp_root, "nkr", 0, data_root) != 0);
+    assert(DeleteFileA(data_root));
+    assert(CreateDirectoryA(data_root, NULL));
+
+    int n = snprintf(prerequisites_root, sizeof(prerequisites_root),
+                     "%s\\prerequisites", data_root);
+    assert(n > 0 && (size_t)n < sizeof(prerequisites_root));
+    n = snprintf(nested_tool_dir, sizeof(nested_tool_dir),
+                 "%s\\synthetic-tool", prerequisites_root);
+    assert(n > 0 && (size_t)n < sizeof(nested_tool_dir));
+    n = snprintf(tool_marker, sizeof(tool_marker), "%s\\marker.txt",
+                 nested_tool_dir);
+    assert(n > 0 && (size_t)n < sizeof(tool_marker));
+    n = snprintf(retained_file, sizeof(retained_file), "%s\\keep.txt",
+                 data_root);
+    assert(n > 0 && (size_t)n < sizeof(retained_file));
+    assert(nk_platform_mkdir_p(nested_tool_dir));
+
+    FILE *file = fopen(tool_marker, "wb");
+    assert(file != NULL);
+    assert(fputs("synthetic downloaded tool marker", file) >= 0);
+    assert(fclose(file) == 0);
+    file = fopen(retained_file, "wb");
+    assert(file != NULL);
+    assert(fputs("synthetic save and library data", file) >= 0);
+    assert(fclose(file) == 0);
+
+    char error_code[64];
+    char error_message[256];
+    assert(package_builder_remove_downloaded_tools(
+        data_root, error_code, sizeof(error_code),
+        error_message, sizeof(error_message)));
+    assert(error_code[0] == '\0');
+    assert(error_message[0] == '\0');
+    assert(!nk_platform_dir_exists(prerequisites_root));
+    assert(nk_platform_file_exists(retained_file));
+    assert(DeleteFileA(retained_file));
+    assert(RemoveDirectoryA(data_root));
+}
+
 typedef struct {
     const unsigned char *body;
     size_t body_size;
@@ -653,6 +703,7 @@ int main(int argc, char *argv[]) {
     test_pinned_prerequisite_manifest();
 #if defined(_WIN32) || defined(_WIN64)
     test_native_download_verification();
+    test_remove_downloaded_tools_preserves_other_app_data();
 #else
     puts("[PACKAGE_BUILDER_TEST] SKIP native WinHTTP/SHA-256 transport tests (non-Windows host)");
 #endif

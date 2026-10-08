@@ -21,7 +21,7 @@ extern "C" {
 /* Typed runtime provider configuration */
 typedef struct {
     int resolution_scale;
-    int fps_cap;
+    int fps_cap; /* -1 = PSP scanout pacing, 0 = uncapped host presentation */
     bool fullscreen;
     bool vsync;
     bool benchmark_mode;

@@ -1677,21 +1677,21 @@ static const char *status_label(NkGameSupportStatus status) {
 static const char *resolution_label(int scale) {
     switch (scale) {
         case 1: return "1x Native (480x272)";
-        case 2: return "2x Vita (960x544)";
+        case 2: return "2x Scale (960x544)";
         case 3: return "3x Scale (1440x816)";
-        case 4: return "4x Scale (1920x1088)";
+        case 4: return "4x Scale";
         case 8: return "8x Scale (3840x2176)";
         default: return "Custom Scale";
     }
 }
 
-/* Human-readable label for the configured frame rate cap. */
+/* Human-readable label for host presentation pacing; the guest clock remains
+ * tied to PSP VBlank in either mode. */
 static const char *fps_label(int cap) {
     switch (cap) {
-        case 30: return "30 FPS CAP";
-        case 60: return "60 FPS CAP";
-        case 0:  return "UNCAPPED TARGET";
-        default: return "CADENCE CAP";
+        case -1: return "PSP TIMING";
+        case 0:  return "NO EXTRA CAP";
+        default: return "PSP TIMING";
     }
 }
 
@@ -2532,13 +2532,13 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
 
 /* --- View: Settings ---
  *
- * Every control here is live: resolution and frame-cap presets write the
+ * Every control here is live: resolution and presentation pacing write the
  * launch preferences that PLAY NOW consumes, toggles flip, and volume
  * steps clamp 0..100. Focus order is stable so Tab/Enter and gamepad
  * SOUTH all reach the same actions as a mouse click. */
-/* Real save root the launcher resolves at launch: nk_launch_prepare_session
- * points SR_MEMSTICK at <root>/<disc id> (platform per-user saves; writable by
- * construction). Computed once because nk_platform_get_path creates the
+/* Default per-user save root shown in Settings. Launch normally uses a
+ * per-title child here, but prepared titles can use their staged memory-stick
+ * root instead. Computed once because nk_platform_get_path creates the
  * directory and the root cannot change while the player runs. Replaces the old
  * save_directory field, which was never read by anything. */
 static char g_saves_root[MAX_PATH_LEN];
@@ -2581,9 +2581,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     if (app->settings_notice[0]) {
         draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
     } else {
-        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f,
-                             "Game settings apply at the next launch; launcher fullscreen applies now.",
-                             1.0f, card_w - 64.0f, COLOR_TEXT_DIM);
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 96.0f,
+                          card_w - 64.0f,
+                          "PSP VBlank (~59.94 Hz) sets game timing; each title chooses its own cadence. "
+                          "High-refresh presentation is not supported yet. Game settings apply next launch; "
+                          "launcher fullscreen applies now.",
+                          0.9f, COLOR_TEXT_DIM, 2);
     }
     /* Identify the platform the player runs, never imply endorsement. */
     draw_text_ellipsized(ren, card_x + 4.0f, card_y + card_h + 14.0f,
@@ -2605,7 +2608,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         draw_text(ren, col1_x, y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
         {
             struct { const char *label; int scale; } kRes[] = {
-                { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
+                { "1x Native", 1 }, { "2x Scale", 2 }, { "4x Scale", 4 },
             };
             float bx = col1_x;
             float by = y + 24.0f;
@@ -2625,25 +2628,25 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             y = by + 52.0f;
         }
         /* Frame rate: wrap the same way. */
-        draw_text(ren, col1_x, y, "FRAME CADENCE (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+        draw_text(ren, col1_x, y, "PRESENTATION PACING (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
         {
             struct { const char *label; int cap; } kFps[] = {
-                { "30 FPS (PSP Cap)", 30 }, { "60 FPS (Smooth)", 60 }, { "Uncapped", 0 },
+                { "PSP timing", -1 }, { "No extra cap", 0 },
             };
             float bx = col1_x;
             float by = y + 24.0f;
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < 2; i++) {
                 bool selected = (app->settings.fps_cap == kFps[i].cap);
                 bool focused = (app->focus_index == focus);
-                if (bx + 140.0f > inner_r + 1.0f && bx > col1_x) {
+                if (bx + 180.0f > inner_r + 1.0f && bx > col1_x) {
                     bx = col1_x;
                     by += 42.0f;
                 }
-                if (draw_button_focused(ren, bx, by, 140.0f, 36.0f, kFps[i].label, selected, in, focused)) {
+                if (draw_button_focused(ren, bx, by, 180.0f, 36.0f, kFps[i].label, selected, in, focused)) {
                     player_app_set_fps_cap(app, kFps[i].cap);
                 }
                 focus++;
-                bx += 150.0f;
+                bx += 190.0f;
             }
             y = by + 52.0f;
         }
@@ -2730,7 +2733,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             y = by + 50.0f;
         }
         /* Gamepad + save stay one-liners here; the topbar badge already
-         * carries live controller state and the save path is display-only. */
+         * carries live controller state and this is the default save root. */
         if (h >= 620.0f) {
             draw_text(ren, col1_x, y, "GAMEPAD & STORAGE", 1.1f, COLOR_TEXT_DIM);
             if (app->settings.controller_connected) {
@@ -2744,6 +2747,9 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             draw_text_ellipsized(ren, col1_x, y + 44.0f,
                                  saves_root_display(),
                                  1.0f, inner_r - col1_x, COLOR_TEXT_DIM);
+            draw_text_ellipsized(ren, col1_x, y + 60.0f,
+                                 "Packages use this root per title; prepared titles may use staged saves.",
+                                 0.8f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
         bool ctrl_focused = (app->focus_index == focus);
@@ -2795,7 +2801,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     draw_text(ren, col1_x, row_y, "INTERNAL RENDER RESOLUTION (MAX 4X)", 1.1f, COLOR_TEXT_DIM);
     {
         struct { const char *label; int scale; } kRes[] = {
-            { "1x (480x272)", 1 }, { "2x (Vita)", 2 }, { "4x (1080p)", 4 },
+            { "1x Native", 1 }, { "2x Scale", 2 }, { "4x Scale", 4 },
         };
         float bx = col1_x;
         for (int i = 0; i < 3; i++) {
@@ -2811,22 +2817,26 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Frame rate */
     float fps_y = two_col ? row_y + 90.0f : row_y + 132.0f;
-    draw_text(ren, col1_x, fps_y, "FRAME CADENCE (GAME LAUNCH)", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col1_x, fps_y, "PRESENTATION PACING (NEXT LAUNCH)", 1.1f, COLOR_TEXT_DIM);
     {
         struct { const char *label; int cap; } kFps[] = {
-            { "30 FPS (PSP Cap)", 30 }, { "60 FPS (Smooth)", 60 }, { "Uncapped", 0 },
+            { "PSP timing", -1 }, { "No extra cap", 0 },
         };
         float bx = col1_x;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 2; i++) {
             bool selected = (app->settings.fps_cap == kFps[i].cap);
             bool focused = (app->focus_index == focus);
-            if (draw_button_focused(ren, bx, fps_y + 24.0f, 140.0f, 36.0f, kFps[i].label, selected, in, focused)) {
+            if (draw_button_focused(ren, bx, fps_y + 24.0f, 180.0f, 36.0f, kFps[i].label, selected, in, focused)) {
                 player_app_set_fps_cap(app, kFps[i].cap);
             }
             focus++;
-            bx += 150.0f;
+            bx += 190.0f;
         }
     }
+    draw_text_ellipsized(ren, col1_x, fps_y + 64.0f,
+                         "Guest timing follows PSP VBlank. High-refresh output is not supported yet.",
+                         0.75f, card_x + player_settings_second_column_offset(card_w) - col1_x - 16.0f,
+                         COLOR_TEXT_DIM);
 
     /* Display toggles */
     float tog_y = fps_y + 90.0f;
@@ -2937,10 +2947,13 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
 
     /* Save path lives under the gamepad block: column one grew a second
      * toggle row, so its old slot now belongs to reduce-motion. */
-    draw_text(ren, col2_x, pad_y + 92.0f, "STORAGE & SAVE DIRECTORY", 1.1f, COLOR_TEXT_DIM);
+    draw_text(ren, col2_x, pad_y + 92.0f, "DEFAULT PER-USER SAVE ROOT", 1.1f, COLOR_TEXT_DIM);
     draw_text_ellipsized(ren, col2_x, pad_y + 116.0f,
                          saves_root_display(),
                          1.1f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_WHITE);
+    draw_text_ellipsized(ren, col2_x, pad_y + 140.0f,
+                         "Packages use this root per title; prepared titles may use staged saves.",
+                         0.8f, card_x + card_w - 32.0f - col2_x, COLOR_TEXT_DIM);
 
     /* Close */
     bool close_focused = (app->focus_index == focus);

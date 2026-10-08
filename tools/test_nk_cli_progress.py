@@ -95,6 +95,30 @@ class NkCliProgressTests(unittest.TestCase):
         self.assertIn(f"Executable: {executable}", stdout.getvalue())
         self.assertIn("LOOSE_ROOTS: \n", stdout.getvalue())
 
+    def test_launch_cli_defaults_to_psp_scanout_pacing(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        import nk_cli
+
+        stdout = StringIO()
+        with patch.object(nk_cli, "RuntimeLauncher") as launcher_class:
+            launcher = launcher_class.return_value
+            launcher.build_launch_plan.return_value = (
+                ["synthetic-runtime.exe"],
+                {"SR_FPS_CAP": "native"},
+            )
+            with patch.object(sys, "argv", ["nk_cli.py", "launch", "synthetic-game"]):
+                with redirect_stdout(stdout):
+                    self.assertEqual(nk_cli.main(), 0)
+
+        launch_args = launcher.build_launch_plan.call_args
+        self.assertIsNotNone(launch_args)
+        assert launch_args is not None
+        self.assertEqual(launch_args.kwargs["fps_cap"], -1)
+        self.assertIn("FPS_CAP:    native", stdout.getvalue())
+
     def test_bringup_direct_launch_binds_manifest_loose_roots(self) -> None:
         import inspect
 

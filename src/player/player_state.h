@@ -134,7 +134,7 @@ typedef struct {
     bool fullscreen;
     bool launcher_fullscreen;
     bool vsync;
-    int fps_cap;          /* 30, 60, 0 = uncapped */
+    int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
     bool launcher_window_maximized;
@@ -402,7 +402,7 @@ void player_app_runtime_package_cache_store(
 uint64_t player_app_ui_test_validation_calls(void);
 #endif
 
-#define NK_PLAYER_SETTINGS_SCHEMA_VERSION 1
+#define NK_PLAYER_SETTINGS_SCHEMA_VERSION 2
 
 /* Settings mutations. All values are validated and clamped; invalid inputs
  * are ignored so a stray click or keypress can never corrupt launch config.
