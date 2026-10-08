@@ -206,6 +206,14 @@ int main(void) {
         mock_img = bin_dir / "pspdev-phase5-v1_image.bin"
         mock_img.write_bytes(b"image")
 
+        # A launchable synthetic title includes its catalogued data root. The
+        # runtime correctly refuses to prepare a session without it (#731).
+        data_root = self.temp_dir / "fixtures" / "pspdev_phase5"
+        data_root.mkdir(parents=True)
+        (data_root / "synthetic-data.txt").write_text(
+            "Source-owned synthetic runtime data.\n", encoding="utf-8"
+        )
+
         res = subprocess.run(
             [str(self.exe_path), str(iso1), str(iso2), str(lib_json), str(self.temp_dir)],
             capture_output=True,
