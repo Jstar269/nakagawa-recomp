@@ -423,6 +423,114 @@ static bool find_candidate_executable(
     return false;
 }
 
+static NkLaunchDataRootStatus launch_resolve_data_root(
+    const NkGameEntry *game,
+    const NkTitleEntry *entry,
+    const char *runtime_root,
+    char *resolved_path,
+    size_t resolved_path_size
+) {
+    char local_resolved[NK_MAX_PATH];
+    char *out = resolved_path;
+    size_t out_size = resolved_path_size;
+    if (!out || out_size == 0) {
+        out = local_resolved;
+        out_size = sizeof(local_resolved);
+    }
+    if (resolved_path && resolved_path_size) resolved_path[0] = '\0';
+    if (!game || !entry) return NK_LAUNCH_DATA_ROOT_INVALID;
+    if (!entry->data_root || !entry->data_root[0]) {
+        return NK_LAUNCH_DATA_ROOT_NOT_REQUIRED;
+    }
+
+    if (game->assets_staged && game->prepared_root[0] &&
+        launch_find_existing_directory(game->prepared_root, entry->data_root,
+                                       out, out_size)) {
+        return NK_LAUNCH_DATA_ROOT_READY;
+    }
+    if (runtime_root && runtime_root[0] &&
+        launch_find_existing_directory(runtime_root, entry->data_root,
+                                       out, out_size)) {
+        return NK_LAUNCH_DATA_ROOT_READY;
+    }
+
+    if (game->iso_path[0]) {
+        char iso_dir[NK_MAX_PATH * 2];
+        char usrdir[NK_MAX_PATH * 2];
+        char candidate[NK_MAX_PATH * 3];
+        if (launch_parent_directory(game->iso_path, iso_dir, sizeof(iso_dir)) &&
+            launch_join_path(iso_dir, "EXTRACTED/PSP_GAME/USRDIR",
+                             usrdir, sizeof(usrdir)) &&
+            launch_join_path(usrdir, entry->data_root,
+                             candidate, sizeof(candidate)) &&
+            launch_store_existing(candidate, true, out, out_size)) {
+            return NK_LAUNCH_DATA_ROOT_READY;
+        }
+    }
+    return NK_LAUNCH_DATA_ROOT_MISSING;
+}
+
+static void launch_describe_missing_data_root(
+    const NkTitleEntry *entry,
+    char *reason,
+    size_t reason_size
+) {
+    if (!reason || reason_size == 0) return;
+    snprintf(reason, reason_size,
+             "This game needs its data folder, but '%s' was not found beside its staged files, in the runtime data folder, or under the extracted disc folder. Add the game's data files and try again (#308).",
+             entry && entry->data_root ? entry->data_root : "(missing)");
+}
+
+NkLaunchDataRootStatus nk_launch_game_data_root_status(
+    const char *runtime_root,
+    const NkGameEntry *game,
+    char *resolved_path,
+    size_t resolved_path_size,
+    char *reason,
+    size_t reason_size
+) {
+    if (resolved_path && resolved_path_size) resolved_path[0] = '\0';
+    if (reason && reason_size) reason[0] = '\0';
+    if (!game) {
+        launch_error(reason, reason_size, "Library entry is missing.");
+        return NK_LAUNCH_DATA_ROOT_INVALID;
+    }
+
+    char default_root[NK_MAX_PATH];
+    const char *root = (runtime_root && runtime_root[0]) ? runtime_root : NULL;
+    if (!root) {
+        if (nk_platform_get_app_data_dir(default_root, sizeof(default_root))) root = default_root;
+        else root = ".";
+    }
+
+    NkTitleEntrySnapshot snapshot = {0};
+    char identity_error[512] = "";
+    bool selected = false;
+    if (game->is_experimental) {
+        char profile_hash[65];
+        selected = nk_title_manifest_read_experimental_profile(
+            root, game->disc_id, game->title_id, game->selected_executable,
+            &snapshot, profile_hash, identity_error, sizeof(identity_error));
+    } else {
+        selected = launch_select_entry(game, &snapshot, identity_error,
+                                       sizeof(identity_error));
+    }
+    if (!selected) {
+        launch_error(reason, reason_size,
+                     identity_error[0] ? identity_error : "Title profile is unavailable.");
+        nk_title_catalog_snapshot_release(&snapshot);
+        return NK_LAUNCH_DATA_ROOT_INVALID;
+    }
+
+    NkLaunchDataRootStatus status = launch_resolve_data_root(
+        game, &snapshot.entry, root, resolved_path, resolved_path_size);
+    if (status == NK_LAUNCH_DATA_ROOT_MISSING && reason && reason_size) {
+        launch_describe_missing_data_root(&snapshot.entry, reason, reason_size);
+    }
+    nk_title_catalog_snapshot_release(&snapshot);
+    return status;
+}
+
 bool nk_launch_runtime_available(const char *root, const char *title_id) {
     char resolved[NK_MAX_PATH];
     const char *effective_root = (root && *root) ? root : ".";
@@ -1021,50 +1129,25 @@ NkResult nk_launch_prepare_session(
         session->staged_executable_info = staged_info;
     }
 
-    /* 4. Resolve data root */
+    /* 4. Resolve the manifest-owned data root. The same resolver powers the
+       player's readiness checks, so an absent folder cannot look launchable. */
     char sep = nk_platform_path_separator();
     const char *asset_root = session->package_launch
         ? session->user_data_root : session->working_directory;
-    if (game->assets_staged && game->prepared_root[0]) {
-        /* The manifest owns the staged data-root name; generic launch code
-         * does not guess a title's directory layout. */
-        if (entry && entry->data_root) {
-            launch_find_existing_directory(game->prepared_root, entry->data_root,
-                                           session->dataroot_path,
-                                           sizeof(session->dataroot_path));
+    NkLaunchDataRootStatus data_status = launch_resolve_data_root(
+        game, entry, asset_root, session->dataroot_path,
+        sizeof(session->dataroot_path));
+    if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
+        data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+        if (data_status == NK_LAUNCH_DATA_ROOT_MISSING) {
+            launch_describe_missing_data_root(
+                entry, session->last_error, sizeof(session->last_error));
+        } else {
+            snprintf(session->last_error, sizeof(session->last_error),
+                     "Title data root could not be resolved.");
         }
-    }
-    if (session->dataroot_path[0] == '\0' && entry && entry->data_root) {
-        char cand_data[NK_MAX_PATH * 2];
-        int w = snprintf(cand_data, sizeof(cand_data), "%s%c%s", asset_root, sep, entry->data_root);
-        if (w > 0 && (size_t)w < sizeof(cand_data) && nk_platform_dir_exists(cand_data)) {
-            /* Catalog data_root values are relative to the repository/install
-               root, but SR_DATAROOT is deliberately fail-closed when relative.
-               Resolve the path before handing it to the runtime. */
-            char absolute[NK_MAX_PATH];
-            if (nk_platform_absolute_path(cand_data, absolute, sizeof(absolute))) {
-                safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), absolute);
-            } else {
-                safe_copy_path(session->dataroot_path, sizeof(session->dataroot_path), cand_data);
-            }
-        }
-    }
-    if (session->dataroot_path[0] == '\0') {
-        /* A declared data_root may also be staged beside the source image's
-         * extracted PSP user directory. The title-specific final component
-         * comes only from the validated manifest. */
-        char iso_dir[NK_MAX_PATH * 2];
-        char usrdir[NK_MAX_PATH * 2];
-        char cand_data[NK_MAX_PATH * 3];
-        if (entry && entry->data_root && game->iso_path[0] &&
-            launch_parent_directory(game->iso_path, iso_dir, sizeof(iso_dir)) &&
-            launch_join_path(iso_dir, "EXTRACTED/PSP_GAME/USRDIR",
-                             usrdir, sizeof(usrdir)) &&
-            launch_join_path(usrdir, entry->data_root,
-                             cand_data, sizeof(cand_data))) {
-            launch_store_existing(cand_data, true, session->dataroot_path,
-                                 sizeof(session->dataroot_path));
-        }
+        nk_title_catalog_snapshot_release(&title_snapshot);
+        return NK_ERROR_FILE_NOT_FOUND;
     }
 
     if (!launch_resolve_loose_content_roots(entry, session->dataroot_path,
@@ -1385,9 +1468,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         envp[env_count++] = "SR_NOVBPACE";
     }
 
-    /* The player launch smoke uses this opt-in side channel because a spawned
-       runtime's stderr is not a stable API of either platform backend. Normal
-       launches do not set it and therefore incur no extra file I/O. */
+    /* Player launches use this event file so startup milestones and named
+       stops survive child exit without relying on platform-specific stderr. */
     const char *boot_event_path = session->boot_event_file_path[0]
         ? session->boot_event_file_path : getenv("SR_BOOT_EVENT_FILE");
     if (boot_event_path && *boot_event_path) {

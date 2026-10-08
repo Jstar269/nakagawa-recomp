@@ -396,6 +396,9 @@ class TestPlayerPackageRoute(unittest.TestCase):
                 "is_experimental": True,
             }],
         }), encoding="utf-8")
+        data_root = manifest.get("filesystem", {}).get("data_root")
+        if data_root:
+            (user_root / data_root).mkdir(parents=True, exist_ok=True)
 
     def write_player_library(self) -> Path:
         """Put the library entry where the player reads it: its own data dir."""
@@ -494,7 +497,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         discovered = completed.stdout.partition("path=")[2].strip()
         self.assertEqual(Path(discovered).resolve(), cli.resolve())
 
-    def test_source_owned_showcase_iso_without_companion_assets_stages(self):
+    def test_source_owned_showcase_iso_without_data_root_reports_incomplete(self):
         self.skip_if_toolchain_unavailable()
         demo = next(item for item in SHOWCASE_DEMOS if item["disc_id"] == "TEST00007")
         executable = align_executable((self.fixture_dir / "guest.prx").read_bytes())
@@ -516,9 +519,11 @@ class TestPlayerPackageRoute(unittest.TestCase):
             [str(self.player), f"--iso={iso_path}", "--stage-only"],
             cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60,
         )
-        self.assertEqual(completed.returncode, 0,
+        self.assertEqual(completed.returncode, 8,
                          completed.stdout + completed.stderr)
-        self.assertIn("STAGING_RESULT status=PASS", completed.stdout)
+        self.assertIn("STAGING_RESULT status=INCOMPLETE", completed.stdout)
+        self.assertIn("data_root", completed.stdout.lower())
+        self.assertIn("runtime=not-ready", completed.stdout)
 
     def test_build_validates_and_launches_through_the_player(self):
         self.skip_if_toolchain_unavailable()

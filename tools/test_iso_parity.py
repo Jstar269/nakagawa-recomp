@@ -801,12 +801,14 @@ int main(int argc, char **argv) {{
         checks = payload["compatibility_preflight"]["checks"]
         self.assertEqual(
             [check["code"] for check in checks],
-            ["DISC_SFO", "EXECUTABLE", "RUNTIME_PACKAGE", "SYSTEM_FONTS", "AUDIO_OUTPUT"],
+            ["DISC_SFO", "EXECUTABLE", "RUNTIME_PACKAGE", "DATA_ROOT", "SYSTEM_FONTS", "AUDIO_OUTPUT"],
         )
         self.assertTrue(all(check["status"] in {
             "OK", "MISSING", "UNSUPPORTED", "IN_PROGRESS",
         } for check in checks))
         by_code = {check["code"]: check for check in checks}
+        self.assertEqual(by_code["DATA_ROOT"]["status"], "MISSING")
+        self.assertIn("data folder", by_code["DATA_ROOT"]["message"].lower())
         self.assertEqual(by_code["RUNTIME_PACKAGE"]["status"], "MISSING")
         self.assertEqual(by_code["SYSTEM_FONTS"]["status"], "MISSING")
         self.assertEqual(by_code["AUDIO_OUTPUT"]["status"], "OK")
@@ -818,6 +820,8 @@ int main(int argc, char **argv) {{
         package_dir.mkdir(parents=True)
         (package_dir / f"{title_name}.exe").write_bytes(b"synthetic executable")
         (package_dir / f"{title_name}_image.bin").write_bytes(b"synthetic image")
+        data_root = runtime_root / "fixtures" / "profile_zero"
+        data_root.mkdir(parents=True)
         font_dir = runtime_root / "font"
         font_dir.mkdir()
         (font_dir / "jpn0.pgf").write_bytes(b"synthetic font marker")
@@ -829,8 +833,66 @@ int main(int argc, char **argv) {{
         self.assertEqual(ready.returncode, 0, ready.stderr)
         ready_checks = {check["code"]: check for check in
                         json.loads(ready.stdout)["compatibility_preflight"]["checks"]}
+        self.assertEqual(ready_checks["DATA_ROOT"]["status"], "OK")
         self.assertEqual(ready_checks["RUNTIME_PACKAGE"]["status"], "OK")
         self.assertEqual(ready_checks["SYSTEM_FONTS"]["status"], "OK")
+
+        data_root.rmdir()
+        extracted_data_root = (
+            iso_file.parent / "EXTRACTED" / "PSP_GAME" / "USRDIR" / "fixtures" / "profile_zero"
+        )
+        extracted_data_root.mkdir(parents=True)
+        extracted_ready = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
+             str(iso_file), "--json", "--root", str(runtime_root)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(extracted_ready.returncode, 0, extracted_ready.stderr)
+        extracted_checks = {check["code"]: check for check in
+                            json.loads(extracted_ready.stdout)["compatibility_preflight"]["checks"]}
+        self.assertEqual(extracted_checks["DATA_ROOT"]["status"], "OK")
+
+    def test_cli_reports_refused_local_profile_with_shared_catalog_state(self) -> None:
+        iso_file = self.temp_dir / "cli-refused-profile.iso"
+        user_root = self.temp_dir / "profile-user-data"
+        manifest_dir = user_root / "manifests"
+        manifest_dir.mkdir(parents=True)
+        create_test_iso(iso_file, disc_id="TEST00007", title="Synthetic Test Title")
+
+        manifest = json.loads((ROOT / "assets" / "titles" / "showcase-scene.json")
+                              .read_text(encoding="utf-8"))
+        manifest["kind"] = "retail"
+        manifest["disc"] = {
+            "id": "TEST00007", "region": "OTHER",
+            "revision_policy": "exact-disc-id",
+        }
+        manifest.pop("profile_zero", None)
+        manifest["runtime_bindings"] = {
+            "schema_version": 1,
+            "vblank_frame_counter_addr": 0x08804000,
+        }
+        (manifest_dir / "retired-binding.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
+             str(iso_file), "--json", "--root", str(user_root)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["catalogued"])
+        self.assertTrue(payload["supported"])
+        self.assertIn("vblank_frame_counter_addr", payload["profile_validation"])
+        human = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
+             str(iso_file), "--root", str(user_root)],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertIn("Catalogued: YES", human.stdout)
+        self.assertIn("Supported:  YES", human.stdout)
+        self.assertIn("vblank_frame_counter_addr", human.stdout)
 
     def test_cli_preflight_selects_plain_boot_fallback(self) -> None:
         iso_file = self.temp_dir / "cli-boot-fallback.iso"
@@ -1557,6 +1619,14 @@ int main(int argc, char **argv) {{
 
         cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
                "TEST00006", "display-smoke-v1"]
+        missing_data = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        self.assertEqual(missing_data.returncode, 0, missing_data.stderr)
+        self.assertIn("LAUNCH_PREPARE_ERROR", missing_data.stdout)
+        self.assertIn("data folder", missing_data.stdout.lower())
+        self.assertNotIn("LAUNCH_PREPARE_OK", missing_data.stdout)
+
+        (mock_root / "fixtures" / "display_smoke").mkdir(parents=True)
+
         res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
         self.assertIn("LAUNCH_PREPARE_OK", res.stdout)

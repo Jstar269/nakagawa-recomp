@@ -1620,6 +1620,17 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
     }
 }
 
+static void dispatch_record_semantic_stop(const char *boundary) {
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (!path || !path[0] || !boundary || !boundary[0]) return;
+    FILE *events = fopen(path, "ab");
+    if (!events) return;
+    fprintf(events,
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=308\n",
+            boundary);
+    fclose(events);
+}
+
 static int dispatch_run_interp(
     CpuState *s,
     uint32_t target,
@@ -1643,8 +1654,9 @@ static int dispatch_run_interp(
             "opcode=%s0x%08x address=0x%08x\n",
             target, sr_guest_interp_result_name(interp_result), fault.pc,
             fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
-    fprintf(stderr, "  SEMANTIC_BOUNDARY: %s; in the works: #285\n",
+    fprintf(stderr, "  SEMANTIC_BOUNDARY: %s; in the works: #308\n",
             dispatch_semantic_boundary_name(interp_result));
+    dispatch_record_semantic_stop(dispatch_semantic_boundary_name(interp_result));
     dump_dispatch_trace();
     return (int)interp_result;
 }

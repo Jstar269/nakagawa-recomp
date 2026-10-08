@@ -2330,7 +2330,11 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     /* Narrow cards stack the actions vertically so BACK can never run
      * off the card edge. Focus order (ADD, BACK) is unchanged. */
     bool stacked_actions = (card_w < 500.0f);
-    float card_h = stacked_actions ? 430.0f : 360.0f;
+    char profile_refusal[512] = "";
+    bool has_profile_refusal = player_app_title_profile_refusal_for_disc(
+        app, app->inspecting_game.disc_id, profile_refusal,
+        sizeof(profile_refusal));
+    float card_h = stacked_actions ? 460.0f : (has_profile_refusal ? 420.0f : 360.0f);
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
     float card_y = cy - card_h * 0.5f;
@@ -2341,7 +2345,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "TITLE RECOGNIZED", COLOR_EMERALD);
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "GAME FOUND", COLOR_EMERALD);
     if (card_w >= 560.0f) {
         draw_badge(ren, card_x + 220.0f, card_y + 28.0f, app->inspecting_game.disc_id[0] ? app->inspecting_game.disc_id : "DISC_ID", COLOR_BLUE);
     }
@@ -2350,16 +2354,28 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
                          app->inspecting_game.title_name[0] ? app->inspecting_game.title_name : "PlayStation Portable Title",
                          2.2f, card_w - 64.0f, COLOR_TEXT_WHITE);
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 116.0f, card_w - 64.0f,
-                      "Disc identified in Nakagawa title catalog.\nThis build does not connect the module preparation pipeline.",
-                      1.1f, COLOR_TEXT_MUTED, 3);
+                      "We found this game in Nakagawa's title list. Game preparation is still in the works.",
+                      1.1f, COLOR_TEXT_MUTED, 2);
+    float note_y = card_y + 180.0f;
+    if (has_profile_refusal) {
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 154.0f,
+                          card_w - 64.0f,
+                          "A local title profile was refused, so this game uses its built-in entry.",
+                          1.0f, COLOR_AMBER, 2);
+        char details[640];
+        snprintf(details, sizeof(details), "Details: %s", profile_refusal);
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 196.0f,
+                          card_w - 64.0f, details, 0.9f, COLOR_TEXT_DIM, 2);
+        note_y = card_y + 254.0f;
+    }
 
     /* Honesty warning */
-    draw_text_wrapped(ren, card_x + 32.0f, card_y + 180.0f, card_w - 64.0f,
+    draw_text_wrapped(ren, card_x + 32.0f, note_y, card_w - 64.0f,
                       "NOTE: Full LLE font fidelity requires jpn0.pgf in system font directory.",
                       1.0f, COLOR_AMBER, 2);
 
     bool add_focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 260.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in, add_focused)) {
+    if (draw_button_focused(ren, card_x + 32.0f, card_y + 300.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in, add_focused)) {
         /* Do not mark the game prepared: no preparation has run. The entry
          * keeps the status reported by the ISO inspection. */
         if (player_app_add_game(app, &app->inspecting_game)) {
@@ -2376,7 +2392,7 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
     }
     bool back_focused = (app->focus_index == 1);
     float back_x = stacked_actions ? card_x + 32.0f : card_x + 310.0f;
-    float back_y = stacked_actions ? card_y + 330.0f : card_y + 260.0f;
+    float back_y = stacked_actions ? card_y + 360.0f : card_y + 300.0f;
     if (draw_button_focused(ren, back_x, back_y, 140.0f, 50.0f, "BACK", false, in, back_focused)) {
         player_app_set_view(app, VIEW_LIBRARY);
     }
@@ -2471,7 +2487,11 @@ static void render_unsupported_title(SDL_Renderer *ren, PlayerApp *app, const Ui
     float cx = w * 0.5f;
     float cy = h * 0.5f;
     float card_w = dialog_card_w(w, 640.0f);
-    float card_h = 320.0f;
+    char profile_refusal[512] = "";
+    bool has_profile_refusal = player_app_title_profile_refusal_for_disc(
+        app, app->inspecting_game.disc_id, profile_refusal,
+        sizeof(profile_refusal));
+    float card_h = has_profile_refusal ? 380.0f : 320.0f;
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
     float card_y = cy - card_h * 0.5f;
@@ -2482,14 +2502,24 @@ static void render_unsupported_title(SDL_Renderer *ren, PlayerApp *app, const Ui
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "UNSUPPORTED TITLE", COLOR_RED);
-    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Title Not Qualified", 2.2f, COLOR_TEXT_WHITE);
+    draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "NOT READY", COLOR_RED);
+    draw_text(ren, card_x + 32.0f, card_y + 76.0f,
+              "This game isn't ready yet", 2.2f, COLOR_TEXT_WHITE);
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 120.0f, card_w - 64.0f,
-                      "The selected ISO disc image is a valid PSP game, but is not yet registered in Nakagawa Recomp's title registry.\nTo avoid unpredictable crashes, unsupported titles are not executed.",
-                      1.1f, COLOR_TEXT_MUTED, 4);
+                      has_profile_refusal
+                          ? "We couldn't use this game's title profile, so it can't be added or run yet."
+                          : "This game isn't in Nakagawa's title list yet, so it can't be run safely.",
+                      1.1f, COLOR_TEXT_MUTED, 3);
+    if (has_profile_refusal) {
+        char details[640];
+        snprintf(details, sizeof(details), "Details: %s", profile_refusal);
+        draw_text_wrapped(ren, card_x + 32.0f, card_y + 174.0f,
+                          card_w - 64.0f, details, 0.95f, COLOR_TEXT_DIM, 3);
+    }
 
     bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, card_y + 230.0f, 220.0f, 48.0f, "RETURN TO LIBRARY", true, in, focused)) {
+    float button_y = card_y + card_h - 90.0f;
+    if (draw_button_focused(ren, card_x + 32.0f, button_y, 220.0f, 48.0f, "RETURN TO LIBRARY", true, in, focused)) {
         player_app_set_view(app, VIEW_LIBRARY);
     }
 }
@@ -3811,9 +3841,15 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float cx = w * 0.5f;
     float cy = h * 0.5f;
     float card_w = dialog_card_w(w, 680.0f);
+    bool runtime_stop = strcmp(app->last_error.error_code,
+                               "RUNTIME_SEMANTIC_BOUNDARY") == 0;
+    bool launch_readiness_error = runtime_stop ||
+        strcmp(app->last_error.error_code, "TITLE_DATA_MISSING") == 0 ||
+        strcmp(app->last_error.error_code, "TITLE_PROFILE_INVALID") == 0 ||
+        strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0;
     bool has_build_details = (app->last_error.failed_stage[0] != '\0' ||
                               app->last_error.log_file_path[0] != '\0');
-    float card_h = has_build_details ? 420.0f : 340.0f;
+    float card_h = (has_build_details || launch_readiness_error) ? 420.0f : 340.0f;
     if (card_h > h - 32.0f && h > 340.0f) card_h = h - 32.0f;
     float card_x = centered_card_x(w, card_w);
     if (cx - card_w * 0.5f >= 16.0f) card_x = cx - card_w * 0.5f;
@@ -3824,7 +3860,14 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
 
-    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, app->last_error.error_code, COLOR_RED);
+    const char *badge = runtime_stop ? "GAME STOPPED"
+        : (strcmp(app->last_error.error_code, "TITLE_DATA_MISSING") == 0
+            ? "GAME DATA NEEDED"
+            : (strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0
+                ? "GAME NOT READY"
+                : (strcmp(app->last_error.error_code, "TITLE_PROFILE_INVALID") == 0
+                    ? "TITLE SETTINGS NEEDED" : app->last_error.error_code)));
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, badge, COLOR_RED);
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 66.0f, app->last_error.title,
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
 
@@ -3836,12 +3879,21 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
         text_y += 34.0f;
     }
 
-    const char *err_msg = app->last_error.boundary_text[0]
-        ? app->last_error.boundary_text
-        : app->last_error.message;
+    const char *err_msg = launch_readiness_error ? app->last_error.message
+        : (app->last_error.boundary_text[0]
+            ? app->last_error.boundary_text : app->last_error.message);
     draw_text_wrapped(ren, card_x + 32.0f, text_y, card_w - 64.0f,
                       err_msg, 1.1f, COLOR_TEXT_MUTED, 4);
     text_y += 76.0f;
+
+    if (launch_readiness_error && app->last_error.boundary_text[0]) {
+        char details[600];
+        snprintf(details, sizeof(details), "DETAILS: %s",
+                 app->last_error.boundary_text);
+        draw_text_wrapped(ren, card_x + 32.0f, text_y, card_w - 64.0f,
+                          details, 0.95f, COLOR_TEXT_DIM, 2);
+        text_y += 50.0f;
+    }
 
     if (app->last_error.log_file_path[0]) {
         char log_str[NK_MAX_PATH + 32];

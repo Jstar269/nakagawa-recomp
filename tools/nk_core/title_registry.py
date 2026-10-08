@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 import sys
@@ -100,6 +101,7 @@ class TitleRegistry:
     def __init__(self, titles_dir: Optional[Path] = None, include_defaults: bool = True) -> None:
         self._profiles: Dict[str, TitleProfile] = {}
         self._disc_index: Dict[str, str] = {}
+        self._profile_refusals: Dict[str, str] = {}
         if include_defaults:
             t_dir = titles_dir or (ROOT / "assets" / "titles")
             if t_dir.is_dir():
@@ -167,6 +169,40 @@ class TitleRegistry:
 
         self.register(profile)
         return profile
+
+    def load_local_manifests(self, directory: Path) -> None:
+        """Load user-local profiles like the native player and retain refusals by disc ID."""
+        if not directory.is_dir():
+            return
+        for manifest_file in sorted(directory.glob("*.json")):
+            disc_ids: list[str] = []
+            try:
+                with manifest_file.open("rb") as stream:
+                    raw_bytes = stream.read(title_manifest.PUBLIC_MANIFEST_MAX_BYTES + 1)
+                if len(raw_bytes) > title_manifest.PUBLIC_MANIFEST_MAX_BYTES:
+                    raise ValueError("manifest exceeds the 256 KiB title-manifest limit")
+                raw = json.loads(raw_bytes.decode("utf-8"))
+                disc = raw.get("disc", {}) if isinstance(raw, dict) else {}
+                if isinstance(disc, dict):
+                    revisions = disc.get("compatible_revisions", [])
+                    values = [disc.get("id")]
+                    if isinstance(revisions, list):
+                        values.extend(revisions)
+                    for value in values:
+                        if isinstance(value, str):
+                            disc_ids.append(self._norm_disc(value))
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                pass
+            try:
+                self.load_private_manifest(manifest_file, allow_override=False)
+            except Exception as exc:
+                detail = f"{manifest_file.name}: {exc}"
+                for disc_id in disc_ids:
+                    if disc_id:
+                        self._profile_refusals[disc_id] = detail
+
+    def profile_refusal_for_disc(self, disc_id: str) -> Optional[str]:
+        return self._profile_refusals.get(self._norm_disc(disc_id))
 
     def register(self, profile: TitleProfile) -> None:
         self._profiles[profile.id] = profile
