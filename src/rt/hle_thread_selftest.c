@@ -255,6 +255,11 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
 #define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
 #define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
+#define NID_SCE_REG_OPEN_REGISTRY 0x92e41280u
+#define NID_SCE_REG_GET_KEY_INFO 0xd4475aa8u
+#define NID_SCE_REG_GET_KEY_VALUE 0x28a8e98au
+#define NID_SCE_REG_CLOSE_REGISTRY 0xfa8a5739u
+#define NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT 0xa5da2406u
 #define NID_SCE_RTC_GET_CURRENT_TICK 0x3f7ad767u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL 0xe7c27d1bu
@@ -2713,8 +2718,6 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         {NID_SCE_GE_BREAK, 0x80020002u, "sceGeBreak"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
-        {NID_SCE_REG_CLOSE_CATEGORY, 0x80010086u, "sceRegCloseCategory"},
-        {NID_SCE_REG_OPEN_CATEGORY, 0x80010086u, "sceRegOpenCategory"},
     };
     reset_fixture();
     sr_hle_init();
@@ -2726,6 +2729,195 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
                "unsupported kernel import returns its explicit refusal code");
     }
+}
+
+/* Set the five MIPS argument registers (a0-a3 and the stack-passed fifth argument in t0). */
+static void sysreg_args(CpuState *cpu, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    cpu->r[6] = a2;
+    cpu->r[7] = a3;
+    cpu->r[8] = a4;
+}
+
+/* True when sceUtilityGetSystemParamInt(id) succeeds and writes its value to out. */
+static int sysreg_sysparam_int_check(uint32_t id, uint32_t out) {
+    CpuState cpu;
+    sysreg_args(&cpu, id, out, 0u, 0u, 0u);
+    return sr_syscall(&cpu, NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT) == 0u;
+}
+
+/* sceReg virtual system registry (read model in hle.c): handle lifecycle, typed key info, value
+ * copies, refusals for unknown names, bad handles, bad spans, and short buffers, plus agreement
+ * with sceUtilityGetSystemParamInt. Guest scratch lives in the arena at 0x08b00000. */
+static void test_sysreg_virtual_registry(void) {
+    const uint32_t REGPARAM = 0x08b00000u, HANDLE_OUT = 0x08b00400u;
+    const uint32_t NAME = 0x08b00800u, NAME2 = 0x08b00900u;
+    const uint32_t HK = 0x08b00c00u, TYPE = 0x08b00c04u, SIZE = 0x08b00c08u;
+    const uint32_t VAL = 0x08b01000u, VAL2 = 0x08b01100u;
+    CpuState cpu;
+    uint32_t r, reg, cat, cat2, cat3, cat4, hk, hk_lang;
+
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_SCE_REG_OPEN_REGISTRY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_OPEN_CATEGORY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_INFO) &&
+               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_VALUE) &&
+               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_CATEGORY) &&
+               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_REGISTRY) &&
+               sr_hle_test_is_registered(NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT),
+           "sceReg family and sceUtilityGetSystemParamInt have production registrations");
+
+    /* Registry handle: mode 1 only; RegParam and out pointers must be guest spans. */
+    MEM_W32(REGPARAM, 1u);
+    sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
+    reg = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry with mode 1");
+    sysreg_args(&cpu, REGPARAM, 3u, HANDLE_OUT, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80010016u,
+           "sceRegOpenRegistry refuses an unsupported mode with EINVAL");
+    sysreg_args(&cpu, 0u, 1u, HANDLE_OUT, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+           "sceRegOpenRegistry refuses a NULL RegParam pointer");
+    sysreg_args(&cpu, REGPARAM, 1u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+           "sceRegOpenRegistry refuses a NULL handle output");
+
+    /* Category handles: unknown names fail closed with ENOENT. */
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB");
+    title_hle_write_cstr(NAME, "/CONFIG/NOPE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010002u,
+           "sceRegOpenCategory refuses an unknown category with ENOENT");
+    sysreg_args(&cpu, 0x12345678u, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010009u,
+           "sceRegOpenCategory refuses a bad registry handle with EBADF");
+
+    /* Integer key: type and size, then the value must equal the system-param table. */
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    expect(r == 0u && MEM_R32(TYPE) == 2u && MEM_R32(SIZE) == 4u && hk != 0u,
+           "sceRegGetKeyInfo reports language as an INT of 4 bytes");
+    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+           "registry language agrees with sceUtilityGetSystemParamInt(LANGUAGE)");
+    sysreg_args(&cpu, cat, hk, VAL, 2u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
+           "sceRegGetKeyValue refuses a buffer smaller than the INT value with EINVAL");
+    hk_lang = hk;
+
+    title_hle_write_cstr(NAME2, "button_assign");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
+    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && sysreg_sysparam_int_check(9u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+           "registry button_assign agrees with sceUtilityGetSystemParamInt(BUTTON_PREFERENCE)");
+
+    /* Keys under the date and network categories agree with the same table. */
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat2 = MEM_R32(HANDLE_OUT);
+    expect(r == 0u && cat2 != 0u && cat2 != cat, "sceRegOpenCategory opens /CONFIG/DATE in its own slot");
+    {
+        static const char *const date_keys[] = { "date_format", "time_format", "time_zone_offset", "summer_time" };
+        static const uint32_t date_ids[] = { 4u, 5u, 6u, 7u };
+        for (uint32_t i = 0; i < 4u; i++) {
+            title_hle_write_cstr(NAME2, date_keys[i]);
+            sysreg_args(&cpu, cat2, NAME2, HK, TYPE, SIZE);
+            r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+            hk = MEM_R32(HK);
+            sysreg_args(&cpu, cat2, hk, VAL, 4u, 0u);
+            r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+            expect(r == 0u && sysreg_sysparam_int_check(date_ids[i], VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+                   "registry date and time keys agree with sceUtilityGetSystemParamInt");
+        }
+    }
+
+    /* String key: the nickname is a NUL-terminated STR of 4 bytes; a 3-byte buffer is too small. */
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
+    cat3 = MEM_R32(HANDLE_OUT);
+    title_hle_write_cstr(NAME2, "nickname");
+    sysreg_args(&cpu, cat3, NAME2, HK, TYPE, SIZE);
+    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
+    hk = MEM_R32(HK);
+    expect(r == 0u && MEM_R32(TYPE) == 3u && MEM_R32(SIZE) == 4u, "sceRegGetKeyInfo reports nickname as a STR of 4 bytes");
+    sysreg_args(&cpu, cat3, hk, VAL, 3u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
+           "sceRegGetKeyValue refuses a 3-byte buffer for a 4-byte string with EINVAL");
+    sysreg_args(&cpu, cat3, hk, VAL, 4u, 0u);
+    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
+    expect(r == 0u && MEM_R8(VAL) == 'P' && MEM_R8(VAL + 1u) == 'S' && MEM_R8(VAL + 2u) == 'P' &&
+               MEM_R8(VAL + 3u) == 0u,
+           "sceRegGetKeyValue copies the nickname with its terminating NUL");
+
+    /* Unknown key and the CHARACTER_SET category, which opens but models no keys. */
+    title_hle_write_cstr(NAME2, "no_such_key");
+    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
+           "sceRegGetKeyInfo refuses an unknown key with ENOENT");
+    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/CHARACTER_SET");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u, "sceRegOpenCategory opens CHARACTER_SET");
+    cat4 = MEM_R32(HANDLE_OUT);
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat4, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
+           "CHARACTER_SET has no modeled keys and refuses lookups with ENOENT");
+
+    /* Bad handles and spans on the key calls. */
+    sysreg_args(&cpu, 0x12345678u, NAME2, HK, TYPE, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010009u,
+           "sceRegGetKeyInfo refuses a bad category handle with EBADF");
+    title_hle_write_cstr(NAME2, "language");
+    sysreg_args(&cpu, cat, NAME2, HK, 0u, SIZE);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80000103u,
+           "sceRegGetKeyInfo refuses a NULL type output");
+    sysreg_args(&cpu, cat2, hk_lang, VAL, 4u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
+           "a key handle from /CONFIG/SYSTEM/XMB is refused under /CONFIG/DATE with EBADF");
+
+    /* A stale key handle must not survive reopening its slot on a different category. */
+    sysreg_args(&cpu, cat, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the XMB category");
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0x80010009u,
+           "a closed category handle is refused with EBADF");
+    title_hle_write_cstr(NAME, "/CONFIG/DATE");
+    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u && MEM_R32(HANDLE_OUT) == cat,
+           "the reopened slot reuses the closed category handle value");
+    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), hk_lang, VAL, 4u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
+           "a stale language key handle is refused on the reopened DATE slot with EBADF");
+
+    /* Close everything and confirm the registry handle is then refused. */
+    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the DATE category");
+    sysreg_args(&cpu, cat2, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the second DATE handle");
+    sysreg_args(&cpu, cat3, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the SYSTEM category");
+    sysreg_args(&cpu, cat4, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes CHARACTER_SET");
+    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u, "sceRegCloseRegistry closes the registry");
+    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
+    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0x80010009u,
+           "a closed registry handle is refused with EBADF");
 }
 
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
@@ -22184,6 +22376,7 @@ int main(int argc, char **argv) {
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
+    test_sysreg_virtual_registry();
     test_kernel_import_sweep_ge_head();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();

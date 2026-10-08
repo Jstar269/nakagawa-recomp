@@ -410,8 +410,8 @@ class LiveManifestTests(unittest.TestCase):
             0xBD2F1094: ("sceKernelLoadExec", "h_ControlledUnsupported", "controlled_unsupported"),
             0xD675EBB8: ("sceKernelSelfStopUnloadModule", "h_ControlledUnsupported", "controlled_unsupported"),
             0x40F1469C: ("sceDisplayWaitVblankStartMulti", "h_DisplayWaitVblankStartMulti", "dedicated"),
-            0x0CAE832B: ("sceRegCloseCategory", "h_ControlledUnsupported", "controlled_unsupported"),
-            0x1D8A762E: ("sceRegOpenCategory", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x0CAE832B: ("sceRegCloseCategory", "h_RegCloseCategory", "dedicated"),
+            0x1D8A762E: ("sceRegOpenCategory", "h_RegOpenCategory", "dedicated"),
         }
         self.assertEqual(len(expected), 20)
         for nid, (name, handler, classification) in expected.items():
@@ -611,28 +611,22 @@ static uint32_t h_SynthReal(CpuState *s) {
             {
                 "0x034a921f": ("sceKernelGetVTimerTime", "0x80020002"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
-                "0x0cae832b": ("sceRegCloseCategory", "0x80010086"),
-                "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
+               "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
                 "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
-                "0x1d8a762e": ("sceRegOpenCategory", "0x80010086"),
-                "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
-                "0x28a8e98a": ("sceRegGetKeyValue", "0x80010086"),
-                "0x4c06e472": ("sceGeContinue", "0x80020002"),
+               "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
+               "0x4c06e472": ("sceGeContinue", "0x80020002"),
                 "0x6652b8ca": ("sceKernelSetAlarm", "0x80020002"),
                 "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
                 "0x75156e8f": ("sceKernelResumeThread", "0x80020002"),
                 "0x7e65b999": ("sceKernelCancelAlarm", "0x80020002"),
-                "0x92e41280": ("sceRegOpenRegistry", "0x80010086"),
-                "0x912354a7": ("sceKernelRotateThreadReadyQueue", "0x80020002"),
+               "0x912354a7": ("sceKernelRotateThreadReadyQueue", "0x80020002"),
                 "0x9944f31f": ("sceKernelSuspendThread", "0x80020002"),
                 "0xb448ec0d": ("sceGeBreak", "0x80020002"),
                 "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
-                "0xd4475aa8": ("sceRegGetKeyInfo", "0x80010086"),
-                "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
-                "0xfa8a5739": ("sceRegCloseRegistry", "0x80010086"),
-            },
+               "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
+           },
         )
         self.assertEqual(
             [(r["nid"], r["name"], r["handler"], r["classification"], r["status"])

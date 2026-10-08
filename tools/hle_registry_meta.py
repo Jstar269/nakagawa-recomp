@@ -471,6 +471,32 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)",
     },
+    # sceReg virtual system registry (src/rt/hle.c, sceReg block). Read-only: writers are not
+    # registered. Integer values come from the table sceUtilityGetSystemParamInt reads.
+    "h_RegOpenRegistry": {
+        "status": "partial",
+        "limitation": "read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured",
+    },
+    "h_RegOpenCategory": {
+        "status": "partial",
+        "limitation": "serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured",
+    },
+    "h_RegGetKeyInfo": {
+        "status": "partial",
+        "limitation": "serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement",
+    },
+    "h_RegGetKeyValue": {
+        "status": "partial",
+        "limitation": "copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured",
+    },
+    "h_RegCloseCategory": {
+        "status": "partial",
+        "limitation": "frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured",
+    },
+    "h_RegCloseRegistry": {
+        "status": "partial",
+        "limitation": "frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
