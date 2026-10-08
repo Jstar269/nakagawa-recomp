@@ -1348,11 +1348,13 @@ static void test_fuzz_package(unsigned iters) {
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
     const char *aot_digest =
-        "b3eb00cb06471b7a44bea245a7ef96fc5b4b79d9a6a8d6ed7ac5c71bca62c89a";
+        "b3f742b8ef4b96abe6e66a4301c2230ce88d7075e46e12cccfc99be598c6dad9";
     const char *native_digest =
-        "f43a16301ce14295ebe90b2c4ba7d605d681d310f98eeab008b782f4ffdbb492";
+        "d8e93061990e675b8d7e459866d273012414d4b583161e257e14e5703dfdc8bd";
     const char *identity_digest =
-        "b892f46111beb45d527213ad7b44bf1286fcb01a8bad842090946aeba92b65b1";
+        "b9b7b9d231aafef0cb4254e9d063043d4f74edb82f87d6a828e66ba9b1eb1774";
+    const char *generated_code_digest =
+        "d3991dd8147b28df31bf0e2336377d7c34b38048aaecc9443fde95bd8f767dd5";
     static const char identity_json[] =
         "{\"container\":null,"
         "\"disc\":{\"disc_version\":null,\"id\":null,\"region\":null},"
@@ -1360,7 +1362,8 @@ static void test_fuzz_package(unsigned iters) {
         "\"main_executable\":{\"name\":\"EBOOT.BIN\",\"sha256\":"
         "\"f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d\"},"
         "\"manifest\":{\"id\":\"synthetic-allegrex-v1\",\"schema_version\":1},"
-        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":1}";
+        "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":2,"
+        "\"source_media\":null}";
     int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
         "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":{"
         "\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
@@ -1371,10 +1374,10 @@ static void test_fuzz_package(unsigned iters) {
         "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}},"
         "\"native\":{\"digest\":\"%s\","
         "\"components\":{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
-        "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
+        "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%s\","
         "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}}}",
         aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest,
-        identity_digest, native_digest, 0, 0);
+        identity_digest, native_digest, generated_code_digest, 0);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
@@ -1431,7 +1434,7 @@ static void test_fuzz_package(unsigned iters) {
 
     NkRuntimePackageInfo info;
     NkRuntimePackageStatus initial_status = nk_title_manifest_validate_aot_package(
-        absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, 2,
+        absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, NULL, 2,
         &info, reason, sizeof(reason));
     if (initial_status != NK_RUNTIME_PACKAGE_OK) {
         fprintf(stderr, "[FUZZ] package v2 seed rejected (%d): %s\n",
@@ -1459,7 +1462,7 @@ static void test_fuzz_package(unsigned iters) {
 
         memset(&info, 0xA5, sizeof(info));
         NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package(
-            absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, 2,
+            absolute_root, disc_id, title_id, false, "EBOOT.BIN", NULL, NULL, 2,
             &info, reason, sizeof(reason));
         if (status == NK_RUNTIME_PACKAGE_OK) {
             assert(info.package_root[0] != '\0');
