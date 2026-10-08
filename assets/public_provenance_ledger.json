@@ -8386,7 +8386,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be2f9d194a473854e4e080957fe65f6eb1059c9e97345852938664ca19b95041"
+      "sha256": "0121b42da0c81fc694408ac2e3341649bd54ada24448b9c389c778421145b01b"
     },
     {
       "path": "tools/test_nid_name_proof.py",
