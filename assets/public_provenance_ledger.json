@@ -6449,7 +6449,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e7d491321f06759ec61053b15c1b0cd8aeb0d7eef35a94630bd9e4a4ab7f06da"
+      "sha256": "5fb87f9bd59bb0be5ca01b0ccec99064c7f194592532138521c30e97fce93e62"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -8530,7 +8530,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7535eab73199ed09b63c3a8691c1cdddf93f12317eb8af70cae40c4058a8cda2"
+      "sha256": "7d2dca827ccb8f6d05630301ce350968fa84ef529f6feadfa1f9a03e1e195b9e"
     },
     {
       "path": "tools/test_portability_inventory.py",
