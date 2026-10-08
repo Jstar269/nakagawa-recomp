@@ -1623,6 +1623,13 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
 static void dispatch_record_semantic_stop(const char *boundary) {
     const char *path = getenv("SR_BOOT_EVENT_FILE");
     if (!path || !path[0] || !boundary || !boundary[0]) return;
+    /* The player accepts only [a-z0-9-] names; never write one it would drop. */
+    for (const char *c = boundary; *c; c++) {
+        if (!((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '-')) {
+            boundary = "interpreter-rejection";
+            break;
+        }
+    }
     FILE *events = fopen(path, "ab");
     if (!events) return;
     fprintf(events,

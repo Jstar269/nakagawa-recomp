@@ -1511,6 +1511,17 @@ bool player_app_should_attempt_window_handoff(bool interactive_window,
            child_window_ready;
 }
 
+/* Copies a boundary reason into the error card. A reason longer than the
+ * card's buffer is shortened there and written whole to stderr, so it is
+ * never silently lost. */
+static void player_set_boundary_text(PlayerApp *app, const char *reason) {
+    int n = snprintf(app->last_error.boundary_text,
+                     sizeof(app->last_error.boundary_text), "%s", reason);
+    if (n >= (int)sizeof(app->last_error.boundary_text)) {
+        fprintf(stderr, "[PLAYER] full boundary reason: %s\n", reason);
+    }
+}
+
 bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (!app || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
@@ -1535,10 +1546,8 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Game Not Ready",
                              "This game isn't ready to start yet. Build or repair its game files, then try again.",
                              "Return to Library", VIEW_LIBRARY);
-        snprintf(app->last_error.boundary_text,
-                 sizeof(app->last_error.boundary_text), "%.511s",
-                 package_error[0] ? package_error :
-                     "Runtime package is missing or incompatible (#308).");
+        player_set_boundary_text(app, package_error[0] ? package_error :
+                                     "Runtime package is missing or incompatible.");
         return false;
     }
     if (data_root_status != NK_LAUNCH_DATA_ROOT_READY &&
@@ -1552,10 +1561,8 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
                                  ? "This game needs its data files before it can start. Add the missing files, then try again."
                                  : "This game's title settings could not be checked. Review the details and try again.",
                              "Return to Library", VIEW_LIBRARY);
-        snprintf(app->last_error.boundary_text,
-                 sizeof(app->last_error.boundary_text), "%.511s",
-                 data_root_reason[0] ? data_root_reason :
-                     "The title data folder could not be resolved.");
+        player_set_boundary_text(app, data_root_reason[0] ? data_root_reason :
+                                     "The title data folder could not be resolved.");
         return false;
     }
 
@@ -1805,8 +1812,8 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
             "Return to Library", VIEW_LIBRARY);
         snprintf(app->last_error.boundary_text,
                  sizeof(app->last_error.boundary_text),
-                 "RUNTIME_SEMANTIC_BOUNDARY: %s; in the works (#%u).",
-                 stopped_boundary, stopped_issue);
+                 "RUNTIME_SEMANTIC_BOUNDARY: %s; not supported yet.",
+                 stopped_boundary);
         snprintf(app->last_error.log_file_path,
                  sizeof(app->last_error.log_file_path), "%s",
                  app->boot_event_file_path);

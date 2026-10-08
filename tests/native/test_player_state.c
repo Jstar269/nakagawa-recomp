@@ -4003,7 +4003,8 @@ int main(int argc, char **argv) {
                       "This part of the game isn't supported yet. Check the details below and try again after an update.") == 0);
         assert(strstr(rep->last_error.boundary_text,
                       "unsupported-interpreter-form") != NULL);
-        assert(strstr(rep->last_error.boundary_text, "#308") != NULL);
+        assert(strstr(rep->last_error.boundary_text, "not supported yet") != NULL);
+        assert(strchr(rep->last_error.boundary_text, '#') == NULL);
         assert(strcmp(rep->last_error.log_file_path, stop_event_path) == 0);
         assert(nk_platform_file_exists(stop_event_path));
         remove(stop_event_path);
