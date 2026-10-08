@@ -37,16 +37,16 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **436** (dedicated **414**, fake_success **3**, controlled_unsupported **19**).
-Semantic handler census: **379** handlers across **21** API families, covering **420** handler-associated NID registrations.
+Registered NIDs: **454** (dedicated **422**, fake_success **3**, controlled_unsupported **29**).
+Semantic handler census: **386** handlers across **21** API families, covering **428** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
-| `complete` | 10 | 17 |
-| `partial` | 29 | 29 |
+| `complete` | 10 | 18 |
+| `partial` | 35 | 35 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 337 | 367 |
+| `unreviewed` | 338 | 368 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -55,13 +55,13 @@ Semantic handler census: **379** handlers across **21** API families, covering *
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
 | `sceAudio` | 0 | 0 | 0 | 0 | 13 | 13 | 14 |
 | `sceCtrl` | 0 | 0 | 0 | 0 | 6 | 6 | 6 |
-| `sceDisplay` | 1 | 2 | 0 | 0 | 10 | 13 | 13 |
+| `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 1 | 0 | 0 | 8 | 9 | 9 |
+| `sceGe` | 0 | 2 | 0 | 0 | 8 | 10 | 10 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 1 | 0 | 0 | 18 | 21 | 22 |
-| `sceKernel` | 2 | 9 | 0 | 0 | 133 | 144 | 167 |
+| `sceKernel` | 2 | 13 | 0 | 0 | 134 | 149 | 173 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
@@ -71,7 +71,7 @@ Semantic handler census: **379** handlers across **21** API families, covering *
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **29** | **1** | **2** | **337** | **379** | **420** |
+| **Total** | **10** | **35** | **1** | **2** | **338** | **386** | **428** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -93,7 +93,7 @@ Semantic handler census: **379** handlers across **21** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_sysclib_memory_imports
   - Evidence: src/rt/hle.c:h_Memset
   - Evidence: public C library contract (memset)
-- **`h_SetCompiledSdkVersion`** (`sceKernel`): `sceKernelSetCompiledSdkVersion603_605` (0x1b4217bc), `sceKernelSetCompiledSdkVersion600_602` (0x35669d4c), `sceKernelSetCompiledSdkVersion606` (0x358ca1bb), `sceKernelSetCompiledSdkVersion` (0x7591c7db), `sceKernelSetCompiledSdkVersion500_505` (0x91de343c), `sceKernelSetCompiledSdkVersion395` (0xebd5c3e6), `sceKernelSetCompilerVersion` (0xf77d77cb)
+- **`h_SetCompiledSdkVersion`** (`sceKernel`): `sceKernelSetCompiledSdkVersion603_605` (0x1b4217bc), `sceKernelSetCompiledSdkVersion370` (0x342061e5), `sceKernelSetCompiledSdkVersion600_602` (0x35669d4c), `sceKernelSetCompiledSdkVersion606` (0x358ca1bb), `sceKernelSetCompiledSdkVersion` (0x7591c7db), `sceKernelSetCompiledSdkVersion500_505` (0x91de343c), `sceKernelSetCompiledSdkVersion395` (0xebd5c3e6), `sceKernelSetCompilerVersion` (0xf77d77cb)
   - Evidence: src/rt/sdkver_selftest.c
   - Evidence: tools/test_sdkver_c.py
   - Evidence: public ABI (PSPSDK sdkver.h: sceKernelSetCompiledSdkVersion)
@@ -134,6 +134,8 @@ Semantic handler census: **379** handlers across **21** API families, covering *
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:run
   - Evidence: tools/test_sched_invariants.py:test_the_two_display_nids_have_separate_handlers
+- **`h_DisplayWaitVblankStartMulti`** (`sceDisplay`): `sceDisplayWaitVblankStartMulti` (0x40f1469c)
+  - Limitation: waits the requested positive count of scheduler VBLANK periods; zero-count behavior fails closed as not implemented, while callback/context precedence and hardware timing are not measured
 - **`h_DmacMemcpy`** (`sceDmac`): `sceDmacMemcpy` (0x617f3fe6)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
@@ -143,14 +145,22 @@ Semantic handler census: **379** handlers across **21** API families, covering *
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:flight_smoke
   - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
+- **`h_GeListEnQueueHead`** (`sceGe`): `sceGeListEnQueueHead` (0x1c0d95a6)
+  - Limitation: idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
   - Limitation: Memory Stick devctl callback events unmodeled (#281, #341)
+- **`h_AllocMemoryBlock`** (`sceKernel`): `sceKernelAllocMemoryBlock` (0xfe707fdf)
+  - Limitation: models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)
   - Limitation: NULL-name create error and interrupt-context placement unmeasured (#339, #341)
 - **`h_DeleteMbx`** (`sceKernel`): `sceKernelDeleteMbx` (0x86255ada)
   - Limitation: delete-while-waited is corroborated by campaign psp-hw-20260917 but not mailbox-measured; interrupt-context placement unmeasured (#339, #341)
+- **`h_FreeMemoryBlock`** (`sceKernel`): `sceKernelFreeMemoryBlock` (0x50f61d8a)
+  - Limitation: releases UIDs created by the modeled Low allocation path; invalid-UID result is source-tested but not hardware measured
+- **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
+  - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
 - **`h_PollMbx`** (`sceKernel`): `sceKernelPollMbx` (0x0d81716a)
   - Limitation: invalid-message-pointer error class unmeasured (#339, #341)
 - **`h_ReceiveMbx`** (`sceKernel`): `sceKernelReceiveMbx` (0x18260574)
@@ -163,6 +173,8 @@ Semantic handler census: **379** handlers across **21** API families, covering *
   - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#309)
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
+- **`h_SysClock2USec`** (`sceKernel`): `sceKernelSysClock2USec` (0xba6b92e2)
+  - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
   - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)

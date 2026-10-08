@@ -94,6 +94,8 @@ enum { PSP_WAIT_NONE = 0, PSP_WAIT_SLEEP = 1, PSP_WAIT_DELAY = 2, PSP_WAIT_OBJEC
 #define SCE_KERNEL_ERROR_NOT_DORMANT       0x800201a4u
 #define SCE_KERNEL_ERROR_THREAD_TERMINATED 0x800201acu
 #define SCE_KERNEL_ERROR_WAIT_DELETE       0x800201b5u
+#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT   0x80020064u
+#define SCE_KERNEL_ERROR_ILLEGAL_ATTR      0x80020191u
 
 /* PSP hardware treats a signed-negative status as an error-shaped non-delete
  * exit and latches SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT.  The boundary probe
@@ -3361,6 +3363,26 @@ uint32_t sched_set_priority(uint32_t uid, int priority) {
      * target answers DORMANT (0x800201A2). */
     if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
     t->priority = priority;
+    return 0;
+}
+
+/* sceKernelChangeCurrentThreadAttr: changes the current thread's attribute bits.
+ * clear_mask: bits to clear from the thread's attribute word
+ * set_mask: bits to set in the thread's attribute word
+ * Returns 0 on success, or an error code.
+ * Only PSP_THREAD_ATTR_VFPU (0x00004000) is accepted; any other bit fails closed
+ * with ILLEGAL_ATTR (0x80020191, the code measured for an invalid semaphore attr,
+ * docs/HARDWARE_ORACLE.md) until hardware evidence covers it. */
+uint32_t sched_change_current_thread_attr(uint32_t clear_mask, uint32_t set_mask) {
+    if (s_cur < 0) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;
+    TCB *t = &s_tcb[s_cur];
+    const uint32_t USER_MODIFIABLE_ATTR = 0x00004000u; /* PSP_THREAD_ATTR_VFPU */
+
+    if ((clear_mask & ~USER_MODIFIABLE_ATTR) != 0 || (set_mask & ~USER_MODIFIABLE_ATTR) != 0)
+        return SCE_KERNEL_ERROR_ILLEGAL_ATTR;
+
+    t->attr &= ~clear_mask;
+    t->attr |= set_mask;
     return 0;
 }
 
