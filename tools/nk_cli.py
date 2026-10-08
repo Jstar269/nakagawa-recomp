@@ -408,7 +408,9 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     stream, file_size, entry.lba, entry.size, 0, header_size
                 )
                 if header.startswith(b"\x7fELF"):
-                    if not _elf32_mips_usable(stream, file_size, entry.lba, entry.size):
+                    if not _elf32_mips_usable(
+                        stream, file_size, entry.lba, entry.size, module=True
+                    ):
                         kind = "unsupported"
                     else:
                         module_bytes = _read_iso_extent(
@@ -659,6 +661,22 @@ def _load_entry_manifest(user_root: Path, entry: dict, disc_id: str, selected: s
     return manifest_path, manifest, None
 
 
+def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) -> None:
+    """Refuse a staged guest module the module checklist would not accept (#729).
+
+    Extraction and the checklist share one rule (``module=True``), so a module
+    the checklist reports as not ready is never packaged.  The rejected file is
+    removed so no half-usable copy stays in the package cache.
+    """
+    if _classify_decrypted_elf_file(path, module=True) == "PLAIN_MIPS_ELF32":
+        return
+    path.unlink(missing_ok=True)
+    raise PackageBuildError(
+        f"Required guest PRX {_module_label(name, disc_name)} is not a usable plain MIPS ELF32 (#295); "
+        "supply a valid decrypted module."
+    )
+
+
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            module_dir_arg: Path | None,
                            default_module_dir: Path | None = None,
@@ -725,6 +743,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                 )
             if not copied_by_boundary:
                 _write_private_file(destination, source_path.read_bytes())
+            _require_plain_guest_module(destination, name, disc_name)
             continue
         extracted = False
         members = []
@@ -805,6 +824,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                                     _write_private_file(
                                         destination, title_target.read_bytes()
                                     )
+                                    _require_plain_guest_module(destination, name, disc_name)
                                     extracted = True
                                     break
                         else:
@@ -823,6 +843,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                             f"plain ELF; supply decrypted modules at {suggested} (#295). "
                             f"{boundary_detail or 'The disc copy is not a plain ELF.'}{key_hint}"
                         )
+                    _require_plain_guest_module(temporary, name, disc_name)
                     os.replace(temporary, destination)
                     extracted = True
                     break
@@ -2721,7 +2742,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 if title_folder is not None:
                     candidate_file = title_folder / candidate["name"]
                     if candidate_file.is_file() and \
-                            _classify_decrypted_elf_file(candidate_file) == "PLAIN_MIPS_ELF32":
+                            _classify_decrypted_elf_file(candidate_file, module=True) == "PLAIN_MIPS_ELF32":
                         folder_copy = candidate_file
                 if folder_copy is not None:
                     module_sources.append((candidate, "folder", folder_copy))
