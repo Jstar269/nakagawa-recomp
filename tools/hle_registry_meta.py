@@ -82,6 +82,26 @@ HANDLER_METADATA = {
         ],
         "description": "Stores g_sdk_version for SDK-dependent paths; retained-state contract verified across all registered variants.",
     },
+    "h_SysClock2USec": {
+        "status": "partial",
+        "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
+    },
+    "h_AllocMemoryBlock": {
+        "status": "partial",
+        "limitation": "models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured",
+    },
+    "h_GetMemoryBlockAddr": {
+        "status": "partial",
+        "limitation": "resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured",
+    },
+    "h_FreeMemoryBlock": {
+        "status": "partial",
+        "limitation": "releases UIDs created by the modeled Low allocation path; invalid-UID result is source-tested but not hardware measured",
+    },
+    "h_DisplayWaitVblankStartMulti": {
+        "status": "partial",
+        "limitation": "waits the requested positive count of scheduler VBLANK periods; zero-count behavior fails closed as not implemented, while callback/context precedence and hardware timing are not measured",
+    },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
     # no parameters; the full observable contract is the float bits.
@@ -126,7 +146,11 @@ HANDLER_METADATA = {
             "fixtures/display_smoke/generate.py:flight_smoke",
             "src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events",
         ],
-        "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)",
+        "limitation": "display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, head-versus-tail ordering with a stalled list, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route",
+    },
+    "h_GeListEnQueueHead": {
+        "status": "partial",
+        "limitation": "idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a

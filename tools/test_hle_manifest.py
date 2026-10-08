@@ -369,6 +369,41 @@ class LiveManifestTests(unittest.TestCase):
             "the 603_605 fix must leave no waiver behind",
         )
 
+    def test_kernel_import_sweep_names_and_routes_every_target(self) -> None:
+        expected = {
+            0xEA748E31: ("sceKernelChangeCurrentThreadAttr", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x912354A7: ("sceKernelRotateThreadReadyQueue", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x75156E8F: ("sceKernelResumeThread", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x9944F31F: ("sceKernelSuspendThread", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x6652B8CA: ("sceKernelSetAlarm", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
+            0x7E65B999: ("sceKernelCancelAlarm", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x034A921F: ("sceKernelGetVTimerTime", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x50F61D8A: ("sceKernelFreeMemoryBlock", "h_FreeMemoryBlock", "dedicated"),
+            0xDB83A952: ("sceKernelGetMemoryBlockAddr", "h_GetMemoryBlockAddr", "dedicated"),
+            0xFE707FDF: ("sceKernelAllocMemoryBlock", "h_AllocMemoryBlock", "dedicated"),
+            0x342061E5: ("sceKernelSetCompiledSdkVersion370", "h_SetCompiledSdkVersion", "dedicated"),
+            0x1C0D95A6: ("sceGeListEnQueueHead", "h_GeListEnQueueHead", "dedicated"),
+            0x4C06E472: ("sceGeContinue", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xB448EC0D: ("sceGeBreak", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xBD2F1094: ("sceKernelLoadExec", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xD675EBB8: ("sceKernelSelfStopUnloadModule", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x40F1469C: ("sceDisplayWaitVblankStartMulti", "h_DisplayWaitVblankStartMulti", "dedicated"),
+            0x0CAE832B: ("sceRegCloseCategory", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x1D8A762E: ("sceRegOpenCategory", "h_ControlledUnsupported", "controlled_unsupported"),
+        }
+        self.assertEqual(len(expected), 20)
+        for nid, (name, handler, classification) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                if nid not in self.regs:
+                    self.fail(f"{name} (NID 0x{nid:08x}) is missing from production registration")
+                registration = self.regs[nid]
+                self.assertEqual(registration["name"], name)
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], classification)
+                if classification == "controlled_unsupported" and nid not in (0x0CAE832B, 0x1D8A762E):
+                    self.assertEqual(int(registration["refusal_error"], 16), 0x80020002)
+
     def test_findings_and_waivers_are_in_exact_balance(self) -> None:
         findings = [{**f, "nid": int(f["nid"], 16)} for f in self.manifest["findings"]]
         unwaived, stale = unwaived_and_stale(findings)
@@ -553,6 +588,7 @@ static uint32_t h_SynthReal(CpuState *s) {
         self.assertEqual(
             unsupported,
             {
+                "0x034a921f": ("sceKernelGetVTimerTime", "0x80020002"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
                 "0x0cae832b": ("sceRegCloseCategory", "0x80010086"),
                 "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
@@ -560,11 +596,21 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x1d8a762e": ("sceRegOpenCategory", "0x80010086"),
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 "0x28a8e98a": ("sceRegGetKeyValue", "0x80010086"),
+                "0x4c06e472": ("sceGeContinue", "0x80020002"),
+                "0x6652b8ca": ("sceKernelSetAlarm", "0x80020002"),
                 "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
+                "0x75156e8f": ("sceKernelResumeThread", "0x80020002"),
+                "0x7e65b999": ("sceKernelCancelAlarm", "0x80020002"),
                 "0x92e41280": ("sceRegOpenRegistry", "0x80010086"),
+                "0x912354a7": ("sceKernelRotateThreadReadyQueue", "0x80020002"),
+                "0x9944f31f": ("sceKernelSuspendThread", "0x80020002"),
+                "0xb448ec0d": ("sceGeBreak", "0x80020002"),
+                "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
                 "0xd4475aa8": ("sceRegGetKeyInfo", "0x80010086"),
+                "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
+                "0xea748e31": ("sceKernelChangeCurrentThreadAttr", "0x80020002"),
                 "0xfa8a5739": ("sceRegCloseRegistry", "0x80010086"),
             },
         )
@@ -591,34 +637,36 @@ static uint32_t h_SynthReal(CpuState *s) {
 
 
 class ControlledRefusalDiagnosticTests(unittest.TestCase):
-    def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
+    def test_runtime_diagnostics_name_semantic_boundary_and_exit_summary(self) -> None:
         source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn(
-            "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)",
+            "UNSUPPORTED_IMPORT: %s is not supported yet (NID 0x%08x, error 0x%08x).",
             source,
         )
         self.assertIn(
-            "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)",
+            "UNSUPPORTED_IMPORT: %s is not supported yet (NID 0x%08x, error 0x%08x).",
             source,
         )
         self.assertIn(
-            "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)",
+            "UNSUPPORTED_IMPORT: sceIoDevctl command 0x%08x for device '%s' is not supported yet (error 0x%08x).",
             source,
         )
         self.assertIn("hle_devctl_refusal_first(device, command)", source)
-        self.assertIn("HLE: compatibility exception: %s (NID 0x%08x)", source)
-        self.assertIn("atexit(hle_unsupported_summary)", source)
-        # A stream the demuxer refuses is a product boundary, not a debug line: the named
-        # reason and its tracking issue must survive any refactor of the emitting helper.
         self.assertIn(
-            'PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s ',
+            "HLE_COMPATIBILITY: %s keeps result 0; full behavior is not supported yet (NID 0x%08x).",
+            source,
+        )
+        self.assertIn("atexit(hle_unsupported_summary)", source)
+        # A stream the demuxer refuses is a named product boundary, not a debug line.
+        self.assertIn(
+            'UNSUPPORTED_MEDIA: scePsmfPlayer: this stream is not supported yet: %s ',
             source,
         )
         self.assertIn(
             "at source offset %llu; no further access unit is decoded and the player keeps ",
             source,
         )
-        self.assertIn("its current status; in the works (#288)", source)
+        self.assertIn("its current status.", source)
 
 
 class MpegDirtyNotificationContractTests(unittest.TestCase):

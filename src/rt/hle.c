@@ -177,12 +177,13 @@ static HleDevctlRefusal *s_hle_devctl_refusals;
 static atomic_uint s_hle_devctl_refusal_log_count;
 #endif
 
-static const char *hle_success_exception_issue(uint32_t nid) {
+static int hle_has_success_exception(uint32_t nid) {
     switch (nid) {
-    case 0xb3b5d042u: return "#281, #286"; /* sceAtracGetOutputChannel */
-    case 0xa569e425u: return "#281";       /* sceKernelVolatileMemUnlock */
-    case 0x4b85c861u: return "#281";       /* sceUtilityOskUpdate */
-    default: return NULL;
+    case 0xb3b5d042u: /* sceAtracGetOutputChannel */
+    case 0xa569e425u: /* sceKernelVolatileMemUnlock */
+    case 0x4b85c861u: /* sceUtilityOskUpdate */
+        return 1;
+    default: return 0;
     }
 }
 
@@ -202,13 +203,11 @@ static void hle_unsupported_summary(void) {
         uint32_t unsupported_error = atomic_load_explicit(&e->unimplemented_error,
                                                           memory_order_acquire);
         if (unsupported_error) {
-            fprintf(stderr, "HLE unimplemented summary: %s (NID 0x%08x) -> 0x%08x; in the works (#281)\n",
+            fprintf(stderr, "UNSUPPORTED_IMPORT: %s is not supported yet (NID 0x%08x, error 0x%08x).\n",
                     e->name, e->nid, unsupported_error);
-        } else {
-            const char *issue = hle_success_exception_issue(e->nid);
-            if (issue)
-                fprintf(stderr, "HLE unimplemented summary: %s (NID 0x%08x) kept compatibility result 0; in the works (%s)\n",
-                        e->name, e->nid, issue);
+        } else if (hle_has_success_exception(e->nid)) {
+            fprintf(stderr, "HLE_COMPATIBILITY: %s keeps result 0; full behavior is not supported yet (NID 0x%08x).\n",
+                    e->name, e->nid);
         }
     }
 }
@@ -217,17 +216,17 @@ static void hle_note_unsupported(HleEntry *e) {
     if (atomic_exchange_explicit(&e->unsupported_state, 1u, memory_order_acq_rel))
         return;
     hle_register_unsupported_summary();
-    fprintf(stderr, "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#281)\n",
+    fprintf(stderr, "UNSUPPORTED_IMPORT: %s is not supported yet (NID 0x%08x, error 0x%08x).\n",
             e->name, e->nid, e->unsupported_error);
 }
 
 static void hle_note_success_exception(HleEntry *e) {
-    const char *issue = hle_success_exception_issue(e->nid);
-    if (!issue || atomic_exchange_explicit(&e->unsupported_state, 1u, memory_order_acq_rel))
+    if (!hle_has_success_exception(e->nid) ||
+        atomic_exchange_explicit(&e->unsupported_state, 1u, memory_order_acq_rel))
         return;
     hle_register_unsupported_summary();
-    fprintf(stderr, "HLE: compatibility exception: %s (NID 0x%08x) keeps result 0; semantics in the works (%s)\n",
-            e->name, e->nid, issue);
+    fprintf(stderr, "HLE_COMPATIBILITY: %s keeps result 0; full behavior is not supported yet (NID 0x%08x).\n",
+            e->name, e->nid);
 }
 
 /* Late imports are intentionally separate from recomp.c's address->native dispatch table.
@@ -419,8 +418,8 @@ static void hle_note_devctl_refusal(const char *device, uint32_t command,
                                    uint32_t error) {
     if (hle_devctl_refusal_first(device, command)) {
         fprintf(stderr,
-                "HLE: sceIoDevctl refused device '%s' command 0x%08x -> 0x%08x; in the works (#281)\n",
-                device, command, error);
+                "UNSUPPORTED_IMPORT: sceIoDevctl command 0x%08x for device '%s' is not supported yet (error 0x%08x).\n",
+                command, device, error);
 #ifdef SR_HLE_THREAD_SELFTEST
         atomic_fetch_add_explicit(&s_hle_devctl_refusal_log_count, 1u,
                                   memory_order_relaxed);
@@ -556,6 +555,10 @@ typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 static int s_nblocks = 0;
+
+typedef struct { uint32_t uid, backing_uid; } HleMemoryBlock;
+#define HLE_MAX_MEMORY_BLOCKS 256
+static HleMemoryBlock s_memory_blocks[HLE_MAX_MEMORY_BLOCKS];
 
 /* Free list for partition memory reuse. Real PSP firmware (SysMem) keeps partition
  * blocks sorted by address and uses First-Fit from the bottom (PSP_SMEM_Low)
@@ -898,6 +901,7 @@ void sr_hle_test_partition_reset(void) {
     s_heap_last_bump = 0;
     s_nblocks = 0;
     memset(s_blocks, 0, sizeof(s_blocks));
+    memset(s_memory_blocks, 0, sizeof(s_memory_blocks));
     s_nfree_blocks = 0;
     memset(s_free_blocks, 0, sizeof(s_free_blocks));
 }
@@ -923,6 +927,11 @@ uint32_t sr_hle_test_partition_top(void) {
 static uint32_t g_sdk_version = 0;
 
 static uint32_t h_SetCompiledSdkVersion(CpuState *s) { return sr_sdkver_set(&g_sdk_version, A0); }
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_compiled_sdk_version(void) {
+    return sr_sdkver_get(&g_sdk_version);
+}
+#endif
 
 /* sceUtilityGetSystemParamInt(id, int *out): write the system setting and return 0. PPSSPP's
  * defaults (Core/HLE/sceUtility.cpp registry): English (1), Western button order, 24h clock.
@@ -1042,6 +1051,13 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
 #define SCE_KERNEL_ERROR_ILLEGAL_ADDR 0x80000103u
 #endif
+#define HLE_KERNEL_ERROR_NOT_IMPLEMENTED 0x80020002u /* SCE_KERNEL_ERROR_NOTIMP */
+#define HLE_KERNEL_ERROR_ILLEGAL_ADDR 0x800200d3u     /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE 0x800200d8u /* SCE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE */
+#define HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED 0x800200d9u /* SCE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED */
+#define HLE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu   /* SCE_KERNEL_ERROR_ILLEGAL_SIZE */
+#define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
+#define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
 
 static int guest_cstr(uint32_t addr, char *out, int max);
 
@@ -1112,6 +1128,79 @@ static uint32_t free_block(uint32_t uid) {
 static uint32_t h_FreePartitionMemory(CpuState *s) {
     return free_block(A0);
 }
+
+static HleMemoryBlock *memory_block_find(uint32_t uid) {
+    for (int i = 0; i < HLE_MAX_MEMORY_BLOCKS; i++)
+        if (s_memory_blocks[i].uid == uid) return &s_memory_blocks[i];
+    return NULL;
+}
+
+/* This handler models the documented main-user-partition Low placement with
+ * the existing tracked partition allocator. Other valid placement policies
+ * remain a named boundary until the allocator models their address ordering. */
+static uint32_t h_AllocMemoryBlock(CpuState *s) {
+    (void)s;
+    uint32_t kind = A1;
+    uint32_t size = A2;
+    char name[64];
+    if (A0 && !guest_cstr(A0, name, sizeof(name)))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (A3 && !sr_guest_span_readable(A3, 4u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (A3) {
+        uint32_t options_size = MEM_R32(A3);
+        if (options_size < 4u) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
+        if (options_size > 4u) {
+            fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock option extensions are not supported yet.\n");
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+    }
+    if (kind > 4u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
+    if (size == 0u || size > UINT32_MAX - 0xffu)
+        return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (kind != 0u) {
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock placement kind %u is not supported yet.\n",
+                kind);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+
+    int slot = -1;
+    for (int i = 0; i < HLE_MAX_MEMORY_BLOCKS; i++) {
+        if (s_memory_blocks[i].uid == 0u) { slot = i; break; }
+    }
+    if (slot < 0) return HLE_KERNEL_ERROR_NO_MEMORY;
+    uint32_t backing_uid = alloc_block(size);
+    if (backing_uid == 0xffffffffu) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+    uint32_t uid = sr_alloc_uid();
+    s_memory_blocks[slot].uid = uid;
+    s_memory_blocks[slot].backing_uid = backing_uid;
+    return uid;
+}
+
+static uint32_t h_GetMemoryBlockAddr(CpuState *s) {
+    (void)s;
+    HleMemoryBlock *block = memory_block_find(A0);
+    if (!block) return HLE_KERNEL_ERROR_UNKNOWN_UID;
+    if (!A1 || !sr_guest_span_writable(A1, 4u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t addr = block_addr(block->backing_uid);
+    if (addr == 0u) return HLE_KERNEL_ERROR_UNKNOWN_UID;
+    MEM_W32(A1, addr);
+    return 0;
+}
+
+static uint32_t h_FreeMemoryBlock(CpuState *s) {
+    (void)s;
+    HleMemoryBlock *block = memory_block_find(A0);
+    if (!block) return HLE_KERNEL_ERROR_UNKNOWN_UID;
+    uint32_t result = free_block(block->backing_uid);
+    if (result == 0u) {
+        block->uid = 0u;
+        block->backing_uid = 0u;
+    }
+    return result;
+}
+
 static uint32_t partition_free(void) {
     user_partition_init();
     uint32_t f = s_heap < s_part_top ? s_part_top - s_heap : 0u;
@@ -1804,15 +1893,15 @@ static uint32_t h_CreateTlspl(CpuState *s) {
     uint32_t alignment = 4u;
     if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A1 != TLSPL_USER_PARTITION) {
-        fprintf(stderr, "TLSPL_PARTITION_UNMODELED: sceKernelCreateTlspl partition=%u; in the works (#339)\n", A1);
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateTlspl partition %u is not supported yet.\n", A1);
         return TLSPL_BAD_ID;
     }
     if (A2 & ~(TLSPL_ATTR_WAIT_PRIORITY | TLSPL_ATTR_MEM_BOTTOM)) {
-        fprintf(stderr, "TLSPL_ATTRIBUTES_UNMODELED: sceKernelCreateTlspl attr=0x%08x; in the works (#339)\n", A2);
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateTlspl attributes 0x%08x are not supported yet.\n", A2);
         return TLSPL_ILLEGAL_ATTR;
     }
     if (A2 & TLSPL_ATTR_MEM_BOTTOM) {
-        fprintf(stderr, "TLSPL_MEMORY_BOTTOM_UNMODELED: sceKernelCreateTlspl (0x8daff657); in the works (#339)\n");
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateTlspl bottom-up allocation is not supported yet.\n");
         return TLSPL_ILLEGAL_ATTR;
     }
     if (!block_size || !num_blocks) return TLSPL_ILLEGAL_SIZE;
@@ -1825,7 +1914,7 @@ static uint32_t h_CreateTlspl(CpuState *s) {
     }
     if (alignment < 4u || alignment > TLSPL_MAX_ALIGNMENT ||
         (alignment & (alignment - 1u)) != 0u) {
-        fprintf(stderr, "TLSPL_ALIGNMENT_UNMODELED: sceKernelCreateTlspl alignment=%u; in the works (#339)\n", alignment);
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateTlspl alignment %u is not supported yet.\n", alignment);
         return TLSPL_ILLEGAL_SIZE;
     }
 
@@ -1872,7 +1961,7 @@ static uint32_t h_DeleteTlspl(CpuState *s) {
     if (p->free_blocks != p->num_blocks) {
         uint32_t held_blocks = p->num_blocks - p->free_blocks;
         fprintf(stderr,
-                "TLSPL_DELETE_WITH_HELD_BLOCKS: pool 0x%x has %u/%u blocks held; in the works (#339)\n",
+                "TLSPL_BUSY: pool 0x%x has %u/%u blocks held.\n",
                 p->uid, held_blocks, p->num_blocks);
         return TLSPL_BUSY;
     }
@@ -1901,7 +1990,7 @@ static uint32_t h_GetTlsAddr(CpuState *s) {
     if (!p) return 0u;
     uint32_t thread_uid = sched_current_uid();
     if (!thread_uid) {
-        fprintf(stderr, "TLSPL_CURRENT_THREAD_UNAVAILABLE: sceKernelGetTlsAddr (0xfa835cde); in the works (#339)\n");
+        fprintf(stderr, "TLSPL_CURRENT_THREAD_UNAVAILABLE: sceKernelGetTlsAddr cannot resolve a current thread yet.\n");
         return 0u;
     }
 
@@ -1915,7 +2004,7 @@ static uint32_t h_GetTlsAddr(CpuState *s) {
         if (p->thread_uids[i]) continue;
         uint64_t addr64 = (uint64_t)p->base + (uint64_t)i * p->stride;
         if (addr64 > UINT32_MAX || !sr_guest_span_writable((uint32_t)addr64, p->block_size)) {
-            fprintf(stderr, "TLSPL_MEMORY_UNAVAILABLE: sceKernelGetTlsAddr (0xfa835cde); in the works (#339)\n");
+            fprintf(stderr, "TLSPL_MEMORY_UNAVAILABLE: sceKernelGetTlsAddr guest memory is not available yet.\n");
             return 0u;
         }
         uint32_t addr = (uint32_t)addr64;
@@ -1924,7 +2013,7 @@ static uint32_t h_GetTlsAddr(CpuState *s) {
         if (p->free_blocks) --p->free_blocks;
         return addr;
     }
-    fprintf(stderr, "TLSPL_POOL_EXHAUSTED: sceKernelGetTlsAddr (0xfa835cde) returned NULL; blocking allocation is in the works (#339)\n");
+    fprintf(stderr, "TLSPL_POOL_EXHAUSTED: sceKernelGetTlsAddr returned NULL; blocking allocation is not supported yet.\n");
     return 0u;
 }
 
@@ -2799,7 +2888,7 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
         fprintf(stderr,
                 "GUEST_MODULE_LOAD_ADDRESS_COLLISION: %s: declared range "
                 "[0x%08x,0x%08x) is not free in the user partition; "
-                "refusing to relocate (#308)\n",
+                "refusing to relocate.\n",
                 host_path, base, base + size);
     } else if (!sr_guest_span_writable(base, size)) {
         /* The reservation is already taken, so hand it straight back rather than
@@ -2838,7 +2927,7 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
         if (required) {
             fprintf(stderr,
                     "GUEST_MODULE_INPUT_MISSING: required module is absent from SR_MODULE_DIR; "
-                    "refusing load at its manifest address (#296)\n");
+                    "refusing load at its manifest address; module startup is not supported yet.\n");
             return 0;
         }
     } else {
@@ -3230,9 +3319,9 @@ static void psmf_name_rejection(SrPsmfPlayer *p) {
     p->rejectNamed = 1;
     const char *reason = sr_psmf_producer_fail_reason(p->producer);
     SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
-    fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
+    fprintf(stderr, "UNSUPPORTED_MEDIA: scePsmfPlayer: this stream is not supported yet: %s "
             "at source offset %llu; no further access unit is decoded and the player keeps "
-            "its current status; in the works (#288)\n",
+            "its current status.\n",
             reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
                            (uint32_t)st.fail_offset,
@@ -3820,7 +3909,7 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
 
     if (!mod->start_entry_ran) {
         fprintf(stderr, "PRX_MODULE_HOST_SKIPPED_STOP: sceKernelStopModule uid=0x%x "
-                        "start entry was host-skipped; stop entry not called (#280)\n",
+                        "start entry was host-skipped; stop entry was not called.\n",
                 modid);
         mod->state = MODULE_STATE_STOPPED;
         return 0;
@@ -3837,7 +3926,7 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
     }
     if (sr_lookup(mod->module_stop) == NULL) {
         fprintf(stderr, "PRX_MODULE_STOP_UNAVAILABLE: sceKernelStopModule uid=0x%x "
-                        "module_stop=0x%08x is untranslated; in the works (#280)\n",
+                        "module_stop=0x%08x is untranslated; stopping this module is not supported yet.\n",
                 modid, mod->module_stop);
         return SCE_KERNEL_ERROR_CAN_NOT_STOP;
     }
@@ -8146,6 +8235,22 @@ static uint32_t h_GetSystemTime(CpuState *s) {
     (void)s;
     return rtc_write_u64(A0, now_usec()) ? 0u : RTC_ILLEGAL_ADDR;
 }
+/* sceKernelSysClock2USec receives the low/high word pair of the same
+ * microsecond clock exposed by GetSystemTime and writes that 64-bit value as
+ * low/high output words. Read the complete input before writing either output
+ * so overlapping guest spans remain deterministic. */
+static uint32_t h_SysClock2USec(CpuState *s) {
+    (void)s;
+    if (!A0 || !sr_guest_span_readable(A0, 8u) ||
+        !A1 || !A2 || !sr_guest_span_writable(A1, 4u) ||
+        !sr_guest_span_writable(A2, 4u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t low = MEM_R32(A0);
+    uint32_t high = MEM_R32(A0 + 4u);
+    MEM_W32(A1, low);
+    MEM_W32(A2, high);
+    return 0;
+}
 static uint32_t h_RtcGetCurrentTick(CpuState *s) {
     (void)s;
     return rtc_write_u64(A0, rtc_now_tick()) ? 0u : RTC_ILLEGAL_ADDR;
@@ -8479,13 +8584,13 @@ static uint32_t h_StartModule(CpuState *s) {
             s_logged_libfont_unavailable[reason_index] = 1;
             if (writable) {
                 fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; using title-configured "
-                                "ready-flag fallback (#299)\n", reason);
+                                "ready-flag fallback; guest module startup is not supported yet.\n", reason);
             } else if (configured) {
                 fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "target is not writable (#299)\n", reason);
+                                "target is not writable; guest module startup is not supported yet.\n", reason);
             } else {
                 fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; ready-flag fallback "
-                                "is unconfigured (#299)\n", reason);
+                                "is unconfigured; guest module startup is not supported yet.\n", reason);
             }
         }
     }
@@ -8877,7 +8982,7 @@ static int data_loose_root_parse(const wchar_t *primary_root) {
     }
     size_t serialized_len = wcslen(serialized);
     if (serialized_len > 32767u || !primary_root) {
-        fprintf(stderr, "host_data: loose-content binding #289 (in the works) exceeds its limit\n");
+        fprintf(stderr, "LOOSE_CONTENT_BINDING_INVALID: serialized binding exceeds the supported limit.\n");
         free(serialized);
         return 0;
     }
@@ -9002,7 +9107,7 @@ static int data_loose_root_parse(const wchar_t *primary_root) {
             free(host_utf8);
         }
         if (!ok) {
-            fprintf(stderr, "host_data: loose-content binding #289 (in the works) is malformed, overlapping, or unavailable\n");
+            fprintf(stderr, "LOOSE_CONTENT_BINDING_INVALID: binding is malformed, overlapping, or unavailable.\n");
             break;
         }
         cursor = (saved_end == L'\n') ? line_end + 1 : serialized_end;
@@ -14455,6 +14560,23 @@ static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
     return 0;
 }
 
+/* The public multi-wait contract blocks through the requested number of
+ * vertical periods, then returns at the following VBLANK start. */
+static uint32_t h_DisplayWaitVblankStartMulti(CpuState *s) {
+    (void)s;
+    uint32_t periods = A0;
+    if (periods == 0u) {
+        fprintf(stderr,
+                "UNSUPPORTED_IMPORT: sceDisplayWaitVblankStartMulti zero-period behavior is not supported yet (NID 0x40f1469c, error 0x80020002).\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    if (sched_current_uid() == 0u) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    for (uint32_t period = 0; period < periods; period++)
+        sched_wait_vblank_start();
+    return 0;
+}
+
 static uint32_t h_DisplayWaitVblank(CpuState *s) {
     (void)s;
     if (ge_log_on()) fprintf(stderr, "HLE: WaitVblank (vcount=%u)\n", s_vcount);
@@ -15129,6 +15251,20 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     }
 
     return list_id;
+}
+
+/* With an idle queue, the host runs an enqueued list synchronously, so head
+ * and tail insertion have the same observable result. If a stalled list is
+ * outstanding, queue order would matter and this runtime cannot honor head
+ * insertion yet. */
+static uint32_t h_GeListEnQueueHead(CpuState *s) {
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == 1) {
+            fprintf(stderr, "UNSUPPORTED_IMPORT: sceGeListEnQueueHead queue ordering is not supported yet.\n");
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+    }
+    return h_GeListEnQueue(s);
 }
 
 static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
@@ -18792,6 +18928,32 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
+/* Public APIs reported as first-stop kernel imports in the library sweep.
+ * Keep this one mapping in both the executable harness and production registry;
+ * facilities with missing lifecycle state are registered as explicit refusals. */
+static void hle_register_kernel_import_sweep_handlers(void) {
+    sr_hle_register_unsupported(0xea748e31, "sceKernelChangeCurrentThreadAttr", 0x80020002u);
+    sr_hle_register_unsupported(0x912354a7, "sceKernelRotateThreadReadyQueue", 0x80020002u);
+    sr_hle_register_unsupported(0x75156e8f, "sceKernelResumeThread", 0x80020002u);
+    sr_hle_register_unsupported(0x9944f31f, "sceKernelSuspendThread", 0x80020002u);
+    sr_hle_register_unsupported(0x6652b8ca, "sceKernelSetAlarm", 0x80020002u);
+    sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
+    sr_hle_register_unsupported(0x7e65b999, "sceKernelCancelAlarm", 0x80020002u);
+    sr_hle_register_unsupported(0x034a921f, "sceKernelGetVTimerTime", 0x80020002u);
+    sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
+    sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
+    sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
+    sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
+    sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
+    sr_hle_register_unsupported(0x4c06e472, "sceGeContinue", 0x80020002u);
+    sr_hle_register_unsupported(0xb448ec0d, "sceGeBreak", 0x80020002u);
+    sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
+    sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
+    sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
+    sr_hle_register_unsupported(0x0cae832b, "sceRegCloseCategory", 0x80010086u);
+    sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -18822,6 +18984,7 @@ void sr_hle_init(void) {
     /* Wait/blocking APIs the issue #88 conformance matrix enters -- the same
      * definition the production branch below calls. */
     hle_register_wait_conformance_handlers();
+    hle_register_kernel_import_sweep_handlers();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
@@ -18842,6 +19005,7 @@ void sr_hle_init(void) {
      * registry the game build uses. */
     hle_register_cancel_release_handlers();
     hle_register_wait_conformance_handlers();
+    hle_register_kernel_import_sweep_handlers();
     hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
     sr_hle_register(0x00061e74u, "newlibModuleStreamWrite", h_ModuleStreamWrite);
@@ -19050,13 +19214,8 @@ void sr_hle_init(void) {
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */
 
-    /* Registry utility (sceReg) stubs */
-    /* Registry utility (sceReg) stubs -- issue #78: all six NIDs were registered under the
-     * wrong canonical names, corrupting import-coverage reports. The labels below match
-     * src/rt/nid_names.h; the real sceRegExit NID (0x9b25edf1) and the read/write registry
-     * model remain unregistered until the minimal registry implementation lands (#78). */
-    sr_hle_register_unsupported(0x0cae832b, "sceRegCloseCategory", 0x80010086u); /* function not supported */
-    sr_hle_register_unsupported(0x1d8a762e, "sceRegOpenCategory", 0x80010086u); /* function not supported */
+    /* The registered registry calls below fail closed until their semantic model
+     * is available; the real sceRegExit NID (0x9b25edf1) remains unregistered. */
     sr_hle_register_unsupported(0x28a8e98a, "sceRegGetKeyValue", 0x80010086u); /* function not supported */
     sr_hle_register_unsupported(0x92e41280, "sceRegOpenRegistry", 0x80010086u); /* function not supported */
     sr_hle_register_unsupported(0xd4475aa8, "sceRegGetKeyInfo", 0x80010086u); /* function not supported */
@@ -19146,9 +19305,8 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_unsupported_fatal(nid, sched_current_uid(), s->pc);
         {
             const char *nm = sr_nid_name(nid);
-            fprintf(stderr, "HLE: unimplemented nid 0x%08x (%s) (thread uid 0x%x)\n"
-                            "     -> add a handler in src/rt/hle.c: sr_hle_register(0x%08xu, \"%s\", h_...);\n",
-                    nid, nm ? nm : "unknown", sched_current_uid(), nid, nm ? nm : "sceUnknown");
+            fprintf(stderr, "UNSUPPORTED_IMPORT: %s (NID 0x%08x) is not supported yet; no handler is registered.\n",
+                    nm ? nm : "Unknown PSP import", nid);
         }
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly

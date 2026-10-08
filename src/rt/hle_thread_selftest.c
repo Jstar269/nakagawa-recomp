@@ -83,6 +83,7 @@ extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
+extern int sr_hle_test_is_registered(uint32_t nid);
 extern uint32_t sr_hle_test_load_module(CpuState *s);
 extern uint32_t sr_hle_test_start_module(CpuState *s);
 extern uint32_t sr_hle_test_stop_module(CpuState *s);
@@ -97,6 +98,7 @@ extern uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
                                            uint32_t patch_nid, uint32_t patch_off);
 extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
 extern void ge_finish_latch_assist(void);
+static void reset_fixture(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
  * hle.c: the observation count and the vblanks-since-flip clock. */
@@ -215,6 +217,26 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW 0x369ed59du
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE 0x82bc5777u
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME 0xdb738f35u
+#define NID_SCE_KERNEL_SYS_CLOCK_TO_USEC 0xba6b92e2u
+#define NID_SCE_KERNEL_CHANGE_CURRENT_THREAD_ATTR 0xea748e31u
+#define NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE 0x912354a7u
+#define NID_SCE_KERNEL_RESUME_THREAD 0x75156e8fu
+#define NID_SCE_KERNEL_SUSPEND_THREAD 0x9944f31fu
+#define NID_SCE_KERNEL_SET_ALARM 0x6652b8cau
+#define NID_SCE_KERNEL_CANCEL_ALARM 0x7e65b999u
+#define NID_SCE_KERNEL_GET_VTIMER_TIME 0x034a921fu
+#define NID_SCE_KERNEL_FREE_MEMORY_BLOCK 0x50f61d8au
+#define NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR 0xdb83a952u
+#define NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK 0xfe707fdfu
+#define NID_SCE_KERNEL_SET_COMPILED_SDK_VERSION_370 0x342061e5u
+#define NID_SCE_GE_LIST_ENQUEUE_HEAD 0x1c0d95a6u
+#define NID_SCE_GE_CONTINUE 0x4c06e472u
+#define NID_SCE_GE_BREAK 0xb448ec0du
+#define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
+#define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
+#define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
+#define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
 #define NID_SCE_RTC_GET_CURRENT_TICK 0x3f7ad767u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL 0xe7c27d1bu
@@ -2286,6 +2308,38 @@ static void test_controlled_unsupported_registration(void) {
            "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
 }
 
+static void test_kernel_import_sweep_explicit_refusals(void) {
+    static const struct {
+        uint32_t nid;
+        uint32_t error;
+        const char *name;
+    } refused[] = {
+        {NID_SCE_KERNEL_CHANGE_CURRENT_THREAD_ATTR, 0x80020002u, "sceKernelChangeCurrentThreadAttr"},
+        {NID_SCE_KERNEL_ROTATE_THREAD_READY_QUEUE, 0x80020002u, "sceKernelRotateThreadReadyQueue"},
+        {NID_SCE_KERNEL_RESUME_THREAD, 0x80020002u, "sceKernelResumeThread"},
+        {NID_SCE_KERNEL_SUSPEND_THREAD, 0x80020002u, "sceKernelSuspendThread"},
+        {NID_SCE_KERNEL_SET_ALARM, 0x80020002u, "sceKernelSetAlarm"},
+        {NID_SCE_KERNEL_CANCEL_ALARM, 0x80020002u, "sceKernelCancelAlarm"},
+        {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
+        {NID_SCE_GE_CONTINUE, 0x80020002u, "sceGeContinue"},
+        {NID_SCE_GE_BREAK, 0x80020002u, "sceGeBreak"},
+        {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
+        {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
+        {NID_SCE_REG_CLOSE_CATEGORY, 0x80010086u, "sceRegCloseCategory"},
+        {NID_SCE_REG_OPEN_CATEGORY, 0x80010086u, "sceRegOpenCategory"},
+    };
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        expect(sr_hle_test_is_registered(refused[i].nid),
+               "kernel import sweep refusal has a production registration");
+        expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
+               "unsupported kernel import returns its explicit refusal code");
+    }
+}
+
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
  * write and preserves the existing no-op behavior for NULL output pointers. */
@@ -3241,6 +3295,35 @@ static void test_time_domains_are_coherent(void) {
  * while an explicit guest-time advance must move both current and accumulated
  * positions.  The GE VBLANK bit shares the same rational frame phase, including
  * the interval just beyond the old integer-16667-us rollover. */
+static void test_kernel_import_sweep_sysclock_conversion(void) {
+    const uint32_t clock = 0x00270010u;
+    const uint32_t low_out = 0x00270020u;
+    const uint32_t high_out = 0x00270024u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W32(clock, 0x89abcdefu);
+    MEM_W32(clock + 4u, 0x12345678u);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = clock;
+    cpu.r[5] = low_out;
+    cpu.r[6] = high_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SYS_CLOCK_TO_USEC) == 0u &&
+               MEM_R32(low_out) == 0x89abcdefu && MEM_R32(high_out) == 0x12345678u,
+           "sceKernelSysClock2USec splits the modeled 64-bit microsecond value");
+
+    const uint32_t sentinel = 0xa57c3de1u;
+    MEM_W32(low_out, sentinel);
+    MEM_W32(high_out, sentinel);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x0bfffffcu; /* 8-byte input crosses the guest-memory boundary */
+    cpu.r[5] = low_out;
+    cpu.r[6] = high_out;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SYS_CLOCK_TO_USEC) == 0x800200d3u &&
+               MEM_R32(low_out) == sentinel && MEM_R32(high_out) == sentinel,
+           "sceKernelSysClock2USec rejects an incomplete input span before writing outputs");
+}
+
 static void test_display_clock_reads_are_observational(void) {
     enum {
         NID_DISPLAY_CURRENT_HCOUNT = 0x773dd3a3u,
@@ -11269,6 +11352,41 @@ static void test_ge_guest_sentinel(void) {
            "resumed list rendered purple rectangle to completion");
 }
 
+static void test_kernel_import_sweep_ge_head(void) {
+    const uint32_t list = 0x08918000u;
+    const uint32_t second_list = list + 0x100u;
+    reset_fixture();
+    sr_hle_init();
+    MEM_W32(list, 0x0f000000u);        /* FINISH */
+    MEM_W32(list + 4u, 0x0c000000u);   /* END */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = 0u;
+    uint32_t complete_id = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD);
+    expect((complete_id & 0xff000000u) == 0x35000000u,
+           "sceGeListEnQueueHead runs a list when the modeled GE queue is idle");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = list; /* empty ring: keep this list stalled */
+    uint32_t stalled_id = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD);
+    expect((stalled_id & 0xff000000u) == 0x35000000u,
+           "sceGeListEnQueueHead records an empty-ring list as stalled");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = second_list;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD) == 0x80020002u,
+           "sceGeListEnQueueHead refuses when head ordering would affect a stalled queue");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = stalled_id;
+    cpu.r[5] = list + 8u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR) == 0u,
+           "the GE head-order boundary clears after the stalled list completes");
+}
+
 /* A display list the GE already ran to its END is consumed, and a stall address
  * that arrives after that is a defined no-op on a known list -- not an unknown
  * one. pspgu's GU ring buffer issues one sceGeListUpdateStallAddr per flushed
@@ -15374,6 +15492,115 @@ static void test_td23_guest_pointer_validation(void) {
            "sceUtilitySavedataInitStart rejects param struct crossing arena boundary");
 }
 
+static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_compiled_sdk_version(void);
+    const uint32_t options = 0x00280000u;
+    const uint32_t addr_out = 0x00280004u;
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    MEM_W32(options, 4u);
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;          /* name is debug-only and may be NULL */
+    cpu.r[5] = 0u;          /* PSP_SMEM_Low */
+    cpu.r[6] = 0x240u;
+    cpu.r[7] = options;
+    uint32_t uid = sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK);
+    expect(uid != 0u && uid < 0x80000000u,
+           "sceKernelAllocMemoryBlock allocates its documented Low placement");
+    if (uid != 0u && uid < 0x80000000u) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[5] = addr_out;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0u &&
+                   MEM_R32(addr_out) != 0u,
+               "sceKernelGetMemoryBlockAddr writes the allocated guest address");
+
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[5] = 0x0bffffffu; /* 4-byte output crosses the guest-memory boundary */
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200d3u,
+               "sceKernelGetMemoryBlockAddr rejects an invalid output span");
+
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0u,
+               "sceKernelFreeMemoryBlock releases its allocation");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[5] = addr_out;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR) == 0x800200cbu,
+               "sceKernelGetMemoryBlockAddr rejects a freed UID");
+
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_FREE_MEMORY_BLOCK) == 0x800200cbu,
+               "sceKernelFreeMemoryBlock rejects a freed UID");
+    }
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 1u;          /* valid PSP_SMEM_High, not modeled yet */
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
+           "sceKernelAllocMemoryBlock refuses valid placement kinds without modeled semantics");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 5u;          /* outside the documented kind enum */
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d8u,
+           "sceKernelAllocMemoryBlock reports ILLEGAL_MEMBLOCKTYPE for an unknown kind");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = 0xfffffffcu;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d3u,
+           "sceKernelAllocMemoryBlock rejects an unreadable options span");
+
+    MEM_W32(options, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800201bcu,
+           "sceKernelAllocMemoryBlock rejects an undersized options header");
+
+    MEM_W32(options, 8u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0x100u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
+           "sceKernelAllocMemoryBlock refuses unmodeled options extensions");
+
+    sr_hle_test_partition_reset();
+    MEM_W32(options, 4u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 0xffffff00u;
+    cpu.r[7] = options;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x800200d9u,
+           "sceKernelAllocMemoryBlock returns MEMBLOCK_ALLOC_FAILED when partition space is exhausted");
+
+    const uint32_t sdk_version = 0x03070000u;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = sdk_version;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_SET_COMPILED_SDK_VERSION_370) == 0u &&
+               sr_hle_test_compiled_sdk_version() == sdk_version,
+           "sceKernelSetCompiledSdkVersion370 updates shared SDK-version state");
+}
+
 static void test_td28_partition_free_reuse(void) {
     extern void sr_hle_test_partition_reset(void);
     extern int sr_hle_test_partition_free_block_count(void);
@@ -17690,7 +17917,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[640];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -17698,6 +17925,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
+                 "+ 1 vblank multi waiter "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -20556,7 +20784,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
     sr_hle_test_module_reset();
 }
 
-/* ---- scePsmfPlayer: a rejected stream has to name itself (issue #288) ---------------- */
+/* ---- scePsmfPlayer: a rejected stream has to name itself ----------------------------- */
 
 #define NID_SCE_PSMF_PLAYER_CREATE       0x235d8787u
 #define NID_SCE_PSMF_PLAYER_DELETE       0x9b71a274u
@@ -20645,7 +20873,7 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
     CpuState cpu;
     char captured[8192];
     SrFlightEvent flight_event;
-    const char *boundary = "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: "
+    const char *boundary = "UNSUPPORTED_MEDIA: scePsmfPlayer: this stream is not supported yet: "
                            "pes-timestamp-field at source offset 2048";
 
     sr_hle_init();
@@ -20706,8 +20934,10 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
 
     expect(count_occurrences(captured, boundary) == 2,
            "psmf: every rejected stream names the demuxer refusal, the reason, and the offset");
-    expect(strstr(captured, "in the works (#288)") != NULL,
-           "psmf: the media boundary carries its tracking issue");
+    expect(strstr(captured, "its current status.") != NULL &&
+               strstr(captured, "not supported yet") != NULL &&
+               strstr(captured, "#") == NULL,
+           "psmf: the named media boundary describes what is not supported yet without an issue number");
     expect(strstr(captured, "MPEG_CONTRACT") == NULL,
            "psmf: the rejection is not reported as some other media boundary");
     expect(sr_flight_event_count() == 2, "psmf: each rejection is one media flight event");
@@ -21233,6 +21463,7 @@ static void test_issue339_sysclock_delay_dispatch(void) {
 
 typedef struct {
     uint32_t nid;
+    uint32_t arg0;
     uint32_t ret;
     int returned;
 } SelftestVblankWaitCtx;
@@ -21241,9 +21472,67 @@ static void selftest_vblank_waiter_fiber_body(void *arg) {
     SelftestVblankWaitCtx *ctx = (SelftestVblankWaitCtx *)arg;
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ctx->arg0;
     ctx->ret = sr_syscall(&cpu, ctx->nid);
     ctx->returned = 1;
     selftest_park_on_scheduler();
+}
+
+static void test_kernel_import_sweep_display_multi(void) {
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) == 0x80020002u,
+           "sceDisplayWaitVblankStartMulti reports zero-period behavior as not implemented");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) ==
+               CNW_ERR,
+           "sceDisplayWaitVblankStartMulti refuses to report success without a current thread");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x40f0u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x40f1u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx wait;
+    memset(&wait, 0, sizeof(wait));
+    wait.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI;
+    wait.arg0 = 2u;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &wait,
+                                  (size_t)4 << 20);
+    expect(waiter->coro != NULL, "sceDisplayWaitVblankStartMulti waiter coroutine is created");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               s_vbl_count == 0u,
+           "sceDisplayWaitVblankStartMulti blocks on the first VBLANK period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    expect(waiter->state == TH_READY && s_vbl_count == 1u,
+           "the first delivered VBLANK wakes the multi-period waiter");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               s_vbl_count == 1u,
+           "sceDisplayWaitVblankStartMulti waits again for its remaining period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    expect(waiter->state == TH_READY && s_vbl_count == 2u,
+           "the second delivered VBLANK satisfies the requested count");
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(wait.returned && wait.ret == 0u,
+           "sceDisplayWaitVblankStartMulti returns success after both periods");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
 }
 
 static void test_issue339_callback_wait_dispatch(void) {
@@ -21430,6 +21719,8 @@ int main(int argc, char **argv) {
     test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
+    test_kernel_import_sweep_explicit_refusals();
+    test_kernel_import_sweep_ge_head();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
     test_io_devctl_memory_stick();
@@ -21441,6 +21732,7 @@ int main(int argc, char **argv) {
     test_explicit_exit_status_exact(0x78, 0x78u);
     test_thread_delete_lifecycle_and_cleanup();
     test_issue339_wait_nids_production_dispatch();
+    test_kernel_import_sweep_display_multi();
     test_start_thread_error_semantics();
     test_exit_delete_lifecycle_and_join_result();
     test_wait_thread_end_invalid_targets();
@@ -21472,6 +21764,7 @@ int main(int argc, char **argv) {
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();
+    test_kernel_import_sweep_sysclock_conversion();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
     test_delay_zero_probe_semantics();
@@ -21542,6 +21835,7 @@ int main(int argc, char **argv) {
     test_msgpipe_callback_and_delete();
     test_msgpipe_nested_callback_wait_scopes();
     test_td23_guest_pointer_validation();
+    test_kernel_import_sweep_memory_blocks_and_sdk_alias();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
     test_fpl_delete_releases_partition();
