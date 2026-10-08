@@ -5418,7 +5418,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9637dc313eac6db61ec4a86203884931ffc4e8a7df3d6d625ae322e5c96b8eec"
+      "sha256": "22907c2afa24be341ba12419499ce921c437684c6ebf578317cbbd4f535b7c46"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -5490,7 +5490,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "05d199cbd8fd4ec7067421b9f6816f4945228476c6c4e4a39fdd535f6653dcdc"
+      "sha256": "93f6f2f4bc6df63eb821c0350b06dde3f0146baf897415bdd3149af425501329"
     },
     {
       "path": "tests/native/test_player_ui.py",
