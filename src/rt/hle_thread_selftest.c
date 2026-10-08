@@ -2705,8 +2705,6 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {NID_SCE_KERNEL_SET_ALARM, 0x80020002u, "sceKernelSetAlarm"},
-        {NID_SCE_KERNEL_CANCEL_ALARM, 0x80020002u, "sceKernelCancelAlarm"},
         {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
         {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
@@ -3325,6 +3323,7 @@ static void reset_fixture(void) {
     audio_fixture_reset();
     extern void sr_hle_test_mutex_reset(void);
     sr_hle_test_mutex_reset();
+    sched_alarm_reset();
 }
 
 static uint32_t audio_dispatch(CpuState *cpu, uint32_t nid,
@@ -10470,6 +10469,397 @@ static void test_suspended_delay_deadline_still_counts(void) {
     expect(pick_next() == -1, "with only a suspended thread left nothing is selected");
     expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, sleeper->uid) == 0u, "resume the sleeper");
     expect(pick_next() == (int)(sleeper - s_tcb), "the resumed sleeper is selected");
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelSetAlarm / sceKernelCancelAlarm
+ * -------------------------------------------------------------------------
+ * Every case enters the production NIDs through sr_syscall.  Handlers are guest
+ * functions run by the real interrupt-service path (scheduler_service_pending, or the
+ * idle loop inside sched_run).  The unknown-id code is the measured Alarm cell in
+ * docs/HARDWARE_ORACLE.md; the NULL-handler and table-exhausted codes are the
+ * project's existing invalid-address and out-of-resources codes, not measurements.
+ * ------------------------------------------------------------------------- */
+#define ALM_UNKNOWN_ALMID    0x8002019fu
+#define ALM_ILLEGAL_ADDR     0x800200d3u
+#define ALM_NO_MEMORY        0x80020190u
+#define ALM_ILLEGAL_CONTEXT  0x80020064u
+#define ALM_UNKNOWN_MUTEXID  0x800201c3u
+#define ALM_NOT_IMPLEMENTED  0x80020002u
+#define ALM_HANDLER_ENTRY    0x08a10000u
+#define NID_ALM_LOCK_MUTEX   0xb011b11fu
+
+enum {
+    ALM_MODE_PLAIN = 0,
+    ALM_MODE_CANCEL_SELF,
+    ALM_MODE_LOCK_MUTEX,
+    ALM_MODE_SET_ANOTHER,
+};
+
+static unsigned s_alm_calls;
+static uint32_t s_alm_commons[8];
+static uint64_t s_alm_times[8];
+static int s_alm_intr_ctx[8];
+static uint32_t s_alm_periods[8];     /* the $v0 each call returns */
+static int s_alm_mode;
+static uint32_t s_alm_self_uid;
+static uint32_t s_alm_cancel_rc;
+static uint32_t s_alm_lock_rc;
+static uint32_t s_alm_spawned_uid;
+
+static uint32_t alm_set(uint32_t clock_us, uint32_t handler, uint32_t common) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = clock_us;
+    cpu.r[5] = handler;
+    cpu.r[6] = common;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_SET_ALARM);
+}
+
+static uint32_t alm_cancel(uint32_t uid) {
+    return srt_call(NID_SCE_KERNEL_CANCEL_ALARM, uid);
+}
+
+static void alm_handler_fn(CpuState *cpu) {
+    unsigned n = s_alm_calls++;
+    if (n < 8u) {
+        s_alm_commons[n] = cpu->r[4];
+        s_alm_times[n] = s_vtime_us;
+        s_alm_intr_ctx[n] = sched_is_intr_context();
+    }
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    switch (s_alm_mode) {
+    case ALM_MODE_CANCEL_SELF:
+        s_alm_cancel_rc = alm_cancel(s_alm_self_uid);
+        break;
+    case ALM_MODE_LOCK_MUTEX:
+        sc.r[4] = 0x1234u;     /* the interrupt-context check precedes the object lookup */
+        sc.r[5] = 1u;
+        s_alm_lock_rc = sr_syscall(&sc, NID_ALM_LOCK_MUTEX);
+        break;
+    case ALM_MODE_SET_ANOTHER:
+        if (n == 0u) s_alm_spawned_uid = alm_set(300u, ALM_HANDLER_ENTRY, 0x99u);
+        break;
+    default:
+        break;
+    }
+    cpu->r[2] = n < 8u ? s_alm_periods[n] : 0u;
+}
+
+static TCB *alm_fixture(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(ALM_HANDLER_ENTRY, alm_handler_fn);
+    s_vbl_next_us = UINT64_MAX;       /* isolate the alarm source from the display source */
+    s_vblank_q_us = 0x7fffffff;
+    s_alm_calls = 0;
+    memset(s_alm_commons, 0, sizeof s_alm_commons);
+    memset(s_alm_times, 0, sizeof s_alm_times);
+    memset(s_alm_intr_ctx, 0, sizeof s_alm_intr_ctx);
+    memset(s_alm_periods, 0, sizeof s_alm_periods);
+    s_alm_mode = ALM_MODE_PLAIN;
+    s_alm_self_uid = 0;
+    s_alm_cancel_rc = 0xffffffffu;
+    s_alm_lock_rc = 0xffffffffu;
+    s_alm_spawned_uid = 0;
+    TCB *main_t = fixture_thread(0x5f0u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+    return main_t;
+}
+
+static void test_alarm_registration_and_error_codes(void) {
+    alm_fixture();
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SET_ALARM) &&
+           sr_hle_test_is_registered(NID_SCE_KERNEL_CANCEL_ALARM),
+           "SetAlarm and CancelAlarm have production registrations");
+
+    expect(alm_set(1000u, 0u, 0x1u) == ALM_ILLEGAL_ADDR,
+           "SetAlarm with a NULL handler returns the invalid-address code");
+    expect(sched_alarm_next_deadline() == SCHED_WAIT_FOREVER,
+           "a refused SetAlarm leaves no alarm behind");
+
+    uint32_t uid = alm_set(1000u, ALM_HANDLER_ENTRY, 0x2u);
+    expect(uid != 0u && uid < 0x80000000u && uid != ALM_NOT_IMPLEMENTED,
+           "SetAlarm returns a positive alarm UID, no longer the named refusal");
+    expect(alm_cancel(uid) == 0u, "CancelAlarm of a pending alarm returns 0");
+    expect(alm_cancel(uid) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of a cancelled alarm returns the measured unknown-alarm code");
+    expect(alm_cancel(0u) == ALM_UNKNOWN_ALMID, "CancelAlarm(0) returns UNKNOWN_ALMID");
+    expect(alm_cancel(0x7fffffffu) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of a UID that was never an alarm returns UNKNOWN_ALMID");
+    expect(alm_cancel(s_tcb[0].uid) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of another object's UID (a thread) returns UNKNOWN_ALMID");
+
+    /* A zero clock is accepted and becomes due at the next service point. */
+    uid = alm_set(0u, ALM_HANDLER_ENTRY, 0x3u);
+    expect(uid != 0u && uid < 0x80000000u && s_alm_calls == 0u,
+           "SetAlarm(0) is accepted and does not run the handler inline");
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_commons[0] == 0x3u, "SetAlarm(0) fires at the next service point");
+
+    /* Exhausting the table is an out-of-resources error, and a cancel makes room. */
+    uint32_t uids[SCHED_ALARM_MAX];
+    sched_alarm_reset();
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++) {
+        uids[i] = alm_set(100000u, ALM_HANDLER_ENTRY, i);
+        if (uids[i] >= 0x80000000u) break;
+    }
+    expect(alm_set(100000u, ALM_HANDLER_ENTRY, 0u) == ALM_NO_MEMORY,
+           "SetAlarm on a full table returns the out-of-resources code");
+    expect(alm_cancel(uids[0]) == 0u && alm_set(100000u, ALM_HANDLER_ENTRY, 0u) < 0x80000000u,
+           "CancelAlarm frees a slot for the next SetAlarm");
+    s_cur = -1;
+}
+
+static void test_alarm_one_shot_fires_once_at_its_time_with_its_argument(void) {
+    alm_fixture();
+    s_vtime_us = 1000u;
+    uint32_t uid = alm_set(2500u, ALM_HANDLER_ENTRY, 0x2468u);
+    expect(uid != 0u && uid < 0x80000000u, "SetAlarm returns an alarm UID");
+
+    s_vtime_us = 3499u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 0u, "the handler has not run 1 us before the deadline");
+    s_vtime_us = 3500u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "the handler runs when clock_us of virtual time has elapsed");
+    expect(s_alm_times[0] == 3500u, "the handler ran at SetAlarm time plus clock_us");
+    expect(s_alm_commons[0] == 0x2468u, "the handler's argument is the common pointer");
+    expect(s_alm_intr_ctx[0] == 1, "the handler ran in interrupt context");
+    expect(s_cur >= 0 && !sched_is_intr_context(),
+           "normal context is restored once the handler returns");
+    s_vtime_us = 1000000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "a handler returning 0 is a one-shot: it never runs again");
+    expect(alm_cancel(uid) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of a one-shot that already fired returns UNKNOWN_ALMID");
+    s_cur = -1;
+}
+
+static void test_alarm_rearm_by_return_value(void) {
+    alm_fixture();
+    s_alm_periods[0] = 5000u;
+    s_alm_periods[1] = 5000u;
+    s_alm_periods[2] = 0u;
+    s_vtime_us = 0u;
+    uint32_t uid = alm_set(10000u, ALM_HANDLER_ENTRY, 0x7u);
+    for (uint64_t t = 0; t <= 40000u; t += 500u) {
+        s_vtime_us = t;
+        scheduler_service_pending();
+    }
+    expect(s_alm_calls == 3u,
+           "a non-zero return re-arms the alarm until a handler returns 0");
+    expect(s_alm_times[0] == 10000u && s_alm_times[1] == 15000u && s_alm_times[2] == 20000u,
+           "the alarm re-fires at the returned period after each delivery");
+    expect(s_alm_commons[1] == 0x7u && s_alm_commons[2] == 0x7u,
+           "the common pointer is passed to every re-armed delivery");
+    expect(alm_cancel(uid) == ALM_UNKNOWN_ALMID,
+           "the alarm is released once its handler stops re-arming it");
+    s_cur = -1;
+}
+
+static void test_alarm_cancel_before_firing_prevents_the_handler(void) {
+    alm_fixture();
+    s_vtime_us = 0u;
+    uint32_t a = alm_set(1000000u, ALM_HANDLER_ENTRY, 0xa1u);
+    uint32_t b = alm_set(2000u, ALM_HANDLER_ENTRY, 0xb2u);
+    expect(alm_cancel(a) == 0u, "CancelAlarm of a pending alarm succeeds");
+    expect(alm_cancel(a) == ALM_UNKNOWN_ALMID, "a second CancelAlarm of it returns UNKNOWN_ALMID");
+    s_vtime_us = 2000000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_commons[0] == 0xb2u,
+           "only the alarm that was not cancelled ran");
+    (void)b;
+
+    /* A re-arming alarm cancelled between two deliveries stops. */
+    alm_fixture();
+    s_alm_periods[0] = 1000u;
+    s_vtime_us = 0u;
+    uint32_t c = alm_set(500u, ALM_HANDLER_ENTRY, 0xc3u);
+    s_vtime_us = 500u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "the first delivery of a periodic alarm");
+    expect(alm_cancel(c) == 0u, "the re-armed alarm can be cancelled");
+    s_vtime_us = 100000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "a cancelled periodic alarm does not run again");
+    s_cur = -1;
+}
+
+static void test_alarm_handler_runs_under_interrupt_context_rules(void) {
+    /* A handler cancelling its own alarm succeeds and suppresses its re-arm. */
+    alm_fixture();
+    s_alm_mode = ALM_MODE_CANCEL_SELF;
+    s_alm_periods[0] = 1000u;
+    s_vtime_us = 0u;
+    s_alm_self_uid = alm_set(100u, ALM_HANDLER_ENTRY, 1u);
+    s_vtime_us = 100u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_cancel_rc == 0u,
+           "a handler can cancel its own alarm");
+    s_vtime_us = 50000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u, "cancelling from inside the handler suppresses the re-arm");
+
+    /* A handler may arm another alarm; it runs later, never inline. */
+    alm_fixture();
+    s_alm_mode = ALM_MODE_SET_ANOTHER;
+    s_vtime_us = 0u;
+    alm_set(100u, ALM_HANDLER_ENTRY, 1u);
+    s_vtime_us = 100u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_spawned_uid != 0u && s_alm_spawned_uid < 0x80000000u,
+           "a handler can arm another alarm, which does not run inline");
+    s_vtime_us = 400u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 2u && s_alm_commons[1] == 0x99u && s_alm_times[1] == 400u,
+           "the alarm armed from a handler fires at its own deadline");
+
+    /* A blocking wait attempted from the handler gets the interrupt-context refusal. */
+    alm_fixture();
+    s_alm_mode = ALM_MODE_LOCK_MUTEX;
+    s_vtime_us = 0u;
+    alm_set(100u, ALM_HANDLER_ENTRY, 1u);
+    s_vtime_us = 100u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_intr_ctx[0] == 1,
+           "the blocking-wait probe ran inside the alarm handler");
+    expect(s_alm_lock_rc == ALM_ILLEGAL_CONTEXT,
+           "a blocking wait from an alarm handler returns SCE_KERNEL_ERROR_ILLEGAL_CONTEXT");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = 0x1234u;
+        cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_ALM_LOCK_MUTEX) == ALM_UNKNOWN_MUTEXID,
+               "control: the same call from normal context reaches the object lookup");
+    }
+
+    /* An alarm due under a CpuSuspendIntr window waits for the resume. */
+    alm_fixture();
+    s_vtime_us = 0u;
+    alm_set(100u, ALM_HANDLER_ENTRY, 5u);
+    uint32_t token = sched_suspend_interrupts();
+    s_vtime_us = 1000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 0u, "interrupts disabled: the alarm handler does not run");
+    sched_resume_interrupts(token);
+    expect(s_alm_calls == 1u && s_alm_commons[0] == 5u,
+           "the pending alarm is delivered when interrupts are enabled again");
+    s_cur = -1;
+}
+
+/* ---- the idle scheduler waits for an alarm instead of declaring a deadlock ---------- */
+enum {
+    ALM_IDLE_ENTRY = 0x08a20000u,
+    ALM_IDLE_HANDLER = 0x08a20040u,
+    ALM_LONG_ENTRY = 0x08a20080u,
+    ALM_LONG_HANDLER = 0x08a200c0u,
+};
+static uint32_t s_alm_idle_main_uid;
+static uint32_t s_alm_idle_alarm_uid;
+static uint64_t s_alm_idle_deadline;
+static uint64_t s_alm_idle_fired_at;
+static uint64_t s_alm_idle_resumed_at;
+static unsigned s_alm_idle_handler_calls;
+static int s_alm_idle_handler_ctx;
+static uint32_t s_alm_idle_wake_rc;
+static unsigned s_alm_idle_entry_finished;
+static unsigned s_alm_long_calls;
+
+static void alm_idle_handler_fn(CpuState *cpu) {
+    s_alm_idle_handler_calls++;
+    s_alm_idle_fired_at = s_vtime_us;
+    s_alm_idle_handler_ctx = sched_is_intr_context();
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    sc.r[4] = s_alm_idle_main_uid;
+    s_alm_idle_wake_rc = sr_syscall(&sc, NID_SCE_KERNEL_WAKEUP_THREAD);
+    cpu->r[2] = 0u;
+}
+
+static void alm_idle_entry_fn(CpuState *cpu) {
+    s_alm_idle_main_uid = sched_current_uid();
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    sc.r[4] = 100000u;
+    sc.r[5] = ALM_IDLE_HANDLER;
+    sc.r[6] = 0xfeedu;
+    s_alm_idle_alarm_uid = sr_syscall(&sc, NID_SCE_KERNEL_SET_ALARM);
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++)
+        if (s_alarms[i].uid == s_alm_idle_alarm_uid) s_alm_idle_deadline = s_alarms[i].deadline;
+    /* Nothing else is runnable and nothing else has a deadline: only the alarm can wake us. */
+    cpu->r[4] = 0u;
+    (void)sr_syscall(cpu, NID_SCE_KERNEL_SLEEP_THREAD);
+    s_alm_idle_resumed_at = s_vtime_us;
+    s_alm_idle_entry_finished = 1u;
+    cpu->r[2] = 0u;
+}
+
+static void alm_long_handler_fn(CpuState *cpu) {
+    s_alm_long_calls++;
+    /* A runaway guard for the test only: stop re-arming after a bounded number of calls. */
+    cpu->r[2] = s_alm_long_calls < 50u ? 1000000u : 0u;
+}
+
+static void alm_long_entry_fn(CpuState *cpu) {
+    CpuState sc;
+    memset(&sc, 0, sizeof sc);
+    sc.r[4] = 1000000u;
+    sc.r[5] = ALM_LONG_HANDLER;
+    (void)sr_syscall(&sc, NID_SCE_KERNEL_SET_ALARM);
+    cpu->r[2] = 0u;            /* return at once: nobody is left waiting for the alarm */
+}
+
+static void test_alarm_idle_scheduler_advances_to_the_deadline(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_alm_idle_main_uid = 0;
+    s_alm_idle_alarm_uid = 0;
+    s_alm_idle_deadline = 0;
+    s_alm_idle_fired_at = 0;
+    s_alm_idle_resumed_at = 0;
+    s_alm_idle_handler_calls = 0;
+    s_alm_idle_handler_ctx = 0;
+    s_alm_idle_wake_rc = 0xffffffffu;
+    s_alm_idle_entry_finished = 0;
+    sr_test_register_guest_fn(ALM_IDLE_ENTRY, alm_idle_entry_fn);
+    sr_test_register_guest_fn(ALM_IDLE_HANDLER, alm_idle_handler_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(ALM_IDLE_ENTRY, 0u, 0u);
+
+    expect(s_alm_idle_alarm_uid != 0u && s_alm_idle_alarm_uid < 0x80000000u &&
+           s_alm_idle_deadline != 0u,
+           "idle: the sleeping thread armed an alarm");
+    expect(s_alm_idle_handler_calls == 1u,
+           "idle: the scheduler advanced to the alarm deadline and ran the handler instead of "
+           "reporting a deadlock");
+    expect(s_alm_idle_fired_at == s_alm_idle_deadline,
+           "idle: the clock was advanced exactly to the deadline");
+    expect(s_alm_idle_handler_ctx == 1 && s_alm_idle_wake_rc == 0u,
+           "idle: the handler ran in interrupt context and woke the sleeper");
+    expect(s_alm_idle_entry_finished == 1u && s_alm_idle_resumed_at >= s_alm_idle_deadline,
+           "idle: the sleeper resumed after the deadline and finished");
+
+    /* A periodic alarm with no thread left waiting does not keep the run alive. */
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_alm_long_calls = 0;
+    sr_test_register_guest_fn(ALM_LONG_ENTRY, alm_long_entry_fn);
+    sr_test_register_guest_fn(ALM_LONG_HANDLER, alm_long_handler_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(ALM_LONG_ENTRY, 0u, 0u);
+    expect(s_alm_long_calls < 50u,
+           "idle: a periodic alarm alone does not keep a finished run alive");
+    sr_test_guest_fn_reset();
 }
 
 static volatile uint32_t s_delay_zero_worker_runs;
@@ -23162,6 +23552,12 @@ int main(int argc, char **argv) {
     test_suspended_waiter_keeps_wait_semantics();
     test_released_timed_wait_reports_release_not_clock();
     test_suspended_delay_deadline_still_counts();
+    test_alarm_registration_and_error_codes();
+    test_alarm_one_shot_fires_once_at_its_time_with_its_argument();
+    test_alarm_rearm_by_return_value();
+    test_alarm_cancel_before_firing_prevents_the_handler();
+    test_alarm_handler_runs_under_interrupt_context_rules();
+    test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
     test_display_framebuf_latch();
     test_time_domains_are_coherent();

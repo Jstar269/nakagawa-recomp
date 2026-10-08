@@ -455,6 +455,7 @@ static void vtime_refresh(void);
 static uint32_t s_pending_vblanks;
 
 static void scheduler_service_pending(void);
+static void sched_alarm_reset(void);
 static void scheduler_add_time(uint64_t delta);
 static uint64_t scheduler_deadline_after(uint64_t delta);
 
@@ -615,6 +616,7 @@ void sched_init(CpuState *cpu) {
     sched_liveness_reset();
 #endif
     stack_ranges_reset();
+    sched_alarm_reset();
 }
 
 uint32_t sched_current_uid(void) { return s_cur >= 0 ? s_tcb[s_cur].uid : 0; }
@@ -1541,6 +1543,164 @@ static int vblank_event_producible(void) {
     return s_interrupts_enabled && s_vbl_next_us != UINT64_MAX;
 }
 
+/* ---- kernel alarms: sceKernelSetAlarm / sceKernelCancelAlarm ----------------------------
+ *
+ * An alarm is a one-shot guest-time timer whose handler is guest code that runs in
+ * interrupt context (s_cur == -1, the same dedicated interrupt stack and register frame
+ * the VBLANK source uses).  The model, in the order the scheduler applies it:
+ *
+ *   - Set: the deadline is the guest clock (vtime_refresh) plus the requested
+ *     microseconds.  A zero request is due at the next service point.
+ *   - Delivery is an interrupt-service step, so it happens exactly where VBLANK
+ *     delivery does: scheduler_service_pending(), which only runs while CPU interrupts
+ *     are enabled and never re-enters itself.  An alarm that comes due under a
+ *     CpuSuspendIntr window therefore runs at the matching resume, and a handler runs
+ *     to completion before any other interrupt source or thread.  VBLANK episodes are
+ *     delivered ahead of alarms; due alarms run in deadline order, oldest set first.
+ *   - The handler gets the `common` word in $a0.  Its $v0 is the re-arm period in
+ *     microseconds: non-zero re-arms the SAME alarm UID that many microseconds after
+ *     the time it was delivered (docs/HARDWARE_ORACLE.md: "An alarm handler's non-zero
+ *     return reschedules it"), zero ends it and releases the UID.  Measured against
+ *     delivery time rather than the original deadline so a delayed service point can
+ *     never owe a burst of catch-up calls.
+ *   - Cancel releases a pending alarm.  A cancel from inside the alarm's own handler
+ *     also works and suppresses the re-arm.  A UID that was cancelled, or whose
+ *     one-shot already ran, is unknown: SCE_KERNEL_ERROR_UNKNOWN_ALMID.
+ *   - The idle scheduler treats the earliest armed alarm as a wake source (see
+ *     sched_classify_idle), so a thread waiting for its handler cannot be reported as
+ *     a deadlock, and alarms never keep a run alive once no thread is waiting.
+ *
+ * Handlers run with s_cur == -1, so sched_is_intr_context() is true and every API that
+ * refuses a blocking wait from interrupt context refuses it here too. */
+#define SCHED_ALARM_MAX 64u
+/* Unknown alarm id.  Measured on hardware (docs/HARDWARE_ORACLE.md, kernel-object table:
+ * Alarm 0x8002019F) and named SCE_KERNEL_ERROR_UNKNOWN_ALMID in the public PSPSDK
+ * pspkerror.h. */
+#define SCHED_ERROR_UNKNOWN_ALMID 0x8002019fu
+/* The alarm table is exhausted.  The project's shared out-of-resources code
+ * (SCE_KERNEL_ERROR_NO_MEMORY); no alarm-specific limit is measured. */
+#define SCHED_ERROR_ALARM_NO_MEMORY 0x80020190u
+
+typedef struct {
+    uint32_t uid;        /* 0 marks a free slot */
+    uint32_t handler;    /* guest entry */
+    uint32_t common;     /* guest word handed to the handler in $a0 */
+    uint64_t deadline;   /* guest-time deadline; SCHED_WAIT_FOREVER while its handler runs */
+    uint64_t seq;        /* set order, the tie-break between equal deadlines */
+} SchedAlarm;
+
+static SchedAlarm s_alarms[SCHED_ALARM_MAX];
+static unsigned s_alarm_live;     /* slots in use, so the service point's common case is O(1) */
+static uint64_t s_alarm_seq;
+
+static void sched_alarm_reset(void) {
+    memset(s_alarms, 0, sizeof(s_alarms));
+    s_alarm_live = 0;
+    s_alarm_seq = 0;
+}
+
+uint32_t sched_alarm_set(uint32_t clock_us, uint32_t handler, uint32_t common) {
+    int slot = -1;
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++)
+        if (s_alarms[i].uid == 0u) { slot = (int)i; break; }
+    if (slot < 0) return SCHED_ERROR_ALARM_NO_MEMORY;
+    uint32_t uid = sr_alloc_uid();
+    if (uid == 0u) return SCHED_ERROR_ALARM_NO_MEMORY;
+    vtime_refresh();
+    SchedAlarm *a = &s_alarms[slot];
+    a->uid = uid;
+    a->handler = handler;
+    a->common = common;
+    a->deadline = scheduler_deadline_after(clock_us);
+    a->seq = ++s_alarm_seq;
+    s_alarm_live++;
+    return uid;
+}
+
+uint32_t sched_alarm_cancel(uint32_t uid) {
+    if (uid == 0u) return SCHED_ERROR_UNKNOWN_ALMID;
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++) {
+        if (s_alarms[i].uid != uid) continue;
+        memset(&s_alarms[i], 0, sizeof(s_alarms[i]));
+        s_alarm_live--;
+        return 0u;
+    }
+    return SCHED_ERROR_UNKNOWN_ALMID;
+}
+
+/* Earliest guest-time deadline of an alarm that is waiting to fire, else
+ * SCHED_WAIT_FOREVER.  An alarm whose handler is running is not waiting. */
+static uint64_t sched_alarm_next_deadline(void) {
+    uint64_t next = SCHED_WAIT_FOREVER;
+    if (!s_alarm_live) return next;
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++)
+        if (s_alarms[i].uid && s_alarms[i].deadline < next) next = s_alarms[i].deadline;
+    return next;
+}
+
+/* The deadline the idle scheduler can actually wait for: an alarm is only a wake source
+ * while CPU interrupts are enabled, because that is the only time it can be delivered. */
+static uint64_t sched_alarm_wake_deadline(void) {
+    return s_interrupts_enabled ? sched_alarm_next_deadline() : SCHED_WAIT_FOREVER;
+}
+
+static int scheduler_alarm_due_slot(void) {
+    if (!s_alarm_live) return -1;
+    int best = -1;
+    for (unsigned i = 0; i < SCHED_ALARM_MAX; i++) {
+        const SchedAlarm *a = &s_alarms[i];
+        if (!a->uid || a->deadline > s_vtime_us) continue;
+        if (best < 0 || a->deadline < s_alarms[best].deadline ||
+            (a->deadline == s_alarms[best].deadline && a->seq < s_alarms[best].seq))
+            best = (int)i;
+    }
+    return best;
+}
+
+/* Run the handler of the due alarm in `slot` as one interrupt episode on the interrupted
+ * register file, then apply its return value.  Called only from the interrupt-service
+ * loop, so CPU interrupts are enabled and no other interrupt handler is active. */
+static void scheduler_alarm_deliver(int slot) {
+    SchedAlarm *a = &s_alarms[slot];
+    const uint32_t uid = a->uid, handler = a->handler, common = a->common;
+    const uint64_t delivered_at = s_vtime_us;
+    a->deadline = SCHED_WAIT_FOREVER;     /* not pending while its own handler runs */
+
+    CpuState save;
+    memcpy(&save, s_cpu, sizeof(CpuState));
+    s_cpu->r[29] = SR_VBLANK_STACK_TOP;   /* the dedicated interrupt stack */
+    s_cpu->r[28] = s_gp;
+    s_cpu->r[4] = common;
+    s_cpu->r[31] = 0;
+    s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
+    s_cpu->pc = handler;
+    int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
+    dispatch(s_cpu, handler);
+    const uint32_t period = s_cpu->r[2];
+    s_cur = save_cur;
+    memcpy(s_cpu, &save, sizeof(CpuState));
+
+    /* The handler may have cancelled this very alarm, and the slot may even have been
+     * reused: only the UID says whether the alarm is still the one that was delivered. */
+    a = &s_alarms[slot];
+    if (a->uid != uid) return;
+    if (period == 0u) {
+        memset(a, 0, sizeof(*a));
+        s_alarm_live--;
+        return;
+    }
+    a->deadline = period > UINT64_MAX - delivered_at ? UINT64_MAX : delivered_at + period;
+}
+
+/* The interrupt-service loop's alarm step: deliver the most overdue alarm.  Returns 1
+ * when one was delivered. */
+static int scheduler_alarm_service_one(void) {
+    int slot = scheduler_alarm_due_slot();
+    if (slot < 0) return 0;
+    scheduler_alarm_deliver(slot);
+    return 1;
+}
+
 /* The scheduler's idle classification, as a pure read of scheduler state.
  *
  * Factored out of sched_run so the policy is directly testable: the loop it used
@@ -1557,12 +1717,21 @@ static SchedIdleState sched_classify_idle(void) {
     SchedIdleState st;
     st.soonest = SCHED_WAIT_FOREVER;
     st.waiting_on_vblank = 0;
+    int any_waiting = 0;
     for (int i = 0; i < s_ntcb; i++) {
         if (s_tcb[i].state != TH_WAIT_DELAY && s_tcb[i].state != TH_WAIT_OBJ) continue;
+        any_waiting = 1;
         if (s_tcb[i].wake < st.soonest) st.soonest = s_tcb[i].wake;
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ &&
             s_tcb[i].wait_obj == VBLANK_WAIT_OBJ)
             st.waiting_on_vblank = 1;
+    }
+    /* A pending alarm is a guest timer like any other deadline, but only while somebody is
+     * waiting: its handler can release a waiter, whereas with nobody waiting there is
+     * nothing left for it to wake and it must not keep a finished run alive. */
+    if (any_waiting) {
+        uint64_t alarm = sched_alarm_wake_deadline();
+        if (alarm < st.soonest) st.soonest = alarm;
     }
     /* Object identity alone is not a licence to keep spinning: the source has to
      * still be able to fire and to be serviced. */
@@ -1589,7 +1758,13 @@ static void scheduler_service_pending(void) {
     if (!s_interrupts_enabled || s_servicing_interrupts) return;
     s_servicing_interrupts = 1;
     while (s_interrupts_enabled &&
-           ((s_pending_interrupts & SCHED_INTR_VBLANK) || s_pending_vblanks)) {
+           ((s_pending_interrupts & SCHED_INTR_VBLANK) || s_pending_vblanks ||
+            scheduler_alarm_due_slot() >= 0)) {
+        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed. */
+        if (!(s_pending_interrupts & SCHED_INTR_VBLANK) && !s_pending_vblanks) {
+            scheduler_alarm_service_one();
+            continue;
+        }
         s_pending_interrupts &= ~SCHED_INTR_VBLANK;
         /* A bare pending bit with no count is an out-of-band source (turbo mode's
          * quantum): exactly one episode, never zero. */
@@ -2577,6 +2752,12 @@ void sr_yield(CpuState *s) {
                     uint64_t delta = s_tcb[i].wake - s_vtime_us;
                     if (adv == 0 || delta < adv) adv = delta;
                 }
+            }
+            /* An alarm deadline is a scheduled event too: never skip past it. */
+            uint64_t alarm_at = sched_alarm_wake_deadline();
+            if (alarm_at != SCHED_WAIT_FOREVER && alarm_at > s_vtime_us) {
+                uint64_t delta = alarm_at - s_vtime_us;
+                if (adv == 0 || delta < adv) adv = delta;
             }
             scheduler_add_time(adv);
         }
@@ -3669,9 +3850,15 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * advance the display source timeline and service its eligible pending interrupt.
              * Vblank delivery can't starve: the source is latched whenever due. */
             uint64_t soonest = (uint64_t)-1;
+            int any_waiting = 0;
             for (int i = 0; i < s_ntcb; i++)
-                if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
-                    s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
+                if (s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) {
+                    any_waiting = 1;
+                    if (s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
+                }
+            /* An armed alarm is a timed wake like a delay, while someone is waiting for it. */
+            if (any_waiting && sched_alarm_wake_deadline() < soonest)
+                soonest = sched_alarm_wake_deadline();
             scheduler_progress_time();
             if (s_pace_on && soonest != (uint64_t)-1 && soonest > s_vtime_us &&
                 soonest - s_vtime_us < vblank_due_us())
@@ -3731,6 +3918,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 } else if (soonest > s_vtime_us) {
                     s_vtime_us = soonest;
                 }
+                /* The jump may have reached an alarm deadline: its handler is what readies
+                 * the waiter, and it only runs from an interrupt-service step. */
+                if (s_alarm_live) scheduler_service_pending();
                 idx = pick_next();
                 if (idx < 0) {
                     fprintf(stderr, "SCHED: no runnable threads left after time jump. Dumping thread states:\n");
