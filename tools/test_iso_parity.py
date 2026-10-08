@@ -954,7 +954,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(module_check["status"], "UNSUPPORTED")
         self.assertIn(first, module_check["message"])
         self.assertIn(second, module_check["message"])
-        self.assertEqual(module_check["issues"], [726])
+        self.assertEqual(module_check["issues"], [308])
 
     def test_nonexperimental_bringup_keeps_module_boundary_detail_and_issue(self) -> None:
         failure, issues, detail = nk_cli._bringup_import_failure(
@@ -964,7 +964,7 @@ int main(int argc, char **argv) {{
             {"EXECUTABLE": {"issue_numbers": [308]}},
         )
         self.assertEqual(failure, "GUEST_MODULE_DISCOVERY_FAILED")
-        self.assertEqual(issues, [726])
+        self.assertEqual(issues, [308])
         self.assertEqual(
             detail, "DUPLICATE_DISC_MODULE_BASENAME: shared.prx occurs twice"
         )
@@ -1648,10 +1648,10 @@ int main(int argc, char **argv) {{
         )
         self.assertTrue(preflight["is_experimental"])
         by_code = {check["code"]: check for check in preflight["checks"]}
-        self.assertEqual(by_code["EXPERIMENTAL"]["issues"], [285, 308])
+        self.assertEqual(by_code["EXPERIMENTAL"]["issues"], [308])
         self.assertIn("Compatibility is unknown", by_code["EXPERIMENTAL"]["message"])
         self.assertEqual(by_code["RUNTIME_PACKAGE"]["status"], "MISSING")
-        self.assertEqual(by_code["RUNTIME_PACKAGE"]["issues"], [296, 297])
+        self.assertEqual(by_code["RUNTIME_PACKAGE"]["issues"], [308])
 
         python_root = self.temp_dir / "python-user-data"
         python_profile_path = write_experimental_profile(

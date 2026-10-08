@@ -2351,7 +2351,7 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
         ? PLAYER_DECRYPTED_EBOOT_VALID : PLAYER_DECRYPTED_EBOOT_INVALID;
 }
 
-/* Issue #295: built-in decryption boundary.  The player holds no key
+/* Issue #308: built-in decryption boundary.  The player holds no key
  * material: a local-only key file at <user data>/keys/psp-keyfile.json (or
  * $NAKAGAWA_PSP_KEY_FILE) unlocks the boundary, which unwraps the disc's
  * encrypted executable and encrypted PRX modules into the private per-title
@@ -2487,11 +2487,11 @@ static PlayerBoundaryStatus player_try_builtin_decrypt_member(
     return PLAYER_BOUNDARY_OK;
 }
 
-/* Issue #295 guest-module boundary: the disc's own PRX modules are resolved
+/* Issue #308 guest-module boundary: the disc's own PRX modules are resolved
    through the same per-title folder and built-in boundary as the executable,
    one module at a time and fail closed per module.  CFW patch-module exclusion
    stays the intake route's named job; this reports decryption readiness. */
-/* Issue #726 reports 35+ PRXs in one folder; 256 covers that count with a
+/* Disc surveys found 35+ PRXs in one folder; 256 covers that count with a
    fixed upper bound for malformed images. */
 #define PLAYER_MAX_GUEST_MODULES 256
 
@@ -2837,7 +2837,7 @@ static void player_check_guest_modules(PlayerApp *app,
     modules = (PlayerModuleCandidate *)calloc(PLAYER_MAX_GUEST_MODULES,
                                                sizeof(*modules));
     if (modules == NULL) {
-        static const unsigned int issues[] = { 726 };
+        static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                              "DISC_MODULE_SCAN_ALLOCATION_FAILED: module discovery "
                              "could not allocate its bounded scan table.",
@@ -2849,7 +2849,7 @@ static void player_check_guest_modules(PlayerApp *app,
         modules, PLAYER_MAX_GUEST_MODULES, &total, discovery_message,
         sizeof(discovery_message));
     if (scan_status != PLAYER_MODULE_SCAN_OK) {
-        static const unsigned int issues[] = { 726 };
+        static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                              discovery_message[0] ? discovery_message :
                                  "DISC_MODULE_SCAN_FAILED: module discovery failed "
@@ -2943,7 +2943,7 @@ static void player_check_guest_modules(PlayerApp *app,
                  (unsigned)(not_ready - 1));
     }
     {
-        static const unsigned int issues[] = { 295 };
+        static const unsigned int issues[] = { 308 };
         if (first_encrypted) {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is encrypted%s. "
@@ -2990,10 +2990,10 @@ void player_app_build_compatibility_preflight(
     if (!runtime_root) runtime_root = ".";
 
     if (app->inspecting_game.is_experimental) {
-        static const unsigned int issues[] = { 285, 308 };
+        static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
                              "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
-                             issues, 2);
+                             issues, 1);
     }
 
     if (!disc_readable) {
@@ -3020,7 +3020,7 @@ void player_app_build_compatibility_preflight(
                              "BOOT.BIN selected for analysis because EBOOT.BIN is encrypted.", NULL, 0);
     } else if (eboot == NK_ISO_EXEC_PSP_ENCRYPTED ||
                eboot == NK_ISO_EXEC_SCE_WRAPPER || eboot == NK_ISO_EXEC_PBP) {
-        static const unsigned int issues[] = { 295 };
+        static const unsigned int issues[] = { 308 };
         char decrypted_dir[NK_MAX_PATH * 2];
         char decrypted_elf[NK_MAX_PATH * 2];
         PlayerDecryptedEbootState decrypted_state = player_find_decrypted_eboot(
@@ -3107,7 +3107,7 @@ void player_app_build_compatibility_preflight(
         NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
             app, &app->inspecting_game, NULL, package_reason,
             sizeof(package_reason));
-        static const unsigned int issues[] = { 296, 297 };
+        static const unsigned int issues[] = { 308 };
         PlayerPreflightStatus status = PREFLIGHT_MISSING;
         if (package_status == NK_RUNTIME_PACKAGE_OK) status = PREFLIGHT_OK;
         else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) status = PREFLIGHT_INCOMPATIBLE;
@@ -3115,10 +3115,10 @@ void player_app_build_compatibility_preflight(
         player_preflight_add(preflight, "RUNTIME_PACKAGE", status,
             package_reason[0] ? package_reason : "Runtime package validation did not complete.",
             status == PREFLIGHT_OK ? NULL : issues,
-            status == PREFLIGHT_OK ? 0 : 2);
+            status == PREFLIGHT_OK ? 0 : 1);
     }
 
-    static const unsigned int font_issues[] = { 300 };
+    static const unsigned int font_issues[] = { 313 };
     char font_message[512] = "";
     NkFontStatus font_status = nk_font_check_cache(runtime_root, runtime_root,
                                                    font_message, sizeof(font_message));

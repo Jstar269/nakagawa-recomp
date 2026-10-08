@@ -218,7 +218,7 @@ HANDLER_METADATA = {
         "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#341)",
     },
     # Common Memory Stick devctls have explicit outputs; unsupported devices or
-    # command pairs remain visible per pair and are summarized under issue #281.
+    # command pairs remain visible per pair and are tracked under issue #341.
     "h_IoDevctl": {
         "status": "partial",
         "limitation": "Memory Stick devctl callback events unmodeled (#341)",

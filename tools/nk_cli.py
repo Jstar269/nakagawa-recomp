@@ -950,7 +950,7 @@ def _stage_runtime_assets(package_dir: Path) -> None:
     if _windows_host():
         # The SDL3_ttf readable-font closure (#421), through the same mechanical
         # step the Makefile's player target uses. The prerequisite installer
-        # (#296) does not provide it yet, so a package without it still builds:
+        # (#324) does not provide it yet, so a package without it still builds:
         # the player then draws with its bitmap fallback and logs why.
         try:
             _runtime_dlls.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
@@ -1894,7 +1894,7 @@ def _new_bringup_report() -> dict:
 
 
 def _update_issues(report: dict, values) -> None:
-    allowed = {118, 280, 285, 295, 296, 297, 298, 300, 308, 726}
+    allowed = {118, 280, 308, 313}
     report["issue_numbers"] = sorted(
         set(report["issue_numbers"]) | {value for value in values if value in allowed}
     )
@@ -1981,7 +1981,7 @@ def _fail_bringup(
 def _bringup_import_failure(exc: Exception, checks: dict) -> tuple[str, list[int], str | None]:
     detail = str(exc)
     if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
-        return "GUEST_MODULE_DISCOVERY_FAILED", [726], detail
+        return "GUEST_MODULE_DISCOVERY_FAILED", [308], detail
 
     failure = "EXPERIMENTAL_IMPORT_FAILED"
     issues = [308]
@@ -2554,7 +2554,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         return 1
     boot_path = _psp_boot_path(preflight.get("selected_executable_source"))
     if boot_path is None:
-        fail_stage(report, "inspect", "EXECUTABLE_UNSUPPORTED", [285],
+        fail_stage(report, "inspect", "EXECUTABLE_UNSUPPORTED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -2595,7 +2595,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             except (OSError, IsoInspectionError, PackageBuildError) as exc:
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_DISCOVERY_FAILED",
-                    [726], int((time.perf_counter() - started) * 1000),
+                    [308], int((time.perf_counter() - started) * 1000),
                 )
                 detail = str(exc)
                 if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
@@ -2607,7 +2607,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             report["counts"]["encrypted_modules"] = sum(
                 candidate["kind"] == "encrypted-prx" for candidate in module_candidates
             )
-            _update_issues(report, [285, 308])
+            _update_issues(report, [308])
             # Every candidate must resolve to a plain module. A plain copy on
             # disc is staged from the image; an encrypted container (or any
             # candidate the intake cannot classify) is satisfied by a valid
@@ -2652,7 +2652,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     print(f"MODULE {candidate['name']}: not ready ({detail})")
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_DECRYPTION_REQUIRED",
-                    [295], int((time.perf_counter() - started) * 1000),
+                    [308], int((time.perf_counter() - started) * 1000),
                 )
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
@@ -2660,7 +2660,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             if unready:
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
-                    [295, 308], int((time.perf_counter() - started) * 1000),
+                    [308], int((time.perf_counter() - started) * 1000),
                 )
                 _write_bringup_report(report, report_path)
                 print(_bringup_human_summary(report))
@@ -2677,7 +2677,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 except (OSError, IsoInspectionError, PackageBuildError):
                     fail_stage(
                         report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
-                        [296], int((time.perf_counter() - started) * 1000),
+                        [308], int((time.perf_counter() - started) * 1000),
                     )
                     _write_bringup_report(report, report_path)
                     print(_bringup_human_summary(report))
@@ -2716,7 +2716,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 except (OSError, KeyError, ValueError):
                     fail_stage(
                         report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
-                        [296], int((time.perf_counter() - started) * 1000),
+                        [308], int((time.perf_counter() - started) * 1000),
                     )
                     _write_bringup_report(report, report_path)
                     print(_bringup_human_summary(report))
@@ -2746,7 +2746,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         return 1
     set_stage(report, "prepare_import", "PASS", int((time.perf_counter() - started) * 1000))
     if not metadata.matched_profile:
-        _update_issues(report, [285, 308])
+        _update_issues(report, [308])
 
     if progress is not None:
         progress.start("analyze")
@@ -2772,7 +2772,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 # production bring-up result.
                 pass
     except Exception:
-        fail_stage(report, "analyze", "ANALYSIS_FAILED", [296],
+        fail_stage(report, "analyze", "ANALYSIS_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -2811,13 +2811,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             codegen_dir / f"{manifest['game_name']}_recomp_stubs.txt", sources
         )
         if completed.returncode != 0:
-            fail_stage(report, "codegen", "CODEGEN_FAILED", [296],
+            fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                           int((time.perf_counter() - started) * 1000))
             _write_bringup_report(report, report_path)
             print(_bringup_human_summary(report))
             return 1
     except Exception:
-        fail_stage(report, "codegen", "CODEGEN_FAILED", [296],
+        fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
@@ -2847,11 +2847,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     if build_status != 0:
         combined = (stdout_capture.getvalue() + stderr_capture.getvalue()).casefold()
         if "production pgf/pgd runtime backends" in combined:
-            failure, stage, issues = "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE", "compile", [297]
+            failure, stage, issues = "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE", "compile", [308]
         elif "package_build_failed" in combined or observer_events.get("compile", (None,))[0] == "FAIL":
-            failure, stage, issues = "COMPILE_FAILED", "compile", [296]
+            failure, stage, issues = "COMPILE_FAILED", "compile", [308]
         else:
-            failure, stage, issues = "BUILD_PACKAGE_FAILED", "build_package", [296, 297]
+            failure, stage, issues = "BUILD_PACKAGE_FAILED", "build_package", [308]
         if report["stages"][stage]["status"] == "NOT_RUN":
             fail_stage(report, stage, failure, issues, 0)
         else:
@@ -2882,7 +2882,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)
         except (OSError, ValueError) as exc:
             fail_stage(
-                report, "launch", "LOOSE_CONTENT_ROOTS_UNAVAILABLE", [289],
+                report, "launch", "LOOSE_CONTENT_ROOTS_UNAVAILABLE", [308],
                 int((time.perf_counter() - started) * 1000),
             )
             print(str(exc), file=sys.stderr)
@@ -2958,32 +2958,32 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 hle_observed = _flight_has_hle_import(flight_output)
                 if hle_observed is False:
                     fail_stage(
-                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [285, 308],
+                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 elif hle_observed is None:
                     fail_stage(
-                        report, "launch", "GUEST_ACTIVITY_UNVERIFIED", [285, 308],
+                        report, "launch", "GUEST_ACTIVITY_UNVERIFIED", [308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 else:
                     framebuffer_observed = _flight_has_display_framebuffer_setup(flight_output)
                     if framebuffer_observed is False:
                         if _flight_has_module_self_unload(flight_output) is True:
-                            failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 285, 308]
+                            failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 308]
                         else:
-                            failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [285, 308]
+                            failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [308]
                         fail_stage(report, "launch", failure, issues,
                                       int((time.perf_counter() - started) * 1000))
                     elif framebuffer_observed is None:
                         fail_stage(
-                            report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [285, 308],
+                            report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", [308],
                             int((time.perf_counter() - started) * 1000),
                         )
                     else:
                         if not presentation_evidence_ok:
                             fail_stage(
-                                report, "launch", "NO_FRAME_SUBMISSIONS", [297, 308],
+                                report, "launch", "NO_FRAME_SUBMISSIONS", [308],
                                 int((time.perf_counter() - started) * 1000),
                             )
                         else:
@@ -2998,24 +2998,24 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                       or "unsupported instruction" in folded or "aot-gap" in folded):
                     failure, issues = "UNSUPPORTED_INSTRUCTION", [118]
                 elif report["runtime_output_kind"] == "ENTRY_NOT_COMPILED":
-                    failure, issues = "ENTRY_NOT_COMPILED", [296]
+                    failure, issues = "ENTRY_NOT_COMPILED", [308]
                 elif report["runtime_output_kind"] == "DRIVER_INPUT_READ_FAILURE":
-                    failure, issues = "RUNTIME_INPUT_UNAVAILABLE", [297]
+                    failure, issues = "RUNTIME_INPUT_UNAVAILABLE", [308]
                 elif report["runtime_output_kind"] == "DRIVER_ELF_REJECTION":
-                    failure, issues = "RUNTIME_ELF_REJECTED", [296]
+                    failure, issues = "RUNTIME_ELF_REJECTED", [308]
                 elif report["runtime_output_kind"] == "DRIVER_TRACE_INPUT_FAILURE":
-                    failure, issues = "RUNTIME_TRACE_UNAVAILABLE", [297]
+                    failure, issues = "RUNTIME_TRACE_UNAVAILABLE", [308]
                 elif report["runtime_output_kind"] == "DRIVER_ARGUMENT_FAILURE":
-                    failure, issues = "RUNTIME_ARGUMENT_FAILURE", [297]
+                    failure, issues = "RUNTIME_ARGUMENT_FAILURE", [308]
                 elif report["runtime_output_kind"] == "NATIVE_CRASH_REPORT":
-                    failure, issues = "NATIVE_RUNTIME_CRASH", [297]
+                    failure, issues = "NATIVE_RUNTIME_CRASH", [308]
                 elif report["runtime_output_kind"] == "DISPATCH_MISS":
                     failure, issues = "UNRESOLVED_DISPATCH_TARGET", [118]
                 elif report["runtime_output_kind"] == "VIDEO_UNAVAILABLE":
-                    failure, issues = "HEADLESS_UNAVAILABLE", [297]
+                    failure, issues = "HEADLESS_UNAVAILABLE", [308]
                     report["exit_classification"] = "HEADLESS_UNAVAILABLE"
                 else:
-                    failure, issues = "LAUNCH_FAILED", [297]
+                    failure, issues = "LAUNCH_FAILED", [308]
                 fail_stage(report, "launch", failure, issues,
                               int((time.perf_counter() - started) * 1000))
         except subprocess.TimeoutExpired:
@@ -3023,11 +3023,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             launch_output, _ = process.communicate()
             _set_bringup_presentation(report, launch_output)
             report["exit_classification"] = "TIMED_OUT"
-            fail_stage(report, "launch", "LAUNCH_TIMEOUT", [297],
+            fail_stage(report, "launch", "LAUNCH_TIMEOUT", [308],
                           int((time.perf_counter() - started) * 1000))
     except OSError:
         report["exit_classification"] = "EXITED_NONZERO"
-        fail_stage(report, "launch", "LAUNCH_FAILED", [297],
+        fail_stage(report, "launch", "LAUNCH_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
 
     _write_bringup_report(report, report_path)

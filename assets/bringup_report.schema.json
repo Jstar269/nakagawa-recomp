@@ -84,7 +84,7 @@
     "issue_numbers": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "type": "integer", "enum": [118, 280, 285, 295, 296, 297, 298, 300, 308, 726] }
+      "items": { "type": "integer", "enum": [118, 280, 308, 313] }
     },
     "unsupported_imports": {
       "type": "array",
@@ -157,7 +157,7 @@
         "issue_numbers": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "integer", "enum": [118, 285, 295, 296, 297, 298, 300, 308, 726] }
+          "items": { "type": "integer", "enum": [118, 308, 313] }
         }
       }
     },

@@ -1077,7 +1077,7 @@ static void assert_module_scan_boundary(PlayerApp *app, const char *iso_path,
                 message_fragment, check->message);
     }
     assert(strstr(check->message, message_fragment) != NULL);
-    assert(check->issue_count == 1 && check->issue_numbers[0] == 726);
+    assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
 }
 
 /* The package-status identity the validator itself computes for *user_root*
@@ -2351,7 +2351,7 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
         assert(strstr(check->message, "Encrypted executable: supply decrypted modules at ") != NULL);
         assert(strstr(check->message, decrypted_dir) != NULL);
-        assert(check->issue_count == 1 && check->issue_numbers[0] == 295);
+        assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
 
         write_synthetic_mips_elf(decrypted_elf);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -2393,12 +2393,10 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_IN_PROGRESS);
         assert(strstr(check->message,
                       "Experimental: this game has not been verified. Compatibility is unknown.") != NULL);
-        assert(check->issue_count == 2 && check->issue_numbers[0] == 285 &&
-               check->issue_numbers[1] == 308);
+        assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_MISSING);
-        assert(check->issue_count == 2 && check->issue_numbers[0] == 296 &&
-               check->issue_numbers[1] == 297);
+        assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
 
         /* Native v1 package checks bind the profile executable hash, the
            player ABI, and a package-contained executable path. */
@@ -2710,7 +2708,7 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
         fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_INVALID);
-        assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 300);
+        assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
 
         /* Clean up */
         free(font_app);

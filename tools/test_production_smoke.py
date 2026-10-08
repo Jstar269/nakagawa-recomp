@@ -1512,7 +1512,7 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["reached_stage"], "inspect")
                 self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
                 self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
-                self.assertEqual(report["issue_numbers"], [285])
+                self.assertEqual(report["issue_numbers"], [308])
 
     def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
         output = (
@@ -1631,7 +1631,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["runtime_output_kind"], "UNSUPPORTED_INSTRUCTION")
         self.assertEqual(report["failure_class"], "UNSUPPORTED_INSTRUCTION")
         self.assertIn(118, report["issue_numbers"])
-        self.assertNotIn(297, report["issue_numbers"])
+        self.assertEqual(sorted(report["issue_numbers"]), [118, 308])
 
     def test_dummy_video_driver_message_remains_headless_fallback(self):
         output = "Vulkan support is not available in current SDL video driver (dummy)\n"
@@ -1669,8 +1669,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_HLE")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
         self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("before its first PSP kernel import", summary)
         self.assertIn("related support is in the works", summary)
@@ -1683,7 +1682,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["failure_class"], "GUEST_ACTIVITY_UNVERIFIED")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
-        self.assertIn(285, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         self.assertIn("telemetry did not verify a PSP kernel import",
                       nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
@@ -1697,8 +1696,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
         self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("before PSP display framebuffer setup", summary)
         self.assertIn("related support is in the works", summary)
@@ -1714,8 +1712,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["failure_class"], "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP")
         self.assertEqual(report["exit_classification"], "EXITED_ZERO")
         self.assertIn(280, report["issue_numbers"])
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(sorted(report["issue_numbers"]), [280, 308])
         summary = nk_cli._bringup_human_summary(report)
         self.assertIn("unloaded itself before PSP display framebuffer setup", summary)
         self.assertIn("related support is in the works", summary)
@@ -1732,8 +1729,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["failure_class"], "DISPLAY_PROGRESS_UNVERIFIED")
         self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
-        self.assertIn(285, report["issue_numbers"])
-        self.assertIn(308, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         self.assertIn("did not verify PSP display framebuffer setup",
                       nk_cli._bringup_human_summary(report))
         nk_cli.validate_bringup_report(report)
@@ -2095,7 +2091,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
         self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
-        self.assertEqual(report["issue_numbers"], [285, 295, 308])
+        self.assertEqual(report["issue_numbers"], [308])
         self.assertEqual(report["counts"]["modules"], 2)
         self.assertEqual(report["counts"]["encrypted_modules"], 1)
         nk_cli.validate_bringup_report(report)
@@ -2161,9 +2157,9 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
         # A still-encrypted "decrypted" copy is not a usable module: with no key
-        # file the module still needs the decryption boundary (#295).
+        # file the module still needs the decryption boundary (#308).
         self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
-        self.assertIn(295, report["issue_numbers"])
+        self.assertEqual(report["issue_numbers"], [308])
         nk_cli.validate_bringup_report(report)
 
     def test_catalog_bringup_stages_user_decrypted_prx(self):
@@ -2389,7 +2385,7 @@ class TestProductStatusCopy(unittest.TestCase):
     checklist and completion-manifest text that still described those as
     missing was a false product claim. Boundaries that really are unavailable
     stay named with their tracking issue: PGD-protected data and no-keyfile
-    executable decryption (#295).
+    executable decryption (#308).
     """
 
     def _source(self, relative: str) -> str:

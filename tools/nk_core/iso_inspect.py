@@ -800,7 +800,7 @@ def _elf32_mips_usable(
 
 
 # ---------------------------------------------------------------------------
-# Guest-module boundary (issue #295).  The disc's own PRX/ELF modules are
+# Guest-module boundary (issue #308).  The disc's own PRX/ELF modules are
 # resolved through the same per-title folder and built-in decryption boundary
 # as the executable, one module at a time and fail closed per module.
 # ---------------------------------------------------------------------------
@@ -814,9 +814,9 @@ MODULE_ROOTS = (
 # packaging variations while bounding traversal work.
 MAX_MODULE_DIRECTORY_DEPTH = 4
 MAX_MODULE_DIRECTORIES = 1024
-# The issue's largest reported folder contained 35+ PRXs; 256 exceeds the
+# The largest surveyed folder contained 35+ PRXs; 256 exceeds the
 # aggregate known folder counts without turning malformed images into an
-# unbounded intake route (#726).
+# unbounded intake route.
 MAX_MODULE_CANDIDATES = 256
 _MODULE_SUFFIXES = {".prx", ".elf"}
 _EXECUTABLE_FILENAMES = {"eboot.bin", "boot.bin", "eboot.old"}
@@ -1149,7 +1149,7 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
         return {
             "code": "GUEST_MODULES", "status": "UNSUPPORTED",
             "message": f"Guest module discovery stopped: {discovery_error}",
-            "issues": [726],
+            "issues": [308],
         }
     ready = report["ready"]
     total = report["total"]
@@ -1172,7 +1172,7 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
                 f"Supply decrypted modules at {module_dir}, or a local key file "
                 f"at {key_hint} to enable the built-in boundary."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     if first["reason"] == "boundary":
         return {
@@ -1182,7 +1182,7 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
                 f"decrypted ({first['detail']}){more}. Supply decrypted modules at "
                 f"{module_dir}, or add the missing entry to your local key file."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     return {
         "code": "GUEST_MODULES", "status": "UNSUPPORTED",
@@ -1190,7 +1190,7 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
             f"Guest modules: {ready} of {total} ready; {label} is not ready "
             f"({first['detail']}){more}. Supply decrypted modules at {module_dir}."
         ),
-        "issues": [295],
+        "issues": [308],
     }
 
 
@@ -1403,7 +1403,7 @@ def inspect_compatibility_preflight(
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
-    # Built-in decryption boundary (issue #295): when the user keeps a local
+    # Built-in decryption boundary (issue #308): when the user keeps a local
     # key file in the private user data, unwrap the disc's encrypted
     # executable through the production boundary and continue to the
     # analyzer.  Nothing is ever written next to the ISO or the repository.
@@ -1445,7 +1445,7 @@ def inspect_compatibility_preflight(
         and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
     ):
         selected = "EBOOT.elf"
-    # Guest-module boundary (issue #295): every module the disc carries is
+    # Guest-module boundary (issue #308): every module the disc carries is
     # resolved through the same per-title folder and boundary as the
     # executable, one module at a time and fail closed per module.
     module_report: dict[str, object] = {
@@ -1550,7 +1550,7 @@ def inspect_compatibility_preflight(
                 f"({boundary_outcome.detail}); supply decrypted modules at {module_dir}. "
                 f"Check the local key file at {boundary_outcome.key_path}."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     elif eboot_kind in user_decryptable_kinds and module_dir is not None:
         executable_check = {
@@ -1561,7 +1561,7 @@ def inspect_compatibility_preflight(
                 "for supported formats. The project ships no keys; broader ISO-to-Play "
                 "support is in the works."
             ),
-            "issues": [295],
+            "issues": [308],
         }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
         executable_check = {
@@ -1606,14 +1606,14 @@ def inspect_compatibility_preflight(
         "code": "EXPERIMENTAL",
         "status": "IN_PROGRESS",
         "message": "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
-        "issues": [285, 308],
+        "issues": [308],
     } if is_experimental else None
 
     if is_experimental:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
             "message": "Experimental title runtime package is missing; build it from the library.",
-            "issues": [296, 297],
+            "issues": [308],
         }
     elif metadata.matched_profile is None:
         runtime_check = {
@@ -1630,7 +1630,7 @@ def inspect_compatibility_preflight(
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "MISSING",
             "message": "Runtime package missing; build it from the library.",
-            "issues": [296, 297],
+            "issues": [308],
         }
 
     from .fonts import inspect_font_cache
@@ -1644,12 +1644,12 @@ def inspect_compatibility_preflight(
     elif font_status == "INVALID":
         fonts_check = {
             "code": "SYSTEM_FONTS", "status": "INVALID",
-            "message": font_message, "issues": [300],
+            "message": font_message,             "issues": [313],
         }
     else:
         fonts_check = {
             "code": "SYSTEM_FONTS", "status": "MISSING",
-            "message": font_message, "issues": [300],
+            "message": font_message,             "issues": [313],
         }
     audio_check = {
         "code": "AUDIO_OUTPUT", "status": "OK",
