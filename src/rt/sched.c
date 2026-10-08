@@ -88,6 +88,7 @@ enum { TH_DORMANT = 0, TH_READY, TH_RUNNING, TH_WAIT_DELAY, TH_WAIT_OBJ };
  * A suspended thread reports its underlying state ORed with the suspend bit. */
 enum { PSP_THREAD_RUNNING = 1, PSP_THREAD_READY = 2, PSP_THREAD_WAITING = 4,
        PSP_THREAD_SUSPEND = 8, PSP_THREAD_STOPPED = 16 };
+enum { SCHED_WAKE_NONE = 0, SCHED_WAKE_TIMEOUT, SCHED_WAKE_SIGNAL };
 enum { PSP_WAIT_NONE = 0, PSP_WAIT_SLEEP = 1, PSP_WAIT_DELAY = 2, PSP_WAIT_OBJECT = 3 };
 
 #define SCE_KERNEL_ERROR_ILLEGAL_THID      0x80020197u
@@ -173,6 +174,10 @@ typedef struct {
                                    * a suspended thread keeps its READY/WAIT state (a wait still
                                    * completes and records its outcome) but is never selected to
                                    * run, and is never TH_RUNNING because only s_cur is on the CPU. */
+    int      wake_cause;          /* why the last timed object wait was released: SCHED_WAKE_NONE
+                                   * (callback wake or other), _TIMEOUT (deadline promotion) or
+                                   * _SIGNAL (signal, cancel, delete, release).  Recorded at the
+                                   * moment of release so a delayed resume cannot change it. */
     int      rot_head;            /* sceKernelRotateThreadReadyQueue moved this thread to the back of
                                    * its priority's queue: the next selection at that priority
                                    * starts scanning after it.  One-shot, cleared by that selection. */
@@ -2261,6 +2266,7 @@ static void sched_promote_expired_waits(void) {
             s_tcb[i].wake != SCHED_WAIT_FOREVER &&
             s_vtime_us >= s_tcb[i].wake) {
             sched_wait_record_wake(&s_tcb[i], 0, 0u);
+            s_tcb[i].wake_cause = SCHED_WAKE_TIMEOUT;
             s_tcb[i].state = TH_READY;   /* delay expired, or a timed wait timed out */
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_WAKE, s_tcb[i].uid, s_tcb[i].uid, s_tcb[i].wait_obj, 1u);
 #ifdef SR_SCHED_LIVENESS_TEST
@@ -2714,9 +2720,18 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     t->pending_wait_kind = 0;
     t->wake_result_valid = 0;
     t->wake = deadline;
+    t->wake_cause = SCHED_WAKE_NONE;
     switch_to_scheduler();
     vtime_refresh();
-    return s_vtime_us >= deadline;   /* resumed: timed out if the deadline has passed */
+    /* The outcome was recorded when the wait was released: a deadline promotion is a
+     * timeout, a signal/cancel/delete/release is not, however late this thread resumes
+     * (it may sit READY behind a stronger thread, or suspended).  A release the scheduler
+     * did not classify (a callback wake) keeps the clock test. */
+    int cause = t->wake_cause;
+    t->wake_cause = SCHED_WAKE_NONE;
+    if (cause == SCHED_WAKE_TIMEOUT) return 1;
+    if (cause == SCHED_WAKE_SIGNAL) return 0;
+    return s_vtime_us >= deadline;
 }
 
 static WaitInvocation *sched_wait_find(SrWaitHandle handle) {
@@ -2920,6 +2935,7 @@ static void sched_wake_thread_joiners(uint32_t uid, uint32_t result) {
         waiter->join_result = result;
         waiter->join_result_valid = 1;
         waiter->join_waiting = 0;
+        waiter->wake_cause = SCHED_WAKE_SIGNAL;
         waiter->state = TH_READY;
 #ifdef SR_SCHED_LIVENESS_TEST
         sched_liveness_record_wake(uid, 1u);
@@ -2940,6 +2956,7 @@ void sched_wake(uint32_t obj) {
     for (int i = 0; i < s_ntcb; i++)
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ && s_tcb[i].wait_obj == obj) {
             sched_wait_record_wake(&s_tcb[i], 0, 0u);
+            s_tcb[i].wake_cause = SCHED_WAKE_SIGNAL;
             s_tcb[i].state = TH_READY;
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_WAKE,
                                     s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u,
@@ -2971,6 +2988,7 @@ void sched_wake_with_result(uint32_t obj, uint32_t result) {
             sched_wait_record_wake(w, 1, result);
             w->wake_result = result;
             w->wake_result_valid = 1;
+            w->wake_cause = SCHED_WAKE_SIGNAL;
             w->state = TH_READY;
 #ifdef SR_SCHED_LIVENESS_TEST
             readied++;
@@ -3000,6 +3018,7 @@ int sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid) {
     TCB *t = tcb_by_uid(thread_uid);
     if (t && !t->deleted && t->state == TH_WAIT_OBJ && t->wait_obj == obj) {
         sched_wait_record_wake(t, 0, 0u);
+        t->wake_cause = SCHED_WAKE_SIGNAL;
         t->state = TH_READY;
 #ifdef SR_SCHED_LIVENESS_TEST
         sched_liveness_record_wake(obj, 1u);
@@ -3028,6 +3047,7 @@ int sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t resul
         sched_wait_record_wake(t, 1, result);
         t->wake_result = result;
         t->wake_result_valid = 1;
+        t->wake_cause = SCHED_WAKE_SIGNAL;
         t->state = TH_READY;
 #ifdef SR_SCHED_LIVENESS_TEST
         sched_liveness_record_wake(t->wait_obj, 1u);

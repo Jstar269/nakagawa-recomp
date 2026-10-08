@@ -17333,12 +17333,30 @@ static uint32_t h_WaitSema(CpuState *s) {
     if (err) return err;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitSema uid=0x%x count=%d need=%d (from 0x%x)\n", uid, m->count, need, sched_current_uid());
+    /* The deadline is fixed by the first block; a wake that finds the count taken
+     * by another thread re-waits only for what is left, and a released waiter that
+     * resumes after the deadline times out instead of starting a fresh full wait. */
+    uint64_t wait_end = 0;
+    int wait_end_set = 0;
     while (m->count < need) {
         /* PSP-B3-01 (psp-hw-20260917): ReferThreadStatus reports sema waits as
          * waitType 3 with waitId = the semaphore UID. */
         sched_set_current_wait_kind(3);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
+            if (!wait_end_set) {
+                sched_vtime_refresh();
+                wait_end = sched_vtime_deadline_after((uint64_t)usec);
+                wait_end_set = 1;
+            } else {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                usec = now >= wait_end ? 0u : (uint32_t)(wait_end - now);
+                if (usec == 0u) {
+                    MEM_W32(toptr, 0u);
+                    return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
+                }
+            }
             if (sched_block_on_timeout(uid, usec)) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired timed wait writes the
                  * remaining time (0 at the deadline) to *timeout and answers
@@ -18478,11 +18496,27 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
     if (!sr_evf_matches(m->pattern, bits, mode) && !(m->attr & 0x200u) &&
         sched_count_waiters(uid) > 0)
         return 0x800201b0u;
+    uint64_t wait_end = 0;      /* fixed by the first block; see h_WaitSema */
+    int wait_end_set = 0;
     while (!sr_evf_matches(m->pattern, bits, mode)) {
         /* PSP-B3-01 (psp-hw-20260917): evf waits report waitType 4. */
         sched_set_current_wait_kind(4);
         if (toptr) {
             uint32_t usec = MEM_R32(toptr);
+            if (!wait_end_set) {
+                sched_vtime_refresh();
+                wait_end = sched_vtime_deadline_after((uint64_t)usec);
+                wait_end_set = 1;
+            } else {
+                sched_vtime_refresh();
+                uint64_t now = sched_vtime_us();
+                usec = now >= wait_end ? 0u : (uint32_t)(wait_end - now);
+                if (usec == 0u) {
+                    MEM_W32(toptr, 0u);
+                    if (outp) MEM_W32(outp, m->pattern);
+                    return 0x800201A8;
+                }
+            }
             if (sched_block_on_timeout(uid, usec)) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired wait writes the
                  * remaining timeout (0) and reports the current pattern. */

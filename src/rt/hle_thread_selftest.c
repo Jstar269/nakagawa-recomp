@@ -9668,6 +9668,89 @@ static void test_suspended_waiter_keeps_wait_semantics(void) {
     srt_suspended_waiter_case(1);
 }
 
+/* The outcome of a timed object wait is recorded when the wait is RELEASED.  A waiter
+ * that was signalled, cancelled or timed out reports exactly that, however late it
+ * resumes -- suspended, or simply behind a stronger thread past its deadline.  The
+ * semaphore wait uses a 1000 us timeout; every case resumes it well after that. */
+enum { RW_TIMEOUT = 0, RW_SIGNAL_SUSPENDED, RW_SIGNAL_DELAYED, RW_CANCEL_DELAYED, RW_TOKEN_STOLEN };
+
+static void srt_released_wait_case(int mode, const char *what, uint32_t want_ret) {
+    char msg[220];
+    reset_fixture();
+    sr_hle_init();
+    TCB *runner = fixture_thread(0x5f0u, TH_RUNNING, 40);
+    TCB *waiter = fixture_thread(0x5f1u, TH_READY, 16);
+    runner->started = waiter->started = 1;
+    const int waiter_idx = (int)(waiter - s_tcb);
+    uint32_t sema = wsv_create(0, 1);
+    MEM_W32(SLC_TIMEOUT_PTR, SLC_TIMEOUT_US);
+    s_slc_nid = NID_CNW_WAIT_SEMA; s_slc_sema = sema;
+    s_slc_ret = 0xFFFFFFFFu; s_slc_returned = 0;
+    waiter->coro = sr_coro_create(slc_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "released-wait fixture: coroutine created");
+    if (!waiter->coro) { wsv_delete(sema); s_cur = -1; return; }
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s: the waiter blocked with its deadline", what);
+    expect(waiter->state == TH_WAIT_OBJ && waiter->wake == (uint64_t)SLC_TIMEOUT_US, msg);
+
+    const uint64_t late = (uint64_t)SLC_TIMEOUT_US + 4000u;   /* well past the deadline */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    s_cur = (int)(runner - s_tcb);
+    switch (mode) {
+    case RW_TIMEOUT:
+        s_vtime_us = late;
+        break;
+    case RW_SIGNAL_SUSPENDED:
+        expect(srt_call(NID_SCE_KERNEL_SUSPEND_THREAD, waiter->uid) == 0u, "suspend the waiter");
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "signal inside the deadline");
+        s_vtime_us = late;
+        expect(pick_next() == -1, "the signalled suspended waiter stays off the CPU");
+        expect(srt_call(NID_SCE_KERNEL_RESUME_THREAD, waiter->uid) == 0u, "resume after the deadline");
+        break;
+    case RW_SIGNAL_DELAYED:
+    case RW_TOKEN_STOLEN:
+        cpu.r[4] = sema; cpu.r[5] = 1u;
+        expect(sr_syscall(&cpu, NID_WSV_SIGNAL_SEMA) == 0u, "signal inside the deadline");
+        if (mode == RW_TOKEN_STOLEN)
+            expect(wsv_wait(0x58b1f937u, sema, 1u, 0u) == 0u,
+                   "another thread takes the signalled count before the waiter runs");
+        s_vtime_us = late;               /* the waiter is READY but has not been dispatched */
+        break;
+    case RW_CANCEL_DELAYED:
+        MEM_W32(WCR_NUMWAIT, 0xFFFFFFFFu);
+        cpu.r[4] = sema; cpu.r[5] = 0xFFFFFFFFu; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        expect(sr_syscall(&cpu, NID_WCR_CANCEL_SEMA) == 0u, "cancel inside the deadline");
+        s_vtime_us = late;
+        break;
+    }
+    runner->state = TH_RUNNING;
+    expect(pick_next() == waiter_idx, "the released waiter is selected");
+    s_cur = waiter_idx;
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    snprintf(msg, sizeof msg, "%s: the waiter returned", what);
+    expect(s_slc_returned == 1, msg);
+    snprintf(msg, sizeof msg, "%s: the wait reports its recorded outcome 0x%08x (got 0x%08x)",
+             what, want_ret, s_slc_ret);
+    expect(s_slc_ret == want_ret, msg);
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    wsv_delete(sema);
+    s_cur = -1;
+}
+
+static void test_released_timed_wait_reports_release_not_clock(void) {
+    srt_released_wait_case(RW_TIMEOUT, "genuine timeout", SLC_WAIT_TIMEOUT);
+    srt_released_wait_case(RW_SIGNAL_SUSPENDED, "signalled while suspended, resumed after the deadline", 0u);
+    srt_released_wait_case(RW_SIGNAL_DELAYED, "signalled, dispatched after the deadline", 0u);
+    srt_released_wait_case(RW_CANCEL_DELAYED, "cancelled, dispatched after the deadline", WCR_WAIT_CANCEL);
+    srt_released_wait_case(RW_TOKEN_STOLEN, "signalled but count taken, dispatched after the deadline",
+                           SLC_WAIT_TIMEOUT);
+}
+
 /* A suspended DelayThread sleeper likewise reaches READY at its deadline without
  * running, and the idle classification still sees its deadline (not frozen). */
 static void test_suspended_delay_deadline_still_counts(void) {
@@ -18351,7 +18434,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 5 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -18360,7 +18443,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
                  "+ 1 vblank multi waiter "
-                 "+ 3 rotate peers + 2 suspended-waiter bodies "
+                 "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -22199,6 +22282,7 @@ int main(int argc, char **argv) {
     test_rotate_ready_queue_selection_order();
     test_rotate_equal_priority_yields_to_peers();
     test_suspended_waiter_keeps_wait_semantics();
+    test_released_timed_wait_reports_release_not_clock();
     test_suspended_delay_deadline_still_counts();
     test_dmac_semantics();
     test_display_framebuf_latch();
