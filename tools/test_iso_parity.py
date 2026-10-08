@@ -403,6 +403,20 @@ def build_psp_container() -> bytes:
     return bytes(container)
 
 
+def build_overlapping_mips_elf(
+    *, vaddr1: int = 0, memsz1: int = 0x2000, vaddr2: int = 0x1000, memsz2: int = 0x2000
+) -> bytes:
+    elf = bytearray(124)
+    elf[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", elf, 16, 0xFFA0, 8, 1)
+    struct.pack_into("<III", elf, 24, vaddr1, 52, 0)
+    struct.pack_into("<HHHHH", elf, 40, 52, 32, 2, 0, 0)
+    struct.pack_into("<8I", elf, 52, 1, 116, vaddr1, vaddr1, 4, memsz1, 5, 4)
+    struct.pack_into("<8I", elf, 84, 1, 120, vaddr2, vaddr2, 4, memsz2, 5, 4)
+    elf[116:124] = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+    return bytes(elf)
+
+
 def _both_endian32(value: int) -> bytes:
     """ECMA-119 7.3.3: a 32-bit value recorded little-endian then big-endian."""
     return value.to_bytes(4, "little") + value.to_bytes(4, "big")
@@ -1889,12 +1903,77 @@ int main(int argc, char **argv) {{
         main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
         huge_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
         huge_b.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
-        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve"):
+        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve") as ctx:
             plan_provisional_module_bindings(
                 main_elf,
                 [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
                  ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
             )
+        self.assertEqual(
+            getattr(ctx.exception, "boundary_code", None),
+            "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
+
+    def test_provisional_guest_module_placement_fails_when_main_image_exhausts_safe_span(self) -> None:
+        main_elf = self.temp_dir / "placement-huge-main.elf"
+        module_a = self.temp_dir / "mod-a.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x016F0000))
+        module_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x1000))
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("a.prx", module_a, "disc0:/PSP_GAME/USRDIR/a.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertIn("leaves no safe guest-module address range", str(ctx.exception))
+
+    def test_provisional_guest_module_placement_encrypted_module_raises_decryption_required(self) -> None:
+        main_elf = self.temp_dir / "placement-main-enc.elf"
+        enc_module = self.temp_dir / "enc.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        enc_module.write_bytes(build_psp_container())
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("enc.prx", enc_module, "disc0:/PSP_GAME/USRDIR/enc.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_DECRYPTION_REQUIRED")
+
+    def test_provisional_guest_module_placement_overlapping_segments_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-ovl.elf"
+        ovl_module = self.temp_dir / "ovl.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        ovl_module.write_bytes(build_overlapping_mips_elf())
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("ovl.prx", ovl_module, "disc0:/PSP_GAME/USRDIR/ovl.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("overlapping loadable segments", str(ctx.exception))
+
+    def test_provisional_guest_module_placement_fixed_address_module_support_and_collision(self) -> None:
+        main_elf = self.temp_dir / "placement-main-fixed.elf"
+        fixed_ok = self.temp_dir / "fixed_ok.prx"
+        fixed_bad = self.temp_dir / "fixed_bad.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        fixed_ok.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x09000000, memsz=0x10000))
+        placed = plan_provisional_module_bindings(
+            main_elf,
+            [("fixed_ok.prx", fixed_ok, "disc0:/PSP_GAME/USRDIR/fixed_ok.prx")],
+        )
+        self.assertEqual(len(placed), 1)
+        self.assertEqual(placed[0]["load_address"], 0x09000000)
+        self.assertEqual(placed[0]["load_address_evidence"], "fixed-address")
+
+        fixed_bad.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08810000, memsz=0x10000))
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("fixed_bad.prx", fixed_bad, "disc0:/PSP_GAME/USRDIR/fixed_bad.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_LOAD_BINDING_REQUIRED")
+
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""

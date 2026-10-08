@@ -2458,6 +2458,14 @@ def _bringup_human_summary(report: dict) -> str:
             detail = f" (runtime emitted no diagnostic; exit code {report['process_exit_code']})"
         elif kind == "OTHER":
             detail = f" (runtime output did not match a known boundary; exit code {report['process_exit_code']})"
+    elif report["failure_class"] == "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE":
+        detail = " (guest modules do not fit in available user memory with the main executable)"
+    elif report["failure_class"] == "GUEST_MODULE_LOAD_BINDING_REQUIRED":
+        detail = " (a guest module requires an explicit load address binding)"
+    elif report["failure_class"] == "GUEST_MODULE_FORMAT_UNSUPPORTED":
+        detail = " (a guest module has an unsupported ELF format or structure)"
+    elif report["failure_class"] == "GUEST_MODULE_DECRYPTION_REQUIRED":
+        detail = " (a guest module is encrypted and requires decryption)"
     return (
         f"{cfw_prefix}Bring-up stopped at {report['reached_stage']}: "
         f"{report['failure_class']}{detail}{suffix}."
@@ -3047,10 +3055,18 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     module_bindings = plan_provisional_module_bindings(
                         selected_elf, module_inputs
                     )
-                except (IsoInspectionError, OSError):
+                except (IsoInspectionError, OSError) as exc:
+                    boundary_code = (
+                        getattr(exc, "boundary_code", None)
+                        or "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE"
+                    )
                     fail_stage(
-                        report, "prepare_import", "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+                        report, "prepare_import", boundary_code,
                         [308], int((time.perf_counter() - started) * 1000),
+                    )
+                    _write_private_file(
+                        work_dir / "bringup-module-layout.log",
+                        f"{boundary_code}: {exc}\n".encode("utf-8"),
                     )
                     _write_bringup_report(report, report_path)
                     print(_bringup_human_summary(report))

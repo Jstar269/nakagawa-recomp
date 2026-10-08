@@ -91,6 +91,26 @@ def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
     )
 
 
+def _is_kernel_mode_module(elf_bytes: bytes) -> bool:
+    """Return whether a validated ELF module is marked kernel-mode or imports kernel libraries."""
+    if _has_cfw_or_kernel_only_imports(elf_bytes):
+        return True
+    try:
+        from analyze import Elf
+
+        elf = Elf(elf_bytes)
+        sec = elf.sec(".rodata.sceModuleInfo")
+        if sec:
+            b = elf.read_at_vaddr(sec["addr"], 2)
+            if b and len(b) >= 2:
+                modattribute = struct.unpack_from("<H", b, 0)[0]
+                if (modattribute & 0x1000) != 0:
+                    return True
+    except (ImportError, IndexError, OSError, TypeError, ValueError, struct.error):
+        pass
+    return False
+
+
 @dataclass(frozen=True)
 class IsoDirectoryEntry:
     """One bounded ISO9660 directory entry with its validated extent."""
@@ -109,41 +129,92 @@ def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
         file_size = image_path.stat().st_size
         with image_path.open("rb") as stream:
             header = stream.read(52)
-            if len(header) < 52 or header[:7] != b"\x7fELF\x01\x01\x01":
-                raise IsoInspectionError("ELF32 load binding needs a little-endian ELF32 image")
+            if len(header) < 52:
+                if header[:4] in (b"~PSP", b"~SCE"):
+                    raise IsoInspectionError(
+                        "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+                        boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+                    )
+                raise IsoInspectionError(
+                    "ELF32 image is truncated",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            if header[:7] != b"\x7fELF\x01\x01\x01":
+                if header[:4] in (b"~PSP", b"~SCE"):
+                    raise IsoInspectionError(
+                        "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+                        boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+                    )
+                raise IsoInspectionError(
+                    "ELF32 load binding needs a little-endian ELF32 image",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             e_type, machine, version = struct.unpack_from("<HHI", header, 16)
             _entry, phoff = struct.unpack_from("<II", header, 24)
             ehsize, phentsize, phnum = struct.unpack_from("<HHH", header, 40)
             if machine != 8 or version != 1 or ehsize != 52 or phentsize != 32:
-                raise IsoInspectionError("ELF32 load binding needs a supported MIPS program-header table")
+                raise IsoInspectionError(
+                    "ELF32 load binding needs a supported MIPS program-header table",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             if not 1 <= phnum <= 128 or phoff < ehsize:
-                raise IsoInspectionError("ELF32 load binding has an unsupported program-header count")
+                raise IsoInspectionError(
+                    "ELF32 load binding has an unsupported program-header count",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             ph_end = phoff + phentsize * phnum
             if ph_end < phoff or ph_end > file_size:
-                raise IsoInspectionError("ELF32 program headers exceed the input image")
+                raise IsoInspectionError(
+                    "ELF32 program headers exceed the input image",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             stream.seek(phoff)
             table = stream.read(phentsize * phnum)
     except OSError as exc:
-        raise IsoInspectionError("ELF32 image could not be read for guest-module placement") from exc
+        raise IsoInspectionError(
+            "ELF32 image could not be read for guest-module placement",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        ) from exc
     if len(table) != phentsize * phnum:
-        raise IsoInspectionError("ELF32 program headers are truncated")
+        raise IsoInspectionError(
+            "ELF32 program headers are truncated",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        )
 
+    segments: list[tuple[int, int]] = []
     low: int | None = None
     high = 0
     for index in range(phnum):
         p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _flags, _align = \
             struct.unpack_from("<8I", table, index * phentsize)
         if p_offset + p_filesz < p_offset or p_offset + p_filesz > file_size:
-            raise IsoInspectionError("ELF32 segment file range exceeds the input image")
+            raise IsoInspectionError(
+                "ELF32 segment file range exceeds the input image",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
         if p_type != 1:
             continue
         end = p_vaddr + p_memsz
         if p_memsz < p_filesz or end < p_vaddr or end > 0xFFFFFFFF:
-            raise IsoInspectionError("ELF32 segment memory range is invalid")
+            raise IsoInspectionError(
+                "ELF32 segment memory range is invalid",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
+        segments.append((p_vaddr, end))
         low = p_vaddr if low is None else min(low, p_vaddr)
         high = max(high, end)
     if low is None or high <= low:
-        raise IsoInspectionError("ELF32 image has no non-empty loadable segment")
+        raise IsoInspectionError(
+            "ELF32 image has no non-empty loadable segment",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        )
+    segments.sort(key=lambda seg: seg[0])
+    for i in range(len(segments) - 1):
+        if segments[i][1] > segments[i + 1][0]:
+            raise IsoInspectionError(
+                "ELF32 image has overlapping loadable segments",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
     return e_type, low, high
 
 
@@ -168,9 +239,15 @@ def plan_provisional_module_bindings(
     elif main_type == 2:
         main_end = main_high
     else:
-        raise IsoInspectionError("main executable type has no supported guest-module layout")
+        raise IsoInspectionError(
+            "main executable type has no supported guest-module layout",
+            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
     if main_end > PSP_CONVENTIONAL_USER_MEMORY_TOP:
-        raise IsoInspectionError("main executable exceeds the conventional user-memory ceiling")
+        raise IsoInspectionError(
+            "main executable exceeds the conventional user-memory ceiling",
+            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
 
     floor_unaligned = max(
         main_end + PSP_MODULE_HEAP_RESERVE,
@@ -179,27 +256,85 @@ def plan_provisional_module_bindings(
     alignment = PSP_MODULE_ADDRESS_ALIGNMENT
     floor = (floor_unaligned + alignment - 1) & ~(alignment - 1)
     if floor < floor_unaligned or floor >= PSP_MODULE_ADDRESS_TOP:
-        raise IsoInspectionError("main image leaves no safe guest-module address range")
+        raise IsoInspectionError(
+            "main image leaves no safe guest-module address range",
+            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
 
-    modules: list[tuple[str, str, int]] = []
+    fixed_modules: list[dict] = []
+    reloc_modules: list[tuple[str, str, int]] = []
     folded_names: set[str] = set()
     for name, module_path, guest_path in module_inputs:
         folded = name.casefold()
         if folded in folded_names:
-            raise IsoInspectionError("guest-module filenames collide under the placement policy")
+            raise IsoInspectionError(
+                f"guest-module filenames collide under the placement policy: {name}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
         folded_names.add(folded)
+        try:
+            mod_bytes = Path(module_path).read_bytes()
+        except OSError as exc:
+            raise IsoInspectionError(
+                f"guest module could not be read: {name}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            ) from exc
+        if _is_kernel_mode_module(mod_bytes):
+            raise IsoInspectionError(
+                f"guest module requires PSP kernel mode: {name}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
         module_type, module_low, module_high = _elf32_load_span(module_path)
-        if module_type not in (3, 0xFFA0) or module_low != 0:
-            raise IsoInspectionError("guest module is not a base-zero relocatable ELF/PRX")
-        modules.append((name, guest_path, module_high))
+        span = module_high - module_low
+        if module_type in (3, 0xFFA0) and module_low == 0:
+            reloc_modules.append((name, guest_path, span))
+        elif module_type == 2 or (module_type in (3, 0xFFA0) and module_low != 0):
+            if (
+                module_low < title_manifest.GUEST_MODULE_RAM_LO
+                or module_high > PSP_MODULE_ADDRESS_TOP
+                or module_low < main_end
+            ):
+                raise IsoInspectionError(
+                    f"guest module has fixed load address 0x{module_low:08x} that collides with layout: {name}",
+                    boundary_code="GUEST_MODULE_LOAD_BINDING_REQUIRED",
+                )
+            fixed_modules.append({
+                "name": name,
+                "load_address": module_low,
+                "end": module_high,
+                "required": True,
+                "role": "guest-prx",
+                "guest_path": guest_path,
+                "load_address_evidence": "fixed-address",
+            })
+        else:
+            raise IsoInspectionError(
+                f"guest module is not a supported ELF/PRX: {name}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
+
+    fixed_modules.sort(key=lambda m: m["load_address"])
+    for i in range(len(fixed_modules) - 1):
+        if fixed_modules[i]["end"] > fixed_modules[i + 1]["load_address"]:
+            raise IsoInspectionError(
+                f"fixed guest modules collide: {fixed_modules[i]['name']} and {fixed_modules[i + 1]['name']}",
+                boundary_code="GUEST_MODULE_LOAD_BINDING_REQUIRED",
+            )
 
     cursor = floor
     placed: list[dict] = []
-    for name, guest_path, span in sorted(modules, key=lambda item: item[0].casefold()):
+    for name, guest_path, span in sorted(reloc_modules, key=lambda item: item[0].casefold()):
         address = (cursor + alignment - 1) & ~(alignment - 1)
         end = address + span
+        for fm in fixed_modules:
+            if not (end <= fm["load_address"] or address >= fm["end"]):
+                address = (fm["end"] + alignment - 1) & ~(alignment - 1)
+                end = address + span
         if address < cursor or end < address or end > PSP_MODULE_ADDRESS_TOP:
-            raise IsoInspectionError("guest modules do not fit above the main-image heap reserve")
+            raise IsoInspectionError(
+                "guest modules do not fit above the main-image heap reserve",
+                boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+            )
         placed.append({
             "name": name,
             "load_address": address,
@@ -209,7 +344,15 @@ def plan_provisional_module_bindings(
             "load_address_evidence": "provisional",
         })
         cursor = end
-    return placed
+
+    all_placed = []
+    for fm in fixed_modules:
+        entry = dict(fm)
+        del entry["end"]
+        all_placed.append(entry)
+    all_placed.extend(placed)
+    all_placed.sort(key=lambda item: item["name"].casefold())
+    return all_placed
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
