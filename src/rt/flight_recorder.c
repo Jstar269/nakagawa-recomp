@@ -467,7 +467,19 @@ void sr_flight_exit(uint32_t status) {
 }
 
 void sr_flight_fault(uint32_t kind, uint32_t pc, uint32_t detail, uint32_t aux) {
-    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_FAULT, kind, pc, detail, aux, 0u);
+    if (s_flight_classes == 0u) return;
+    if (s_flight_classes & SR_FLIGHT_CLASS_FAULT) {
+        record_locked(SR_FLIGHT_CLASS_FAULT, kind, pc, detail, aux, 0u);
+    }
+    /* First-exception trigger: the retained prefix ends at the first fault and
+     * the bundle is dumped with terminal reason "fatal" carrying the fault
+     * kind, mirroring sr_flight_fatal. The LLE exception entry keeps its own
+     * non-triggering record so recoverable guest exceptions do not freeze it. */
+    trigger(SR_FLIGHT_TERMINAL_FATAL, kind, detail);
+}
+
+void sr_flight_host_fault(uint32_t guest_pc, uint32_t exception_code, uint32_t guest_fault_addr) {
+    sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, guest_pc, exception_code, guest_fault_addr);
 }
 
 static uint32_t retained_count(void) {

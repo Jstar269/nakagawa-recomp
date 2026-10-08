@@ -2551,8 +2551,10 @@ static bool package_number(const JsonNode *node, int64_t expected) {
 }
 
 static bool package_read_json(const char *path, size_t max_bytes,
+                              bool *out_exceeds_limit,
                               char **out_text, size_t *out_length,
                               char *error, size_t error_size) {
+    if (out_exceeds_limit) *out_exceeds_limit = false;
     if (!path || !out_text || !out_length) return false;
     FILE *file = manifest_fopen(path);
     if (!file) {
@@ -2565,8 +2567,14 @@ static bool package_read_json(const char *path, size_t max_bytes,
         return false;
     }
     long size = ftell(file);
-    if (size < 0 || (unsigned long)size > max_bytes ||
-        fseek(file, 0, SEEK_SET) != 0) {
+    if (size < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        if (error && error_size) snprintf(error, error_size,
+            "Could not size or rewind %s", path);
+        fclose(file);
+        return false;
+    }
+    if ((unsigned long)size > max_bytes) {
+        if (out_exceeds_limit) *out_exceeds_limit = true;
         if (error && error_size) snprintf(error, error_size,
             "%s is larger than the supported JSON limit", path);
         fclose(file);
@@ -2949,7 +2957,7 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
     char *package_text = NULL;
     size_t package_length = 0;
     char parse_error[160] = "";
-    if (package_read_json(package_path, NK_MANIFEST_MAX_BYTES, &package_text,
+    if (package_read_json(package_path, NK_MANIFEST_MAX_BYTES, NULL, &package_text,
                           &package_length, parse_error, sizeof(parse_error))) {
         JsonNode *package = json_parse(package_text, package_length, parse_error,
                                        sizeof(parse_error));
@@ -3011,7 +3019,7 @@ static bool nk_title_manifest_aot_package_cache_identity_at_epoch(
 
         char *profile_text = NULL;
         size_t profile_length = 0;
-        if (package_read_json(profile_path, NK_MANIFEST_MAX_BYTES, &profile_text,
+        if (package_read_json(profile_path, NK_MANIFEST_MAX_BYTES, NULL, &profile_text,
                               &profile_length, parse_error, sizeof(parse_error))) {
             JsonNode *profile = json_parse(profile_text, profile_length,
                                            parse_error, sizeof(parse_error));
@@ -3111,7 +3119,7 @@ static bool package_completion_identity(const char *package_root,
     char *completion_text = NULL;
     size_t completion_length = 0;
     char error[256] = "";
-    if (!package_read_json(completion_path, 1024u * 1024u,
+    if (!package_read_json(completion_path, 1024u * 1024u, NULL,
                            &completion_text, &completion_length,
                            error, sizeof(error))) return false;
     PackageFileIdentity completion_identity_after;
@@ -3274,7 +3282,7 @@ static void package_rebuild_reason(char *reason, size_t reason_size,
         /* The short library command comes first: UI error fields are bounded
            and the path-heavy developer route may be truncated. */
         snprintf(reason, reason_size,
-            "%s Cache component/epoch mismatch or incomplete entry (#316). "
+            "%s Cache component/epoch mismatch or incomplete entry (#308). "
             "Build it with: python tools/nk_cli.py build-package %s (#296/#297). "
             "Developer route: python tools/title_codegen_plan.py \"%s\" --package --game-elf \"%s\" --output-dir \"%s\".",
             detail ? detail : "Runtime package needs rebuilding.",
@@ -3738,7 +3746,7 @@ static bool package_validate_current_identity(
     }
     char *identity_text = NULL;
     size_t identity_length = 0;
-    if (!package_read_json(identity_path, NK_MANIFEST_MAX_BYTES, &identity_text,
+    if (!package_read_json(identity_path, NK_MANIFEST_MAX_BYTES, NULL, &identity_text,
                            &identity_length, error, error_size)) {
         snprintf(error, error_size,
                  "Title input identity record is unreadable; rebuild the package from the current inputs.");
@@ -4270,7 +4278,7 @@ static bool package_validate_completion(const char *package_root,
         snprintf(error, error_size, "Runtime package completion manifest identity is unavailable.");
         return false;
     }
-    if (!package_read_json(completion_path, 1024u * 1024u,
+    if (!package_read_json(completion_path, 1024u * 1024u, NULL,
                            &completion_text, &completion_length,
                            error, error_size)) {
         snprintf(error, error_size, "Runtime package completion manifest is missing or unreadable.");
@@ -4446,7 +4454,7 @@ bool nk_title_manifest_read_experimental_profile(
     }
     char *profile_text = NULL;
     size_t profile_length = 0;
-    if (!package_read_json(profile_path, NK_MANIFEST_MAX_BYTES, &profile_text,
+    if (!package_read_json(profile_path, NK_MANIFEST_MAX_BYTES, NULL, &profile_text,
                            &profile_length, error_buf, error_buf_len)) return false;
     JsonNode *profile = json_parse(profile_text, profile_length, error_buf, error_buf_len);
     free(profile_text);
@@ -4701,7 +4709,7 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     char *package_text = NULL;
     size_t package_length = 0;
     char parse_error[320] = "";
-    if (!package_read_json(package_path, NK_MANIFEST_MAX_BYTES, &package_text,
+    if (!package_read_json(package_path, NK_MANIFEST_MAX_BYTES, NULL, &package_text,
                            &package_length, parse_error, sizeof(parse_error))) {
         package_rebuild_reason(reason, reason_size, parse_error, user_data_root, normalized);
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
@@ -4800,10 +4808,23 @@ NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
     char report_path[NK_MAX_PATH];
     char *report_text = NULL;
     size_t report_length = 0;
-    if (!package_direct_file(package_root, "build-report.json", report_path,
-                             sizeof(report_path)) ||
-        !package_read_json(report_path, NK_MANIFEST_MAX_BYTES, &report_text,
-                           &report_length, parse_error, sizeof(parse_error))) {
+    bool report_exceeds_limit = false;
+    bool report_found = package_direct_file(package_root, "build-report.json",
+                                            report_path, sizeof(report_path));
+    if (!report_found ||
+        !package_read_json(report_path, NK_BUILD_REPORT_MAX_BYTES,
+                           &report_exceeds_limit, &report_text, &report_length,
+                           parse_error, sizeof(parse_error))) {
+        if (report_exceeds_limit) {
+            char report_error[128];
+            snprintf(report_error, sizeof(report_error),
+                     "Package build-report.json exceeds the %zu MiB build-report limit.",
+                     (size_t)NK_BUILD_REPORT_MAX_BYTES / (1024u * 1024u));
+            package_rebuild_reason(reason, reason_size, report_error,
+                                   user_data_root, normalized);
+            json_free(package);
+            return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+        }
         package_rebuild_reason(reason, reason_size, "Package build-report.json is missing or unreadable.", user_data_root, normalized);
         json_free(package);
         return NK_RUNTIME_PACKAGE_MISSING;
