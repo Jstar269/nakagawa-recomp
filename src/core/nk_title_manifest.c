@@ -934,8 +934,10 @@ static bool nk_manifest_parse_locked(
     }
     JsonNode *dr_node = obj_get(fs_node, "data_root");
     JsonNode *ms_node = obj_get(fs_node, "memory_stick_root");
-    if (!dr_node || dr_node->type != JSON_STRING || !is_valid_portable_path(dr_node->u.str_val)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.data_root: must be a portable relative POSIX-style path");
+    if (!dr_node || dr_node->type != JSON_STRING ||
+        (dr_node->u.str_val[0] && !is_valid_portable_path(dr_node->u.str_val))) {
+        if (error_buf) snprintf(error_buf, error_buf_len,
+            "$.filesystem.data_root: must be empty or a portable relative POSIX-style path");
         json_free(root);
         return false;
     }
