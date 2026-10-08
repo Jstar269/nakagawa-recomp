@@ -36,6 +36,7 @@ are produced.  No instruction text is reproduced.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from analyze import (
@@ -1089,7 +1090,14 @@ def main(argv):  # pragma: no cover - operator entry point
     args = parser.parse_args(argv[1:])
 
     elf = Elf(args.elf, base=args.base)
-    starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
+    try:
+        starts, ranges = analyze(elf, extra_spans=analyzer_span_from_env())
+    except Exception as exc:
+        boundary_code = getattr(exc, "code", None)
+        if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
+            sys.stderr.write(f"{boundary_code}: {exc}\n")
+            return 1
+        raise
     print(f"analyzer starts: {len(starts)}")
 
     for addr in args.addr:

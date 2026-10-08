@@ -2427,17 +2427,20 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
             from imports import ImportTableError, parse_imports
             impmap = parse_imports(elf)
             for a in impmap.keys():
-                hc.add(a)
-        except ImportTableError:
-            raise
+                if in_ranges(a, ranges) and (a & 3) == 0:
+                    hc.add(a)
         except Exception as e:
+            from imports import ImportTableError
+            if isinstance(e, ImportTableError):
+                raise
             raise ImportTableError(
                 "ANALYZER_IMPORT_TABLE_INVALID",
                 f"failed to parse imports in analyzer: {e}",
             ) from e
     elif stubs_sec:
         for a in range(stubs_sec["addr"], stubs_sec["addr"] + stubs_sec["size"], 8):
-            hc.add(a)
+            if in_ranges(a, ranges) and (a & 3) == 0:
+                hc.add(a)
 
 
     # Function-pointer tables in read-only/data sections (callbacks reached via jalr).

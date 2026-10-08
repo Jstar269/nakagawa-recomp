@@ -40,6 +40,13 @@ _SWEEP_TITLE_JSON_MAX_DEPTH = 32
 _SWEEP_TITLE_JSON_MAX_MEMBERS = 262144
 _SWEEP_TITLE_JSON_MAX_ITEMS = 262144
 _SWEEP_TITLE_JSON_MAX_NODES = 1048576
+# The analyzer-diagnostic sidecar is a small private payload containing only
+# metadata and a diagnostic trimmed to 300 characters.
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_BYTES = 8 * 1024
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_DEPTH = 8
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_MEMBERS = 32
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_ITEMS = 32
+_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_NODES = 64
 # Resume reports have one row per discovered ISO and no input-count ceiling.
 # The limits admit the tested 10,000 rich-row checkpoint and larger sweeps; the
 # writer applies the same limits before replacing files.
@@ -761,11 +768,11 @@ def _read_private_analyzer_diagnostic(sidecar_path: Path) -> str | None:
     try:
         payload = package_cache.read_bounded_json(
             sidecar_path,
-            max_bytes=_SWEEP_TITLE_JSON_MAX_BYTES,
-            max_depth=_SWEEP_TITLE_JSON_MAX_DEPTH,
-            max_members=_SWEEP_TITLE_JSON_MAX_MEMBERS,
-            max_items=_SWEEP_TITLE_JSON_MAX_ITEMS,
-            max_nodes=_SWEEP_TITLE_JSON_MAX_NODES,
+            max_bytes=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_BYTES,
+            max_depth=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_DEPTH,
+            max_members=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_MEMBERS,
+            max_items=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_ITEMS,
+            max_nodes=_SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_NODES,
         )
     except (OSError, ValueError):
         return None

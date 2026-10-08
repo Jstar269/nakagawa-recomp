@@ -382,6 +382,38 @@ class LibrarySweepTests(unittest.TestCase):
             "ValueError: SYNTHETIC_ANALYZER_FAILURE",
         )
 
+    def test_private_sweep_sidecar_read_bounds(self) -> None:
+        work_dir = self.private_dir / "sidecar-work-bounds"
+        work_dir.mkdir(parents=True)
+        sidecar = work_dir / "sweep-imports.json"
+
+        nk_cli._write_private_sweep_import_report(
+            sidecar,
+            work_dir,
+            [],
+            analyzer_diagnostic="Valid diagnostic",
+        )
+        self.assertEqual(
+            library_sweep._read_private_analyzer_diagnostic(sidecar),
+            "Valid diagnostic",
+        )
+
+        oversized_payload = {
+            "schema_version": 1,
+            "analyzer_diagnostic": "Valid diagnostic",
+            "padding": "x" * (library_sweep._SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_BYTES + 100),
+        }
+        sidecar.write_text(json.dumps(oversized_payload), encoding="utf-8")
+        self.assertIsNone(library_sweep._read_private_analyzer_diagnostic(sidecar))
+
+        too_many_members = {
+            "schema_version": 1,
+            "analyzer_diagnostic": "Valid diagnostic",
+            **{f"k_{i}": i for i in range(library_sweep._SWEEP_ANALYZER_DIAGNOSTIC_JSON_MAX_MEMBERS + 1)},
+        }
+        sidecar.write_text(json.dumps(too_many_members), encoding="utf-8")
+        self.assertIsNone(library_sweep._read_private_analyzer_diagnostic(sidecar))
+
     def test_legacy_schema_baseline_is_compared_without_exporting_old_family_names(self) -> None:
         previous = library_sweep._public_aggregate(
             [_sweep_row("analyze")], SOURCE_COMMIT, SOURCE_FINGERPRINT, 120, 1

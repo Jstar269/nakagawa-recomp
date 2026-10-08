@@ -86,7 +86,14 @@ def main(argv):
 
     image_base, exec_blocks, gfuncs = load_ghidra_csv(ns.csv)
     elf = analyze.Elf(ns.elf)
-    starts, ranges = analyze.analyze(elf, extra_spans=analyze.analyzer_span_from_env())
+    try:
+        starts, ranges = analyze.analyze(elf, extra_spans=analyze.analyzer_span_from_env())
+    except Exception as exc:
+        boundary_code = getattr(exc, "code", None)
+        if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
+            sys.stderr.write(f"{boundary_code}: {exc}\n")
+            return 1
+        raise
 
     # Ghidra entries, normalized to base 0, restricted to real code:
     # executable blocks, non-thunk (thunks model imports/PLT stubs).

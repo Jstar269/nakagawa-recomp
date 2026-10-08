@@ -2642,7 +2642,14 @@ def main(argv):
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     extra_spans = resolve_extra_spans(extra_span_arg)
-    analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    try:
+        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+    except Exception as exc:
+        boundary_code = getattr(exc, "code", None)
+        if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
+            sys.stderr.write(f"codegen: {boundary_code}: {exc}\n")
+            return 1
+        raise
     if cfg_report_path is not None or cfg_gate:
         # This opt-in gate audits the primary image. Extra modules have their own
         # analyzer invocation below and remain a separate bring-up surface until
@@ -2651,7 +2658,14 @@ def main(argv):
         if not cfg_gate:
             # A report-only run describes gate-mode analysis but must not change
             # the entry set that feeds code emission.
-            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            try:
+                report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            except Exception as exc:
+                boundary_code = getattr(exc, "code", None)
+                if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
+                    sys.stderr.write(f"codegen: {boundary_code}: {exc}\n")
+                    return 1
+                raise
         cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
@@ -2692,6 +2706,10 @@ def main(argv):
             from imports import parse_imports
             impmap = parse_imports(elf)
         except Exception as e:
+            boundary_code = getattr(e, "code", None)
+            if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
+                sys.stderr.write(f"codegen: {boundary_code}: {e}\n")
+                return 1
             sys.stderr.write(f"warning: import table parse failed: {e}\n")
 
     # Stripped linked executables may reconstruct the loader-owned table as
@@ -3014,7 +3032,14 @@ def main(argv):
                         )
                         return 2
         owned_exec_ranges.extend(extra_ranges)
-        extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
+        try:
+            extra_analyzed, _ = analyze(extra_elf, cfg_gate=cfg_gate)
+        except Exception as exc:
+            boundary_code = getattr(exc, "code", None)
+            if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
+                sys.stderr.write(f"codegen: {boundary_code}: {extra_path}: {exc}\n")
+                return 1
+            raise
         extra_known = set(extra_analyzed)
         extra_known = set(a for a in extra_known if in_ranges(a, extra_ranges))
         if cfg_gate:
@@ -3037,11 +3062,15 @@ def main(argv):
             )
 
         extra_impmap = {}
-        if extra_elf.reloc is not None:
+        if extra_elf.reloc is not None or extra_elf.sec(".rodata.sceModuleInfo") is not None:
             try:
                 from imports import parse_imports
                 extra_impmap = parse_imports(extra_elf)
             except Exception as e:
+                boundary_code = getattr(e, "code", None)
+                if isinstance(boundary_code, str) and boundary_code.startswith("ANALYZER_"):
+                    sys.stderr.write(f"codegen: {boundary_code}: {extra_elf_path}: {e}\n")
+                    return 1
                 sys.stderr.write(f"warning: import table parse failed for {extra_elf_path}: {e}\n")
 
         extra_stub = extra_elf.sec(".sceStub.text")
