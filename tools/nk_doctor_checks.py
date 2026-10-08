@@ -1438,7 +1438,7 @@ def check_private_inputs(
         ):
             report.warn(
                 "MIGRATE_LOOSE_CONTENT_ROOTS",
-                "Loose files beside the manifest data root need filesystem.loose_content_roots (#289 is in the works)",
+                "Loose files beside the manifest data root are not bound; declare their root in filesystem.loose_content_roots.",
                 path=manifest_data_root.parent,
                 remediation=(
                     "Declare each loose-content root in filesystem.loose_content_roots so the runtime can bind it explicitly."

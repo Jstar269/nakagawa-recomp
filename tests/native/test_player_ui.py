@@ -1924,7 +1924,8 @@ class FirstRunRouteTests(unittest.TestCase):
         self.assertTrue(frames, completed.stdout)
         self.assertEqual(frames[0]["view"], "error")
         self.assertEqual(frames[0]["error"], "EXPERIMENTAL_LAUNCH_UNAVAILABLE")
-        self.assertIn("in the works (#308)", completed.stderr)
+        self.assertIn("in the works.", completed.stderr)
+        self.assertNotIn("(#308)", completed.stderr)
         self.assertEqual(library_disc_ids(scratch), [])
 
     def test_launch_index_on_an_empty_library_fails_with_a_clear_message(self) -> None:

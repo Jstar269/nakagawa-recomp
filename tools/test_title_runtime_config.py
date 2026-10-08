@@ -165,18 +165,18 @@ class RuntimeBindingValidation(unittest.TestCase):
     def test_retired_vblank_counter_fields_are_rejected(self) -> None:
         self.assert_rejected(
             base_manifest(vblank_frame_counter_addr=0x08820000),
-            "vblank_frame_counter_addr is retired (#643)",
+            "vblank_frame_counter_addr is retired",
         )
         self.assert_rejected(
             base_manifest(vblank_vsync_counter_addr=0x08820004),
-            "vblank_vsync_counter_addr is retired (#643)",
+            "vblank_vsync_counter_addr is retired",
         )
         self.assert_rejected(
             base_manifest(
                 vblank_frame_counter_addr=0x08820000,
                 vblank_vsync_counter_addr=0x08820004,
             ),
-            "retired (#643)",
+            "retired",
         )
 
     def test_identical_worker_and_launcher_roles_are_rejected(self) -> None:

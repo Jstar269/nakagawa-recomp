@@ -144,7 +144,7 @@ class RuntimeLauncher:
             f"This game needs its data folder, but '{declared}' was not found "
             "beside its staged files, in the runtime data folder, or under "
             "the extracted disc folder. Add the game's data files and try "
-            "again (#308)."
+            "again."
         )
 
     def _resolve_identity(self, manifest: Dict[str, Any]) -> Any:
