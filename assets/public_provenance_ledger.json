@@ -1273,7 +1273,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "90cb15c64d2451d186e15607fe65a1818679aa9756b3562170f37bf1c426eb8f"
+      "sha256": "9afd0ec49036fcbd5aeaeae5d52951026d060514b408be51a63091da2c1f5914"
     },
     {
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
@@ -4722,7 +4722,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a59e6c1e6cf6737d07837d9947ef79bb400cf461f5f49228be0567dd59cb634d"
+      "sha256": "65b7f16d486c7680ed7eb7bdabd2314e1d3e914a613afa7a8a21998994651614"
     },
     {
       "path": "src/rt/intr_conformance.h",
