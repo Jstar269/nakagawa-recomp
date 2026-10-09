@@ -1453,7 +1453,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dd0e153aefdf753cabd9e11e161fa87bef9bab687f2081b6d6a7e6b6b6f0b23e"
+      "sha256": "ba1f93b9274ef1b14ce939f825fde4dd0c5ccd3143bf41864d9a58ede74b6203"
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
@@ -6919,7 +6919,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "81c12aa722dd2b61eb2898e5d3ea114ffc9889c5b0a745dd25d06bac801a3f1f"
+      "sha256": "5a7dbdf7b0ebcd6e4db7ca47bf8b490d9c0cd086e50eee329a9f6f51c31bc50c"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8748,7 +8748,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d1c5021ce284e7efd7e24fdf6a565910bad6db7e2bc05dea3ca03c70f209bd3e"
+      "sha256": "9d5ba675c7cb9856be6cea9c4e7a57d0e8a304c4e63644964594be88db8a349e"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -9613,7 +9613,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09ec64ffdcca8d228205d1b01e5acc0191e0db52cde5d9b661c6f88ea9bb0a4e"
+      "sha256": "9e487efe89d36e8f23d0eba91e1114a1a81951d9dfb5b5a129655ebd5437bdff"
     },
     {
       "path": "tools/test_validate_assets.py",
@@ -9962,7 +9962,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "566881af61db21ab87860f89894628025fdbdf64213a72e65d5dd8178c6fc0b9"
+      "sha256": "24be82c5105216dd1b468c554f48162a0a336f9846959f72dd5dce103e5a1e78"
     },
     {
       "path": "tools/validate_assets.py",

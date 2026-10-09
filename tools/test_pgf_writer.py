@@ -264,17 +264,31 @@ class PgfWriterRefusalTests(unittest.TestCase):
         ]
         self.assertTrue(build_pgf(glyphs))
 
-    def test_non_contiguous_code_points_are_refused_by_name(self):
-        glyphs = [
-            Glyph(code=0x41, width=1, height=1, samples=(0,)),
-            Glyph(code=0x50, width=1, height=1, samples=(0,)),
-        ]
-        self.assert_refused("non-contiguous-code-points", glyphs=glyphs)
-
     def test_firmware_font_names_are_refused_with_their_extension(self):
         for name in ("jpn0.pgf", "LTN15.PGF", "kr0"):
             with self.subTest(name=name):
                 self.assert_refused("font-field-invalid", font_name=name)
+
+    def test_nominal_em_size_outside_the_header_range_is_refused(self):
+        for value in (0, -1, 1 << 31):
+            with self.subTest(value=value):
+                self.assert_refused("nominal-size-out-of-range", nominal_em_26_6=value)
+
+    def test_vendor_and_reserved_font_names_are_refused_by_marker(self):
+        # The markers are split across literals so this file never holds one whole.
+        markers = (
+            "New" "Rodin", "Asia" "KNHH", "Asia" "NHH", "Font" "works", "F" "TT", "SO" "NY",
+            "Source", "Atkinson", "Hyper" "legible", "Sawarabi", "Gowun", "Nanum", "Gudea",
+            "No" "to", "La" "to", "M PLUS", "Ume",
+        )
+        for marker in markers:
+            with self.subTest(marker=marker):
+                self.assert_refused("font-field-invalid", font_name=f"Nakagawa {marker} Latin")
+
+    def test_denylist_matches_short_marks_only_as_whole_words(self):
+        # "Lato" inside "Platonic" is an ordinary word, not the trademark.
+        image = build_pgf(GLYPHS, font_name="Platonic Mono")
+        self.assertEqual(image[0x35 : 0x35 + len("Platonic Mono")], b"Platonic Mono")
 
     def test_cli_refusal_names_the_reason_and_writes_nothing(self):
         with tempfile.TemporaryDirectory(prefix="pgf_writer_") as tmp:
@@ -293,6 +307,60 @@ class PgfWriterRefusalTests(unittest.TestCase):
             self.assertIn("sample-count-mismatch", result.stderr)
             self.assertFalse(output.exists())
 
+
+class PgfWriterSparseAndHeaderTests(unittest.TestCase):
+    """A code span wider than the glyph set is a sparse map; the header sizes are nominal."""
+
+    SPARSE_A = Glyph(code=0x41, width=2, height=2, samples=(1, 2, 3, 4))
+    SPARSE_D = Glyph(code=0x44, width=1, height=1, samples=(9,))
+    SPARSE_KANA = Glyph(code=0x3042, width=2, height=1, samples=(7, 8))
+
+    def setUp(self) -> None:
+        self.glyphs = (self.SPARSE_A, self.SPARSE_D, self.SPARSE_KANA)
+        self.image = build_pgf(self.glyphs)
+
+    def _resolved(self) -> dict[int, int]:
+        """Code -> glyph identifier for every map entry that is not the sentinel."""
+        image = self.image
+        first = struct.unpack_from("<H", image, 0xB6)[0]
+        char_map_count = struct.unpack_from("<I", image, 0x10)[0]
+        char_map_bits = struct.unpack_from("<I", image, 0x18)[0]
+        map_offset = pgf_writer.HEADER_SIZE + sum(image[0x102 + table] * 8 for table in range(4))
+        sentinel = (1 << char_map_bits) - 1
+        resolved = {}
+        for index in range(char_map_count):
+            value = _bits(image, map_offset, index * char_map_bits, char_map_bits)
+            if value != sentinel:
+                resolved[first + index] = value
+        return resolved
+
+    def test_span_and_pointer_counts_describe_a_sparse_map(self):
+        first, last = struct.unpack_from("<HH", self.image, 0xB6)
+        self.assertEqual((first, last), (0x41, 0x3042))
+        self.assertEqual(struct.unpack_from("<I", self.image, 0x10)[0], last - first + 1)
+        self.assertEqual(struct.unpack_from("<I", self.image, 0x14)[0], len(self.glyphs))
+
+    def test_present_codes_resolve_and_absent_codes_hold_the_sentinel(self):
+        self.assertEqual(self._resolved(), {0x41: 0, 0x44: 1, 0x3042: 2})
+
+    def test_public_structural_validator_accepts_the_sparse_image(self):
+        report = validate_pgf_data(self.image, "sparse.pgf")
+        self.assertEqual(report["size"], len(self.image))
+
+    def test_nominal_em_size_is_written_to_the_header_not_the_extrema(self):
+        glyphs = (Glyph(code=0x41, width=1, height=1, samples=(3,), advance_x=3000),)
+        image = build_pgf(glyphs, nominal_em_26_6=768)
+        self.assertEqual(_signed(image, 0x24), 768)
+        self.assertEqual(_signed(image, 0x28), 768)
+        self.assertEqual(_signed(image, 0x2C), pgf_writer.DEFAULT_RESOLUTION)
+        self.assertEqual(_signed(image, 0x30), pgf_writer.DEFAULT_RESOLUTION)
+        self.assertEqual(_signed(image, 0xEC), 3000, "the extrema stay in their own fields")
+
+    def test_default_nominal_em_size_is_the_documented_twelve_pixels(self):
+        image = build_pgf(GLYPHS)
+        self.assertEqual(pgf_writer.DEFAULT_NOMINAL_EM_26_6, 12 * 64)
+        self.assertEqual(_signed(image, 0x24), 12 * 64)
+        self.assertEqual(_signed(image, 0x28), 12 * 64)
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class PgfWriterReaderRoundTripTests(unittest.TestCase):
@@ -385,6 +453,33 @@ class PgfWriterReaderRoundTripTests(unittest.TestCase):
     def test_a_second_run_reads_back_identically(self):
         codes = [glyph.code for glyph in GLYPHS]
         self.assertEqual(self._read_back(GLYPHS, codes), self._read_back(GLYPHS, codes))
+
+    def test_sparse_font_opens_and_absent_codes_are_misses(self):
+        sparse = (
+            Glyph(code=0x41, width=2, height=2, samples=(1, 2, 3, 4)),
+            Glyph(code=0x44, width=1, height=1, samples=(9,)),
+            Glyph(code=0x3042, width=2, height=1, samples=(7, 8)),
+        )
+        codes = [0x41, 0x42, 0x44, 0x3042]
+        present = {0x41: sparse[0], 0x44: sparse[1], 0x3042: sparse[2]}
+        lines = self._read_back(sparse, codes)
+        self.assertEqual(lines[0], "open ok")
+        font = bytes.fromhex(lines[1].removeprefix("font "))
+        self.assertEqual(struct.unpack_from("<I", font, 0x54)[0], 0x3042 - 0x41 + 1)
+        self.assertEqual(struct.unpack_from("<I", font, 0x58)[0], 0)
+        records = lines[2 : 2 + len(codes) * 2]
+        for index, code in enumerate(codes):
+            char_line = records[index * 2].split(" ")
+            draw_line = records[index * 2 + 1].split(" ")
+            self.assertEqual(char_line[:2], ["char", str(code)])
+            if code not in present:
+                self.assertEqual(char_line[2], "0", f"U+{code:04X} is a sparse-map miss")
+                self.assertEqual(draw_line, ["draw", str(code), "none"])
+                continue
+            glyph = present[code]
+            self.assertEqual(char_line[2], "1", f"U+{code:04X} presence")
+            self.assertEqual(draw_line[2:4], [str(glyph.width), str(glyph.height)])
+            self.assertEqual(list(bytes.fromhex(draw_line[4])), _raster(glyph))
 
 
 if __name__ == "__main__":

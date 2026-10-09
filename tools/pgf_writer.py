@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import struct
 import sys
 from dataclasses import dataclass, fields
@@ -65,6 +66,48 @@ SUPPORTED_ROW_ORDERS = (1, 2)
 
 #: PSP firmware family names. A project-generated font must never claim one.
 RESERVED_FONT_NAMES = frozenset({"jpn0", "kr0", *(f"ltn{index}" for index in range(16))})
+
+#: Denylisted output-name markers (plan section 3.3), one row per refusal reason:
+#: (reason, markers, whole_word). A part marker matches anywhere in a name, ignoring case; a
+#: whole-word marker matches only as a separate word, so a short mark never refuses an
+#: ordinary word that contains it. The vendor camouflage markers are split across literals,
+#: so this file never holds them whole (the convention tools/history_audit.py uses for its own
+#: private vocabulary).
+DENIED_FONT_NAME_RULES = (
+    ("camouflage-font-name", ("New" "Rodin", "Asia" "KNHH", "Asia" "NHH", "Font" "works"), False),
+    ("camouflage-font-name", ("F" "TT", "SO" "NY"), True),
+    ("reserved-font-name",
+     ("Source", "Atkinson", "Hyperlegible", "Sawarabi", "Gowun", "Nanum", "Gudea"), False),
+    ("reserved-font-name", ("Noto", "Lato", "Ume", "M PLUS"), True),
+)
+
+
+def _compile_denied_rule(markers: tuple[str, ...], whole_word: bool) -> re.Pattern[str]:
+    body = "|".join(re.escape(marker) for marker in markers)
+    if whole_word:
+        body = r"(?<![0-9A-Za-z])(?:" + body + r")(?![0-9A-Za-z])"
+    return re.compile(body, re.IGNORECASE)
+
+
+_DENIED_FONT_NAME_PATTERNS = tuple(
+    (reason, _compile_denied_rule(markers, whole_word))
+    for reason, markers, whole_word in DENIED_FONT_NAME_RULES
+)
+
+
+def denied_font_name(name: str) -> str | None:
+    """Return the refusal reason for the first denylisted marker in ``name``, else None."""
+    for reason, pattern in _DENIED_FONT_NAME_PATTERNS:
+        if pattern.search(name) is not None:
+            return reason
+    return None
+
+
+#: Nominal em size written to the header's horizontal and vertical size fields, in 26.6
+#: units. The default is 12 pixels (the converter's default ppem); the converter passes
+#: its chosen ppem times 64. The header maxima are not used for these fields.
+DEFAULT_NOMINAL_EM_26_6 = 12 * 64
+MAX_NOMINAL_EM_26_6 = (1 << 31) - 1
 
 TABLE_COUNT = 4
 #: Metric groups in record order: dimension, X adjustment, Y adjustment, advance.
@@ -312,6 +355,8 @@ def _validate_font_name(value: object) -> bytes:
         stem = stem[: -len(".pgf")]
     if stem in RESERVED_FONT_NAMES:
         raise _refuse("font-field-invalid", f"{value!r} is a PSP firmware font name and must not be claimed")
+    if isinstance(value, str) and denied_font_name(value) is not None:
+        raise _refuse("font-field-invalid", f"{value!r} carries a vendor or reserved font name and must not be claimed")
     return encoded
 
 
@@ -358,8 +403,6 @@ def _record_bytes(plan: _Planned, indexes: list[int]) -> bytes:
 def _extrema(plans: list[_Planned]) -> dict[str, int]:
     """Header maxima and the derived ascender/descender for the whole set."""
     return {
-        "horizontal_size": max(plan.advance_x for plan in plans),
-        "vertical_size": max(plan.dimension_height for plan in plans),
         "ascender": max(plan.y_base for plan in plans),
         "descender": min(plan.y_base - plan.dimension_height for plan in plans),
         "left_x": min(plan.x_left for plan in plans),
@@ -380,15 +423,27 @@ def build_pgf(
     *,
     font_name: str = DEFAULT_FONT_NAME,
     font_type: str = DEFAULT_FONT_TYPE,
+    nominal_em_26_6: int = DEFAULT_NOMINAL_EM_26_6,
 ) -> bytes:
     """Write one deterministic PGF image from an in-memory glyph set.
 
     Glyphs are ordered by code point, so the caller's collection order cannot
-    change the output.  Every rejection is a :class:`PgfWriteError` naming its
-    reason.
+    change the output.  A code span wider than the glyph set is a sparse character
+    map: codes without a glyph hold the absence sentinel (PGF_SPEC.md 3.1, 3.2).
+    ``nominal_em_26_6`` is written to the header's horizontal and vertical size
+    fields. Every rejection is a :class:`PgfWriteError` naming its reason.
     """
     name_bytes = _validate_font_name(font_name)
     type_bytes = _font_field(font_type, "font type")
+    if (
+        isinstance(nominal_em_26_6, bool)
+        or not isinstance(nominal_em_26_6, int)
+        or not 1 <= nominal_em_26_6 <= MAX_NOMINAL_EM_26_6
+    ):
+        raise _refuse(
+            "nominal-size-out-of-range",
+            f"nominal em size {nominal_em_26_6!r} must be an integer 1..{MAX_NOMINAL_EM_26_6} in 26.6 units",
+        )
     glyphs = list(glyphs)
     if not glyphs:
         raise _refuse("empty-glyph-set", "a PGF needs at least one glyph record")
@@ -413,16 +468,8 @@ def build_pgf(
             f"codes U+{first_glyph:04X}..U+{last_glyph:04X} need {char_map_count} map entries",
         )
 
-    if glyph_count != char_map_count:
-        # PGF_SPEC section 3.1: the public reader requires one glyph record per code point
-        # in first..last, so a gap would produce a file that reader refuses.
-        missing = next(code for code in range(first_glyph, last_glyph + 1) if code not in seen)
-        raise _refuse(
-            "non-contiguous-code-points",
-            f"codes U+{first_glyph:04X}..U+{last_glyph:04X} need a glyph for every code point; "
-            f"U+{missing:04X} is missing",
-        )
-
+    # A span wider than the glyph count is a sparse map (PGF_SPEC.md 3.1, O-15): the
+    # pointer count stays the glyph count, and the absent codes hold the sentinel below.
     tables, table_indexes = _build_metric_tables(plans)
 
     glyph_data = bytearray()
@@ -470,8 +517,8 @@ def build_pgf(
         header[0x102 + table] = len(tables[table]) // 8
     struct.pack_into("<I", header, 0x16C, 0)  # empty shadow character map
     struct.pack_into("<I", header, 0x170, 0)
-    struct.pack_into("<i", header, 0x24, extrema["horizontal_size"])
-    struct.pack_into("<i", header, 0x28, extrema["vertical_size"])
+    struct.pack_into("<i", header, 0x24, nominal_em_26_6)
+    struct.pack_into("<i", header, 0x28, nominal_em_26_6)
     struct.pack_into("<i", header, 0x2C, DEFAULT_RESOLUTION)
     struct.pack_into("<i", header, 0x30, DEFAULT_RESOLUTION)
 
