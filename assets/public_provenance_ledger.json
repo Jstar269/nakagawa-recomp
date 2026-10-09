@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d9b35b2a1f36ef3ee63b4e11e592e770536453e46cbb1e637e67a9aba038102b"
+      "sha256": "1f131d8e10be970193e794c2e818a98b1f614da23bb1fac36cee9e25a9b3902d"
     },
     {
       "path": "NOTICE.md",
@@ -1639,7 +1639,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9711a7e0a660ea99df854dc059e2b34c3288722c9a93a10a621fee30ed87183b"
+      "sha256": "eca1ed094cae729cabe26bd039c56408147ad8a154d89898b9007036fcb2b4d8"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -5866,7 +5866,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6b554ea1008b06498f5e3ca344259ac435e3a25c322d020fb0c4d06778fe0ebc"
+      "sha256": "a681b77a63c0f55b5fed2131249e5cfa7a75628d9ee7617ab0903722ef84f859"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5952,7 +5952,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7a6363ddf7a859b985ffa38d89bc1d4c8291f00e743e78897a9f65ff109aa644"
+      "sha256": "e39fb4d8be975f26fd9286eacf6b2ceb1ce4f0b8c4b6b97e3435e69308fe534c"
     },
     {
       "path": "tools/build_public_export.py",
@@ -7486,7 +7486,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd37e626c6dd9bda7b223e14c81e98fe4480da2b1ca95103c7e33e7cd6b8d046"
+      "sha256": "c61fd9c51530015b360410c506cb4c3a597afeabc8740c72f6eb1b927dda355c"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -7558,7 +7558,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b2ee9d81eeec1a33bfee58c6d01c9764af4479f8302506694011d2ecfd86706"
+      "sha256": "0fbd17696621810f2310c34a357c4f197cd4dae3763a4041d87069e2ab41f53d"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -7955,7 +7955,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2248e4f7b4bbe70df00764af00eea7510b7b2b033c32cc27abed58d6436dd4c6"
+      "sha256": "74ec84d6158740a65e4a34a2aae4b22e50e6952534a2c7a9df3304c96b1c33c7"
     },
     {
       "path": "tools/test_elf_bounds.py",
@@ -9565,7 +9565,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f7a6956f4e7638a4129ac2d86501d1e48208fa8a569e8d32890ba583e5334a8"
+      "sha256": "8edb7910dff8c82c2d20a8098cbc2414f02a5216896aaa2b77e4b180985bb669"
     },
     {
       "path": "tools/test_trace_window_probe.py",
