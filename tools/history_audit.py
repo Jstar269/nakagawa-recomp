@@ -78,6 +78,9 @@ PRIVATE_OPERATIONAL_VOCABULARY = re.compile(
     re.IGNORECASE,
 )
 SUSPICIOUS_ENCODED = re.compile(r"^[A-Za-z0-9+/]{256,}={0,2}$")
+# A C0 control character other than TAB, LF and CR marks a blob as binary. One
+# search per blob replaces a Python-level scan of every character of every text blob.
+BINARY_CONTROL_CHARACTER = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 FORBIDDEN_EXTENSIONS = {
     ".at3", ".bin", ".chd", ".cso", ".dax", ".dmp", ".edat", ".elf", ".gim",
@@ -296,7 +299,7 @@ def audit_history_blob_contents(repo_root: Path = ROOT) -> list[HistoryFinding]:
             text = None
         if text is not None and (
             b"\0" in data
-            or any(ord(ch) < 32 and ch not in "\t\r\n" for ch in text)
+            or BINARY_CONTROL_CHARACTER.search(text) is not None
         ):
             text = None
 

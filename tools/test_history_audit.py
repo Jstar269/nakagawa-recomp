@@ -96,6 +96,38 @@ class TestHistoryAudit(unittest.TestCase):
                     "a " + label + " key body must still be caught",
                 )
 
+    def test_binary_control_guard_matches_the_per_character_definition(self):
+        # Fast path: one search of BINARY_CONTROL_CHARACTER per blob. Slow path:
+        # the per-character definition the audit used before, kept here as the
+        # reference. Every code point below U+3000 plus the edge code points,
+        # placed alone and before, inside and after ordinary text.
+        def reference(text):
+            return any(ord(ch) < 32 and ch not in "\t\r\n" for ch in text)
+
+        code_points = list(range(0x3000)) + [0xFFFE, 0xFFFF, 0x10FFFF]
+        for cp in code_points:
+            if 0xD800 <= cp <= 0xDFFF:
+                continue  # a lone surrogate cannot be decoded from UTF-8 text
+            ch = chr(cp)
+            for text in (ch, "ab" + ch + "cd", ch + " tail"):
+                self.assertEqual(
+                    history_audit.BINARY_CONTROL_CHARACTER.search(text) is not None,
+                    reference(text),
+                    f"U+{cp:04X} in {text!r}",
+                )
+
+    def test_control_character_makes_a_blob_binary_while_tab_cr_lf_do_not(self):
+        begin = "-----BE" + "GIN RSA PRIVATE KEY-----"
+        end = "-----E" + "ND RSA PRIVATE KEY-----"
+        body = "MIIEowIBAAKCAQEAx7Vq9kZ3mQ8Jf2pL0sYtWn4cB6dHgR1uEvXaTzKmNpQrSuVw"
+        pem = begin + "\n" + body + "\n" + end + "\n"
+
+        def secrets(content):
+            return [f for f in self._blob_findings(content) if f.code == "HISTORICAL_BLOB_SECRET"]
+
+        self.assertTrue(secrets(pem + "\t\r\n"), "tab, CR and LF are ordinary text")
+        self.assertEqual(secrets(pem + "\x0b"), [], "a vertical tab marks the blob binary")
+
     def test_ancestor_only_sensitive_blob_is_scanned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
