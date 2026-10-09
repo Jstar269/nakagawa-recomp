@@ -327,12 +327,63 @@ def _hle_coupling_use_patterns(name: str) -> list[re.Pattern]:
     ]
 
 
+def blank_c_literals_and_comments(lines: list[str]) -> list[str]:
+    """Return ``lines`` with C comments and string/char literal contents blanked.
+
+    Line count and column positions are preserved, so brace counting over the result
+    is not misled by a brace inside a string (for example a JSON writer emitting
+    "{
+") or a comment.
+    """
+    out: list[str] = []
+    in_block = False
+    for line in lines:
+        chars = list(line)
+        i, n = 0, len(chars)
+        quote = ""
+        while i < n:
+            c = chars[i]
+            nxt = chars[i + 1] if i + 1 < n else ""
+            if in_block:
+                if c == "*" and nxt == "/":
+                    chars[i] = chars[i + 1] = " "
+                    in_block = False
+                    i += 2
+                    continue
+                chars[i] = " "
+            elif quote:
+                if c == "\\" and i + 1 < n:
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    continue
+                if c == quote:
+                    quote = ""
+                else:
+                    chars[i] = " "
+            elif c == "/" and nxt == "/":
+                for j in range(i, n):
+                    chars[j] = " "
+                break
+            elif c == "/" and nxt == "*":
+                chars[i] = chars[i + 1] = " "
+                in_block = True
+                i += 2
+                continue
+            elif c in "\"'":
+                quote = c
+            i += 1
+        out.append("".join(chars))
+    return out
+
+
 def hle_function_spans(lines: list[str]) -> list[tuple[str, int, int]]:
     """(name, first_line, last_line) for each static function body, 1-based.
 
     Brace counting, not parsing: the file is .clang-format'd, so a body opens on
-    the signature line or the one after it and closes at depth zero.
+    the signature line or the one after it and closes at depth zero. Braces inside
+    comments and string/char literals are ignored.
     """
+    code = blank_c_literals_and_comments(lines)
     spans: list[tuple[str, int, int]] = []
     index, total = 0, len(lines)
     while index < total:
@@ -348,8 +399,8 @@ def hle_function_spans(lines: list[str]) -> list[tuple[str, int, int]]:
             continue
         depth, cursor, opened = 0, index, False
         while cursor < total:
-            depth += lines[cursor].count("{") - lines[cursor].count("}")
-            if "{" in lines[cursor]:
+            depth += code[cursor].count("{") - code[cursor].count("}")
+            if "{" in code[cursor]:
                 opened = True
             if opened and depth <= 0:
                 break
