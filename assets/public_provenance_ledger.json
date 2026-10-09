@@ -2515,7 +2515,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0245af0ba1c1bd55df5240ddc5546b6bdb771b3b1bc05be2c9f5b7f6fa59ea1b"
+      "sha256": "5b4a4160f9d74e159338a3f6fb1457052c42e8e93850b786f978ad48ec501aab"
     },
     {
       "path": "src/core/nk_iso.h",
@@ -2527,7 +2527,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab60da2f492aa1f7e88f40dcb2c639e32e68d52cfdd71afad9a89bcb6bf24912"
+      "sha256": "2bfa54324b851802a1246fd77c79b0fd8eb882c84aa789efdaabc728bb32984e"
     },
     {
       "path": "src/core/nk_json.c",
@@ -2563,7 +2563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c78633097feb1eacb5fa586ddd583d818eada0fa9d99f156441b5889bec8dda3"
+      "sha256": "feebd9d7c5387ac0497b69eca2e94dba7920359f6aaf924d674d052239bfff3e"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3041,7 +3041,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7aa935e6d50c7e89414f4de2aa9d7d0a42bebe6e19ebf3393bacc9516bb4156c"
+      "sha256": "7fb3220499b73cf2876e0a74b9853417a880a128c8eece425ac2d7c0c9ccd957"
     },
     {
       "path": "src/player/player_state.h",
@@ -5765,7 +5765,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "372c354eab248afc81915b01c2395eee955e516053b3771b3ebdfb17b22fc1ea"
+      "sha256": "e766b1d249b47c9c4406de2b437fd7ab984e9999e751aaf14b7dd76a7e25eb60"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -6691,7 +6691,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2def2bdfb86c810fb66889c8276eb725efa8eefff735649a6a55a387f2bb952b"
+      "sha256": "b152470025287b470f5e68454a0976980ec9a303b838af289381ba1b730be247"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6763,7 +6763,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "674ecd6bdcd9b75093fc455f8f1bc1c29479ca9264e158690a9f75457ae9d230"
+      "sha256": "b9f33240abdbf11113f22ae8d0f65263368d06241a5841e5884d340fc4530afa"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -6799,7 +6799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "40a0c645b117eb28c989e3e5b57424e4f3c7a3e41a4bfee1a4736bd6031ffb52"
+      "sha256": "b45d2f0dc3c34a3b19e4582e335775ba9e009501548312f1adb6db7cdaf83c99"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -7102,7 +7102,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "36efa4ccb720e07625b3f24df6a8b3f8f0886840bafcf992894a749e37cb7158"
+      "sha256": "43c1d0fdca09108ea75e5fafc4533739f4507ad9cf61a9b5e5a8284f8388d522"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -8496,7 +8496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a0177188fbdbc815acbcb17241e14ecf792727e2008b32af1a3acaa4f5ed25de"
+      "sha256": "1886df44be327be417ff510b6b95e2accd81540fcfae41124860c1612ad63462"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -8736,7 +8736,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72e5bc248a9b27d63ecb5ee0870bafd089ae0b47e249fe73e321701a59a2f267"
+      "sha256": "f68aeb3d30a3c6a89fd4500afbaa0f872d67016480d32737c5fe71cb0686f19b"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -9925,7 +9925,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29438836cdef9f8279a3f5021f1af83186496c47eb5106758547004f8a40a64e"
+      "sha256": "1100892f4b6fadc828759b516a6703d18ab0adf7a146ad5e6204403ef2b6c358"
     },
     {
       "path": "tools/title_manager_plan.ps1",
