@@ -614,7 +614,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96b2a70b6ca7e4440cd00f7de8d4702a0015bd5463e9f915afe4ca166dd6342a"
+      "sha256": "1492352997535b8e029c4f259bfece094c3446d0b3d9a7ea9a7bdc78a20d40e2"
     },
     {
       "path": "assets/issue_routing.json",
@@ -6448,7 +6448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cdc0f69b45d9ab2cadd9570427a9561c6cd79c59ee3c73302661110bc74f5367"
+      "sha256": "f8a07310165ab91cb1d7754fdcd84d1d05bab86d1f752202b1e5cbf9a4511967"
     },
     {
       "path": "tools/hle_manifest.py",
@@ -8315,7 +8315,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1282ffb0682c6bb2b6eec59ec0da05c2933b2e477164a427d66455273aa52447"
+      "sha256": "dd295a215e66e1b7454c6416e0c0917fe217c60a26cd2d09a691eeeb9b25b091"
     },
     {
       "path": "tools/test_hle_manifest.py",
