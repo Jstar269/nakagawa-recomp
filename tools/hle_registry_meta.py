@@ -557,31 +557,68 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)",
     },
-    # sceReg virtual system registry (src/rt/hle.c, sceReg block). Read-only: writers are not
-    # registered. Integer values come from the table sceUtilityGetSystemParamInt reads.
+    # sceReg virtual system registry (src/rt/hle.c, sceReg block): the /CONFIG tree measured on
+    # PSP-3000 6.6.1 (2026-10-09, read-only enumeration) with a per-user overlay persisted by the
+    # flush calls. sceUtilityGetSystemParamInt reads the registry's shared integer keys back.
     "h_RegOpenRegistry": {
         "status": "partial",
-        "limitation": "read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured",
-    },
-    "h_RegOpenCategory": {
-        "status": "partial",
-        "limitation": "serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured",
-    },
-    "h_RegGetKeyInfo": {
-        "status": "partial",
-        "limitation": "serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement",
-    },
-    "h_RegGetKeyValue": {
-        "status": "partial",
-        "limitation": "copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured",
-    },
-    "h_RegCloseCategory": {
-        "status": "partial",
-        "limitation": "frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured",
+        "limitation": "opens the one virtual system registry in mode 1 or 2 with 512 project-bounded handles (the console served at least 257 at once, measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration); RegParam regtype and name are not checked; the first open loads the measured /CONFIG tree and the per-user overlay; write semantics and the errno-class codes are not hardware measured",
     },
     "h_RegCloseRegistry": {
         "status": "partial",
-        "limitation": "frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured",
+        "limitation": "frees a registry handle slot; closed handles get the bad-handle code 0x8008272E, measured on sceRegGetKeysNum and applied here by analogy",
+    },
+    "h_RegFlushRegistry": {
+        "status": "partial",
+        "limitation": "persists the whole per-user overlay atomically when the registry changed (whether firmware persists less, or commits on close, is unmeasured); a failed write is EIO and the change stays in memory",
+    },
+    "h_RegOpenCategory": {
+        "status": "partial",
+        "limitation": "opens a category of the measured tree with 512 project-bounded handles; an open of a missing category creates it in either mode, cutting new names to 26 bytes (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration for mode 1); the console's failure to reopen such a cut name is not modeled; write semantics and the errno-class codes are not hardware measured",
+    },
+    "h_RegCloseCategory": {
+        "status": "partial",
+        "limitation": "frees a category handle slot, including one made stale by sceRegRemoveCategory; closed handles get the bad-handle code 0x8008272E (measured on sceRegGetKeysNum, applied by analogy)",
+    },
+    "h_RegFlushCategory": {
+        "status": "partial",
+        "limitation": "persists the whole per-user overlay, not only the flushed category (firmware scope unmeasured); a failed write is EIO and the change stays in memory",
+    },
+    "h_RegRemoveCategory": {
+        "status": "partial",
+        "limitation": "removes an empty category a game created through a mode-2 registry handle; measured default categories are refused (EPERM) and non-empty ones too (ENOTEMPTY); write semantics and the errno-class codes are not hardware measured",
+    },
+    "h_RegGetKeyInfo": {
+        "status": "partial",
+        "limitation": "reports type, size and a key handle for the measured /CONFIG entries (names, types, sizes and DIR size 0 measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration), created keys and child categories; an unknown key returns the measured 0x8008271D; values other than six measured settings are neutral placeholders",
+    },
+    "h_RegGetKeyInfoByName": {
+        "status": "partial",
+        "limitation": "the same lookup as sceRegGetKeyInfo without a key handle; the not-found code is applied by analogy",
+    },
+    "h_RegGetKeyValue": {
+        "status": "partial",
+        "limitation": "copies a value key with bounds checks (a buffer smaller than the value is EINVAL, a DIR entry EFTYPE; both unmeasured); stale or foreign key handles get the bad-handle code by analogy; reading a neutral placeholder logs once",
+    },
+    "h_RegGetKeyValueByName": {
+        "status": "partial",
+        "limitation": "the same copy as sceRegGetKeyValue, by name; error codes other than not-found are not hardware measured",
+    },
+    "h_RegSetKeyValue": {
+        "status": "partial",
+        "limitation": "writes an existing key through a mode-2 category handle (mode 1 is EACCES): INT exactly 4 bytes, a STR takes the size of its new value (string sizes follow their values, measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration), BIN up to its fixed size with the rest zero-filled; persists on a flush; write semantics and the errno-class codes are not hardware measured",
+    },
+    "h_RegCreateKey": {
+        "status": "partial",
+        "limitation": "creates an INT (4 bytes), STR or BIN key (up to a 4096-byte project bound) with zero-filled space through a mode-2 category handle; names over 26 bytes are cut to 26 (inferred from the measured category cut); DIR and unknown types are EINVAL, existing names EEXIST; write semantics and the errno-class codes are not hardware measured",
+    },
+    "h_RegGetKeysNum": {
+        "status": "partial",
+        "limitation": "counts a category's keys and child categories; a forged handle returns 0x8008272E and leaves the count untouched (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration)",
+    },
+    "h_RegGetKeys": {
+        "status": "partial",
+        "limitation": "writes the first num entry names as NUL-padded 27-byte slots in the console's order for the measured tree (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration) and creation order after it; truncation below the entry count is a project choice",
     },
 }
 
