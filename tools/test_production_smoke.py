@@ -2245,8 +2245,9 @@ class TestSanitizedBringup(unittest.TestCase):
         iso_path = work_root / "archive.iso"
         create_archive_title_iso(iso_path, disc_id="ULUS99998", title="Synthetic Archive",
                                  executable=bytes(build_synthetic_iso_elf()))
+        # No game_name, as in a typical user manifest: the package naming rule
+        # (the title id) applies.
         manifest = archive_title_manifest("ULUS99998", "archive-ulus99998")
-        manifest["game_name"] = "archive_ulus99998"
         manifest["executable"]["base"] = 0x08804000
         manifest["executable"]["entry"] = 0x08804000
         manifest["executable"]["bss_metadata_source"] = "elf"

@@ -3251,9 +3251,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         codegen_dir.mkdir(parents=True, exist_ok=True)
         if not codegen_dir.resolve().is_relative_to(work_dir):
             raise PackageBuildError("Code generation output escaped the work directory.")
+        # The package route's naming rule: game_name is optional in a title
+        # manifest (a user manifest often omits it) and defaults to the id.
+        game_name = title_codegen_plan._package_game_name(manifest, None)
         plan = title_codegen_plan.build_plan(
             manifest,
-            game_name=manifest["game_name"],
+            game_name=game_name,
             game_elf=selected_elf,
             build_dir=codegen_dir,
             codegen_profile=manifest.get("codegen_profile"),
@@ -3270,7 +3273,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             check=False,
         )
         report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
-            codegen_dir / f"{manifest['game_name']}_recomp_stubs.txt", sources
+            codegen_dir / f"{game_name}_recomp_stubs.txt", sources
         )
         if completed.returncode != 0:
             fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
