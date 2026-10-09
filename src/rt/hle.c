@@ -22049,6 +22049,14 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
     sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
     sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
+    /* scePower_469989ad (0x469989ad) has no public name in the sources this project may consult, so
+     * it is refused under its synthetic name rather than given a guessed one. Its contract needs a
+     * named source and a probe before it can be modelled. */
+    sr_hle_register_unsupported(0x469989adu, "scePower_469989ad", 0x80020002u);
+    /* sceKernelReferSystemStatus: the PSPSDK struct leaves the status and vfpuSwitchCount fields
+     * documented only as unknown, and the idle-clock and switch counters are not modelled here, so
+     * the status is refused until a probe measures the struct. */
+    sr_hle_register_unsupported(0x627e6f3au, "sceKernelReferSystemStatus", 0x80020002u);
     sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
     sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
     sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
@@ -22058,6 +22066,9 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
     sr_hle_register_unsupported(0x8c943191u, "sceImposeGetBatteryIconStatus", 0x80010086u);
     sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    /* sceNetInit follows the same offline network policy as sceNetGetLocalEtherAddr: the runtime
+     * has no network stack, so the call refuses with that code rather than reporting success. */
+    sr_hle_register_unsupported(0x39af39a6u, "sceNetInit", 0x80010086u);
     sr_hle_register_unsupported(0x0282a3bdu, "sceHttpGetContentLength", 0x80010086u);
     sr_hle_register_unsupported(0x03d9526fu, "sceHttpSetResolveRetry", 0x80010086u);
     sr_hle_register_unsupported(0x1f0fc3e3u, "sceHttpSetRecvTimeOut", 0x80010086u);

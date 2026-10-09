@@ -4120,6 +4120,36 @@ static void test_sysreg_write_model(void) {
 
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
+/* Named refusals for three NIDs whose contract is not established from the sources in this tree.
+ * Each one returns its named error and does not stop the title, so the run continues past it:
+ *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086);
+ *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name;
+ *  - sceKernelReferSystemStatus (0x627e6f3a): status and vfpuSwitchCount meanings undocumented.
+ * The test pins the codes, so a later measured handler has to replace them deliberately. */
+#define NID_REFUSE_NET_INIT                0x39af39a6u
+#define NID_REFUSE_POWER_469989AD          0x469989adu
+#define NID_REFUSE_REFER_SYSTEM_STATUS     0x627e6f3au
+#define REFUSE_NET_CODE                    0x80010086u
+#define REFUSE_UNSUPPORTED_CODE            0x80020002u
+
+static uint32_t refuse_call(uint32_t nid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = 0u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_named_refusals(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(refuse_call(NID_REFUSE_NET_INIT) == REFUSE_NET_CODE,
+           "sceNetInit refuses with the offline network code 0x80010086");
+    expect(refuse_call(NID_REFUSE_POWER_469989AD) == REFUSE_UNSUPPORTED_CODE,
+           "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
+    expect(refuse_call(NID_REFUSE_REFER_SYSTEM_STATUS) == REFUSE_UNSUPPORTED_CODE,
+           "sceKernelReferSystemStatus is a named refusal (0x80020002) until its fields are measured");
+}
+
 /* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Width 0 leaves the width unset and
  * reports the current setting (0 when none); 512, 1024, 2048 and 4096 set it and return the
  * previous width (0 when none was set). An unsupported width fails and leaves the setting alone.
@@ -25568,6 +25598,7 @@ int main(int argc, char **argv) {
     test_sysreg_write_model();
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
+    test_named_refusals();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();
