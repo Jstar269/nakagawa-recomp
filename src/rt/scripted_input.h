@@ -29,6 +29,15 @@
  * silently falling on the floor. A gap segment waits without a budget: a guest that is
  * not polling cannot be pressed anyway, and nothing is lost while it waits.
  *
+ * A segment's width is normally its nominal length in controller samples, which is vblank
+ * time. A segment may instead state its width in GUEST READS (`reads` > 0): it is delivered
+ * once that many guest reads have each been handed a sample latched while it was current.
+ * A read counts once however many samples it returns, and reads that come before the
+ * segment's first sample is latched do not count. On a starved host such a press lasts the
+ * same number of guest reads however many vblanks the batch covered, which a vblank width
+ * cannot promise. The budget of a pressed segment bounds the whole wait for its reads, so a
+ * guest that reads once and then stops is an overdue press, not a hang.
+ *
  * This header is pure logic with no runtime dependencies, so the exact state machine the
  * runtime uses (src/rt/hle.c) is also compiled by tools/test_scripted_input.py. It is
  * included by that one runtime translation unit; the functions are static for that
@@ -45,9 +54,10 @@
 
 typedef struct {
     uint32_t mask;        /* buttons held while this segment is current (0 = a release gap) */
-    uint32_t samples;     /* nominal length in controller samples, >= 1 */
+    uint32_t samples;     /* nominal length in controller samples, >= 1 (vblank width) */
     uint32_t not_before;  /* earliest VCOUNT at which the segment may become current */
     uint32_t budget;      /* vblanks it may wait for a guest read; 0 = wait without limit */
+    uint32_t reads;       /* guest-read width: reads that must observe it; 0 = vblank width */
 } SrInputSegment;
 
 typedef struct {
@@ -58,6 +68,7 @@ typedef struct {
     uint32_t since;       /* VCOUNT at which seg became current */
     uint32_t last_id;     /* last delivery id handed out */
     uint32_t read_id;     /* newest delivery id the guest has been handed by a read */
+    uint32_t reads;       /* guest reads that observed the current segment */
 } SrInputPlayer;
 
 /* Stop delivering and forget the current segment. Delivery ids are never reused: samples
@@ -65,7 +76,7 @@ typedef struct {
  * must never vouch for a segment started after it. */
 static inline void sr_input_reset(SrInputPlayer *p) {
     uint32_t handed_out = p->last_id;
-    SrInputPlayer zero = { { 0u, 0u, 0u, 0u }, 0, 0u, 0u, 0u, 0u, 0u };
+    SrInputPlayer zero = { { 0u, 0u, 0u, 0u, 0u }, 0, 0u, 0u, 0u, 0u, 0u, 0u };
     *p = zero;
     p->last_id = handed_out;
     p->read_id = handed_out;
@@ -79,6 +90,7 @@ static inline void sr_input_start(SrInputPlayer *p, const SrInputSegment *seg, u
     p->last_id = p->last_id == UINT32_MAX ? 1u : p->last_id + 1u;
     p->id = p->last_id;
     p->latched = 0u;
+    p->reads = 0u;
     p->since = v;
 }
 
@@ -93,15 +105,20 @@ static inline int sr_input_was_read(const SrInputPlayer *p) {
     return p->current && p->read_id >= p->id;
 }
 
-/* The current segment has been latched for its nominal length and the guest has read it. */
+/* The current segment has been latched for its nominal length and the guest has read it; a
+ * guest-read width is delivered once its reads have observed it. */
 static inline int sr_input_delivered(const SrInputPlayer *p) {
-    return p->current && p->latched >= p->seg.samples && p->read_id >= p->id;
+    if (!p->current) return 0;
+    if (p->seg.reads != 0u) return p->reads >= p->seg.reads;
+    return p->latched >= p->seg.samples && p->read_id >= p->id;
 }
 
-/* A pressed segment that the guest has still not read after its budget. */
+/* A pressed segment that the guest has still not read after its budget. A guest-read width
+ * is overdue while fewer reads than it asked for have observed it, however many did. */
 static inline int sr_input_overdue(const SrInputPlayer *p, uint32_t v) {
-    return p->current && p->seg.mask != 0u && p->seg.budget != 0u &&
-           p->read_id < p->id && v - p->since >= p->seg.budget;
+    if (!p->current || p->seg.mask == 0u || p->seg.budget == 0u) return 0;
+    if (p->seg.reads != 0u) return p->reads < p->seg.reads && v - p->since >= p->seg.budget;
+    return p->read_id < p->id && v - p->since >= p->seg.budget;
 }
 
 /* Once per latched controller sample: count it against the current segment and return the
@@ -113,9 +130,12 @@ static inline uint32_t sr_input_latch(SrInputPlayer *p) {
 }
 
 /* Once per guest controller read, with the newest delivery id among the samples the read
- * returned. Returns 1 when this read is the first to hand the guest the current segment. */
+ * returned. Returns 1 when this read is the first to hand the guest the current segment.
+ * A read observes the current segment when it hands over one of its samples, and then it
+ * counts once toward a guest-read width. */
 static inline int sr_input_read(SrInputPlayer *p, uint32_t newest_id) {
     int first = p->current && p->read_id < p->id && newest_id >= p->id;
+    if (p->current && newest_id >= p->id && p->reads < UINT32_MAX) p->reads++;
     if (newest_id > p->read_id) p->read_id = newest_id;
     return first;
 }
@@ -179,6 +199,7 @@ static inline int sr_input_from_rows(const uint32_t *f, const uint32_t *mask, co
             out[count].samples = (count == 0 && held == 0u) ? 1u : next - at;
             out[count].not_before = at;
             out[count].budget = held ? budget : 0u;
+            out[count].reads = 0u;          /* a table row is a vblank width */
             count++;
         }
         at = next;

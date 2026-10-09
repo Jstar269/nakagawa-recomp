@@ -42,6 +42,20 @@ PBP_HEADER_SIZE = 40
 PBP_SECTION_COUNT = 8
 PBP_PARAM_SFO_SECTION = 0
 PBP_TITLE_MAX_BYTES = 128  # same bound as the native title_name field
+PBP_PACKAGE_UNSUPPORTED = "PBP_PACKAGE_UNSUPPORTED"
+PBP_HEADER_TRUNCATED = "PBP_HEADER_TRUNCATED"
+PBP_OFFSETS_INVALID = "PBP_OFFSETS_INVALID"
+PBP_SFO_INVALID = "PBP_SFO_INVALID"
+# The single registry of identify refusals this module emits. Every raise goes
+# through _pbp_refusal, which accepts only these codes. The parity tests derive
+# their expected sets from this tuple, so the C emitter, the bring-up schema enum,
+# and the sweep vocabulary are all checked against the same source.
+PBP_BOUNDARY_CODES: tuple[str, ...] = (
+    PBP_PACKAGE_UNSUPPORTED,
+    PBP_HEADER_TRUNCATED,
+    PBP_OFFSETS_INVALID,
+    PBP_SFO_INVALID,
+)
 PBP_UNSUPPORTED_SENTENCE = (
     "This is a PlayStation Store package (PBP), not a disc image. "
     "Nakagawa Recomp can't use these yet."
@@ -613,6 +627,13 @@ def _pbp_package_sentence(disc_id: str, title: str) -> str:
     return f"{PBP_UNSUPPORTED_SENTENCE} ID: {disc_id}"
 
 
+def _pbp_refusal(message: str, boundary_code: str) -> IsoInspectionError:
+    """Build the identify refusal for one code from PBP_BOUNDARY_CODES."""
+    if boundary_code not in PBP_BOUNDARY_CODES:
+        raise RuntimeError(f"unregistered PBP boundary code: {boundary_code}")
+    return IsoInspectionError(message, boundary_code=boundary_code)
+
+
 def _reject_pbp_package(stream, size_bytes: int, header: bytes) -> None:
     """Refuse a file already identified as a PBP package at a named boundary.
 
@@ -623,9 +644,7 @@ def _reject_pbp_package(stream, size_bytes: int, header: bytes) -> None:
     disc ID the package carries. No package section is extracted or executed.
     """
     if len(header) < PBP_HEADER_SIZE:
-        raise IsoInspectionError(
-            PBP_HEADER_TRUNCATED_SENTENCE, boundary_code="PBP_HEADER_TRUNCATED"
-        )
+        raise _pbp_refusal(PBP_HEADER_TRUNCATED_SENTENCE, PBP_HEADER_TRUNCATED)
     offsets = struct.unpack_from("<8I", header, 8)
     ascending = all(
         offsets[index] <= offsets[index + 1]
@@ -636,16 +655,12 @@ def _reject_pbp_package(stream, size_bytes: int, header: bytes) -> None:
         or not ascending
         or offsets[PBP_SECTION_COUNT - 1] > size_bytes
     ):
-        raise IsoInspectionError(
-            PBP_OFFSETS_INVALID_SENTENCE, boundary_code="PBP_OFFSETS_INVALID"
-        )
+        raise _pbp_refusal(PBP_OFFSETS_INVALID_SENTENCE, PBP_OFFSETS_INVALID)
 
     sfo_start = offsets[PBP_PARAM_SFO_SECTION]
     sfo_size = offsets[PBP_PARAM_SFO_SECTION + 1] - sfo_start
     if sfo_size < 20 or sfo_size > MAX_SFO_BYTES:
-        raise IsoInspectionError(
-            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
-        )
+        raise _pbp_refusal(PBP_SFO_INVALID_SENTENCE, PBP_SFO_INVALID)
     stream.seek(sfo_start)
     raw_sfo = stream.read(sfo_size)
     try:
@@ -657,12 +672,10 @@ def _reject_pbp_package(stream, size_bytes: int, header: bytes) -> None:
         if len(title.encode("utf-8")) >= PBP_TITLE_MAX_BYTES:
             raise IsoInspectionError("PARAM.SFO TITLE is too long to display")
     except IsoInspectionError as exc:
-        raise IsoInspectionError(
-            PBP_SFO_INVALID_SENTENCE, boundary_code="PBP_SFO_INVALID"
-        ) from exc
-    raise IsoInspectionError(
+        raise _pbp_refusal(PBP_SFO_INVALID_SENTENCE, PBP_SFO_INVALID) from exc
+    raise _pbp_refusal(
         _pbp_package_sentence(disc_id, _pbp_display_title(title)),
-        boundary_code="PBP_PACKAGE_UNSUPPORTED",
+        PBP_PACKAGE_UNSUPPORTED,
     )
 
 

@@ -919,6 +919,12 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
         if fn == 0x2D: return wr(d, f"({{int32_t _x=(int32_t){R(a)},_y=(int32_t){R(b)}; (uint32_t)(_x<_y?_x:_y);}})"), None, 0  # min
         if fn == 0x2E: return f"{{ uint64_t _acc=((uint64_t)s->hi<<32)|s->lo; uint64_t _prod=(uint64_t)((int64_t)(int32_t){R(a)}*(int64_t)(int32_t){R(b)}); _acc-=_prod; s->lo=(uint32_t)_acc; s->hi=(uint32_t)(_acc>>32);}}", None, 0  # msub
         if fn == 0x2F: return f"{{ uint64_t _acc=((uint64_t)s->hi<<32)|s->lo; _acc-=(uint64_t){R(a)}*(uint64_t){R(b)}; s->lo=(uint32_t)_acc; s->hi=(uint32_t)(_acc>>32);}}", None, 0  # msubu
+        if fn == 0x0F:  # sync, stype 0 (full barrier). This runtime is single-hart and
+            # sequentially consistent, so the barrier orders nothing: no effect. Only the
+            # all-zero form is accepted; rs/rt/rd and nonzero stype stay fail-closed until measured.
+            if (w & 0x03FFFFC0) != 0:
+                raise Unsupported(f"SYNC with reserved or nonzero-stype bits at 0x{addr:08x}")
+            return "(void)0;", None, 0
         raise Unsupported(f"SPECIAL funct 0x{fn:02x} at 0x{addr:08x}")
     if op == 0x08 or op == 0x09: return wr(rt(w), f"({R(rs(w))} + {simm(w)})"), None, 0  # addi/addiu
     if op == 0x0A: return wr(rt(w), f"((int32_t){R(rs(w))} < (int32_t){simm(w)} ? 1u : 0u)"), None, 0  # slti
@@ -1831,7 +1837,9 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 t = jump_target(pc, w)
                 insns.add(pc + 4)
                 seen.add(pc + 4)
-                if not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
+                if t == pc:  # a self-loop is an in-function edge, never a native call to this function
+                    labels.add(t)
+                elif not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
                     labels.add(t)
                     stack.append(t)
                 break
@@ -2068,6 +2076,7 @@ def _sv_step(w, regs, written):
         if fn == 0x27: bin2(d, regs[a], regs[b], lambda x, y: ~(x | y)); return
         if fn == 0x2A: bin2(d, regs[a], regs[b], lambda x, y: 1 if _sv_s32(x) < _sv_s32(y) else 0); return  # slt
         if fn == 0x2B: bin2(d, regs[a], regs[b], lambda x, y: 1 if x < y else 0); return      # sltu
+        if fn == 0x0F: return                                                                 # sync (no GPR write)
     elif op in (0x08, 0x09):   # addi/addiu
         W(b, regs[a] + s16(w) if regs[a] is not None else None); return
     elif op == 0x0A:           # slti
@@ -2559,7 +2568,11 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-            if (target in known or target in resume_owners) and not (
+            if target == addr:
+                # Self-loop (a spin wait): the native call below would recurse on the host
+                # stack once per iteration. Keep it a backward goto with the preemption point.
+                out.append(f"    SR_YIELD(s, {G(addr)}); goto L_{target:08x};")
+            elif (target in known or target in resume_owners) and not (
                 target in resume_owners and target in labels
             ):
                 out.append(f"    {ADDRESS_SPACE.symbol(target, resume_owners)}(s); {emit_host_return(resumable, stack_census=stack_census)}")
