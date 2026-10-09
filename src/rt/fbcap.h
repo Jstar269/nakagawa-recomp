@@ -17,8 +17,9 @@
 //          known to have reached the presentation engine.
 //      A presenter whose present fails calls sr_capture_fail().
 //   3. Once its present call returns, the arming side calls sr_capture_cancel(): an arm no
-//      presenter serviced (output slot skipped, no presenter, refused span) resolves as
-//      "nothing attempted" and can never be serviced later by a newer frame.
+//      presenter serviced (an output slot skipped, a presenter that declined the frame)
+//      resolves as "nothing attempted" and can never be serviced later by a newer frame.
+//      The arming side arms only frames it will hand to a presenter.
 //
 // Published files are P6 PPMs written atomically. A publication failure resolves the capture
 // as failed (-1); it never changes whether the frame itself was presented, and no path

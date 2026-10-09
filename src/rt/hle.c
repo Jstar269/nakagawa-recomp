@@ -14769,7 +14769,7 @@ static void display_present_frame(void) {
 
 /* Present the active framebuffer, then close this frame's capture (fbcap.h): the presenter
  * that showed the frame has already serviced an armed capture, and an arm nobody serviced
- * (no presenter, a refused span, a skipped output slot) resolves here as "nothing
+ * (a skipped output slot, a presenter that declined the frame) resolves here as "nothing
  * attempted", so a later present can never publish this frame's path with newer pixels. */
 static void display_present_active(void) {
     display_present_frame();
@@ -15094,7 +15094,11 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
     int fbsnap_every = sr_fbcap_snap_every(getenv("SR_FBSNAP"), s_fbsnap_win_n > 0);
     int owner = sr_fbcap_owner(sr_fbcap_env_on("SR_FBDUMP"), fbsnap_every > 0);
     if (owner == SR_FBCAP_NONE) return NULL;
-    if (!framebuf_set || !display_host_span_valid(fb)) return NULL;
+    /* Arm only a frame display_present_active() will hand to a presenter -- the same gate
+     * vramdump_try_present() applies. With no presenter (no --gui, or none initialised)
+     * there is nothing to capture, so neither the capture nor its legacy VRAM-side
+     * snapshot is taken. */
+    if (!gui_on() || !framebuf_set || !display_host_span_valid(fb)) return NULL;
     if (owner == SR_FBCAP_FBDUMP) {
         const char *fd = getenv("SR_FBDUMP");
         if (!fd || vcount < (uint32_t)atoi(fd)) return NULL;
@@ -15276,9 +15280,9 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
                     s_vcount, s_fbcap_armed, cres);
         } else {
-            /* No presenter serviced this frame's arm (the output cap dropped the present,
-             * or no presenter ran): display_present_active() cancelled it, so it can
-             * neither be serviced by a later frame nor reported with a stale result. */
+            /* No presenter serviced this frame's arm (the output cap dropped the present):
+             * display_present_active() cancelled it, so it can neither be serviced by a
+             * later frame nor reported with a stale result. */
             fprintf(stderr, "FBSNAP f=%u swapchain capture -> SKIPPED (no present serviced this frame)\n",
                     s_vcount);
         }

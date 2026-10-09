@@ -7012,11 +7012,14 @@ static void test_display_capture_arms_on_latched_flip(void) {
     /* The policy reads SR_FBSNAP once and caches it, so arm it before the first flip. */
     _putenv_s("SR_FBSNAP", "1");
 
-    /* Configure the display with an immediate flip so a latched flip is accepted. */
+    /* With no presenter a flip is never shown, so nothing may be armed for it. */
+    s_cap_arm_calls = 0;
     sr_display_advance_vcount(1u);
     cpu.r[4] = VRAM_B; cpu.r[5] = 512; cpu.r[6] = 3; cpu.r[7] = 0;
     expect(sr_syscall(&cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
            "capture fixture configures the display with an immediate flip");
+    expect(s_cap_arm_calls == 0u, "a flip with no presenter arms no capture");
+    s_test_gui_on = 1;
 
     /* A latched request is not a present yet, so it must not arm on its own. */
     s_cap_arm_calls = 0;
@@ -7048,6 +7051,7 @@ static void test_display_capture_arms_on_latched_flip(void) {
     expect(!s_cap_pending,
            "an arm no presenter serviced is resolved before the immediate flip returns");
 
+    s_test_gui_on = 0;
     _putenv_s("SR_FBSNAP", "");
 }
 
@@ -7086,6 +7090,7 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
     _putenv_s("SR_FBSNAP_WINDOWS", window);
     sr_fbcap_test_reset_config();
     s_cap_arm_accept = 0;
+    s_test_gui_on = 1;
 
     for (int i = 0; i < 4; i++) {
         uint32_t v = 0;
@@ -7111,6 +7116,7 @@ static void test_display_capture_windows_alone_select_fbsnap(void) {
     _putenv_s("SR_FBSNAP", "");
     _putenv_s("SR_FBSNAP_WINDOWS", "");
     s_cap_arm_accept = 1;
+    s_test_gui_on = 0;
     sr_fbcap_test_reset_config();
 }
 

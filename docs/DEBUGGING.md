@@ -701,8 +701,9 @@ SDL3/Vulkan presenter records a readback inside the same command buffer that bli
 frame, while the headless `SR_VIDEO=offscreen` sink and the GDI window publish the converted frame
 they accepted. Either way the file is an exact P6 `.ppm` published atomically
 (`build/snapshots/frame_<n>.ppm`, or `frame_v<vcount>.ppm` with windows), and the same guest frame
-produces the same bytes on every presenter. A frame no presenter showed (output slot skipped, no
-presenter) is reported `SKIPPED` and is never published later with newer pixels. The legacy guest-VRAM
+produces the same bytes on every presenter. A frame whose present did not run (its output slot was
+skipped) is reported `SKIPPED` and is never published later with newer pixels; with no presenter at
+all (no `--gui`) nothing is armed. The legacy guest-VRAM
 `snap_*.ppm`/`snap_v*.ppm` files (route evidence via `dump_fb_fmt`) are still written unchanged.
 `SR_FBDUMP=<N>` publishes the presented frame as `present_source.ppm` and exits; the exit status is
 0 only if a capture was truly published, 1 otherwise (the run must not be claimed as captured when
