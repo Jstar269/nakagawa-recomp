@@ -510,12 +510,12 @@ they do not encode expected PSP return values.
 
 | Case | Evidence id | Hardware status | Contract being measured |
 | --- | --- | --- | --- |
-| `kernel-alarm` | `PSP-ALARM-001` | `NOT_RUN` | Alarm creation with a null handler and zero clock; dynamic alarm-table exhaustion; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
+| `kernel-alarm` | `PSP-ALARM-001` | `NOT_RUN` | Alarm creation with a null handler and zero clock; alarm-table exhaustion capped at 1024 pending alarms; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
 | `thread-scheduler` | `PSP-THREAD-003` | `NOT_RUN` | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
 | `wait-outcomes` | `PSP-WAIT-001` | `NOT_RUN` | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
-| `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, and list/draw sync states for paused/cancelled lists. |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `NOT_RUN` | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
-| `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, and handle exhaustion. |
+| `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `NOT_RUN` | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 
 The registry probe opens the registry and categories in read mode and never
@@ -535,7 +535,9 @@ boot, performs a PSPLink soft reset between completed cases, validates the
 whole private plan in offline dry-run mode, and checkpoints each case. A timed
 out or incomplete launch stops the queue. After the maintainer power-cycles
 and confirms that action, the runner resumes at the next case without
-reclassifying the interrupted capture.
+reclassifying the interrupted capture. A stop before a launch, such as a
+transport start failure, keeps the checkpoint at the same case and needs no
+power-cycle confirmation.
 
 ## 1. The gap this closes
 
@@ -713,13 +715,39 @@ Violating these makes the oracle lie:
 A probe can leave child threads asleep or runnable after its records finish. Those
 threads share PSPLink's kernel namespace with the next probe: names can collide,
 priorities can change scheduling, and thread stacks consume partition memory. The
-probe's main thread also remains parked until PSPLink stops and unloads its module.
+probe's main thread also remains parked until its module is stopped.
 
 Do not end the probe's main thread with `sceKernelExitDeleteThread(0)`. That bypasses
 the PSPSDK CRT exit path. The observed result was a broken PSPLink
 `modstun` handshake (`Module Stop/Unload 0x00000000/` was not reported), which
-escalated cleanup. The exact kernel transition is not established; the supported
-path leaves main alive for PSPLink to stop and unload.
+escalated cleanup. The exact kernel transition is not established.
+
+Stopping and unloading a module does not end the threads it created. PSPSDK's PRX
+CRT (`crt0_prx`) creates main in `module_start` and exports no `module_stop`. Its
+only exit path, `exit()` to `_exit()`, runs `_fini` and `__libcglue_deinit` and then
+calls `sceKernelExitGame()`. PSPLink hooks that call: with `resetonexit=1` (its
+default) it resets, and otherwise it exits the calling thread without deleting it.
+PSPLink's `modstun` calls `sceKernelStopModule` and then `sceKernelUnloadModule`,
+and nothing in that sequence ends main. On 2026-10-08 a PSP-3000 run showed the
+result. `transport-write` passed its records and `modstun` unloaded the module, but
+S2 still listed one more thread than S0 (the parked main), and about 52.5 MB of
+the probe's default newlib heap stayed allocated.
+
+The probe therefore owns the stop half of its lifecycle. Main records its thread
+UID first. After the completion marker it sleeps until a stop request arrives;
+a wakeup sent before the sleep is counted, not lost. The probe's exported
+`module_stop` sets the request, wakes main, waits up to one second for main to end,
+deletes it, and returns 0. On the request, main runs the CRT runtime
+de-initialisation (`_fini`, then `__libcglue_deinit`, which frees the newlib heap
+and the C runtime's kernel objects) without the `sceKernelExitGame` tail, then
+calls `sceKernelExitThread(0)`. If main does not end within the bound,
+`module_stop` returns 1 rather than remove a thread that may still be running; the
+module stays loaded and the unload and snapshot checks below report the failure.
+The Makefile generates the PRX export table (`module_start`, `module_stop`,
+`module_info`) into the build directory for every `probe.c` case. Releasing the heap
+at stop is the general fix for repeated launches, so the default heap size is kept.
+A smaller global bound would change the memory environment that existing cases
+measure; only the DMAC cases bound it, for their own measurement reasons.
 
 The probe now runs one ordered teardown after its case records: write back the data
 cache; terminate, delete, and verify its created child threads; delete tracked kernel
@@ -727,8 +755,8 @@ objects and registered sub-interrupts; release audio channels and close descript
 free partition blocks; restore CPU/bus clocks, captured FCR31, and any pending
 interrupt-resume tokens; remove tracked disposable `host0:` files; write and read a
 64-byte `host0:` round-trip file for the host; append the completion marker last; and
-park main in `sceKernelSleepThread()`. The case result log and round-trip file remain
-available until the host has captured and checked them.
+park main in `sceKernelSleepThread()` until `module_stop` ends it. The case result log
+and round-trip file remain available until the host has captured and checked them.
 
 `tools/psp_oracle/run_psplink.py` compares three PSPLink snapshots around each launch.
 It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
@@ -737,7 +765,12 @@ per-partition total/largest free bytes, and modules before load.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
 must show that the probe's only remaining thread is its main thread. After the
 `modstun` stop/unload handshake, S2 must match S0 for thread UID/name pairs and
-module UID/name pairs, with the probe UID absent. Per-partition free-memory changes
+module UID/name pairs, with the probe UID absent. The verdict lists the threads S2
+gained or lost relative to S0. When the only extra threads are the module's own S1
+threads, it also names the boundary: the probe main thread survived the module stop
+and unload. The verdict also keeps PSPLink's `modstun` reply in `modstun_reply`.
+Its `Status` field is the probe's `module_stop` return value: 0 only after main
+ended and was deleted. Per-partition free-memory changes
 are retained as diagnostics; allocator equality is not a teardown gate. The runner
 also requires a qualified shell and the host0 round-trip. `exprint` output remains
 diagnostic because its interpretation is not qualified, so its status is `NOT_RUN`.
