@@ -362,6 +362,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_savedata_security.py` | Production-path regressions for the bounded savedata security successor. |
 | `test_savedata_spans.py` | Guest span validation, preflight ordering and portable contained-delete seams. |
 | `test_sched_invariants.py` | Source-level guards for scheduler and thread-lifecycle invariants. |
+| `test_scripted_input.py` | Scripted controller input reaches the guest in guest time, including on a starved host. |
 | `test_sdkver_c.py` | Retained-state regression for the compiled SDK-version contract. |
 | `test_tracediff_local_coverage.py` | Strict local trace coverage contract for `tracediff.py --strict-local` and the codegen/microtest gates. |
 | `test_vfs_c.py` | Host-neutral VFS path joining regression test. |

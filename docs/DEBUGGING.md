@@ -343,9 +343,10 @@ The diagnostic does not skip guest work or change GE execution.
 | `SR_INLOG=1` | Log input state changes |
 | `SR_PAD=HEX` | Override pad state (hex buttons) |
 | `SR_PADPERIOD=N` | Automatic pad-pulse period in vblanks (default 240) |
-| `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4) |
+| `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
 | `SR_PADSTART=N` | Pad override start frame |
 | `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
+| `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800); not a whole number >= 1 refuses the script |
 | `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
 | `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
 | `SR_NOINPUT=1` | Disable the automatic START pulse; live and scripted input still work |
@@ -368,9 +369,40 @@ $env:SR_NOINPUT = "1"
 .\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Standard
 ```
 
-The converter expands shorter presses because a one-vblank desktop automation
-pulse can fall between the game's controller reads. Use
+The converter expands shorter presses so a replay holds each press for as many
+vblanks as a person would. A one-vblank pulse can no longer fall between the
+game's controller reads, because scripted input waits for a read (below). Use
 `--minimum-width 1` only when an exact-width replay is required.
+
+### Scripted input is delivered in guest time
+
+Every scripted input source uses the same delivery rule (`src/rt/scripted_input.h`): the
+legacy `SR_PADSCRIPT` table, the route program's `PRESS`, `DELAY`, `PRESS_UNTIL` and
+`PRESS_WHILE`, and the automatic START pulse. A script is a sequence of pressed and released
+stretches. Each stretch ends only when both of these hold:
+
+- it has been latched for its authored width in controller samples (one sample per serviced
+  vblank);
+- the guest has read the controller (`sceCtrlReadBufferPositive` or
+  `sceCtrlPeekBufferPositive`) and been handed a sample of it.
+
+A stretch never starts before its authored vblank. On a host that keeps up, the guest reads
+inside every window and the timing is exactly the authored timing. On a host that falls
+behind, the runtime services several elapsed periods at once, with no guest code between
+them. The script then stretches until the guest has seen each press and each release, and
+it never shortens or skips one.
+
+Before this rule, a press whose window one such batch stepped over was never latched. A
+press shorter than the guest's frame time on a starved host was never read either. The
+headless showcase smoke "missed the scripted Cross input sample" that way.
+
+A press the guest does not read within `SR_PADSCRIPT_READ_BUDGET` vblanks (default 1800)
+fails the run with `ROUTE_FAIL` naming the buttons, the step and the vblanks waited. That
+covers a legacy row and a `PRESS` step. A release waits without a budget, because a guest
+that is not polling cannot be pressed. So does a `PRESS_UNTIL` / `PRESS_WHILE` pulse, whose
+step timeout already bounds it.
+`SR_INLOG=1` adds a `ctrl_read: vcount=<n> guest read scripted <mask>` line when the guest
+first reads each scripted state.
 
 ### Scripted keyboard answers
 
@@ -432,10 +464,10 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to record it again (see below) |
 | `WAIT <NAME> <timeout>` | Block until `NAME` is observed; fail the run on timeout |
 | `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
-| `PRESS <hexmask\|buttons> <width>` | Hold `hexmask` (or the named buttons) for `width` vblanks |
-| `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
-| `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
-| `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
+| `PRESS <hexmask\|buttons> <width>` | Hold `hexmask` (or the named buttons) for `width` samples and until the guest has read it |
+| `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`, each until read) until `NAME` is observed; fail on timeout |
+| `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press the same way while `NAME` is observed; complete when it is not |
+| `DELAY <n>` | Release the pad for `n` samples and until the guest has read the release (input cadence *within* one screen) |
 | `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
 | `END` | Route complete |
 

@@ -1580,7 +1580,7 @@ $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h
 
 $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
