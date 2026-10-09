@@ -4842,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1bfa359d8184cf9480bef3085967fd764f63c2f771821b08da2f1b152bcb0695"
+      "sha256": "7b7e0fcabba42092e84f8e17f49618ffe4d0a741e223b18f73597e54cd842e22"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4880,7 +4880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1436828f1d4946298d83cfef7c93166d2cb9563bde69968755645163930d91a"
+      "sha256": "3e8e515533589c193b83c82b2faa8b91c265bb5e41ace43250633404aab0d124"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4990,7 +4990,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "663ed1a8270409923a52731d65a935b41000e27382cca3f6fa9fd84552be79a2"
+      "sha256": "01df63cb31ee9b7c0bdb8a56c39823842e64f336404210b3fe1298ac09cfca76"
     },
     {
       "path": "src/rt/osk_text_entry.h",
@@ -5002,7 +5002,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84effc14cb33fb67f657b2fe596673a7002a9fa6d3324711d607ac7263ad4b3d"
+      "sha256": "c1f8ff5fdb445eb7beca2eb1373c9bc6f14d4652065fa56b8cc75937c3b509f6"
     },
     {
       "path": "src/rt/osk_text_entry_selftest.c",
