@@ -22158,6 +22158,9 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register_unsupported(0x39af39a6u, "sceNetInit", 0x80010086u);
     /* sceHttpsEnd follows the offline HTTP policy of sceHttpEnd and sceHttpInit: no network stack. */
     sr_hle_register_unsupported(0xf9d8eb63u, "sceHttpsEnd", 0x80010086u);
+    /* The SSL library has no handler in this runtime, which has no network stack. sceSslEnd follows
+     * the same offline policy as the HTTP family (0x80010086); the other SSL calls are not modelled. */
+    sr_hle_register_unsupported(0x191cdeffu, "sceSslEnd", 0x80010086u);
     /* sceRtcGetAccumulativeTime (0x011f03c1) is not declared in the PSPSDK RTC header, so its contract
      * is not established here and it is refused under its name rather than guessed. */
     sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);

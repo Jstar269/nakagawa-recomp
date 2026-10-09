@@ -4154,6 +4154,8 @@ static void test_named_refusals(void) {
            "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
     expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
            "sceRtcGetAccumulativeTime is a named refusal (0x80020002): not in the PSPSDK RTC header");
+    expect(refuse_call(0x191cdeffu) == REFUSE_NET_CODE,
+           "sceSslEnd refuses with the offline network code 0x80010086 (no SSL or network stack)");
 }
 
 /* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Width 0 leaves the width unset and
