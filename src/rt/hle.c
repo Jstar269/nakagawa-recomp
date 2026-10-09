@@ -7478,9 +7478,9 @@ typedef struct {
  * 17 (kr0). Keep the registry explicit so an absent indexed asset is an honest error rather
  * than silently returning ltn0 metrics with the wrong size/style. */
 static const SrFontSpec s_font_specs[18] = {
-    [0]  = {"jpn0.pgf", "FTT-NewRodin Pro DB", 0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f},
-    [9]  = {"ltn8.pgf", "FTT-NewRodin Pro Latin", 0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f},
-    [17] = {"kr0.pgf", "AsiaNHH(512Johab)", 0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f},
+    [0]  = {"nkjpn.pgf", "Nakagawa Open Japanese", 0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f},
+    [9]  = {"nkltn.pgf", "Nakagawa Open Latin", 0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f},
+    [17] = {"nkkr.pgf", "Nakagawa Open Korean", 0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f},
 };
 
 typedef struct {
