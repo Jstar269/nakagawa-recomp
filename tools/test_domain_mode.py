@@ -49,9 +49,14 @@ class DefaultStubsUnchangedTests(unittest.TestCase):
         self.assertIn("sr_syscall(s, 0x27a6b7cdu);", text)
         self.assertNotIn("sr_import_call", text)
 
-    def test_both_emit_sites_route_through_the_helper(self):
+    def test_every_emit_site_routes_through_the_helper(self):
+        # Three images carry import stubs: the primary image, each fixed-address
+        # extra module, and each runtime-placed module (translated in its own link
+        # space). Every one emits its stubs through import_stub_text, and the helper
+        # is the only place the sr_syscall stub body is spelled.
         source = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
-        self.assertEqual(len(re.findall(r"text = import_stub_text\(", source)), 2)
+        self.assertEqual(len(re.findall(r"text = import_stub_text\(", source)), 3)
+        self.assertEqual(len(re.findall(r"sr_syscall\(s, 0x\{nid", source)), 1)
 
     def test_production_fixture_recipes_do_not_opt_into_the_seam(self):
         for target in ("production-smoke:", "cosim-selftest:"):
