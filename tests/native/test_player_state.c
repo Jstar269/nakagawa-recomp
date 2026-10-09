@@ -1500,10 +1500,208 @@ static void test_source_iso_member_path_validation(void) {
 }
 #endif
 
+/* The bitmap fallback (SDL_RenderDebugText) draws ASCII only. Every UTF-8 text
+ * it draws goes through player_text_for_bitmap_font, so a title that the system
+ * font can draw (the trademark sign) is readable there too, and nothing else
+ * reaches the debug font as raw bytes. */
+static void test_bitmap_font_text_fallback(void) {
+    char out[64];
+    size_t n = player_text_for_bitmap_font("Fixture\xE2\x84\xA2", out, sizeof(out));
+    assert(strcmp(out, "FixtureTM") == 0);
+    assert(n == strlen(out));
+
+    player_text_for_bitmap_font("caf\xC3\xA9", out, sizeof(out));
+    assert(strcmp(out, "caf?") == 0);
+
+    /* A truncated sequence and a stray continuation byte each become one '?'. */
+    player_text_for_bitmap_font("a\xE2\x84", out, sizeof(out));
+    assert(strcmp(out, "a??") == 0);
+    player_text_for_bitmap_font("\x80" "b", out, sizeof(out));
+    assert(strcmp(out, "?b") == 0);
+
+    player_text_for_bitmap_font("tab\there\x7f", out, sizeof(out));
+    assert(strcmp(out, "tab here?") == 0);
+
+    /* Output never overruns its buffer; the cut is at a whole glyph. */
+    char small[4];
+    n = player_text_for_bitmap_font("abcdef", small, sizeof(small));
+    assert(strcmp(small, "abc") == 0);
+    assert(n == 3);
+    char tiny[3];
+    n = player_text_for_bitmap_font("\xE2\x84\xA2" "x", tiny, sizeof(tiny));
+    assert(strcmp(tiny, "TM") == 0);
+    assert(n == 2);
+
+    printf("[PLAYER_STATE_TEST] bitmap font text fallback PASS\n");
+}
+
+/* Paths under the user's profile are shown with the profile folder replaced by
+ * "~" (the stored path is untouched). The profile folder is matched on whole
+ * path components only, so a profile name that is a prefix of another folder
+ * name is left alone. */
+static void test_display_path_hides_profile_folder(void) {
+    /* Each platform's own path spelling: the profile folder and its separator. */
+#if defined(_WIN32) || defined(_WIN64)
+#define TP_HOME "C:\\path\\synthetic-user"
+#define TP_OTHER "D:"
+#define TP_SEP "\\"
+#else
+#define TP_HOME "/srv/synthetic-user"
+#define TP_OTHER "/media"
+#define TP_SEP "/"
+#endif
+    char out[160];
+    const char *home = TP_HOME;
+
+    /* The saves root from the Settings screen. */
+    size_t n = player_display_text_with_home(
+        TP_HOME TP_SEP "AppData" TP_SEP "Local" TP_SEP "Nakagawa" TP_SEP "saves", home,
+        out, sizeof(out));
+    assert(strcmp(out, "~" TP_SEP "AppData" TP_SEP "Local" TP_SEP "Nakagawa" TP_SEP "saves") == 0);
+    assert(n == strlen(out));
+
+    /* Exactly the profile folder, a trailing separator on the profile, and a
+     * path embedded in a sentence. */
+    player_display_text_with_home(TP_HOME, home, out, sizeof(out));
+    assert(strcmp(out, "~") == 0);
+    player_display_text_with_home(TP_HOME TP_SEP "Games" TP_SEP "disc.iso",
+                                  TP_HOME TP_SEP, out, sizeof(out));
+    assert(strcmp(out, "~" TP_SEP "Games" TP_SEP "disc.iso") == 0);
+    player_display_text_with_home("Promoted to " TP_HOME TP_SEP "AppData, done.",
+                                  home, out, sizeof(out));
+    assert(strcmp(out, "Promoted to ~" TP_SEP "AppData, done.") == 0);
+
+    /* A sibling folder whose name only starts with the profile name is untouched,
+     * and so is a path outside the profile. */
+    player_display_text_with_home(TP_HOME "2" TP_SEP "Games", home, out, sizeof(out));
+    assert(strcmp(out, TP_HOME "2" TP_SEP "Games") == 0);
+    player_display_text_with_home(TP_OTHER TP_SEP "Games" TP_SEP "disc.iso", home,
+                                  out, sizeof(out));
+    assert(strcmp(out, TP_OTHER TP_SEP "Games" TP_SEP "disc.iso") == 0);
+
+    /* No profile known: nothing is rewritten. */
+    player_display_text_with_home(TP_HOME TP_SEP "x", "", out, sizeof(out));
+    assert(strcmp(out, TP_HOME TP_SEP "x") == 0);
+    player_display_text_with_home(TP_HOME TP_SEP "x", NULL, out, sizeof(out));
+    assert(strcmp(out, TP_HOME TP_SEP "x") == 0);
+
+    /* The buffer bound holds: the cut is never past the end. */
+    char tiny[6];
+    player_display_text_with_home(TP_HOME TP_SEP "AppData", home, tiny, sizeof(tiny));
+    assert(strlen(tiny) < sizeof(tiny));
+    assert(strcmp(tiny, "~" TP_SEP "App") == 0);
+#undef TP_HOME
+#undef TP_OTHER
+#undef TP_SEP
+
+#if defined(_WIN32) || defined(_WIN64)
+    /* Windows paths compare case-insensitively and accept either separator. */
+    player_display_text_with_home("c:/PATH/SYNTHETIC-USER/Games/disc.iso", home,
+                                  out, sizeof(out));
+    assert(strcmp(out, "~/Games/disc.iso") == 0);
+#endif
+
+    printf("[PLAYER_STATE_TEST] display path hides the profile folder PASS\n");
+}
+
+/* A library card says what is true of the title's package now. A title whose
+ * package has not been checked yet is "checking", never "Not prepared"; a
+ * package that cannot be used says why, with the validator's first sentence. */
+static void test_library_card_status_text(void) {
+    char out[256];
+    size_t n = player_library_status_text(true, false, false, false, 0, NULL,
+                                          out, sizeof(out));
+    assert(strcmp(out, "Status: Prepared") == 0);
+    assert(n == strlen(out));
+
+    player_library_status_text(false, true, false, false, 0, NULL, out, sizeof(out));
+    assert(strcmp(out, "Status: Checking package...") == 0);
+
+    /* The reason from a copied library: the identity record is missing. */
+    const char *reason =
+        "Title input identity record is missing or unreadable; source media cannot be qualified. "
+        "Cache component/epoch mismatch or incomplete entry; build it from the library.";
+    player_library_status_text(false, false, false, false, 0, reason, out, sizeof(out));
+    assert(strcmp(out, "Not prepared: Title input identity record is missing or unreadable; "
+                       "source media cannot be qualified") == 0);
+
+    player_library_status_text(false, false, false, false, 0,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Not prepared: Runtime package is missing") == 0);
+
+    player_library_status_text(false, false, true, false, 0,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Check failed: Runtime package is missing") == 0);
+
+    player_library_status_text(false, false, false, false, 0, NULL, out, sizeof(out));
+    assert(strcmp(out, "Status: Not prepared") == 0);
+
+    /* Staged assets keep their count, and say why the runtime is still missing. */
+    player_library_status_text(false, false, false, true, 12, NULL, out, sizeof(out));
+    assert(strcmp(out, "Assets staged: 12") == 0);
+    player_library_status_text(false, false, false, true, 12,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Assets staged: 12. Runtime package is missing") == 0);
+
+    /* A small buffer is never overrun. */
+    char tiny[8];
+    n = player_library_status_text(true, false, false, false, 0, NULL, tiny, sizeof(tiny));
+    assert(strcmp(tiny, "Status:") == 0);
+    assert(n == strlen(tiny));
+
+    printf("[PLAYER_STATE_TEST] library card status text PASS\n");
+}
+
+/* The bundled sample entries (the UI fixtures from player_app_populate_sample_games)
+ * live in memory only. Every library save writes library.json, so a save made for
+ * a real title (an add, or the last-played record after a launch) must leave the
+ * samples out of the file. The file is redirected to a disposable path. */
+static void test_sample_entries_never_reach_library_json(void) {
+    printf("[PLAYER_STATE_TEST] Subtest: sample entries never reach library.json\n");
+    char cache[512];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache, sizeof(cache)));
+    char path[1024];
+    snprintf(path, sizeof(path), "%s%csample_isolation.json", cache,
+             nk_platform_path_separator());
+    remove(path);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    assert(strlen(path) < sizeof(app->library.library_path));
+    strcpy(app->library.library_path, path);
+
+    /* The samples enter the in-memory library, as they do for --demo runs. */
+    player_app_populate_sample_games(app);
+    assert(app->library.count >= 2);
+
+    /* A real title is added, which saves the library. */
+    GameRecord user;
+    memset(&user, 0, sizeof(user));
+    seed_entry(&user, "TEST00041", "Synthetic User Title");
+    assert(player_app_add_game(app, &user));
+
+    NkLibrary loaded;
+    nk_library_init(&loaded);
+    assert(nk_library_load(&loaded, path) == NK_OK);
+    assert(nk_library_count(&loaded) == 1);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00041") != NULL);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00005") == NULL);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00006") == NULL);
+
+    remove(path);
+    free(app);
+    printf("[PLAYER_STATE_TEST] sample entries stay out of library.json PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
     }
+    test_bitmap_font_text_fallback();
+    test_display_path_hides_profile_folder();
+    test_library_card_status_text();
+    test_sample_entries_never_reach_library_json();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);

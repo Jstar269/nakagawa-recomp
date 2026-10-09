@@ -27,6 +27,7 @@
 #endif
 #include "nk_types.h"
 #include "nk_iso.h"
+#include "nk_json.h"
 #include "nk_library.h"
 #include "nk_platform.h"
 #include "native_test_isolation.h"
@@ -230,6 +231,99 @@ static void test_hostile_library_json(const char *test_dir) {
 
     printf("[HOSTILE_TEST] Library JSON tests PASSED!\n");
     fflush(stdout);
+}
+
+/* Writes one library record whose title_name is the raw JSON string body
+ * `title_body` (escapes included, quotes excluded) and loads it. */
+static NkResult load_library_with_title_body(const char *fpath, const char *title_body,
+                                             NkLibrary *lib) {
+    char json[4096];
+    snprintf(json, sizeof(json),
+             "{\n  \"schema_version\": 1,\n  \"games\": [\n"
+             "    {\"disc_id\": \"TEST00011\", \"title_name\": \"%s\", \"disc_version\": \"1.00\"}\n"
+             "  ]\n}\n",
+             title_body);
+    write_test_file(fpath, json, strlen(json));
+    return nk_library_load(lib, fpath);
+}
+
+static void test_library_json_string_escapes(const char *test_dir) {
+    char fpath[512];
+    NkLibrary lib;
+
+    printf("[HOSTILE_TEST] Testing library.json string escapes...\n"); fflush(stdout);
+
+    /* 1. Every RFC 8259 escape decodes to its exact UTF-8 bytes. Metadata is
+     *    synthetic: the trademark sign, a surrogate pair and the short escapes. */
+    struct { const char *body; const char *expect; } good[] = {
+        { "Synthetic \\u2122 fixture", "Synthetic \xE2\x84\xA2 fixture" },
+        { "Pair \\ud83c\\udfae end", "Pair \xF0\x9F\x8E\xAE end" },
+        { "\\\"\\\\\\/\\b\\f\\n\\r\\t", "\"\\/\b\f\n\r\t" },
+        { "\\u00e9t\\u00E9", "\xC3\xA9t\xC3\xA9" },
+        { "\\u0041\\u007f", "A\x7f" },
+        /* A NUL escape is a NUL byte: the C-string value ends there. */
+        { "a\\u0000b", "a" },
+    };
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        snprintf(fpath, sizeof(fpath), "%s%cescape_ok_%zu.json", test_dir,
+                 nk_platform_path_separator(), i);
+        nk_library_init(&lib);
+        assert(load_library_with_title_body(fpath, good[i].body, &lib) == NK_OK);
+        assert(nk_library_count(&lib) == 1);
+        const NkGameEntry *e = nk_library_get(&lib, 0);
+        assert(e != NULL);
+        assert(strcmp(e->title_name, good[i].expect) == 0);
+    }
+
+    /* 2. Malformed escapes and raw control characters fail the whole file with
+     *    no entry and no invented bytes. Each case gets a fresh file name, so no
+     *    .bak recovery copy can mask the failure. */
+    const char *bad[] = {
+        "bad \\x41 escape",
+        "bad \\u12G4 hex",
+        "bad \\u12",
+        "lone \\ud83c high surrogate",
+        "lone \\udfae low surrogate",
+        "pair \\ud83c\\u0041 not a low surrogate",
+        "raw \t tab",
+        "raw \x01 control",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        snprintf(fpath, sizeof(fpath), "%s%cescape_bad_%zu.json", test_dir,
+                 nk_platform_path_separator(), i);
+        nk_library_init(&lib);
+        assert(load_library_with_title_body(fpath, bad[i], &lib) == NK_ERROR_GENERIC);
+        assert(nk_library_count(&lib) == 0);
+    }
+
+    /* 3. A decoded code point that does not fit the field is dropped whole.
+     *    The field keeps only complete characters, never a split sequence. */
+    char long_body[NK_MAX_TITLE_LEN + 64];
+    size_t fill = sizeof(((NkGameEntry *)0)->title_name) - 2;
+    memset(long_body, 'A', fill);
+    memcpy(long_body + fill, "\\u2122", 6);
+    long_body[fill + 6] = '\0';
+    snprintf(fpath, sizeof(fpath), "%s%cescape_truncated.json", test_dir,
+             nk_platform_path_separator());
+    nk_library_init(&lib);
+    assert(load_library_with_title_body(fpath, long_body, &lib) == NK_OK);
+    assert(nk_library_count(&lib) == 1);
+    const NkGameEntry *long_entry = nk_library_get(&lib, 0);
+    assert(strlen(long_entry->title_name) == fill);
+    for (size_t i = 0; i < fill; i++) assert(long_entry->title_name[i] == 'A');
+
+    /* 4. The shared JSON reader decodes the same escapes. */
+    const char json_text[] = "{\"k\": \"\\u2122\\ud83c\\udfae\"}";
+    char parse_err[128] = "";
+    NkJsonNode *root = nk_json_parse(json_text, strlen(json_text), parse_err, sizeof(parse_err));
+    assert(root != NULL);
+    const char *value = nk_json_get_string(nk_json_obj_get(root, "k"));
+    assert(value != NULL);
+    assert(strlen(value) == 7);
+    assert(memcmp(value, "\xE2\x84\xA2\xF0\x9F\x8E\xAE", 7) == 0);
+    nk_json_free(root);
+
+    printf("[HOSTILE_TEST] Library string escape tests PASSED!\n"); fflush(stdout);
 }
 
 static void test_hostile_iso_parser(const char *test_dir) {
@@ -1032,6 +1126,7 @@ int main(void) {
     assert(nk_platform_mkdir_p(hostile_dir));
 
     test_hostile_library_json(hostile_dir);
+    test_library_json_string_escapes(hostile_dir);
     test_hostile_iso_parser(hostile_dir);
     test_hostile_pbp_package(hostile_dir);
     test_iso_executable_classification(hostile_dir);
