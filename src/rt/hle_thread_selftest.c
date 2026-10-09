@@ -219,6 +219,7 @@ extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
 extern void sr_hle_test_power_reset(void);
+extern void sr_hle_test_hprm_set_remote(int attached);
 extern uint32_t sr_vblank_handler(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
@@ -11267,6 +11268,12 @@ static void test_td24b_cheap_hle_batch(void) {
      * is not stopped at it. */
     expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 0u,
            "sceHprmIsRemoteExist reports no remote (the runtime models no remote accessory)");
+    sr_hle_test_hprm_set_remote(1);
+    expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsRemoteExist follows a modeled attached remote");
+    sr_hle_test_hprm_set_remote(0);
+    expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsRemoteExist returns to no remote when the model detaches it");
 
     /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
     reset_fixture();

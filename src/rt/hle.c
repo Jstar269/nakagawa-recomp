@@ -2534,11 +2534,18 @@ static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
 static uint32_t s_ctrl_idle_back = 0xFFFFFFFFu;
 /* sceHprmIsRemoteExist(void): 1 when the infrared remote is plugged in, else 0 (PSPSDK
- * psphprm.h). The runtime models no remote accessory, so no remote is ever reported. */
+ * psphprm.h). The runtime models the accessory as absent by default, so the answer comes from that
+ * modeled state and is 0 until a model attaches a remote. The state is a model, not a measurement. */
+static int s_hprm_remote_attached = 0;
 static uint32_t h_HprmIsRemoteExist(CpuState *s) {
     (void)s;
-    return 0u;
+    return s_hprm_remote_attached ? 1u : 0u;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only setter so the executable harness can check that the answer follows the model. */
+void sr_hle_test_hprm_set_remote(int attached) { s_hprm_remote_attached = attached != 0; }
+#endif
 
 /* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): report the
  * stored thresholds (power-on default: both "disabled", -1). */
