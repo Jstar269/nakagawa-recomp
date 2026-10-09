@@ -326,6 +326,93 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         findings = audit_markdown_files(self.repo_path, issues_map)
         self.assertTrue(all(finding[4] for finding in findings))
 
+    @staticmethod
+    def _tracker(number: int, state: str, *, is_pr: bool = False, merged: bool = False) -> dict:
+        return {
+            "number": number,
+            "is_pr": is_pr,
+            "type": "PR" if is_pr else "Issue",
+            "state": state,
+            "merged_at": "2026-01-01T00:00:00Z" if merged else None,
+            "title": f"synthetic {number}",
+            "url": "",
+        }
+
+    def _stale_in_works(self, findings: list) -> list:
+        return [f for f in findings if not f[4] and "STALE IN-THE-WORKS POINTER" in f[3]]
+
+    def test_user_guide_is_current_facing(self) -> None:
+        self.assertIn("docs/YOUR_OWN_GAMES.md", CURRENT_FACING_DOCS)
+
+    def test_in_the_works_clause_citing_closed_issue_fails(self) -> None:
+        # Regression: the user guide said second-title verification was "in the
+        # works" and pointed at the issue that had closed when it shipped.
+        doc = self.repo_path / "docs" / "YOUR_OWN_GAMES.md"
+        doc.parent.mkdir()
+        doc.write_text(
+            "- **Game not in the list:** imported as Experimental. Second-title work is in the works\n"
+            "  ([#85](https://github.com/Jstar269/nakagawa-recomp/issues/85)) and intake too (#86).\n",
+            encoding="utf-8",
+        )
+        issues_map = {85: self._tracker(85, "closed"), 86: self._tracker(86, "open")}
+        stale = self._stale_in_works(audit_markdown_files(self.repo_path, issues_map))
+        self.assertEqual([(f[0], f[1], f[2]) for f in stale], [("docs/YOUR_OWN_GAMES.md", 1, "#85")])
+        self.assertIn("CLOSED ISSUE", stale[0][3])
+
+    def test_merged_pr_in_an_in_the_works_clause_fails(self) -> None:
+        (self.repo_path / "README.md").write_text(
+            "Linux support is **in the works** (#90).\n", encoding="utf-8"
+        )
+        issues_map = {90: self._tracker(90, "closed", is_pr=True, merged=True)}
+        stale = self._stale_in_works(audit_markdown_files(self.repo_path, issues_map))
+        self.assertEqual(len(stale), 1)
+        self.assertIn("MERGED PR", stale[0][3])
+
+    def test_finished_work_cited_outside_the_in_the_works_clause_passes(self) -> None:
+        (self.repo_path / "README.md").write_text(
+            "- Fonts import from your own PSP\n"
+            "  ([#30](https://github.com/Jstar269/nakagawa-recomp/issues/30)); a converter is\n"
+            "  in the works ([#31](https://github.com/Jstar269/nakagawa-recomp/issues/31)).\n"
+            "- A second title plays a stage (#32). Full games are in the works (#31).\n"
+            "\n"
+            "```text\n"
+            "in the works (#30)\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        issues_map = {
+            30: self._tracker(30, "closed"),
+            31: self._tracker(31, "open"),
+            32: self._tracker(32, "closed", is_pr=True, merged=True),
+        }
+        findings = audit_markdown_files(self.repo_path, issues_map)
+        self.assertTrue(all(finding[4] for finding in findings), findings)
+
+    def test_tracking_column_citing_closed_issue_fails(self) -> None:
+        (self.repo_path / "README.md").write_text(
+            "## What is still in the works\n\n"
+            "| Area | Today | Tracking |\n"
+            "| --- | --- | --- |\n"
+            "| Fonts | Import works (PR #40). | [#41](https://github.com/Jstar269/nakagawa-recomp/issues/41) |\n"
+            "| Titles | Experimental import. | [#42](https://github.com/Jstar269/nakagawa-recomp/issues/42) |\n",
+            encoding="utf-8",
+        )
+        issues_map = {
+            40: self._tracker(40, "closed", is_pr=True, merged=True),
+            41: self._tracker(41, "closed"),
+            42: self._tracker(42, "open"),
+        }
+        stale = self._stale_in_works(audit_markdown_files(self.repo_path, issues_map))
+        self.assertEqual([(f[1], f[2]) for f in stale], [(5, "#41")])
+        self.assertIn("Tracking column", stale[0][3])
+
+    def test_in_the_works_rule_skips_documents_that_are_not_current_facing(self) -> None:
+        doc = self.repo_path / "docs" / "PORTING_NOTES.md"
+        doc.parent.mkdir()
+        doc.write_text("Root binding is in the works (#50).\n", encoding="utf-8")
+        findings = audit_markdown_files(self.repo_path, {50: self._tracker(50, "closed")})
+        self.assertEqual(self._stale_in_works(findings), [])
+
     def test_pagination_beyond_100(self) -> None:
         page1 = [
             {

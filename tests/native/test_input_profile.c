@@ -608,7 +608,7 @@ static void test_per_title_selection_and_fallback(void) {
     NkInputProfile boxing;
     nk_input_profile_init_default(&boxing);
     boxing.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_LEFT_STICK;
-    assert(nk_input_profile_file_set_title(&doc, "ULUS10041", &boxing, diag, sizeof(diag)) == NK_OK);
+    assert(nk_input_profile_file_set_title(&doc, "TEST80001", &boxing, diag, sizeof(diag)) == NK_OK);
     assert(doc.title_count == 2);
 
     /* Saving and reloading preserves both entries and the global mapping. */
@@ -621,7 +621,7 @@ static void test_per_title_selection_and_fallback(void) {
     assert(loaded.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
     assert(loaded.title_count == 2);
     assert(nk_input_profile_file_find_title(&loaded, "UCUS98701") == 0);
-    assert(nk_input_profile_file_find_title(&loaded, "ULUS10041") == 1);
+    assert(nk_input_profile_file_find_title(&loaded, "TEST80001") == 1);
     assert(nk_input_profile_file_find_title(&loaded, "ULES99999") == -1);
     assert(loaded.title[0].psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
     assert(loaded.title[0].axes[NK_PSP_AXIS_ANALOG_Y].inverted);
@@ -649,14 +649,14 @@ static void test_per_title_selection_and_fallback(void) {
     memset(host_buttons, 0, sizeof(host_buttons));
     memset(host_axes, 0, sizeof(host_axes));
     host_buttons[NK_HOST_BUTTON_LEFT_STICK] = true;
-    assert(nk_input_profile_eval_buttons(resolved /* ULUS10041 */, host_buttons, host_axes) == 0);
+    assert(nk_input_profile_eval_buttons(resolved /* TEST80001 */, host_buttons, host_axes) == 0);
     host_buttons[NK_HOST_BUTTON_LEFT_STICK] = false;
     host_buttons[NK_HOST_BUTTON_GUIDE] = true;
     assert(nk_input_profile_eval_buttons(&loaded.global, host_buttons, host_axes) == 0);
     resolved = nk_input_profile_file_resolve(&loaded, "UCUS98701", resolve_diag, sizeof(resolve_diag));
     assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == NK_PSP_BTN_CROSS_BIT);
     host_buttons[NK_HOST_BUTTON_GUIDE] = false;
-    resolved = nk_input_profile_file_resolve(&loaded, "ULUS10041", resolve_diag, sizeof(resolve_diag));
+    resolved = nk_input_profile_file_resolve(&loaded, "TEST80001", resolve_diag, sizeof(resolve_diag));
     assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == 0);
     host_buttons[NK_HOST_BUTTON_LEFT_STICK] = true;
     assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == NK_PSP_BTN_CROSS_BIT);
@@ -814,7 +814,7 @@ static void test_per_title_fail_closed(void) {
         "  \"navigation_bindings\": [],\n"
         "  \"per_title\": [\n"
         "    {\n"
-        "      \"disc_id\": \"ULUS10041\",\n"
+        "      \"disc_id\": \"TEST80001\",\n"
         "      \"profile\": {\n"
         "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
         "        \"calibration\": {\n"
@@ -830,7 +830,7 @@ static void test_per_title_fail_closed(void) {
         "}";
     assert(nk_input_profile_file_parse_json(&doc, out_of_range_entry, strlen(out_of_range_entry),
                                             diag, sizeof(diag)) != NK_OK);
-    assert(strstr(diag, "ULUS10041") != NULL);
+    assert(strstr(diag, "TEST80001") != NULL);
     assert(strstr(diag, "trigger_threshold") != NULL);
     assert(doc.title_count == 0);
 
@@ -923,10 +923,10 @@ static void test_per_title_fail_closed(void) {
     assert(nk_input_profile_file_set_title(&doc, "UCUS98701", &good, diag, sizeof(diag)) == NK_OK);
     NkInputProfile bad = good;
     bad.psp_buttons[NK_PSP_BTN_CIRCLE] = bad.psp_buttons[NK_PSP_BTN_CROSS];
-    assert(nk_input_profile_file_set_title(&doc, "ULUS10041", &bad, diag, sizeof(diag)) != NK_OK);
+    assert(nk_input_profile_file_set_title(&doc, "TEST80001", &bad, diag, sizeof(diag)) != NK_OK);
     assert(strstr(diag, "conflicting binding") != NULL);
     assert(doc.title_count == 1);
-    assert(nk_input_profile_file_find_title(&doc, "ULUS10041") == -1);
+    assert(nk_input_profile_file_find_title(&doc, "TEST80001") == -1);
     assert(nk_input_profile_file_set_title(&doc, "ULUS/10041", &good, diag, sizeof(diag)) != NK_OK);
     assert(doc.title_count == 1);
 
@@ -1273,7 +1273,7 @@ static void test_hostile_documents_fail_closed(void) {
         {
             char entries[1024];
             (void)render_entry(entries, sizeof(entries),
-                               "\"UCUS98701\", \"disc_id\": \"ULUS10041\"", NULL);
+                               "\"UCUS98701\", \"disc_id\": \"TEST80001\"", NULL);
             len = render_per_title_doc(s_hostile_doc, sizeof(s_hostile_doc), "2", entries);
             expect_refused("duplicate disc_id in one per_title entry", s_hostile_doc, len,
                            "duplicate JSON object key");

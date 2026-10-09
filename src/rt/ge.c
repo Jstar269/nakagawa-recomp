@@ -766,7 +766,7 @@ static void ge_capture_configure(void) {
     }
 }
 
-/* ---- Per-frame statistics (SR_GESTAT=1: print every 60 frames) ----
+/* ---- Per-frame statistics (SR_GESTAT=1: print once per 60-vblank window, see ge_set_frame) ----
  * Used to diagnose "black screen" states: shows whether 3D geometry is being culled,
  * near-clipped, z-rejected, alpha-killed, or drawn. */
 static struct {
@@ -1037,7 +1037,12 @@ void ge_set_frame(uint32_t frame) {
     }
     s_ge_frame = frame;
     if (s_stat_on < 0) s_stat_on = getenv("SR_GESTAT") ? 1 : 0;
-    if (s_stat_on && frame && (frame % 60) == 0) {
+    /* A window closes on the first delivered vblank at or past each multiple of 60 and
+     * is labelled with that vblank: `frame` is VCOUNT, which can step over the multiple
+     * (59 -> 61) or repeat (61, 61) when the scheduler services a coalesced batch, so an
+     * exact `frame % 60 == 0` test lost the window or emitted an empty duplicate. */
+    static uint32_t stat_window = 0;
+    if (s_stat_on && sr_vcount_window_crossed(frame, 60u, &stat_window)) {
         unsigned long now = wall_ms();
         fprintf(stderr,
             "GESTAT f=%u wall=%lums ge=%lums tri2d=%lu tri3d=%lu spr2d=%lu spr3d=%lu cull=%lu near=%lu zfail=%lu afail=%lu px2d=%lu px3d=%lu mw=%lu/%lu/%lu\n",

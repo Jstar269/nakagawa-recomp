@@ -12274,25 +12274,44 @@ static void test_ctrl_read_buffer_contract(void) {
     }
 
     /* --- press transition ------------------------------------------------ *
-     * Two frames pressed, two released, so eight consecutive vblanks carry
-     * exactly four of each and at least one rising edge whatever the starting
-     * phase.  A flat "current state" fill cannot produce that, which is the
-     * distinction this case exists to make. */
+     * Two frames pressed, two released. A guest polling every vblank therefore
+     * reads exactly four of each in eight vblanks and at least one rising edge
+     * whatever the starting phase.  A flat "current state" fill cannot produce
+     * that, which is the distinction this case exists to make. */
     ctrl_env("", "0008", "4", "2");
     ctrl_drain(&cpu);
-    ctrl_tick(8u);
-    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 8u) == 8u, "press-transition read returns eight samples");
     {
         unsigned set = 0, rising = 0;
         int prev = -1;
         for (unsigned i = 0; i < 8u; i++) {
-            int cur = (MEM_R32(CTRL_OK_BUF + i * CTRL_SAMPLE_BYTES + 4u) & CTRL_BTN_START) ? 1 : 0;
+            ctrl_tick(1u);
+            expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 1u) == 1u,
+                   "a guest polling every vblank reads one fresh sample each time");
+            int cur = (MEM_R32(CTRL_OK_BUF + 4u) & CTRL_BTN_START) ? 1 : 0;
             if (cur) set++;
             if (prev == 0 && cur == 1) rising++;
             prev = cur;
         }
         expect(set == 4u, "a two-on/two-off pulse delivers exactly four pressed samples in eight");
         expect(rising >= 1u, "delivered history contains a real press edge, not a flat state fill");
+    }
+
+    /* --- the pulse waits for the guest ------------------------------------ *
+     * The auto pulse is delivered in guest time (scripted_input.h): a press is
+     * held until the guest has read it. A guest that does not poll for eight
+     * vblanks therefore finds START still held, not a press it slept through. */
+    ctrl_drain(&cpu);
+    ctrl_tick(8u);
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 8u) == 8u, "press-transition read returns eight samples");
+    {
+        int pressed_seen = 0, released_after = 0;
+        for (unsigned i = 0; i < 8u; i++) {
+            int cur = (MEM_R32(CTRL_OK_BUF + i * CTRL_SAMPLE_BYTES + 4u) & CTRL_BTN_START) ? 1 : 0;
+            if (cur) pressed_seen = 1;
+            else if (pressed_seen) released_after = 1;
+        }
+        expect(pressed_seen, "an unread pulse is in the history the guest finally reads");
+        expect(!released_after, "and it was never released before the guest read it");
     }
 
     /* --- oversized request ------------------------------------------------ */
@@ -21645,8 +21664,19 @@ uint32_t sr_route_step(uint32_t vblank, const uint8_t *sig);
 int      sr_route_status(void);
 int      sr_route_sig_bytes(void);
 void     sr_route_reset(void);
+void     sr_input_test_deliver(int guest_reads);
 
 enum { RT_OFF = 0, RT_LEGACY, RT_RUNNING, RT_DONE, RT_FAILED };
+
+/* One vblank of a route as a guest that polls every frame sees it: the step, the sample it
+ * latches, and the guest's read of that sample. Scripted input is delivered in guest time
+ * (scripted_input.h), so a press only ends once the guest has read it; with a read every
+ * vblank that is exactly the authored width, which is what these cases pin. */
+static uint32_t rt_frame(uint32_t v, const uint8_t *sig) {
+    uint32_t keys = sr_route_step(v, sig);
+    sr_input_test_deliver(1);
+    return keys;
+}
 
 #define RT_PATH "route_selftest_tmp.pad"
 
@@ -21690,19 +21720,19 @@ static void test_route_program_advances_only_on_observed_state(void) {
     /* No observation: the route may not advance and may not press. Elapsed vblanks alone
      * are exactly what issue #64 showed to be worthless. */
     for (uint32_t v = 0; v < 200; v++)
-        expect(sr_route_step(v, NULL) == 0u, "an unobserved WAIT emits no input");
+        expect(rt_frame(v, NULL) == 0u, "an unobserved WAIT emits no input");
     expect(sr_route_status() == RT_RUNNING, "an unobserved WAIT is still waiting");
 
     /* Wrong screen observed: still no advance. */
-    expect(sr_route_step(200, sigB) == 0u, "the wrong screen does not satisfy a WAIT");
+    expect(rt_frame(200, sigB) == 0u, "the wrong screen does not satisfy a WAIT");
 
     /* Right screen: the WAIT completes and the following PRESS starts on the same vblank. */
-    expect(sr_route_step(201, sigA) == 0x4000u, "the press begins on the vblank the screen is reached");
+    expect(rt_frame(201, sigA) == 0x4000u, "the press begins on the vblank the screen is reached");
     for (uint32_t v = 202; v < 217; v++)
-        expect(sr_route_step(v, NULL) == 0x4000u, "the press is held for its full width");
-    expect(sr_route_step(217, NULL) == 0u, "the press is released after its width");
+        expect(rt_frame(v, NULL) == 0x4000u, "the press is held for its full width");
+    expect(rt_frame(217, NULL) == 0u, "the press is released after its width");
 
-    expect(sr_route_step(240, sigB) == 0u, "the second WAIT is satisfied by the second screen");
+    expect(rt_frame(240, sigB) == 0u, "the second WAIT is satisfied by the second screen");
     expect(sr_route_status() == RT_DONE, "END completes the route");
     remove(RT_PATH);
 }
@@ -21821,17 +21851,20 @@ static void test_route_press_until_stops_when_the_screen_arrives(void) {
     expect(sr_route_load(RT_PATH) == 1, "a PRESS_UNTIL route loads");
     rt_sig(sigA, 0x20); rt_sig(sigB, 0x80);
 
-    expect(sr_route_step(0, NULL) == 0x0008u, "PRESS_UNTIL pulses at the start of each period");
-    expect(sr_route_step(7, NULL) == 0x0008u, "the pulse covers its full width");
-    expect(sr_route_step(8, NULL) == 0u, "the pulse stops after its width");
-    expect(sr_route_step(240, NULL) == 0x0008u, "the pulse repeats one period later");
-    expect(sr_route_step(480, sigB) == 0x0008u, "a different screen does not end the repeat");
+    uint32_t at[490];
+    for (uint32_t v = 0; v < 480; v++) at[v] = rt_frame(v, NULL);
+    expect(at[0] == 0x0008u, "PRESS_UNTIL pulses at the start of each period");
+    expect(at[7] == 0x0008u, "the pulse covers its full width");
+    expect(at[8] == 0u, "the pulse stops after its width");
+    expect(at[239] == 0u && at[240] == 0x0008u, "the pulse repeats one period later");
+    expect(rt_frame(480, sigB) == 0x0008u, "a different screen does not end the repeat");
 
     /* The screen arrives: the repeat ends and the next step starts in the same vblank,
      * so the START pulse is never issued again. */
-    expect(sr_route_step(481, sigA) == 0x4000u, "the next step begins on the vblank the screen arrives");
-    expect(sr_route_step(485, NULL) == 0x4000u, "the following press holds for its width");
-    expect(sr_route_step(489, NULL) == 0u, "no further pulse is issued once the screen was reached");
+    expect(rt_frame(481, sigA) == 0x4000u, "the next step begins on the vblank the screen arrives");
+    for (uint32_t v = 482; v < 489; v++) at[v] = rt_frame(v, NULL);
+    expect(at[485] == 0x4000u && at[488] == 0x4000u, "the following press holds for its width");
+    expect(rt_frame(489, NULL) == 0u, "no further pulse is issued once the screen was reached");
     expect(sr_route_status() == RT_DONE, "the route completes after the gated press");
     remove(RT_PATH);
 }
@@ -21856,18 +21889,21 @@ static void test_route_press_while_ends_with_its_screen(void) {
     expect(sr_route_load(RT_PATH) == 1, "a PRESS_WHILE route loads");
     rt_sig(sigA, 0x20); rt_sig(sigB, 0x80);
 
-    expect(sr_route_step(0, sigA) == 0x4000u, "PRESS_WHILE presses while its screen is up");
-    expect(sr_route_step(10, sigA) == 0u, "the press respects its width");
-    expect(sr_route_step(300, sigA) == 0x4000u, "the press repeats one period later");
+    expect(rt_frame(0, sigA) == 0x4000u, "PRESS_WHILE presses while its screen is up");
+    for (uint32_t v = 1; v < 10; v++) (void)rt_frame(v, NULL);
+    expect(rt_frame(10, sigA) == 0u, "the press respects its width");
+    for (uint32_t v = 11; v < 300; v++) (void)rt_frame(v, NULL);
+    expect(rt_frame(300, sigA) == 0x4000u, "the press repeats one period later");
     expect(sr_route_status() == RT_RUNNING, "PRESS_WHILE keeps going while the screen is up");
 
     /* The screen goes away -- to something that is not the next checkpoint either, which is
      * what a crossfade looks like. The step ends there, long before the menu is live. */
     uint8_t midway[576];
     for (int i = 0; i < sr_route_sig_bytes(); i++) midway[i] = 0x50;
-    expect(sr_route_step(600, midway) == 0u, "PRESS_WHILE stops as soon as its screen is gone");
-    expect(sr_route_step(900, midway) == 0u, "nothing is pressed while waiting for the next screen");
-    sr_route_step(1200, sigB);
+    for (uint32_t v = 301; v < 600; v++) (void)rt_frame(v, NULL);
+    expect(rt_frame(600, midway) == 0u, "PRESS_WHILE stops as soon as its screen is gone");
+    expect(rt_frame(900, midway) == 0u, "nothing is pressed while waiting for the next screen");
+    rt_frame(1200, sigB);
     expect(sr_route_status() == RT_DONE, "the following WAIT completes the route");
 
     /* Entering the step one vblank before its screen is drawn must not skip the input. */
@@ -22111,16 +22147,16 @@ static void test_route_mask_refuses_what_it_cannot_mean(void) {
              "END\n", hexA);
     rt_write(body);
     expect(sr_route_load(RT_PATH) == 1, "hex masks with and without a 0x prefix load");
-    expect(sr_route_step(0, sigA) == 0x4000u, "a bare hex mask still reaches the guest");
+    expect(rt_frame(0, sigA) == 0x4000u, "a bare hex mask still reaches the guest");
     for (uint32_t v = 1; v < 16; v++)
-        expect(sr_route_step(v, sigA) == 0x4000u, "the named-width press is held");
-    expect(sr_route_step(16, sigA) == 0x0008u, "the next press starts with its own mask");
+        expect(rt_frame(v, sigA) == 0x4000u, "the named-width press is held");
+    expect(rt_frame(16, sigA) == 0x0008u, "the next press starts with its own mask");
     for (uint32_t v = 17; v < 24; v++)
-        expect(sr_route_step(v, sigA) == 0x0008u, "the 0x-prefixed mask is held for its width");
-    expect(sr_route_step(24, sigA) == 0xFFFFFFFFu, "a full-width mask is every button, not a truncation");
+        expect(rt_frame(v, sigA) == 0x0008u, "the 0x-prefixed mask is held for its width");
+    expect(rt_frame(24, sigA) == 0xFFFFFFFFu, "a full-width mask is every button, not a truncation");
     for (uint32_t v = 25; v < 28; v++)
-        expect(sr_route_step(v, sigA) == 0xFFFFFFFFu, "the full-width press is held for its width");
-    expect(sr_route_step(28, sigA) == 0u, "and released after it");
+        expect(rt_frame(v, sigA) == 0xFFFFFFFFu, "the full-width press is held for its width");
+    expect(rt_frame(28, sigA) == 0u, "and released after it");
     expect(sr_route_status() == RT_DONE, "a legal mask route completes");
     remove(RT_PATH);
 
@@ -22181,19 +22217,20 @@ static void test_route_gates_on_a_guest_event_not_a_signature(void) {
     sr_route_reset();
     rt_write(body);
     expect(sr_route_load(RT_PATH) == 1, "a route that waits on an import loads");
-    expect(sr_route_step(0, sigA) == 0x4000u, "the press before the wait is held");
-    for (uint32_t v = 1; v < 8; v++) (void)sr_route_step(v, sigA);
-    expect(sr_route_step(8, sigA) == 0u, "and released after its width");
+    expect(rt_frame(0, sigA) == 0x4000u, "the press before the wait is held");
+    for (uint32_t v = 1; v < 8; v++) (void)rt_frame(v, sigA);
+    expect(rt_frame(8, sigA) == 0u, "and released after its width");
 
     /* Another import is not the one being waited for. */
     sr_route_test_import(0x11111111u);
-    expect(sr_route_step(9, sigA) == 0u, "an unrelated import does not complete the step");
+    expect(rt_frame(9, sigA) == 0u, "an unrelated import does not complete the step");
     expect(sr_route_status() == RT_RUNNING, "and the route is still waiting");
 
     sr_route_test_import(open_nid);
-    expect(sr_route_step(10, sigA) == 0u, "the waited-for import completes the step");
-    expect(sr_route_step(11, sigA) == 0u, "the step after it begins on the next vblank");
-    expect(sr_route_step(14, sigA) == 0u, "its DELAY is honoured");
+    expect(rt_frame(10, sigA) == 0u, "the waited-for import completes the step");
+    expect(rt_frame(11, sigA) == 0u, "the step after it begins on the next vblank");
+    expect(sr_route_status() == RT_RUNNING, "its DELAY is honoured");
+    expect(rt_frame(12, sigA) == 0u, "and ends once its two samples are latched and read");
     expect(sr_route_status() == RT_DONE, "and the route completes");
     remove(RT_PATH);
 
@@ -22257,27 +22294,29 @@ static void test_route_names_the_buttons_it_presses(void) {
              "END\n", hexA);
     rt_write(body);
     expect(sr_route_load(RT_PATH) == 1, "a route that names buttons loads");
-    expect(sr_route_step(0, NULL) == 0u, "an unobserved screen check presses nothing");
-    expect(sr_route_step(1, sigA) == NK_PSP_BTN_CROSS_BIT,
+    expect(rt_frame(0, NULL) == 0u, "an unobserved screen check presses nothing");
+    expect(rt_frame(1, sigA) == NK_PSP_BTN_CROSS_BIT,
            "the press begins on the vblank the screen is reached");
     for (uint32_t v = 2; v < 17; v++)
-        expect(sr_route_step(v, NULL) == NK_PSP_BTN_CROSS_BIT, "CROSS stays held for its width");
-    expect(sr_route_step(17, NULL) == 0u, "CROSS is released after its width");
-    expect(sr_route_step(21, NULL) == NK_PSP_BTN_CROSS_BIT,
+        expect(rt_frame(v, NULL) == NK_PSP_BTN_CROSS_BIT, "CROSS stays held for its width");
+    expect(rt_frame(17, NULL) == 0u, "CROSS is released after its width");
+    for (uint32_t v = 18; v < 21; v++) (void)rt_frame(v, NULL);
+    expect(rt_frame(21, NULL) == NK_PSP_BTN_CROSS_BIT,
            "a hex mask means the same button as its name");
-    expect(sr_route_step(38, NULL) == 0u, "the release between presses is honoured");
+    for (uint32_t v = 22; v < 37; v++) (void)rt_frame(v, NULL);
+    expect(rt_frame(37, NULL) == 0u, "the release between presses is honoured");
 
     /* The repeating step, checked as a pattern rather than against a vblank arithmetic the
      * reader would have to redo: 120 vblanks is exactly four of its 30-vblank periods, so a
      * 4-vblank press inside each must be held for 16 of them and released for the rest. */
     const uint32_t pulse = NK_PSP_BTN_START_BIT | NK_PSP_BTN_UP_BIT;
     uint32_t first = 0;
-    for (uint32_t v = 30; v < 120 && first == 0; v++)
-        if (sr_route_step(v, NULL) & pulse) first = v;
+    for (uint32_t v = 38; v < 120 && first == 0; v++)
+        if (rt_frame(v, NULL) & pulse) first = v;
     expect(first != 0, "names joined with '+' reach the guest as every button named");
-    int held = 0, loose = 0;
-    for (uint32_t v = first; v < first + 120; v++) {
-        if (sr_route_step(v, NULL) & pulse) held++; else loose++;
+    int held = 1, loose = 0;   /* `first` itself was a pressed vblank */
+    for (uint32_t v = first + 1; v < first + 120; v++) {
+        if (rt_frame(v, NULL) & pulse) held++; else loose++;
     }
     expect(held == 16, "the repeating step holds the named buttons 4 of every 30 vblanks");
     expect(loose == 104, "the repeating step releases the pad between its pulses");
@@ -22473,6 +22512,144 @@ static void test_route_samples_by_elapsed_vcount_cadence(void) {
 
     remove(RT_PATH);
     sr_route_reset();
+}
+
+/* Scripted input in guest time under a starved host (scripted_input.h).
+ *
+ * A host that falls behind latches several elapsed display periods at once and services
+ * their episodes back to back at the batch's final VCOUNT, with no guest code in between.
+ * The legacy pad script used to evaluate each row against that VCOUNT, so a press whose
+ * window one batch stepped over was never latched; a route PRESS ended as soon as VCOUNT
+ * moved past its width; and the auto pulse fired only while VCOUNT sat inside its window.
+ * Each time the press was gone before the guest -- which reads only the latest sample --
+ * was scheduled again. That is how the showcase smoke "missed the scripted Cross input
+ * sample" on a loaded host. Driven here through the real scheduler source latch, the real
+ * episode service (sr_vblank_tick -> route_tick -> sr_ctrl_sample) and the real
+ * sceCtrlReadBufferPositive dispatch, with the guest reading only between batches. */
+static uint64_t s_starve_periods;
+
+static void starve_reset(void) {
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    s_vbl_next_us = 0;
+    s_vbl_event_period_rem = 0;
+    s_vbl_count = 0;
+    s_interrupts_enabled = 1;
+    s_starve_periods = 0;
+}
+
+/* One source latch that discovers `periods` elapsed periods, then every owed episode
+ * serviced back to back: VCOUNT jumps by `periods` and the guest does not run between. */
+static void starve_batch(uint32_t periods) {
+    s_starve_periods += periods;
+    s_vtime_us = (uint64_t)scheduler_vblank_delta(s_starve_periods - 1u, 0u, NULL);
+    scheduler_latch_due_events();
+    scheduler_service_pending();
+}
+
+/* The guest's one read between batches: sceCtrlReadBufferPositive(&pad, 1), the latest
+ * sample, as the showcase demos and most titles read the pad once per frame. */
+static uint32_t starve_guest_read(CpuState *cpu) {
+    MEM_W32(CTRL_OK_BUF + 4u, 0xa5a5a5a5u);
+    expect(ctrl_dispatch(cpu, CTRL_OK_BUF, 1u) == 1u, "the starved guest's read returns one sample");
+    return MEM_R32(CTRL_OK_BUF + 4u);
+}
+
+static uint32_t starve_vcount(CpuState *cpu) {
+    memset(cpu, 0, sizeof(*cpu));
+    return sr_syscall(cpu, 0x9c6eaad7u);   /* sceDisplayGetVcount */
+}
+
+static void test_scripted_input_reaches_a_starved_guest(void) {
+    CpuState cpu;
+    char body[128];
+
+    /* --- legacy pad script: one batch steps over the whole row ---------------- */
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    ctrl_env("1", "", "", "");
+    sr_ctrl_test_reset_live_input();
+    ctrl_drain(&cpu);
+    starve_reset();
+    uint32_t v0 = starve_vcount(&cpu);
+    snprintf(body, sizeof body, "%u 4000 4\n", v0 + 12u);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_LEGACY,
+           "a one-row pad script loads as a legacy table");
+    starve_batch(1u);
+    expect(starve_guest_read(&cpu) == 0u, "before its row the scripted pad reads released");
+    starve_batch(20u);   /* VCOUNT v0+1 -> v0+21 in one latch: [v0+12, v0+16) is never a tick */
+    expect(starve_vcount(&cpu) == v0 + 21u, "the batch stepped VCOUNT past the whole row");
+    expect((starve_guest_read(&cpu) & 0x4000u) != 0u,
+           "a pad-script press the batch stepped over still reaches the starved guest");
+    starve_batch(1u);
+    expect((starve_guest_read(&cpu) & 0x4000u) == 0u,
+           "once the guest has read the press it is released, and the guest reads the release");
+    remove(RT_PATH);
+
+    /* --- route program: VCOUNT moves past the press width before the guest runs - */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("PRESS CROSS 4\nDELAY 4\nPRESS CROSS 4\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING,
+           "a press/delay/press route program loads");
+    starve_batch(1u);    /* the first press begins; the guest is not scheduled before the next batch */
+    starve_batch(10u);   /* VCOUNT moves 10 past the press start in one latch */
+    expect((starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT) != 0u,
+           "a route PRESS outlives a VCOUNT jump past its width until the guest reads it");
+    starve_batch(1u);
+    expect((starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT) == 0u,
+           "after the read the DELAY releases the pad and the guest reads the release");
+    starve_batch(10u);
+    expect((starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT) != 0u,
+           "the second press reaches the guest as a second press, after a release it saw");
+    starve_batch(1u);
+    expect(sr_route_status() == RT_DONE, "the route completes once every press was read");
+    expect((starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT) == 0u, "and leaves the pad released");
+    remove(RT_PATH);
+
+    /* --- route program: a guest that never reads fails the run by name ---------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    _putenv("SR_PADSCRIPT_READ_BUDGET=30");
+    rt_write("PRESS START 4\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a single-press route loads with a 30-vblank read budget");
+    starve_batch(1u);
+    starve_batch(28u);
+    expect(sr_route_status() == RT_RUNNING, "an unread press is held inside its read budget");
+    starve_batch(2u);
+    expect(sr_route_status() == RT_FAILED,
+           "a press the guest never reads fails the route instead of vanishing");
+    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    sr_route_reset();
+    _putenv("SR_PADSCRIPT_READ_BUDGET=0");
+    expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
+           "a read budget that is not a vblank count >= 1 is refused at load");
+    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    remove(RT_PATH);
+
+    /* --- auto-START pulse: one batch steps over its whole window ---------------- */
+    sr_route_reset();
+    ctrl_env("", "0008", "240", "4");
+    sr_ctrl_test_reset_live_input();
+    ctrl_drain(&cpu);
+    starve_batch(1u);
+    (void)starve_guest_read(&cpu);
+    uint32_t v1 = starve_vcount(&cpu);
+    uint32_t boundary = (v1 / 240u + 1u) * 240u;
+    if (boundary - v1 > 2u) starve_batch(boundary - 2u - v1);
+    (void)starve_guest_read(&cpu);
+    starve_batch(10u);   /* VCOUNT boundary-2 -> boundary+8: vcount % 240 < 4 is never a tick */
+    expect((starve_guest_read(&cpu) & CTRL_BTN_START) != 0u,
+           "an auto-START pulse the batch stepped over still reaches the starved guest");
+    starve_batch(1u);
+    expect((starve_guest_read(&cpu) & CTRL_BTN_START) == 0u,
+           "and is released once the guest has read it");
+
+    ctrl_env("1", "", "", "");
+    sr_route_reset();
+    ctrl_drain(&cpu);
 }
 
 /* sceKernelExitGame is `void sceKernelExitGame(void)`:
@@ -24621,6 +24798,7 @@ int main(int argc, char **argv) {
     test_route_gates_on_a_guest_event_not_a_signature();
 
     test_route_samples_by_elapsed_vcount_cadence();
+    test_scripted_input_reaches_a_starved_guest();
 
     check_coroutine_lifecycle();
 

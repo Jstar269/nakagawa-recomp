@@ -84,6 +84,25 @@ class PublicCiWiringTests(unittest.TestCase):
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("showcase-linux", docs)
 
+    def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:
+        """A failed smoke names runtime.log; the run must keep it to diagnose a flake."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        smoke = _ci_step(native_tools, "Build and run the Linux showcase headlessly")
+        upload = _ci_step(native_tools, "Upload the Linux showcase smoke evidence on failure")
+        self.assertIsNotNone(smoke)
+        self.assertIsNotNone(upload)
+        assert smoke is not None and upload is not None
+        self.assertIn("id: showcase", "\n".join(smoke))
+        self.assertLess(
+            _ci_step_index(native_tools, "Build and run the Linux showcase headlessly"),
+            _ci_step_index(native_tools, "Upload the Linux showcase smoke evidence on failure"),
+        )
+        text = "\n".join(upload)
+        self.assertIn("if: failure() && steps.showcase.outcome == 'failure'", text)
+        self.assertRegex(text, r"uses: actions/upload-artifact@[0-9a-f]{40} # v\d")
+        self.assertIn("${{ runner.temp }}/showcase-build/smoke/", text)
+        self.assertIn("${{ runner.temp }}/showcase-demo/packages/*/snap_f*.ppm", text)
+
     def test_linux_cmake_player_gate_reuses_pinned_sdl_and_is_required(self) -> None:
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         native_start = ci.index("  native_tools:\n")

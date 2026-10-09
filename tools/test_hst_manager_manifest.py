@@ -435,7 +435,7 @@ class HstManagerManifestTests(unittest.TestCase):
             ("bad-span.json", lambda value: value["executable"].update(
                 extra_executable_spans=[{"start": 1, "end": 2}]
             )),
-            ("bad-disc.json", lambda value: value["disc"].update(id="UCUS98702")),
+            ("bad-disc.json", lambda value: value["disc"].update(id="TEST80006")),
             ("bad-module.json", lambda value: value["modules"][0].update(name="other.prx")),
             ("bad-address.json", lambda value: value["modules"][0].update(load_address=1)),
         ]

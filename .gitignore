@@ -10,8 +10,9 @@
 *_recomp_*.c
 *_recomp_funcs.h
 *_imports.toml
-*_image.bin
 *.spv
+# Generated *_image.bin guest images, extracted game data, and raw dumps.
+*.bin
 
 # User-supplied PSP/game data and external verification inputs
 *.[eE][lL][fF]
@@ -66,8 +67,7 @@ tools/vfpu_game_*.txt
 /docs/opengrip_ref/
 /opengrip_ref/
 /OpenGrip_For_Inspiration/
-**/EBOOT.BIN.dec
-**/EBOOT.BIN.dec.*
+EBOOT.BIN.dec*
 
 # Local third-party checkouts and redistributable runtime binaries
 /third_party/*
@@ -107,7 +107,6 @@ nidseq_mine.txt
 # they are ever staged, but that is the last line of defence, not the first.
 /docs/ui-baseline/*.png
 /docs/ui-baseline/*.bmp
-*.bin
 *.psess
 *.ngef
 /progress.json
@@ -115,19 +114,16 @@ nidseq_mine.txt
 /benchmarks_report.*
 /watchpoints.json
 
-# Superseded investigations and local scratch
-/Archive/
+# Local scratch
 /scratch/
 /tmp/
-/nul
 /.tmp/
-/backups/
-/tmp_show.txt
-/docs/UNSEEN_ISSUES.md
+# Git Bash turns a Windows-style `>nul` / `2>nul` redirection into a real file
+# named nul that holds the redirected command output.
+/nul
 
 # Python caches and local environments
 __pycache__/
-*.py[cod]
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
@@ -137,11 +133,18 @@ htmlcov/
 .venv/
 venv/
 
-
-# IDE/editor and OS metadata
+# Editor, IDE, debugger, and OS metadata
 /.vs/
 /.vscode/
 /.idea/
+*.user
+*.sw[op]
+*.bak
+*.dmp
+*.stackdump
+.DS_Store
+Thumbs.db
+Desktop.ini
 
 # Generated, machine-specific Clang compilation database (absolute paths; refreshed by nk_manager.ps1)
 /compile_commands.json
@@ -167,26 +170,40 @@ opencode.json
 /.cache/
 /.github/github-app.yml
 
-# Editor, debugger, and OS metadata
-*.suo
-*.user
-*.sln.docstates
-*.sw[op]
-*.bak
-*.dmp
-*.stackdump
-.DS_Store
-Thumbs.db
-Desktop.ini
-
 # Local secrets and credentials
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 
-# Locally supplied PSP KIRK/amctrl constants. Never commit these.
-# See docs/PGD_KEYS.md.
+# Locally supplied PSP KIRK/amctrl constants (default keys/pgd_keys.txt, or
+# wherever SR_PGD_KEYS points). Never commit these.
 keys/
 pgd_keys.txt
+# Local-only KeyStore files dropped outside keys/ (the default
+# <user data>/keys/psp-keyfile.json can be relocated). These mirror the JSON,
+# text and .dat forms of KEY_FILE_NAME in tools/publish_audit.py; *.bin, *.key
+# and *.pem are ignored above, and publish_audit stays the complete,
+# case-insensitive authority for every other suffix.
+*keystore*.json
+*keystore*.txt
+*keystore*.dat
+*key[_-]store*.json
+*key[_-]store*.txt
+*key[_-]store*.dat
+*keyfile*.json
+*keyfile*.txt
+*keyfile*.dat
+*key[_-]file*.json
+*key[_-]file*.txt
+*key[_-]file*.dat
+*psp[_-]key*.json
+*psp[_-]key*.txt
+*psp[_-]key*.dat
+*kirk[_-]key*.json
+*kirk[_-]key*.txt
+*kirk[_-]key*.dat
+keys.json
+keys.txt
+keys.dat
+*.keys
