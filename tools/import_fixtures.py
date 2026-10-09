@@ -117,11 +117,15 @@ def build_import_elf(
     entry_size_words: int = 5,
     corrupt: str | None = None,
     sectionless: bool = False,
+    module_attributes: int = 0,
 ) -> bytes:
     """Build a synthetic ELF whose import table lists `libs` as (name, [NIDs]).
 
     sectionless=True omits every section header; the parser must then locate
     SceModuleInfo via phdr[0].p_paddr (the stripped-PRX convention).
+
+    module_attributes is written to SceModuleInfo.attribute (0x1000 marks a
+    kernel-mode module).
 
     corrupt values (each produces exactly one malformed property; the ELF
     envelope and module-info location stay valid unless stated):
@@ -154,7 +158,7 @@ def build_import_elf(
         seg.extend(b)
         return BASE_VADDR + off
 
-    modinfo_vaddr = alloc(b"\0" * 52)
+    modinfo_vaddr = alloc(struct.pack("<H", module_attributes) + b"\0" * 50)
 
     name_vaddrs = []
     for name, _nids in libs:

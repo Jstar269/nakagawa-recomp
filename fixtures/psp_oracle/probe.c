@@ -4825,12 +4825,15 @@ static uint32_t run_mutex_priority_inheritance_case(uint32_t *out0, uint32_t *ou
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
-/* Kernel interrupt-context query: returns 1 when executing inside an ISR,
-   0 otherwise.  Sourced from InterruptManagerForKernel (NID per PSPSDK
-   pspintrman_kernel.h); libpspinterruptmanager_kernel_660 exports the stub.
-   This is independent proof that the VBLANK sub-interrupt handler body
-   executes in interrupt context before any mutex call is made. */
-extern int sceKernelIsIntrContext(void);
+/* Interrupt-state proof from user mode. This probe is a user-mode module, so
+   it cannot import InterruptManagerForKernel (sceKernelIsIntrContext): the PSP
+   refuses to load a user-mode PRX that imports a kernel-only library. The
+   handler instead records the raw return of sceKernelIsCpuIntrEnable(), the
+   user Kernel_Library export from pspintrman.h and the PSPSDK libpspuser.a
+   (the kernel-alarm case samples the same call inside its alarm handler).
+   A trial counts only when it is 0, meaning the handler body ran with CPU
+   interrupts disabled, as the interrupt dispatcher runs it, before any mutex
+   call was made. */
 
 /* MUTEX_INTR_TRIALS: number of VBLANK firings to sample.  Each firing emits
    one protocol record with a trial-indexed case_id (mutex-interrupt-context-t00
@@ -4842,7 +4845,7 @@ extern int sceKernelIsIntrContext(void);
    All fields are set atomically from within the ISR; main thread reads them
    only after s_subintr_count is incremented and the mutex mutex cycle resets. */
 typedef struct {
-    uint32_t ctx_proof;   /* sceKernelIsIntrContext() return value from ISR     */
+    uint32_t intr_enabled; /* sceKernelIsCpuIntrEnable() return value from ISR */
     uint32_t r_bad_uid;   /* LockMutex(0x7fffffff, 1, NULL)  -- bad UID         */
     uint32_t r_bad_cnt;   /* LockMutex(valid, 0, NULL)        -- bad count       */
     uint32_t r_lock;      /* LockMutex(valid_unlocked, 1, NULL)                  */
@@ -4858,9 +4861,9 @@ static IntrTrial s_trials[MUTEX_INTR_TRIALS];
 
 /* VBLANK sub-interrupt handler.  Fires once per vertical blank (~60 Hz).
    Increments s_subintr_count only after writing all six cell results so the
-   main thread can use s_subintr_count as the ready sentinel.  Uses
-   sceKernelIsIntrContext() as the first call -- before any mutex operation --
-   as independent proof of ISR execution context. */
+   main thread can use s_subintr_count as the ready sentinel.  Samples
+   sceKernelIsCpuIntrEnable() as the first call -- before any mutex
+   operation -- as proof that the body runs with CPU interrupts disabled. */
 static int oracle_subintr_handler(int subintr, void *arg) {
     (void)subintr;
     (void)arg;
@@ -4869,8 +4872,8 @@ static int oracle_subintr_handler(int subintr, void *arg) {
         return 0;
     }
     IntrTrial t;
-    /* Context proof: must return 1 when inside this ISR. */
-    t.ctx_proof  = (uint32_t)sceKernelIsIntrContext();
+    /* Interrupt-state proof: 0 when CPU interrupts are disabled here. */
+    t.intr_enabled = (uint32_t)sceKernelIsCpuIntrEnable();
     /* Cell A: bad UID.  PRX must already have context-check before lookup. */
     t.r_bad_uid  = (uint32_t)sceKernelLockMutex(0x7fffffff, 1, NULL);
     /* Cell B: valid UID, bad count (0).  Context vs count ordering cell. */
@@ -4891,20 +4894,20 @@ static int oracle_subintr_handler(int subintr, void *arg) {
 
 /* Emit one protocol record per completed trial.
    case_id format: mutex-interrupt-context-tNN (NN = zero-padded trial index).
-   out0 = ctx_proof, out1..out6 = six cell raw return values. */
+   out0 = intr_enabled, out1..out6 = six cell raw return values. */
 static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     char case_id[48];
     snprintf(case_id, sizeof(case_id), "mutex-interrupt-context-t%02d", trial);
     uint32_t out[7];
-    out[0] = t->ctx_proof;
+    out[0] = t->intr_enabled;
     out[1] = t->r_bad_uid;
     out[2] = t->r_bad_cnt;
     out[3] = t->r_lock;
     out[4] = t->r_lock_cb;
     out[5] = t->r_try;
     out[6] = t->r_unlock;
-    /* pass iff context proof confirms ISR execution (ctx_proof == 1) */
-    int pass = (t->ctx_proof == 1u);
+    /* pass iff the handler ran with CPU interrupts disabled (intr_enabled == 0) */
+    int pass = (t->intr_enabled == 0u);
     emit_mutex_test(emulated, case_id, pass, pass ? 1u : 0u, out, 7);
 }
 

@@ -362,12 +362,14 @@ out-of-order stub warnings (issue #400). `probe.c` mirrors the documented
   from main and `GetThreadCurrentPriority` from the owner itself), deciding
   whether PSP boosts the owner.
 - `CASE=mutex-interrupt-context` — registers a VBLANK sub-interrupt handler
-  that samples 20 firings; each firing first proves interrupt context with
-  `sceKernelIsIntrContext()`, then measures `LockMutex`/`LockMutexCB`/
-  `TryLockMutex` return precedence across bad UID, bad count, valid-unlocked,
-  and non-owner unlock cells. One header record and one record per trial are
-  emitted (`mutex-interrupt-context-t00`..`t19`). This case links
-  `libpspinterruptmanager_kernel_660`.
+  that samples 20 firings; each firing first records
+  `sceKernelIsCpuIntrEnable()` (a trial counts only when it is 0, meaning the
+  handler ran with CPU interrupts disabled), then measures `LockMutex`/
+  `LockMutexCB`/`TryLockMutex` return precedence across bad UID, bad count,
+  valid-unlocked, and non-owner unlock cells. One header record and one record
+  per trial are emitted (`mutex-interrupt-context-t00`..`t19`). The kernel
+  query `sceKernelIsIntrContext()` is not used: it lives in the kernel-only
+  library InterruptManagerForKernel, which a user-mode probe cannot import.
 
 All four emit `PSP-MUTEX-001` records. `status=PASS` means only that the
 machinery ran and every scalar was captured; it makes no claim that any host
@@ -403,7 +405,24 @@ which is why `kernel-b3` parks instead.
 The kernel-object probes link `threadman_user_imports.S`, one complete
 ThreadManForUser import block: PSPSDK ships heavyweight-mutex stubs only for
 the kernel library, and a second partial block would split the library's stub
-run. Add any newly used ThreadManForUser NID there.
+run. Add any newly used ThreadManForUser NID there, and nothing else: every
+PRX that links the file gets every stub in it. `display_user_imports.S` is the
+user sceDisplay block (`sceDisplaySetHoldMode`,
+`sceDisplayWaitVblankStartMultiCB`), linked only into `kernel-misc`.
+
+### User-mode import gate
+
+Every probe is a user-mode module, and the PSP refuses to load a user-mode PRX
+that imports a kernel-only library (`0x8002013C`, library not found), so no
+probe code runs. After `psp-fixup-imports`, the Makefile runs
+`tools/psp_oracle/user_mode_imports.py` on the linked ELF. The build fails when
+a user-mode module imports a library whose name ends in `_driver` or
+`ForKernel`, or another known kernel-only library, and the message names each
+library and its NIDs. A rejected ELF is deleted, so a later `make` cannot
+package it. Use the user library that exports the same NIDs (for example
+`sceDisplay`, not `sceDisplay_driver`), and never link a PSPSDK `*_kernel*` or
+`*_driver` archive into a probe. The gate can also be run by hand on a PRX:
+`python3 tools/psp_oracle/user_mode_imports.py build/nakagawa_psp_oracle.prx`.
 
 ## Bounded follow-up probes (hardware NOT_RUN)
 

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+import io
 import json
 import re
 from pathlib import Path
@@ -18,6 +20,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_manifest
+from import_fixtures import (
+    INTERLEAVED_NIDS,
+    INTERLEAVED_SHAPE,
+    build_import_elf,
+    build_interleaved_import_elf,
+)
+from psp_import_table import UNATTRIBUTED_LIBRARY
+from psp_oracle import user_mode_imports
 from psp_oracle.protocol import (
     ProtocolError,
     ge_corpus_report,
@@ -2827,6 +2837,140 @@ class PspMutexProbeTests(unittest.TestCase):
                 "mutex-interrupt-context",
             ],
         )
+
+
+class UserModeImportGateTests(unittest.TestCase):
+    """The link-time gate that keeps kernel-only imports out of user-mode probes."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    def _run_main(self, data: bytes) -> tuple[int, str, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            module = Path(tmp) / "probe.elf"
+            module.write_bytes(data)
+            out = io.StringIO()
+            err = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                status = user_mode_imports.main([str(module)])
+        return status, out.getvalue(), err.getvalue()
+
+    def test_kernel_only_reason_classifies_library_names(self) -> None:
+        for library in ("sceDisplay_driver", "sceImpose_driver", "sceCtrl_driver",
+                        "InterruptManagerForKernel", "ThreadManForKernel", "sceUmd"):
+            self.assertIsNotNone(user_mode_imports.kernel_only_reason(library), library)
+        for library in ("sceDisplay", "sceImpose", "ThreadManForUser", "Kernel_Library",
+                        "InterruptManager", "SysMemUserForUser", "sceUmdUser", "sceCtrl"):
+            self.assertIsNone(user_mode_imports.kernel_only_reason(library), library)
+
+    def test_user_mode_module_with_only_user_libraries_passes(self) -> None:
+        data = build_import_elf([
+            ("ThreadManForUser", [0x0F000001, 0x0F000002]),
+            ("sceDisplay", [0x0F000003]),
+            ("sceImpose", [0x0F000004]),
+        ])
+        result = user_mode_imports.check_module(data)
+        self.assertTrue(result.passed)
+        self.assertFalse(result.kernel_mode)
+        self.assertEqual(result.libraries, ("ThreadManForUser", "sceDisplay", "sceImpose"))
+        status, out, err = self._run_main(data)
+        self.assertEqual(status, user_mode_imports.EXIT_OK)
+        self.assertIn("OK", out)
+        self.assertEqual(err, "")
+
+    def test_user_mode_module_importing_kernel_libraries_fails_with_names_and_nids(self) -> None:
+        data = build_import_elf([
+            ("ThreadManForUser", [0x0F000001]),
+            ("sceDisplay_driver", [0x0F000002]),
+            ("sceImpose_driver", [0x0F000003, 0x0F000004]),
+            ("InterruptManagerForKernel", [0x0F000005]),
+        ])
+        result = user_mode_imports.check_module(data)
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            [(v.library, v.nids) for v in result.violations],
+            [("sceDisplay_driver", (0x0F000002,)),
+             ("sceImpose_driver", (0x0F000003, 0x0F000004)),
+             ("InterruptManagerForKernel", (0x0F000005,))],
+        )
+        status, out, err = self._run_main(data)
+        self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+        self.assertEqual(out, "")
+        self.assertIn("sceDisplay_driver (name ends in _driver): 0x0F000002", err)
+        self.assertIn("sceImpose_driver (name ends in _driver): 0x0F000003, 0x0F000004", err)
+        self.assertIn("InterruptManagerForKernel (name ends in ForKernel): 0x0F000005", err)
+        self.assertIn("0x8002013C", err)
+        self.assertNotIn("ThreadManForUser (", err)
+
+    def test_kernel_mode_module_is_outside_the_rule(self) -> None:
+        data = build_import_elf(
+            [("sceDisplay_driver", [0x0F000002])],
+            module_attributes=user_mode_imports.PSP_MODULE_KERNEL,
+        )
+        result = user_mode_imports.check_module(data)
+        self.assertTrue(result.kernel_mode)
+        self.assertTrue(result.passed)
+        status, out, _err = self._run_main(data)
+        self.assertEqual(status, user_mode_imports.EXIT_OK)
+        self.assertIn("kernel-mode module (SceModuleInfo attribute 0x1000)", out)
+
+    def test_unattributed_stub_slots_fail_closed(self) -> None:
+        user_shape = [(name.replace("ForKernel", "ForUser"), first, count)
+                      for name, first, count in INTERLEAVED_SHAPE]
+        result = user_mode_imports.check_module(
+            build_interleaved_import_elf(user_shape, INTERLEAVED_NIDS))
+        self.assertFalse(result.passed)
+        self.assertEqual([v.library for v in result.violations], [UNATTRIBUTED_LIBRARY])
+
+    def test_malformed_import_table_fails_closed(self) -> None:
+        status, out, err = self._run_main(build_import_elf(
+            [("ThreadManForUser", [0x0F000001])], corrupt="truncated_file"))
+        self.assertEqual(status, user_mode_imports.EXIT_UNREADABLE)
+        self.assertEqual(out, "")
+        self.assertIn("cannot read import table", err)
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(user_mode_imports.main([]), user_mode_imports.EXIT_UNREADABLE)
+
+    def test_hand_written_import_blocks_name_only_user_libraries(self) -> None:
+        sources = sorted(self.fixture.glob("*.S"))
+        self.assertTrue(sources)
+        for source in sources:
+            text = source.read_text(encoding="utf-8")
+            for library in re.findall(r'IMPORT_(?:START|FUNC)\s+"([^"]+)"', text):
+                self.assertIsNone(
+                    user_mode_imports.kernel_only_reason(library),
+                    f"{source.name} imports kernel-only library {library}",
+                )
+
+    def test_probe_sources_use_no_kernel_headers_or_kernel_archives(self) -> None:
+        for source in sorted(self.fixture.glob("*.c")):
+            text = source.read_text(encoding="utf-8")
+            self.assertIsNone(
+                re.search(r"#include\s*<psp\w*_(?:driver|kernel)\.h>", text),
+                f"{source.name} includes a kernel-only PSPSDK header",
+            )
+        self.assertEqual(re.findall(r"-lpsp\w*(?:_kernel|_driver)\w*", self.makefile), [])
+
+    def test_makefile_runs_the_gate_after_fixup_and_deletes_rejected_elves(self) -> None:
+        fixup = next(line for line in self.makefile.splitlines() if line.startswith("FIXUP = "))
+        self.assertLess(fixup.index("psp-fixup-imports"), fixup.index("$(USER_MODE_IMPORT_GATE)"))
+        self.assertIn(
+            "USER_MODE_IMPORT_GATE = $(FIXTURE_DIR)../../tools/psp_oracle/user_mode_imports.py",
+            self.makefile,
+        )
+        self.assertTrue((self.root / "tools" / "psp_oracle" / "user_mode_imports.py").is_file())
+        self.assertIn("\n.DELETE_ON_ERROR:\n", self.makefile)
+
+    def test_display_user_imports_are_linked_into_kernel_misc_only(self) -> None:
+        links = re.findall(r"^OBJS \+?= .*display_user_imports\.o.*$", self.makefile, re.MULTILINE)
+        self.assertEqual(len(links), 1)
+        start = self.makefile.index(links[0])
+        self.assertEqual(self.makefile.rfind("ifeq ($(CASE),kernel-misc)", 0, start),
+                         self.makefile.rfind("ifeq (", 0, start))
+        shared = (self.fixture / "threadman_user_imports.S").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'IMPORT_START\s+"([^"]+)"', shared), ["ThreadManForUser"])
 
 
 if __name__ == "__main__":

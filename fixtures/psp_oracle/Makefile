@@ -309,11 +309,6 @@ endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
 endif
-# Case 22 (mutex-interrupt-context) uses sceKernelIsIntrContext() from the
-# kernel interrupt manager library for independent ISR execution proof.
-ifeq ($(CASE),mutex-interrupt-context)
-LIBS += -lpspinterruptmanager_kernel_660
-endif
 ifeq ($(CASE),registry-readonly)
 LIBS += -lpspreg
 endif
