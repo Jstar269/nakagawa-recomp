@@ -16,6 +16,12 @@ latch, so when the host falls behind the delivered ticks step over the multiple
 ``GESTAT f=60`` line therefore fails on a slow or loaded host even though the guest
 reached the window; read the label instead. A label below the first boundary, or two
 lines inside one window, break the runtime contract and are rejected.
+
+VCOUNT is host time in the default paced mode, so how much a guest has drawn by a
+given window depends on how fast the host ran it. A gate that wants the guest's
+first rendered frame therefore asks for the first window whose counters show that
+work (``first_window(output, require=("tri3d", "px3d"))``) rather than for the first
+window, and bounds the wait by the run's own vblank budget.
 """
 
 from __future__ import annotations
@@ -67,7 +73,13 @@ def parse_windows(output: str) -> list[GeStatWindow]:
     return windows
 
 
-def first_window(output: str) -> GeStatWindow | None:
-    """The first window ``output`` closed: a run's first-frame checkpoint, or None."""
-    windows = parse_windows(output)
-    return windows[0] if windows else None
+def first_window(output: str, require: tuple[str, ...] = ()) -> GeStatWindow | None:
+    """The first window ``output`` closed whose ``require`` counters are all non-zero.
+
+    With no ``require`` this is simply the first window. None means no window in the
+    log qualifies; the whole log is still checked against the contract first.
+    """
+    for window in parse_windows(output):
+        if all(window.counters.get(name) for name in require):
+            return window
+    return None

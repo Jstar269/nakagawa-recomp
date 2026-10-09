@@ -32,16 +32,22 @@ def minimal_elf() -> bytes:
     return bytes(header) + program + bytes(0x100 - 84) + b"\x13\x37\x00\x00"
 
 
-def scene_log(*frames: int, tri3d: int = 12) -> str:
-    """A runtime log whose SR_GESTAT windows close at `frames`."""
+SCENE = next(demo for demo in showcase.DEMOS if demo["disc_id"] == "TEST00007")
+BREAKOUT = next(demo for demo in showcase.DEMOS if demo["disc_id"] == "TEST00008")
+CAPTURE = b"P6\n1 1\n255\n\0\0\0"
+
+
+def scene_log(*windows: tuple[int, int]) -> str:
+    """A runtime log whose SR_GESTAT windows close at (vblank, tri3d) pairs."""
     return "".join(
-        f"GESTAT f={frame} wall=10ms ge=4ms tri2d=0 tri3d={tri3d} px3d=4096 mw=1/1/1\n"
-        for frame in frames
+        f"GESTAT f={frame} wall=10ms ge=4ms tri2d=0 tri3d={tri3d} spr2d=0 "
+        f"px2d=130560 px3d={4096 if tri3d else 0} mw=1/1/1\n"
+        for frame, tri3d in windows
     ) + "ctrl_latch: vcount=12 buttons 0x0000 -> 0x4000\n"
 
 
 class ShowcaseFirstFrameCheckpointTests(unittest.TestCase):
-    """The checkpoint is the first window the run closed, at whatever vblank closed it."""
+    """The checkpoint is the guest's first drawn frame, at whatever vblank it landed."""
 
     def setUp(self) -> None:
         self._temp = tempfile.TemporaryDirectory()
@@ -55,38 +61,52 @@ class ShowcaseFirstFrameCheckpointTests(unittest.TestCase):
         # A loaded host stepped VCOUNT 59 -> 61: the first window closes at 61 and its
         # capture is snap_f00061.ppm. The smoke used to demand the literal "GESTAT f=60"
         # and failed with "did not reach its first frame checkpoint" here.
-        (self.package / "snap_f00061.ppm").write_bytes(b"P6\n1 1\n255\n\0\0\0")
+        (self.package / "snap_f00061.ppm").write_bytes(CAPTURE)
         checkpoint, ppm = showcase.first_frame_checkpoint(
-            "TEST00007", scene_log(61, 120, 181), self.package, self.log)
+            SCENE, scene_log((61, 12), (120, 12), (181, 12)), self.package, self.log)
         self.assertEqual(checkpoint.frame, 61)
         self.assertEqual(checkpoint.counters["tri3d"], 12)
         self.assertEqual(ppm, self.package / "snap_f00061.ppm")
 
-    def test_no_window_is_a_missed_checkpoint(self) -> None:
-        with self.assertRaisesRegex(showcase.ShowcaseError,
-                                    "TEST00008 did not reach its first frame checkpoint"):
-            showcase.first_frame_checkpoint("TEST00008", "BOOT_EVENT phase=init\n",
-                                            self.package, self.log)
+    def test_slow_boot_moves_the_checkpoint_to_the_first_drawn_window(self) -> None:
+        # A starved host booted the guest late: its first flip came at vblank 55, so the
+        # window closing at 64 holds only the clear and the cube first appears in the
+        # window closing at 121. That window is the checkpoint, with its own capture.
+        (self.package / "snap_f00064.ppm").write_bytes(CAPTURE)
+        (self.package / "snap_f00121.ppm").write_bytes(CAPTURE)
+        checkpoint, ppm = showcase.first_frame_checkpoint(
+            SCENE, scene_log((64, 0), (121, 84), (180, 48)), self.package, self.log)
+        self.assertEqual(checkpoint.frame, 121)
+        self.assertEqual(ppm, self.package / "snap_f00121.ppm")
 
-    def test_scene_without_geometry_in_the_first_window_fails(self) -> None:
-        (self.package / "snap_f00060.ppm").write_bytes(b"P6\n1 1\n255\n\0\0\0")
+    def test_no_drawn_window_within_the_budget_is_a_missed_checkpoint(self) -> None:
+        with self.assertRaisesRegex(
+                showcase.ShowcaseError,
+                r"TEST00007 did not reach its first frame checkpoint: no GE statistics window "
+                r"before vblank 180 drew tri3d and px3d \(windows closed at vblank: 60, 120\)"):
+            showcase.first_frame_checkpoint(SCENE, scene_log((60, 0), (120, 0)),
+                                            self.package, self.log)
         with self.assertRaisesRegex(showcase.ShowcaseError,
-                                    r"no visible 3D geometry .*\(vblank 60\)"):
-            showcase.first_frame_checkpoint("TEST00007", scene_log(60, 120, tri3d=0),
+                                    r"TEST00008 did not reach .*spr2d and px2d .*vblank: none"):
+            showcase.first_frame_checkpoint(BREAKOUT, "BOOT_EVENT phase=init\n",
                                             self.package, self.log)
 
     def test_capture_must_be_the_checkpoint_window_s_own(self) -> None:
         # A capture from another window (or an earlier run) is not this checkpoint's frame.
-        (self.package / "snap_f00120.ppm").write_bytes(b"P6\n1 1\n255\n\0\0\0")
+        (self.package / "snap_f00120.ppm").write_bytes(CAPTURE)
         with self.assertRaisesRegex(showcase.ShowcaseError,
                                     r"no GE framebuffer capture .*\(vblank 61\)"):
-            showcase.first_frame_checkpoint("TEST00007", scene_log(61, 120),
+            showcase.first_frame_checkpoint(SCENE, scene_log((61, 12), (120, 12)),
                                             self.package, self.log)
 
     def test_duplicate_window_breaks_the_runtime_contract(self) -> None:
         with self.assertRaisesRegex(showcase.ShowcaseError, "TEST00007 .*does not cross"):
-            showcase.first_frame_checkpoint("TEST00007", scene_log(60, 60, 120),
+            showcase.first_frame_checkpoint(SCENE, scene_log((60, 12), (60, 0), (120, 12)),
                                             self.package, self.log)
+
+    def test_every_demo_names_the_counters_its_frame_draws(self) -> None:
+        self.assertEqual(SCENE["frame_counters"], ("tri3d", "px3d"))
+        self.assertEqual(BREAKOUT["frame_counters"], ("spr2d", "px2d"))
 
 
 class ShowcaseRuntimeRunTests(unittest.TestCase):

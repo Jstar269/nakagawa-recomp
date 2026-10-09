@@ -66,12 +66,14 @@ The smoke's budget is counted on the guest display clock. Each frame run exits
 cleanly at vblank 180 (`SR_EXIT_AT_VBLANK`), three of the runtime's 60-vblank GE
 statistics windows, inside a 15-second host timeout. The Breakout savedata run
 ends instead when its scripted Start saves and exits. The first-frame checkpoint
-is the first window the run closes. The smoke reads that window's closing vblank
-from `runtime.log`, because a busy host can step VCOUNT past 60. The checkpoint
-judges that window's counters and the framebuffer capture named for it. Every
-run writes its log (`runtime.log`, or `runtime-save.log` for the savedata run)
-under `build/showcase/smoke/<disc id>/`, even on a timeout. Linux CI uploads
-those logs and captures when the smoke fails.
+is the first window whose counters show the demo's own drawing: 3D triangles for
+the scene, sprites for Breakout. The smoke reads that window and its closing
+vblank from `runtime.log`. A busy host can step VCOUNT past 60 and can boot the
+guest later, so the checkpoint may land in a later window. The framebuffer capture
+judged is the one named for that window. Every run writes its log (`runtime.log`,
+or `runtime-save.log` for the savedata run) under
+`build/showcase/smoke/<disc id>/`, even on a timeout. Linux CI uploads those logs
+and captures when the smoke fails.
 
 In the 3D scene, the analog stick rotates the lit, checker-textured cube, Cross
 plays a short tone, and Start exits. Breakout uses the analog stick or d-pad to

@@ -607,10 +607,10 @@ def _run_package(manifest_path: Path, guest: Path, package_dir: Path,
     if "-> 0x4000" not in output:
         raise AssertionError(f"controller replay was not sampled for {manifest['id']}")
 
-    # The first GE statistics window is labelled with the vblank that closed it, which a
-    # loaded host can push past 60 (see tools/ge_stat_windows.py): read the label.
-    window = ge_stat_windows.first_window(output)
-    if window is None or not window.counters.get("tri2d") or not window.counters.get("px2d"):
+    # The checkpoint is the first GE statistics window that rasterized the primitive, at
+    # whatever vblank closed it: a loaded host pushes both later (tools/ge_stat_windows.py).
+    window = ge_stat_windows.first_window(output, require=("tri2d", "px2d"))
+    if window is None:
         raise AssertionError(f"GE did not rasterize the source-owned primitive for {manifest['id']}")
     ppm = package_dir / window.snapshot_name
     if not ppm.is_file():

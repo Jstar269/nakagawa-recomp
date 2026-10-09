@@ -26,7 +26,8 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from ge_stat_windows import WINDOW_VBLANKS, GeStatWindow, GeStatWindowError, first_window
+from ge_stat_windows import (WINDOW_VBLANKS, GeStatWindow, GeStatWindowError, first_window,
+                             parse_windows)
 from prxload import Prx
 
 # Where the staged demos live. The defaults are inside the repository's ignored
@@ -40,12 +41,14 @@ SCREENSHOT_ROOT = BUILD_ROOT / "screenshots"
 SECTOR = 2048
 PSP_PRX_ELF_TYPE = 0xFFA0
 
-# The smoke's budget is counted on the guest's display clock (VCOUNT) and bounded by
-# host time. The runtime closes one SR_GESTAT window each time VCOUNT crosses a
-# multiple of WINDOW_VBLANKS and exits cleanly once VCOUNT reaches SMOKE_EXIT_VBLANK
-# (SR_EXIT_AT_VBLANK), three windows in; the first window is the first-frame
-# checkpoint. SMOKE_TIMEOUT_SECONDS bounds the whole host process, so a guest that
-# stops making progress fails instead of hanging CI.
+# The first-frame checkpoint is guest progress: the first SR_GESTAT window whose
+# counters show the demo's own drawing ("frame_counters" below), at whatever vblank
+# that window closed. VCOUNT is host time in the default paced mode, so a slow host
+# boots the guest later and its first drawn frame lands in a later window; that is
+# still a reached checkpoint. The budget bounds the wait: the runtime exits cleanly
+# once VCOUNT reaches SMOKE_EXIT_VBLANK (SR_EXIT_AT_VBLANK, three windows), and
+# SMOKE_TIMEOUT_SECONDS bounds the whole host process, so a guest that stops making
+# progress fails instead of hanging CI.
 SMOKE_EXIT_VBLANK = 3 * WINDOW_VBLANKS
 SMOKE_TIMEOUT_SECONDS = 15
 
@@ -58,6 +61,8 @@ DEMOS = (
         "target": "showcase_scene_app",
         "manifest": "assets/titles/showcase-scene.json",
         "palette": ((23, 54, 81), (78, 204, 190)),
+        # The lit cube: transform-mode triangles with visible pixels.
+        "frame_counters": ("tri3d", "px3d"),
     },
     {
         "id": "showcase-breakout-v1",
@@ -67,6 +72,8 @@ DEMOS = (
         "target": "showcase_breakout_app",
         "manifest": "assets/titles/showcase-breakout.json",
         "palette": ((49, 35, 78), (252, 200, 87)),
+        # Paddle, ball, bricks and score: through-mode sprites with visible pixels.
+        "frame_counters": ("spr2d", "px2d"),
     },
 )
 
@@ -432,29 +439,28 @@ def _ppm_metrics(path: Path, background: bytes) -> tuple[int, int]:
     return len(colors), foreground
 
 
-def first_frame_checkpoint(disc_id: str, output: str, package_dir: Path,
+def first_frame_checkpoint(demo: dict[str, object], output: str, package_dir: Path,
                            log_path: Path) -> tuple[GeStatWindow, Path]:
-    """The first GE statistics window a smoke run closed, and that moment's capture.
+    """The window in which a smoke run's guest first drew its frame, and its capture.
 
-    The checkpoint is the first VCOUNT crossing of WINDOW_VBLANKS, labelled with the
-    vblank that closed it (61 when the host stepped over 60); the label is read from
-    the log, never assumed, so a loaded host cannot make a reached checkpoint look
-    missed. The 3D scene must have drawn visible geometry inside that window.
+    The checkpoint is the first GE statistics window whose counters show the demo's
+    own drawing (``frame_counters``), labelled with the vblank that closed it. Both
+    are read from the log, never assumed: a loaded host steps VCOUNT past 60 and boots
+    the guest later, which moves the checkpoint to a later window but does not make a
+    reached checkpoint look missed. The run's vblank budget bounds the wait.
     """
+    disc_id = str(demo["disc_id"])
+    counters = tuple(str(name) for name in demo["frame_counters"])
     try:
-        checkpoint = first_window(output)
+        checkpoint = first_window(output, require=counters)
     except GeStatWindowError as exc:
         raise ShowcaseError(f"{disc_id} {exc}; see {log_path}") from exc
     if checkpoint is None:
+        closed = ", ".join(str(window.frame) for window in parse_windows(output)) or "none"
         raise ShowcaseError(
-            f"{disc_id} did not reach its first frame checkpoint (no GE statistics "
-            f"window closed before vblank {SMOKE_EXIT_VBLANK}); see {log_path}"
-        )
-    if disc_id == "TEST00007" and (not checkpoint.counters.get("tri3d") or
-                                   not checkpoint.counters.get("px3d")):
-        raise ShowcaseError(
-            f"{disc_id} produced no visible 3D geometry by its first frame checkpoint "
-            f"(vblank {checkpoint.frame}); see {log_path}"
+            f"{disc_id} did not reach its first frame checkpoint: no GE statistics window "
+            f"before vblank {SMOKE_EXIT_VBLANK} drew {' and '.join(counters)} "
+            f"(windows closed at vblank: {closed}); see {log_path}"
         )
     ppm = package_dir / checkpoint.snapshot_name
     if not ppm.is_file():
@@ -506,7 +512,7 @@ def smoke_all() -> None:
         command, env, package_dir = _runtime_command(demo, smoke_dir / "padscript.txt")
         log_path = smoke_dir / "runtime.log"
         output = _run_runtime(command, env, package_dir, log_path, f"{disc_id} runtime")
-        checkpoint, ppm = first_frame_checkpoint(disc_id, output, package_dir, log_path)
+        checkpoint, ppm = first_frame_checkpoint(demo, output, package_dir, log_path)
         if "-> 0x4000" not in output:
             raise ShowcaseError(f"{disc_id} missed the scripted Cross input sample; see {log_path}")
         if "AUDIOSTAT_HOST:" not in output or "pushed=0" in output:

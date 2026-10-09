@@ -227,6 +227,14 @@ class GeStatWindowParserTests(unittest.TestCase):
         self.assertEqual(window.snapshot_name, "snap_f00061.ppm")
         self.assertIsNone(ge_stat_windows.first_window("BOOT_EVENT phase=init\n"))
 
+    def test_first_window_with_required_counters_skips_windows_without_that_work(self) -> None:
+        log = "GESTAT f=64 tri3d=0 px3d=0 px2d=130560\nGESTAT f=121 tri3d=84 px3d=900\n"
+        window = ge_stat_windows.first_window(log, require=("tri3d", "px3d"))
+        self.assertIsNotNone(window)
+        assert window is not None
+        self.assertEqual(window.frame, 121)
+        self.assertIsNone(ge_stat_windows.first_window(log, require=("spr2d",)))
+
     def test_two_lines_for_one_window_fail_closed(self) -> None:
         with self.assertRaisesRegex(ge_stat_windows.GeStatWindowError, "does not cross"):
             ge_stat_windows.parse_windows("GESTAT f=60 tri3d=1\nGESTAT f=60 tri3d=0\n")
