@@ -545,9 +545,10 @@ def build_import_layout_elf(
         return BASE_VADDR + off
 
     gap = detached_gap_slots or 0
-    # .text holds one 8-byte (two-word) `jr $ra; nop` pair as ordinary code,
-    # one more pair the detached runs start after, and then two words per
-    # detached stub slot, including the unused gap slots after each run.
+    # .text is filled with 8-byte (two-word) `jr $ra; nop` pairs: one pair of
+    # ordinary code at its start, then two words per detached stub slot
+    # (including the unused gap slots after each run; the runs start at
+    # text + 8), then one trailing pair of ordinary code after the last run.
     text_words = 4 + 2 * sum(len(nids) + gap for _name, nids in detached)
     text = alloc(struct.pack("<2I", 0x03E00008, 0) * (text_words // 2))
     expected: dict[int, tuple[str, int]] = {}
