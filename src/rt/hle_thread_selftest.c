@@ -51,6 +51,8 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "nid_names.h"
 #include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
 #include "osk_text_entry.h"     /* the keyboard's text-entry seam, stubbed below */
+#include "flash0_font.h"        /* flash0: font device: slot binding seam */
+#include "nk_platform.h"        /* per-user data directory override for the font cache */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -25667,6 +25669,295 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
+/* ---- flash0: read-only font device (src/rt/flash0_font.c) -------------------------------
+ * tools/test_flash0_font.py writes synthetic PGFs with tools/pgf_writer.py under
+ * SR_FLASH0_TEST_ROOT: the user-imported cache is <root>/data/fonts/v2/latin.pgf and the
+ * project fonts are <root>/project/{latin,japanese}.pgf, with SR_FONTDIR set to <root>/project.
+ * The served names are synthetic and bound through the selftest seam, because the measured
+ * names are not in the tree. The production path (hle.c IO entry points, roots, source order)
+ * is exercised unchanged. */
+#define F0T_LATIN_NAME    "flash0-test-latin.pgf"
+#define F0T_JAPANESE_NAME "flash0-test-japanese.pgf"
+#define F0T_KOREAN_NAME   "flash0-test-korean.pgf"
+#define F0T_ERR_ACCESS    0x8001000Du
+#define F0T_ERR_NOT_FOUND 0x80010014u
+#define F0T_FD_KIND_FILE  2
+#define F0T_PATH_ADDR     0x09020000u
+#define F0T_PATH2_ADDR    0x09020400u
+#define F0T_BUF_ADDR      0x09100000u
+#define F0T_STAT_ADDR     0x09030000u
+#define F0T_DIRENT_ADDR   0x09031000u
+
+static char *f0t_read_file(const char *path, size_t *size_out) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    char *buf = NULL;
+    long n = -1;
+    if (fseek(fp, 0, SEEK_END) == 0) n = ftell(fp);
+    if (n > 0 && fseek(fp, 0, SEEK_SET) == 0) {
+        buf = (char *)malloc((size_t)n);
+        if (buf && fread(buf, 1, (size_t)n, fp) != (size_t)n) {
+            free(buf);
+            buf = NULL;
+        }
+    }
+    fclose(fp);
+    if (buf) *size_out = (size_t)n;
+    return buf;
+}
+
+static int f0t_guest_equals(uint32_t addr, const char *bytes, size_t size) {
+    for (size_t i = 0; i < size; i++)
+        if (MEM_R8(addr + (uint32_t)i) != (uint8_t)bytes[i]) return 0;
+    return 1;
+}
+
+static uint32_t f0t_open(const char *guest, uint32_t flags) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    fd_guest_copy(F0T_PATH_ADDR, guest, strlen(guest) + 1u);
+    cpu.r[4] = F0T_PATH_ADDR;
+    cpu.r[5] = flags;
+    cpu.r[6] = 0777u;
+    return sr_hle_test_io_open(&cpu);
+}
+
+static uint32_t f0t_getstat(const char *guest) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    fd_guest_copy(F0T_PATH_ADDR, guest, strlen(guest) + 1u);
+    cpu.r[4] = F0T_PATH_ADDR;
+    cpu.r[5] = F0T_STAT_ADDR;
+    return sr_hle_test_io_getstat(&cpu);
+}
+
+static uint32_t f0t_read(uint32_t fd, uint32_t count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = F0T_BUF_ADDR;
+    cpu.r[6] = count;
+    return sr_hle_test_io_read(&cpu);
+}
+
+static uint32_t f0t_seek32(uint32_t fd, int32_t offset, uint32_t whence) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = (uint32_t)offset;
+    cpu.r[6] = whence;
+    return sr_hle_test_io_lseek32(&cpu);
+}
+
+static uint32_t f0t_close(uint32_t fd) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    return sr_hle_test_io_close(&cpu);
+}
+
+static uint32_t f0t_path_op(const char *guest, uint32_t (*op)(CpuState *)) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    fd_guest_copy(F0T_PATH_ADDR, guest, strlen(guest) + 1u);
+    cpu.r[4] = F0T_PATH_ADDR;
+    cpu.r[5] = 0777u;
+    cpu.r[6] = 0u;
+    return op(&cpu);
+}
+
+static uint32_t f0t_rename(const char *from, const char *to) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    fd_guest_copy(F0T_PATH_ADDR, from, strlen(from) + 1u);
+    fd_guest_copy(F0T_PATH2_ADDR, to, strlen(to) + 1u);
+    cpu.r[4] = F0T_PATH_ADDR;
+    cpu.r[5] = F0T_PATH2_ADDR;
+    return sr_hle_test_io_rename(&cpu);
+}
+
+static void test_flash0_font_device(void) {
+    const char *root = getenv("SR_FLASH0_TEST_ROOT");
+    expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
+    if (!root || !root[0]) return;
+
+    char data_dir[512], user_latin[600], project_latin[600], project_japanese[600];
+    snprintf(data_dir, sizeof(data_dir), "%s/data", root);
+    snprintf(user_latin, sizeof(user_latin), "%s/data/fonts/v2/latin.pgf", root);
+    snprintf(project_latin, sizeof(project_latin), "%s/project/latin.pgf", root);
+    snprintf(project_japanese, sizeof(project_japanese), "%s/project/japanese.pgf", root);
+    expect(nk_platform_set_app_data_dir_override(data_dir),
+           "the per-user data directory can be pointed at the synthetic cache");
+
+    size_t user_size = 0, project_latin_size = 0, project_japanese_size = 0;
+    char *user_bytes = f0t_read_file(user_latin, &user_size);
+    char *project_latin_bytes = f0t_read_file(project_latin, &project_latin_size);
+    char *project_japanese_bytes = f0t_read_file(project_japanese, &project_japanese_size);
+    expect(user_bytes && project_latin_bytes && project_japanese_bytes,
+           "the synthetic user and project PGFs exist");
+    expect(user_bytes && project_latin_bytes && user_size != project_latin_size,
+           "the user and project latin files differ in size, so the source choice is visible");
+    if (!user_bytes || !project_latin_bytes || !project_japanese_bytes) {
+        free(user_bytes); free(project_latin_bytes); free(project_japanese_bytes);
+        return;
+    }
+
+    sr_hle_init();
+    sr_flash0_font_selftest_bind(NK_FONT_SLOT_LATIN, F0T_LATIN_NAME);
+    sr_flash0_font_selftest_bind(NK_FONT_SLOT_JAPANESE, F0T_JAPANESE_NAME);
+    /* Korean stays pending: its name is not bound, so nothing under it can open. */
+    sr_flash0_font_selftest_bind(NK_FONT_SLOT_KOREAN, NULL);
+
+    /* Pending slot fails closed, even though a source for it could exist. */
+    expect(f0t_open("flash0:/font/" F0T_KOREAN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
+           "a pending slot name is refused, not served");
+
+    /* Source order and read, seek and getstat sizes: the user cache wins for latin. */
+    uint32_t fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
+    expect(fd >= 3u && sr_hle_test_fd_kind(fd) == F0T_FD_KIND_FILE,
+           "a served latin font opens read-only as a file descriptor");
+    expect(f0t_getstat("flash0:/font/" F0T_LATIN_NAME) == 0u &&
+               MEM_R32(F0T_STAT_ADDR + 8u) == user_size &&
+               (MEM_R32(F0T_STAT_ADDR + 0u) & 0x2000u) != 0u,
+           "getstat reports the user-imported latin size as a regular file");
+    expect(f0t_read(fd, (uint32_t)user_size) == user_size &&
+               f0t_guest_equals(F0T_BUF_ADDR, user_bytes, user_size),
+           "the first read returns the user-imported bytes (source order: user first)");
+    expect(f0t_seek32(fd, 7, 0u) == 7u && f0t_read(fd, 9u) == 9u &&
+               f0t_guest_equals(F0T_BUF_ADDR, user_bytes + 7, 9u),
+           "SEEK_SET then read returns the bytes at that offset");
+    expect(f0t_seek32(fd, -4, 2u) == (uint32_t)(user_size - 4u) &&
+               f0t_read(fd, 4u) == 4u && f0t_guest_equals(F0T_BUF_ADDR, user_bytes + user_size - 4u, 4u),
+           "SEEK_END then read returns the tail of the served file");
+    expect(f0t_close(fd) == 0u && sr_hle_test_fd_kind(fd) == 0,
+           "closing a served font releases its descriptor");
+
+    /* Case-insensitive device, prefix and name, and project fallback for japanese. */
+    fd = f0t_open("FLASH0:/FONT/FLASH0-TEST-JAPANESE.PGF", 0x0001u);
+    expect(fd >= 3u && f0t_getstat("flash0:/font/" F0T_JAPANESE_NAME) == 0u &&
+               MEM_R32(F0T_STAT_ADDR + 8u) == project_japanese_size,
+           "an upper-case flash0 path opens the project japanese font with its size");
+    expect(fd >= 3u && f0t_read(fd, (uint32_t)project_japanese_size) == project_japanese_size &&
+               f0t_guest_equals(F0T_BUF_ADDR, project_japanese_bytes, project_japanese_size),
+           "with no user-imported file the project font is served (fallback)");
+    expect(fd >= 3u && f0t_close(fd) == 0u, "closing the project font succeeds");
+
+    /* Read-only: a write through a read descriptor is refused with EACCES. */
+    fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        cpu.r[5] = F0T_BUF_ADDR;
+        cpu.r[6] = 4u;
+        expect(sr_hle_test_io_write(&cpu) == F0T_ERR_ACCESS,
+               "a write through a served font descriptor is refused with EACCES");
+    }
+    (void)f0t_close(fd);
+
+    /* Every write-side open flag and operation is refused, and nothing is changed. */
+    expect(f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0002u) == F0T_ERR_ACCESS,
+           "open for write (WRONLY) is refused with EACCES");
+    expect(f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0003u) == F0T_ERR_ACCESS,
+           "open for read-write (RDWR) is refused with EACCES");
+    expect(f0t_open("flash0:/font/new-font.pgf", 0x0202u) == F0T_ERR_ACCESS,
+           "create (CREAT) on flash0 is refused with EACCES, even for a new name");
+    expect(f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0602u) == F0T_ERR_ACCESS,
+           "truncating open (TRUNC) is refused with EACCES");
+    expect(f0t_path_op("flash0:/font/" F0T_LATIN_NAME, sr_hle_test_io_remove) == F0T_ERR_ACCESS,
+           "remove on a served font is refused with EACCES");
+    expect(f0t_rename("flash0:/font/" F0T_LATIN_NAME, "flash0:/font/renamed.pgf") == F0T_ERR_ACCESS,
+           "rename away from flash0 is refused with EACCES");
+    expect(f0t_path_op("flash0:/font/made-dir", sr_hle_test_io_mkdir) == F0T_ERR_ACCESS,
+           "mkdir under flash0 is refused with EACCES");
+    expect(f0t_path_op("flash0:/font", sr_hle_test_io_rmdir) == F0T_ERR_ACCESS,
+           "rmdir on flash0 is refused with EACCES");
+    expect(f0t_path_op("flash0:/font/" F0T_LATIN_NAME, sr_hle_test_io_chstat) == F0T_ERR_ACCESS,
+           "changing the attributes of a served font is refused with EACCES");
+    {
+        size_t still_size = 0;
+        char *still = f0t_read_file(project_latin, &still_size);
+        expect(still != NULL && still_size == project_latin_size &&
+                   memcmp(still, project_latin_bytes, still_size) == 0,
+               "the refused writes left the project font untouched");
+        free(still);
+    }
+
+    /* Every other path under flash0: is a named refusal. */
+    expect(f0t_open("flash0:/kd/anything.prx", 0x0001u) == F0T_ERR_NOT_FOUND,
+           "a flash0 path outside /font/ is refused");
+    expect(f0t_open("flash0:/font/../kd/anything.prx", 0x0001u) == F0T_ERR_NOT_FOUND,
+           "a '..' escape from /font/ is refused");
+    expect(f0t_open("flash0:/font/sub/" F0T_LATIN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
+           "a nested path under /font/ is refused");
+    expect(f0t_open("flash0:/", 0x0001u) == F0T_ERR_NOT_FOUND,
+           "the device root is refused");
+    expect(f0t_getstat("flash0:/kd") == F0T_ERR_NOT_FOUND,
+           "getstat outside /font/ is refused");
+    expect(f0t_open("flash0:/font/flash0-test-unknown.pgf", 0x0001u) == F0T_ERR_NOT_FOUND,
+           "an unknown file name under /font/ is refused");
+
+    /* A bound slot with no source at all is a named missing-slot refusal. */
+    sr_flash0_font_selftest_bind(NK_FONT_SLOT_KOREAN, F0T_KOREAN_NAME);
+    expect(f0t_open("flash0:/font/" F0T_KOREAN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
+           "a slot with no user-imported and no project font is refused");
+    expect(f0t_getstat("flash0:/font/" F0T_KOREAN_NAME) == F0T_ERR_NOT_FOUND,
+           "getstat on a slot with no source is refused");
+
+    /* Directory listing: exactly the served slots, in name order. */
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        fd_guest_copy(F0T_PATH_ADDR, "flash0:/font", strlen("flash0:/font") + 1u);
+        cpu.r[4] = F0T_PATH_ADDR;
+        uint32_t dir = sr_hle_test_io_dopen(&cpu);
+        expect(dir >= 0x100u, "flash0:/font opens as a directory");
+        char names[3][64];
+        int count = 0;
+        for (;;) {
+            CpuState rd;
+            memset(&rd, 0, sizeof(rd));
+            rd.r[4] = dir;
+            rd.r[5] = F0T_DIRENT_ADDR;
+            uint32_t got = sr_hle_test_io_dread(&rd);
+            if (got == 0u || count >= 3) break;
+            size_t n = 0;
+            while (n + 1u < sizeof(names[count]) &&
+                   MEM_R8(F0T_DIRENT_ADDR + 0x58u + (uint32_t)n) != 0u) {
+                names[count][n] = (char)MEM_R8(F0T_DIRENT_ADDR + 0x58u + (uint32_t)n);
+                n++;
+            }
+            names[count][n] = '\0';
+            count++;
+        }
+        expect(count == 2 && strcmp(names[0], F0T_JAPANESE_NAME) == 0 &&
+                   strcmp(names[1], F0T_LATIN_NAME) == 0,
+               "the listing has the two served slots in name order (pending and sourceless slots omitted)");
+        CpuState cl;
+        memset(&cl, 0, sizeof(cl));
+        cl.r[4] = dir;
+        expect(sr_hle_test_io_dclose(&cl) == 0u, "closing the flash0:/font listing succeeds");
+    }
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        fd_guest_copy(F0T_PATH_ADDR, "flash0:/kd", strlen("flash0:/kd") + 1u);
+        cpu.r[4] = F0T_PATH_ADDR;
+        expect(sr_hle_test_io_dopen(&cpu) == F0T_ERR_NOT_FOUND,
+               "a listing outside /font/ is refused");
+    }
+
+    sr_flash0_font_selftest_bind(NK_FONT_SLOT_LATIN, NULL);
+    sr_flash0_font_selftest_bind(NK_FONT_SLOT_JAPANESE, NULL);
+    sr_flash0_font_selftest_bind(NK_FONT_SLOT_KOREAN, NULL);
+    expect(f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
+           "after every slot returns to pending, nothing is served");
+
+    free(user_bytes);
+    free(project_latin_bytes);
+    free(project_japanese_bytes);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
@@ -25696,6 +25987,13 @@ int main(int argc, char **argv) {
         test_title_config_hle_bindings();
         fprintf(stderr, "hle_title_production_selftest: %d checks, %d failures\n",
                 s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--flash0-font") == 0) {
+        test_flash0_font_device();
+        fprintf(stderr, "flash0-font: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
     }
