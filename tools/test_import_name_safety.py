@@ -207,15 +207,71 @@ class TestImportNameSafety(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
 
-    def test_variable_only_imports_have_a_named_unsupported_boundary(self):
+    VSTUB_TABLE = 0x1500
+
+    def _variable_entry(self, *, num_vars=1, num_funcs=0, size=7, vstub_table=VSTUB_TABLE):
         elf = FakeElf(b"sceDisplay")
-        struct.pack_into("<B", elf.mem, FakeElf.STUB - FakeElf.BASE + 9, 1)
-        struct.pack_into("<H", elf.mem, FakeElf.STUB - FakeElf.BASE + 10, 0)
+        entry = FakeElf.STUB - FakeElf.BASE
+        struct.pack_into("<B", elf.mem, entry + 8, size)
+        struct.pack_into("<B", elf.mem, entry + 9, num_vars)
+        struct.pack_into("<H", elf.mem, entry + 10, num_funcs)
+        # SceLibraryStubTable.vstubtable follows the function-stub pointer.
+        struct.pack_into("<I", elf.mem, entry + 20, vstub_table)
+        return elf
+
+    def test_variable_only_imports_have_a_named_unsupported_boundary(self):
+        elf = self._variable_entry()
 
         with self.assertRaises(imports_tool.ImportTableError) as raised:
             imports_tool.parse_imports(elf)
 
         self.assertEqual(raised.exception.code, "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED")
+        self.assertIsInstance(raised.exception, imports_tool.VariableImportsUnsupported)
+        self.assertEqual(
+            raised.exception.tables,
+            (imports_tool.VariableImportTable("sceDisplay", 1, FakeElf.STUB, self.VSTUB_TABLE),),
+        )
+
+    def test_variable_imports_beside_functions_name_their_library(self):
+        elf = self._variable_entry(num_vars=2, num_funcs=1)
+
+        with self.assertRaises(imports_tool.VariableImportsUnsupported) as raised:
+            imports_tool.parse_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED")
+        self.assertIn("2 variable imports (sceDisplay x2)", str(raised.exception))
+
+    def test_variable_import_library_name_must_be_mapped(self):
+        elf = self._variable_entry()
+        struct.pack_into("<I", elf.mem, FakeElf.STUB - FakeElf.BASE, 0)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED")
+
+    def test_variable_imports_need_the_variable_stub_table_word(self):
+        # A five-word entry ends at the function-stub pointer, so it cannot
+        # name a variable-stub table: the declaration is malformed.
+        elf = self._variable_entry(size=5)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.parse_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_TABLE_INVALID")
+        self.assertIn("has no variable-stub table", str(raised.exception))
+
+    def test_variable_imports_with_a_null_or_unmapped_table_are_invalid(self):
+        for vstub_table, reason in ((0, "null or misaligned"), (0x1502, "null or misaligned"),
+                                    (0x9000, "leaves mapped input")):
+            with self.subTest(vstub_table=hex(vstub_table)):
+                elf = self._variable_entry(vstub_table=vstub_table)
+
+                with self.assertRaises(imports_tool.ImportTableError) as raised:
+                    imports_tool.parse_imports(elf)
+
+                self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_TABLE_INVALID")
+                self.assertIn(reason, str(raised.exception))
 
     def test_misaligned_import_regions_have_a_named_boundary(self):
         class MismatchedRegionElf(FakeElf):

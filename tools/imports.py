@@ -45,6 +45,7 @@
 #
 # Usage: imports.py <prx-elf> <base-hex> [--toml out.toml]
 
+from dataclasses import dataclass
 import json
 import os
 import struct
@@ -84,6 +85,71 @@ class ImportTableError(ValueError):
 def format_boundary(exc, subject=None):
     """Format a named ImportTableError boundary, optionally naming the module."""
     return exc.format_boundary(subject=subject)
+
+
+@dataclass(frozen=True)
+class VariableImportTable:
+    """One library's declared variable imports (SceLibraryStubTable.vstubcount).
+
+    entry is the PspLibStubEntry address and vstub_table its variable-stub
+    table pointer (the sixth word of an entry at least six words long).
+    """
+
+    library: str
+    count: int
+    entry: int
+    vstub_table: int
+
+
+class VariableImportsUnsupported(ImportTableError):
+    """A well-formed import table that declares variable imports.
+
+    The analyzer records every declaring library; resolving each variable's
+    references and providing exported-variable storage is not implemented, so
+    the table stops at this named boundary instead of being partly imported.
+    """
+
+    def __init__(self, tables):
+        self.tables = tuple(tables)
+        total = sum(table.count for table in self.tables)
+        summary = ", ".join(f"{table.library} x{table.count}" for table in self.tables)
+        super().__init__(
+            "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED",
+            f"import table declares {total} variable imports ({summary}); "
+            "variable imports are not supported yet",
+        )
+
+
+def _variable_import_table(elf, pos, entry_bytes, size_words, library, count, rebase):
+    """Validate and record one entry's variable-import declaration.
+
+    The variable-stub table pointer follows the function-stub pointer, so an
+    entry that declares variables must be at least six words long and point at
+    a word-aligned, mapped table.
+    """
+    if size_words < 6:
+        raise ImportTableError(
+            "ANALYZER_IMPORT_TABLE_INVALID",
+            f"import entry at 0x{pos:08x} declares {count} variables but its "
+            f"{size_words}-word entry has no variable-stub table",
+        )
+    if len(entry_bytes) < 24:
+        raise ValueError(f"truncated import stub entry at 0x{pos:08x}")
+    vstub_table = rebase(struct.unpack_from("<I", entry_bytes, 20)[0])
+    if vstub_table == 0 or vstub_table % 4:
+        raise ImportTableError(
+            "ANALYZER_IMPORT_TABLE_INVALID",
+            f"import entry at 0x{pos:08x} declares {count} variables but its "
+            f"variable-stub table pointer 0x{vstub_table:08x} is null or misaligned",
+        )
+    head = elf.read_at_vaddr(vstub_table, 4)
+    if head is None or len(head) != 4:
+        raise ImportTableError(
+            "ANALYZER_IMPORT_TABLE_INVALID",
+            f"import entry at 0x{pos:08x}: variable-stub table 0x{vstub_table:08x} "
+            "leaves mapped input",
+        )
+    return VariableImportTable(library, count, pos, vstub_table)
 
 
 # Marker for stub slots that no library window claims (interleaved stub tables). Kept
@@ -179,6 +245,7 @@ def _import_model_impl(elf):
 
     # Pass 1: walk the PspLibStubEntry window table (libstub..libstubend).
     windows = []  # (library name, numFuncs, numVars, nidData, firstSym)
+    variable_tables = []  # one VariableImportTable per window that declares variables
     pos = libstub
     while pos < libstubend:
         e = elf.read_at_vaddr(pos, 28)
@@ -194,15 +261,19 @@ def _import_model_impl(elf):
                 "ANALYZER_IMPORT_NID_TABLE_MISSING",
                 f"import entry at 0x{pos:08x}: {numFuncs} functions but null NID table pointer",
             )
-        if numFuncs > 0 and name_ptr == 0:
+        if (numFuncs > 0 or numVars > 0) and name_ptr == 0:
             raise ImportTableError(
                 "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED",
-                f"import entry at 0x{pos:08x} has functions but a null library-name pointer",
+                f"import entry at 0x{pos:08x} has imports but a null library-name pointer",
             )
-        # A zero-function window claims no import stubs, so its library name is
-        # never used by the codegen map. Some stripped retail inputs leave this
-        # optional pointer stale; do not dereference it for an empty window.
-        libname = _read_guest_cstr(elf, name_ptr) if name_ptr and numFuncs else "(null)"
+        # A window that imports nothing claims no import stubs, so its library
+        # name is never used by the codegen map. Some stripped retail inputs leave
+        # this optional pointer stale; do not dereference it for an empty window.
+        libname = (_read_guest_cstr(elf, name_ptr)
+                   if name_ptr and (numFuncs or numVars) else "(null)")
+        if numVars:
+            variable_tables.append(
+                _variable_import_table(elf, pos, e, size, libname, numVars, rebase))
         windows.append((libname, numFuncs, numVars, nidData, firstSym))
         step = size * 4
         if step <= 0 or pos + step > 0xFFFFFFFF:
@@ -223,13 +294,8 @@ def _import_model_impl(elf):
         if st_empty and nid_empty:
             return {}, ["module declares an empty import table"]
         raise ValueError("import stub table is empty")
-    variable_windows = [w for w in windows if w[2] > 0]
-    if variable_windows:
-        variable_count = sum(w[2] for w in variable_windows)
-        raise ImportTableError(
-            "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED",
-            f"import table declares {variable_count} variable imports; variable imports are not supported yet",
-        )
+    if variable_tables:
+        raise VariableImportsUnsupported(variable_tables)
 
     function_windows = [w for w in windows if w[1] > 0]
     if not function_windows:
