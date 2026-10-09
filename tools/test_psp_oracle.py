@@ -3212,3 +3212,33 @@ class CampaignHost0LogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegistryProbeNeverWritesTests(unittest.TestCase):
+    """The registry oracle must be read-only on real firmware.
+
+    On PSP-3000 6.6.1 sceRegOpenCategory on a category that does not exist creates it and
+    persists it to flash even in mode 1, and stored category names are cut to 26 bytes so a
+    long name cannot be reopened (a reopen then creates another copy). These checks pin the
+    source-level rules that keep the probe from issuing such an implicit write.
+    """
+
+    PROBE = Path(__file__).resolve().parent.parent / "fixtures" / "psp_oracle" / "probe.c"
+    WRITE_APIS = ("sceRegSetKeyValue", "sceRegCreateKey", "sceRegRemoveCategory",
+                  "sceRegRemoveRegistry", "sceRegFlushRegistry", "sceRegFlushCategory")
+
+    def setUp(self) -> None:
+        self.source = self.PROBE.read_text(encoding="utf-8")
+
+    def test_no_registry_write_api_is_called(self) -> None:
+        for api in self.WRITE_APIS:
+            self.assertNotRegex(self.source, rf"\b{api}\s*\(", api)
+
+    def test_open_category_literals_name_only_the_config_root(self) -> None:
+        literals = re.findall(r'sceRegOpenCategory\s*\([^,]+,\s*"([^"]*)"', self.source)
+        self.assertEqual(sorted(set(literals)), ["/CONFIG"], literals)
+
+    def test_walk_descends_only_into_reopenable_categories(self) -> None:
+        self.assertIn("registry_category_reopenable(name)", self.source)
+        self.assertRegex(self.source, r"#define REGISTRY_SAFE_NAME_MAX 26u")
+        self.assertNotIn("__NAKAGAWA_ORACLE_UNKNOWN_CATEGORY__", self.source)

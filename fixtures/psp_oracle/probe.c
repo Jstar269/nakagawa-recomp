@@ -6220,6 +6220,17 @@ static int registry_probe_small_buffer(REGHANDLE category) {
     return result;
 }
 
+/* Category names at or beyond the firmware's stored-name limit may be truncated copies;
+ * measured on PSP-3000 6.6.1 (2026-10-09): stored names are cut to 26 bytes and such a
+ * category could not be reopened by its cut name. */
+#define REGISTRY_SAFE_NAME_MAX 26u
+static int registry_category_reopenable(const char *name) {
+    size_t length = strlen(name);
+    if (length == 0u || length >= REGISTRY_SAFE_NAME_MAX) return 0;
+    if (strncmp(name, "__NAKAGAWA", 10) == 0) return 0;
+    return 1;
+}
+
 static void walk_registry_category(int emulated, REGHANDLE registry,
                                    const char *api_path, const char *display_path) {
     REGHANDLE category = 0;
@@ -6263,7 +6274,11 @@ static void walk_registry_category(int emulated, REGHANDLE registry,
                 !registry_name_is_safe(name)) continue;
             int is_directory = registry_read_key(emulated, category, display_path, name,
                                                   s_registry_keys);
-            if (is_directory) {
+            /* Never descend into a category that might not round-trip: the firmware stores
+             * category names cut to REGISTRY_SAFE_NAME_MAX bytes, a cut name cannot be
+             * reopened, and opening a name that is not found CREATES a category (a flash
+             * write). Our own stray test categories are skipped by prefix for the same reason. */
+            if (is_directory && registry_category_reopenable(name)) {
                 size_t api_length = strlen(api_path);
                 size_t name_length = strlen(name);
                 size_t display_length = strlen(display_path);
@@ -6321,11 +6336,10 @@ static void run_registry_readonly(int emulated) {
     REGHANDLE config = 0;
     int config_rc = (int)0xffffffffu;
     if (open_rc == 0) {
-        REGHANDLE unknown = 0;
-        REGISTRY_STEP("unknown-category");
-        unknown_category_rc = sceRegOpenCategory(registry,
-            "/CONFIG/__NAKAGAWA_ORACLE_UNKNOWN_CATEGORY__", 1, &unknown);
-        if (unknown_category_rc == 0) (void)sceRegCloseCategory(unknown);
+        /* No probe may open a category that enumeration did not report: on PSP-3000 6.6.1
+         * sceRegOpenCategory on a missing category CREATES it (and persists it to flash),
+         * even with mode 1, so an "unknown category" probe is a registry write. The
+         * unknown-category error code is therefore not measured here (left 0xffffffff). */
         REGISTRY_STEP("open-config");
         config_rc = sceRegOpenCategory(registry, "/CONFIG", 1, &config);
         if (config_rc == 0) {
