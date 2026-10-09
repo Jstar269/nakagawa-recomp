@@ -1347,7 +1347,7 @@ static void test_guest_module_load_binding(void) {
     const char *name = NULL, *guest_path = NULL;
     uint32_t base = 0;
     int required = 0;
-    expect(sr_title_config_guest_module_at(0, &name, &guest_path, &base, &required),
+    expect(sr_title_config_guest_module_at(0, &name, &guest_path, &base, &required, NULL),
            "synthetic manifest exposes a guest-module load binding");
     if (strcmp(mode, "libfont-startup") == 0) {
         if (name && guest_path)

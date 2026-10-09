@@ -3217,7 +3217,13 @@ static int populate_known_module(const char *guest_path) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
     s_last_prx_base = 0;
-    if (!sr_title_config_guest_module(guest_path, &file, &base, &required)) return 0;
+    SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+    if (!sr_title_config_guest_module(guest_path, &file, &base, &required, &placement)) return 0;
+    if (placement == SR_GUEST_MODULE_RUNTIME) {
+        fprintf(stderr, "GUEST_MODULE_RUNTIME_PLACEMENT_UNAVAILABLE: %s is placed by the "
+                        "guest allocator, which this loader does not support yet (#704)\n", file);
+        return -1;
+    }
     return populate_guest_module(file, base, required) ? 1 : -1;
 }
 
@@ -8850,7 +8856,11 @@ static uint32_t h_LoadModuleByID(CpuState *s) {
         const char *file = NULL;
         uint32_t base = 0;
         int required = 0;
-        if (sr_title_config_guest_module_at(i, &file, NULL, &base, &required) &&
+        SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+        /* A runtime-placed module is never bulk-populated: it is laid out only when the
+         * game loads it, wherever the guest allocator places it. */
+        if (sr_title_config_guest_module_at(i, &file, NULL, &base, &required, &placement) &&
+            placement == SR_GUEST_MODULE_FIXED &&
             !populate_guest_module(file, base, required)) {
             return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
         }

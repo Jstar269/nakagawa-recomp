@@ -49,7 +49,8 @@ static int nk_ascii_casecmp(const char *a, const char *b) {
     return nk_ascii_lower((unsigned char)*a) - nk_ascii_lower((unsigned char)*b);
 }
 
-#define MAX_MODULES 32
+/* Mirrors MAX_TITLE_MODULES in tools/title_manifest.py: the disc module-discovery cap. */
+#define MAX_MODULES 256
 #define MAX_COMPAT_DISC_IDS 16
 #define MAX_LOOSE_CONTENT_ROOTS 16
 #define MAX_LOOSE_CONTENT_EXCLUDES 2
@@ -816,8 +817,9 @@ static bool nk_manifest_parse_locked(
        parser, so they belong in the accepted set here rather than being rejected as unknown
        fields -- rejecting them made the two parsers disagree on any manifest that uses them. */
     static const char * const allowed_mod_keys[] = {"name", "load_address", "required", "role",
-                                                    "guest_path", "load_address_evidence", NULL};
-    static const char * const required_mod_keys[] = {"name", "load_address", "required", "role", NULL};
+                                                    "guest_path", "load_address_evidence",
+                                                    "placement", NULL};
+    static const char * const required_mod_keys[] = {"name", "required", "role", NULL};
     for (size_t i = 0; i < mods_node->u.arr.count; i++) {
         JsonNode *m = mods_node->u.arr.items[i];
         char mod_path[64];
@@ -840,23 +842,6 @@ static bool nk_manifest_parse_locked(
                 if (nk_ascii_casecmp(pname->u.str_val, mname->u.str_val) == 0)
                 {
                     if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].name: duplicate module name under case-insensitive comparison", i);
-                    json_free(root);
-                    return false;
-                }
-            }
-        }
-
-        uint32_t mod_addr = 0;
-        if (!parse_uint32(obj_get(m, "load_address"), &mod_addr)) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: invalid address", i);
-            json_free(root);
-            return false;
-        }
-        for (size_t prev = 0; prev < i; prev++) {
-            uint32_t prev_addr = 0;
-            if (parse_uint32(obj_get(mods_node->u.arr.items[prev], "load_address"), &prev_addr)) {
-                if (prev_addr == mod_addr) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: duplicate module load address", i);
                     json_free(root);
                     return false;
                 }
@@ -892,7 +877,53 @@ static bool nk_manifest_parse_locked(
             json_free(root);
             return false;
         }
-        if (strcmp(role_str, "guest-prx") == 0 || strcmp(role_str, "optional-guest-prx") == 0) {
+        /* placement "runtime": the module carries no address; it is translated position-
+           independently and laid out by the guest allocator when the game loads it. Absent
+           or "fixed" keeps the manifest load_address contract below. Mirrors
+           validate_modules in tools/title_manifest.py. */
+        bool runtime_placed = false;
+        JsonNode *placement_node = obj_get(m, "placement");
+        if (placement_node) {
+            if (placement_node->type != JSON_STRING ||
+                (strcmp(placement_node->u.str_val, "fixed") != 0 &&
+                 strcmp(placement_node->u.str_val, "runtime") != 0)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].placement: unsupported module placement", i);
+                json_free(root);
+                return false;
+            }
+            runtime_placed = strcmp(placement_node->u.str_val, "runtime") == 0;
+        }
+        uint32_t mod_addr = 0;
+        if (runtime_placed) {
+            if (strcmp(role_str, "guest-prx") != 0 && strcmp(role_str, "optional-guest-prx") != 0) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].placement: only a guest module is placed by the runtime", i);
+                json_free(root);
+                return false;
+            }
+            if (obj_get(m, "load_address") || obj_get(m, "load_address_evidence")) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: a runtime-placed module has no manifest load address", i);
+                json_free(root);
+                return false;
+            }
+        } else {
+            if (!parse_uint32(obj_get(m, "load_address"), &mod_addr)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: invalid address", i);
+                json_free(root);
+                return false;
+            }
+            for (size_t prev = 0; prev < i; prev++) {
+                uint32_t prev_addr = 0;
+                if (parse_uint32(obj_get(mods_node->u.arr.items[prev], "load_address"), &prev_addr)) {
+                    if (prev_addr == mod_addr) {
+                        if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: duplicate module load address", i);
+                        json_free(root);
+                        return false;
+                    }
+                }
+            }
+        }
+        if (!runtime_placed &&
+            (strcmp(role_str, "guest-prx") == 0 || strcmp(role_str, "optional-guest-prx") == 0)) {
             /* A guest module's code AND data live at load_address, so it must be real user RAM:
                a base outside it lets translated code run while every data write is dropped (the
                late-PRX bases once sat at 0x322xxxxx). The Python parser enforces the same window. */
@@ -1510,6 +1541,9 @@ static bool nk_manifest_parse_locked(
         snprintf(temp.module_names[i], sizeof(temp.module_names[i]), "%s", mn->u.str_val);
         temp.modules[i].name = temp.module_names[i];
 
+        /* A runtime-placed module has no load_address and records 0: its base is chosen
+           when the game loads it. A fixed guest-module base always lies in user RAM, so 0
+           never names a fixed placement. */
         uint32_t laddr = 0;
         parse_uint32(obj_get(m, "load_address"), &laddr);
         temp.modules[i].load_address = laddr;

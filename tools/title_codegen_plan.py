@@ -296,7 +296,7 @@ def build_plan(
         codegen.append(
             "--extra-elf="
             f"{_path_text(module_dir / module['name'], 'module_path')}"
-            f"@{_hex(module['load_address'])}"
+            f"@{_module_placement_text(module)}"
         )
     codegen.append(f"--funcs-per-chunk={funcs_per_chunk}")
 
@@ -335,6 +335,21 @@ def build_plan(
             "imports": imports,
         },
     }
+
+
+def _module_placement_text(module: dict[str, Any]) -> str:
+    """The codegen/package spelling of a guest module's placement: its fixed load
+    address, or ``runtime`` for a module the guest allocator places when the game
+    loads it (translated position-independently)."""
+    if module.get("placement") == "runtime":
+        return "runtime"
+    return _hex(module["load_address"])
+
+
+def _manager_module(module: dict[str, Any]) -> dict[str, Any]:
+    if module.get("placement") == "runtime":
+        return {"name": module["name"], "placement": "runtime"}
+    return {"name": module["name"], "load_address": module["load_address"]}
 
 
 def build_manager_plan(
@@ -394,14 +409,8 @@ def build_manager_plan(
         "bss_metadata_source": executable["bss_metadata_source"],
         "disc": normalized.get("disc"),
         "extra_executable_spans": executable["extra_executable_spans"],
-        "required_guest_modules": [
-            {"name": module["name"], "load_address": module["load_address"]}
-            for module in required_guest
-        ],
-        "optional_guest_modules": [
-            {"name": module["name"], "load_address": module["load_address"]}
-            for module in optional_guest
-        ],
+        "required_guest_modules": [_manager_module(module) for module in required_guest],
+        "optional_guest_modules": [_manager_module(module) for module in optional_guest],
         "private_binding_requirements": {
             "game_elf": True,
             "module_dir": bool(selected_guest),
@@ -663,6 +672,19 @@ def _selected_guest_modules(
     ]
 
 
+def _analysis_base(module: dict[str, Any], path: Path) -> int | None:
+    """The base a guest module is analyzed at: its manifest address when fixed; for a
+    runtime-placed module its link space -- base 0 for a relocatable PSP module, its
+    absolute link addresses for a fixed-address image -- exactly as codegen translates it."""
+    if module.get("placement") != "runtime":
+        return module["load_address"]
+    with path.open("rb") as stream:
+        header = stream.read(18)
+    if len(header) == 18 and header[:4] == b"\x7fELF" and int.from_bytes(header[16:18], "little") == 0xFFA0:
+        return 0
+    return None
+
+
 def _make_input_images(
     manifest: dict[str, Any],
     executable_path: Path,
@@ -697,7 +719,7 @@ def _make_input_images(
             sources.append({
                 "name": module["name"],
                 "path": path,
-                "base": module["load_address"],
+                "base": _analysis_base(module, path),
                 "module_name": module["name"],
             })
 
@@ -788,20 +810,32 @@ def _read_codegen_fallbacks(
         if not line.strip():
             continue
         address_text, _, reason = line.partition(" ")
+        # A runtime-placed module's fallbacks are in its own link space and carry its
+        # name: <module>@0x<link address>. Every other line is a primary-image or
+        # fixed-module address.
+        module_name, at, address_part = address_text.rpartition("@")
         try:
-            entry = int(address_text, 16)
+            entry = int(address_part if at else address_text, 16)
         except ValueError as exc:
             raise PackageRouteError(
                 "PACKAGE_INVALID_CODEGEN_REPORT", "malformed codegen fallback address"
             ) from exc
-        owner = next(
-            (
-                source
-                for source in sources
-                if any(lo <= entry < hi for lo, hi in source["ranges"])
-            ),
-            None,
-        )
+        if at:
+            owner = next((source for source in sources if source["name"] == module_name), None)
+            if owner is None:
+                raise PackageRouteError(
+                    "PACKAGE_INVALID_CODEGEN_REPORT",
+                    "codegen fallback names a module the plan did not select",
+                )
+        else:
+            owner = next(
+                (
+                    source
+                    for source in sources
+                    if any(lo <= entry < hi for lo, hi in source["ranges"])
+                ),
+                None,
+            )
         module = owner["name"] if owner is not None else "executable region"
         region = {
             "boundary": f"AOT function at 0x{entry:08x}",
@@ -817,7 +851,7 @@ def _read_codegen_fallbacks(
         if location is None:
             continue
         instruction_address = int(location.group(1), 16)
-        instruction_owner = next(
+        instruction_owner = owner if at else next(
             (
                 source
                 for source in sources
@@ -876,7 +910,7 @@ def _required_local_assets(
         asset: dict[str, Any] = {
             "kind": "guest-prx",
             "name": module["name"],
-            "load_address": _hex(module["load_address"]),
+            "load_address": _module_placement_text(module),
             "required": bool(module["required"]),
             "included_in_aot": selected,
             "provisioning": "local title module supplied by the user",
@@ -934,14 +968,14 @@ def _hash_package_inputs(
     module_input_paths: dict[str, Path],
     psp_header: Path | None,
 ) -> dict[str, Any]:
-    module_addresses = {module["name"]: module["load_address"] for module in selected_modules}
+    module_placements = {module["name"]: _module_placement_text(module) for module in selected_modules}
     return {
         "manifest": {"sha256": _sha256_file(manifest_path)},
         "executable": {"sha256": _sha256_file(game_elf)},
         "modules": [
             {
                 "name": name,
-                "load_address": _hex(module_addresses[name]),
+                "load_address": module_placements[name],
                 "sha256": _sha256_file(path),
             }
             for name, path in sorted(module_input_paths.items())
