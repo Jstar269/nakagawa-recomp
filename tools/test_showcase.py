@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,151 @@ def minimal_elf() -> bytes:
     program = struct.pack("<IIIIIIII", 1, 0x100, 0x08804000, 0x08804000,
                           4, 0x100, 5, 0x1000)
     return bytes(header) + program + bytes(0x100 - 84) + b"\x13\x37\x00\x00"
+
+
+SCENE = next(demo for demo in showcase.DEMOS if demo["disc_id"] == "TEST00007")
+BREAKOUT = next(demo for demo in showcase.DEMOS if demo["disc_id"] == "TEST00008")
+CAPTURE = b"P6\n1 1\n255\n\0\0\0"
+
+
+def scene_log(*windows: tuple[int, int]) -> str:
+    """A runtime log whose SR_GESTAT windows close at (vblank, tri3d) pairs."""
+    return "".join(
+        f"GESTAT f={frame} wall=10ms ge=4ms tri2d=0 tri3d={tri3d} spr2d=0 "
+        f"px2d=130560 px3d={4096 if tri3d else 0} mw=1/1/1\n"
+        for frame, tri3d in windows
+    ) + "ctrl_latch: vcount=12 buttons 0x0000 -> 0x4000\n"
+
+
+class ShowcaseFirstFrameCheckpointTests(unittest.TestCase):
+    """The checkpoint is the guest's first drawn frame, at whatever vblank it landed."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.package = Path(self._temp.name)
+        self.log = self.package / "runtime.log"
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def test_window_closed_past_the_multiple_is_the_checkpoint(self) -> None:
+        # A loaded host stepped VCOUNT 59 -> 61: the first window closes at 61 and its
+        # capture is snap_f00061.ppm. The smoke used to demand the literal "GESTAT f=60"
+        # and failed with "did not reach its first frame checkpoint" here.
+        (self.package / "snap_f00061.ppm").write_bytes(CAPTURE)
+        checkpoint, ppm = showcase.first_frame_checkpoint(
+            SCENE, scene_log((61, 12), (120, 12), (181, 12)), self.package, self.log)
+        self.assertEqual(checkpoint.frame, 61)
+        self.assertEqual(checkpoint.counters["tri3d"], 12)
+        self.assertEqual(ppm, self.package / "snap_f00061.ppm")
+
+    def test_slow_boot_moves_the_checkpoint_to_the_first_drawn_window(self) -> None:
+        # A starved host booted the guest late: its first flip came at vblank 55, so the
+        # window closing at 64 holds only the clear and the cube first appears in the
+        # window closing at 121. That window is the checkpoint, with its own capture.
+        (self.package / "snap_f00064.ppm").write_bytes(CAPTURE)
+        (self.package / "snap_f00121.ppm").write_bytes(CAPTURE)
+        checkpoint, ppm = showcase.first_frame_checkpoint(
+            SCENE, scene_log((64, 0), (121, 84), (180, 48)), self.package, self.log)
+        self.assertEqual(checkpoint.frame, 121)
+        self.assertEqual(ppm, self.package / "snap_f00121.ppm")
+
+    def test_no_drawn_window_within_the_budget_is_a_missed_checkpoint(self) -> None:
+        with self.assertRaisesRegex(
+                showcase.ShowcaseError,
+                r"TEST00007 did not reach its first frame checkpoint: no GE statistics window "
+                r"before vblank 180 drew tri3d and px3d \(windows closed at vblank: 60, 120\)"):
+            showcase.first_frame_checkpoint(SCENE, scene_log((60, 0), (120, 0)),
+                                            self.package, self.log)
+        with self.assertRaisesRegex(showcase.ShowcaseError,
+                                    r"TEST00008 did not reach .*spr2d and px2d .*vblank: none"):
+            showcase.first_frame_checkpoint(BREAKOUT, "BOOT_EVENT phase=init\n",
+                                            self.package, self.log)
+
+    def test_capture_must_be_the_checkpoint_window_s_own(self) -> None:
+        # A capture from another window (or an earlier run) is not this checkpoint's frame.
+        (self.package / "snap_f00120.ppm").write_bytes(CAPTURE)
+        with self.assertRaisesRegex(showcase.ShowcaseError,
+                                    r"no GE framebuffer capture .*\(vblank 61\)"):
+            showcase.first_frame_checkpoint(SCENE, scene_log((61, 12), (120, 12)),
+                                            self.package, self.log)
+
+    def test_duplicate_window_breaks_the_runtime_contract(self) -> None:
+        with self.assertRaisesRegex(showcase.ShowcaseError, "TEST00007 .*does not cross"):
+            showcase.first_frame_checkpoint(SCENE, scene_log((60, 12), (60, 0), (120, 12)),
+                                            self.package, self.log)
+
+    def test_every_demo_names_the_counters_its_frame_draws(self) -> None:
+        self.assertEqual(SCENE["frame_counters"], ("tri3d", "px3d"))
+        self.assertEqual(BREAKOUT["frame_counters"], ("spr2d", "px2d"))
+
+
+class ShowcaseScriptedPressTests(unittest.TestCase):
+    """A failed check that depends on a scripted press says whether the guest read it."""
+
+    def test_pad_script_rows_match_the_runtime_format(self) -> None:
+        self.assertEqual(showcase._padscript(showcase.CROSS_PRESS, showcase.START_PRESS),
+                         "12 4000 4\n240 0008 4\n")
+
+    def test_a_press_the_guest_read_is_named_with_its_read(self) -> None:
+        # Guest-time delivery holds the press until the guest reads it, so a late read is
+        # normal on a loaded host; what the message needs is that the read happened.
+        log = ("ctrl_latch: vcount=15 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+               "ctrl_read: vcount=57 guest read scripted 0x4000 (latched 43 samples since vblank 15)\n")
+        self.assertEqual(
+            showcase.scripted_press_note(log, showcase.CROSS_PRESS),
+            " (the guest read the scripted press due at vblank 12 at vblank 57)")
+
+    def test_a_press_the_guest_never_read_says_so(self) -> None:
+        log = "ctrl_latch: vcount=120 buttons 0x0000 -> 0x0008 lx=128 ly=128\n"
+        self.assertEqual(
+            showcase.scripted_press_note(log, showcase.SAVE_START_PRESS),
+            " (the guest never read the scripted press due at vblank 120)")
+
+    def test_a_named_runtime_failure_reaches_the_smoke_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cwd = Path(temp)
+            log = ("ROUTE: pad script loaded\n"
+                   "ROUTE_FAIL: pad script segment 2 of 4: the guest did not read the controller "
+                   "while CROSS was held for 1800 vblanks\n")
+            failed = subprocess.CompletedProcess(["runtime"], 86, stdout=log)
+            with mock.patch.object(showcase.subprocess, "run", return_value=failed):
+                with self.assertRaisesRegex(
+                        showcase.ShowcaseError,
+                        r"TEST00007 runtime exited 86 \(pad script segment 2 of 4: the guest did not "
+                        r"read the controller while CROSS was held for 1800 vblanks\); see "):
+                    showcase._run_runtime(["runtime"], {}, cwd, cwd / "runtime.log",
+                                          "TEST00007 runtime")
+
+
+class ShowcaseRuntimeRunTests(unittest.TestCase):
+    def test_timeout_keeps_the_partial_log_and_names_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cwd = Path(temp)
+            log = cwd / "runtime.log"
+            expired = subprocess.TimeoutExpired(["runtime"], 15, output=b"GESTAT f=60 tri3d=1\n")
+            with mock.patch.object(showcase.subprocess, "run", side_effect=expired):
+                with self.assertRaisesRegex(showcase.ShowcaseError,
+                                            r"TEST00007 runtime exceeded the 15 second smoke window; see "):
+                    showcase._run_runtime(["runtime"], {}, cwd, log, "TEST00007 runtime")
+            self.assertEqual(log.read_text(encoding="utf-8"),
+                             "GESTAT f=60 tri3d=1\n\nSHOWCASE_SMOKE_TIMEOUT\n")
+
+    def test_captures_from_an_earlier_run_are_cleared_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cwd = Path(temp)
+            stale = cwd / "snap_f00060.ppm"
+            stale.write_bytes(b"old")
+            done = subprocess.CompletedProcess(["runtime"], 0, stdout="ok\n")
+            with mock.patch.object(showcase.subprocess, "run", return_value=done) as run:
+                output = showcase._run_runtime(["runtime"], {}, cwd, cwd / "runtime.log",
+                                               "TEST00007 runtime")
+            self.assertEqual(output, "ok\n")
+            self.assertFalse(stale.exists())
+            self.assertEqual(run.call_args.kwargs["timeout"], showcase.SMOKE_TIMEOUT_SECONDS)
+
+    def test_exit_budget_is_three_statistics_windows(self) -> None:
+        self.assertEqual(showcase.SMOKE_EXIT_VBLANK, 3 * showcase.WINDOW_VBLANKS)
 
 
 class ShowcaseImageTests(unittest.TestCase):

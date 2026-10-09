@@ -874,6 +874,27 @@ int      sched_display_is_vblank(void);
  * separate from deliver_vblank()/sr_vblank_tick(), which runs once per serviced
  * source event and owns framebuffer/interrupt/callback side effects. */
 void     sr_display_advance_vcount(uint32_t elapsed_periods);
+/* Periodic VCOUNT windows (statistics windows, periodic dumps, cadence logs).
+ *
+ * Because VCOUNT advances by every elapsed period at the source latch while the
+ * per-episode tick runs once per serviced event, consecutive ticks can step over a
+ * multiple of `period` (59 -> 61 when the host was late by more than one display
+ * period) or observe the same VCOUNT more than once (61, 61 while a coalesced batch
+ * is serviced).  An exact-modulus test (`vcount % period == 0`) therefore skips a
+ * boundary in the first case and repeats it in the second.  This reports each
+ * boundary CROSSING exactly once: it returns 1 on the first call whose `vcount` lies
+ * in a later window than `*last_window` and records that window.  Window 0 counts
+ * as already seen, so the first report is at the first VCOUNT >= period; a jump over
+ * several boundaries is one report.  `*last_window` starts at 0 and VCOUNT is
+ * monotonic for the life of the process. */
+static inline int sr_vcount_window_crossed(uint32_t vcount, uint32_t period,
+                                           uint32_t *last_window) {
+    if (!period || !last_window) return 0;
+    uint32_t window = vcount / period;
+    if (window <= *last_window) return 0;
+    *last_window = window;
+    return 1;
+}
 void     sched_set_current_cb_wait(int cb_wait);    /* mark running thread as callback-waiting */
 void     sched_wake_callbacks(uint32_t thread_uid); /* wake thread waiting in CB-wait */
 void     sched_thread_sleep(void);                  /* sceKernelSleepThread (wakeup-count) */

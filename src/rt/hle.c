@@ -49,6 +49,7 @@
 #define NK_JSON_NO_LEGACY_ALIASES
 #include "nk_json.h"       /* sceReg overlay parser */
 #include "evf.h"         /* pure sceKernelEventFlag pattern/mode semantics */
+#include "scripted_input.h" /* scripted controller input delivered in guest time */
 #include "asset_index.h" /* dynamic extracted-data index (issue #223) */
 #include "archive_vfs.h" /* validated read-only XB provider (issue #298) */
 #include "sdkver.h"      /* retained compiled-SDK-version state (issue #71) */
@@ -14616,8 +14617,10 @@ static void sr_dump_calls(void) {
 /* `ts` is stamped when the sample is latched, not when it is read. SceCtrlData.TimeStamp
  * contains the low 32 bits of the guest microsecond system clock at latch time
  * (corroborated by uOFW sceKernelGetSystemTimeLow, PSPAutotests ctrl/vblank, and emulator consensus). */
-typedef struct { uint32_t btn; uint32_t ts; uint8_t lx, ly; } CtrlSample;
-static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 0, 128, 128 } };
+/* `input_id` is the scripted-input delivery id current when the sample was latched (0 when
+ * nothing scripted was), so a guest read can report which scripted state it was handed. */
+typedef struct { uint32_t btn; uint32_t ts; uint8_t lx, ly; uint32_t input_id; } CtrlSample;
+static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 0, 128, 128, 0 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 
 /* ---- state-qualified acceptance routes (issue #64) --------------------------------
@@ -14724,6 +14727,41 @@ static int      s_route_have_attempt;
 static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
 static int      s_route_nlegacy;
 static int      s_route_loaded;
+
+/* Every scripted input source -- the legacy table below, the route program's press steps and
+ * the auto-START pulse -- delivers through this one player in guest time (scripted_input.h):
+ * each pressed and released stretch lasts at least its authored number of controller samples
+ * AND until the guest has read a sample of it, so a host that falls behind stretches a script
+ * but can never shorten or skip a press. Only one source is active in a run. */
+static SrInputPlayer  s_input;
+static uint32_t       s_input_budget = SR_INPUT_DEFAULT_READ_BUDGET;
+/* The legacy table as the segment list that reproduces it (2 * rows + 1 always suffices). */
+static SrInputSegment s_route_legacy_seg[ROUTE_MAX_LEGACY * 2 + 1];
+static int            s_route_legacy_nseg;
+static int            s_route_legacy_pos;
+static int            s_route_legacy_reported;   /* the "delivered" line has been printed */
+/* The auto-START pulse's schedule (see auto_pulse_keys): the configuration it was armed
+ * with and the nominal VCOUNT of its next press. */
+static struct {
+    int      armed;
+    uint32_t mask, period, width, start;
+    uint32_t next;
+} s_pulse;
+static void auto_pulse_disarm(void) { s_pulse.armed = 0; }
+
+/* SR_PADSCRIPT_READ_BUDGET=<vblanks>: how long a scripted press may wait for the guest to
+ * read it before the run fails. Unset or empty keeps the default; anything that is not a
+ * whole vblank count >= 1 is refused rather than read as some other budget. */
+static int input_read_budget_from_env(uint32_t *out) {
+    const char *e = getenv("SR_PADSCRIPT_READ_BUDGET");
+    *out = SR_INPUT_DEFAULT_READ_BUDGET;
+    if (!e || !e[0]) return 0;
+    char *end = NULL;
+    unsigned long v = strtoul(e, &end, 10);
+    if (!end || *end || e[0] == '-' || v < 1ul || v > UINT32_MAX) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
 
 /* WAIT_NID: gate a step on a guest-visible EVENT rather than on what a screen looks like.
  *
@@ -15241,6 +15279,10 @@ void sr_route_reset(void) {
     route_nid_watch(0);
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
+    sr_input_reset(&s_input);
+    s_route_legacy_nseg = s_route_legacy_pos = s_route_legacy_reported = 0;
+    s_input_budget = SR_INPUT_DEFAULT_READ_BUDGET;
+    auto_pulse_disarm();
 }
 
 int sr_route_load(const char *path) {
@@ -15257,7 +15299,14 @@ int sr_route_load(const char *path) {
     s_route_have_attempt = 0;
     s_route_state = ROUTE_OFF;
     s_route_loaded = 1;
+    sr_input_reset(&s_input);
+    s_route_legacy_nseg = s_route_legacy_pos = s_route_legacy_reported = 0;
     if (!path || !path[0]) return 0;
+    if (input_read_budget_from_env(&s_input_budget) != 0) {
+        route_fail("SR_PADSCRIPT_READ_BUDGET='%s' is not a vblank count >= 1; refusing to run "
+                   "a pad script with an unknown read budget", getenv("SR_PADSCRIPT_READ_BUDGET"));
+        return 0;
+    }
     fp = fopen(path, "r");
     if (!fp) {
         fprintf(stderr, "ROUTE_PARSE: cannot open route file '%s'\n", path);
@@ -15315,7 +15364,25 @@ int sr_route_load(const char *path) {
         return 1;
     }
     if (s_route_nlegacy > 0) {
+        uint32_t rf[ROUTE_MAX_LEGACY], rm[ROUTE_MAX_LEGACY], rw[ROUTE_MAX_LEGACY];
+        for (int i = 0; i < s_route_nlegacy; i++) {
+            rf[i] = s_route_legacy[i].f;
+            rm[i] = s_route_legacy[i].mask;
+            rw[i] = s_route_legacy[i].w;
+        }
+        s_route_legacy_nseg = sr_input_from_rows(
+            rf, rm, rw, s_route_nlegacy, s_input_budget, s_route_legacy_seg,
+            (int)(sizeof s_route_legacy_seg / sizeof s_route_legacy_seg[0]));
+        if (s_route_legacy_nseg < 0) {
+            s_route_legacy_nseg = 0;
+            route_fail("pad script '%s' does not fit the segment table", path);
+            return 0;
+        }
+        s_route_legacy_pos = 0;
         s_route_state = ROUTE_LEGACY;
+        fprintf(stderr, "ROUTE: pad script loaded from %s (%d rows as %d segments, delivered in "
+                        "guest time; a press may wait %u vblanks for the guest to read it)\n",
+                path, s_route_nlegacy, s_route_legacy_nseg, s_input_budget);
         return 1;
     }
     if (s_route_ncp > 0) {
@@ -15327,6 +15394,39 @@ int sr_route_load(const char *path) {
     return 0;
 }
 
+/* A scripted press the guest never read. Before guest-time delivery the press simply ended
+ * on schedule and the run carried on as if it had been made; now the run fails here, naming
+ * the buttons, how long they were held and what the step was. */
+static void route_input_overdue(const char *what_step, uint32_t v) {
+    char what[64];
+    route_describe_mask(s_input.seg.mask, what, sizeof what);
+    route_fail("%s: the guest did not read the controller while %s was held for %u vblanks "
+               "(from vblank %u to %u); a scripted press is held until the guest reads it, for "
+               "at most SR_PADSCRIPT_READ_BUDGET=%u vblanks",
+               what_step, what, v - s_input.since, s_input.since, v, s_input.seg.budget);
+    sr_input_idle(&s_input);
+}
+
+/* One vblank of a legacy pad script: advance its segment list in guest time and return the
+ * pad state for this vblank's sample. */
+static uint32_t route_legacy_tick(uint32_t v) {
+    int r = sr_input_list_tick(&s_input, s_route_legacy_seg, s_route_legacy_nseg,
+                               &s_route_legacy_pos, v);
+    if (r < 0) {
+        char step[64];
+        snprintf(step, sizeof step, "pad script segment %d of %d", s_route_legacy_pos,
+                 s_route_legacy_nseg);
+        route_input_overdue(step, v);
+        return 0u;
+    }
+    if (r == 1 && !s_route_legacy_reported) {
+        s_route_legacy_reported = 1;
+        fprintf(stderr, "ROUTE: pad script delivered (%d segments) by vblank %u\n",
+                s_route_legacy_nseg, v);
+    }
+    return sr_input_mask(&s_input);
+}
+
 static void route_load_once(void) {
     if (s_route_loaded) return;
     s_route_loaded = 1;
@@ -15336,6 +15436,21 @@ static void route_load_once(void) {
 }
 
 static void route_advance(void) { s_route_pc++; s_route_step_started = 0; }
+
+/* The repeated press of PRESS_UNTIL / PRESS_WHILE in guest time: `width` samples pressed
+ * until the guest has read it, then released for the rest of the `period` until the guest
+ * has read the release, and again. These pulses carry no read budget of their own: the
+ * step's screen test ends them, and the step's own timeout bounds a guest that never
+ * reads (the boot prefix they exist for can legitimately ignore the pad for a while). */
+static uint32_t route_pulse(const RouteStep *st, uint32_t v) {
+    if (sr_input_delivered(&s_input)) {
+        SrInputSegment next = s_input.seg.mask
+            ? (SrInputSegment){ 0u, st->c - st->b, v, 0u }
+            : (SrInputSegment){ st->a, st->b, v, 0u };
+        sr_input_start(&s_input, &next, v);
+    }
+    return sr_input_mask(&s_input);
+}
 
 /* One vblank of the route program. `sig` is the observed screen signature, or NULL when
  * no observation was taken this vblank. Returns the button mask for this vblank. */
@@ -15365,15 +15480,36 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             /* The NID watch is armed by the step that wants it, so "called since this step
              * began" is measured from this vblank and not from the start of the route. */
             route_nid_watch(st->op == ROUTE_OP_NID);
+            /* Input belongs to the step that makes it: a pressing step starts its first
+             * segment here, every other step leaves the pad released. */
+            if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE) {
+                SrInputSegment press = { st->a, st->b, v,
+                                         st->op == ROUTE_OP_PRESS ? s_input_budget : 0u };
+                sr_input_start(&s_input, &press, v);
+            } else if (st->op == ROUTE_OP_DELAY && st->a > 0u) {
+                SrInputSegment gap = { 0u, st->a, v, 0u };
+                sr_input_start(&s_input, &gap, v);
+            } else {
+                sr_input_idle(&s_input);
+            }
         }
         uint32_t el = v - s_route_step_start;
         switch (st->op) {
         case ROUTE_OP_PRESS:
-            if (el < st->b) return keys | st->a;
+            /* Held for `width` samples and until the guest has read it (scripted_input.h). */
+            if (sr_input_overdue(&s_input, v)) {
+                char step[32];
+                snprintf(step, sizeof step, "line %d: PRESS", st->line);
+                route_input_overdue(step, v);
+                return keys;
+            }
+            if (!sr_input_delivered(&s_input)) return keys | st->a;
             route_advance();
             continue;
         case ROUTE_OP_DELAY:
-            if (el < st->a) return keys;
+            /* Released for `n` samples and until the guest has read the release, so the
+             * press before it and the press after it reach the guest as two presses. */
+            if (st->a > 0u && !sr_input_delivered(&s_input)) return keys;
             route_advance();
             continue;
         case ROUTE_OP_UNTIL: {
@@ -15389,8 +15525,7 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
                            st->line, st->name, el, s_route_step_start, route_seen_desc());
                 return keys;
             }
-            if ((el % st->c) < st->b) keys |= st->a;
-            return keys;
+            return keys | route_pulse(st, v);
         }
         case ROUTE_OP_WHILE: {
             int d = 255;
@@ -15416,8 +15551,7 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
                            ever ? "never went away" : "was never on show", route_seen_desc());
                 return keys;
             }
-            if ((el % st->c) < st->b) keys |= st->a;
-            return keys;
+            return keys | route_pulse(st, v);
         }
         case ROUTE_OP_WAIT: {
             int d = 255;
@@ -15537,6 +15671,41 @@ void sr_hle_test_ctrl_sampling_reset(void) {
  * gui_on()/gui_buttons() to neutral, so production keys are always 0 there). */
 int sr_ctrl_test_pulse_suppressed(uint32_t keys) { return ctrl_pulse_suppressed(keys); }
 #endif
+/* The headless auto-START pulse in guest time, like every scripted input: `mask` is pressed
+ * from each nominal period boundary (none before `start`) for `width` samples and until the
+ * guest has read it, then released until the guest has read the release and the next
+ * boundary is due. On a host that keeps up this is the old `vcount % period < width` cadence;
+ * on a starved one the guest still sees every pulse as a press and a release. A width that
+ * covers the whole period is a constant hold. Called once per latched sample. */
+static uint32_t auto_pulse_keys(uint32_t mask, uint32_t period, uint32_t width, uint32_t start,
+                                uint32_t v) {
+    if (width >= period) { sr_input_idle(&s_input); return v >= start ? mask : 0u; }
+    if (!s_pulse.armed || s_pulse.mask != mask || s_pulse.period != period ||
+        s_pulse.width != width || s_pulse.start != start) {
+        /* The first pulse is the window the old cadence would be in now (or next): the
+         * boundary at or before max(start, v) if that window is still open, else the next. */
+        uint32_t base = v > start ? v : start;
+        uint32_t boundary = base - base % period;
+        s_pulse.armed = 1;
+        s_pulse.mask = mask; s_pulse.period = period; s_pulse.width = width; s_pulse.start = start;
+        s_pulse.next = base - boundary < width ? boundary : boundary + period;
+        sr_input_idle(&s_input);
+    }
+    if (s_input.current) {
+        if (!sr_input_delivered(&s_input)) return sr_input_mask(&s_input);
+        if (s_input.seg.mask) {               /* the press was read: release it */
+            SrInputSegment gap = { 0u, 1u, v, 0u };
+            sr_input_start(&s_input, &gap, v);
+            return 0u;
+        }
+    }
+    if (v < s_pulse.next || v < start) return 0u;
+    SrInputSegment press = { mask, width, v, 0u };
+    sr_input_start(&s_input, &press, v);
+    s_pulse.next = (v / period + 1u) * period;  /* the boundary after this press */
+    return mask;
+}
+
 static uint32_t h_CtrlButtons(void) {
     /* Live keyboard (windowed mode) is OR'd with the auto-input pulse below -- in this headless
      * window environment no key is ever pressed, so without the pulse the intro movie never gets
@@ -15544,19 +15713,11 @@ static uint32_t h_CtrlButtons(void) {
     uint32_t keys = gui_on() ? gui_buttons() : 0;
     /* SR_PADSCRIPT=<file>: either a route program (issue #64: state-qualified steps) or the
      * original absolute table of "frame hexmask width" lines -- press mask at frame for width
-     * frames. Either way it replaces the default START pulse entirely. The program's keys for
-     * this vblank were computed by route_tick() before the sample was latched. */
+     * frames. Either way it replaces the default START pulse entirely, and either way its pad
+     * state for this vblank was computed by route_tick() in guest time (scripted_input.h)
+     * before the sample was latched. */
     route_load_once();
-    if (s_route_state != ROUTE_OFF && s_route_state != ROUTE_LEGACY) return keys | s_route_keys;
-    {
-        if (s_route_nlegacy > 0) {
-            for (int i = 0; i < s_route_nlegacy; i++)
-                if (s_vcount_fwd >= s_route_legacy[i].f &&
-                    s_vcount_fwd < s_route_legacy[i].f + s_route_legacy[i].w)
-                    keys |= s_route_legacy[i].mask;
-            return keys;
-        }
-    }
+    if (s_route_state != ROUTE_OFF) return keys | s_route_keys;
     /* The auto-START pulse below only exists to advance the intro/attract in headless or no-input
      * runs. When a real controller is connected the player drives input themselves, so suppress the
      * pulse (otherwise a phantom START every few seconds would keep opening the pause menu).
@@ -15577,10 +15738,9 @@ static uint32_t h_CtrlButtons(void) {
      *
      * `keys` cannot contain the pulse itself here -- the pulse is OR'd into the return
      * value below this point and never feeds back in -- so the latch cannot be
-     * self-triggering. Route-script keys likewise never reach it: both route branches
-     * return above, so synthetic route playback neither sets the latch nor is gated by
-     * it. */
-    if (ctrl_pulse_suppressed(keys)) return keys;
+     * self-triggering. Route-script keys likewise never reach it: the route branch returns
+     * above, so synthetic route playback neither sets the latch nor is gated by it. */
+    if (ctrl_pulse_suppressed(keys)) { sr_input_idle(&s_input); return keys; }
     /* Pulse START only, briefly, on a slow cadence to skip the (minutes-long) intro movie and the
      * "press start" prompt. Pressing CROSS/CIRCLE as well drove the menus into bad states (it
      * confirmed things the game was not ready for); START alone advances the intro without that.
@@ -15591,9 +15751,9 @@ static uint32_t h_CtrlButtons(void) {
     const char *pw = getenv("SR_PADWIDTH");  int width  = pw ? atoi(pw) : 4;
     const char *ps = getenv("SR_PADSTART");  int startf = ps ? atoi(ps) : 0;  /* hold input until frame */
     if (period <= 0) period = 240;
-    if ((int)s_vcount_fwd < startf) return keys;
-    if ((int)(s_vcount_fwd % (uint32_t)period) < width) return keys | mask;
-    return keys;
+    if (width <= 0) return keys;
+    return keys | auto_pulse_keys(mask, (uint32_t)period, (uint32_t)width,
+                                  startf > 0 ? (uint32_t)startf : 0u, s_vcount_fwd);
 }
 /* sceCtrlReadBuffer*: fill SceCtrlData[count]. Positive reports pressed buttons as set bits;
  * Negative reports them inverted (set = not pressed), so it must write ~buttons -- writing the
@@ -15613,6 +15773,7 @@ void sr_ctrl_sample(void) {
         }
     }
     s_ctrl_ring[s_ctrl_w].btn = buttons;
+    s_ctrl_ring[s_ctrl_w].input_id = sr_input_latch(&s_input);
     s_ctrl_ring[s_ctrl_w].ts = (uint32_t)sched_vtime_us();   /* low 32 bits of guest microsecond clock at latch */
     s_ctrl_ring[s_ctrl_w].lx = lx;
     s_ctrl_ring[s_ctrl_w].ly = ly;
@@ -15663,8 +15824,10 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
     /* Oldest of the delivered samples first; peek differs only in blocking and in
      * whether the read cursor is advanced below, not in where the window starts. */
     int start = (s_ctrl_w - avail + CTRL_RING) % CTRL_RING;
+    uint32_t newest_input = 0u;
     for (int i = 0; i < avail; i++) {
         CtrlSample smp = s_ctrl_ring[(start + i) % CTRL_RING];
+        if (smp.input_id > newest_input) newest_input = smp.input_id;
         uint32_t field = negate ? ~smp.btn : smp.btn;   /* negative mode inverts buttons only */
         uint32_t e = buf + (uint32_t)i * CTRL_SAMPLE_BYTES;
         MEM_W32(e + 0, smp.ts);        /* stamped when the sample was latched */
@@ -15672,6 +15835,12 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
         MEM_W8(e + 8, smp.lx); MEM_W8(e + 9, smp.ly); MEM_W8(e + 10, 128); MEM_W8(e + 11, 128);
     }
     if (!peek) s_ctrl_r = s_ctrl_w;                /* consume */
+    /* Scripted input advances in guest time: this read is what tells the script the guest
+     * has seen the state it is holding (scripted_input.h). */
+    if (sr_input_read(&s_input, newest_input) && getenv("SR_INLOG"))
+        fprintf(stderr, "ctrl_read: vcount=%u guest read scripted 0x%04x (latched %u samples "
+                        "since vblank %u)\n",
+                s_vcount_fwd, s_input.seg.mask, s_input.latched, s_input.since);
     if (getenv("SR_INLOG")) {
         static unsigned long calls = 0;
         CtrlSample latest = s_ctrl_ring[(s_ctrl_w - 1 + CTRL_RING) % CTRL_RING];
@@ -16161,6 +16330,10 @@ static void route_learn_emit(uint32_t v, const uint8_t *sig) {
  * reached on this vblank can release its press on this vblank. */
 static void route_tick(uint32_t v) {
     route_load_once();
+    if (s_route_state == ROUTE_LEGACY && !s_route_learn) { s_route_keys = route_legacy_tick(v); return; }
+    /* A finished or failed program presses nothing more. (The auto-START pulse shares the
+     * player only when no route is loaded, so ROUTE_OFF must not idle it here.) */
+    if (s_route_state == ROUTE_DONE || s_route_state == ROUTE_FAILED) sr_input_idle(&s_input);
     if (s_route_state != ROUTE_RUNNING && !s_route_learn) { s_route_keys = 0; return; }
 
     uint8_t sig[ROUTE_SIG_MAX];
@@ -16197,7 +16370,7 @@ static void route_tick(uint32_t v) {
             if (s_route_learn) route_learn_emit(v, sig);
         }
     }
-    s_route_keys = sr_route_step(v, observed);
+    s_route_keys = s_route_state == ROUTE_LEGACY ? route_legacy_tick(v) : sr_route_step(v, observed);
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -16205,6 +16378,14 @@ static void route_tick(uint32_t v) {
  * regression drive production sampling/cadence/state-machine behavior without
  * a scheduler, a title, or a GPU. Production builds compile none of this. */
 void sr_route_test_tick(uint32_t v) { route_tick(v); }
+/* The latch and read halves of sr_ctrl_sample() / ctrl_fill_n() for tests that drive
+ * sr_route_step() directly: latch one sample of the current scripted state and, when
+ * `guest_reads`, hand it to the guest. A route test that delivers every vblank is a guest
+ * that polls every frame, which is the case where guest time and VCOUNT agree. */
+void sr_input_test_deliver(int guest_reads) {
+    uint32_t id = sr_input_latch(&s_input);
+    if (guest_reads) (void)sr_input_read(&s_input, id);
+}
 /* Feed the import ring exactly as sr_syscall() does, gate included, and resolve a route's
  * name-or-hex token through the production resolver. A step that waits on a guest event is
  * only trustworthy if the observation it reads is the one the dispatcher writes. */
@@ -16809,7 +16990,10 @@ void sr_vblank_tick(void) {
         vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     }
-    if (ge_log_on() && (s_vcount & 0x3f) == 0)
+    /* Periodic VCOUNT cadences are boundary crossings, not an exact modulus: a serviced
+     * tick can step over a multiple or repeat one (see sr_vcount_window_crossed). */
+    static uint32_t tick_log_window = 0;
+    if (ge_log_on() && sr_vcount_window_crossed(s_vcount, 64u, &tick_log_window))
         fprintf(stderr, "VBLANK tick %u\n", s_vcount);
     vramdump_note_vblank(s_vcount);
     /* Full guest-PC dumps contain thousands of rows and synchronous five-second cadence
@@ -16822,7 +17006,9 @@ void sr_vblank_tick(void) {
         unsigned long parsed = period && period[0] ? strtoul(period, NULL, 10) : 0;
         profile_dump_period = parsed > UINT32_MAX ? UINT32_MAX - 1u : (uint32_t)parsed;
     }
-    if (profile_dump_period > 0 && (s_vcount % profile_dump_period) == 0) {
+    static uint32_t profile_dump_window = 0;
+    if (profile_dump_period > 0 &&
+        sr_vcount_window_crossed(s_vcount, profile_dump_period, &profile_dump_window)) {
         extern void sr_profile_dump(void);
         sr_profile_dump();
     }
