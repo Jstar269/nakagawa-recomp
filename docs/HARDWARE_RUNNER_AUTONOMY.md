@@ -44,9 +44,20 @@ re-attach now share a bounded verifier: at most three `ver` attempts, each
 limited to the remaining time or 15 seconds, within a configurable total
 deadline (`--shell-verification-timeout`, default 45 seconds). Every attempt is
 recorded in recovery events. Lost replies and USBHostFS unknown-command output
-are retryable transport events; only exhaustion escalates to
+are retryable transport events. After a probe launch, exhaustion escalates to
 `PHYSICAL_INTERVENTION_REQUIRED` with manual commands. This routine retries
 shell qualification only; semantic probe results are never retried.
+
+Transport start-up waits for positive readiness instead of issuing `ver` as
+soon as `usbhostfs_pc` is spawned. It waits for USBHostFS to report its device
+poll loop, finds the one PSPLink device in `usbipd list`, attaches it once when
+it is `Shared`, and then waits for `Connected to device`; all of this shares one
+bounded start budget (60 seconds by default). USBHostFS prints
+`waiting for device...` once at start-up and again after every disconnect, so
+only a wait that follows a connection counts as a device loss. A failure before
+the first launch, including initial shell-qualification exhaustion, ends as
+`TRANSPORT_START_FAILED` with the USBHostFS output tail and manual commands. The
+PSP ran nothing, so it needs no power cycle.
 
 The reset command's timeout alone did not establish its outcome; the subsequent
 `Shared` to attach to `Connected` to `ver` sequence did establish restored

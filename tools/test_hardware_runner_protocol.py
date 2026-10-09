@@ -31,14 +31,15 @@ Fail-closed invariants under test, in one sentence each:
 from __future__ import annotations
 
 import hashlib
-from io import StringIO
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import struct
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +58,7 @@ from psp_oracle.run_psplink import (
     _wait_for_host0_output,
     _verify_psplink_shell,
     PsplinkProcessTransport,
+    TransportStartError,
     UnsafeHost0OutputError,
     _run_command,
     run_campaign_plan,
@@ -221,6 +223,58 @@ def _campaign_mbx_delete_wait_stream(cases=None) -> str:
     )
 
 
+class LiveServerOutput:
+    """Blocking line stream for a fake USBHostFS: lines arrive when emitted."""
+
+    def __init__(self, lines=()):
+        self._lines: queue.Queue[str | None] = queue.Queue()
+        for line in lines:
+            self.emit(line)
+
+    def emit(self, line: str) -> None:
+        self._lines.put(line + "\n")
+
+    def close(self) -> None:
+        self._lines.put(None)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        line = self._lines.get(timeout=10.0)
+        if line is None:
+            raise StopIteration
+        return line
+
+
+class FakeUsbHostFsProcess:
+    """A synthetic usbhostfs_pc process whose output the test controls."""
+
+    def __init__(self, lines=(), *, exits: bool = False):
+        self.stdout = LiveServerOutput(lines)
+        self.returncode = None
+        self.terminated = False
+        if exits:
+            self.stdout.close()
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = 0
+        self.stdout.close()
+
+    def wait(self, timeout):
+        return self.returncode
+
+    def kill(self):
+        self.terminate()
+
+
+USBHOSTFS_BANNER = ("USBHostFS (c) TyRaNiD 2k6", "waiting for device...")
+
+
 class SimulatedPsplinkTransport:
     """Command-level fake for the real PSPSH adapter; never touches hardware."""
 
@@ -246,7 +300,9 @@ class SimulatedPsplinkTransport:
         fail_host0_roundtrip_cases: set[str] | None = None,
         transport_file_cases: set[str] | None = None,
         fail_snapshot_call: dict[str, int] | None = None,
+        start_error: str | None = None,
     ):
+        self.start_error = start_error
         self.timeout_cases = timeout_cases or set()
         self.fail_modstun = fail_modstun
         self.fail_modstun_cases = fail_modstun_cases or set()
@@ -345,6 +401,8 @@ class SimulatedPsplinkTransport:
         )
 
     def start(self) -> None:
+        if self.start_error is not None:
+            raise TransportStartError(self.start_error)
         self.started = True
 
     def stop(self) -> None:
@@ -1927,24 +1985,6 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         )
 
     def test_20_process_transport_uses_argv_templates_timeout_and_owned_server_lifecycle(self):
-        class FakeProcess:
-            def __init__(self):
-                self.stdout = StringIO("")
-                self.terminated = False
-                self.killed = False
-
-            def poll(self):
-                return 0 if self.terminated or self.killed else None
-
-            def terminate(self):
-                self.terminated = True
-
-            def wait(self, timeout):
-                return 0
-
-            def kill(self):
-                self.killed = True
-
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="runner-process-", dir=fixture_dir) as scratch_name:
             scratch = Path(scratch_name)
@@ -1954,12 +1994,15 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
 
             def popen_factory(command, **kwargs):
                 popen_calls.append((command, kwargs))
-                process = FakeProcess()
+                process = FakeUsbHostFsProcess(USBHOSTFS_BANNER)
                 created.append(process)
                 return process
 
             def command_runner(command, timeout):
                 command_calls.append((command, timeout))
+                if command == ["usbipd", "list"]:
+                    created[-1].stdout.emit("Connected to device")
+                    return 0, "2-1 054c:01c9 PSP Type B Attached\n", "", "PROCESS_EXITED"
                 return 0, "ok", "", "PROCESS_EXITED"
 
             adapter = PsplinkProcessTransport(
@@ -1974,7 +2017,8 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             adapter.restart()
             adapter.stop()
 
-        self.assertEqual(command_calls, [(["fake-pspsh", "-e", "ldstart host0:/probe.prx"], 0.5)])
+        pspsh_calls = [call for call in command_calls if call[0][0] == "fake-pspsh"]
+        self.assertEqual(pspsh_calls, [(["fake-pspsh", "-e", "ldstart host0:/probe.prx"], 0.5)])
         self.assertEqual(len(popen_calls), 2)
         self.assertEqual(popen_calls[0][0][0:2], ["fake-usbhostfs", str(scratch.resolve())])
         self.assertTrue(popen_calls[0][0][2].startswith("/"))
@@ -2575,7 +2619,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertIn("PASS", ver_events[2])
         self.assertTrue(report["envelopes"][0]["ACCEPTANCE_ELIGIBLE"])
 
-    def test_shell_qualification_exhaustion_requires_physical_intervention(self):
+    def test_initial_shell_qualification_exhaustion_is_a_transport_start_failure(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="runner-ver-exhausted-", dir=fixture_dir) as scratch_name:
             scratch = Path(scratch_name)
@@ -2595,11 +2639,46 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             event for event in report["recovery_events"]
             if event.startswith("shell verification attempt ")
         ]
-        self.assertEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+        commands = [command for command, _timeout in transport.commands]
+        # Nothing was launched, so the stop is a transport start failure and
+        # never a power-cycle (physical intervention) demand.
+        self.assertEqual(report["terminal_reason"], "TRANSPORT_START_FAILED")
+        self.assertEqual(report["state"], "STOPPED")
+        self.assertIsNone(report["resume_case_index"])
         self.assertEqual(len(attempts), 3)
         self.assertIn("usbipd list", report["recovery_events"][-1])
         self.assertIn("pspsh -e ver", report["recovery_events"][-1])
+        self.assertIn("no power cycle is required", report["recovery_events"][-1])
+        self.assertIn("pspsh -e ver", report["transport_start_problem"])
+        self.assertFalse(any(command.startswith(("ldstart", "reset")) for command in commands))
         self.assertEqual(report["envelopes"], [])
+        self.assertTrue(transport.stopped)
+
+    def test_transport_start_failure_stops_before_any_psplink_command(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-start-fail-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(
+                start_error="USBHostFS did not report `Connected to device`"
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+
+        self.assertEqual(report["terminal_reason"], "TRANSPORT_START_FAILED")
+        self.assertEqual(report["state"], "STOPPED")
+        self.assertEqual(transport.commands, [])
+        self.assertTrue(transport.stopped)
+        self.assertEqual(
+            report["transport_start_problem"],
+            "USBHostFS did not report `Connected to device`",
+        )
+        self.assertIn("no power cycle is required", report["recovery_events"][-1])
 
     def test_campaign_unknown_model_is_captured_but_not_acceptance_eligible(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
@@ -2760,39 +2839,26 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(_parse_usbipd_psplink_devices(output), [("9-7.2", "Shared")])
 
     def test_27_shared_psplink_device_is_attached_and_verified(self):
-        class FakeProcess:
-            def __init__(self):
-                self.stdout = StringIO("Waiting for device...\n")
-                self.terminated = False
-
-            def poll(self):
-                return 0 if self.terminated else None
-
-            def terminate(self):
-                self.terminated = True
-
-            def wait(self, timeout):
-                return 0
-
-            def kill(self):
-                self.terminated = True
-
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="usbipd-reattach-", dir=fixture_dir) as scratch_name:
             scratch = Path(scratch_name)
-            process = FakeProcess()
+            process = FakeUsbHostFsProcess(USBHOSTFS_BANNER)
             calls = []
             shell_events = []
             ver_attempts = 0
+            usbipd_states = ["Attached", "Shared"]
             adapter = None
 
             def command_runner(command, timeout):
                 calls.append(command)
                 if command == ["usbipd", "list"]:
+                    state = usbipd_states.pop(0)
+                    if state == "Attached":
+                        process.stdout.emit("Connected to device")
                     return (
                         0,
                         "Connected:\nBUSID VID:PID DEVICE STATE\n"
-                        "9-7.2 054c:01c9 PSP Type B Shared\n",
+                        f"9-7.2 054c:01c9 PSP Type B {state}\n",
                         "",
                         "PROCESS_EXITED",
                     )
@@ -2816,7 +2882,10 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 popen_factory=lambda _command, **_kwargs: process,
             )
             adapter.start()
-            self.assertTrue(adapter._waiting_for_device.wait(0.5))
+            self.assertFalse(adapter.take_waiting_for_device())
+            adapter._observe_server_output("Read cancelled (remote disconnected)")
+            adapter._observe_server_output("waiting for device...")
+            self.assertTrue(adapter.take_waiting_for_device())
 
             recovered, detail, verification = adapter.recover_psplink_transport(
                 0.5,
@@ -2832,6 +2901,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertIn("Error, unknown command", shell_events[0])
         self.assertIn("PASS", shell_events[1])
         self.assertEqual(calls, [
+            ["usbipd", "list"],
             ["usbipd", "list"],
             ["usbipd", "attach", "--wsl", "--busid", "9-7.2"],
             ["fake-pspsh", "-e", "ver"],
@@ -3048,6 +3118,163 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(commands.count("ldstart host0:/smoke.prx"), 0)
         self.assertNotIn("reset", commands[second_launch + 1:])
         self.assertNotIn("modstun 0x04280001", commands[second_launch + 1:])
+
+
+class TransportStartReadinessTests(unittest.TestCase):
+    """PSPLink start-up waits for a positive USB link signal (no fixed sleeps)."""
+
+    def _adapter(self, scratch: Path, process, command_runner, *, start_timeout=5.0):
+        return PsplinkProcessTransport(
+            pspsh_argv=["fake-pspsh", "-e", "{remote_command}"],
+            usbhostfs_argv=["fake-usbhostfs", "{host0_root}"],
+            host0_root=scratch,
+            command_runner=command_runner,
+            popen_factory=lambda _command, **_kwargs: process,
+            start_timeout=start_timeout,
+        )
+
+    @staticmethod
+    def _usbipd_row(state: str) -> tuple[int, str, str, str]:
+        return 0, f"BUSID VID:PID DEVICE STATE\n2-1 054c:01c9 PSP Type B {state}\n", "", "PROCESS_EXITED"
+
+    def test_shared_device_is_attached_and_start_waits_for_connected_to_device(self):
+        process = FakeUsbHostFsProcess(USBHOSTFS_BANNER)
+        calls = []
+
+        def command_runner(command, timeout):
+            calls.append(command)
+            if command == ["usbipd", "list"]:
+                return self._usbipd_row("Shared")
+            if command == ["usbipd", "attach", "--wsl", "--busid", "2-1"]:
+                process.stdout.emit("Connected to device")
+                return 0, "", "", "PROCESS_EXITED"
+            raise AssertionError(f"start-up must not run {command}")
+
+        with tempfile.TemporaryDirectory() as scratch_name:
+            adapter = self._adapter(Path(scratch_name), process, command_runner)
+            adapter.start()
+            try:
+                self.assertEqual(calls, [
+                    ["usbipd", "list"],
+                    ["usbipd", "attach", "--wsl", "--busid", "2-1"],
+                ])
+                self.assertIn("attached from Shared", adapter.start_detail)
+                self.assertIn("Connected to device", adapter.start_detail)
+                # USBHostFS's start-up `waiting for device...` is not a device loss.
+                self.assertFalse(adapter.take_waiting_for_device())
+            finally:
+                adapter.stop()
+
+    def test_attached_device_start_waits_for_connected_without_attaching(self):
+        process = FakeUsbHostFsProcess(USBHOSTFS_BANNER)
+        calls = []
+
+        def command_runner(command, timeout):
+            calls.append(command)
+            if command == ["usbipd", "list"]:
+                process.stdout.emit("Connected to device")
+                return self._usbipd_row("Attached")
+            raise AssertionError(f"start-up must not run {command}")
+
+        with tempfile.TemporaryDirectory() as scratch_name:
+            adapter = self._adapter(Path(scratch_name), process, command_runner)
+            adapter.start()
+            adapter.stop()
+
+        self.assertEqual(calls, [["usbipd", "list"]])
+        self.assertIn("already attached", adapter.start_detail)
+
+    def test_already_connected_server_needs_no_usbipd_command(self):
+        process = FakeUsbHostFsProcess(("USBHostFS (c) TyRaNiD 2k6", "Connected to device"))
+
+        def command_runner(command, timeout):
+            raise AssertionError(f"start-up must not run {command}")
+
+        with tempfile.TemporaryDirectory() as scratch_name:
+            adapter = self._adapter(Path(scratch_name), process, command_runner)
+            adapter.start()
+            adapter.stop()
+
+        self.assertEqual(adapter.start_detail, "USBHostFS reported `Connected to device`")
+
+    def test_missing_connected_to_device_fails_start_within_its_budget(self):
+        process = FakeUsbHostFsProcess(USBHOSTFS_BANNER)
+
+        def command_runner(command, timeout):
+            if command == ["usbipd", "list"]:
+                return self._usbipd_row("Shared")
+            return 0, "", "", "PROCESS_EXITED"
+
+        with tempfile.TemporaryDirectory() as scratch_name:
+            adapter = self._adapter(
+                Path(scratch_name), process, command_runner, start_timeout=0.3
+            )
+            started = time.monotonic()
+            with self.assertRaises(TransportStartError) as raised:
+                adapter.start()
+            elapsed = time.monotonic() - started
+            adapter.stop()
+
+        message = str(raised.exception)
+        self.assertLess(elapsed, 5.0)
+        self.assertIn("did not report `Connected to device` for PSPLink device 2-1", message)
+        self.assertIn("within the 0.3s transport start budget", message)
+        self.assertIn("lsusb -d 054c:01c9", message)
+        self.assertIn("last usbhostfs_pc output: USBHostFS (c) TyRaNiD 2k6 | waiting for device...",
+                      message)
+
+    def test_server_exit_before_polling_fails_start_with_its_output(self):
+        process = FakeUsbHostFsProcess(
+            ("USBHostFS (c) TyRaNiD 2k6", "USB initialization failed: -1"), exits=True
+        )
+
+        def command_runner(command, timeout):
+            raise AssertionError(f"start-up must not run {command}")
+
+        with tempfile.TemporaryDirectory() as scratch_name:
+            adapter = self._adapter(Path(scratch_name), process, command_runner)
+            with self.assertRaises(TransportStartError) as raised:
+                adapter.start()
+            adapter.stop()
+
+        message = str(raised.exception)
+        self.assertIn("before usbhostfs_pc exited or closed its output", message)
+        self.assertIn("USB initialization failed: -1", message)
+
+    def test_unbound_device_fails_start_with_manual_bind_and_no_attach(self):
+        process = FakeUsbHostFsProcess(USBHOSTFS_BANNER)
+        calls = []
+
+        def command_runner(command, timeout):
+            calls.append(command)
+            return self._usbipd_row("Not shared")
+
+        with tempfile.TemporaryDirectory() as scratch_name:
+            adapter = self._adapter(Path(scratch_name), process, command_runner)
+            with self.assertRaises(TransportStartError) as raised:
+                adapter.start()
+            adapter.stop()
+
+        self.assertEqual(calls, [["usbipd", "list"]])
+        self.assertIn("usbipd bind --busid 2-1", str(raised.exception))
+
+    def test_only_a_wait_after_a_connection_is_a_device_loss(self):
+        with tempfile.TemporaryDirectory() as scratch_name:
+            adapter = self._adapter(Path(scratch_name), None, None)
+            adapter._observe_server_output("waiting for device...")
+            self.assertFalse(adapter.take_waiting_for_device())
+            adapter._observe_server_output("Connected to device")
+            self.assertFalse(adapter.take_waiting_for_device())
+            adapter._observe_server_output("Read cancelled (remote disconnected)")
+            adapter._observe_server_output("waiting for device...")
+            self.assertTrue(adapter.take_waiting_for_device())
+            self.assertFalse(adapter.take_waiting_for_device())
+
+    def test_start_timeout_must_be_finite_and_positive(self):
+        with tempfile.TemporaryDirectory() as scratch_name:
+            for value in (0.0, -1.0, float("inf"), float("nan")):
+                with self.assertRaises(ValueError):
+                    self._adapter(Path(scratch_name), None, None, start_timeout=value)
 
 
 class Host0RemotePathTests(unittest.TestCase):

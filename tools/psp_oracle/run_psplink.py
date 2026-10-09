@@ -959,8 +959,32 @@ def _parse_usbipd_psplink_devices(output: str) -> list[tuple[str, str]]:
     return devices
 
 
+DEFAULT_TRANSPORT_START_TIMEOUT = 60.0
+_SERVER_OUTPUT_TAIL_LINES = 8
+
+
+class TransportStartError(RuntimeError):
+    """The host USB link to PSPLink did not become ready.
+
+    Start-up runs no PSPLink shell command, so nothing reached the PSP and a
+    failure here never needs a power cycle.
+    """
+
+
 class PsplinkProcessTransport:
-    """Real host process adapter for one standalone PSPLINK/USBHostFS route."""
+    """Real host process adapter for one standalone PSPLINK/USBHostFS route.
+
+    ``start`` returns only after a positive readiness signal: USBHostFS is
+    running its device poll loop, the PSPLink device is attached to the USB/IP
+    client (attaching it once when ``usbipd`` reports it ``Shared``), and
+    USBHostFS has printed ``Connected to device``. That line means USBHostFS
+    opened the device inside the client, which is stronger evidence than the
+    device merely being listed there. Every wait shares one bounded budget.
+
+    USBHostFS prints ``waiting for device...`` once each time it enters its
+    poll loop: at start-up and after every disconnect. Only a wait that follows
+    a connection is a device loss; the start-up wait is not.
+    """
 
     def __init__(
         self,
@@ -971,18 +995,27 @@ class PsplinkProcessTransport:
         usbipd_argv: list[str] | None = None,
         command_runner: Callable[[list[str], float], tuple[int | None, str, str, str]] = _run_command,
         popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+        start_timeout: float = DEFAULT_TRANSPORT_START_TIMEOUT,
     ) -> None:
+        if not math.isfinite(start_timeout) or start_timeout <= 0:
+            raise ValueError("transport start timeout must be finite and positive")
         self.pspsh_argv = list(pspsh_argv)
         self.usbhostfs_argv = list(usbhostfs_argv)
         self.usbipd_argv = list(usbipd_argv or ["usbipd"])
         self.host0_root = host0_root.resolve()
         self.command_runner = command_runner
         self.popen_factory = popen_factory
+        self.start_timeout = start_timeout
+        self.start_detail: str | None = None
         self.server: subprocess.Popen | None = None
         self._server_output_thread: threading.Thread | None = None
-        self._waiting_for_device = threading.Event()
-        self._connected_to_device = threading.Event()
-        self._server_output_lock = threading.Lock()
+        self._server_state = threading.Condition()
+        self._server_polling = False
+        self._link_up = False
+        self._device_lost = False
+        self._server_output_closed = False
+        self._server_output_tail: list[str] = []
+        self._server_generation = 0
         self._unknown_command_events = 0
 
     def _server_argv(self) -> list[str]:
@@ -992,14 +1025,28 @@ class PsplinkProcessTransport:
             host0_root_wsl=_wsl_path(self.host0_root),
         )
 
+    def _reset_server_state(self) -> int:
+        """Forget the previous server; return the new server's output generation."""
+
+        with self._server_state:
+            self._server_generation += 1
+            self._server_polling = False
+            self._link_up = False
+            self._device_lost = False
+            self._server_output_closed = False
+            self._server_output_tail = []
+            self._unknown_command_events = 0
+            return self._server_generation
+
     def start(self) -> None:
+        """Start USBHostFS and return only once the PSPLink USB link is up."""
+
         if not self.host0_root.is_dir():
             raise FileNotFoundError("host0 root must be an existing directory")
+        deadline = time.monotonic() + self.start_timeout
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        self._waiting_for_device.clear()
-        self._connected_to_device.clear()
-        with self._server_output_lock:
-            self._unknown_command_events = 0
+        self.start_detail = None
+        generation = self._reset_server_state()
         self.server = self.popen_factory(
             self._server_argv(),
             cwd=self.host0_root,
@@ -1016,45 +1063,194 @@ class PsplinkProcessTransport:
         if self.server.stdout is not None:
             self._server_output_thread = threading.Thread(
                 target=self._read_server_output,
-                args=(self.server.stdout,),
+                args=(self.server.stdout, generation),
                 name="usbhostfs-output",
                 daemon=True,
             )
             self._server_output_thread.start()
         if self.server.poll() is not None:
-            raise RuntimeError("usbhostfs_pc exited during startup")
+            raise TransportStartError(
+                self._with_server_output("usbhostfs_pc exited during startup")
+            )
+        self.start_detail = self._establish_link_at_start(deadline)
 
-    def _observe_server_output(self, line: str) -> None:
+    def _establish_link_at_start(self, deadline: float) -> str:
+        if not self._wait_server(lambda: self._server_polling, deadline):
+            raise TransportStartError(self._start_wait_failure(
+                "usbhostfs_pc did not report `waiting for device` or `Connected to device`"
+            ))
+        if self._link_is_up():
+            return "USBHostFS reported `Connected to device`"
+        attached, detail, busid, action = self._attach_psplink_device(
+            max(deadline - time.monotonic(), 0.0)
+        )
+        if not attached:
+            raise TransportStartError(detail)
+        if not self._wait_server(lambda: self._link_up, deadline):
+            raise TransportStartError(self._start_wait_failure(
+                f"USBHostFS did not report `Connected to device` for PSPLink device {busid} "
+                f"({action})",
+                "check that PSPLink is running on the PSP, then run `usbipd list` and "
+                "`wsl lsusb -d 054c:01c9`",
+            ))
+        return f"PSPLink device {busid} {action}; USBHostFS reported `Connected to device`"
+
+    def _start_wait_failure(self, detail: str, guidance: str = "") -> str:
+        with self._server_state:
+            closed = self._server_output_closed
+        if closed:
+            detail += " before usbhostfs_pc exited or closed its output"
+        else:
+            detail += f" within the {self.start_timeout:g}s transport start budget"
+        if guidance:
+            detail += f"; {guidance}"
+        return self._with_server_output(detail)
+
+    def _with_server_output(self, detail: str) -> str:
+        with self._server_state:
+            tail = list(self._server_output_tail)
+        if not tail:
+            return detail + "; usbhostfs_pc printed nothing"
+        return detail + "; last usbhostfs_pc output: " + " | ".join(tail)
+
+    def _wait_server(self, predicate: Callable[[], bool], deadline: float) -> bool:
+        """Wait for a USBHostFS state, failing early if its output has ended."""
+
+        with self._server_state:
+            while True:
+                if predicate():
+                    return True
+                if self.server is None or self._server_output_closed:
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._server_state.wait(remaining)
+
+    def _link_is_up(self) -> bool:
+        with self._server_state:
+            return self._link_up
+
+    def _observe_server_output(self, line: str, generation: int | None = None) -> None:
         normalized = line.casefold()
-        if "waiting for device" in normalized:
-            self._waiting_for_device.set()
-        if "connected to device" in normalized:
-            self._connected_to_device.set()
-        if "error, unknown command" in normalized:
-            with self._server_output_lock:
+        with self._server_state:
+            if generation is not None and generation != self._server_generation:
+                return  # a previous server's late output never describes this one
+            text = line.strip()
+            if text:
+                self._server_output_tail.append(text[:200])
+                del self._server_output_tail[:-_SERVER_OUTPUT_TAIL_LINES]
+            if "waiting for device" in normalized:
+                self._server_polling = True
+                if self._link_up:
+                    self._device_lost = True
+                self._link_up = False
+            if "connected to device" in normalized:
+                self._server_polling = True
+                self._link_up = True
+            if "error, unknown command" in normalized:
                 self._unknown_command_events += 1
+            self._server_state.notify_all()
 
-    def _read_server_output(self, stream) -> None:
+    def _read_server_output(self, stream, generation: int) -> None:
         try:
             for line in stream:
-                self._observe_server_output(line)
+                self._observe_server_output(line, generation)
         except (OSError, ValueError):
-            return
+            pass
+        finally:
+            with self._server_state:
+                if generation == self._server_generation:
+                    self._server_output_closed = True
+                    self._server_state.notify_all()
 
     def take_waiting_for_device(self) -> bool:
-        waiting = self._waiting_for_device.is_set()
-        if waiting:
-            self._waiting_for_device.clear()
-        return waiting
+        """Return and clear one device loss: a USBHostFS wait after a connection."""
+
+        with self._server_state:
+            lost, self._device_lost = self._device_lost, False
+        return lost
 
     def take_unknown_command_events(self) -> int:
-        with self._server_output_lock:
+        with self._server_state:
             events, self._unknown_command_events = self._unknown_command_events, 0
         return events
 
     @staticmethod
     def _command_succeeded(result: tuple[int | None, str, str, str]) -> bool:
         return result[0] == 0 and result[3] == "PROCESS_EXITED"
+
+    def _attach_psplink_device(self, timeout: float) -> tuple[bool, str, str | None, str]:
+        """Find the one PSPLink device in ``usbipd list``; attach it once when Shared.
+
+        Returns ``(attached, detail, busid, action)``. The adapter never binds or
+        detaches a device: those stay manual and are named in ``detail``.
+        """
+
+        list_result = self.command_runner(self.usbipd_argv + ["list"], timeout)
+        if not self._command_succeeded(list_result):
+            return (
+                False,
+                "usbipd list could not report the PSPLink device; manual command: `usbipd list`",
+                None,
+                "",
+            )
+        devices = _parse_usbipd_psplink_devices(list_result[1] + "\n" + list_result[2])
+        if not devices:
+            return (
+                False,
+                "PSPLink device 054c:01c9 is absent from usbipd list; reconnect the PSP, "
+                "then run `usbipd list` and `usbipd attach --wsl --busid <BUSID>`",
+                None,
+                "",
+            )
+        if len(devices) != 1:
+            return (
+                False,
+                "multiple PSPLink devices 054c:01c9 are present in usbipd list; "
+                "disconnect extras and run `usbipd list` to identify the PSP busid",
+                None,
+                "",
+            )
+
+        busid, state = devices[0]
+        if state.casefold() == "not shared":
+            return (
+                False,
+                f"PSPLink device {busid} is not bound (usbipd state: Not shared); "
+                f"manual commands: `usbipd bind --busid {busid}` then "
+                f"`usbipd attach --wsl --busid {busid}`",
+                busid,
+                "",
+            )
+        if state.casefold() not in {"shared", "attached"}:
+            return (
+                False,
+                f"PSPLink device {busid} has unsupported usbipd state `{state}`; "
+                f"manual command: `usbipd list`",
+                busid,
+                "",
+            )
+        if state.casefold() == "attached":
+            return True, f"PSPLink device {busid} already attached", busid, "already attached"
+
+        # A detached device cannot still be connected; forget any connection
+        # USBHostFS has not yet reported losing so that only a fresh
+        # `Connected to device` can satisfy the wait that follows.
+        with self._server_state:
+            self._link_up = False
+        attach_result = self.command_runner(
+            self.usbipd_argv + ["attach", "--wsl", "--busid", busid], timeout
+        )
+        if not self._command_succeeded(attach_result):
+            return (
+                False,
+                f"usbipd attach failed for PSPLink device {busid}; "
+                f"manual command: `usbipd attach --wsl --busid {busid}`",
+                busid,
+                "",
+            )
+        return True, f"PSPLink device {busid} attached from Shared", busid, "attached from Shared"
 
     def recover_psplink_transport(
         self,
@@ -1066,67 +1262,17 @@ class PsplinkProcessTransport:
         """Reattach once, then qualify the fresh shell with bounded ``ver`` attempts."""
 
         self.take_waiting_for_device()
-        list_result = self.command_runner(self.usbipd_argv + ["list"], timeout)
-        if not self._command_succeeded(list_result):
+        attached, detail, busid, action = self._attach_psplink_device(timeout)
+        if not attached:
+            return False, detail, None
+        if not self._wait_server(lambda: self._link_up, time.monotonic() + timeout):
+            verb = "attaching" if action == "attached from Shared" else "re-attaching"
             return (
                 False,
-                "usbipd list could not report the PSPLink device; manual command: `usbipd list`",
+                f"USBHostFS did not report `Connected to device` after {verb} PSPLink "
+                f"device {busid}; manual command: `usbipd attach --wsl --busid {busid}`",
                 None,
             )
-        devices = _parse_usbipd_psplink_devices(list_result[1] + "\n" + list_result[2])
-        if not devices:
-            return (
-                False,
-                "PSPLink device 054c:01c9 is absent from usbipd list; reconnect the PSP, "
-                "then run `usbipd list` and `usbipd attach --wsl --busid <BUSID>`",
-                None,
-            )
-        if len(devices) != 1:
-            return (
-                False,
-                "multiple PSPLink devices 054c:01c9 are present in usbipd list; "
-                "disconnect extras and run `usbipd list` to identify the PSP busid",
-                None,
-            )
-
-        busid, state = devices[0]
-        if state.casefold() == "not shared":
-            return (
-                False,
-                f"PSPLink device {busid} is not bound (usbipd state: Not shared); "
-                f"manual commands: `usbipd bind --busid {busid}` then "
-                f"`usbipd attach --wsl --busid {busid}`",
-                None,
-            )
-        if state.casefold() not in {"shared", "attached"}:
-            return (
-                False,
-                f"PSPLink device {busid} has unsupported usbipd state `{state}`; "
-                f"manual command: `usbipd list`",
-                None,
-            )
-
-        action = "already attached"
-        if state.casefold() == "shared":
-            action = "attached from Shared"
-            self._connected_to_device.clear()
-            attach_result = self.command_runner(
-                self.usbipd_argv + ["attach", "--wsl", "--busid", busid], timeout
-            )
-            if not self._command_succeeded(attach_result):
-                return (
-                    False,
-                    f"usbipd attach failed for PSPLink device {busid}; "
-                    f"manual command: `usbipd attach --wsl --busid {busid}`",
-                    None,
-                )
-            if not self._connected_to_device.wait(timeout):
-                return (
-                    False,
-                    f"USBHostFS did not report `Connected to device` after attaching PSPLink "
-                    f"device {busid}; manual command: `usbipd attach --wsl --busid {busid}`",
-                    None,
-                )
 
         verified, version, attempts, verification_detail = _verify_psplink_shell(
             self.run,
@@ -1175,6 +1321,10 @@ class PsplinkProcessTransport:
             self._server_output_thread = None
         if server.stdout is not None:
             server.stdout.close()
+        with self._server_state:
+            self._server_polling = False
+            self._link_up = False
+            self._server_state.notify_all()
 
 
 class PsplinkCampaignRunner:
@@ -1215,6 +1365,7 @@ class PsplinkCampaignRunner:
         self.source_tree_problem: str | None = None
         self.intervention_case_id: str | None = None
         self.resume_case_index: int | None = None
+        self.transport_start_problem: str | None = None
         self._l0_cleanup_attempted = False
         self._l1_attempted = False
         self._l1_active = False
@@ -1491,6 +1642,16 @@ class PsplinkCampaignRunner:
         self.recovery_events.append(f"L4: {detail}")
         self.state = "SESSION_WEDGED"
         self.terminal_reason = "PHYSICAL_INTERVENTION_REQUIRED"
+
+    def _transport_start_failed(self, detail: str) -> None:
+        """Stop before any launch: the PSP ran nothing, so no power cycle is needed."""
+
+        self.recovery_events.append(
+            f"TRANSPORT_START: {detail}; no probe was launched, so no power cycle is required"
+        )
+        self.transport_start_problem = detail
+        self.state = "STOPPED"
+        self.terminal_reason = "TRANSPORT_START_FAILED"
 
     def _reset_once(self, detail: str) -> bool:
         if self._l2_reset_attempted:
@@ -1906,15 +2067,21 @@ class PsplinkCampaignRunner:
             self.transport.start()
         except (OSError, RuntimeError) as exc:
             self.transport.stop()
-            self.state = "STOPPED"
-            self.terminal_reason = f"HOST_TRANSPORT_NOT_READY: {type(exc).__name__}"
+            self._transport_start_failed(
+                str(exc) if isinstance(exc, TransportStartError)
+                else f"host transport process could not start ({type(exc).__name__})"
+            )
             return self._report()
+        start_detail = getattr(self.transport, "start_detail", None)
+        if isinstance(start_detail, str) and start_detail:
+            self.recovery_events.append(f"transport start: {start_detail}")
         try:
             if not self._qualify():
                 if self.terminal_reason is None:
-                    self._physical_intervention(
-                        "PSPLink session did not qualify before campaign start; "
-                        "manual commands: `usbipd list`, `pspsh -e ver`"
+                    self._transport_start_failed(
+                        "PSPLink shell did not qualify after the USB link came up; check "
+                        "that the PSPLink shell is running on the PSP; manual commands: "
+                        "`usbipd list`, `pspsh -e ver`"
                     )
                 return self._report()
             for local_index, case in enumerate(cases):
@@ -2260,6 +2427,7 @@ class PsplinkCampaignRunner:
             "terminal_reason": self.terminal_reason,
             "intervention_case_id": self.intervention_case_id,
             "resume_case_index": self.resume_case_index,
+            "transport_start_problem": self.transport_start_problem,
             "firmware": self.firmware,
             "recovery_events": list(self.recovery_events),
             "envelopes": list(self.envelopes),
