@@ -1752,9 +1752,17 @@ class TestSanitizedBringup(unittest.TestCase):
         user_decrypted_modules: dict[str, bytes] | None = None,
         catalog_manifest: dict | None = None,
         forbid_iso_executable: bool = False,
+        user_manifest: dict | None = None,
+        native_stager=None,
     ):
         work_dir = work_root / "work"
         report_path = work_root / "bringup.json"
+        if user_manifest is not None:
+            manifest_dir = work_dir / "user-data" / "manifests"
+            manifest_dir.mkdir(parents=True, exist_ok=True)
+            (manifest_dir / "user-title.json").write_text(
+                json.dumps(user_manifest), encoding="utf-8"
+            )
         if user_decrypted_modules:
             decrypted_dir = (
                 work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
@@ -1803,6 +1811,7 @@ class TestSanitizedBringup(unittest.TestCase):
             return 0
 
         def fake_popen(_command, **kwargs):
+            self.last_launch_env = dict(kwargs["env"])
             Path(kwargs["env"]["SR_FLIGHT_OUTPUT"]).write_text(json.dumps({
                 "recorder": {"dropped": 0},
                 "events": [{"class": "hle", "kind": 1, "arg0": 0x289D82FE}],
@@ -1814,8 +1823,8 @@ class TestSanitizedBringup(unittest.TestCase):
             if catalog_manifest is not None:
                 inspect_iso = nk_cli.inspect_iso
 
-                def inspect_catalog_iso(path):
-                    metadata = inspect_iso(path)
+                def inspect_catalog_iso(path, **kwargs):
+                    metadata = inspect_iso(path, **kwargs)
                     profile = TitleProfile(
                         id=catalog_manifest["id"],
                         name=catalog_manifest.get("game_name", catalog_manifest["display_name"]),
@@ -1844,6 +1853,10 @@ class TestSanitizedBringup(unittest.TestCase):
                 stack.enter_context(mock.patch.object(
                     nk_cli, "_extract_iso_executable",
                     side_effect=AssertionError("CFW loader was selected for analysis"),
+                ))
+            if native_stager is not None:
+                stack.enter_context(mock.patch.object(
+                    nk_cli, "NativeTitleStager", side_effect=native_stager
                 ))
             with mock.patch("builtins.print"):
                 return nk_cli.cmd_bringup(args), json.loads(
@@ -2221,6 +2234,88 @@ class TestSanitizedBringup(unittest.TestCase):
             "ULUS99998" / "modules" / "encrypted.prx"
         )
         self.assertEqual(staged_module.read_bytes(), bytes(module_bytes))
+        nk_cli.validate_bringup_report(report)
+
+    def _archive_bringup_fixture(self, case: str):
+        """A source-owned archive disc and its user manifest, as the sweep stages them."""
+        from test_iso_parity import archive_title_manifest, create_archive_title_iso
+
+        work_root = self.root / case
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "archive.iso"
+        create_archive_title_iso(iso_path, disc_id="ULUS99998", title="Synthetic Archive",
+                                 executable=bytes(build_synthetic_iso_elf()))
+        manifest = archive_title_manifest("ULUS99998", "archive-ulus99998")
+        manifest["game_name"] = "archive_ulus99998"
+        manifest["executable"]["base"] = 0x08804000
+        manifest["executable"]["entry"] = 0x08804000
+        manifest["executable"]["bss_metadata_source"] = "elf"
+        return work_root, iso_path, manifest
+
+    def test_archive_disc_bringup_stages_through_the_player_and_launches_from_it(self):
+        """Failing-before: bring-up never staged an archive disc's files.
+
+        A title known only from the user's manifest, whose data ships in archives,
+        had its SR_DATAROOT resolved inside the source tree, where the disc's
+        data never is. Bring-up now loads the user's manifests, sets the files up
+        through the player's staging transaction in its own user-data root, and
+        launches with the staged data root and loose-content anchor.
+        """
+        from nk_core import PreparationResult
+
+        work_root, iso_path, manifest = self._archive_bringup_fixture("archive-bringup")
+        user_root = work_root / "work" / "user-data"
+        staged = user_root / "games" / "ULUS99998"
+        calls = []
+
+        def stager_factory(root, *args, **kwargs):
+            def stage(iso, disc_id, progress):
+                calls.append((Path(root), Path(iso), disc_id))
+                (staged / "xbdata").mkdir(parents=True, exist_ok=True)
+                return PreparationResult(success=True, disc_id=disc_id, prepared_root=staged)
+            return stage
+
+        status, report = self._run_module_fixture(
+            iso_path, work_root, user_manifest=manifest, native_stager=stager_factory,
+        )
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertEqual(report["stages"]["prepare_import"]["status"], "PASS")
+        self.assertEqual(len(calls), 1)
+        root, iso, disc_id = calls[0]
+        self.assertEqual(root.resolve(), user_root.resolve())
+        self.assertEqual(iso, iso_path.resolve())
+        self.assertEqual(disc_id, "ULUS99998")
+        env = self.last_launch_env
+        self.assertEqual(Path(env["SR_DATAROOT"]).resolve(), (staged / "xbdata").resolve())
+        self.assertIn(str(staged.resolve()), env["SR_LOOSE_CONTENT_ROOTS"])
+        nk_cli.validate_bringup_report(report)
+
+    def test_archive_disc_staging_failure_is_a_named_bringup_boundary(self):
+        from nk_core import PreparationResult
+
+        work_root, iso_path, manifest = self._archive_bringup_fixture("archive-bringup-fail")
+        def stager_factory(root, *args, **kwargs):
+            def stage(iso, disc_id, progress):
+                return PreparationResult(
+                    success=False, disc_id=disc_id, error_code="STAGE_DATA_FOLDER_MISSING",
+                    error_message="[STAGE_DATA_FOLDER_MISSING] This disc image has no "
+                                  "'xbdata' folder, which this game needs.",
+                )
+            return stage
+
+        status, report = self._run_module_fixture(
+            iso_path, work_root, user_manifest=manifest, native_stager=stager_factory,
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["reached_stage"], "prepare_import")
+        self.assertEqual(report["failure_class"], "DISC_FILES_STAGE_FAILED")
+        self.assertEqual(report["stages"]["analyze"]["status"], "NOT_RUN")
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("could not be set up", summary)
+        self.assertNotIn("xbdata", json.dumps(report))
         nk_cli.validate_bringup_report(report)
 
     def test_each_stage_failure_is_named_in_the_report(self):

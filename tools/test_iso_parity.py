@@ -408,6 +408,7 @@ def archive_title_manifest(disc_id: str, title_id: str) -> dict:
             ],
         },
         "hle_profile": "generic",
+        "codegen_profile": "none",
         "feature_requirements": [],
         "verification_profile": "experimental-unverified",
     }

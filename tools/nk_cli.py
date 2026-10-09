@@ -40,7 +40,7 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
-from nk_core.prep_engine import NativeTitleStager  # noqa: E402
+from nk_core.prep_engine import NativeTitleStager, SUPPORTED_ARCHIVE_FORMATS  # noqa: E402
 from nk_core.title_registry import get_default_registry  # noqa: E402
 from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core.library import (  # noqa: E402
@@ -2505,6 +2505,9 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (runtime telemetry did not verify a PSP kernel import)"
     elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
+    elif report["failure_class"] == "DISC_FILES_STAGE_FAILED":
+        detail = (" (the game's files on the disc could not be set up; the message above "
+                  "says why and what to do next)")
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
     elif report["failure_class"] == "PBP_PACKAGE_UNSUPPORTED":
@@ -2923,7 +2926,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     started = time.perf_counter()
     module_dir: Path | None = None
     try:
-        metadata = inspect_iso(iso_path)
+        # The player's title list: the built-in manifests plus the user's own
+        # manifests in the bring-up user-data root.
+        from nk_core.title_registry import TitleRegistry
+
+        registry = TitleRegistry(include_defaults=True)
+        registry.load_local_manifests(user_root / "manifests")
+        metadata = inspect_iso(iso_path, registry=registry)
         preflight = inspect_compatibility_preflight(
             iso_path, metadata=metadata, runtime_root=user_root
         )
@@ -2973,6 +2982,24 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     if progress is not None:
         progress.start("prepare_import")
     started = time.perf_counter()
+    # A disc whose data ships in archives gets its files from the player's
+    # staging transaction (the one the setup wizard and `prepare` run), into
+    # this bring-up's own user-data root; the launch below reads them there.
+    staged_root: Path | None = None
+    if (metadata.matched_profile is not None and
+            metadata.matched_profile.archive_format not in SUPPORTED_ARCHIVE_FORMATS):
+        staged = NativeTitleStager(user_root)(
+            iso_path, metadata.disc_id.upper(), lambda _percent, _files: None
+        )
+        if not staged.success or staged.prepared_root is None:
+            print(f"Setting up the game's files failed [{staged.error_code}]: "
+                  f"{staged.error_message}")
+            fail_stage(report, "prepare_import", "DISC_FILES_STAGE_FAILED", [],
+                       int((time.perf_counter() - started) * 1000))
+            _write_bringup_report(report, report_path)
+            print(_bringup_human_summary(report))
+            return 1
+        staged_root = staged.prepared_root
     try:
         profile_path: Path | None = None
         profile: dict | None = None
@@ -2985,7 +3012,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             title_id = manifest["id"]
             is_experimental = True
         else:
-            _manifest_source, manifest = _find_public_manifest(metadata.matched_profile.id)
+            _manifest_source, manifest = _find_public_manifest(
+                metadata.matched_profile.id, user_root
+            )
             title_id = manifest["id"]
             is_experimental = False
         selected_elf = work_dir / "selected.elf"
@@ -3310,7 +3339,14 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         env = os.environ.copy()
         env.pop("SR_DATAROOT", None)
         env.pop("SR_LOOSE_CONTENT_ROOTS", None)
-        data_root = (ROOT / manifest["filesystem"]["data_root"]).resolve(strict=False)
+        # The same order the launcher resolves SR_DATAROOT in: the staged
+        # copy of the disc first, then the source tree.
+        declared_data_root = manifest["filesystem"]["data_root"]
+        if (staged_root is not None and declared_data_root and
+                (staged_root / declared_data_root).is_dir()):
+            data_root = (staged_root / declared_data_root).resolve()
+        else:
+            data_root = (ROOT / declared_data_root).resolve(strict=False)
         try:
             loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)
         except (OSError, ValueError) as exc:
