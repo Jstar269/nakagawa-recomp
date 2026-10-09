@@ -1,0 +1,9 @@
+NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 source_commit=5497dece74819ef6789fcfede9305f7c6041eaa1 fixture=nakagawa-psp-oracle-v1
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-THREAD-003 case_id=thread-suspend-idle status=PASS result=0x00000000 out0=0x00000000 out1=0x00000000 out2=0x800201a5 out3=0x80020197
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-THREAD-003 case_id=thread-suspend-self status=PASS result=0x00000000 out0=0x00000000 out1=0x00000000 out2=0x800201a5 out3=0x80020197
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-THREAD-003 case_id=thread-resume-idle status=PASS result=0x80020197 out0=0x80020197
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-THREAD-003 case_id=thread-rotate-range status=PASS result=0x80020193 out0=0x000000ff
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-THREAD-003 case_id=thread-ready-order-after-rotate status=PASS result=0x00000000 out0=0x00000000 out1=0x00000000 out2=0x00000000 out3=0x00000000 out4=0x00000001 out5=0x00000000 out6=0x00000002
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-THREAD-003 case_id=thread-suspend-wait-timeout status=PASS result=0x00000000 out0=0x00000000 out1=0x00000001 out2=0x00000000 out3=0x00000000 out4=0x800201a8
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-THREAD-003 case_id=thread-scheduler-done status=PASS result=0x00000000 out0=0x00000006
+NAKAGAWA_PSP_COMPLETE schema=1 status=PASS

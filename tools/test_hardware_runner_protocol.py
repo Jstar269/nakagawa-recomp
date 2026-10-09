@@ -30,6 +30,7 @@ Fail-closed invariants under test, in one sentence each:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -81,6 +82,7 @@ from psp_oracle.parse_golden import (
     MBX_DELETE_WAIT_EXPECTED_FIELDS,
     MBX_DELETE_WAIT_SPEC,
 )
+from psp_oracle.protocol import ParsedOutput, TestResult
 from psp_oracle.protocol import ProtocolError as PspProtocolError
 from psp_oracle.protocol import model_identity_fields
 
@@ -3992,6 +3994,291 @@ class ExpectedFirmwareFormTests(unittest.TestCase):
         )
         self.assertTrue(runner._qualify())
         self.assertEqual(runner.firmware, "6.6.1")
+
+
+
+CONSOLE_CAPTURES = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle_captures"
+# Verbatim host0 logs from the 2026-10-08 PSP-3000 session, written by the
+# project-authored synthetic probes. They hold kernel object UIDs, return codes
+# and counts, a placeholder binary digest and a project commit id: no serial,
+# MAC, or retail data.
+COMPLETE_CONSOLE_CAPTURES = {
+    "transport_write.20261008-run3.txt": "transport-write",
+    "kernel_alarm.20261008-run3.txt": "kernel-alarm",
+    "kernel_alarm.20261008-manual.txt": "kernel-alarm",
+    "thread_scheduler.20261008-manual.txt": "thread-scheduler",
+    "refer_status_size.20261008-manual.txt": "refer-status-size",
+}
+PARTIAL_CONSOLE_CAPTURES = {
+    "ge_break_continue.20261008-manual-partial.txt": "ge-break-continue",
+    "registry_readonly.20261008-manual-partial.txt": "registry-readonly",
+}
+
+
+def _console_capture(name: str) -> str:
+    return (CONSOLE_CAPTURES / name).read_text(encoding="utf-8")
+
+
+class ConsoleCaptureRegressionTests(unittest.TestCase):
+    """Real console captures must flow through every runner stage without crashing."""
+
+    def test_complete_captures_parse_to_typed_records(self):
+        for name, case_id in COMPLETE_CONSOLE_CAPTURES.items():
+            with self.subTest(capture=name):
+                text = _console_capture(name)
+                self.assertTrue(run_psplink_module._campaign_stream_complete(text, case_id))
+                records = text.split("NAKAGAWA_PSP_COMPLETE", 1)[0]
+                parsed = _parse_campaign_records(
+                    run_psplink_module._normalise_unbound_identity_fields(records), case_id
+                )
+                self.assertIsInstance(parsed, ParsedOutput)
+                self.assertTrue(parsed.results)
+                for record in parsed.results:
+                    self.assertIsInstance(record, TestResult)
+                    self.assertEqual(record.status, "PASS")
+
+    def test_probe_success_check_accepts_complete_captures(self):
+        # The 2026-10-08 crash: SequenceReport.results is keyed by case_id, so the
+        # success check iterated strings and raised AttributeError on `.status`.
+        for name, case_id in COMPLETE_CONSOLE_CAPTURES.items():
+            with self.subTest(capture=name):
+                now = time.time_ns()
+                self.assertTrue(PsplinkCampaignRunner._probe_case_succeeded(
+                    CampaignCase(case_id, Path(f"{case_id}.prx"), 1.0),
+                    (0, "", "", "PROCESS_EXITED"),
+                    "0x04280001",
+                    run_started_ns=now,
+                    host0_log_cleared=True,
+                    captured_host0_text=_console_capture(name),
+                    captured_host0_mtime_ns=now,
+                    host0_capture_problem=None,
+                ))
+
+    def test_partial_captures_are_incomplete_named_errors(self):
+        for name, case_id in PARTIAL_CONSOLE_CAPTURES.items():
+            with self.subTest(capture=name):
+                text = _console_capture(name)
+                self.assertFalse(run_psplink_module._campaign_stream_complete(text, case_id))
+                with self.assertRaises(PspProtocolError):
+                    _parse_campaign_records(
+                        run_psplink_module._normalise_unbound_identity_fields(text), case_id
+                    )
+
+    def test_every_queued_case_returns_the_typed_record_view(self):
+        stream = CAMPAIGN_META + (
+            "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=row "
+            "status=PASS result=0x0\n"
+        )
+        for case_id in CAMPAIGN_QUEUE_CASES:
+            with self.subTest(case_id=case_id):
+                self.assertNotEqual(
+                    run_psplink_module._campaign_completeness_contract(case_id),
+                    "unregistered-no-completion-contract",
+                )
+                with patch.object(run_psplink_module, "_validate_campaign_contract") as check:
+                    parsed = _parse_campaign_records(stream, case_id)
+                check.assert_called_once_with(stream, case_id)
+                self.assertIsInstance(parsed, ParsedOutput)
+                self.assertTrue(all(isinstance(item, TestResult) for item in parsed.results))
+
+    def _campaign(self, scratch: Path, case_ids, **transport_options):
+        cases = []
+        for case_id in case_ids:
+            binary = scratch / f"{case_id}.prx"
+            binary.write_bytes(b"synthetic PRX")
+            cases.append(CampaignCase(case_id, binary, 0.3))
+        transport = SimulatedPsplinkTransport(
+            transport_file_cases={"transport-write"}, **transport_options
+        )
+        transport.host0_root = scratch
+        runner = PsplinkCampaignRunner(
+            transport, console_model="PSP-3000-04g", source_commit=SOURCE_COMMIT, model_code=3,
+        )
+        return runner, transport, cases
+
+    def test_campaign_runs_real_kernel_alarm_capture_end_to_end(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="capture-alarm-", dir=fixture_dir) as scratch_name:
+            runner, transport, cases = self._campaign(
+                Path(scratch_name), ("transport-write", "kernel-alarm"),
+                host0_log_contents={
+                    "kernel-alarm": _console_capture("kernel_alarm.20261008-run3.txt")
+                },
+            )
+            report = runner.run(cases, reset_between_cases=True, stop_on_incomplete=True)
+
+        self.assertIsNone(report["terminal_reason"])
+        alarm = report["envelopes"][1]
+        self.assertEqual(alarm["CASE_ID"], "kernel-alarm")
+        self.assertEqual(alarm["TEARDOWN_CHECK"]["status"], "PASS")
+        self.assertIn("case_id=kernel-alarm-done status=PASS", alarm["RAW_RESULT"])
+        # The capture was built from another commit: bound and reported, never hidden.
+        self.assertEqual(alarm["SOURCE_COMMIT_BINDING"], "MISMATCH")
+        self.assertFalse(alarm["ACCEPTANCE_ELIGIBLE"])
+
+    def test_campaign_partial_console_capture_stops_as_an_incomplete_case(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for name, case_id in PARTIAL_CONSOLE_CAPTURES.items():
+            with self.subTest(capture=name), tempfile.TemporaryDirectory(
+                prefix="capture-partial-", dir=fixture_dir
+            ) as scratch_name:
+                runner, transport, cases = self._campaign(
+                    Path(scratch_name), ("transport-write", case_id),
+                    host0_log_contents={case_id: _console_capture(name)},
+                )
+                report = runner.run(cases, reset_between_cases=True, stop_on_incomplete=True)
+                self.assertEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+                self.assertEqual(report["intervention_case_id"], case_id)
+                self.assertIsNone(report["host_error"])
+
+
+def _raise_on_second_call(real, error: Exception):
+    """Wrap ``real`` so that its second call raises ``error`` (a synthetic host bug)."""
+
+    calls = []
+
+    def wrapper(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            raise error
+        return real(*args, **kwargs)
+
+    return wrapper
+
+
+class HostErrorContainmentTests(unittest.TestCase):
+    """A host-side exception ends the case by name, tears down, and checkpoints."""
+
+    def _plan_run(self, scratch: Path, transport: SimulatedPsplinkTransport, *patches):
+        helper = CampaignPlanCheckpointTests()
+        plan_path = helper._plan(scratch)
+        with contextlib.ExitStack() as stack:
+            for target, attribute, kwargs in patches:
+                stack.enter_context(patch.object(target, attribute, **kwargs))
+            code, report = helper._run(plan_path, confirm=False, transport=transport)
+        return code, report, helper._checkpoint(plan_path)
+
+    @staticmethod
+    def _alarm_transport(**options) -> SimulatedPsplinkTransport:
+        return SimulatedPsplinkTransport(
+            transport_file_cases={"transport-write"},
+            host0_log_contents={
+                "kernel-alarm": _console_capture("kernel_alarm.20261008-run3.txt")
+            },
+            **options,
+        )
+
+    def test_error_after_unload_with_clean_teardown_needs_no_power_cycle(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        crash = AttributeError("'str' object has no attribute 'status'")
+        with tempfile.TemporaryDirectory(prefix="host-error-clean-", dir=fixture_dir) as name:
+            transport = self._alarm_transport()
+            code, report, checkpoint = self._plan_run(
+                Path(name), transport,
+                (PsplinkCampaignRunner, "_probe_case_succeeded", {"side_effect": [True, crash]}),
+            )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "HOST_ERROR")
+        self.assertIn("kernel-alarm: AttributeError", report["host_error"])
+        self.assertIn("'str' object has no attribute 'status'", report["host_error"])
+        envelope = report["envelopes"][-1]
+        self.assertEqual(envelope["PROCESS_STATUS"], "HOST_ERROR")
+        self.assertTrue(envelope["TEARDOWN_CHECK"]["post_error_teardown_clean"])
+        self.assertEqual(checkpoint["state"], "IN_PROGRESS")
+        self.assertEqual(checkpoint["next_case_index"], 2)
+        self.assertEqual(checkpoint["completed_cases"], ["transport-write"])
+        self.assertEqual(checkpoint["interrupted_cases"], ["kernel-alarm"])
+        self.assertEqual(checkpoint["failed_case_id"], "kernel-alarm")
+
+    def test_error_before_unload_still_unloads_the_probe(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for fail_unload, expected_state, expected_code in (
+            (False, "IN_PROGRESS", 2),
+            (True, "WAITING_FOR_POWER_CYCLE", 3),
+        ):
+            with self.subTest(fail_unload=fail_unload), tempfile.TemporaryDirectory(
+                prefix="host-error-unload-", dir=fixture_dir
+            ) as name:
+                transport = self._alarm_transport(
+                    fail_modstun_cases={"kernel-alarm"} if fail_unload else set()
+                )
+                code, report, checkpoint = self._plan_run(
+                    Path(name), transport,
+                    (PsplinkCampaignRunner, "_module_threads", {
+                        "autospec": True,
+                        "side_effect": _raise_on_second_call(
+                            PsplinkCampaignRunner._module_threads,
+                            RuntimeError("synthetic host fault before unload"),
+                        ),
+                    }),
+                )
+                commands = [command for command, _timeout in transport.commands]
+                launch = commands.index("ldstart host0:/kernel-alarm.prx")
+                self.assertIn("modstun 0x04280001", commands[launch:])
+                self.assertEqual(code, expected_code)
+                self.assertIn("RuntimeError", report["host_error"])
+                self.assertEqual(checkpoint["state"], expected_state)
+                self.assertEqual(checkpoint["next_case_index"], 2)
+                self.assertEqual(
+                    report["envelopes"][-1]["TEARDOWN_CHECK"]["post_error_teardown_clean"],
+                    not fail_unload,
+                )
+
+    def test_error_before_launch_keeps_the_case_queued(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        remote_path = _raise_on_second_call(
+            run_psplink_module._host0_remote_path,
+            RuntimeError("synthetic host fault before launch"),
+        )
+        with tempfile.TemporaryDirectory(prefix="host-error-prelaunch-", dir=fixture_dir) as name:
+            transport = self._alarm_transport()
+            code, report, checkpoint = self._plan_run(
+                Path(name), transport,
+                (run_psplink_module, "_host0_remote_path", {"side_effect": remote_path}),
+            )
+        commands = [command for command, _timeout in transport.commands]
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "HOST_ERROR")
+        self.assertNotIn("ldstart host0:/kernel-alarm.prx", commands)
+        self.assertEqual(checkpoint["state"], "IN_PROGRESS")
+        self.assertEqual(checkpoint["next_case_index"], 1)
+        self.assertEqual(checkpoint["interrupted_cases"], [])
+
+    def test_error_in_initial_qualification_is_named(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="host-error-qualify-", dir=fixture_dir) as name:
+            code, report, checkpoint = self._plan_run(
+                Path(name), self._alarm_transport(),
+                (PsplinkCampaignRunner, "_qualify",
+                 {"side_effect": KeyError("firmware")}),
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "HOST_ERROR")
+        self.assertIn("before the first case: KeyError", report["host_error"])
+        self.assertEqual((checkpoint["state"], checkpoint["next_case_index"]), ("IN_PROGRESS", 0))
+
+    def test_campaign_plan_finalizes_the_checkpoint_if_the_runner_raises(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+
+        def explode(runner, *args, **kwargs):
+            kwargs["on_case_start"](0, CampaignCase("transport-write", Path("x.prx"), 1.0),
+                                    "CASE_ACTIVE")
+            raise ValueError("synthetic runner fault")
+
+        with tempfile.TemporaryDirectory(prefix="host-error-plan-", dir=fixture_dir) as name:
+            transport = self._alarm_transport()
+            code, report, checkpoint = self._plan_run(
+                Path(name), transport,
+                (PsplinkCampaignRunner, "run", {"autospec": True, "side_effect": explode}),
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "HOST_ERROR")
+        self.assertIn("campaign runner: ValueError", report["host_error"])
+        # A launch was recorded without a completion: the durable state owes a power cycle.
+        self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(checkpoint["next_case_index"], 0)
+        self.assertTrue(transport.stopped)
 
 
 class Host0RemotePathTests(unittest.TestCase):

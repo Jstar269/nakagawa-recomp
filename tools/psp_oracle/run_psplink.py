@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from typing import Callable
 
 _PACKAGE_PARENT = str(Path(__file__).resolve().parents[1])
@@ -33,6 +34,7 @@ if _PACKAGE_PARENT not in sys.path:
 
 try:
     from .protocol import (
+        ParsedOutput,
         ProtocolError,
         compare_texts,
         decode_psp_model_code,
@@ -46,6 +48,7 @@ try:
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
     from psp_oracle.protocol import (
+        ParsedOutput,
         ProtocolError,
         compare_texts,
         decode_psp_model_code,
@@ -687,6 +690,38 @@ class CampaignCase:
     timeout: float
 
 
+@dataclass
+class _CaseProgress:
+    """What one case has done so far, so a host-side error can still clean up."""
+
+    before: PsplinkSnapshot | None = None
+    launched: bool = False
+    module_uid: str | None = None
+    unload_attempted: bool = False
+    unload_status: str | None = None
+    recorded: bool = False
+
+
+def _host_error_summary(exc: BaseException) -> str:
+    """Name a host-side exception by type, raising function and message.
+
+    The location comes from the innermost traceback frame. An OSError keeps
+    only its strerror so that no local path enters the evidence.
+    """
+
+    frames = traceback.extract_tb(exc.__traceback__)
+    where = (
+        f" in {frames[-1].name} ({Path(frames[-1].filename).name}:{frames[-1].lineno})"
+        if frames else ""
+    )
+    if isinstance(exc, OSError):
+        message = exc.strerror or ""
+    else:
+        message = str(exc).splitlines()[0] if str(exc) else ""
+    message = message[:240]
+    return f"{type(exc).__name__}{where}" + (f": {message}" if message else "")
+
+
 def _wsl_path(path: Path) -> str:
     """Convert a Windows path to the standard WSL /mnt/<drive> form."""
 
@@ -797,52 +832,63 @@ def _parse_fixed_campaign_records(text: str, case_id: str):
     return parsed
 
 
-def _parse_campaign_records(text: str, case_id: str):
-    """Validate a campaign's known completion contract, then parse its rows."""
+def _validate_campaign_contract(text: str, case_id: str) -> None:
+    """Raise ProtocolError unless ``text`` meets the case's completion contract.
+
+    The case validators return differently shaped reports (a SequenceReport
+    keys its results by case_id; the registry census wraps its records), so
+    their return values are deliberately not used as the typed record view.
+    """
 
     if case_id in DMAC_INVALID_CASES:
-        return parse_dmac_invalid_tail_output(text, case_id)
-    if case_id in {"dma-size-matrix", "dmac-size-matrix"}:
-        return validate_dmac_size_matrix(text)
-    match = re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id)
-    if match:
-        return validate_dmac_size_matrix_size(text, int(match.group(1), 16))
-    if case_id in CAMPAIGN_PROBE_CASES:
-        return parse_campaign_probe_output(text, case_id, require_complete=True)
-    if case_id == "registry-readonly":
-        return parse_registry_readonly_output(text, require_complete=True)
-    if case_id in _FIXED_CAMPAIGN_CASES:
-        return _parse_fixed_campaign_records(text, case_id)
+        parse_dmac_invalid_tail_output(text, case_id)
+    elif case_id in {"dma-size-matrix", "dmac-size-matrix"}:
+        validate_dmac_size_matrix(text)
+    elif match := re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id):
+        validate_dmac_size_matrix_size(text, int(match.group(1), 16))
+    elif case_id in CAMPAIGN_PROBE_CASES:
+        parse_campaign_probe_output(text, case_id, require_complete=True)
+    elif case_id == "registry-readonly":
+        parse_registry_readonly_output(text, require_complete=True)
+    elif case_id in _FIXED_CAMPAIGN_CASES:
+        _parse_fixed_campaign_records(text, case_id)
+    elif case_id in _COMPLETE_CAMPAIGN_PARSERS:
+        _COMPLETE_CAMPAIGN_PARSERS[case_id](text, require_complete=True)
+    elif case_id in _SINGLE_RECORD_CAMPAIGN_CASES:
+        expected = _SINGLE_RECORD_CAMPAIGN_CASES[case_id]
+        parsed = parse_output(text)
+        if len(parsed.results) != 1:
+            raise ProtocolError(f"{case_id} stream must contain exactly one result record")
+        if (parsed.results[0].test_id, parsed.results[0].case_id) != expected:
+            raise ProtocolError(f"{case_id} stream must contain {expected[0]}/{expected[1]}")
 
-    parsed = parse_output(text)
-    complete_parser = {
-        "audio-query": parse_audio_query_output,
-        "fpu-vector": parse_fpu_vector_output,
-        "cache-alias": parse_cache_alias_output,
-        "io-matrix": parse_io_matrix_output,
-        "mbx-delete-wait": parse_mbx_delete_wait_output,
-        "ge-nan": parse_ge_nan_output,
-        "dma-cells": parse_dmac_cells_output,
-        "delay-zero": parse_delay_zero_output,
-    }.get(case_id)
-    if complete_parser is not None:
-        complete_parser(text, require_complete=True)
-    else:
-        expected_single = {
-            "transport-write": ("PSP-TRANSPORT-001", "host0-write-readback"),
-            "model-profile": ("PSP-SYSTEM-001", "model-profile"),
-        }.get(case_id)
-        if expected_single is not None:
-            if len(parsed.results) != 1:
-                raise ProtocolError(
-                    f"{case_id} stream must contain exactly one result record"
-                )
-            record = parsed.results[0]
-            if (record.test_id, record.case_id) != expected_single:
-                raise ProtocolError(
-                    f"{case_id} stream must contain {expected_single[0]}/{expected_single[1]}"
-                )
-    return parsed
+
+_COMPLETE_CAMPAIGN_PARSERS = {
+    "audio-query": parse_audio_query_output,
+    "fpu-vector": parse_fpu_vector_output,
+    "cache-alias": parse_cache_alias_output,
+    "io-matrix": parse_io_matrix_output,
+    "mbx-delete-wait": parse_mbx_delete_wait_output,
+    "ge-nan": parse_ge_nan_output,
+    "dma-cells": parse_dmac_cells_output,
+    "delay-zero": parse_delay_zero_output,
+}
+_SINGLE_RECORD_CAMPAIGN_CASES = {
+    "transport-write": ("PSP-TRANSPORT-001", "host0-write-readback"),
+    "model-profile": ("PSP-SYSTEM-001", "model-profile"),
+}
+
+
+def _parse_campaign_records(text: str, case_id: str) -> ParsedOutput:
+    """Validate a campaign's known completion contract, then return its typed rows.
+
+    Every caller iterates ``results`` as TestResult records (status, values,
+    metadata). This is the single typed view for all campaign cases, whatever
+    shape the case-specific validator reports.
+    """
+
+    _validate_campaign_contract(text, case_id)
+    return parse_output(text)
 
 
 def _campaign_stream_complete(text: str, case_id: str) -> bool:
@@ -1407,6 +1453,10 @@ class PsplinkCampaignRunner:
         self.transport_start_problem: str | None = None
         self.hardware_lock_status: str | None = None
         self.last_modstun_reply: str | None = None
+        self.host_error: str | None = None
+        # False only when a host-side error ended a launched case whose teardown
+        # was then verified clean: the case is lost but the PSP needs no power cycle.
+        self.intervention_requires_power_cycle = True
         self._l0_cleanup_attempted = False
         self._l1_attempted = False
         self._l1_active = False
@@ -2152,7 +2202,17 @@ class PsplinkCampaignRunner:
         if isinstance(start_detail, str) and start_detail:
             self.recovery_events.append(f"transport start: {start_detail}")
         try:
-            if not self._qualify():
+            try:
+                qualified = self._qualify()
+            except Exception as exc:  # noqa: BLE001 - a host bug must never crash the runner
+                self.host_error = f"before the first case: {_host_error_summary(exc)}"
+                self.recovery_events.append(
+                    f"HOST_ERROR: {self.host_error}; no probe was launched"
+                )
+                self.state = "STOPPED"
+                self.terminal_reason = "HOST_ERROR"
+                return self._report()
+            if not qualified:
                 if self.terminal_reason is None:
                     self._transport_start_failed(
                         "PSPLink shell did not qualify after the USB link came up; check "
@@ -2162,345 +2222,491 @@ class PsplinkCampaignRunner:
                 return self._report()
             for local_index, case in enumerate(cases):
                 case_index = case_index_offset + local_index
-                if not self._hardware_lock_held(f"before case {case.case_id}"):
-                    break
-                if reset_between_cases and local_index > 0:
-                    if on_case_start is not None:
-                        try:
-                            on_case_start(case_index, case, "RESET_BEFORE_CASE")
-                        except (OSError, ValueError, TypeError):
-                            self.state = "STOPPED"
-                            self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
-                            break
-                    self._l2_reset_attempted = False
-                    self._l2_transport_reattach_attempted = False
-                    if not self._reset_once(
-                        f"campaign soft reset before {case.case_id}"
-                    ):
-                        if self.terminal_reason == "PHYSICAL_INTERVENTION_REQUIRED":
-                            self.intervention_case_id = cases[local_index - 1].case_id
-                            self.resume_case_index = case_index
-                        break
-                case_host0_log = (
-                    _campaign_host0_log_path(host0_path, case.case_id)
-                    if isinstance(host0_path, Path) else None
-                )
-                host0_log_cleared = False
-                if case_host0_log is not None:
-                    try:
-                        case_host0_log.unlink(missing_ok=True)
-                        host0_log_cleared = not (
-                            case_host0_log.exists() or case_host0_log.is_symlink()
-                        )
-                    except OSError:
-                        host0_log_cleared = False
-                if not host0_log_cleared:
-                    self.state = "STOPPED"
-                    self.terminal_reason = (
-                        "HOST0_LOG_UNAVAILABLE" if case_host0_log is None
-                        else "HOST0_LOG_CLEAR_FAILED"
-                    )
-                    self.envelopes.append(
-                        self._envelope(
-                            case,
-                            (None, "", "", self.terminal_reason),
-                            None,
-                            False,
-                            host0_log_path=case_host0_log,
-                            run_started_ns=None,
-                            run_finished_ns=time.time_ns(),
-                            host0_log_cleared=False,
-                            captured_host0_text=None,
-                            captured_host0_mtime_ns=None,
-                            host0_capture_problem="per-case host0 log was unavailable before launch",
-                        )
-                    )
-                    break
-
+                progress = _CaseProgress()
                 try:
-                    remote_path = _host0_remote_path(
-                        case.binary, getattr(self.transport, "host0_root", None)
-                    )
-                except ValueError:
-                    # Same structured refusal as the sibling pre-launch failures: a PRX
-                    # the device cannot resolve under host0 is never launched.
-                    self.state = "STOPPED"
-                    self.terminal_reason = "HOST0_PRX_OUTSIDE_ROOT"
-                    self.envelopes.append(
-                        self._envelope(
-                            case,
-                            (None, "", "", self.terminal_reason),
-                            None,
-                            False,
-                            host0_log_path=case_host0_log,
-                            run_started_ns=None,
-                            run_finished_ns=time.time_ns(),
-                            host0_log_cleared=host0_log_cleared,
-                            captured_host0_text=None,
-                            captured_host0_mtime_ns=None,
-                            # No local paths in evidence: name the case, not the files.
-                            host0_capture_problem=(f"campaign PRX for case {case.case_id} "
-                                                   "is not inside host0 root"),
-                        )
-                    )
-                    break
-                before, snapshot_problem = self._take_snapshot()
-                if before is None:
-                    self.state = "STOPPED"
-                    self.terminal_reason = "TEARDOWN_S0_SNAPSHOT_FAILED"
-                    self.envelopes.append(
-                        self._envelope(
-                            case,
-                            (None, "", "", self.terminal_reason),
-                            None,
-                            False,
-                            host0_log_path=case_host0_log,
-                            run_started_ns=None,
-                            run_finished_ns=time.time_ns(),
-                            host0_log_cleared=host0_log_cleared,
-                            captured_host0_text=None,
-                            captured_host0_mtime_ns=None,
-                            host0_capture_problem=snapshot_problem,
-                            teardown_check={
-                                "status": "BLOCKED",
-                                "stage": "S0",
-                                "issues": [snapshot_problem or "baseline snapshot failed"],
-                            },
-                        )
-                    )
-                    break
-                if not self._hardware_lock_held(f"before launching {case.case_id}"):
-                    break
-                run_started_ns = time.time_ns()
-                if on_case_start is not None:
-                    try:
-                        on_case_start(case_index, case, "CASE_ACTIVE")
-                    except (OSError, ValueError, TypeError):
-                        self.state = "STOPPED"
-                        self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
-                        break
-                self.state = "RUN_CASE"
-                result = self._request(f"ldstart host0:/{remote_path}", case.timeout)
-                uid_match = self._MODULE_UID_RE.search(result[1])
-                module_uid = uid_match.group(1) if uid_match else None
-
-                captured_host0_text: str | None = None
-                captured_host0_mtime_ns: int | None = None
-                host0_capture_problem: str | None = None
-                if case_host0_log is None:
-                    host0_capture_problem = "host0 root is unavailable for per-case logs"
-                elif not host0_log_cleared:
-                    host0_capture_problem = (
-                        "previous host0 log could not be cleared before loading the probe"
-                    )
-                elif result[3] == "PROCESS_EXITED":
-                    try:
-                        capture = _wait_for_host0_output(
-                            case_host0_log,
-                            case.timeout,
-                            not_before_ns=run_started_ns - HOST0_MTIME_TOLERANCE_NS,
-                            ready=lambda text, case_id=case.case_id: (
-                                _campaign_stream_complete(text, case_id)
-                                and _has_probe_completion_sentinel(text)
-                            ),
-                            include_mtime=True,
-                        )
-                        if not isinstance(capture, tuple):
-                            raise RuntimeError("host0 wait did not return captured metadata")
-                        captured_host0_text, captured_host0_mtime_ns = capture
-                    except TimeoutError:
-                        host0_capture_problem = (
-                            "per-case host0 stream did not become complete before probe unload"
-                        )
-                        partial, partial_mtime_ns, partial_problem = _snapshot_host0_output(
-                            case_host0_log
-                        )
-                        captured_host0_text = partial
-                        captured_host0_mtime_ns = partial_mtime_ns
-                        if partial_problem:
-                            host0_capture_problem += f"; {partial_problem}"
-                    except UnsafeHost0OutputError as exc:
-                        host0_capture_problem = str(exc)
-                    except (OSError, UnicodeError) as exc:
-                        host0_capture_problem = (
-                            "per-case host0 log could not be observed before probe unload "
-                            f"({type(exc).__name__})"
-                        )
-                else:
-                    host0_capture_problem = (
-                        "per-case command timed out before a complete host0 stream was observed"
-                    )
-                    captured_host0_text, captured_host0_mtime_ns, partial_problem = (
-                        _snapshot_host0_output(case_host0_log)
-                    )
-                    if partial_problem:
-                        host0_capture_problem += f"; {partial_problem}"
-
-                if stop_on_incomplete and (
-                    result[0] != 0
-                    or result[3] != "PROCESS_EXITED"
-                    or captured_host0_text is None
-                    or parse_probe_completion_sentinel(captured_host0_text) is None
-                    or not _campaign_stream_complete(captured_host0_text, case.case_id)
-                ):
-                    self._physical_intervention(
-                        f"campaign stopped after incomplete or uncertain case {case.case_id}; "
-                        "maintainer power-cycle confirmation is required before continuing"
-                    )
-                    self.intervention_case_id = case.case_id
-                    self.resume_case_index = case_index + 1
-                    run_finished_ns = time.time_ns()
-                    teardown_report = {
-                        "status": "BLOCKED",
-                        "stage": "PROBE",
-                        "issues": [host0_capture_problem or "complete case stream was not observed"],
-                        "recovery_status": "NOT_RUN",
-                    }
-                    envelope = self._envelope(
+                    keep_going = self._run_case(
                         case,
-                        result,
-                        module_uid,
-                        False,
-                        host0_log_path=case_host0_log,
-                        run_started_ns=run_started_ns,
-                        run_finished_ns=run_finished_ns,
-                        host0_log_cleared=host0_log_cleared,
-                        captured_host0_text=captured_host0_text,
-                        captured_host0_mtime_ns=captured_host0_mtime_ns,
-                        host0_capture_problem=host0_capture_problem,
-                        teardown_check=teardown_report,
+                        case_index,
+                        local_index,
+                        cases,
+                        host0_path,
+                        progress,
+                        reset_between_cases=reset_between_cases,
+                        stop_on_incomplete=stop_on_incomplete,
+                        on_case_start=on_case_start,
+                        on_case_complete=on_case_complete,
                     )
-                    self.envelopes.append(envelope)
-                    if on_case_complete is not None:
-                        try:
-                            on_case_complete(case_index, envelope)
-                        except (OSError, ValueError, TypeError):
-                            self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+                except Exception as exc:  # noqa: BLE001 - a host bug must never crash the queue
+                    self._contain_case_error(
+                        case, case_index, progress, exc, on_case_complete=on_case_complete
+                    )
                     break
-
-                after_probe, s1_problem = self._take_snapshot()
-                module_threads: frozenset[tuple[str, str]] = frozenset()
-                module_thread_problem: str | None = None
-                if module_uid:
-                    module_threads, module_thread_problem = self._module_threads(module_uid)
-                else:
-                    module_thread_problem = "ldstart did not return a module UID"
-
-                self.last_modstun_reply = None
-                unload_status = (
-                    self._unload_status(module_uid) if module_uid else "BLOCKED"
-                )
-                after_unload, s2_problem = self._take_snapshot()
-                shell_qualified = self._shell_qualified()
-                exprint = self._request("exprint", self.cleanup_timeout)
-                host0_roundtrip_ok = (
-                    self._verify_host0_roundtrip()
-                    if case.case_id == "transport-write" or not reset_between_cases
-                    else self.host0_qualified
-                )
-                probe_succeeded = self._probe_case_succeeded(
-                    case,
-                    result,
-                    module_uid,
-                    run_started_ns=run_started_ns,
-                    host0_log_cleared=host0_log_cleared,
-                    captured_host0_text=captured_host0_text,
-                    captured_host0_mtime_ns=captured_host0_mtime_ns,
-                    host0_capture_problem=host0_capture_problem,
-                )
-                teardown_report = evaluate_teardown_snapshots(
-                    before,
-                    after_probe,
-                    after_unload,
-                    module_uid or "0x00000000",
-                    module_threads,
-                    unload_confirmed=(
-                        True if unload_status == "PASS"
-                        else False if unload_status == "FAIL"
-                        else None
-                    ),
-                    sentinel_status=parse_probe_completion_sentinel(
-                        captured_host0_text or ""
-                    ),
-                    shell_qualified=shell_qualified,
-                    host0_roundtrip=host0_roundtrip_ok,
-                    case_succeeded=probe_succeeded,
-                    host0_capture_complete=(
-                        captured_host0_text is not None
-                        and host0_capture_problem is None
-                    ),
-                    module_threads_available=module_thread_problem is None,
-                    exprint_command_status=exprint[3],
-                )
-                teardown_report["modstun_reply"] = self.last_modstun_reply
-                for stage, problem in (("S1", s1_problem), ("S2", s2_problem)):
-                    if problem:
-                        teardown_report["issues"].append(
-                            f"{stage} snapshot capture failed: {problem}"
-                        )
-                if host0_capture_problem:
-                    teardown_report["issues"].append(host0_capture_problem)
-                if module_thread_problem:
-                    teardown_report["issues"].append(
-                        f"module thread snapshot unavailable: {module_thread_problem}"
-                    )
-                cleanup_ok = unload_status == "PASS" and teardown_report["status"] == "PASS"
-                if teardown_report["status"] != "PASS":
-                    if stop_on_incomplete:
-                        self._physical_intervention(
-                            f"campaign stopped after teardown check failed for {case.case_id}; "
-                            "maintainer power-cycle confirmation is required before continuing"
-                        )
-                        self.intervention_case_id = case.case_id
-                        self.resume_case_index = case_index + 1
-                        teardown_report["recovery_status"] = "NOT_RUN"
-                    else:
-                        self._enforce_teardown_check(
-                            teardown_report,
-                            module_uid,
-                            probe_succeeded=probe_succeeded,
-                        )
-                run_finished_ns = time.time_ns()
-                if case.case_id == "transport-write":
-                    self.host0_qualified = bool(host0_roundtrip_ok)
-                if (
-                    (case.case_id == "transport-write" or not reset_between_cases)
-                    and
-                    not host0_roundtrip_ok
-                    and self.terminal_reason in {
-                        None, "TEARDOWN_CHECK_BLOCKED",
-                        "TEARDOWN_RECOVERY_NOT_ELIGIBLE",
-                    }
-                ):
-                    self.state = "STOPPED"
-                    self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
-                envelope = self._envelope(
-                        case,
-                        result,
-                        module_uid,
-                        cleanup_ok,
-                        host0_log_path=case_host0_log,
-                        run_started_ns=run_started_ns,
-                        run_finished_ns=run_finished_ns,
-                        host0_log_cleared=host0_log_cleared,
-                        captured_host0_text=captured_host0_text,
-                        captured_host0_mtime_ns=captured_host0_mtime_ns,
-                        host0_capture_problem=host0_capture_problem,
-                        teardown_check=teardown_report,
-                    )
-                self.envelopes.append(envelope)
-                if on_case_complete is not None:
-                    try:
-                        on_case_complete(case_index, envelope)
-                    except (OSError, ValueError, TypeError):
-                        self.state = "STOPPED"
-                        self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
-                if self.terminal_reason:
+                if not keep_going:
                     break
-                self.state = "READY"
         finally:
             self.transport.stop()
         return self._report()
+
+    def _run_case(
+        self,
+        case: CampaignCase,
+        case_index: int,
+        local_index: int,
+        cases: list[CampaignCase],
+        host0_path: object,
+        progress: _CaseProgress,
+        *,
+        reset_between_cases: bool,
+        stop_on_incomplete: bool,
+        on_case_start: Callable[[int, CampaignCase, str], None] | None,
+        on_case_complete: Callable[[int, dict[str, object]], None] | None,
+    ) -> bool:
+        """Run one queued case; return False when the queue must stop after it."""
+
+        if not self._hardware_lock_held(f"before case {case.case_id}"):
+            return False
+        if reset_between_cases and local_index > 0:
+            if on_case_start is not None:
+                try:
+                    on_case_start(case_index, case, "RESET_BEFORE_CASE")
+                except (OSError, ValueError, TypeError):
+                    self.state = "STOPPED"
+                    self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+                    return False
+            self._l2_reset_attempted = False
+            self._l2_transport_reattach_attempted = False
+            if not self._reset_once(
+                f"campaign soft reset before {case.case_id}"
+            ):
+                if self.terminal_reason == "PHYSICAL_INTERVENTION_REQUIRED":
+                    self.intervention_case_id = cases[local_index - 1].case_id
+                    self.resume_case_index = case_index
+                return False
+        case_host0_log = (
+            _campaign_host0_log_path(host0_path, case.case_id)
+            if isinstance(host0_path, Path) else None
+        )
+        host0_log_cleared = False
+        if case_host0_log is not None:
+            try:
+                case_host0_log.unlink(missing_ok=True)
+                host0_log_cleared = not (
+                    case_host0_log.exists() or case_host0_log.is_symlink()
+                )
+            except OSError:
+                host0_log_cleared = False
+        if not host0_log_cleared:
+            self.state = "STOPPED"
+            self.terminal_reason = (
+                "HOST0_LOG_UNAVAILABLE" if case_host0_log is None
+                else "HOST0_LOG_CLEAR_FAILED"
+            )
+            self.envelopes.append(
+                self._envelope(
+                    case,
+                    (None, "", "", self.terminal_reason),
+                    None,
+                    False,
+                    host0_log_path=case_host0_log,
+                    run_started_ns=None,
+                    run_finished_ns=time.time_ns(),
+                    host0_log_cleared=False,
+                    captured_host0_text=None,
+                    captured_host0_mtime_ns=None,
+                    host0_capture_problem="per-case host0 log was unavailable before launch",
+                )
+            )
+            return False
+
+        try:
+            remote_path = _host0_remote_path(
+                case.binary, getattr(self.transport, "host0_root", None)
+            )
+        except ValueError:
+            # Same structured refusal as the sibling pre-launch failures: a PRX
+            # the device cannot resolve under host0 is never launched.
+            self.state = "STOPPED"
+            self.terminal_reason = "HOST0_PRX_OUTSIDE_ROOT"
+            self.envelopes.append(
+                self._envelope(
+                    case,
+                    (None, "", "", self.terminal_reason),
+                    None,
+                    False,
+                    host0_log_path=case_host0_log,
+                    run_started_ns=None,
+                    run_finished_ns=time.time_ns(),
+                    host0_log_cleared=host0_log_cleared,
+                    captured_host0_text=None,
+                    captured_host0_mtime_ns=None,
+                    # No local paths in evidence: name the case, not the files.
+                    host0_capture_problem=(f"campaign PRX for case {case.case_id} "
+                                           "is not inside host0 root"),
+                )
+            )
+            return False
+        before, snapshot_problem = self._take_snapshot()
+        progress.before = before
+        if before is None:
+            self.state = "STOPPED"
+            self.terminal_reason = "TEARDOWN_S0_SNAPSHOT_FAILED"
+            self.envelopes.append(
+                self._envelope(
+                    case,
+                    (None, "", "", self.terminal_reason),
+                    None,
+                    False,
+                    host0_log_path=case_host0_log,
+                    run_started_ns=None,
+                    run_finished_ns=time.time_ns(),
+                    host0_log_cleared=host0_log_cleared,
+                    captured_host0_text=None,
+                    captured_host0_mtime_ns=None,
+                    host0_capture_problem=snapshot_problem,
+                    teardown_check={
+                        "status": "BLOCKED",
+                        "stage": "S0",
+                        "issues": [snapshot_problem or "baseline snapshot failed"],
+                    },
+                )
+            )
+            return False
+        if not self._hardware_lock_held(f"before launching {case.case_id}"):
+            return False
+        run_started_ns = time.time_ns()
+        if on_case_start is not None:
+            try:
+                on_case_start(case_index, case, "CASE_ACTIVE")
+            except (OSError, ValueError, TypeError):
+                self.state = "STOPPED"
+                self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+                return False
+        self.state = "RUN_CASE"
+        progress.launched = True
+        result = self._request(f"ldstart host0:/{remote_path}", case.timeout)
+        uid_match = self._MODULE_UID_RE.search(result[1])
+        module_uid = uid_match.group(1) if uid_match else None
+        progress.module_uid = module_uid
+
+        captured_host0_text: str | None = None
+        captured_host0_mtime_ns: int | None = None
+        host0_capture_problem: str | None = None
+        if case_host0_log is None:
+            host0_capture_problem = "host0 root is unavailable for per-case logs"
+        elif not host0_log_cleared:
+            host0_capture_problem = (
+                "previous host0 log could not be cleared before loading the probe"
+            )
+        elif result[3] == "PROCESS_EXITED":
+            try:
+                capture = _wait_for_host0_output(
+                    case_host0_log,
+                    case.timeout,
+                    not_before_ns=run_started_ns - HOST0_MTIME_TOLERANCE_NS,
+                    ready=lambda text, case_id=case.case_id: (
+                        _campaign_stream_complete(text, case_id)
+                        and _has_probe_completion_sentinel(text)
+                    ),
+                    include_mtime=True,
+                )
+                if not isinstance(capture, tuple):
+                    raise RuntimeError("host0 wait did not return captured metadata")
+                captured_host0_text, captured_host0_mtime_ns = capture
+            except TimeoutError:
+                host0_capture_problem = (
+                    "per-case host0 stream did not become complete before probe unload"
+                )
+                partial, partial_mtime_ns, partial_problem = _snapshot_host0_output(
+                    case_host0_log
+                )
+                captured_host0_text = partial
+                captured_host0_mtime_ns = partial_mtime_ns
+                if partial_problem:
+                    host0_capture_problem += f"; {partial_problem}"
+            except UnsafeHost0OutputError as exc:
+                host0_capture_problem = str(exc)
+            except (OSError, UnicodeError) as exc:
+                host0_capture_problem = (
+                    "per-case host0 log could not be observed before probe unload "
+                    f"({type(exc).__name__})"
+                )
+        else:
+            host0_capture_problem = (
+                "per-case command timed out before a complete host0 stream was observed"
+            )
+            captured_host0_text, captured_host0_mtime_ns, partial_problem = (
+                _snapshot_host0_output(case_host0_log)
+            )
+            if partial_problem:
+                host0_capture_problem += f"; {partial_problem}"
+
+        if stop_on_incomplete and (
+            result[0] != 0
+            or result[3] != "PROCESS_EXITED"
+            or captured_host0_text is None
+            or parse_probe_completion_sentinel(captured_host0_text) is None
+            or not _campaign_stream_complete(captured_host0_text, case.case_id)
+        ):
+            self._physical_intervention(
+                f"campaign stopped after incomplete or uncertain case {case.case_id}; "
+                "maintainer power-cycle confirmation is required before continuing"
+            )
+            self.intervention_case_id = case.case_id
+            self.resume_case_index = case_index + 1
+            run_finished_ns = time.time_ns()
+            teardown_report = {
+                "status": "BLOCKED",
+                "stage": "PROBE",
+                "issues": [host0_capture_problem or "complete case stream was not observed"],
+                "recovery_status": "NOT_RUN",
+            }
+            envelope = self._envelope(
+                case,
+                result,
+                module_uid,
+                False,
+                host0_log_path=case_host0_log,
+                run_started_ns=run_started_ns,
+                run_finished_ns=run_finished_ns,
+                host0_log_cleared=host0_log_cleared,
+                captured_host0_text=captured_host0_text,
+                captured_host0_mtime_ns=captured_host0_mtime_ns,
+                host0_capture_problem=host0_capture_problem,
+                teardown_check=teardown_report,
+            )
+            self.envelopes.append(envelope)
+            progress.recorded = True
+            if on_case_complete is not None:
+                try:
+                    on_case_complete(case_index, envelope)
+                except (OSError, ValueError, TypeError):
+                    self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+            return False
+
+        after_probe, s1_problem = self._take_snapshot()
+        module_threads: frozenset[tuple[str, str]] = frozenset()
+        module_thread_problem: str | None = None
+        if module_uid:
+            module_threads, module_thread_problem = self._module_threads(module_uid)
+        else:
+            module_thread_problem = "ldstart did not return a module UID"
+
+        self.last_modstun_reply = None
+        progress.unload_attempted = True
+        unload_status = (
+            self._unload_status(module_uid) if module_uid else "BLOCKED"
+        )
+        progress.unload_status = unload_status
+        after_unload, s2_problem = self._take_snapshot()
+        shell_qualified = self._shell_qualified()
+        exprint = self._request("exprint", self.cleanup_timeout)
+        host0_roundtrip_ok = (
+            self._verify_host0_roundtrip()
+            if case.case_id == "transport-write" or not reset_between_cases
+            else self.host0_qualified
+        )
+        probe_succeeded = self._probe_case_succeeded(
+            case,
+            result,
+            module_uid,
+            run_started_ns=run_started_ns,
+            host0_log_cleared=host0_log_cleared,
+            captured_host0_text=captured_host0_text,
+            captured_host0_mtime_ns=captured_host0_mtime_ns,
+            host0_capture_problem=host0_capture_problem,
+        )
+        teardown_report = evaluate_teardown_snapshots(
+            before,
+            after_probe,
+            after_unload,
+            module_uid or "0x00000000",
+            module_threads,
+            unload_confirmed=(
+                True if unload_status == "PASS"
+                else False if unload_status == "FAIL"
+                else None
+            ),
+            sentinel_status=parse_probe_completion_sentinel(
+                captured_host0_text or ""
+            ),
+            shell_qualified=shell_qualified,
+            host0_roundtrip=host0_roundtrip_ok,
+            case_succeeded=probe_succeeded,
+            host0_capture_complete=(
+                captured_host0_text is not None
+                and host0_capture_problem is None
+            ),
+            module_threads_available=module_thread_problem is None,
+            exprint_command_status=exprint[3],
+        )
+        teardown_report["modstun_reply"] = self.last_modstun_reply
+        for stage, problem in (("S1", s1_problem), ("S2", s2_problem)):
+            if problem:
+                teardown_report["issues"].append(
+                    f"{stage} snapshot capture failed: {problem}"
+                )
+        if host0_capture_problem:
+            teardown_report["issues"].append(host0_capture_problem)
+        if module_thread_problem:
+            teardown_report["issues"].append(
+                f"module thread snapshot unavailable: {module_thread_problem}"
+            )
+        cleanup_ok = unload_status == "PASS" and teardown_report["status"] == "PASS"
+        if teardown_report["status"] != "PASS":
+            if stop_on_incomplete:
+                self._physical_intervention(
+                    f"campaign stopped after teardown check failed for {case.case_id}; "
+                    "maintainer power-cycle confirmation is required before continuing"
+                )
+                self.intervention_case_id = case.case_id
+                self.resume_case_index = case_index + 1
+                teardown_report["recovery_status"] = "NOT_RUN"
+            else:
+                self._enforce_teardown_check(
+                    teardown_report,
+                    module_uid,
+                    probe_succeeded=probe_succeeded,
+                )
+        run_finished_ns = time.time_ns()
+        if case.case_id == "transport-write":
+            self.host0_qualified = bool(host0_roundtrip_ok)
+        if (
+            (case.case_id == "transport-write" or not reset_between_cases)
+            and
+            not host0_roundtrip_ok
+            and self.terminal_reason in {
+                None, "TEARDOWN_CHECK_BLOCKED",
+                "TEARDOWN_RECOVERY_NOT_ELIGIBLE",
+            }
+        ):
+            self.state = "STOPPED"
+            self.terminal_reason = "HOST0_ROUNDTRIP_FAILED"
+        envelope = self._envelope(
+                case,
+                result,
+                module_uid,
+                cleanup_ok,
+                host0_log_path=case_host0_log,
+                run_started_ns=run_started_ns,
+                run_finished_ns=run_finished_ns,
+                host0_log_cleared=host0_log_cleared,
+                captured_host0_text=captured_host0_text,
+                captured_host0_mtime_ns=captured_host0_mtime_ns,
+                host0_capture_problem=host0_capture_problem,
+                teardown_check=teardown_report,
+            )
+        self.envelopes.append(envelope)
+        progress.recorded = True
+        if on_case_complete is not None:
+            try:
+                on_case_complete(case_index, envelope)
+            except (OSError, ValueError, TypeError):
+                self.state = "STOPPED"
+                self.terminal_reason = "CHECKPOINT_WRITE_FAILED"
+        if self.terminal_reason:
+            return False
+        self.state = "READY"
+        return True
+
+    def _contain_case_error(
+        self,
+        case: CampaignCase,
+        case_index: int,
+        progress: _CaseProgress,
+        exc: Exception,
+        *,
+        on_case_complete: Callable[[int, dict[str, object]], None] | None,
+    ) -> None:
+        """End a case that raised on the host: name the error, tear down, checkpoint.
+
+        Nothing launched: stop with HOST_ERROR and keep the queue position.
+        A launched case that was not yet recorded: unload the probe if it was
+        not unloaded, take S2, and compare it with S0. A verified-clean
+        teardown records the case as interrupted without a power cycle; any
+        other outcome demands one, exactly like an incomplete case.
+        """
+
+        detail = _host_error_summary(exc)
+        self.host_error = f"{case.case_id}: {detail}"
+        self.recovery_events.append(f"HOST_ERROR: {self.host_error}")
+        if not progress.launched or progress.recorded:
+            self.state = "STOPPED"
+            self.terminal_reason = "HOST_ERROR"
+            return
+
+        # Tear down before naming the stop: a terminal reason blocks PSPLink requests.
+        teardown: dict[str, object] = {
+            "status": "BLOCKED",
+            "stage": "HOST_ERROR",
+            "issues": [f"host-side error while processing the case: {detail}"],
+            "recovery_status": "NOT_RUN",
+        }
+        clean = False
+        try:
+            unload_status = progress.unload_status
+            if progress.module_uid and not progress.unload_attempted:
+                self.last_modstun_reply = None
+                unload_status = self._unload_status(progress.module_uid)
+                teardown["modstun_reply"] = self.last_modstun_reply
+            teardown["unload_status"] = unload_status or "BLOCKED"
+            after_unload, snapshot_problem = self._take_snapshot()
+            if snapshot_problem:
+                teardown["issues"].append(f"S2 snapshot capture failed: {snapshot_problem}")
+            if after_unload is not None and progress.before is not None:
+                leftover = set(after_unload.threads) - set(progress.before.threads)
+                missing = set(progress.before.threads) - set(after_unload.threads)
+                teardown["s2_leftover_threads"] = [list(item) for item in sorted(leftover)]
+                teardown["s2_missing_threads"] = [list(item) for item in sorted(missing)]
+                clean = (
+                    unload_status == "PASS"
+                    and not leftover and not missing
+                    and set(after_unload.modules) == set(progress.before.modules)
+                )
+        except Exception as teardown_exc:  # noqa: BLE001 - containment must not raise
+            teardown["issues"].append(
+                f"host-side teardown attempt failed: {_host_error_summary(teardown_exc)}"
+            )
+            clean = False
+        teardown["post_error_teardown_clean"] = clean
+        self.intervention_case_id = case.case_id
+        self.resume_case_index = case_index + 1
+        self.state = "STOPPED"
+        self.terminal_reason = "HOST_ERROR"
+        if clean:
+            self.intervention_requires_power_cycle = False
+            self.recovery_events.append(
+                f"HOST_ERROR: {case.case_id} teardown verified clean after the error; "
+                "the case is recorded as interrupted and needs no power cycle"
+            )
+        else:
+            self._physical_intervention(
+                f"host-side error during {case.case_id} and its teardown was not verified "
+                "clean; maintainer power-cycle confirmation is required before continuing"
+            )
+        envelope: dict[str, object] = {
+            "CASE_ID": case.case_id,
+            "SOURCE_COMMIT": self.source_commit,
+            "FW": self.firmware or "NOT_CAPTURED",
+            "PROCESS_STATUS": "HOST_ERROR",
+            "RETURN_CODE": None,
+            "HOST_ERROR": detail,
+            "EVIDENCE_CLASS": "UNQUALIFIED_CAPTURE",
+            "ACCEPTANCE_ELIGIBLE": False,
+            "ACCEPTANCE_BLOCKERS": [f"HOST_ERROR: {detail}"],
+            "QUALIFICATION_STATUS": "UNQUALIFIED",
+            "QUALIFICATION_BLOCKERS": [f"HOST_ERROR: {detail}"],
+            "TEARDOWN_CHECK": teardown,
+            "RECOVERY_EVENTS": list(self.recovery_events),
+        }
+        self.envelopes.append(envelope)
+        progress.recorded = True
+        if on_case_complete is not None:
+            try:
+                on_case_complete(case_index, envelope)
+            except (OSError, ValueError, TypeError):
+                self.recovery_events.append(
+                    "HOST_ERROR: the interrupted case could not be checkpointed"
+                )
 
     def _report(self) -> dict[str, object]:
         return {
@@ -2512,6 +2718,7 @@ class PsplinkCampaignRunner:
             "resume_case_index": self.resume_case_index,
             "transport_start_problem": self.transport_start_problem,
             "hardware_lock_status": self.hardware_lock_status,
+            "host_error": self.host_error,
             "firmware": self.firmware,
             "recovery_events": list(self.recovery_events),
             "envelopes": list(self.envelopes),
@@ -2735,15 +2942,35 @@ def _checkpoint_case_finished(
     intervention_case_id: str | None,
     resume_case_index: int | None,
     host0_qualified: bool,
+    power_cycle_required: bool = True,
 ) -> dict[str, object]:
-    """Durable record written after a launched case's capture and teardown check."""
+    """Durable record written after a launched case's capture and teardown check.
+
+    ``power_cycle_required=False`` is the one interrupted outcome that needs no
+    power cycle: a host-side error ended the case but its teardown was then
+    verified clean. The case is recorded as interrupted, not completed.
+    """
 
     updated = {**state, "host0_qualified": host0_qualified}
     if intervention_case_id is not None:
-        resume = index + 1 if resume_case_index is None else resume_case_index
-        return _checkpoint_waiting(
-            updated, intervention_case_id, _checkpoint_preflight_position(updated, resume)
+        resume = _checkpoint_preflight_position(
+            updated, index + 1 if resume_case_index is None else resume_case_index
         )
+        if power_cycle_required:
+            return _checkpoint_waiting(updated, intervention_case_id, resume)
+        interrupted = [str(item) for item in updated.get("interrupted_cases", [])]
+        if intervention_case_id not in interrupted:
+            interrupted.append(intervention_case_id)
+        return {
+            **updated,
+            "state": "IN_PROGRESS",
+            "failed_case_id": intervention_case_id,
+            "interrupted_cases": interrupted,
+            "next_case_index": resume,
+            "active_case_index": None,
+            "active_case_id": None,
+            "phase": None,
+        }
     completed = [str(item) for item in updated.get("completed_cases", [])]
     completed.append(case_id)
     return {
@@ -3001,18 +3228,31 @@ def run_campaign_plan(
             intervention_case_id=runner.intervention_case_id,
             resume_case_index=runner.resume_case_index,
             host0_qualified=runner.host0_qualified,
+            power_cycle_required=runner.intervention_requires_power_cycle,
         ))
         _write_campaign_json(checkpoint_path, state)
 
-    report = runner.run(
-        remaining,
-        require_transport_preflight=start_index == 0,
-        reset_between_cases=True,
-        stop_on_incomplete=True,
-        case_index_offset=start_index,
-        on_case_start=record_start,
-        on_case_complete=record_complete,
-    )
+    try:
+        report = runner.run(
+            remaining,
+            require_transport_preflight=start_index == 0,
+            reset_between_cases=True,
+            stop_on_incomplete=True,
+            case_index_offset=start_index,
+            on_case_start=record_start,
+            on_case_complete=record_complete,
+        )
+    except Exception as exc:  # noqa: BLE001 - finalize the checkpoint whatever happened
+        try:
+            transport.stop()
+        except Exception:  # noqa: BLE001 - the original error is the one to report
+            pass
+        runner.host_error = f"campaign runner: {_host_error_summary(exc)}"
+        runner.recovery_events.append(f"HOST_ERROR: {runner.host_error}")
+        runner.state = "STOPPED"
+        if runner.terminal_reason != "PHYSICAL_INTERVENTION_REQUIRED":
+            runner.terminal_reason = "HOST_ERROR"
+        report = runner._report()
     final_state = _checkpoint_after_run(
         state,
         terminal_reason=report.get("terminal_reason"),

@@ -520,6 +520,15 @@ the `transport-write` preflight qualified host0; a campaign resumes past the
 preflight only when it did, and an interrupted preflight resumes at
 `transport-write`. Interrupted cases accumulate in `interrupted_cases`.
 
+A host-side exception never crashes the queue. The case ends as `HOST_ERROR`, and
+the report's `host_error` names the exception type, the raising function and the
+message. If the probe was launched, the runner still unloads it and compares S2
+with S0. A verified-clean teardown records the case as interrupted and keeps the
+checkpoint `IN_PROGRESS` at the next case. Any other outcome waits for a power
+cycle, as an incomplete case does. Verbatim console captures from the
+2026-10-08 session under `fixtures/psp_oracle_captures/` pin the parsers and
+runner stages against real probe output.
+
 ## Build and hardware handoff
 
 ### Device build identity
