@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **491** (dedicated **448**, fake_success **5**, controlled_unsupported **38**).
-Semantic handler census: **413** handlers across **22** API families, covering **454** handler-associated NID registrations.
+Registered NIDs: **500** (dedicated **457**, fake_success **5**, controlled_unsupported **38**).
+Semantic handler census: **422** handlers across **22** API families, covering **463** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 68 | 68 |
+| `partial` | 77 | 77 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 332 | 361 |
@@ -66,13 +66,13 @@ Semantic handler census: **413** handlers across **22** API families, covering *
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
-| `sceReg` | 0 | 6 | 0 | 0 | 0 | 6 | 6 |
+| `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **68** | **1** | **2** | **332** | **413** | **454** |
+| **Total** | **10** | **77** | **1** | **2** | **332** | **422** | **463** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -286,17 +286,35 @@ Semantic handler census: **413** handlers across **22** API families, covering *
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
   - Limitation: host HLE player; requires host codec backend; no hardware comparison tier measured (#341)
 - **`h_RegCloseCategory`** (`sceReg`): `sceRegCloseCategory` (0x0cae832b)
-  - Limitation: frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured
+  - Limitation: frees a category handle slot, including one made stale by sceRegRemoveCategory; closed handles are refused with EBADF; the error code is not hardware measured
 - **`h_RegCloseRegistry`** (`sceReg`): `sceRegCloseRegistry` (0xfa8a5739)
-  - Limitation: frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured
+  - Limitation: frees a registry handle slot; closed handles are refused with EBADF; the error code is not hardware measured
+- **`h_RegCreateKey`** (`sceReg`): `sceRegCreateKey` (0x57641a81)
+  - Limitation: creates an INT (4 bytes), STR or BIN key (up to a 4096-byte project bound) with zero-filled space through a mode-2 category handle; DIR and unknown types are EINVAL, existing names EEXIST; write semantics and errno-class error codes are not hardware measured
+- **`h_RegFlushCategory`** (`sceReg`): `sceRegFlushCategory` (0x0d69bf40)
+  - Limitation: persists the whole per-user overlay, not only the flushed category (firmware scope unmeasured); a failed write is EIO and the change stays in memory
+- **`h_RegFlushRegistry`** (`sceReg`): `sceRegFlushRegistry` (0x39461b4d)
+  - Limitation: persists the whole per-user overlay atomically when the registry changed (whether firmware persists less, or commits on close, is unmeasured); a failed write is EIO and the change stays in memory
 - **`h_RegGetKeyInfo`** (`sceReg`): `sceRegGetKeyInfo` (0xd4475aa8)
-  - Limitation: serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement
+  - Limitation: reports type, size and a key handle for the modeled /CONFIG integer keys, created keys, and child categories (DIR entries, size 0 unmeasured); no nickname default is modeled; unknown keys fail closed with ENOENT; error codes are not hardware measured
+- **`h_RegGetKeyInfoByName`** (`sceReg`): `sceRegGetKeyInfoByName` (0xc5768d02)
+  - Limitation: the same lookup as sceRegGetKeyInfo without a key handle; error codes are not hardware measured
 - **`h_RegGetKeyValue`** (`sceReg`): `sceRegGetKeyValue` (0x28a8e98a)
-  - Limitation: copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured
+  - Limitation: copies a value key with bounds checks (a buffer smaller than the value is refused with EINVAL, a DIR entry with EFTYPE); stale or foreign key handles are EBADF; error codes are not hardware measured
+- **`h_RegGetKeyValueByName`** (`sceReg`): `sceRegGetKeyValueByName` (0x30be0259)
+  - Limitation: the same copy as sceRegGetKeyValue, by name; error codes are not hardware measured
+- **`h_RegGetKeys`** (`sceReg`): `sceRegGetKeys` (0x2d211135)
+  - Limitation: writes the first num entry names in creation order as NUL-padded 27-byte slots (REG_KEYNAME_SIZE); truncation below the entry count and the order are project choices; error codes are not hardware measured
+- **`h_RegGetKeysNum`** (`sceReg`): `sceRegGetKeysNum` (0x2c0db9dd)
+  - Limitation: counts a category's keys and child categories; error codes are not hardware measured
 - **`h_RegOpenCategory`** (`sceReg`): `sceRegOpenCategory` (0x1d8a762e)
-  - Limitation: serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured
+  - Limitation: opens a category of the modeled tree with 16 project-bounded handles; a mode-2 open of a missing path creates it (inferred: the API has no other create call); unknown categories in mode 1 fail closed with ENOENT; CHARACTER_SET has no modeled keys; write semantics and errno-class error codes are not hardware measured
 - **`h_RegOpenRegistry`** (`sceReg`): `sceRegOpenRegistry` (0x92e41280)
-  - Limitation: read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured
+  - Limitation: opens the one virtual system registry in mode 1 (read) or 2 (read/write) with 8 project-bounded handles; RegParam regtype and name are not checked; the first open loads the modeled defaults and the per-user overlay; write semantics and errno-class error codes are not hardware measured
+- **`h_RegRemoveCategory`** (`sceReg`): `sceRegRemoveCategory` (0x4ca16893)
+  - Limitation: removes an empty category a game created through a mode-2 registry handle; modeled default categories are refused (EPERM) and non-empty ones too (ENOTEMPTY); write semantics and errno-class error codes are not hardware measured
+- **`h_RegSetKeyValue`** (`sceReg`): `sceRegSetKeyValue` (0x17768e14)
+  - Limitation: writes an existing key through a mode-2 category handle (mode 1 is EACCES): INT exactly 4 bytes, STR/BIN up to the size fixed at creation with the rest zero-filled; the change is live at once and persists on a flush; write semantics and errno-class error codes are not hardware measured
 - **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
   - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
 - **`h_RtcConvertUtcToLocal`** (`sceRtc`): `sceRtcConvertUtcToLocalTime` (0x34885e0d)

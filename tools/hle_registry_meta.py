@@ -557,31 +557,68 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)",
     },
-    # sceReg virtual system registry (src/rt/hle.c, sceReg block). Read-only: writers are not
-    # registered. Integer values come from the table sceUtilityGetSystemParamInt reads.
+    # sceReg virtual system registry (src/rt/hle.c, sceReg block): a category/key tree over the
+    # modeled defaults with a per-user overlay persisted by the flush calls. Integer defaults are the
+    # values sceUtilityGetSystemParamInt reports, which reads the registry back.
     "h_RegOpenRegistry": {
         "status": "partial",
-        "limitation": "read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured",
-    },
-    "h_RegOpenCategory": {
-        "status": "partial",
-        "limitation": "serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured",
-    },
-    "h_RegGetKeyInfo": {
-        "status": "partial",
-        "limitation": "serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement",
-    },
-    "h_RegGetKeyValue": {
-        "status": "partial",
-        "limitation": "copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured",
-    },
-    "h_RegCloseCategory": {
-        "status": "partial",
-        "limitation": "frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured",
+        "limitation": "opens the one virtual system registry in mode 1 (read) or 2 (read/write) with 8 project-bounded handles; RegParam regtype and name are not checked; the first open loads the modeled defaults and the per-user overlay; write semantics and errno-class error codes are not hardware measured",
     },
     "h_RegCloseRegistry": {
         "status": "partial",
-        "limitation": "frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured",
+        "limitation": "frees a registry handle slot; closed handles are refused with EBADF; the error code is not hardware measured",
+    },
+    "h_RegFlushRegistry": {
+        "status": "partial",
+        "limitation": "persists the whole per-user overlay atomically when the registry changed (whether firmware persists less, or commits on close, is unmeasured); a failed write is EIO and the change stays in memory",
+    },
+    "h_RegOpenCategory": {
+        "status": "partial",
+        "limitation": "opens a category of the modeled tree with 16 project-bounded handles; a mode-2 open of a missing path creates it (inferred: the API has no other create call); unknown categories in mode 1 fail closed with ENOENT; CHARACTER_SET has no modeled keys; write semantics and errno-class error codes are not hardware measured",
+    },
+    "h_RegCloseCategory": {
+        "status": "partial",
+        "limitation": "frees a category handle slot, including one made stale by sceRegRemoveCategory; closed handles are refused with EBADF; the error code is not hardware measured",
+    },
+    "h_RegFlushCategory": {
+        "status": "partial",
+        "limitation": "persists the whole per-user overlay, not only the flushed category (firmware scope unmeasured); a failed write is EIO and the change stays in memory",
+    },
+    "h_RegRemoveCategory": {
+        "status": "partial",
+        "limitation": "removes an empty category a game created through a mode-2 registry handle; modeled default categories are refused (EPERM) and non-empty ones too (ENOTEMPTY); write semantics and errno-class error codes are not hardware measured",
+    },
+    "h_RegGetKeyInfo": {
+        "status": "partial",
+        "limitation": "reports type, size and a key handle for the modeled /CONFIG integer keys, created keys, and child categories (DIR entries, size 0 unmeasured); no nickname default is modeled; unknown keys fail closed with ENOENT; error codes are not hardware measured",
+    },
+    "h_RegGetKeyInfoByName": {
+        "status": "partial",
+        "limitation": "the same lookup as sceRegGetKeyInfo without a key handle; error codes are not hardware measured",
+    },
+    "h_RegGetKeyValue": {
+        "status": "partial",
+        "limitation": "copies a value key with bounds checks (a buffer smaller than the value is refused with EINVAL, a DIR entry with EFTYPE); stale or foreign key handles are EBADF; error codes are not hardware measured",
+    },
+    "h_RegGetKeyValueByName": {
+        "status": "partial",
+        "limitation": "the same copy as sceRegGetKeyValue, by name; error codes are not hardware measured",
+    },
+    "h_RegSetKeyValue": {
+        "status": "partial",
+        "limitation": "writes an existing key through a mode-2 category handle (mode 1 is EACCES): INT exactly 4 bytes, STR/BIN up to the size fixed at creation with the rest zero-filled; the change is live at once and persists on a flush; write semantics and errno-class error codes are not hardware measured",
+    },
+    "h_RegCreateKey": {
+        "status": "partial",
+        "limitation": "creates an INT (4 bytes), STR or BIN key (up to a 4096-byte project bound) with zero-filled space through a mode-2 category handle; DIR and unknown types are EINVAL, existing names EEXIST; write semantics and errno-class error codes are not hardware measured",
+    },
+    "h_RegGetKeysNum": {
+        "status": "partial",
+        "limitation": "counts a category's keys and child categories; error codes are not hardware measured",
+    },
+    "h_RegGetKeys": {
+        "status": "partial",
+        "limitation": "writes the first num entry names in creation order as NUL-padded 27-byte slots (REG_KEYNAME_SIZE); truncation below the entry count and the order are project choices; error codes are not hardware measured",
     },
 }
 

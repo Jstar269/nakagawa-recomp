@@ -45,6 +45,9 @@
 #include "pgf_api.h"
 #include "pgd_api.h"
 #include "nk_input_profile.h"
+#include "nk_platform.h"   /* per-user data directory and UTF-8 file primitives (sceReg overlay) */
+#define NK_JSON_NO_LEGACY_ALIASES
+#include "nk_json.h"       /* sceReg overlay parser */
 #include "evf.h"         /* pure sceKernelEventFlag pattern/mode semantics */
 #include "asset_index.h" /* dynamic extracted-data index (issue #223) */
 #include "archive_vfs.h" /* validated read-only XB provider (issue #298) */
@@ -952,205 +955,1116 @@ static uint32_t systemparam_int_value(uint32_t id) {
     }
 }
 
+static uint32_t sreg_systemparam_int(uint32_t id);
+
 static uint32_t h_GetSystemParamInt(CpuState *s) {
     uint32_t id = A0, out = A1;
-    uint32_t v = systemparam_int_value(id);
+    /* Read through the virtual system registry, so a setting a game wrote there is what this
+     * getter reports: the two surfaces share one value per modeled key. */
+    uint32_t v = sreg_systemparam_int(id);
     if (out) MEM_W32(out, v);
     if (hle_log_on()) fprintf(stderr, "sceUtilityGetSystemParamInt: id=%u -> %u\n", id, v);
     return 0;
 }
 
-/* ---- sceReg: read-only virtual system registry ----
- * Public reference: the PSPSDK Reg kernel library (pspdev.github.io/pspsdk, group__Reg and
- * structRegParam). struct RegParam is 272 bytes: regtype u32 at +0, name[256] at +4 (documented
- * as seemingly unused), namelen u32 at +260, unk2 u32 at +264, unk3 u32 at +268. Key types are
- * DIR=1, INT=2, STR=3, BIN=4; REGHANDLE is a 32-bit handle. The reference documents no regtype
- * values and no error codes, so regtype is not checked and the error codes below are errno-class
- * choices, not hardware measurements.
+/* ---- sceReg: virtual system registry with a per-user overlay ----
+ * Public references:
+ *  - PSPSDK Registry Kernel Library (pspdev.github.io/pspsdk group__Reg, src/registry/pspreg.h and
+ *    the sceReg.S import stubs): the signatures, REGHANDLE, the key types DIR=1, INT=2 ("Key is an
+ *    integer (4 bytes)"), STR=3 and BIN=4, REG_KEYNAME_SIZE 27 (sceRegGetKeys fills num * 27 bytes
+ *    of NUL-terminated names), sceRegCreateKey's type ("cannot be a directory type") and size ("Size
+ *    of the allocated value space"), and the category open mode ("can be 1 or 2, probably read or
+ *    read/write"). struct RegParam is 272 bytes: regtype u32 at +0, name[256] at +4 (documented as
+ *    seemingly unused), namelen u32 at +260, unk2 u32 at +264, unk3 u32 at +268. The Rust libc psp bindings name the first argument
+ *    of sceRegRemoveCategory the registry handle (not a category handle); it takes a category name.
+ *  - Public homebrew title behaviour (Adrenaline, cef/recovery/utils.c): reading or writing a
+ *    setting opens the registry and the category with mode 2; a write tries sceRegSetKeyValue first
+ *    and, when the key is missing, calls sceRegCreateKey and sets the value again; both paths call
+ *    sceRegFlushCategory and sceRegFlushRegistry before closing.
  *
- * Read model: the writers (sceRegSetKeyValue and friends) are not registered, so a write fails
- * closed as an unregistered import. Integer values come from systemparam_int_value(), the table
- * sceUtilityGetSystemParamInt reads, so the two surfaces cannot disagree. The nickname is a
- * project default because this runtime has no system-param string table yet. Nothing here
- * touches the host filesystem. */
+ * UNMEASURED: the console oracle (PSP-REGISTRY-001) never writes the registry and has no capture
+ * yet, so the write semantics and every error code here are unmeasured. The codes are errno-class
+ * (0x8001xxxx, newlib numbering) project choices, and so is the order of the checks.
+ *
+ * Model (project choices where the references are silent; each one is unmeasured):
+ *  - A tree of categories and value keys. A category's entries are its value keys and its child
+ *    categories; a child category is reported as a DIR key of size 0.
+ *  - Defaults are the modeled /CONFIG keys below. Their integer values come from
+ *    systemparam_int_value(), and sceUtilityGetSystemParamInt reads the registry value back through
+ *    sreg_systemparam_int(), so the two surfaces agree after a game writes a setting. No string key
+ *    has a default: the former "PSP" nickname was a project-invented value, and the runtime has no
+ *    player nickname setting. RegParam regtype and name are not checked (the SDK documents no
+ *    regtype values); every open serves the one system registry.
+ *  - Writes need a mode-2 category handle (sceRegSetKeyValue, sceRegCreateKey) or a mode-2 registry
+ *    handle (sceRegRemoveCategory); a mode-1 handle is refused with EACCES. A registry handle's mode
+ *    does not limit the categories opened under it. A mode-2 sceRegOpenCategory of a missing path
+ *    creates it: the API has sceRegRemoveCategory but no create call, so this is the only way a
+ *    category can come to exist (inference). Modeled default categories cannot be removed (EPERM),
+ *    and a category that still has entries is refused (ENOTEMPTY). sceRegRemoveKey stays
+ *    unregistered because no public header documents its arguments.
+ *  - A key's size is fixed at creation (INT: 4). sceRegSetKeyValue writes 1..size bytes and
+ *    zero-fills the rest of the allocated space; an INT write must be exactly 4 bytes.
+ *  - Writes change the live registry at once. sceRegFlushCategory and sceRegFlushRegistry persist
+ *    the whole overlay (every difference from the defaults) to one schema-versioned JSON file that
+ *    is replaced atomically; whether firmware persists only the flushed category, or commits on
+ *    close without a flush, is unmeasured. The file is SR_SYSTEM_REGISTRY when set, else
+ *    <per-user data dir>/registry/system.json; nothing is written anywhere resembling a console. A
+ *    missing file means no changes. An unreadable or invalid file is reported once and ignored as a
+ *    whole (the defaults are served), and the next flush moves it aside to <file>.corrupt.
+ *  - Project bounds, not console limits: 8 registry and 16 category handles, 512 nodes, category
+ *    paths under 256 bytes, STR/BIN values up to 4096 bytes, an overlay file up to 1 MiB, and names
+ *    of printable ASCII without '/'. */
 #define SREG_REGPARAM_BYTES 272u
-#define SREG_SLOTS 4u
+#define SREG_REG_SLOTS 8u
+#define SREG_CAT_SLOTS 16u
+#define SREG_MAX_NODES 512u
+#define SREG_NAME_BYTES 27u       /* REG_KEYNAME_SIZE: up to 26 name bytes and the NUL */
+#define SREG_PATH_BYTES 256u      /* a category path and its NUL */
+#define SREG_VALUE_MAX 4096u
+#define SREG_OVERLAY_MAX_BYTES (1024u * 1024u)
+#define SREG_OVERLAY_SCHEMA "nakagawa.psp-system-registry-overlay"
+#define SREG_OVERLAY_VERSION 1u
+#define SREG_ALL_NODES (-2)
 #define SREG_TAG_REG 0x52470000u /* 'RG' registry handle; low byte = slot + 1 */
 #define SREG_TAG_CAT 0x52430000u /* 'RC' category handle; low byte = slot + 1 */
-#define SREG_TAG_KEY 0x524b0000u /* 'RK' key handle; bits 8..15 = category slot + 1, bits 0..7 = key index + 1 */
-#define SREG_ERR_ILLEGAL_ADDR 0x80000103u /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-#define SREG_ERR_BADF 0x80010009u /* EBADF: not an open handle of this kind */
-#define SREG_ERR_NOENT 0x80010002u /* ENOENT: unknown category or key */
-#define SREG_ERR_NOMEM 0x8001000cu /* ENOMEM: handle slots exhausted */
-#define SREG_ERR_INVAL 0x80010016u /* EINVAL: unsupported mode, or buffer smaller than the value */
+#define SREG_TAG_KEY 0x524b0000u /* 'RK' key handle; low 16 bits = the entry's node id */
+#define SREG_ERR_ILLEGAL_ADDR 0x80000103u /* SCE_KERNEL_ERROR_ILLEGAL_ADDR: bad guest pointer or span */
+#define SREG_ERR_PERM 0x80010001u         /* EPERM: a modeled default category cannot be removed */
+#define SREG_ERR_NOENT 0x80010002u        /* ENOENT: unknown category or key */
+#define SREG_ERR_IO 0x80010005u           /* EIO: a flush could not persist the overlay */
+#define SREG_ERR_BADF 0x80010009u         /* EBADF: not an open handle of this kind, or a stale one */
+#define SREG_ERR_NOMEM 0x8001000cu        /* ENOMEM: handle slots exhausted */
+#define SREG_ERR_ACCES 0x8001000du        /* EACCES: a write through a mode-1 (read-only) handle */
+#define SREG_ERR_EXIST 0x80010011u        /* EEXIST: the name is already an entry of the category */
+#define SREG_ERR_INVAL 0x80010016u        /* EINVAL: bad mode, type, size or name; buffer smaller than the value */
+#define SREG_ERR_NOSPC 0x8001001cu        /* ENOSPC: value larger than the key's space, or no free node */
+#define SREG_ERR_FTYPE 0x8001004fu        /* EFTYPE: value access to a DIR entry, or an INT write that is not 4 bytes */
+#define SREG_ERR_NOTEMPTY 0x8001005au     /* ENOTEMPTY: the category still has entries */
+#define SREG_ERR_NAMETOOLONG 0x8001005bu  /* ENAMETOOLONG: a name over 26 bytes or a path over 255 */
+#define SREG_TYPE_DIR 1u
 #define SREG_TYPE_INT 2u
 #define SREG_TYPE_STR 3u
+#define SREG_TYPE_BIN 4u
+#define SREG_NODE_DEFAULT 0x01u /* part of the modeled defaults: never persisted, never removed */
 
 typedef struct {
-    const char *category; /* absolute path, exact match as passed to sceRegOpenCategory */
-    const char *key;
-    uint32_t type;        /* SREG_TYPE_INT or SREG_TYPE_STR */
-    int sysparam_id;      /* integer keys: PSP_SYSTEMPARAM_ID_INT_* read via systemparam_int_value() */
-    const char *str;      /* string keys: NUL-terminated value */
-} SregKey;
+    uint16_t id;          /* nonzero while live; key handles carry it */
+    uint8_t type;         /* SREG_TYPE_DIR for a category, else the value type */
+    uint8_t flags;        /* SREG_NODE_DEFAULT */
+    int parent;           /* parent category node, or -1 at the top level */
+    int sysparam_id;      /* default INT keys: PSP_SYSTEMPARAM_ID_INT_*, else -1 */
+    uint32_t seq;         /* creation order; sceRegGetKeys lists entries in this order */
+    uint32_t size;        /* value bytes; 0 for a category */
+    uint8_t *value;
+    char name[SREG_NAME_BYTES];
+} SregNode;
 
-static const SregKey s_sreg_keys[] = {
-    { "/CONFIG/SYSTEM/XMB",    "language",         SREG_TYPE_INT, 8, NULL },
-    { "/CONFIG/SYSTEM/XMB",    "button_assign",    SREG_TYPE_INT, 9, NULL },
-    { "/CONFIG/SYSTEM",        "nickname",         SREG_TYPE_STR, -1, "PSP" },
-    { "/CONFIG/DATE",          "date_format",      SREG_TYPE_INT, 4, NULL },
-    { "/CONFIG/DATE",          "time_format",      SREG_TYPE_INT, 5, NULL },
-    { "/CONFIG/DATE",          "time_zone_offset", SREG_TYPE_INT, 6, NULL },
-    { "/CONFIG/DATE",          "summer_time",      SREG_TYPE_INT, 7, NULL },
-    { "/CONFIG/NETWORK/ADHOC", "channel",          SREG_TYPE_INT, 2, NULL },
-};
+typedef struct {
+    uint8_t open;
+    uint8_t mode;         /* 1 = read, 2 = read/write */
+} SregRegSlot;
 
-/* Categories that open successfully. CHARACTER_SET opens but has no modeled keys: its value source
- * is not in this runtime yet, so key lookups under it fail closed. */
-static const char *const s_sreg_categories[] = {
+typedef struct {
+    uint8_t open;
+    uint8_t mode;         /* 1 = read, 2 = read/write */
+    int node;             /* the category node */
+    uint16_t node_id;     /* its id when opened; a removed category leaves the handle stale */
+} SregCatSlot;
+
+/* Modeled defaults: categories in creation order, then the integer keys with the
+ * PSP_SYSTEMPARAM_ID_INT_* id each one shares with sceUtilityGetSystemParamInt. Ancestors
+ * (/CONFIG, /CONFIG/NETWORK) are created implicitly. CHARACTER_SET opens but has no modeled keys:
+ * its value source is not in this runtime yet. Of the key names, button_assign under
+ * /CONFIG/SYSTEM/XMB is corroborated by public homebrew (Adrenaline reads and writes it as a 4-byte
+ * INT); the rest await the PSP-REGISTRY-001 census. */
+static const char *const s_sreg_default_categories[] = {
     "/CONFIG/SYSTEM", "/CONFIG/SYSTEM/XMB", "/CONFIG/SYSTEM/CHARACTER_SET",
     "/CONFIG/DATE", "/CONFIG/NETWORK/ADHOC",
 };
 
-static uint8_t s_sreg_reg_open[SREG_SLOTS];
-static uint8_t s_sreg_cat_open[SREG_SLOTS];
-static int s_sreg_cat_index[SREG_SLOTS];
+static const struct {
+    const char *category;
+    const char *key;
+    uint32_t sysparam_id;
+} s_sreg_default_keys[] = {
+    { "/CONFIG/SYSTEM/XMB",    "language",         8u },
+    { "/CONFIG/SYSTEM/XMB",    "button_assign",    9u },
+    { "/CONFIG/DATE",          "date_format",      4u },
+    { "/CONFIG/DATE",          "time_format",      5u },
+    { "/CONFIG/DATE",          "time_zone_offset", 6u },
+    { "/CONFIG/DATE",          "summer_time",      7u },
+    { "/CONFIG/NETWORK/ADHOC", "channel",          2u },
+};
 
-static int sreg_slot_of(uint32_t h, uint32_t tag, const uint8_t *open) {
+static SregNode s_sreg_nodes[SREG_MAX_NODES];
+static SregRegSlot s_sreg_reg[SREG_REG_SLOTS];
+static SregCatSlot s_sreg_cat[SREG_CAT_SLOTS];
+static uint32_t s_sreg_seq;
+static uint16_t s_sreg_next_id;
+static int s_sreg_loaded;
+static int s_sreg_dirty;            /* the live registry differs from the last persisted overlay */
+static int s_sreg_corrupt_on_disk;  /* an ignored corrupt overlay is moved aside by the next flush */
+
+static void sreg_put_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static uint32_t sreg_get_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* A name this model can store and persist: 1..26 bytes of printable ASCII without '/'. */
+static int sreg_name_ok(const char *name) {
+    size_t n = strlen(name);
+    if (n == 0u || n >= SREG_NAME_BYTES) return 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20u || c > 0x7eu || c == '/') return 0;
+    }
+    return 1;
+}
+
+static void sreg_free_node(int i) {
+    free(s_sreg_nodes[i].value);
+    memset(&s_sreg_nodes[i], 0, sizeof(s_sreg_nodes[i]));
+}
+
+static void sreg_clear_nodes(void) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) sreg_free_node((int)i);
+    s_sreg_seq = 0;
+    s_sreg_next_id = 0;
+    s_sreg_dirty = 0;
+}
+
+static uint32_t sreg_free_node_count(void) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++)
+        if (!s_sreg_nodes[i].id) n++;
+    return n;
+}
+
+static int sreg_child(int parent, const char *name) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        const SregNode *n = &s_sreg_nodes[i];
+        if (n->id && n->parent == parent && strcmp(n->name, name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+static int sreg_has_entries(int cat) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++)
+        if (s_sreg_nodes[i].id && s_sreg_nodes[i].parent == cat) return 1;
+    return 0;
+}
+
+/* A fresh nonzero id that no live node carries, so a stale key handle can never name a newer
+ * entry while fewer than 65535 ids are live (the node table holds 512). */
+static uint16_t sreg_new_id(void) {
+    for (uint32_t tries = 0; tries < 0x10000u; tries++) {
+        uint16_t id = ++s_sreg_next_id;
+        int used = 0;
+        if (!id) continue;
+        for (uint32_t i = 0; i < SREG_MAX_NODES && !used; i++) used = s_sreg_nodes[i].id == id;
+        if (!used) return id;
+    }
+    return 0;
+}
+
+/* Add an entry (name already validated) under parent, -1 being the top level. A value starts
+ * zero-filled. Returns the node index, or -1 when no node or value storage is free. */
+static int sreg_add(int parent, const char *name, uint32_t type, uint32_t size, uint8_t flags) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        SregNode *n = &s_sreg_nodes[i];
+        uint8_t *value = NULL;
+        uint16_t id;
+        if (n->id) continue;
+        if (size) {
+            value = (uint8_t *)calloc(1u, size);
+            if (!value) return -1;
+        }
+        id = sreg_new_id();
+        if (!id) {
+            free(value);
+            return -1;
+        }
+        memset(n, 0, sizeof(*n));
+        n->id = id;
+        n->type = (uint8_t)type;
+        n->flags = flags;
+        n->parent = parent;
+        n->sysparam_id = -1;
+        n->seq = ++s_sreg_seq;
+        n->size = size;
+        n->value = value;
+        memcpy(n->name, name, strlen(name) + 1u);
+        return (int)i;
+    }
+    return -1;
+}
+
+/* Resolve an absolute category path such as "/CONFIG/SYSTEM" (one trailing '/' is ignored). With
+ * create, missing components are made as categories carrying flags, and *created reports it; the
+ * first pass validates every component and counts free nodes, so a refused path creates nothing.
+ * Returns the node index, or -1 with *err set. */
+static int sreg_walk(const char *path, int create, uint8_t flags, uint32_t *err, int *created) {
+    char comp[SREG_NAME_BYTES];
+    size_t len = strlen(path);
+    int cur = -1;
+    if (created) *created = 0;
+    if (len > 1u && path[len - 1u] == '/') len--;
+    if (len < 2u || path[0] != '/') {
+        *err = SREG_ERR_NOENT;
+        return -1;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        size_t at = 1u;
+        uint32_t missing = 0;
+        int exists = 1;
+        cur = -1;
+        while (at < len) {
+            size_t end = at, n;
+            int child;
+            while (end < len && path[end] != '/') end++;
+            n = end - at;
+            if (n == 0u) {
+                *err = SREG_ERR_NOENT; /* an empty component ("//") names nothing */
+                return -1;
+            }
+            if (n >= SREG_NAME_BYTES) {
+                *err = SREG_ERR_NAMETOOLONG;
+                return -1;
+            }
+            memcpy(comp, path + at, n);
+            comp[n] = '\0';
+            child = exists ? sreg_child(cur, comp) : -1;
+            if (child >= 0) {
+                if (s_sreg_nodes[child].type != SREG_TYPE_DIR) {
+                    /* A value key, not a category: it cannot be opened, nor replaced by one. */
+                    *err = create ? SREG_ERR_EXIST : SREG_ERR_NOENT;
+                    return -1;
+                }
+                cur = child;
+            } else {
+                exists = 0;
+                if (!create) {
+                    *err = SREG_ERR_NOENT;
+                    return -1;
+                }
+                if (!sreg_name_ok(comp)) {
+                    *err = SREG_ERR_INVAL;
+                    return -1;
+                }
+                if (pass == 0) {
+                    missing++;
+                } else {
+                    cur = sreg_add(cur, comp, SREG_TYPE_DIR, 0u, flags);
+                    if (cur < 0) {
+                        *err = SREG_ERR_NOSPC;
+                        return -1;
+                    }
+                    if (created) *created = 1;
+                }
+            }
+            at = end + 1u;
+        }
+        if (pass == 0) {
+            if (missing == 0u) return cur;
+            if (missing > sreg_free_node_count()) {
+                *err = SREG_ERR_NOSPC;
+                return -1;
+            }
+        }
+    }
+    return cur;
+}
+
+/* The absolute path of a category node. */
+static int sreg_node_path(int node, char *out, size_t cap) {
+    int chain[SREG_PATH_BYTES / 2u];
+    int depth = 0;
+    size_t at = 0;
+    for (int n = node; n >= 0; n = s_sreg_nodes[n].parent) {
+        if (depth >= (int)(sizeof(chain) / sizeof(chain[0]))) return 0;
+        chain[depth++] = n;
+    }
+    for (int d = depth - 1; d >= 0; d--) {
+        const char *name = s_sreg_nodes[chain[d]].name;
+        size_t n = strlen(name);
+        if (at + n + 2u > cap) return 0;
+        out[at++] = '/';
+        memcpy(out + at, name, n);
+        at += n;
+    }
+    if (at + 1u > cap) return 0;
+    out[at] = '\0';
+    return 1;
+}
+
+/* Live nodes in creation order: the entries of one category, or every node with SREG_ALL_NODES.
+ * out holds SREG_MAX_NODES indices. */
+static uint32_t sreg_ordered(int parent, int *out) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        const SregNode *n = &s_sreg_nodes[i];
+        uint32_t at;
+        if (!n->id || (parent != SREG_ALL_NODES && n->parent != parent)) continue;
+        at = count++;
+        while (at > 0u && s_sreg_nodes[out[at - 1u]].seq > n->seq) {
+            out[at] = out[at - 1u];
+            at--;
+        }
+        out[at] = (int)i;
+    }
+    return count;
+}
+
+/* Categories created here carry SREG_NODE_DEFAULT along the whole path. */
+static int sreg_default_category(const char *path) {
+    uint32_t err = 0;
+    return sreg_walk(path, 1, SREG_NODE_DEFAULT, &err, NULL);
+}
+
+static void sreg_build_defaults(void) {
+    for (uint32_t i = 0; i < sizeof(s_sreg_default_categories) / sizeof(s_sreg_default_categories[0]); i++)
+        (void)sreg_default_category(s_sreg_default_categories[i]);
+    for (uint32_t i = 0; i < sizeof(s_sreg_default_keys) / sizeof(s_sreg_default_keys[0]); i++) {
+        int cat = sreg_default_category(s_sreg_default_keys[i].category), node;
+        if (cat < 0) continue;
+        node = sreg_add(cat, s_sreg_default_keys[i].key, SREG_TYPE_INT, 4u, SREG_NODE_DEFAULT);
+        if (node < 0) continue;
+        s_sreg_nodes[node].sysparam_id = (int)s_sreg_default_keys[i].sysparam_id;
+        sreg_put_le32(s_sreg_nodes[node].value, systemparam_int_value(s_sreg_default_keys[i].sysparam_id));
+    }
+}
+
+/* True when a value key equals its modeled default, so the overlay need not record it. */
+static int sreg_is_default_value(const SregNode *n) {
+    return (n->flags & SREG_NODE_DEFAULT) && n->type == SREG_TYPE_INT && n->size == 4u &&
+           n->sysparam_id >= 0 &&
+           sreg_get_le32(n->value) == systemparam_int_value((uint32_t)n->sysparam_id);
+}
+
+static int sr_utf8_env_alloc(const wchar_t *name, char **value_out, int *present_out);
+
+/* The overlay file: SR_SYSTEM_REGISTRY when set, else <per-user data dir>/registry/system.json.
+ * NULL when neither resolves, or when the variable is set but cannot be read as UTF-8 (falling
+ * back to the default file then would silently write somewhere the user did not choose). */
+static char *sreg_overlay_path(void) {
+    char *env = NULL, *path;
+    char dir[4096];
+    char sep = nk_platform_path_separator();
+    int present = 0;
+    size_t need;
+    if (!sr_utf8_env_alloc(L"SR_SYSTEM_REGISTRY", &env, &present)) return NULL;
+    if (present && env && env[0]) return env;
+    free(env);
+    if (!nk_platform_resolve_app_data_dir(dir, sizeof(dir))) return NULL;
+    need = strlen(dir) + sizeof("/registry/system.json");
+    path = (char *)malloc(need);
+    if (!path) return NULL;
+    snprintf(path, need, "%s%cregistry%csystem.json", dir, sep, sep);
+    return path;
+}
+
+/* Read the overlay file. Returns 1 with a NUL-terminated copy, 0 when there is no file, and -1
+ * with *why set when it exists but cannot be read within the size bound. */
+static int sreg_read_file(const char *path, char **out, size_t *len_out, char *why, size_t why_len) {
+    FILE *f;
+    char *buf;
+    size_t got;
+    int failed;
+    *out = NULL;
+    *len_out = 0;
+    if (!nk_platform_file_exists(path)) return 0;
+    f = nk_fopen_utf8(path, "rb");
+    if (!f) {
+        snprintf(why, why_len, "the file cannot be opened");
+        return -1;
+    }
+    buf = (char *)malloc((size_t)SREG_OVERLAY_MAX_BYTES + 1u);
+    if (!buf) {
+        fclose(f);
+        snprintf(why, why_len, "no memory to read it");
+        return -1;
+    }
+    got = fread(buf, 1u, (size_t)SREG_OVERLAY_MAX_BYTES + 1u, f);
+    failed = ferror(f);
+    fclose(f);
+    if (failed || got > SREG_OVERLAY_MAX_BYTES) {
+        free(buf);
+        snprintf(why, why_len, "%s", failed ? "the file cannot be read" : "the file is larger than 1 MiB");
+        return -1;
+    }
+    buf[got] = '\0';
+    *out = buf;
+    *len_out = got;
+    return 1;
+}
+
+static int sreg_hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static uint32_t sreg_type_from_name(const char *name) {
+    if (strcmp(name, "int") == 0) return SREG_TYPE_INT;
+    if (strcmp(name, "str") == 0) return SREG_TYPE_STR;
+    if (strcmp(name, "bin") == 0) return SREG_TYPE_BIN;
+    return 0;
+}
+
+static const char *sreg_type_name(uint32_t type) {
+    return type == SREG_TYPE_INT ? "int" : type == SREG_TYPE_STR ? "str" : "bin";
+}
+
+/* Apply a parsed overlay onto the defaults. Returns 1, or 0 with *why set; the caller discards a
+ * partial application and serves the defaults. */
+static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) {
+    const NkJsonNode *schema = nk_json_obj_get(doc, "schema");
+    const NkJsonNode *cats = nk_json_obj_get(doc, "categories");
+    const NkJsonNode *keys = nk_json_obj_get(doc, "keys");
+    uint32_t version = 0, err = 0;
+    static uint8_t value[SREG_VALUE_MAX];
+    if (!nk_json_is_object(doc) || !nk_json_is_string(schema) ||
+        strcmp(nk_json_get_string(schema), SREG_OVERLAY_SCHEMA) != 0) {
+        snprintf(why, why_len, "it is not a system registry overlay");
+        return 0;
+    }
+    if (!nk_json_get_uint32(nk_json_obj_get(doc, "schema_version"), &version) ||
+        version != SREG_OVERLAY_VERSION) {
+        snprintf(why, why_len, "its schema_version is not %u", SREG_OVERLAY_VERSION);
+        return 0;
+    }
+    if (!nk_json_is_array(cats) || !nk_json_is_array(keys)) {
+        snprintf(why, why_len, "it lacks the categories and keys arrays");
+        return 0;
+    }
+    for (size_t i = 0; i < nk_json_array_count(cats); i++) {
+        const NkJsonNode *item = nk_json_array_get(cats, i);
+        const char *path = nk_json_is_string(item) ? nk_json_get_string(item) : NULL;
+        if (!path || strlen(path) >= SREG_PATH_BYTES || sreg_walk(path, 1, 0u, &err, NULL) < 0) {
+            snprintf(why, why_len, "categories[%u] is not a valid category path", (unsigned)i);
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < nk_json_array_count(keys); i++) {
+        const NkJsonNode *item = nk_json_array_get(keys, i);
+        const NkJsonNode *jcat = nk_json_obj_get(item, "category");
+        const NkJsonNode *jname = nk_json_obj_get(item, "name");
+        const NkJsonNode *jtype = nk_json_obj_get(item, "type");
+        const NkJsonNode *jhex = nk_json_obj_get(item, "value_hex");
+        const char *name, *hex;
+        uint32_t type, bytes;
+        size_t hex_len;
+        int cat, node;
+        if (!nk_json_is_object(item) || !nk_json_is_string(jcat) || !nk_json_is_string(jname) ||
+            !nk_json_is_string(jtype) || !nk_json_is_string(jhex)) {
+            snprintf(why, why_len, "keys[%u] lacks category, name, type or value_hex", (unsigned)i);
+            return 0;
+        }
+        name = nk_json_get_string(jname);
+        hex = nk_json_get_string(jhex);
+        type = sreg_type_from_name(nk_json_get_string(jtype));
+        hex_len = strlen(hex);
+        cat = strlen(nk_json_get_string(jcat)) < SREG_PATH_BYTES
+                  ? sreg_walk(nk_json_get_string(jcat), 0, 0u, &err, NULL) : -1;
+        if (cat < 0 || !sreg_name_ok(name) || !type || hex_len == 0u || (hex_len & 1u) ||
+            hex_len > 2u * SREG_VALUE_MAX || (type == SREG_TYPE_INT && hex_len != 8u)) {
+            snprintf(why, why_len, "keys[%u] is not a valid key record", (unsigned)i);
+            return 0;
+        }
+        bytes = (uint32_t)(hex_len / 2u);
+        for (uint32_t b = 0; b < bytes; b++) {
+            int hi = sreg_hex_nibble(hex[2u * b]), lo = sreg_hex_nibble(hex[2u * b + 1u]);
+            if (hi < 0 || lo < 0) {
+                snprintf(why, why_len, "keys[%u] value_hex is not hexadecimal", (unsigned)i);
+                return 0;
+            }
+            value[b] = (uint8_t)((hi << 4) | lo);
+        }
+        node = sreg_child(cat, name);
+        if (node >= 0) {
+            /* Only a modeled default may be overridden, with its own type and size; anything else
+             * is a duplicate record or a key that is a category. */
+            const SregNode *n = &s_sreg_nodes[node];
+            if (!(n->flags & SREG_NODE_DEFAULT) || n->type != type || n->size != bytes) {
+                snprintf(why, why_len, "keys[%u] conflicts with an existing entry", (unsigned)i);
+                return 0;
+            }
+        } else {
+            node = sreg_add(cat, name, type, bytes, 0u);
+            if (node < 0) {
+                snprintf(why, why_len, "it holds more entries than the registry model's %u", SREG_MAX_NODES);
+                return 0;
+            }
+        }
+        memcpy(s_sreg_nodes[node].value, value, bytes);
+    }
+    return 1;
+}
+
+/* Load the defaults and the per-user overlay once per process. */
+static void sreg_ensure_loaded(void) {
+    char *path, *text = NULL;
+    char why[192];
+    size_t len = 0;
+    int got;
+    if (s_sreg_loaded) return;
+    s_sreg_loaded = 1;
+    s_sreg_corrupt_on_disk = 0;
+    sreg_clear_nodes();
+    sreg_build_defaults();
+    path = sreg_overlay_path();
+    if (!path) return; /* the first flush that needs a file reports it */
+    why[0] = '\0';
+    got = sreg_read_file(path, &text, &len, why, sizeof(why));
+    if (got > 0) {
+        char parse_error[128];
+        NkJsonNode *doc = nk_json_parse(text, len, parse_error, sizeof(parse_error));
+        if (!doc) {
+            snprintf(why, sizeof(why), "it is not valid JSON (%s)", parse_error);
+            got = -1;
+        } else {
+            if (!sreg_overlay_apply(doc, why, sizeof(why))) got = -1;
+            nk_json_free(doc);
+        }
+    }
+    if (got < 0) {
+        fprintf(stderr, "sceReg: ignoring the per-user registry overlay %s: %s; serving the modeled "
+                        "defaults (the next flush moves it to %s.corrupt)\n", path, why, path);
+        sreg_clear_nodes();
+        sreg_build_defaults();
+        s_sreg_corrupt_on_disk = 1;
+    }
+    s_sreg_dirty = 0;
+    free(text);
+    free(path);
+}
+
+typedef struct {
+    char *data;
+    size_t len, cap;
+    int failed;
+} SregText;
+
+static void sreg_text_add(SregText *t, const char *s, size_t n) {
+    if (t->failed) return;
+    if (t->len + n + 1u > t->cap) {
+        size_t cap = t->cap ? t->cap : 1024u;
+        char *grown;
+        while (cap < t->len + n + 1u) cap *= 2u;
+        grown = (char *)realloc(t->data, cap);
+        if (!grown) {
+            t->failed = 1;
+            return;
+        }
+        t->data = grown;
+        t->cap = cap;
+    }
+    memcpy(t->data + t->len, s, n);
+    t->len += n;
+    t->data[t->len] = '\0';
+}
+
+static void sreg_text_str(SregText *t, const char *s) { sreg_text_add(t, s, strlen(s)); }
+
+/* Names and paths are printable ASCII (sreg_name_ok), so only '"' and '\\' need escaping. */
+static void sreg_text_json_string(SregText *t, const char *s) {
+    sreg_text_add(t, "\"", 1u);
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') sreg_text_add(t, "\\", 1u);
+        sreg_text_add(t, s, 1u);
+    }
+    sreg_text_add(t, "\"", 1u);
+}
+
+/* The overlay is every difference from the defaults: the categories a game created, the keys it
+ * created, and the default keys whose value it changed, in creation order. */
+static void sreg_overlay_render(SregText *t) {
+    static int order[SREG_MAX_NODES];
+    uint32_t count = sreg_ordered(SREG_ALL_NODES, order);
+    char path[SREG_PATH_BYTES];
+    int first = 1;
+    sreg_text_str(t, "{\n  \"schema\": \"" SREG_OVERLAY_SCHEMA "\",\n  \"schema_version\": 1,\n"
+                     "  \"categories\": [");
+    for (uint32_t i = 0; i < count; i++) {
+        const SregNode *n = &s_sreg_nodes[order[i]];
+        if (n->type != SREG_TYPE_DIR || (n->flags & SREG_NODE_DEFAULT)) continue;
+        if (!sreg_node_path(order[i], path, sizeof(path))) {
+            t->failed = 1;
+            return;
+        }
+        sreg_text_str(t, first ? "\n    " : ",\n    ");
+        sreg_text_json_string(t, path);
+        first = 0;
+    }
+    sreg_text_str(t, "\n  ],\n  \"keys\": [");
+    first = 1;
+    for (uint32_t i = 0; i < count; i++) {
+        const SregNode *n = &s_sreg_nodes[order[i]];
+        static const char digits[] = "0123456789abcdef";
+        if (n->type == SREG_TYPE_DIR || sreg_is_default_value(n)) continue;
+        if (!sreg_node_path(n->parent, path, sizeof(path))) {
+            t->failed = 1;
+            return;
+        }
+        sreg_text_str(t, first ? "\n    {\"category\": " : ",\n    {\"category\": ");
+        sreg_text_json_string(t, path);
+        sreg_text_str(t, ", \"name\": ");
+        sreg_text_json_string(t, n->name);
+        sreg_text_str(t, ", \"type\": \"");
+        sreg_text_str(t, sreg_type_name(n->type));
+        sreg_text_str(t, "\", \"value_hex\": \"");
+        for (uint32_t b = 0; b < n->size; b++) {
+            char pair[2] = { digits[n->value[b] >> 4], digits[n->value[b] & 0x0fu] };
+            sreg_text_add(t, pair, 2u);
+        }
+        sreg_text_str(t, "\"}");
+        first = 0;
+    }
+    sreg_text_str(t, "\n  ]\n}\n");
+}
+
+static int sreg_sync_file(FILE *f) {
+#ifdef _WIN32
+    return _commit(_fileno(f)) == 0;
+#else
+    return fsync(fileno(f)) == 0;
+#endif
+}
+
+/* Replace path with data atomically: write and sync <path>.tmp, then rename it over path. The
+ * parent directory is created owner-private, since the overlay can hold the user's settings. */
+static int sreg_write_atomic(const char *path, const char *data, size_t len) {
+    size_t plen = strlen(path);
+    char *tmp = (char *)malloc(plen + 5u), *dir = (char *)malloc(plen + 1u);
+    char *cut;
+    FILE *f;
+    int ok;
+    if (!tmp || !dir) {
+        free(tmp);
+        free(dir);
+        return 0;
+    }
+    snprintf(tmp, plen + 5u, "%s.tmp", path);
+    memcpy(dir, path, plen + 1u);
+    cut = strrchr(dir, '/');
+    {
+        char *back = strrchr(dir, '\\');
+        if (back && (!cut || back > cut)) cut = back;
+    }
+    if (cut && cut != dir) {
+        *cut = '\0';
+        (void)nk_platform_mkdir_p_private(dir);
+    }
+    free(dir);
+    f = nk_platform_fopen_private(tmp, "wb");
+    ok = f && fwrite(data, 1u, len, f) == len && fflush(f) == 0;
+    if (f) {
+        ok = sreg_sync_file(f) && ok;
+        if (fclose(f) != 0) ok = 0;
+    }
+    if (ok && nk_rename_utf8(tmp, path) != 0) ok = 0;
+    if (!ok) (void)nk_remove_utf8(tmp);
+    free(tmp);
+    return ok;
+}
+
+/* sceRegFlushRegistry / sceRegFlushCategory: persist the overlay when the live registry changed
+ * since the last persist (a flush after reads writes nothing). */
+static uint32_t sreg_persist(const char *caller) {
+    SregText text = { NULL, 0u, 0u, 0 };
+    char *path;
+    uint32_t rc = 0;
+    if (!s_sreg_dirty) return 0;
+    path = sreg_overlay_path();
+    if (!path) {
+        fprintf(stderr, "%s: no per-user data directory resolves for the registry overlay; set "
+                        "SR_SYSTEM_REGISTRY (the change stays in memory only)\n", caller);
+        return SREG_ERR_IO;
+    }
+    sreg_overlay_render(&text);
+    if (text.failed) rc = SREG_ERR_IO;
+    if (!rc && s_sreg_corrupt_on_disk && nk_platform_file_exists(path)) {
+        size_t need = strlen(path) + sizeof(".corrupt");
+        char *aside = (char *)malloc(need);
+        if (aside) snprintf(aside, need, "%s.corrupt", path);
+        if (!aside || nk_rename_utf8(path, aside) != 0) {
+            fprintf(stderr, "%s: cannot move the unreadable registry overlay %s aside; nothing written\n",
+                    caller, path);
+            rc = SREG_ERR_IO;
+        } else {
+            fprintf(stderr, "%s: moved the unreadable registry overlay to %s\n", caller, aside);
+        }
+        free(aside);
+    }
+    if (!rc) {
+        s_sreg_corrupt_on_disk = 0;
+        if (!sreg_write_atomic(path, text.data, text.len)) {
+            fprintf(stderr, "%s: cannot write the registry overlay %s (the change stays in memory only)\n",
+                    caller, path);
+            rc = SREG_ERR_IO;
+        }
+    }
+    if (!rc) s_sreg_dirty = 0;
+    free(text.data);
+    free(path);
+    return rc;
+}
+
+/* Read a NUL-terminated guest name of at most cap - 1 bytes into out. Returns 0, ILLEGAL_ADDR when
+ * the pointer is NULL or a byte before the terminator is unreadable, or NAMETOOLONG when the first
+ * cap bytes hold no terminator. */
+static uint32_t sreg_guest_name(uint32_t addr, char *out, uint32_t cap) {
+    out[0] = '\0';
+    if (!addr) return SREG_ERR_ILLEGAL_ADDR;
+    for (uint32_t i = 0; i < cap; i++) {
+        uint32_t cur = 0;
+        if (!sr_size_add_ok(addr, i, &cur) || !sr_guest_span_readable(cur, 1u)) {
+            out[0] = '\0';
+            return SREG_ERR_ILLEGAL_ADDR;
+        }
+        out[i] = (char)MEM_R8(cur);
+        if (!out[i]) return 0;
+    }
+    out[0] = '\0';
+    return SREG_ERR_NAMETOOLONG;
+}
+
+static int sreg_slot_index(uint32_t h, uint32_t tag, uint32_t slots) {
     uint32_t n = h & 0xffu;
-    if ((h & 0xffff0000u) != tag || (h & 0xff00u) || n == 0u || n > SREG_SLOTS) return -1;
-    return open[n - 1u] ? (int)(n - 1u) : -1;
+    if ((h & 0xffff0000u) != tag || (h & 0xff00u) || n == 0u || n > slots) return -1;
+    return (int)(n - 1u);
 }
 
-static int sreg_free_slot(const uint8_t *open) {
-    for (uint32_t i = 0; i < SREG_SLOTS; i++)
-        if (!open[i]) return (int)i;
+static int sreg_reg_slot(uint32_t h) {
+    int slot = sreg_slot_index(h, SREG_TAG_REG, SREG_REG_SLOTS);
+    return slot >= 0 && s_sreg_reg[slot].open ? slot : -1;
+}
+
+/* An open category handle whose category still exists: removing a category leaves its handles
+ * stale, and they are refused with EBADF (closing one still succeeds). */
+static int sreg_cat_slot(uint32_t h) {
+    int slot = sreg_slot_index(h, SREG_TAG_CAT, SREG_CAT_SLOTS), node;
+    if (slot < 0 || !s_sreg_cat[slot].open) return -1;
+    node = s_sreg_cat[slot].node;
+    if (node < 0 || node >= (int)SREG_MAX_NODES || s_sreg_nodes[node].id != s_sreg_cat[slot].node_id)
+        return -1;
+    return slot;
+}
+
+/* The entry a key handle names, provided it belongs to the category. */
+static int sreg_key_by_handle(uint32_t hk, int cat) {
+    uint32_t id = hk & 0xffffu;
+    if ((hk & 0xffff0000u) != SREG_TAG_KEY || id == 0u) return -1;
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++)
+        if (s_sreg_nodes[i].id == id) return s_sreg_nodes[i].parent == cat ? (int)i : -1;
     return -1;
 }
 
-static int sreg_find_category(const char *path) {
-    for (uint32_t i = 0; i < sizeof(s_sreg_categories) / sizeof(s_sreg_categories[0]); i++)
-        if (strcmp(s_sreg_categories[i], path) == 0) return (int)i;
-    return -1;
+/* Look up the entry named by a guest string in an open category. */
+static uint32_t sreg_lookup_entry(int slot, uint32_t name_addr, const char *caller, int *node_out) {
+    char key[SREG_NAME_BYTES];
+    uint32_t rc = sreg_guest_name(name_addr, key, SREG_NAME_BYTES);
+    int node;
+    if (rc) return rc;
+    node = sreg_child(s_sreg_cat[slot].node, key);
+    if (node < 0) {
+        char path[SREG_PATH_BYTES];
+        if (!sreg_node_path(s_sreg_cat[slot].node, path, sizeof(path))) path[0] = '\0';
+        fprintf(stderr, "%s: unknown key \"%s\" in category \"%s\" (virtual system registry fails closed)\n",
+                caller, key, path);
+        return SREG_ERR_NOENT;
+    }
+    *node_out = node;
+    return 0;
 }
 
-static int sreg_find_key(int cat, const char *name) {
-    for (uint32_t i = 0; i < sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]); i++)
-        if (strcmp(s_sreg_keys[i].category, s_sreg_categories[cat]) == 0 &&
-            strcmp(s_sreg_keys[i].key, name) == 0)
-            return (int)i;
-    return -1;
+static uint32_t sreg_refuse_read_only(const char *caller) {
+    fprintf(stderr, "%s: refused: the handle was opened with mode 1 (read only)\n", caller);
+    return SREG_ERR_ACCES;
 }
 
-static uint32_t sreg_key_size(const SregKey *k) {
-    return k->type == SREG_TYPE_INT ? 4u : (uint32_t)strlen(k->str) + 1u;
+/* Copy a value key into a guest buffer of buf_size bytes; a buffer smaller than the value is
+ * refused, and a string value includes whatever NUL it was stored with. */
+static uint32_t sreg_copy_out(int node, uint32_t buf, uint32_t buf_size) {
+    const SregNode *n = &s_sreg_nodes[node];
+    if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
+    if (buf_size < n->size) return SREG_ERR_INVAL;
+    if (!buf || !sr_guest_span_writable(buf, n->size)) return SREG_ERR_ILLEGAL_ADDR;
+    for (uint32_t i = 0; i < n->size; i++) MEM_W8(buf + i, n->value[i]);
+    return 0;
 }
 
-static int guest_cstr(uint32_t addr, char *out, int max);
+/* sceUtilityGetSystemParamInt's value for a modeled id: the registry key it shares, else the
+ * system-param table. */
+static uint32_t sreg_systemparam_int(uint32_t id) {
+    sreg_ensure_loaded();
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        const SregNode *n = &s_sreg_nodes[i];
+        if (n->id && (n->flags & SREG_NODE_DEFAULT) && n->sysparam_id >= 0 &&
+            (uint32_t)n->sysparam_id == id && n->type == SREG_TYPE_INT && n->size == 4u)
+            return sreg_get_le32(n->value);
+    }
+    return systemparam_int_value(id);
+}
 
-/* sceRegOpenRegistry(RegParam *reg, int mode, REGHANDLE *h): mode 1 only. */
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Drop the live registry and every handle, as a new process starts: the next sceReg call or
+ * system-param read loads the defaults and the overlay file again. */
+void sr_hle_test_sysreg_reset(void) {
+    sreg_clear_nodes();
+    memset(s_sreg_reg, 0, sizeof(s_sreg_reg));
+    memset(s_sreg_cat, 0, sizeof(s_sreg_cat));
+    s_sreg_loaded = 0;
+    s_sreg_corrupt_on_disk = 0;
+}
+#endif
+
+/* sceRegOpenRegistry(struct RegParam *reg, int mode, REGHANDLE *h): mode 1 (read) or 2 (read/write). */
 static uint32_t h_RegOpenRegistry(CpuState *s) {
     uint32_t reg = A0, mode = A1, out = A2;
-    int slot;
+    int slot = -1;
     if (!reg || !sr_guest_span_readable(reg, SREG_REGPARAM_BYTES)) return SREG_ERR_ILLEGAL_ADDR;
     if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
-    if (mode != 1u) {
-        fprintf(stderr, "sceRegOpenRegistry: mode %u unsupported (the registry opens with mode 1)\n", mode);
+    if (mode != 1u && mode != 2u) {
+        fprintf(stderr, "sceRegOpenRegistry: mode %u unsupported (1 = read, 2 = read/write)\n", mode);
         return SREG_ERR_INVAL;
     }
-    slot = sreg_free_slot(s_sreg_reg_open);
+    for (uint32_t i = 0; i < SREG_REG_SLOTS && slot < 0; i++)
+        if (!s_sreg_reg[i].open) slot = (int)i;
     if (slot < 0) return SREG_ERR_NOMEM;
-    s_sreg_reg_open[slot] = 1;
+    sreg_ensure_loaded();
+    s_sreg_reg[slot].open = 1;
+    s_sreg_reg[slot].mode = (uint8_t)mode;
     MEM_W32(out, SREG_TAG_REG | (uint32_t)(slot + 1));
     return 0;
 }
 
-/* sceRegOpenCategory(REGHANDLE h, const char *name, int mode, REGHANDLE *hd). Mode 2 (read/write)
- * is accepted, but no writer is registered, so an open category cannot change any value. */
+static uint32_t h_RegCloseRegistry(CpuState *s) {
+    int slot = sreg_reg_slot(A0);
+    if (slot < 0) return SREG_ERR_BADF;
+    s_sreg_reg[slot].open = 0;
+    return 0;
+}
+
+/* sceRegFlushRegistry(REGHANDLE h) */
+static uint32_t h_RegFlushRegistry(CpuState *s) {
+    if (sreg_reg_slot(A0) < 0) return SREG_ERR_BADF;
+    return sreg_persist("sceRegFlushRegistry");
+}
+
+/* sceRegOpenCategory(REGHANDLE h, const char *name, int mode, REGHANDLE *hd). Mode 2 opens for
+ * writing and creates a missing category (see the model above). */
 static uint32_t h_RegOpenCategory(CpuState *s) {
-    uint32_t reg = A0, name = A1, mode = A2, out = A3;
-    char path[128];
-    int cat, slot;
-    if (sreg_slot_of(reg, SREG_TAG_REG, s_sreg_reg_open) < 0) return SREG_ERR_BADF;
+    uint32_t reg = A0, name = A1, mode = A2, out = A3, err = 0, rc;
+    char path[SREG_PATH_BYTES];
+    int slot = -1, node, created = 0;
+    if (sreg_reg_slot(reg) < 0) return SREG_ERR_BADF;
     if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
-    /* guest_cstr reports unreadable and unterminated names alike; both are refused as bad spans. */
-    if (!guest_cstr(name, path, (int)sizeof(path))) return SREG_ERR_ILLEGAL_ADDR;
+    rc = sreg_guest_name(name, path, SREG_PATH_BYTES);
+    if (rc) return rc;
     if (mode != 1u && mode != 2u) return SREG_ERR_INVAL;
-    cat = sreg_find_category(path);
-    if (cat < 0) {
-        fprintf(stderr, "sceRegOpenCategory: unknown category \"%s\" (virtual system registry fails closed)\n",
-                path);
-        return SREG_ERR_NOENT;
-    }
-    slot = sreg_free_slot(s_sreg_cat_open);
+    for (uint32_t i = 0; i < SREG_CAT_SLOTS && slot < 0; i++)
+        if (!s_sreg_cat[i].open) slot = (int)i;
     if (slot < 0) return SREG_ERR_NOMEM;
-    s_sreg_cat_open[slot] = 1;
-    s_sreg_cat_index[slot] = cat;
+    node = sreg_walk(path, mode == 2u, 0u, &err, &created);
+    if (node < 0) {
+        if (err == SREG_ERR_NOENT)
+            fprintf(stderr, "sceRegOpenCategory: unknown category \"%s\" (virtual system registry fails closed)\n",
+                    path);
+        return err;
+    }
+    if (created) {
+        s_sreg_dirty = 1;
+        fprintf(stderr, "sceRegOpenCategory: created category \"%s\" (mode-2 open of a missing category)\n",
+                path);
+    }
+    s_sreg_cat[slot].open = 1;
+    s_sreg_cat[slot].mode = (uint8_t)mode;
+    s_sreg_cat[slot].node = node;
+    s_sreg_cat[slot].node_id = s_sreg_nodes[node].id;
     MEM_W32(out, SREG_TAG_CAT | (uint32_t)(slot + 1));
+    return 0;
+}
+
+static uint32_t h_RegCloseCategory(CpuState *s) {
+    int slot = sreg_slot_index(A0, SREG_TAG_CAT, SREG_CAT_SLOTS);
+    if (slot < 0 || !s_sreg_cat[slot].open) return SREG_ERR_BADF;
+    s_sreg_cat[slot].open = 0;
+    return 0;
+}
+
+/* sceRegFlushCategory(REGHANDLE hd) */
+static uint32_t h_RegFlushCategory(CpuState *s) {
+    if (sreg_cat_slot(A0) < 0) return SREG_ERR_BADF;
+    return sreg_persist("sceRegFlushCategory");
+}
+
+/* sceRegRemoveCategory(REGHANDLE h, const char *name): h is the registry handle and name a
+ * category path. Only an empty category a game created can be removed. */
+static uint32_t h_RegRemoveCategory(CpuState *s) {
+    uint32_t err = 0, rc;
+    char path[SREG_PATH_BYTES];
+    int slot = sreg_reg_slot(A0), node;
+    if (slot < 0) return SREG_ERR_BADF;
+    if (s_sreg_reg[slot].mode != 2u) return sreg_refuse_read_only("sceRegRemoveCategory");
+    rc = sreg_guest_name(A1, path, SREG_PATH_BYTES);
+    if (rc) return rc;
+    node = sreg_walk(path, 0, 0u, &err, NULL);
+    if (node < 0) {
+        if (err == SREG_ERR_NOENT)
+            fprintf(stderr, "sceRegRemoveCategory: unknown category \"%s\"\n", path);
+        return err;
+    }
+    if (s_sreg_nodes[node].flags & SREG_NODE_DEFAULT) {
+        fprintf(stderr, "sceRegRemoveCategory: refused: \"%s\" is a modeled system category\n", path);
+        return SREG_ERR_PERM;
+    }
+    if (sreg_has_entries(node)) return SREG_ERR_NOTEMPTY;
+    sreg_free_node(node);
+    s_sreg_dirty = 1;
     return 0;
 }
 
 /* sceRegGetKeyInfo(REGHANDLE hd, const char *name, REGHANDLE *hk, unsigned int *type, SceSize *size).
  * The fifth argument (t0/r8 under MIPS EABI) is the size pointer, read through stack_arg. */
 static uint32_t h_RegGetKeyInfo(CpuState *s) {
-    uint32_t cat = A0, name = A1, hk_out = A2, type_out = A3, size_out = stack_arg(s, 0);
-    char key[64];
-    int slot, idx;
-    slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
+    uint32_t hk_out = A2, type_out = A3, size_out = stack_arg(s, 0), rc;
+    int slot = sreg_cat_slot(A0), node = -1;
     if (slot < 0) return SREG_ERR_BADF;
     if (!hk_out || !sr_guest_span_writable(hk_out, 4u) || !type_out ||
         !sr_guest_span_writable(type_out, 4u) || !size_out || !sr_guest_span_writable(size_out, 4u))
         return SREG_ERR_ILLEGAL_ADDR;
-    if (!guest_cstr(name, key, (int)sizeof(key))) return SREG_ERR_ILLEGAL_ADDR;
-    idx = sreg_find_key(s_sreg_cat_index[slot], key);
-    if (idx < 0) {
-        fprintf(stderr, "sceRegGetKeyInfo: unknown key \"%s\" in category \"%s\" (virtual system registry fails closed)\n",
-                key, s_sreg_categories[s_sreg_cat_index[slot]]);
-        return SREG_ERR_NOENT;
-    }
-    MEM_W32(hk_out, SREG_TAG_KEY | ((uint32_t)(slot + 1) << 8) | (uint32_t)(idx + 1));
-    MEM_W32(type_out, s_sreg_keys[idx].type);
-    MEM_W32(size_out, sreg_key_size(&s_sreg_keys[idx]));
+    rc = sreg_lookup_entry(slot, A1, "sceRegGetKeyInfo", &node);
+    if (rc) return rc;
+    MEM_W32(hk_out, SREG_TAG_KEY | s_sreg_nodes[node].id);
+    MEM_W32(type_out, s_sreg_nodes[node].type);
+    MEM_W32(size_out, s_sreg_nodes[node].size);
     return 0;
 }
 
-/* sceRegGetKeyValue(REGHANDLE hd, REGHANDLE hk, void *buf, SceSize size): copies the value. A
- * buffer smaller than the value is refused; a string value includes its terminating NUL. */
+/* sceRegGetKeyInfoByName(REGHANDLE hd, const char *name, unsigned int *type, SceSize *size) */
+static uint32_t h_RegGetKeyInfoByName(CpuState *s) {
+    uint32_t type_out = A2, size_out = A3, rc;
+    int slot = sreg_cat_slot(A0), node = -1;
+    if (slot < 0) return SREG_ERR_BADF;
+    if (!type_out || !sr_guest_span_writable(type_out, 4u) || !size_out ||
+        !sr_guest_span_writable(size_out, 4u))
+        return SREG_ERR_ILLEGAL_ADDR;
+    rc = sreg_lookup_entry(slot, A1, "sceRegGetKeyInfoByName", &node);
+    if (rc) return rc;
+    MEM_W32(type_out, s_sreg_nodes[node].type);
+    MEM_W32(size_out, s_sreg_nodes[node].size);
+    return 0;
+}
+
+/* sceRegGetKeyValue(REGHANDLE hd, REGHANDLE hk, void *buf, SceSize size) */
 static uint32_t h_RegGetKeyValue(CpuState *s) {
-    uint32_t cat = A0, keyh = A1, buf = A2, size = A3;
-    uint32_t kcat, kidx, need;
-    const SregKey *k;
-    int slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
-    if (slot < 0 || (keyh & 0xffff0000u) != SREG_TAG_KEY) return SREG_ERR_BADF;
-    kcat = (keyh >> 8) & 0xffu;
-    kidx = keyh & 0xffu;
-    if (kcat != (uint32_t)(slot + 1) || kidx == 0u || kidx > sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]))
-        return SREG_ERR_BADF;
-    k = &s_sreg_keys[kidx - 1u];
-    /* A stale key handle can name this slot after it was reopened on another category. */
-    if (strcmp(k->category, s_sreg_categories[s_sreg_cat_index[slot]]) != 0) return SREG_ERR_BADF;
-    need = sreg_key_size(k);
-    if (size < need) return SREG_ERR_INVAL;
-    if (!buf || !sr_guest_span_writable(buf, need)) return SREG_ERR_ILLEGAL_ADDR;
-    if (k->type == SREG_TYPE_INT) {
-        MEM_W32(buf, systemparam_int_value((uint32_t)k->sysparam_id));
-    } else {
-        for (uint32_t i = 0; i < need; i++) MEM_W8(buf + i, (uint8_t)k->str[i]);
+    int slot = sreg_cat_slot(A0), node;
+    if (slot < 0) return SREG_ERR_BADF;
+    /* A key handle of another category, or of an entry removed since, is stale. */
+    node = sreg_key_by_handle(A1, s_sreg_cat[slot].node);
+    if (node < 0) return SREG_ERR_BADF;
+    return sreg_copy_out(node, A2, A3);
+}
+
+/* sceRegGetKeyValueByName(REGHANDLE hd, const char *name, void *buf, SceSize size) */
+static uint32_t h_RegGetKeyValueByName(CpuState *s) {
+    uint32_t rc;
+    int slot = sreg_cat_slot(A0), node = -1;
+    if (slot < 0) return SREG_ERR_BADF;
+    rc = sreg_lookup_entry(slot, A1, "sceRegGetKeyValueByName", &node);
+    if (rc) return rc;
+    return sreg_copy_out(node, A2, A3);
+}
+
+/* sceRegSetKeyValue(REGHANDLE hd, const char *name, const void *buf, SceSize size): the key must
+ * exist (a missing one is ENOENT; titles then call sceRegCreateKey). */
+static uint32_t h_RegSetKeyValue(CpuState *s) {
+    uint32_t buf = A2, size = A3, rc;
+    int slot = sreg_cat_slot(A0), node = -1, changed = 0;
+    SregNode *n;
+    if (slot < 0) return SREG_ERR_BADF;
+    if (s_sreg_cat[slot].mode != 2u) return sreg_refuse_read_only("sceRegSetKeyValue");
+    rc = sreg_lookup_entry(slot, A1, "sceRegSetKeyValue", &node);
+    if (rc) return rc;
+    n = &s_sreg_nodes[node];
+    if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
+    if (size == 0u) return SREG_ERR_INVAL;
+    if (n->type == SREG_TYPE_INT && size != 4u) return SREG_ERR_FTYPE;
+    if (size > n->size) return SREG_ERR_NOSPC;
+    if (!buf || !sr_guest_span_readable(buf, size)) return SREG_ERR_ILLEGAL_ADDR;
+    for (uint32_t i = 0; i < n->size; i++) {
+        uint8_t b = i < size ? MEM_R8(buf + i) : 0u;
+        if (n->value[i] != b) {
+            n->value[i] = b;
+            changed = 1;
+        }
     }
+    if (changed) s_sreg_dirty = 1;
+    if (hle_log_on())
+        fprintf(stderr, "sceRegSetKeyValue: \"%s\" <- %u bytes%s\n", n->name, size, changed ? "" : " (unchanged)");
     return 0;
 }
 
-static uint32_t h_RegCloseCategory(CpuState *s) {
-    int slot = sreg_slot_of(A0, SREG_TAG_CAT, s_sreg_cat_open);
+/* sceRegCreateKey(REGHANDLE hd, const char *name, int type, SceSize size): an INT, STR or BIN key
+ * with size bytes of zero-filled value space. */
+static uint32_t h_RegCreateKey(CpuState *s) {
+    uint32_t type = A2, size = A3, rc;
+    char key[SREG_NAME_BYTES];
+    int slot = sreg_cat_slot(A0), cat;
     if (slot < 0) return SREG_ERR_BADF;
-    s_sreg_cat_open[slot] = 0;
+    if (s_sreg_cat[slot].mode != 2u) return sreg_refuse_read_only("sceRegCreateKey");
+    rc = sreg_guest_name(A1, key, SREG_NAME_BYTES);
+    if (rc) return rc;
+    if (!sreg_name_ok(key)) return SREG_ERR_INVAL;
+    if (type != SREG_TYPE_INT && type != SREG_TYPE_STR && type != SREG_TYPE_BIN) return SREG_ERR_INVAL;
+    if (size == 0u || (type == SREG_TYPE_INT && size != 4u)) return SREG_ERR_INVAL;
+    if (size > SREG_VALUE_MAX) return SREG_ERR_NOSPC;
+    cat = s_sreg_cat[slot].node;
+    if (sreg_child(cat, key) >= 0) return SREG_ERR_EXIST;
+    if (sreg_add(cat, key, type, size, 0u) < 0) return SREG_ERR_NOSPC;
+    s_sreg_dirty = 1;
+    if (hle_log_on()) fprintf(stderr, "sceRegCreateKey: \"%s\" type %u size %u\n", key, type, size);
     return 0;
 }
 
-static uint32_t h_RegCloseRegistry(CpuState *s) {
-    int slot = sreg_slot_of(A0, SREG_TAG_REG, s_sreg_reg_open);
+/* sceRegGetKeysNum(REGHANDLE hd, int *num): the category's keys plus its child categories. */
+static uint32_t h_RegGetKeysNum(CpuState *s) {
+    static int entries[SREG_MAX_NODES];
+    int slot = sreg_cat_slot(A0);
     if (slot < 0) return SREG_ERR_BADF;
-    s_sreg_reg_open[slot] = 0;
+    if (!A1 || !sr_guest_span_writable(A1, 4u)) return SREG_ERR_ILLEGAL_ADDR;
+    MEM_W32(A1, sreg_ordered(s_sreg_cat[slot].node, entries));
+    return 0;
+}
+
+/* sceRegGetKeys(REGHANDLE hd, char *buf, int num): the first num entry names in creation order,
+ * each NUL-padded to REG_KEYNAME_SIZE (27) bytes. A num below the entry count returns that many
+ * names (truncation is a project choice); a negative num is EINVAL. */
+static uint32_t h_RegGetKeys(CpuState *s) {
+    static int entries[SREG_MAX_NODES];
+    uint32_t buf = A1, num = A2, count;
+    int slot = sreg_cat_slot(A0);
+    if (slot < 0) return SREG_ERR_BADF;
+    if ((int32_t)num < 0) return SREG_ERR_INVAL;
+    count = sreg_ordered(s_sreg_cat[slot].node, entries);
+    if (num < count) count = num;
+    if (count == 0u) return 0;
+    /* count <= SREG_MAX_NODES, so the byte count cannot overflow. */
+    if (!buf || !sr_guest_span_writable(buf, count * SREG_NAME_BYTES)) return SREG_ERR_ILLEGAL_ADDR;
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = s_sreg_nodes[entries[i]].name;
+        size_t len = strlen(name);
+        for (uint32_t j = 0; j < SREG_NAME_BYTES; j++)
+            MEM_W8(buf + i * SREG_NAME_BYTES + j, j < len ? (uint8_t)name[j] : 0u);
+    }
     return 0;
 }
 
@@ -1166,9 +2080,10 @@ static uint32_t h_RegCloseRegistry(CpuState *s) {
  *   sceImposeGetLanguageMode(int *language, int *buttonConfirm) writes both back and returns 0.
  *     Either out-pointer is optional in the wrapper ('xx'), so each is written only when the guest
  *     supplied a writable 4-byte span.
- * Defaults come from the same table as sceUtilityGetSystemParamInt, so the two surfaces cannot
- * disagree before the game's first set. The numeric convention for the confirm button is whatever
- * that table reports for id 9; it is deliberately not reinterpreted here. */
+ * Defaults come from the same source as sceUtilityGetSystemParamInt (the system registry over the
+ * system-param table), so the two surfaces cannot disagree before the game's first set. The
+ * numeric convention for the confirm button is whatever that source reports for id 9; it is
+ * deliberately not reinterpreted here. */
 static uint32_t s_impose_language;
 static uint32_t s_impose_button;
 static int s_impose_inited;
@@ -1176,8 +2091,8 @@ static int s_impose_inited;
 static void impose_init_once(void) {
     if (s_impose_inited) return;
     s_impose_inited = 1;
-    s_impose_language = systemparam_int_value(8);  /* SCE_SYSTEMPARAM_ID_INT_LANGUAGE */
-    s_impose_button = systemparam_int_value(9);    /* SCE_SYSTEMPARAM_ID_INT_BUTTON_PREFERENCE */
+    s_impose_language = sreg_systemparam_int(8);  /* SCE_SYSTEMPARAM_ID_INT_LANGUAGE */
+    s_impose_button = sreg_systemparam_int(9);    /* SCE_SYSTEMPARAM_ID_INT_BUTTON_PREFERENCE */
 }
 
 static uint32_t h_ImposeSetLanguageMode(CpuState *s) {
@@ -19964,17 +20879,28 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
-/* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The registry reads the same
- * integer table as the system-param getter, so both are registered here: the executable harness
- * and the production registry then dispatch one mapping. */
+/* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The system-param getter reads
+ * the registry's modeled keys, so both are registered here: the executable harness and the
+ * production registry then dispatch one mapping. sceRegExit (0x9b25edf1), sceRegRemoveKey
+ * (0x3615bc87, no public argument documentation) and sceRegRemoveRegistry (0xdeda92bf, which this
+ * model never performs) stay unregistered, so a call is a visible dispatch miss. */
 static void hle_register_sysreg_handlers(void) {
     sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
     sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_RegOpenRegistry);
-    sr_hle_register(0x1d8a762e, "sceRegOpenCategory", h_RegOpenCategory);
-    sr_hle_register(0xd4475aa8, "sceRegGetKeyInfo", h_RegGetKeyInfo);
-    sr_hle_register(0x28a8e98a, "sceRegGetKeyValue", h_RegGetKeyValue);
-    sr_hle_register(0x0cae832b, "sceRegCloseCategory", h_RegCloseCategory);
     sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_RegCloseRegistry);
+    sr_hle_register(0x39461b4d, "sceRegFlushRegistry", h_RegFlushRegistry);
+    sr_hle_register(0x1d8a762e, "sceRegOpenCategory", h_RegOpenCategory);
+    sr_hle_register(0x0cae832b, "sceRegCloseCategory", h_RegCloseCategory);
+    sr_hle_register(0x0d69bf40, "sceRegFlushCategory", h_RegFlushCategory);
+    sr_hle_register(0x4ca16893, "sceRegRemoveCategory", h_RegRemoveCategory);
+    sr_hle_register(0xd4475aa8, "sceRegGetKeyInfo", h_RegGetKeyInfo);
+    sr_hle_register(0xc5768d02, "sceRegGetKeyInfoByName", h_RegGetKeyInfoByName);
+    sr_hle_register(0x28a8e98a, "sceRegGetKeyValue", h_RegGetKeyValue);
+    sr_hle_register(0x30be0259, "sceRegGetKeyValueByName", h_RegGetKeyValueByName);
+    sr_hle_register(0x17768e14, "sceRegSetKeyValue", h_RegSetKeyValue);
+    sr_hle_register(0x57641a81, "sceRegCreateKey", h_RegCreateKey);
+    sr_hle_register(0x2c0db9dd, "sceRegGetKeysNum", h_RegGetKeysNum);
+    sr_hle_register(0x2d211135, "sceRegGetKeys", h_RegGetKeys);
 }
 
 /* Public APIs reported as first-stop kernel imports in the library sweep.
@@ -20330,8 +21256,7 @@ void sr_hle_init(void) {
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */
 
-    /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers().
-     * The real sceRegExit NID (0x9b25edf1) remains unregistered. */
+    /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers(). */
     hle_register_sysreg_handlers();
     /* sceOpenPSID: returns 16-byte console unique ID; zero-fill is fine for boot. */
     sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);

@@ -90,6 +90,8 @@ extern uint32_t sr_hle_test_stop_module(CpuState *s);
 extern uint32_t sr_hle_test_unload_module(CpuState *s);
 extern uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop);
 extern void sr_hle_test_module_reset(void);
+/* Test-build-only: drop the virtual system registry and its handles, as a new process starts. */
+extern void sr_hle_test_sysreg_reset(void);
 extern uint32_t sr_hle_test_started_export(uint32_t nid);
 extern unsigned sr_hle_test_image_count(void);
 extern unsigned sr_hle_test_module_count(void);
@@ -261,6 +263,18 @@ extern uint32_t sr_vblank_handler(void);
 #define NID_SCE_REG_GET_KEY_INFO 0xd4475aa8u
 #define NID_SCE_REG_GET_KEY_VALUE 0x28a8e98au
 #define NID_SCE_REG_CLOSE_REGISTRY 0xfa8a5739u
+#define NID_SCE_REG_FLUSH_REGISTRY 0x39461b4du
+#define NID_SCE_REG_FLUSH_CATEGORY 0x0d69bf40u
+#define NID_SCE_REG_REMOVE_CATEGORY 0x4ca16893u
+#define NID_SCE_REG_GET_KEY_INFO_BY_NAME 0xc5768d02u
+#define NID_SCE_REG_GET_KEY_VALUE_BY_NAME 0x30be0259u
+#define NID_SCE_REG_SET_KEY_VALUE 0x17768e14u
+#define NID_SCE_REG_CREATE_KEY 0x57641a81u
+#define NID_SCE_REG_GET_KEYS_NUM 0x2c0db9ddu
+#define NID_SCE_REG_GET_KEYS 0x2d211135u
+#define NID_SCE_REG_REMOVE_KEY 0x3615bc87u
+#define NID_SCE_REG_REMOVE_REGISTRY 0xdeda92bfu
+#define NID_SCE_REG_EXIT 0x9b25edf1u
 #define NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT 0xa5da2406u
 #define NID_SCE_RTC_GET_CURRENT_TICK 0x3f7ad767u
 #define NID_SCE_RTC_GET_CURRENT_CLOCK 0x4cfa57b0u
@@ -2731,6 +2745,35 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
     }
 }
 
+/* sceReg virtual system registry (src/rt/hle.c): guest scratch lives in the arena at 0x08b00000,
+ * and the per-user overlay is redirected for the whole run to a build-scoped file (main sets
+ * SR_SYSTEM_REGISTRY), so no test reads or writes the developer's own registry overlay. */
+#define SYSREG_SCRATCH_DIR "build/hle_sysreg"
+#define SYSREG_SCRATCH_FILE SYSREG_SCRATCH_DIR "/system.json"
+#define SYSREG_PARAM 0x08b00000u
+#define SYSREG_OUT 0x08b00400u
+#define SYSREG_NAME 0x08b00800u
+#define SYSREG_NAME2 0x08b00900u
+#define SYSREG_HK 0x08b00c00u
+#define SYSREG_TYPE 0x08b00c04u
+#define SYSREG_SIZE 0x08b00c08u
+#define SYSREG_VAL 0x08b01000u
+#define SYSREG_VAL2 0x08b01100u
+#define SYSREG_KEYS 0x08b02000u
+#define SYSREG_E_ILLEGAL_ADDR 0x80000103u
+#define SYSREG_E_PERM 0x80010001u
+#define SYSREG_E_NOENT 0x80010002u
+#define SYSREG_E_IO 0x80010005u
+#define SYSREG_E_BADF 0x80010009u
+#define SYSREG_E_NOMEM 0x8001000cu
+#define SYSREG_E_ACCES 0x8001000du
+#define SYSREG_E_EXIST 0x80010011u
+#define SYSREG_E_INVAL 0x80010016u
+#define SYSREG_E_NOSPC 0x8001001cu
+#define SYSREG_E_FTYPE 0x8001004fu
+#define SYSREG_E_NOTEMPTY 0x8001005au
+#define SYSREG_E_NAMETOOLONG 0x8001005bu
+
 /* Set the five arguments; for sceRegGetKeyInfo, the fifth (t0/r8 under MIPS EABI) is the size
  * pointer, read through stack_arg. */
 static void sysreg_args(CpuState *cpu, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
@@ -2742,235 +2785,717 @@ static void sysreg_args(CpuState *cpu, uint32_t a0, uint32_t a1, uint32_t a2, ui
     cpu->r[8] = a4;
 }
 
-/* True when sceUtilityGetSystemParamInt(id) succeeds and writes its value to out. */
-static int sysreg_sysparam_int_check(uint32_t id, uint32_t out) {
+static uint32_t sysreg_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
     CpuState cpu;
-    sysreg_args(&cpu, id, out, 0u, 0u, 0u);
-    return sr_syscall(&cpu, NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT) == 0u;
+    sysreg_args(&cpu, a0, a1, a2, a3, a4);
+    return sr_syscall(&cpu, nid);
 }
 
-/* sceReg virtual system registry (read model in hle.c): handle lifecycle, typed key info, value
- * copies, refusals for unknown names, bad handles, bad spans, and short buffers, plus agreement
- * with sceUtilityGetSystemParamInt. Guest scratch lives in the arena at 0x08b00000. */
+/* True when sceUtilityGetSystemParamInt(id) succeeds and writes its value to out. */
+static int sysreg_sysparam_int_check(uint32_t id, uint32_t out) {
+    return sysreg_call(NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT, id, out, 0u, 0u, 0u) == 0u;
+}
+
+static uint32_t sysreg_sysparam_int(uint32_t id) {
+    MEM_W32(SYSREG_VAL2, 0xdeadbeefu);
+    return sysreg_sysparam_int_check(id, SYSREG_VAL2) ? MEM_R32(SYSREG_VAL2) : 0xdeadbeefu;
+}
+
+/* sceRegOpenRegistry; returns the handle, or 0 with *rc set on failure. */
+static uint32_t sysreg_open_registry(uint32_t mode, uint32_t *rc) {
+    uint32_t r;
+    MEM_W32(SYSREG_PARAM, 1u);
+    MEM_W32(SYSREG_OUT, 0u);
+    r = sysreg_call(NID_SCE_REG_OPEN_REGISTRY, SYSREG_PARAM, mode, SYSREG_OUT, 0u, 0u);
+    if (rc) *rc = r;
+    return r == 0u ? MEM_R32(SYSREG_OUT) : 0u;
+}
+
+static uint32_t sysreg_open_category(uint32_t reg, const char *path, uint32_t mode, uint32_t *rc) {
+    uint32_t r;
+    title_hle_write_cstr(SYSREG_NAME, path);
+    MEM_W32(SYSREG_OUT, 0u);
+    r = sysreg_call(NID_SCE_REG_OPEN_CATEGORY, reg, SYSREG_NAME, mode, SYSREG_OUT, 0u);
+    if (rc) *rc = r;
+    return r == 0u ? MEM_R32(SYSREG_OUT) : 0u;
+}
+
+static uint32_t sysreg_key_info(uint32_t cat, const char *key) {
+    title_hle_write_cstr(SYSREG_NAME2, key);
+    MEM_W32(SYSREG_HK, 0u);
+    MEM_W32(SYSREG_TYPE, 0xffffffffu);
+    MEM_W32(SYSREG_SIZE, 0xffffffffu);
+    return sysreg_call(NID_SCE_REG_GET_KEY_INFO, cat, SYSREG_NAME2, SYSREG_HK, SYSREG_TYPE, SYSREG_SIZE);
+}
+
+static uint32_t sysreg_set(uint32_t cat, const char *key, const void *bytes, uint32_t size) {
+    for (uint32_t i = 0; i < size; i++) MEM_W8(SYSREG_VAL + i, ((const uint8_t *)bytes)[i]);
+    title_hle_write_cstr(SYSREG_NAME2, key);
+    return sysreg_call(NID_SCE_REG_SET_KEY_VALUE, cat, SYSREG_NAME2, SYSREG_VAL, size, 0u);
+}
+
+static uint32_t sysreg_set_int(uint32_t cat, const char *key, uint32_t value) {
+    uint8_t le[4] = { (uint8_t)value, (uint8_t)(value >> 8), (uint8_t)(value >> 16), (uint8_t)(value >> 24) };
+    return sysreg_set(cat, key, le, 4u);
+}
+
+static uint32_t sysreg_create(uint32_t cat, const char *key, uint32_t type, uint32_t size) {
+    title_hle_write_cstr(SYSREG_NAME2, key);
+    return sysreg_call(NID_SCE_REG_CREATE_KEY, cat, SYSREG_NAME2, type, size, 0u);
+}
+
+/* sceRegGetKeyValueByName into SYSREG_VAL (pre-filled with 0xaa) with a buf_size-byte buffer. */
+static uint32_t sysreg_get_by_name(uint32_t cat, const char *key, uint32_t buf_size) {
+    for (uint32_t i = 0; i < 64u; i++) MEM_W8(SYSREG_VAL + i, 0xaau);
+    title_hle_write_cstr(SYSREG_NAME2, key);
+    return sysreg_call(NID_SCE_REG_GET_KEY_VALUE_BY_NAME, cat, SYSREG_NAME2, SYSREG_VAL, buf_size, 0u);
+}
+
+static uint32_t sysreg_get_int(uint32_t cat, const char *key) {
+    return sysreg_get_by_name(cat, key, 4u) == 0u ? MEM_R32(SYSREG_VAL) : 0xdeadbeefu;
+}
+
+static uint32_t sysreg_remove_category(uint32_t reg, const char *path) {
+    title_hle_write_cstr(SYSREG_NAME, path);
+    return sysreg_call(NID_SCE_REG_REMOVE_CATEGORY, reg, SYSREG_NAME, 0u, 0u, 0u);
+}
+
+static uint32_t sysreg_keys_num(uint32_t cat) {
+    MEM_W32(SYSREG_OUT, 0xffffffffu);
+    return sysreg_call(NID_SCE_REG_GET_KEYS_NUM, cat, SYSREG_OUT, 0u, 0u, 0u) == 0u ? MEM_R32(SYSREG_OUT)
+                                                                                     : 0xffffffffu;
+}
+
+static void sysreg_fill(uint32_t addr, uint8_t byte, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) MEM_W8(addr + i, byte);
+}
+
+/* The idx-th 27-byte name slot sceRegGetKeys wrote at SYSREG_KEYS equals name, NUL-padded. */
+static int sysreg_keys_slot_is(uint32_t idx, const char *name) {
+    size_t len = strlen(name);
+    for (uint32_t j = 0; j < 27u; j++) {
+        uint8_t want = j < len ? (uint8_t)name[j] : 0u;
+        if (MEM_R8(SYSREG_KEYS + idx * 27u + j) != want) return 0;
+    }
+    return 1;
+}
+
+static void sysreg_env(const char *value) {
+    SetEnvironmentVariableA("SR_SYSTEM_REGISTRY", value);
+    _putenv_s("SR_SYSTEM_REGISTRY", value ? value : "");
+}
+
+static void sysreg_scratch_clean(void) {
+    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(SYSREG_SCRATCH_DIR, NULL);
+    DeleteFileA(SYSREG_SCRATCH_FILE);
+    DeleteFileA(SYSREG_SCRATCH_FILE ".tmp");
+    DeleteFileA(SYSREG_SCRATCH_FILE ".corrupt");
+}
+
+static int sysreg_file_exists(const char *path) {
+    DWORD attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static int sysreg_write_file(const char *path, const char *text, size_t len) {
+    FILE *f = fopen(path, "wb");
+    int ok;
+    if (!f) return 0;
+    ok = fwrite(text, 1u, len, f) == len;
+    return fclose(f) == 0 && ok;
+}
+
+/* The whole file as a NUL-terminated string (NULL when absent); the caller frees it. */
+static char *sysreg_read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    char *text;
+    long size;
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    text = (char *)malloc((size_t)size + 1u);
+    if (text && fread(text, 1u, (size_t)size, f) != (size_t)size) {
+        free(text);
+        text = NULL;
+    }
+    if (text) text[size] = '\0';
+    fclose(f);
+    return text;
+}
+
+/* A new process: the live registry and every handle are dropped, so the next call reloads the
+ * defaults and the overlay file. */
+static void sysreg_restart(void) {
+    sr_hle_test_sysreg_reset();
+}
+
+/* Read model: handle lifecycle, typed key info, value copies, refusals for unknown names, bad
+ * handles, bad spans and short buffers, the category tree, and agreement with
+ * sceUtilityGetSystemParamInt. */
 static void test_sysreg_virtual_registry(void) {
-    const uint32_t REGPARAM = 0x08b00000u, HANDLE_OUT = 0x08b00400u;
-    const uint32_t NAME = 0x08b00800u, NAME2 = 0x08b00900u;
-    const uint32_t HK = 0x08b00c00u, TYPE = 0x08b00c04u, SIZE = 0x08b00c08u;
-    const uint32_t VAL = 0x08b01000u, VAL2 = 0x08b01100u;
-    CpuState cpu;
-    uint32_t r, reg, cat, cat2, cat3, cat4, hk, hk_lang;
-    char long_category[129];
+    static const uint32_t registered[] = {
+        NID_SCE_REG_OPEN_REGISTRY, NID_SCE_REG_CLOSE_REGISTRY, NID_SCE_REG_FLUSH_REGISTRY,
+        NID_SCE_REG_OPEN_CATEGORY, NID_SCE_REG_CLOSE_CATEGORY, NID_SCE_REG_FLUSH_CATEGORY,
+        NID_SCE_REG_REMOVE_CATEGORY, NID_SCE_REG_GET_KEY_INFO, NID_SCE_REG_GET_KEY_INFO_BY_NAME,
+        NID_SCE_REG_GET_KEY_VALUE, NID_SCE_REG_GET_KEY_VALUE_BY_NAME, NID_SCE_REG_SET_KEY_VALUE,
+        NID_SCE_REG_CREATE_KEY, NID_SCE_REG_GET_KEYS_NUM, NID_SCE_REG_GET_KEYS,
+        NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT,
+    };
+    uint32_t r, reg, cat, cat2, cat3, cat4, config, hk, hk_lang;
+    char long_text[301];
+    int all_registered = 1;
 
     reset_fixture();
     sr_hle_init();
-    expect(sr_hle_test_is_registered(NID_SCE_REG_OPEN_REGISTRY) &&
-               sr_hle_test_is_registered(NID_SCE_REG_OPEN_CATEGORY) &&
-               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_INFO) &&
-               sr_hle_test_is_registered(NID_SCE_REG_GET_KEY_VALUE) &&
-               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_CATEGORY) &&
-               sr_hle_test_is_registered(NID_SCE_REG_CLOSE_REGISTRY) &&
-               sr_hle_test_is_registered(NID_SCE_UTILITY_GET_SYSTEM_PARAM_INT),
-           "sceReg family and sceUtilityGetSystemParamInt have production registrations");
+    sysreg_scratch_clean();
+    sysreg_restart();
+    for (size_t i = 0; i < sizeof(registered) / sizeof(registered[0]); i++)
+        all_registered &= sr_hle_test_is_registered(registered[i]) != 0;
+    expect(all_registered, "the sceReg family and sceUtilityGetSystemParamInt have production registrations");
+    expect(!sr_hle_test_is_registered(NID_SCE_REG_REMOVE_KEY) &&
+               !sr_hle_test_is_registered(NID_SCE_REG_REMOVE_REGISTRY) &&
+               !sr_hle_test_is_registered(NID_SCE_REG_EXIT),
+           "sceRegRemoveKey, sceRegRemoveRegistry and sceRegExit stay unregistered (visible dispatch misses)");
 
-    /* Registry handle: mode 1 only; RegParam and out pointers must be guest spans. */
-    MEM_W32(REGPARAM, 1u);
-    sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
-    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
-    reg = MEM_R32(HANDLE_OUT);
+    /* Registry handle: mode 1 or 2; RegParam and out pointers must be guest spans. */
+    reg = sysreg_open_registry(1u, &r);
     expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry with mode 1");
-    sysreg_args(&cpu, REGPARAM, 3u, HANDLE_OUT, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80010016u,
-           "sceRegOpenRegistry refuses an unsupported mode with EINVAL");
-    sysreg_args(&cpu, 0u, 1u, HANDLE_OUT, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+    {
+        uint32_t rw = sysreg_open_registry(2u, &r);
+        expect(r == 0u && rw != 0u && rw != reg, "sceRegOpenRegistry opens the system registry with mode 2");
+        expect(sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, rw, 0u, 0u, 0u, 0u) == 0u,
+               "sceRegCloseRegistry closes the mode-2 registry handle");
+    }
+    expect(sysreg_call(NID_SCE_REG_OPEN_REGISTRY, SYSREG_PARAM, 3u, SYSREG_OUT, 0u, 0u) == SYSREG_E_INVAL &&
+               sysreg_call(NID_SCE_REG_OPEN_REGISTRY, SYSREG_PARAM, 0u, SYSREG_OUT, 0u, 0u) == SYSREG_E_INVAL,
+           "sceRegOpenRegistry refuses modes other than 1 and 2 with EINVAL");
+    expect(sysreg_call(NID_SCE_REG_OPEN_REGISTRY, 0u, 1u, SYSREG_OUT, 0u, 0u) == SYSREG_E_ILLEGAL_ADDR,
            "sceRegOpenRegistry refuses a NULL RegParam pointer");
-    sysreg_args(&cpu, REGPARAM, 1u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x80000103u,
+    expect(sysreg_call(NID_SCE_REG_OPEN_REGISTRY, SYSREG_PARAM, 1u, 0u, 0u, 0u) == SYSREG_E_ILLEGAL_ADDR,
            "sceRegOpenRegistry refuses a NULL handle output");
 
-    /* Category handles: unknown names fail closed with ENOENT. */
-    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
-    cat = MEM_R32(HANDLE_OUT);
+    /* Category handles. */
+    cat = sysreg_open_category(reg, "/CONFIG/SYSTEM/XMB", 1u, &r);
     expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB");
     {
-        uint32_t mode2_cat, mode2_hk;
-
-        title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/XMB");
-        sysreg_args(&cpu, reg, NAME, 2u, HANDLE_OUT, 0u);
-        r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
-        mode2_cat = MEM_R32(HANDLE_OUT);
+        uint32_t mode2_cat = sysreg_open_category(reg, "/CONFIG/SYSTEM/XMB/", 2u, &r), mode2_hk;
         expect(r == 0u && mode2_cat != 0u && mode2_cat != cat,
-               "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB with mode 2");
-        title_hle_write_cstr(NAME2, "language");
-        sysreg_args(&cpu, mode2_cat, NAME2, HK, TYPE, SIZE);
-        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
-        mode2_hk = MEM_R32(HK);
-        expect(r == 0u && mode2_hk != 0u, "mode-2 category still provides readable key info");
-        sysreg_args(&cpu, mode2_cat, mode2_hk, VAL, 4u, 0u);
-        r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
-        expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
-               "mode-2 category still provides readable values");
-        sysreg_args(&cpu, mode2_cat, 0u, 0u, 0u, 0u);
-        expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u,
+               "sceRegOpenCategory opens /CONFIG/SYSTEM/XMB with mode 2 (one trailing '/' is ignored)");
+        r = sysreg_key_info(mode2_cat, "language");
+        mode2_hk = MEM_R32(SYSREG_HK);
+        expect(r == 0u && mode2_hk != 0u, "a mode-2 category still provides readable key info");
+        r = sysreg_call(NID_SCE_REG_GET_KEY_VALUE, mode2_cat, mode2_hk, SYSREG_VAL, 4u, 0u);
+        expect(r == 0u && MEM_R32(SYSREG_VAL) == sysreg_sysparam_int(8u),
+               "a mode-2 category still provides readable values");
+        expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, mode2_cat, 0u, 0u, 0u, 0u) == 0u,
                "sceRegCloseCategory closes the mode-2 category");
     }
-    title_hle_write_cstr(NAME, "/CONFIG/NOPE");
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010002u,
-           "sceRegOpenCategory refuses an unknown category with ENOENT");
-    memset(long_category, 'A', sizeof(long_category) - 1u);
-    long_category[sizeof(long_category) - 1u] = '\0';
-    title_hle_write_cstr(NAME, long_category);
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80000103u,
-           "sceRegOpenCategory refuses a 128-character category name with ILLEGAL_ADDR");
-    sysreg_args(&cpu, 0x12345678u, NAME, 1u, HANDLE_OUT, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x80010009u,
+    (void)sysreg_open_category(reg, "/CONFIG/NOPE", 1u, &r);
+    expect(r == SYSREG_E_NOENT, "sceRegOpenCategory refuses an unknown category with ENOENT");
+    (void)sysreg_open_category(reg, "/CONFIG/NOPE", 1u, &r);
+    expect(r == SYSREG_E_NOENT, "a mode-1 open of a missing category creates nothing");
+    (void)sysreg_open_category(reg, "CONFIG/SYSTEM", 1u, &r);
+    expect(r == SYSREG_E_NOENT, "a category path without its leading '/' is refused with ENOENT");
+    (void)sysreg_open_category(reg, "/CONFIG//SYSTEM", 1u, &r);
+    expect(r == SYSREG_E_NOENT, "a category path with an empty component is refused with ENOENT");
+    (void)sysreg_open_category(reg, "/", 1u, &r);
+    expect(r == SYSREG_E_NOENT, "the bare root path names no category");
+    (void)sysreg_open_category(reg, "/CONFIG/ABCDEFGHIJKLMNOPQRSTUVWXYZA", 1u, &r);
+    expect(r == SYSREG_E_NAMETOOLONG, "a 27-byte path component is refused with ENAMETOOLONG");
+    memset(long_text, 'A', sizeof(long_text) - 1u);
+    long_text[0] = '/';
+    long_text[sizeof(long_text) - 1u] = '\0';
+    (void)sysreg_open_category(reg, long_text, 1u, &r);
+    expect(r == SYSREG_E_NAMETOOLONG, "a category path with no NUL in 256 bytes is refused with ENAMETOOLONG");
+    MEM_W8(0x0bfffffeu, '/');
+    MEM_W8(0x0bffffffu, 'C');
+    expect(sysreg_call(NID_SCE_REG_OPEN_CATEGORY, reg, 0x0bfffffeu, 1u, SYSREG_OUT, 0u) == SYSREG_E_ILLEGAL_ADDR,
+           "a category name that runs off guest memory is refused with ILLEGAL_ADDR");
+    expect(sysreg_call(NID_SCE_REG_OPEN_CATEGORY, 0x12345678u, SYSREG_NAME, 1u, SYSREG_OUT, 0u) == SYSREG_E_BADF,
            "sceRegOpenCategory refuses a bad registry handle with EBADF");
 
-    /* Integer key: type and size, then the value must equal the system-param table. */
-    title_hle_write_cstr(NAME2, "language");
-    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
-    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
-    hk = MEM_R32(HK);
-    expect(r == 0u && MEM_R32(TYPE) == 2u && MEM_R32(SIZE) == 4u && hk != 0u,
+    /* Integer keys: type and size, then the value must equal the system-param getter. */
+    r = sysreg_key_info(cat, "language");
+    hk = MEM_R32(SYSREG_HK);
+    expect(r == 0u && MEM_R32(SYSREG_TYPE) == 2u && MEM_R32(SYSREG_SIZE) == 4u && hk != 0u,
            "sceRegGetKeyInfo reports language as an INT of 4 bytes");
-    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
-    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
-    expect(r == 0u && sysreg_sysparam_int_check(8u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+    r = sysreg_call(NID_SCE_REG_GET_KEY_VALUE, cat, hk, SYSREG_VAL, 4u, 0u);
+    expect(r == 0u && MEM_R32(SYSREG_VAL) == sysreg_sysparam_int(8u),
            "registry language agrees with sceUtilityGetSystemParamInt(LANGUAGE)");
-    sysreg_args(&cpu, cat, hk, VAL, 2u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_VALUE, cat, hk, SYSREG_VAL, 2u, 0u) == SYSREG_E_INVAL,
            "sceRegGetKeyValue refuses a buffer smaller than the INT value with EINVAL");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_VALUE, cat, hk, 0u, 4u, 0u) == SYSREG_E_ILLEGAL_ADDR,
+           "sceRegGetKeyValue refuses a NULL value buffer");
     hk_lang = hk;
-
-    title_hle_write_cstr(NAME2, "button_assign");
-    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
-    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
-    hk = MEM_R32(HK);
-    sysreg_args(&cpu, cat, hk, VAL, 4u, 0u);
-    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
-    expect(r == 0u && sysreg_sysparam_int_check(9u, VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
+    expect(sysreg_get_int(cat, "button_assign") == sysreg_sysparam_int(9u),
            "registry button_assign agrees with sceUtilityGetSystemParamInt(BUTTON_PREFERENCE)");
+    MEM_W32(SYSREG_TYPE, 0u);
+    MEM_W32(SYSREG_SIZE, 0u);
+    title_hle_write_cstr(SYSREG_NAME2, "button_assign");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_INFO_BY_NAME, cat, SYSREG_NAME2, SYSREG_TYPE, SYSREG_SIZE, 0u) == 0u &&
+               MEM_R32(SYSREG_TYPE) == 2u && MEM_R32(SYSREG_SIZE) == 4u,
+           "sceRegGetKeyInfoByName reports button_assign as an INT of 4 bytes");
+    expect(sysreg_get_by_name(cat, "button_assign", 3u) == SYSREG_E_INVAL,
+           "sceRegGetKeyValueByName refuses a buffer smaller than the value with EINVAL");
 
-    /* Keys under the date and network categories agree with the same table. */
-    title_hle_write_cstr(NAME, "/CONFIG/DATE");
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
-    cat2 = MEM_R32(HANDLE_OUT);
+    cat2 = sysreg_open_category(reg, "/CONFIG/DATE", 1u, &r);
     expect(r == 0u && cat2 != 0u && cat2 != cat, "sceRegOpenCategory opens /CONFIG/DATE in its own slot");
     {
         static const char *const date_keys[] = { "date_format", "time_format", "time_zone_offset", "summer_time" };
         static const uint32_t date_ids[] = { 4u, 5u, 6u, 7u };
-        for (uint32_t i = 0; i < 4u; i++) {
-            title_hle_write_cstr(NAME2, date_keys[i]);
-            sysreg_args(&cpu, cat2, NAME2, HK, TYPE, SIZE);
-            r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
-            hk = MEM_R32(HK);
-            sysreg_args(&cpu, cat2, hk, VAL, 4u, 0u);
-            r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
-            expect(r == 0u && sysreg_sysparam_int_check(date_ids[i], VAL2) && MEM_R32(VAL) == MEM_R32(VAL2),
-                   "registry date and time keys agree with sceUtilityGetSystemParamInt");
-        }
+        int agree = 1;
+        for (uint32_t i = 0; i < 4u; i++) agree &= sysreg_get_int(cat2, date_keys[i]) == sysreg_sysparam_int(date_ids[i]);
+        expect(agree, "registry date and time keys agree with sceUtilityGetSystemParamInt");
+    }
+    {
+        uint32_t adhoc = sysreg_open_category(reg, "/CONFIG/NETWORK/ADHOC", 1u, &r);
+        expect(r == 0u && sysreg_get_int(adhoc, "channel") == sysreg_sysparam_int(2u),
+               "registry ad-hoc channel agrees with sceUtilityGetSystemParamInt(ADHOC_CHANNEL)");
+        expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, adhoc, 0u, 0u, 0u, 0u) == 0u,
+               "sceRegCloseCategory closes the ad-hoc category");
     }
 
-    /* String key: the nickname is a NUL-terminated STR of 4 bytes; a 3-byte buffer is too small. */
-    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM");
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    r = sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY);
-    cat3 = MEM_R32(HANDLE_OUT);
-    title_hle_write_cstr(NAME2, "nickname");
-    sysreg_args(&cpu, cat3, NAME2, HK, TYPE, SIZE);
-    r |= sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO);
-    hk = MEM_R32(HK);
-    expect(r == 0u && MEM_R32(TYPE) == 3u && MEM_R32(SIZE) == 4u, "sceRegGetKeyInfo reports nickname as a STR of 4 bytes");
-    sysreg_args(&cpu, cat3, hk, VAL, 3u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010016u,
-           "sceRegGetKeyValue refuses a 3-byte buffer for a 4-byte string with EINVAL");
-    sysreg_args(&cpu, cat3, hk, VAL, 4u, 0u);
-    r = sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE);
-    expect(r == 0u && MEM_R8(VAL) == 'P' && MEM_R8(VAL + 1u) == 'S' && MEM_R8(VAL + 2u) == 'P' &&
-               MEM_R8(VAL + 3u) == 0u,
-           "sceRegGetKeyValue copies the nickname with its terminating NUL");
+    /* No string key has a default: the former invented "PSP" nickname is gone. */
+    cat3 = sysreg_open_category(reg, "/CONFIG/SYSTEM", 1u, &r);
+    expect(r == 0u && sysreg_key_info(cat3, "nickname") == SYSREG_E_NOENT,
+           "/CONFIG/SYSTEM has no invented nickname value (ENOENT)");
 
-    /* Unknown key and the CHARACTER_SET category, which opens but models no keys. */
-    title_hle_write_cstr(NAME2, "no_such_key");
-    sysreg_args(&cpu, cat, NAME2, HK, TYPE, SIZE);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
+    /* The tree: /CONFIG is a category whose entries are its child categories (DIR keys). */
+    config = sysreg_open_category(reg, "/CONFIG", 1u, &r);
+    expect(r == 0u && sysreg_keys_num(config) == 3u, "/CONFIG opens and lists SYSTEM, DATE and NETWORK");
+    sysreg_fill(SYSREG_KEYS, 0x5au, 4u * 27u);
+    expect(sysreg_call(NID_SCE_REG_GET_KEYS, config, SYSREG_KEYS, 3u, 0u, 0u) == 0u &&
+               sysreg_keys_slot_is(0u, "SYSTEM") && sysreg_keys_slot_is(1u, "DATE") &&
+               sysreg_keys_slot_is(2u, "NETWORK") && MEM_R8(SYSREG_KEYS + 3u * 27u) == 0x5au,
+           "sceRegGetKeys writes NUL-padded 27-byte names in creation order and nothing past num");
+    r = sysreg_key_info(config, "SYSTEM");
+    expect(r == 0u && MEM_R32(SYSREG_TYPE) == 1u && MEM_R32(SYSREG_SIZE) == 0u,
+           "a child category is a DIR key of size 0");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_VALUE, config, MEM_R32(SYSREG_HK), SYSREG_VAL, 64u, 0u) == SYSREG_E_FTYPE,
+           "sceRegGetKeyValue refuses a DIR entry with EFTYPE");
+    expect(sysreg_keys_num(cat) == 2u, "/CONFIG/SYSTEM/XMB lists its two modeled keys");
+
+    title_hle_write_cstr(SYSREG_NAME2, "no_such_key");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_INFO, cat, SYSREG_NAME2, SYSREG_HK, SYSREG_TYPE, SYSREG_SIZE) == SYSREG_E_NOENT,
            "sceRegGetKeyInfo refuses an unknown key with ENOENT");
-    title_hle_write_cstr(NAME, "/CONFIG/SYSTEM/CHARACTER_SET");
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u, "sceRegOpenCategory opens CHARACTER_SET");
-    cat4 = MEM_R32(HANDLE_OUT);
-    title_hle_write_cstr(NAME2, "language");
-    sysreg_args(&cpu, cat4, NAME2, HK, TYPE, SIZE);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010002u,
-           "CHARACTER_SET has no modeled keys and refuses lookups with ENOENT");
-    title_hle_write_cstr(NAME, "/CONFIG/DATE");
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0x8001000cu,
-           "sceRegOpenCategory refuses a fifth open category handle with NO_MEMORY");
+    title_hle_write_cstr(SYSREG_NAME2, "abcdefghijklmnopqrstuvwxyz0");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_INFO, cat, SYSREG_NAME2, SYSREG_HK, SYSREG_TYPE, SYSREG_SIZE) == SYSREG_E_NAMETOOLONG,
+           "a 27-byte key name is refused with ENAMETOOLONG");
+    cat4 = sysreg_open_category(reg, "/CONFIG/SYSTEM/CHARACTER_SET", 1u, &r);
+    expect(r == 0u && sysreg_keys_num(cat4) == 0u && sysreg_key_info(cat4, "language") == SYSREG_E_NOENT,
+           "CHARACTER_SET opens with no modeled keys and refuses lookups with ENOENT");
 
     /* Bad handles and spans on the key calls. */
-    sysreg_args(&cpu, 0x12345678u, NAME2, HK, TYPE, SIZE);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80010009u,
+    title_hle_write_cstr(SYSREG_NAME2, "language");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_INFO, 0x12345678u, SYSREG_NAME2, SYSREG_HK, SYSREG_TYPE, SYSREG_SIZE) == SYSREG_E_BADF,
            "sceRegGetKeyInfo refuses a bad category handle with EBADF");
-    title_hle_write_cstr(NAME2, "language");
-    sysreg_args(&cpu, cat, NAME2, HK, 0u, SIZE);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_INFO) == 0x80000103u,
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_INFO, cat, SYSREG_NAME2, SYSREG_HK, 0u, SYSREG_SIZE) == SYSREG_E_ILLEGAL_ADDR,
            "sceRegGetKeyInfo refuses a NULL type output");
-    sysreg_args(&cpu, cat2, hk_lang, VAL, 4u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
+    expect(sysreg_call(NID_SCE_REG_GET_KEYS_NUM, cat, 0u, 0u, 0u, 0u) == SYSREG_E_ILLEGAL_ADDR,
+           "sceRegGetKeysNum refuses a NULL count output");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_VALUE, cat2, hk_lang, SYSREG_VAL, 4u, 0u) == SYSREG_E_BADF,
            "a key handle from /CONFIG/SYSTEM/XMB is refused under /CONFIG/DATE with EBADF");
+    expect(sysreg_call(NID_SCE_REG_GET_KEY_VALUE, cat, 0x524b0000u, SYSREG_VAL, 4u, 0u) == SYSREG_E_BADF,
+           "a key handle naming no entry is refused with EBADF");
 
     /* A stale key handle must not survive reopening its slot on a different category. */
-    sysreg_args(&cpu, cat, 0u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the XMB category");
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0x80010009u,
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat, 0u, 0u, 0u, 0u) == 0u, "sceRegCloseCategory closes the XMB category");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat, 0u, 0u, 0u, 0u) == SYSREG_E_BADF,
            "a closed category handle is refused with EBADF");
-    title_hle_write_cstr(NAME, "/CONFIG/DATE");
-    sysreg_args(&cpu, reg, NAME, 1u, HANDLE_OUT, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_CATEGORY) == 0u && MEM_R32(HANDLE_OUT) == cat,
-           "the reopened slot reuses the closed category handle value");
-    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), hk_lang, VAL, 4u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_GET_KEY_VALUE) == 0x80010009u,
-           "a stale language key handle is refused on the reopened DATE slot with EBADF");
+    {
+        uint32_t reopened = sysreg_open_category(reg, "/CONFIG/DATE", 1u, &r);
+        expect(r == 0u && reopened == cat, "the reopened slot reuses the closed category handle value");
+        expect(sysreg_call(NID_SCE_REG_GET_KEY_VALUE, reopened, hk_lang, SYSREG_VAL, 4u, 0u) == SYSREG_E_BADF,
+               "a stale language key handle is refused on the reopened DATE slot with EBADF");
+        expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, reopened, 0u, 0u, 0u, 0u) == 0u,
+               "sceRegCloseCategory closes the reopened DATE category");
+    }
 
-    /* Close everything and confirm the registry handle is then refused. */
-    sysreg_args(&cpu, MEM_R32(HANDLE_OUT), 0u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the DATE category");
-    sysreg_args(&cpu, cat2, 0u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the second DATE handle");
-    sysreg_args(&cpu, cat3, 0u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes the SYSTEM category");
-    sysreg_args(&cpu, cat4, 0u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_CATEGORY) == 0u, "sceRegCloseCategory closes CHARACTER_SET");
-    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u, "sceRegCloseRegistry closes the registry");
-    sysreg_args(&cpu, reg, 0u, 0u, 0u, 0u);
-    expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0x80010009u,
+    /* Category handle exhaustion: 16 slots, 4 already held (DATE, SYSTEM, /CONFIG, CHARACTER_SET). */
+    {
+        uint32_t held[16];
+        uint32_t opened = 0;
+        for (; opened < 16u; opened++) {
+            held[opened] = sysreg_open_category(reg, "/CONFIG/DATE", 1u, &r);
+            if (r != 0u) break;
+        }
+        expect(opened == 12u && r == SYSREG_E_NOMEM,
+               "sceRegOpenCategory refuses a seventeenth open category handle with NO_MEMORY");
+        for (uint32_t i = 0; i < opened; i++) (void)sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, held[i], 0u, 0u, 0u, 0u);
+    }
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat2, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat3, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, config, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat4, 0u, 0u, 0u, 0u) == 0u,
+           "sceRegCloseCategory closes the remaining categories");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u, "sceRegCloseRegistry closes the registry");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, reg, 0u, 0u, 0u, 0u) == SYSREG_E_BADF,
            "a closed registry handle is refused with EBADF");
     {
-        uint32_t registry_handles[4];
-
-        for (uint32_t i = 0; i < 4u; i++) {
-            sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
-            r = sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY);
-            registry_handles[i] = MEM_R32(HANDLE_OUT);
-            expect(r == 0u && registry_handles[i] != 0u,
-                   "sceRegOpenRegistry opens a handle while a slot is available");
+        uint32_t handles[8];
+        uint32_t opened = 0;
+        for (; opened < 8u; opened++) {
+            handles[opened] = sysreg_open_registry(1u, &r);
+            if (r != 0u) break;
         }
-        sysreg_args(&cpu, REGPARAM, 1u, HANDLE_OUT, 0u, 0u);
-        expect(sr_syscall(&cpu, NID_SCE_REG_OPEN_REGISTRY) == 0x8001000cu,
-               "sceRegOpenRegistry refuses a fifth open registry handle with NO_MEMORY");
-        for (uint32_t i = 0; i < 4u; i++) {
-            sysreg_args(&cpu, registry_handles[i], 0u, 0u, 0u, 0u);
-            expect(sr_syscall(&cpu, NID_SCE_REG_CLOSE_REGISTRY) == 0u,
-                   "sceRegCloseRegistry closes a handle opened for the exhaustion test");
-        }
+        (void)sysreg_open_registry(1u, &r);
+        expect(opened == 8u && r == SYSREG_E_NOMEM,
+               "sceRegOpenRegistry refuses a ninth open registry handle with NO_MEMORY");
+        for (uint32_t i = 0; i < opened; i++) (void)sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, handles[i], 0u, 0u, 0u, 0u);
     }
+    expect(!sysreg_file_exists(SYSREG_SCRATCH_FILE), "reading the registry writes no overlay file");
+}
+
+/* Write model, in memory: mode-1 refusals, typed writes and their size rules, key and category
+ * creation, listing, and removal. Nothing is flushed, so a restart discards every change. */
+static void test_sysreg_write_model(void) {
+    static const uint8_t hello[6] = { 'h', 'e', 'l', 'l', 'o', 0 };
+    static const uint8_t hi[3] = { 'h', 'i', 0 };
+    static const uint8_t blob[4] = { 1, 2, 3, 4 };
+    uint32_t r, reg1, reg2, xmb_ro, xmb_rw, config, made, made_parent;
+    uint8_t big[17];
+    int ok;
+
+    reset_fixture();
+    sr_hle_init();
+    sysreg_scratch_clean();
+    sysreg_restart();
+    reg1 = sysreg_open_registry(1u, &r);
+    reg2 = sysreg_open_registry(2u, &r);
+    expect(reg1 != 0u && reg2 != 0u, "registry handles open in modes 1 and 2");
+    xmb_ro = sysreg_open_category(reg2, "/CONFIG/SYSTEM/XMB", 1u, &r);
+
+    /* Mode-1 handles never write. */
+    expect(sysreg_set_int(xmb_ro, "language", 3u) == SYSREG_E_ACCES,
+           "sceRegSetKeyValue through a mode-1 category handle is refused with EACCES");
+    expect(sysreg_create(xmb_ro, "nk_new", 2u, 4u) == SYSREG_E_ACCES,
+           "sceRegCreateKey through a mode-1 category handle is refused with EACCES");
+    expect(sysreg_remove_category(reg1, "/CONFIG/NOPE") == SYSREG_E_ACCES,
+           "sceRegRemoveCategory through a mode-1 registry handle is refused with EACCES");
+    expect(sysreg_get_int(xmb_ro, "language") == 1u, "a refused write leaves the value unchanged");
+
+    /* The category handle's mode governs writes, not the registry handle's. */
+    xmb_rw = sysreg_open_category(reg1, "/CONFIG/SYSTEM/XMB", 2u, &r);
+    expect(r == 0u && xmb_rw != 0u, "a mode-2 category opens under a mode-1 registry handle");
+    expect(sysreg_set_int(xmb_rw, "language", 3u) == 0u, "sceRegSetKeyValue writes a 4-byte INT");
+    expect(sysreg_get_int(xmb_ro, "language") == 3u, "another handle on the category reads the new value");
+    expect(sysreg_sysparam_int(8u) == 3u, "sceUtilityGetSystemParamInt(LANGUAGE) reports the written value");
+    expect(sysreg_set(xmb_rw, "language", blob, 2u) == SYSREG_E_FTYPE &&
+               sysreg_set(xmb_rw, "language", hello, 6u) == SYSREG_E_FTYPE,
+           "an INT write that is not 4 bytes is refused with EFTYPE");
+    expect(sysreg_set(xmb_rw, "language", blob, 0u) == SYSREG_E_INVAL, "a zero-byte write is refused with EINVAL");
+    title_hle_write_cstr(SYSREG_NAME2, "language");
+    expect(sysreg_call(NID_SCE_REG_SET_KEY_VALUE, xmb_rw, SYSREG_NAME2, 0u, 4u, 0u) == SYSREG_E_ILLEGAL_ADDR,
+           "sceRegSetKeyValue refuses a NULL source buffer");
+    expect(sysreg_set_int(xmb_rw, "no_such_key", 1u) == SYSREG_E_NOENT,
+           "sceRegSetKeyValue on a missing key is refused with ENOENT");
+    expect(sysreg_get_int(xmb_ro, "language") == 3u, "refused writes leave the written value in place");
+
+    /* sceRegCreateKey argument rules. */
+    expect(sysreg_create(xmb_rw, "nk_str", 3u, 16u) == 0u, "sceRegCreateKey creates a 16-byte STR key");
+    expect(sysreg_create(xmb_rw, "nk_str", 3u, 16u) == SYSREG_E_EXIST &&
+               sysreg_create(xmb_rw, "language", 2u, 4u) == SYSREG_E_EXIST,
+           "sceRegCreateKey refuses an existing name with EEXIST");
+    expect(sysreg_create(xmb_rw, "nk_dir", 1u, 4u) == SYSREG_E_INVAL &&
+               sysreg_create(xmb_rw, "nk_bad", 5u, 4u) == SYSREG_E_INVAL &&
+               sysreg_create(xmb_rw, "nk_bad", 0u, 4u) == SYSREG_E_INVAL,
+           "sceRegCreateKey refuses the DIR type and unknown types with EINVAL");
+    expect(sysreg_create(xmb_rw, "nk_bad", 2u, 8u) == SYSREG_E_INVAL &&
+               sysreg_create(xmb_rw, "nk_bad", 3u, 0u) == SYSREG_E_INVAL,
+           "sceRegCreateKey refuses an INT that is not 4 bytes and a zero-size value with EINVAL");
+    expect(sysreg_create(xmb_rw, "nk_bad", 4u, 4097u) == SYSREG_E_NOSPC,
+           "sceRegCreateKey refuses a value larger than 4096 bytes with ENOSPC");
+    expect(sysreg_create(xmb_rw, "abcdefghijklmnopqrstuvwxyz0", 2u, 4u) == SYSREG_E_NAMETOOLONG,
+           "sceRegCreateKey refuses a 27-byte name with ENAMETOOLONG");
+    expect(sysreg_create(xmb_rw, "a/b", 2u, 4u) == SYSREG_E_INVAL && sysreg_create(xmb_rw, "", 2u, 4u) == SYSREG_E_INVAL,
+           "sceRegCreateKey refuses an empty name and a name containing '/' with EINVAL");
+    expect(sysreg_create(xmb_rw, "abcdefghijklmnopqrstuvwxyz", 2u, 4u) == 0u,
+           "sceRegCreateKey accepts a 26-byte name");
+
+    /* STR values: the allocated space is fixed; shorter writes zero-fill the rest. */
+    r = sysreg_key_info(xmb_rw, "nk_str");
+    expect(r == 0u && MEM_R32(SYSREG_TYPE) == 3u && MEM_R32(SYSREG_SIZE) == 16u,
+           "sceRegGetKeyInfo reports the created key as a 16-byte STR");
+    expect(sysreg_get_by_name(xmb_rw, "nk_str", 16u) == 0u && MEM_R8(SYSREG_VAL) == 0u && MEM_R8(SYSREG_VAL + 15u) == 0u &&
+               MEM_R8(SYSREG_VAL + 16u) == 0xaau,
+           "a created key starts zero-filled and the copy stops at its size");
+    expect(sysreg_set(xmb_rw, "nk_str", hello, 6u) == 0u, "sceRegSetKeyValue writes 6 bytes into the 16-byte STR");
+    ok = sysreg_get_by_name(xmb_rw, "nk_str", 16u) == 0u;
+    for (uint32_t i = 0; i < 16u; i++) ok &= MEM_R8(SYSREG_VAL + i) == (i < 6u ? hello[i] : 0u);
+    expect(ok, "the STR value reads back with a zero-filled tail");
+    expect(sysreg_get_by_name(xmb_rw, "nk_str", 15u) == SYSREG_E_INVAL,
+           "a 15-byte buffer is refused for the 16-byte STR with EINVAL");
+    memset(big, 'x', sizeof(big));
+    expect(sysreg_set(xmb_rw, "nk_str", big, 17u) == SYSREG_E_NOSPC,
+           "a 17-byte write into the 16-byte STR is refused with ENOSPC");
+    expect(sysreg_set(xmb_rw, "nk_str", hi, 3u) == 0u, "a shorter STR write succeeds");
+    ok = sysreg_get_by_name(xmb_rw, "nk_str", 16u) == 0u;
+    for (uint32_t i = 0; i < 16u; i++) ok &= MEM_R8(SYSREG_VAL + i) == (i < 3u ? hi[i] : 0u);
+    expect(ok, "a shorter STR write clears the older, longer value");
+
+    /* BIN values, and the public homebrew write pattern: set, create on ENOENT, set again. */
+    expect(sysreg_create(xmb_rw, "nk_bin", 4u, 4u) == 0u && sysreg_set(xmb_rw, "nk_bin", blob, 4u) == 0u &&
+               sysreg_get_by_name(xmb_rw, "nk_bin", 4u) == 0u && MEM_R32(SYSREG_VAL) == 0x04030201u,
+           "a BIN key round-trips its bytes");
+    expect(sysreg_set_int(xmb_rw, "nk_int", 7u) == SYSREG_E_NOENT && sysreg_create(xmb_rw, "nk_int", 2u, 4u) == 0u &&
+               sysreg_set_int(xmb_rw, "nk_int", 7u) == 0u && sysreg_get_int(xmb_ro, "nk_int") == 7u,
+           "the set / create / set pattern creates and writes a missing INT key");
+
+    /* Listing: entries in creation order, truncated to num, refused for a negative num. */
+    expect(sysreg_keys_num(xmb_rw) == 6u, "the XMB category lists its two defaults and four created keys");
+    sysreg_fill(SYSREG_KEYS, 0x5au, 7u * 27u);
+    expect(sysreg_call(NID_SCE_REG_GET_KEYS, xmb_rw, SYSREG_KEYS, 6u, 0u, 0u) == 0u &&
+               sysreg_keys_slot_is(0u, "language") && sysreg_keys_slot_is(1u, "button_assign") &&
+               sysreg_keys_slot_is(2u, "nk_str") && sysreg_keys_slot_is(3u, "abcdefghijklmnopqrstuvwxyz") &&
+               sysreg_keys_slot_is(4u, "nk_bin") && sysreg_keys_slot_is(5u, "nk_int"),
+           "sceRegGetKeys lists the entries in creation order");
+    sysreg_fill(SYSREG_KEYS, 0x5au, 7u * 27u);
+    expect(sysreg_call(NID_SCE_REG_GET_KEYS, xmb_rw, SYSREG_KEYS, 2u, 0u, 0u) == 0u &&
+               sysreg_keys_slot_is(1u, "button_assign") && MEM_R8(SYSREG_KEYS + 2u * 27u) == 0x5au,
+           "sceRegGetKeys with num 2 writes exactly two names");
+    expect(sysreg_call(NID_SCE_REG_GET_KEYS, xmb_rw, SYSREG_KEYS, 0xffffffffu, 0u, 0u) == SYSREG_E_INVAL,
+           "sceRegGetKeys refuses a negative num with EINVAL");
+    expect(sysreg_call(NID_SCE_REG_GET_KEYS, xmb_rw, 0u, 0u, 0u, 0u) == 0u,
+           "sceRegGetKeys with num 0 writes nothing and needs no buffer");
+
+    /* Categories: a mode-2 open creates a missing path; mode 1 never does. */
+    (void)sysreg_open_category(reg2, "/CONFIG/NAKAGAWA_T/LEAF", 1u, &r);
+    expect(r == SYSREG_E_NOENT, "a mode-1 open of a missing nested category is refused with ENOENT");
+    made = sysreg_open_category(reg2, "/CONFIG/NAKAGAWA_T/LEAF", 2u, &r);
+    expect(r == 0u && made != 0u, "a mode-2 open creates a missing nested category");
+    made_parent = sysreg_open_category(reg2, "/CONFIG/NAKAGAWA_T", 1u, &r);
+    expect(r == 0u && sysreg_keys_num(made_parent) == 1u && sysreg_key_info(made_parent, "LEAF") == 0u &&
+               MEM_R32(SYSREG_TYPE) == 1u,
+           "the created parent opens in mode 1 and lists the leaf as a DIR entry");
+    config = sysreg_open_category(reg2, "/CONFIG", 1u, &r);
+    expect(r == 0u && sysreg_keys_num(config) == 4u, "/CONFIG lists the created category after its defaults");
+    (void)sysreg_open_category(reg2, "/CONFIG/SYSTEM/XMB/language/X", 2u, &r);
+    expect(r == SYSREG_E_EXIST, "a mode-2 open through a value key is refused with EEXIST");
+    (void)sysreg_open_category(reg2, "/CONFIG/SYSTEM/XMB/language", 1u, &r);
+    expect(r == SYSREG_E_NOENT, "a value key does not open as a category");
+    expect(sysreg_set_int(config, "SYSTEM", 1u) == SYSREG_E_ACCES, "a mode-1 /CONFIG handle cannot write");
+    {
+        uint32_t config_rw = sysreg_open_category(reg2, "/CONFIG", 2u, &r);
+        expect(r == 0u && sysreg_set_int(config_rw, "SYSTEM", 1u) == SYSREG_E_FTYPE,
+               "sceRegSetKeyValue on a DIR entry is refused with EFTYPE");
+        expect(sysreg_create(config_rw, "SYSTEM", 2u, 4u) == SYSREG_E_EXIST,
+               "sceRegCreateKey refuses the name of a child category with EEXIST");
+        (void)sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, config_rw, 0u, 0u, 0u, 0u);
+    }
+
+    /* Removal: modeled categories never; created ones only when empty. */
+    expect(sysreg_remove_category(reg2, "/CONFIG/SYSTEM") == SYSREG_E_PERM &&
+               sysreg_remove_category(reg2, "/CONFIG/SYSTEM/CHARACTER_SET") == SYSREG_E_PERM,
+           "sceRegRemoveCategory refuses modeled system categories with EPERM, even an empty one");
+    expect(sysreg_remove_category(reg2, "/CONFIG/NAKAGAWA_T") == SYSREG_E_NOTEMPTY,
+           "sceRegRemoveCategory refuses a category with entries with ENOTEMPTY");
+    expect(sysreg_remove_category(reg2, "/CONFIG/NAKAGAWA_T/LEAF") == 0u, "sceRegRemoveCategory removes an empty created category");
+    expect(sysreg_keys_num(made) == 0xffffffffu &&
+               sysreg_call(NID_SCE_REG_GET_KEYS_NUM, made, SYSREG_OUT, 0u, 0u, 0u) == SYSREG_E_BADF,
+           "a handle on a removed category is stale (EBADF)");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, made, 0u, 0u, 0u, 0u) == 0u, "a stale category handle still closes");
+    expect(sysreg_remove_category(reg2, "/CONFIG/NAKAGAWA_T/LEAF") == SYSREG_E_NOENT,
+           "removing a removed category is refused with ENOENT");
+    expect(sysreg_keys_num(made_parent) == 0u && sysreg_remove_category(reg2, "/CONFIG/NAKAGAWA_T") == 0u,
+           "the emptied parent is removable");
+    expect(sysreg_call(NID_SCE_REG_REMOVE_CATEGORY, 0x12345678u, SYSREG_NAME, 0u, 0u, 0u) == SYSREG_E_BADF,
+           "sceRegRemoveCategory refuses a bad registry handle with EBADF");
+
+    /* Nothing was flushed: no file exists, and a restart serves the defaults again. */
+    expect(!sysreg_file_exists(SYSREG_SCRATCH_FILE), "unflushed writes create no overlay file");
+    sysreg_restart();
+    expect(sysreg_sysparam_int(8u) == 1u, "a restart without a flush discards the written language");
+    reg1 = sysreg_open_registry(1u, &r);
+    xmb_ro = sysreg_open_category(reg1, "/CONFIG/SYSTEM/XMB", 1u, &r);
+    expect(sysreg_key_info(xmb_ro, "nk_str") == SYSREG_E_NOENT, "a restart without a flush discards created keys");
+    sysreg_restart();
+}
+
+/* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
+ * writes nothing, and values equal to their defaults are not recorded. */
+static void test_sysreg_persistence_round_trip(void) {
+    static const uint8_t abc[4] = { 'a', 'b', 'c', 0 };
+    static const uint8_t bytes3[3] = { 0x00, 0xff, 0x10 };
+    uint32_t r, reg, xmb, made;
+    char *text;
+    int ok;
+
+    reset_fixture();
+    sr_hle_init();
+    sysreg_scratch_clean();
+    sysreg_restart();
+    reg = sysreg_open_registry(2u, &r);
+    xmb = sysreg_open_category(reg, "/CONFIG/SYSTEM/XMB", 2u, &r);
+    made = sysreg_open_category(reg, "/CONFIG/NAKAGAWA_RT", 2u, &r);
+    expect(r == 0u && sysreg_set_int(xmb, "language", 5u) == 0u && sysreg_create(made, "title", 3u, 8u) == 0u &&
+               sysreg_set(made, "title", abc, 4u) == 0u && sysreg_create(made, "blob", 4u, 3u) == 0u &&
+               sysreg_set(made, "blob", bytes3, 3u) == 0u,
+           "writes before the flush succeed");
+    expect(!sysreg_file_exists(SYSREG_SCRATCH_FILE), "no overlay file exists before a flush");
+    expect(sysreg_call(NID_SCE_REG_FLUSH_CATEGORY, xmb, 0u, 0u, 0u, 0u) == 0u, "sceRegFlushCategory persists the overlay");
+    text = sysreg_read_file(SYSREG_SCRATCH_FILE);
+    expect(text && strstr(text, "\"schema\": \"nakagawa.psp-system-registry-overlay\"") &&
+               strstr(text, "\"schema_version\": 1") && strstr(text, "\"/CONFIG/NAKAGAWA_RT\"") &&
+               strstr(text, "\"name\": \"language\", \"type\": \"int\", \"value_hex\": \"05000000\"") &&
+               strstr(text, "\"name\": \"blob\", \"type\": \"bin\", \"value_hex\": \"00ff10\"") &&
+               !strstr(text, "button_assign"),
+           "the overlay file records the created category, the keys and the changed default only");
+    free(text);
+    expect(!sysreg_file_exists(SYSREG_SCRATCH_FILE ".tmp"), "the atomic write leaves no temporary file");
+    expect(sysreg_call(NID_SCE_REG_FLUSH_CATEGORY, 0x12345678u, 0u, 0u, 0u, 0u) == SYSREG_E_BADF &&
+               sysreg_call(NID_SCE_REG_FLUSH_REGISTRY, 0x12345678u, 0u, 0u, 0u, 0u) == SYSREG_E_BADF,
+           "the flushes refuse bad handles with EBADF");
+
+    /* A new process loads the overlay. */
+    sysreg_restart();
+    expect(sysreg_sysparam_int(8u) == 5u, "after a restart sceUtilityGetSystemParamInt reports the persisted language");
+    reg = sysreg_open_registry(1u, &r);
+    made = sysreg_open_category(reg, "/CONFIG/NAKAGAWA_RT", 1u, &r);
+    expect(r == 0u, "the created category persists across a restart");
+    ok = sysreg_get_by_name(made, "title", 8u) == 0u;
+    for (uint32_t i = 0; i < 8u; i++) ok &= MEM_R8(SYSREG_VAL + i) == (i < 4u ? abc[i] : 0u);
+    r = sysreg_key_info(made, "title");
+    expect(ok && r == 0u && MEM_R32(SYSREG_TYPE) == 3u && MEM_R32(SYSREG_SIZE) == 8u,
+           "the STR key persists with its type, size and value");
+    expect(sysreg_get_by_name(made, "blob", 3u) == 0u && MEM_R8(SYSREG_VAL) == 0x00u && MEM_R8(SYSREG_VAL + 1u) == 0xffu &&
+               MEM_R8(SYSREG_VAL + 2u) == 0x10u,
+           "the BIN key persists its bytes");
+
+    /* A flush after reads only writes nothing. */
+    DeleteFileA(SYSREG_SCRATCH_FILE);
+    expect(sysreg_call(NID_SCE_REG_FLUSH_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_FLUSH_CATEGORY, made, 0u, 0u, 0u, 0u) == 0u &&
+               !sysreg_file_exists(SYSREG_SCRATCH_FILE),
+           "a flush with no change since the load writes no file");
+
+    /* Setting a default back to its default value drops it from the overlay. */
+    reg = sysreg_open_registry(2u, &r);
+    xmb = sysreg_open_category(reg, "/CONFIG/SYSTEM/XMB", 2u, &r);
+    expect(sysreg_set_int(xmb, "language", 1u) == 0u &&
+               sysreg_call(NID_SCE_REG_FLUSH_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u,
+           "sceRegFlushRegistry persists a value set back to its default");
+    text = sysreg_read_file(SYSREG_SCRATCH_FILE);
+    expect(text && !strstr(text, "language") && strstr(text, "\"/CONFIG/NAKAGAWA_RT\""),
+           "a default value is not recorded while created entries remain");
+    free(text);
+    sysreg_restart();
+    expect(sysreg_sysparam_int(8u) == 1u, "the restored default survives a restart");
+    sysreg_restart();
+    sysreg_scratch_clean();
+}
+
+/* A corrupt, foreign or inconsistent overlay is reported and ignored as a whole: the defaults are
+ * served, nothing crashes, and the next flush moves the file aside before writing a valid one. */
+static void test_sysreg_corrupt_overlay(void) {
+    static const char *const bad[] = {
+        "not json {",
+        "{\"schema\": \"something-else\", \"schema_version\": 1, \"categories\": [], \"keys\": []}",
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 2, \"categories\": [], \"keys\": []}",
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, \"keys\": []}",
+        /* The first record is valid; the second is not, so neither may apply. */
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, \"categories\": [],"
+        " \"keys\": [{\"category\": \"/CONFIG/SYSTEM/XMB\", \"name\": \"language\", \"type\": \"int\", \"value_hex\": \"07000000\"},"
+        " {\"category\": \"/CONFIG/SYSTEM/XMB\", \"name\": \"button_assign\", \"type\": \"int\", \"value_hex\": \"070000\"}]}",
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, \"categories\": [],"
+        " \"keys\": [{\"category\": \"/CONFIG/SYSTEM/XMB\", \"name\": \"language\", \"type\": \"int\", \"value_hex\": \"0700000g\"}]}",
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, \"categories\": [],"
+        " \"keys\": [{\"category\": \"/CONFIG/SYSTEM/XMB\", \"name\": \"language\", \"type\": \"str\", \"value_hex\": \"07000000\"}]}",
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, \"categories\": [\"/CONFIG/X\"],"
+        " \"keys\": [{\"category\": \"/CONFIG/X\", \"name\": \"k\", \"type\": \"bin\", \"value_hex\": \"01\"},"
+        " {\"category\": \"/CONFIG/X\", \"name\": \"k\", \"type\": \"bin\", \"value_hex\": \"02\"}]}",
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, \"categories\": [\"CONFIG/X\"], \"keys\": []}",
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, \"categories\": [],"
+        " \"keys\": [{\"category\": \"/CONFIG/MISSING\", \"name\": \"k\", \"type\": \"bin\", \"value_hex\": \"01\"}]}",
+    };
+    static const char valid[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1,"
+        " \"categories\": [\"/CONFIG/NAKAGAWA_FX\"], \"keys\": ["
+        "{\"category\": \"/CONFIG/NAKAGAWA_FX\", \"name\": \"k\", \"type\": \"bin\", \"value_hex\": \"0a0B\"},"
+        " {\"category\": \"/CONFIG/SYSTEM/XMB\", \"name\": \"button_assign\", \"type\": \"int\", \"value_hex\": \"00000000\"}],"
+        " \"note\": \"unknown members are ignored\"}";
+    uint32_t r, reg, cat;
+    int all_defaults = 1, all_open = 1;
+    char *text;
+
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        sysreg_scratch_clean();
+        sysreg_write_file(SYSREG_SCRATCH_FILE, bad[i], strlen(bad[i]));
+        sysreg_restart();
+        all_defaults &= sysreg_sysparam_int(8u) == 1u && sysreg_sysparam_int(9u) == 1u;
+        reg = sysreg_open_registry(1u, &r);
+        all_open &= r == 0u && sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u;
+    }
+    expect(all_defaults, "every invalid overlay is ignored as a whole and the defaults are served");
+    expect(all_open, "the registry still opens over every invalid overlay");
+
+    /* An oversized file is refused before parsing. */
+    {
+        size_t big = 1024u * 1024u + 1u;
+        char *spaces = (char *)malloc(big);
+        sysreg_scratch_clean();
+        if (spaces) {
+            memset(spaces, ' ', big);
+            sysreg_write_file(SYSREG_SCRATCH_FILE, spaces, big);
+            free(spaces);
+        }
+        sysreg_restart();
+        expect(spaces && sysreg_sysparam_int(8u) == 1u, "an overlay larger than 1 MiB is ignored");
+    }
+
+    /* A hand-written overlay in the documented schema loads (hex digits in either case). */
+    sysreg_scratch_clean();
+    sysreg_write_file(SYSREG_SCRATCH_FILE, valid, strlen(valid));
+    sysreg_restart();
+    expect(sysreg_sysparam_int(9u) == 0u, "a valid overlay's button_assign reaches sceUtilityGetSystemParamInt");
+    reg = sysreg_open_registry(1u, &r);
+    cat = sysreg_open_category(reg, "/CONFIG/NAKAGAWA_FX", 1u, &r);
+    expect(r == 0u && sysreg_get_by_name(cat, "k", 2u) == 0u && MEM_R8(SYSREG_VAL) == 0x0au && MEM_R8(SYSREG_VAL + 1u) == 0x0bu,
+           "a valid overlay's created category and BIN key load");
+
+    /* The next flush after an ignored overlay moves it aside. */
+    sysreg_scratch_clean();
+    sysreg_write_file(SYSREG_SCRATCH_FILE, bad[0], strlen(bad[0]));
+    sysreg_restart();
+    reg = sysreg_open_registry(2u, &r);
+    cat = sysreg_open_category(reg, "/CONFIG/SYSTEM/XMB", 2u, &r);
+    expect(sysreg_set_int(cat, "language", 4u) == 0u && sysreg_call(NID_SCE_REG_FLUSH_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u,
+           "a flush succeeds after an ignored overlay");
+    text = sysreg_read_file(SYSREG_SCRATCH_FILE ".corrupt");
+    expect(text && strcmp(text, bad[0]) == 0, "the ignored overlay is preserved as <file>.corrupt");
+    free(text);
+    sysreg_restart();
+    expect(sysreg_sysparam_int(8u) == 4u, "the overlay written after the ignored one loads");
+    sysreg_restart();
+    sysreg_scratch_clean();
+}
+
+/* A flush that cannot write reports EIO and keeps the change live in memory. */
+static void test_sysreg_flush_failure(void) {
+    static const char blocker[] = SYSREG_SCRATCH_DIR "/parent_is_a_file";
+    uint32_t r, reg, cat;
+
+    reset_fixture();
+    sr_hle_init();
+    sysreg_scratch_clean();
+    sysreg_write_file(blocker, "x", 1u);
+    sysreg_env(SYSREG_SCRATCH_DIR "/parent_is_a_file/system.json");
+    sysreg_restart();
+    reg = sysreg_open_registry(2u, &r);
+    cat = sysreg_open_category(reg, "/CONFIG/SYSTEM/XMB", 2u, &r);
+    expect(sysreg_set_int(cat, "language", 2u) == 0u &&
+               sysreg_call(NID_SCE_REG_FLUSH_CATEGORY, cat, 0u, 0u, 0u, 0u) == SYSREG_E_IO,
+           "sceRegFlushCategory reports EIO when the overlay cannot be written");
+    expect(sysreg_get_int(cat, "language") == 2u && sysreg_sysparam_int(8u) == 2u,
+           "a failed flush keeps the written value live in memory");
+    sysreg_env(SYSREG_SCRATCH_FILE);
+    sysreg_restart();
+    DeleteFileA(blocker);
+    sysreg_scratch_clean();
 }
 
 /* sceKernelReferThreadProfiler and sceKernelReferGlobalProfiler report NULL (no profiler data
@@ -23699,6 +24224,10 @@ int main(int argc, char **argv) {
     }
     g_mem = g_mem_base + 0x08000000u;
     s_cpu = &s_cpu_store;
+    /* Every mode reads system settings through the virtual registry: point its per-user overlay
+     * at a build-scoped scratch file so no test reads or writes the developer's own. */
+    sysreg_env(SYSREG_SCRATCH_FILE);
+    sysreg_scratch_clean();
 
     /* sched_init() performs the single sr_coro_main() adoption. There is deliberately no
      * separate adoption here: a second call would allocate a second wrapper and redefine
@@ -23750,6 +24279,10 @@ int main(int argc, char **argv) {
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
     test_sysreg_virtual_registry();
+    test_sysreg_write_model();
+    test_sysreg_persistence_round_trip();
+    test_sysreg_corrupt_overlay();
+    test_sysreg_flush_failure();
     test_unregistered_batch_refusals();
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
