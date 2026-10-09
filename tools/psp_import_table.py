@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Defensive PSP ELF import-table parser for the import-coverage audit gate.
+"""Defensive PSP ELF import- and export-table parser.
 
+Used by the import-coverage audit gate and by the guest-module planner.
 Standalone on purpose: tools/analyze.py's Elf class is a trusting pipeline
 loader for a known-good local ELF, while this module is fed arbitrary
 developer-supplied byte buffers (and deliberately malformed CI fixtures).
@@ -10,7 +11,8 @@ Every read is bounds-checked against the file, every guest address is mapped
 through validated PT_LOAD/section ranges, and every failure raises
 ImportTableError with a message instead of crashing, wrapping, or allocating
 based on unvalidated lengths. Nothing here executes or disassembles guest
-code; the output is (library name, function NID) pairs plus stub addresses.
+code; the output is (library name, function NID) pairs plus stub addresses
+for imports, and (library name, attributes, exported NIDs) for exports.
 
 Layout references: psp-fixup-imports (pspsdk/tools) builds the table the PSP
 kernel loader consumes: .sceStub.text holds one 8-byte slot per imported
@@ -26,6 +28,16 @@ names from the window runs (last claimer wins on overlap), marks unclaimed
 slots with the UNATTRIBUTED_LIBRARY marker, and reports structural findings;
 it fails closed on malformed bounds, truncated records, overflow, impossible
 counts, and windows whose NID position disagrees with their stub position.
+
+Exports use the PSP SceLibraryEntryTable layout the module loader consumes
+(the same layout src/rt/hle.c register_prx_exports() publishes when it loads
+a guest module): SceModuleInfo.ent_top..ent_end holds one entry per exported
+library, each starting with a 16-byte header (library-name pointer, version,
+attribute, entry length in words, variable count, function count, entry
+table pointer). The entry table holds every function NID, then every
+variable NID, then the matching guest addresses in the same order. The
+nameless entry carrying the module-lifecycle exports (module_start,
+module_info, ...) has the syslib attribute and is never importable.
 """
 
 from __future__ import annotations
@@ -46,6 +58,22 @@ MAX_LIBNAME_LEN = 128
 # real tables use 5 or 6. Anything outside a small window is hostile/corrupt.
 MIN_STUB_ENTRY_WORDS = 5
 MAX_STUB_ENTRY_WORDS = 32
+# SceLibraryEntryTable.len is in 32-bit words; the 16-byte header is the
+# minimum and real tables use 4 to 6. The upper bound and the export-table span
+# cap are the runtime loader's own (src/rt/hle.c register_prx_exports), so the
+# planner never refuses a table the runtime would publish.
+MIN_EXPORT_ENTRY_WORDS = 4
+MAX_EXPORT_ENTRY_WORDS = 0x40
+MAX_EXPORT_TABLE_BYTES = 0x10000
+EXPORT_ENTRY_HEADER_SIZE = 16
+
+# SceModuleInfo.modattribute bit for a kernel-mode module.
+MODULE_ATTR_KERNEL = 0x1000
+# SceLibraryEntryTable.attribute bits. A kernel-mode module's library is
+# callable from user mode only through the syscall-export bit; the syslib bit
+# marks the nameless module-lifecycle entry, which no module can import.
+LIB_ATTR_SYSCALL_EXPORT = 0x4000
+LIB_ATTR_SYSLIB = 0x8000
 
 MODULE_INFO_SECTION = b".rodata.sceModuleInfo"
 MODULE_INFO_SIZE = 52
@@ -80,6 +108,43 @@ class ImportTable:
     # PSP_MODULE_KERNEL bit (0x1000) marks a kernel-mode module; every other
     # module runs in user mode and may import only user (syscall) libraries.
     module_attributes: int = 0
+
+
+@dataclass(frozen=True)
+class ExportedLibrary:
+    """One SceLibraryEntryTable entry: a library and the NIDs it exports."""
+
+    name: str | None  # None for the nameless module-lifecycle (syslib) entry
+    attributes: int
+    function_nids: tuple[int, ...]
+    variable_nids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class ExportTable:
+    module_attributes: int
+    libraries: tuple[ExportedLibrary, ...]
+
+    @property
+    def kernel_mode(self) -> bool:
+        return bool(self.module_attributes & MODULE_ATTR_KERNEL)
+
+    def user_callable_libraries(self) -> tuple[ExportedLibrary, ...]:
+        """Libraries a user-mode importer can link against.
+
+        Never the syslib entry (it carries the module's own lifecycle
+        exports and has no library name to import by). A user-mode module's
+        named libraries are all directly importable; a kernel-mode module's
+        library reaches user mode only when it carries the syscall-export
+        attribute, and the rest are importable by kernel code alone.
+        """
+        return tuple(
+            library
+            for library in self.libraries
+            if library.name is not None
+            and not library.attributes & LIB_ATTR_SYSLIB
+            and (not self.kernel_mode or library.attributes & LIB_ATTR_SYSCALL_EXPORT)
+        )
 
 
 def _need(data: bytes, off: int, n: int, what: str) -> bytes:
@@ -215,22 +280,23 @@ def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dic
     return gmap, modinfo_vaddr, phdr0_paddr, sections
 
 
-def _locate_module_info(data: bytes, gmap: _GuestMap, modinfo_vaddr: int | None, phdr0_paddr: int | None) -> bytes:
-    """Return the 52-byte SceModuleInfo record, sectioned or sectionless.
+def _find_module_info(
+    data: bytes, gmap: _GuestMap, modinfo_vaddr: int | None, phdr0_paddr: int | None
+) -> bytes | None:
+    """Return the 52-byte SceModuleInfo record, or None when the input declares none.
 
     Sectioned inputs name it via .rodata.sceModuleInfo. Stripped PRX/ELF
     inputs use the PRX loader convention instead: phdr[0].p_paddr with the
     kernel-mode bit (bit 31) masked off is the record's file offset. The
     offset must land inside a mapped load range so a forged p_paddr cannot
-    reach arbitrary file bytes outside guest-visible data.
+    reach arbitrary file bytes outside guest-visible data. An input with
+    neither a module-info section nor a nonzero phdr[0].p_paddr declares no
+    record (None); a declared record that cannot be read is an error.
     """
     if modinfo_vaddr is not None:
         return _read_guest(data, gmap, modinfo_vaddr, MODULE_INFO_SIZE, "SceModuleInfo")
     if not phdr0_paddr:
-        raise ImportTableError(
-            f"no {MODULE_INFO_SECTION.decode()} section and phdr[0].p_paddr is absent/zero; "
-            "cannot locate SceModuleInfo"
-        )
+        return None
     file_off = phdr0_paddr & 0x7FFFFFFF
     for _base, size, range_off in gmap.ranges:
         if range_off <= file_off and file_off + MODULE_INFO_SIZE <= range_off + size:
@@ -239,6 +305,78 @@ def _locate_module_info(data: bytes, gmap: _GuestMap, modinfo_vaddr: int | None,
         f"sectionless SceModuleInfo file offset {file_off:#x} (from phdr[0].p_paddr "
         f"{phdr0_paddr:#x}) is not inside any loaded file range"
     )
+
+
+def _locate_module_info(data: bytes, gmap: _GuestMap, modinfo_vaddr: int | None, phdr0_paddr: int | None) -> bytes:
+    """Return the 52-byte SceModuleInfo record; an input without one is an error."""
+    record = _find_module_info(data, gmap, modinfo_vaddr, phdr0_paddr)
+    if record is None:
+        raise ImportTableError(
+            f"no {MODULE_INFO_SECTION.decode()} section and phdr[0].p_paddr is absent/zero; "
+            "cannot locate SceModuleInfo"
+        )
+    return record
+
+
+def parse_export_table(data: bytes) -> ExportTable | None:
+    """Parse the module attributes and every exported library out of a PSP ELF.
+
+    Returns None when the input declares no SceModuleInfo record at all (see
+    _find_module_info): such an image exports nothing and carries no
+    kernel-mode attribute. Every declared table is read in full or rejected
+    with ImportTableError, including each entry's guest address table, which
+    the loader reads alongside the NIDs.
+    """
+    gmap, modinfo_vaddr, phdr0_paddr, _sections = _parse_elf_maps(data)
+    mi = _find_module_info(data, gmap, modinfo_vaddr, phdr0_paddr)
+    if mi is None:
+        return None
+    (module_attributes,) = struct.unpack_from("<H", mi, 0)
+    ent_top, ent_end = struct.unpack_from("<II", mi, 36)
+    if ent_top > ent_end:
+        raise ImportTableError(f"ent_top {ent_top:#x} is above ent_end {ent_end:#x}")
+    if ent_end - ent_top > MAX_EXPORT_TABLE_BYTES:
+        raise ImportTableError(
+            f"export table spans {ent_end - ent_top:#x} bytes; exceeds the "
+            f"{MAX_EXPORT_TABLE_BYTES:#x}-byte loader bound"
+        )
+
+    libraries: list[ExportedLibrary] = []
+    pos = ent_top
+    while pos < ent_end:
+        what = f"export entry {len(libraries)} at {pos:#x}"
+        if ent_end - pos < EXPORT_ENTRY_HEADER_SIZE:
+            raise ImportTableError(
+                f"{what}: truncated ({ent_end - pos} bytes left, need {EXPORT_ENTRY_HEADER_SIZE})"
+            )
+        header = _read_guest(data, gmap, pos, EXPORT_ENTRY_HEADER_SIZE, what)
+        name_ptr, _version, attributes, size_words, num_vars, num_funcs, entry_table = struct.unpack(
+            "<IHHBBHI", header
+        )
+        if size_words < MIN_EXPORT_ENTRY_WORDS or size_words > MAX_EXPORT_ENTRY_WORDS:
+            raise ImportTableError(
+                f"{what}: entry size {size_words} words outside "
+                f"[{MIN_EXPORT_ENTRY_WORDS}, {MAX_EXPORT_ENTRY_WORDS}]"
+            )
+        next_pos = pos + size_words * 4
+        if next_pos > ent_end:
+            raise ImportTableError(f"{what}: entry size {size_words} words runs past ent_end {ent_end:#x}")
+        if len(libraries) >= MAX_LIBRARIES:
+            raise ImportTableError(f"more than {MAX_LIBRARIES} export entries")
+        count = num_funcs + num_vars
+        if count > MAX_FUNCS_PER_LIB:
+            raise ImportTableError(f"{what}: {count} exports exceeds cap {MAX_FUNCS_PER_LIB}")
+        name = _read_guest_cstr(data, gmap, name_ptr, f"{what} library name") if name_ptr else None
+        nids: tuple[int, ...] = ()
+        if count:
+            if entry_table == 0:
+                raise ImportTableError(f"{what}: {count} exports but null entry table pointer")
+            nid_blob = _read_guest(data, gmap, entry_table, count * 4, f"{what} NID table")
+            _read_guest(data, gmap, entry_table + count * 4, count * 4, f"{what} address table")
+            nids = struct.unpack_from(f"<{count}I", nid_blob)
+        libraries.append(ExportedLibrary(name, attributes, nids[:num_funcs], nids[num_funcs:]))
+        pos = next_pos
+    return ExportTable(module_attributes, tuple(libraries))
 
 
 def parse_import_table(data: bytes) -> ImportTable:

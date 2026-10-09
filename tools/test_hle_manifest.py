@@ -195,6 +195,46 @@ static void init(void) {
         self.assertEqual(len(extract_registrations(src)), 4)
 
 
+class RegisteredNidTests(unittest.TestCase):
+    """The NID set the guest-module planner compares module exports against."""
+
+    def test_every_registration_form_counts(self) -> None:
+        source = SYNTH_SOURCE + """
+static uint32_t h_ControlledUnsupported(CpuState *s) { (void)s; return 0x80010086u; }
+static void sr_hle_register_unsupported(uint32_t nid, const char *name, uint32_t error) { }
+static void more(void) {
+    sr_hle_register_unsupported(0x00000050u, "synthUnavailable", 0x80010086u);
+}
+"""
+        self.assertEqual(
+            hle_manifest.registered_nids(source),
+            frozenset({0x10, 0x20, 0x30, 0x40, 0x50}),
+        )
+
+    def test_commented_out_registration_is_not_registered(self) -> None:
+        source = SYNTH_SOURCE.replace(
+            'sr_hle_register(0x00000020, "synthBeta", h_ok);',
+            '/* sr_hle_register(0x00000020, "synthBeta", h_ok); */',
+        )
+        self.assertNotIn(0x20, hle_manifest.registered_nids(source))
+
+    def test_unaccounted_registration_fails_closed(self) -> None:
+        source = SYNTH_SOURCE.replace(
+            'sr_hle_register(0x00000020, "synthBeta", h_ok);',
+            "sr_hle_register(table[i].nid, table[i].name, table[i].fn);",
+        )
+        with self.assertRaises(ManifestError):
+            hle_manifest.registered_nids(source)
+
+    def test_live_set_matches_the_manifest_extraction(self) -> None:
+        live = hle_manifest.registered_nids()
+        regs = extract_registrations(hle_manifest.runtime_hle_source())
+        self.assertEqual(live, frozenset(r["nid"] for r in regs))
+        origins = {r["origin"] for r in regs}
+        self.assertIn("static", origins)
+        self.assertIn("static_unsupported", origins)
+
+
 class LiveManifestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
