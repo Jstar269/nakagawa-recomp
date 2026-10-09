@@ -496,6 +496,15 @@ After an interrupted case, the maintainer power-cycles the PSP and resumes with
 case starts on the new boot. No automatic retry or semantic result is inferred
 from a host timeout.
 
+The checkpoint never loses its resume position. A stop before the next case is
+launched, such as `TRANSPORT_START_FAILED` or a failed baseline snapshot, leaves
+the checkpoint `IN_PROGRESS` at that case and owes no power cycle; rerun without
+`--confirm-power-cycle`. Only a launched case without a clean completion, or a
+failed soft reset, waits for a power cycle. The checkpoint also records whether
+the `transport-write` preflight qualified host0; a campaign resumes past the
+preflight only when it did, and an interrupted preflight resumes at
+`transport-write`. Interrupted cases accumulate in `interrupted_cases`.
+
 ## Build and hardware handoff
 
 ### Device build identity

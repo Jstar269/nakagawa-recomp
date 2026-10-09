@@ -535,7 +535,9 @@ boot, performs a PSPLink soft reset between completed cases, validates the
 whole private plan in offline dry-run mode, and checkpoints each case. A timed
 out or incomplete launch stops the queue. After the maintainer power-cycles
 and confirms that action, the runner resumes at the next case without
-reclassifying the interrupted capture.
+reclassifying the interrupted capture. A stop before a launch, such as a
+transport start failure, keeps the checkpoint at the same case and needs no
+power-cycle confirmation.
 
 ## 1. The gap this closes
 

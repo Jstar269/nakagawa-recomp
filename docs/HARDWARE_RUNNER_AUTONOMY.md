@@ -57,7 +57,8 @@ bounded start budget (60 seconds by default). USBHostFS prints
 only a wait that follows a connection counts as a device loss. A failure before
 the first launch, including initial shell-qualification exhaustion, ends as
 `TRANSPORT_START_FAILED` with the USBHostFS output tail and manual commands. The
-PSP ran nothing, so it needs no power cycle.
+PSP ran nothing, so it needs no power cycle and a campaign checkpoint keeps its
+resume position.
 
 The reset command's timeout alone did not establish its outcome; the subsequent
 `Shared` to attach to `Connected` to `ver` sequence did establish restored

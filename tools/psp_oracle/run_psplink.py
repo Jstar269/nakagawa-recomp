@@ -2565,6 +2565,213 @@ def _read_hardware_lock(session_id: str) -> tuple[bool, str]:
     return True, "HELD_AND_CONFIRMED"
 
 
+def _checkpoint_waiting(
+    state: dict[str, object], failed_case_id: str | None, resume_case_index: int
+) -> dict[str, object]:
+    """Return ``state`` stopped for a maintainer power cycle at a known position."""
+
+    interrupted = [str(item) for item in state.get("interrupted_cases", [])]
+    if failed_case_id is not None and failed_case_id not in interrupted:
+        interrupted.append(failed_case_id)
+    return {
+        **state,
+        "state": "WAITING_FOR_POWER_CYCLE",
+        "failed_case_id": failed_case_id,
+        "interrupted_cases": interrupted,
+        "next_case_index": resume_case_index,
+        "active_case_index": None,
+        "active_case_id": None,
+        "phase": None,
+    }
+
+
+def _checkpoint_preflight_position(state: dict[str, object], resume_case_index: int) -> int:
+    """Resume past the host0 preflight only after it qualified host0."""
+
+    return resume_case_index if state.get("host0_qualified") is True else 0
+
+
+def _checkpoint_case_started(
+    state: dict[str, object], index: int, case_id: str, phase: str
+) -> dict[str, object]:
+    """Durable record written before a reset (RESET_BEFORE_CASE) or a launch (CASE_ACTIVE)."""
+
+    if phase not in {"RESET_BEFORE_CASE", "CASE_ACTIVE"}:
+        raise ValueError(f"unknown campaign case phase {phase!r}")
+    return {
+        **state,
+        "state": "RUNNING",
+        "active_case_index": index,
+        "active_case_id": case_id,
+        "phase": phase,
+        "next_case_index": index,
+    }
+
+
+def _checkpoint_case_finished(
+    state: dict[str, object],
+    index: int,
+    case_id: str,
+    *,
+    intervention_case_id: str | None,
+    resume_case_index: int | None,
+    host0_qualified: bool,
+) -> dict[str, object]:
+    """Durable record written after a launched case's capture and teardown check."""
+
+    updated = {**state, "host0_qualified": host0_qualified}
+    if intervention_case_id is not None:
+        resume = index + 1 if resume_case_index is None else resume_case_index
+        return _checkpoint_waiting(
+            updated, intervention_case_id, _checkpoint_preflight_position(updated, resume)
+        )
+    completed = [str(item) for item in updated.get("completed_cases", [])]
+    completed.append(case_id)
+    return {
+        **updated,
+        "state": "IN_PROGRESS",
+        "completed_cases": completed,
+        "next_case_index": index + 1,
+        "active_case_index": None,
+        "active_case_id": None,
+        "phase": None,
+    }
+
+
+def _checkpoint_after_run(
+    state: dict[str, object],
+    *,
+    terminal_reason: str | None,
+    intervention_case_id: str | None,
+    resume_case_index: int | None,
+    case_count: int,
+) -> dict[str, object]:
+    """Durable record once the runner has returned.
+
+    The resume position is never discarded. A stop demands a power cycle only
+    when the PSP may have been left running something: the runner asked for
+    physical intervention, or a launched case (phase ``CASE_ACTIVE``) has no
+    completion record. A stop before the active case launched, including a
+    transport start failure, keeps ``IN_PROGRESS`` at that case.
+    """
+
+    if state.get("state") == "WAITING_FOR_POWER_CYCLE":
+        return dict(state)  # the per-case record already holds the resume position
+    running = state.get("state") == "RUNNING"
+    active_index = state.get("active_case_index") if running else None
+    if running and not isinstance(active_index, int):
+        raise ValueError("a running campaign checkpoint must name its active case index")
+    position = active_index if running else state.get("next_case_index")
+    if not isinstance(position, int):
+        raise ValueError("campaign checkpoint has no resume position")
+    launched = running and state.get("phase") == "CASE_ACTIVE"
+
+    if terminal_reason is None and not running:
+        if position == case_count:
+            return {
+                **state,
+                "state": "COMPLETE",
+                "active_case_index": None,
+                "active_case_id": None,
+                "phase": None,
+            }
+        return dict(state)
+    if terminal_reason == "PHYSICAL_INTERVENTION_REQUIRED" or launched:
+        if resume_case_index is None:
+            resume_case_index = position + 1 if launched else position
+        failed = intervention_case_id
+        if failed is None and launched:
+            failed = str(state.get("active_case_id"))
+        return _checkpoint_waiting(
+            state, failed, _checkpoint_preflight_position(state, resume_case_index)
+        )
+    return {
+        **state,
+        "state": "IN_PROGRESS",
+        "next_case_index": position,
+        "active_case_index": None,
+        "active_case_id": None,
+        "phase": None,
+    }
+
+
+def _checkpoint_resume(
+    checkpoint: dict[str, object] | None,
+    *,
+    confirm_power_cycle: bool,
+    case_count: int,
+) -> tuple[int, dict[str, object]] | dict[str, object]:
+    """Return ``(start_index, carried fields)`` for a run, or a refusal/status report."""
+
+    carried: dict[str, object] = {
+        "completed_cases": [],
+        "interrupted_cases": [],
+        "host0_qualified": False,
+    }
+    if checkpoint is None:
+        if confirm_power_cycle:
+            return {"status": "REFUSED", "reason": "no interrupted campaign needs confirmation"}
+        return 0, carried
+
+    carried = {
+        "completed_cases": list(checkpoint.get("completed_cases", [])),
+        "interrupted_cases": list(checkpoint.get("interrupted_cases", [])),
+        "host0_qualified": checkpoint.get("host0_qualified") is True,
+    }
+    state = checkpoint.get("state")
+    if state == "COMPLETE":
+        return {"status": "COMPLETE", "case_count": case_count}
+    if state == "RUNNING":
+        if not confirm_power_cycle:
+            return {
+                "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
+                "reason": "previous launch stopped before a durable case completion",
+                "active_case_id": checkpoint.get("active_case_id"),
+            }
+        phase = checkpoint.get("phase")
+        active_index = checkpoint.get("active_case_index")
+        if not isinstance(active_index, int) or not 0 <= active_index < case_count:
+            return {"status": "REFUSED", "reason": "invalid active case index"}
+        if phase not in {"RESET_BEFORE_CASE", "CASE_ACTIVE"}:
+            return {"status": "REFUSED", "reason": "invalid active case phase"}
+        start_index = active_index + 1 if phase == "CASE_ACTIVE" else active_index
+    elif state == "WAITING_FOR_POWER_CYCLE":
+        if not confirm_power_cycle:
+            return {
+                "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
+                "failed_case_id": checkpoint.get("failed_case_id"),
+                "resume_case_index": checkpoint.get("next_case_index"),
+            }
+        start_index = checkpoint.get("next_case_index")
+    elif state == "IN_PROGRESS":
+        if confirm_power_cycle:
+            return {
+                "status": "REFUSED",
+                "reason": (
+                    "power-cycle confirmation is only accepted after an interrupted case; "
+                    "this checkpoint resumes without it at case index "
+                    f"{checkpoint.get('next_case_index')}"
+                ),
+            }
+        start_index = checkpoint.get("next_case_index")
+    else:
+        return {"status": "REFUSED", "reason": "unknown checkpoint state"}
+    if (
+        not isinstance(start_index, int) or isinstance(start_index, bool)
+        or not 0 <= start_index <= case_count
+    ):
+        return {"status": "REFUSED", "reason": "invalid resume case index"}
+    if 0 < start_index < case_count and carried["host0_qualified"] is not True:
+        return {
+            "status": "REFUSED",
+            "reason": (
+                "checkpoint does not record a qualified transport-write host0 preflight; "
+                "remove the checkpoint to restart the campaign at transport-write"
+            ),
+        }
+    return start_index, carried
+
+
 def run_campaign_plan(
     plan_path: Path,
     *,
@@ -2572,6 +2779,7 @@ def run_campaign_plan(
     confirm_power_cycle: bool,
     pspsh_argv: list[str],
     usbhostfs_argv: list[str],
+    transport_factory: Callable[..., object] | None = None,
 ) -> tuple[int, dict[str, object]]:
     """Validate or execute the resumable, one-launch-per-boot campaign queue."""
 
@@ -2620,52 +2828,13 @@ def run_campaign_plan(
             )
         ):
             return 2, {"status": "REFUSED", "reason": "checkpoint identity mismatch", **summary}
-        if checkpoint.get("state") == "COMPLETE":
-            return 0, {"status": "COMPLETE", "case_count": len(cases), **summary}
-        if checkpoint.get("state") == "RUNNING":
-            if not confirm_power_cycle:
-                return 2, {
-                    "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
-                    "reason": "previous launch stopped before a durable case completion",
-                    "active_case_id": checkpoint.get("active_case_id"),
-                    **summary,
-                }
-            phase = checkpoint.get("phase")
-            active_index = checkpoint.get("active_case_index")
-            if not isinstance(active_index, int) or not 0 <= active_index < len(cases):
-                return 2, {"status": "REFUSED", "reason": "invalid active case index", **summary}
-            start_index = active_index + 1 if phase == "CASE_ACTIVE" else active_index
-            completed = list(checkpoint.get("completed_cases", []))
-        elif checkpoint.get("state") == "WAITING_FOR_POWER_CYCLE":
-            if not confirm_power_cycle:
-                return 2, {
-                    "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
-                    "failed_case_id": checkpoint.get("failed_case_id"),
-                    "resume_case_index": checkpoint.get("next_case_index"),
-                    **summary,
-                }
-            start_index = checkpoint.get("next_case_index")
-            completed = list(checkpoint.get("completed_cases", []))
-        elif checkpoint.get("state") == "IN_PROGRESS":
-            if confirm_power_cycle:
-                return 2, {
-                    "status": "REFUSED",
-                    "reason": "power-cycle confirmation is only accepted after an interrupted case",
-                    **summary,
-                }
-            start_index = checkpoint.get("next_case_index")
-            completed = list(checkpoint.get("completed_cases", []))
-        else:
-            return 2, {"status": "REFUSED", "reason": "unknown checkpoint state", **summary}
-        if not isinstance(start_index, int) or not 0 <= start_index <= len(cases):
-            return 2, {"status": "REFUSED", "reason": "invalid resume case index", **summary}
-    else:
-        if confirm_power_cycle:
-            return 2, {"status": "REFUSED", "reason": "no interrupted campaign needs confirmation", **summary}
-        start_index = 0
-        completed = []
-        checkpoint = None
 
+    resume = _checkpoint_resume(
+        checkpoint, confirm_power_cycle=confirm_power_cycle, case_count=len(cases)
+    )
+    if isinstance(resume, dict):
+        return (0 if resume.get("status") == "COMPLETE" else 2), {**resume, **summary}
+    start_index, carried = resume
     if start_index >= len(cases):
         return 0, {"status": "COMPLETE", "case_count": len(cases), **summary}
 
@@ -2676,7 +2845,7 @@ def run_campaign_plan(
         "session_id": plan["session_id"],
         "queue": list(CAMPAIGN_QUEUE_CASES),
         "state": "IN_PROGRESS",
-        "completed_cases": completed,
+        **carried,
         "next_case_index": start_index,
         "active_case_index": None,
         "active_case_id": None,
@@ -2684,7 +2853,7 @@ def run_campaign_plan(
         "failed_case_id": None,
     }
     _write_campaign_json(checkpoint_path, state)
-    transport = PsplinkProcessTransport(
+    transport = (transport_factory or PsplinkProcessTransport)(
         pspsh_argv=pspsh_argv,
         usbhostfs_argv=usbhostfs_argv,
         host0_root=paths["host0_root"],
@@ -2699,39 +2868,22 @@ def run_campaign_plan(
             if isinstance(plan.get("expected_firmware"), str) else None
         ),
     )
-    runner.host0_qualified = start_index > 0
+    runner.host0_qualified = start_index > 0 and carried["host0_qualified"] is True
     remaining = cases[start_index:]
 
     def record_start(index: int, case: CampaignCase, phase: str) -> None:
-        state.update({
-            "state": "RUNNING",
-            "active_case_index": index,
-            "active_case_id": case.case_id,
-            "phase": phase,
-            "next_case_index": index,
-        })
+        state.update(_checkpoint_case_started(state, index, case.case_id, phase))
         _write_campaign_json(checkpoint_path, state)
 
     def record_complete(index: int, envelope: dict[str, object]) -> None:
-        if runner.intervention_case_id is not None:
-            state.update({
-                "state": "WAITING_FOR_POWER_CYCLE",
-                "failed_case_id": runner.intervention_case_id,
-                "next_case_index": runner.resume_case_index,
-                "active_case_index": None,
-                "active_case_id": None,
-                "phase": None,
-            })
-        else:
-            completed.append(str(envelope["CASE_ID"]))
-            state.update({
-                "state": "IN_PROGRESS",
-                "completed_cases": list(completed),
-                "next_case_index": index + 1,
-                "active_case_index": None,
-                "active_case_id": None,
-                "phase": None,
-            })
+        state.update(_checkpoint_case_finished(
+            state,
+            index,
+            str(envelope["CASE_ID"]),
+            intervention_case_id=runner.intervention_case_id,
+            resume_case_index=runner.resume_case_index,
+            host0_qualified=runner.host0_qualified,
+        ))
         _write_campaign_json(checkpoint_path, state)
 
     report = runner.run(
@@ -2743,18 +2895,15 @@ def run_campaign_plan(
         on_case_start=record_start,
         on_case_complete=record_complete,
     )
-    if runner.terminal_reason == "PHYSICAL_INTERVENTION_REQUIRED" and state.get("state") != "WAITING_FOR_POWER_CYCLE":
-        state.update({
-            "state": "WAITING_FOR_POWER_CYCLE",
-            "failed_case_id": runner.intervention_case_id,
-            "next_case_index": runner.resume_case_index,
-            "active_case_index": None,
-            "active_case_id": None,
-            "phase": None,
-        })
-        _write_campaign_json(checkpoint_path, state)
-    elif not report.get("terminal_reason") and state.get("next_case_index") == len(cases):
-        state.update({"state": "COMPLETE", "active_case_index": None, "active_case_id": None})
+    final_state = _checkpoint_after_run(
+        state,
+        terminal_reason=report.get("terminal_reason"),
+        intervention_case_id=runner.intervention_case_id,
+        resume_case_index=runner.resume_case_index,
+        case_count=len(cases),
+    )
+    if final_state != state:
+        state = final_state
         _write_campaign_json(checkpoint_path, state)
 
     report.update({
@@ -2762,6 +2911,7 @@ def run_campaign_plan(
         "queue_case_count": len(cases),
         "start_case_index": start_index,
         "checkpoint_state": state.get("state"),
+        "checkpoint_next_case_index": state.get("next_case_index"),
         **summary,
     })
     _write_campaign_json(paths["report_path"], report)

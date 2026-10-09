@@ -53,6 +53,10 @@ from psp_oracle.run_psplink import (
     _parse_campaign_records,
     _FIXED_CAMPAIGN_CASES,
     _campaign_queue_summary,
+    _checkpoint_after_run,
+    _checkpoint_case_finished,
+    _checkpoint_case_started,
+    _checkpoint_resume,
     _parse_usbipd_psplink_devices,
     _snapshot_host0_output,
     _wait_for_host0_output,
@@ -3275,6 +3279,401 @@ class TransportStartReadinessTests(unittest.TestCase):
             for value in (0.0, -1.0, float("inf"), float("nan")):
                 with self.assertRaises(ValueError):
                     self._adapter(Path(scratch_name), None, None, start_timeout=value)
+
+
+def _checkpoint_state(**fields):
+    state = {
+        "schema": 1,
+        "campaign_id": "synthetic-campaign",
+        "source_commit": SOURCE_COMMIT,
+        "session_id": "synthetic-session",
+        "queue": list(CAMPAIGN_QUEUE_CASES),
+        "state": "IN_PROGRESS",
+        "completed_cases": [],
+        "interrupted_cases": [],
+        "host0_qualified": False,
+        "next_case_index": 0,
+        "active_case_index": None,
+        "active_case_id": None,
+        "phase": None,
+        "failed_case_id": None,
+    }
+    state.update(fields)
+    return state
+
+
+class CampaignCheckpointTransitionTests(unittest.TestCase):
+    """Every durable checkpoint transition keeps a usable resume position."""
+
+    CASES = len(CAMPAIGN_QUEUE_CASES)
+
+    def test_case_start_records_reset_and_launch_phases(self):
+        base = _checkpoint_state(next_case_index=3, host0_qualified=True)
+        reset = _checkpoint_case_started(base, 3, "wait-outcomes", "RESET_BEFORE_CASE")
+        launch = _checkpoint_case_started(reset, 3, "wait-outcomes", "CASE_ACTIVE")
+        self.assertEqual(
+            (reset["state"], reset["phase"], reset["active_case_index"], reset["next_case_index"]),
+            ("RUNNING", "RESET_BEFORE_CASE", 3, 3),
+        )
+        self.assertEqual((launch["phase"], launch["active_case_id"]), ("CASE_ACTIVE", "wait-outcomes"))
+        with self.assertRaises(ValueError):
+            _checkpoint_case_started(base, 3, "wait-outcomes", "UNKNOWN")
+
+    def test_clean_case_finish_advances_and_records_completion(self):
+        running = _checkpoint_case_started(
+            _checkpoint_state(), 0, "transport-write", "CASE_ACTIVE"
+        )
+        finished = _checkpoint_case_finished(
+            running, 0, "transport-write",
+            intervention_case_id=None, resume_case_index=None, host0_qualified=True,
+        )
+        self.assertEqual(finished["state"], "IN_PROGRESS")
+        self.assertEqual(finished["next_case_index"], 1)
+        self.assertEqual(finished["completed_cases"], ["transport-write"])
+        self.assertTrue(finished["host0_qualified"])
+        self.assertIsNone(finished["active_case_index"])
+        self.assertIsNone(finished["phase"])
+
+    def test_interrupted_case_finish_waits_for_power_cycle_at_the_next_case(self):
+        running = _checkpoint_case_started(
+            _checkpoint_state(next_case_index=1, host0_qualified=True,
+                              completed_cases=["transport-write"]),
+            1, "kernel-alarm", "CASE_ACTIVE",
+        )
+        finished = _checkpoint_case_finished(
+            running, 1, "kernel-alarm",
+            intervention_case_id="kernel-alarm", resume_case_index=2, host0_qualified=True,
+        )
+        self.assertEqual(finished["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(finished["next_case_index"], 2)
+        self.assertEqual(finished["failed_case_id"], "kernel-alarm")
+        self.assertEqual(finished["interrupted_cases"], ["kernel-alarm"])
+        self.assertEqual(finished["completed_cases"], ["transport-write"])
+
+        defaulted = _checkpoint_case_finished(
+            running, 1, "kernel-alarm",
+            intervention_case_id="kernel-alarm", resume_case_index=None, host0_qualified=True,
+        )
+        self.assertEqual(defaulted["next_case_index"], 2)
+
+    def test_interrupted_preflight_without_host0_qualification_resumes_at_the_preflight(self):
+        running = _checkpoint_case_started(_checkpoint_state(), 0, "transport-write", "CASE_ACTIVE")
+        finished = _checkpoint_case_finished(
+            running, 0, "transport-write",
+            intervention_case_id="transport-write", resume_case_index=1, host0_qualified=False,
+        )
+        self.assertEqual(finished["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(finished["next_case_index"], 0)
+        self.assertFalse(finished["host0_qualified"])
+
+    def test_run_end_keeps_a_per_case_power_cycle_record(self):
+        waiting = _checkpoint_state(
+            state="WAITING_FOR_POWER_CYCLE", next_case_index=2, failed_case_id="kernel-alarm",
+            host0_qualified=True,
+        )
+        self.assertEqual(
+            _checkpoint_after_run(
+                waiting, terminal_reason="PHYSICAL_INTERVENTION_REQUIRED",
+                intervention_case_id="kernel-alarm", resume_case_index=2, case_count=self.CASES,
+            ),
+            waiting,
+        )
+
+    def test_run_end_marks_a_finished_queue_complete(self):
+        done = _checkpoint_state(next_case_index=self.CASES, host0_qualified=True)
+        final = _checkpoint_after_run(
+            done, terminal_reason=None, intervention_case_id=None,
+            resume_case_index=None, case_count=self.CASES,
+        )
+        self.assertEqual(final["state"], "COMPLETE")
+        partial = _checkpoint_state(next_case_index=4, host0_qualified=True)
+        self.assertEqual(
+            _checkpoint_after_run(
+                partial, terminal_reason=None, intervention_case_id=None,
+                resume_case_index=None, case_count=self.CASES,
+            ),
+            partial,
+        )
+
+    def test_transport_start_failure_keeps_the_resume_position_without_power_cycle(self):
+        # The 2026-10-08 failure: resumed after a confirmed power cycle at case 1, then the
+        # transport did not start. The position must survive and no confirmation is owed.
+        resumed = _checkpoint_state(
+            next_case_index=1, host0_qualified=True, interrupted_cases=["transport-write"]
+        )
+        final = _checkpoint_after_run(
+            resumed, terminal_reason="TRANSPORT_START_FAILED", intervention_case_id=None,
+            resume_case_index=None, case_count=self.CASES,
+        )
+        self.assertEqual(final["state"], "IN_PROGRESS")
+        self.assertEqual(final["next_case_index"], 1)
+        self.assertEqual(final["interrupted_cases"], ["transport-write"])
+        self.assertIsNone(final["failed_case_id"])
+
+    def test_intervention_without_a_runner_position_never_clobbers_the_checkpoint(self):
+        resumed = _checkpoint_state(next_case_index=1, host0_qualified=True)
+        final = _checkpoint_after_run(
+            resumed, terminal_reason="PHYSICAL_INTERVENTION_REQUIRED",
+            intervention_case_id=None, resume_case_index=None, case_count=self.CASES,
+        )
+        self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(final["next_case_index"], 1)
+
+    def test_stop_after_reset_but_before_launch_resumes_that_case_without_power_cycle(self):
+        reset = _checkpoint_case_started(
+            _checkpoint_state(next_case_index=5, host0_qualified=True),
+            5, "refer-status-size", "RESET_BEFORE_CASE",
+        )
+        final = _checkpoint_after_run(
+            reset, terminal_reason="TEARDOWN_S0_SNAPSHOT_FAILED", intervention_case_id=None,
+            resume_case_index=None, case_count=self.CASES,
+        )
+        self.assertEqual(final["state"], "IN_PROGRESS")
+        self.assertEqual(final["next_case_index"], 5)
+        self.assertIsNone(final["active_case_index"])
+
+    def test_failed_reset_waits_for_power_cycle_at_the_unlaunched_case(self):
+        reset = _checkpoint_case_started(
+            _checkpoint_state(next_case_index=5, host0_qualified=True),
+            5, "refer-status-size", "RESET_BEFORE_CASE",
+        )
+        final = _checkpoint_after_run(
+            reset, terminal_reason="PHYSICAL_INTERVENTION_REQUIRED",
+            intervention_case_id="ge-break-continue", resume_case_index=5, case_count=self.CASES,
+        )
+        self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(final["next_case_index"], 5)
+        self.assertEqual(final["failed_case_id"], "ge-break-continue")
+
+    def test_launched_case_without_completion_record_waits_for_power_cycle(self):
+        launched = _checkpoint_case_started(
+            _checkpoint_state(next_case_index=7, host0_qualified=True),
+            7, "kernel-misc", "CASE_ACTIVE",
+        )
+        final = _checkpoint_after_run(
+            launched, terminal_reason="CHECKPOINT_WRITE_FAILED", intervention_case_id=None,
+            resume_case_index=None, case_count=self.CASES,
+        )
+        self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(final["next_case_index"], 8)
+        self.assertEqual(final["failed_case_id"], "kernel-misc")
+
+    def test_running_checkpoint_without_active_index_is_rejected(self):
+        with self.assertRaises(ValueError):
+            _checkpoint_after_run(
+                _checkpoint_state(state="RUNNING"), terminal_reason="TRANSPORT_START_FAILED",
+                intervention_case_id=None, resume_case_index=None, case_count=self.CASES,
+            )
+
+    def test_resume_without_checkpoint(self):
+        self.assertEqual(
+            _checkpoint_resume(None, confirm_power_cycle=False, case_count=self.CASES),
+            (0, {"completed_cases": [], "interrupted_cases": [], "host0_qualified": False}),
+        )
+        refused = _checkpoint_resume(None, confirm_power_cycle=True, case_count=self.CASES)
+        self.assertEqual(refused["status"], "REFUSED")
+
+    def test_resume_complete_checkpoint(self):
+        result = _checkpoint_resume(
+            _checkpoint_state(state="COMPLETE", next_case_index=self.CASES),
+            confirm_power_cycle=False, case_count=self.CASES,
+        )
+        self.assertEqual(result["status"], "COMPLETE")
+
+    def test_resume_running_checkpoint_requires_confirmation_and_skips_a_launched_case(self):
+        launched = _checkpoint_state(
+            state="RUNNING", active_case_index=4, active_case_id="ge-break-continue",
+            phase="CASE_ACTIVE", next_case_index=4, host0_qualified=True,
+        )
+        waiting = _checkpoint_resume(launched, confirm_power_cycle=False, case_count=self.CASES)
+        self.assertEqual(waiting["status"], "WAITING_FOR_POWER_CYCLE_CONFIRMATION")
+        start, carried = _checkpoint_resume(launched, confirm_power_cycle=True, case_count=self.CASES)
+        self.assertEqual(start, 5)
+        self.assertTrue(carried["host0_qualified"])
+        reset = dict(launched, phase="RESET_BEFORE_CASE")
+        self.assertEqual(
+            _checkpoint_resume(reset, confirm_power_cycle=True, case_count=self.CASES)[0], 4
+        )
+        for broken in (dict(launched, active_case_index=None), dict(launched, phase=None)):
+            refused = _checkpoint_resume(broken, confirm_power_cycle=True, case_count=self.CASES)
+            self.assertEqual(refused["status"], "REFUSED")
+
+    def test_resume_waiting_checkpoint_requires_confirmation(self):
+        waiting = _checkpoint_state(
+            state="WAITING_FOR_POWER_CYCLE", next_case_index=1, failed_case_id="transport-write",
+            host0_qualified=True,
+        )
+        status = _checkpoint_resume(waiting, confirm_power_cycle=False, case_count=self.CASES)
+        self.assertEqual(status["status"], "WAITING_FOR_POWER_CYCLE_CONFIRMATION")
+        self.assertEqual(status["resume_case_index"], 1)
+        self.assertEqual(
+            _checkpoint_resume(waiting, confirm_power_cycle=True, case_count=self.CASES)[0], 1
+        )
+        clobbered = dict(waiting, next_case_index=None)
+        refused = _checkpoint_resume(clobbered, confirm_power_cycle=True, case_count=self.CASES)
+        self.assertEqual(refused, {"status": "REFUSED", "reason": "invalid resume case index"})
+
+    def test_resume_in_progress_checkpoint_refuses_a_confirmation(self):
+        in_progress = _checkpoint_state(next_case_index=1, host0_qualified=True)
+        self.assertEqual(
+            _checkpoint_resume(in_progress, confirm_power_cycle=False, case_count=self.CASES)[0], 1
+        )
+        refused = _checkpoint_resume(in_progress, confirm_power_cycle=True, case_count=self.CASES)
+        self.assertEqual(refused["status"], "REFUSED")
+        self.assertIn("case index 1", refused["reason"])
+
+    def test_resume_rejects_unknown_state_and_non_integer_positions(self):
+        for checkpoint in (
+            _checkpoint_state(state="PAUSED"),
+            _checkpoint_state(next_case_index=True, host0_qualified=True),
+            _checkpoint_state(next_case_index=self.CASES + 1, host0_qualified=True),
+            _checkpoint_state(next_case_index=-1),
+        ):
+            result = _checkpoint_resume(checkpoint, confirm_power_cycle=False, case_count=self.CASES)
+            self.assertEqual(result["status"], "REFUSED")
+
+    def test_resume_past_the_preflight_requires_recorded_host0_qualification(self):
+        legacy = _checkpoint_state(next_case_index=1)
+        del legacy["host0_qualified"]
+        for checkpoint in (legacy, _checkpoint_state(next_case_index=1)):
+            refused = _checkpoint_resume(checkpoint, confirm_power_cycle=False, case_count=self.CASES)
+            self.assertEqual(refused["status"], "REFUSED")
+            self.assertIn("transport-write host0 preflight", refused["reason"])
+        start, _carried = _checkpoint_resume(
+            _checkpoint_state(next_case_index=0), confirm_power_cycle=False, case_count=self.CASES
+        )
+        self.assertEqual(start, 0)
+
+
+class CampaignPlanCheckpointTests(unittest.TestCase):
+    """run_campaign_plan writes the transitions above around a simulated PSPLink."""
+
+    def _plan(self, scratch: Path) -> Path:
+        host0_root = scratch / "host0"
+        host0_root.mkdir()
+        cases = []
+        for case_id in CAMPAIGN_QUEUE_CASES:
+            (host0_root / f"{case_id}.prx").write_bytes(b"synthetic PRX")
+            cases.append({"case_id": case_id, "prx": f"{case_id}.prx", "timeout_seconds": 0.2})
+        plan_path = scratch / "campaign-plan.json"
+        plan_path.write_text(json.dumps({
+            "schema": 1,
+            "campaign_id": "synthetic-campaign",
+            "session_id": "synthetic-session",
+            "source_commit": SOURCE_COMMIT,
+            "console_model": "PSP-3000",
+            "host0_root": "host0",
+            "report_path": "report.json",
+            "checkpoint_path": "checkpoint.json",
+            "cases": cases,
+        }), encoding="utf-8")
+        return plan_path
+
+    def _run(self, plan_path: Path, *, confirm: bool, transport: SimulatedPsplinkTransport):
+        def factory(**kwargs):
+            transport.host0_root = kwargs["host0_root"]
+            return transport
+
+        with patch.object(run_psplink_module, "_read_hardware_lock",
+                          return_value=(True, "HELD_AND_CONFIRMED")), \
+                patch.object(run_psplink_module, "_check_source_tree", return_value=None):
+            return run_campaign_plan(
+                plan_path,
+                dry_run=False,
+                confirm_power_cycle=confirm,
+                pspsh_argv=["pspsh", "-e", "{remote_command}"],
+                usbhostfs_argv=["usbhostfs_pc", "{host0_root}"],
+                transport_factory=factory,
+            )
+
+    @staticmethod
+    def _checkpoint(plan_path: Path) -> dict:
+        return json.loads((plan_path.parent / "checkpoint.json").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _launched(transport: SimulatedPsplinkTransport) -> list[str]:
+        return [
+            Path(command).name.removesuffix(".prx")
+            for command, _timeout in transport.commands
+            if command.startswith("ldstart ")
+        ]
+
+    def test_transport_start_failure_after_confirmed_power_cycle_keeps_the_resume_position(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="campaign-checkpoint-", dir=fixture_dir) as scratch_name:
+            plan_path = self._plan(Path(scratch_name))
+
+            # Run 1: the preflight passes; kernel-alarm's synthetic stream is incomplete.
+            first = SimulatedPsplinkTransport(transport_file_cases={"transport-write"})
+            code, report = self._run(plan_path, confirm=False, transport=first)
+            self.assertEqual(code, 3)
+            self.assertEqual(self._launched(first), ["transport-write", "kernel-alarm"])
+            checkpoint = self._checkpoint(plan_path)
+            self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+            self.assertEqual(checkpoint["next_case_index"], 2)
+            self.assertEqual(checkpoint["completed_cases"], ["transport-write"])
+            self.assertEqual(checkpoint["interrupted_cases"], ["kernel-alarm"])
+            self.assertTrue(checkpoint["host0_qualified"])
+
+            # Run 2: power cycle confirmed, but the shell never qualifies before any launch.
+            second = SimulatedPsplinkTransport(fail_all_ver=True)
+            code, report = self._run(plan_path, confirm=True, transport=second)
+            self.assertEqual(code, 2)
+            self.assertEqual(report["terminal_reason"], "TRANSPORT_START_FAILED")
+            self.assertEqual(self._launched(second), [])
+            checkpoint = self._checkpoint(plan_path)
+            self.assertEqual(checkpoint["state"], "IN_PROGRESS")
+            self.assertEqual(checkpoint["next_case_index"], 2)
+            self.assertEqual(report["checkpoint_next_case_index"], 2)
+            self.assertEqual(checkpoint["completed_cases"], ["transport-write"])
+            self.assertTrue(checkpoint["host0_qualified"])
+
+            # Run 3: a repeated confirmation is refused and changes nothing.
+            code, report = self._run(
+                plan_path, confirm=True, transport=SimulatedPsplinkTransport()
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(report["status"], "REFUSED")
+            self.assertEqual(self._checkpoint(plan_path), checkpoint)
+
+            # Run 4: without a confirmation the queue resumes at the preserved case.
+            fourth = SimulatedPsplinkTransport()
+            code, report = self._run(plan_path, confirm=False, transport=fourth)
+            self.assertEqual(code, 3)
+            self.assertEqual(self._launched(fourth), ["thread-scheduler"])
+            self.assertNotIn("reset", [command for command, _timeout in fourth.commands])
+            checkpoint = self._checkpoint(plan_path)
+            self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+            self.assertEqual(checkpoint["next_case_index"], 3)
+            self.assertEqual(checkpoint["interrupted_cases"], ["kernel-alarm", "thread-scheduler"])
+
+    def test_fresh_campaign_transport_start_failure_stays_at_the_preflight(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="campaign-start-fail-", dir=fixture_dir) as scratch_name:
+            plan_path = self._plan(Path(scratch_name))
+            transport = SimulatedPsplinkTransport(start_error="usbhostfs_pc printed nothing")
+            code, report = self._run(plan_path, confirm=False, transport=transport)
+            checkpoint = self._checkpoint(plan_path)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "TRANSPORT_START_FAILED")
+        self.assertEqual(checkpoint["state"], "IN_PROGRESS")
+        self.assertEqual(checkpoint["next_case_index"], 0)
+        self.assertEqual(transport.commands, [])
+
+    def test_failed_preflight_round_trip_resumes_at_the_preflight(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="campaign-preflight-", dir=fixture_dir) as scratch_name:
+            plan_path = self._plan(Path(scratch_name))
+            transport = SimulatedPsplinkTransport(fail_host0_roundtrip_cases={"transport-write"})
+            code, report = self._run(plan_path, confirm=False, transport=transport)
+            checkpoint = self._checkpoint(plan_path)
+
+        self.assertEqual(code, 3)
+        self.assertEqual(report["intervention_case_id"], "transport-write")
+        self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(checkpoint["next_case_index"], 0)
+        self.assertFalse(checkpoint["host0_qualified"])
 
 
 class Host0RemotePathTests(unittest.TestCase):
