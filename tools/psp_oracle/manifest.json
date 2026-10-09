@@ -415,6 +415,263 @@
       "issues": [2],
       "risk": "medium",
       "reset": "return to PSPLINK after each case"
-    }
+    },
+      {
+        "id": "PSP-HLE-KERNEL-STATUS-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "CASE=hle-kernel-status is built from fixtures/psp_oracle/probe_hle_measure.c and strictly parsed; no PSP capture exists, so every return value and struct word it records remains NOT_RUN (H-oracle-hle-measure-1009).",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_kernel_status.prx",
+        "apis": [
+          "sceKernelReferSystemStatus",
+          "sceKernelCreateFpl",
+          "sceKernelReferFplStatus",
+          "sceKernelTryAllocateFpl",
+          "sceKernelFreeFpl",
+          "sceKernelDeleteFpl"
+        ],
+        "diagnostic_case_ids": [
+          "hle-kernel-status"
+        ],
+        "case_ids": [
+          "sys-status-size-0x1c",
+          "sys-status-size-0x20",
+          "sys-status-size-0x08",
+          "sys-status-size-0x00",
+          "fpl-create",
+          "fpl-refer-full-all-free",
+          "fpl-try-alloc-a",
+          "fpl-try-alloc-b",
+          "fpl-try-alloc-exhausted",
+          "fpl-refer-full-two-held",
+          "fpl-refer-size-0x08-two-held",
+          "fpl-refer-size-0x00-two-held",
+          "fpl-free-a",
+          "fpl-refer-full-one-free",
+          "fpl-free-b",
+          "fpl-delete",
+          "fpl-refer-full-after-delete",
+          "hle-kernel-status-done"
+        ],
+        "invariant": "ReferSystemStatus at sizes 0x1c/0x20/0x08/0x00 and ReferFplStatus on a probe-owned FPL at full, too-small and zero size words, with return codes and every returned word recorded",
+        "issues": [],
+        "risk": "low; probe-owned FPL is created, held, freed and deleted within the case; scalar output only",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-HLE-VTIMER-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "CASE=hle-vtimer is built from fixtures/psp_oracle/probe_hle_measure.c and strictly parsed; no PSP capture exists, so every return value and struct word it records remains NOT_RUN (H-oracle-hle-measure-1009).",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_vtimer.prx",
+        "apis": [
+          "sceKernelCreateVTimer",
+          "sceKernelReferVTimerStatus",
+          "sceKernelStartVTimer",
+          "sceKernelStopVTimer",
+          "sceKernelGetVTimerTime",
+          "sceKernelDelayThread",
+          "sceKernelDeleteVTimer"
+        ],
+        "diagnostic_case_ids": [
+          "hle-vtimer"
+        ],
+        "case_ids": [
+          "vtimer-create",
+          "vtimer-refer-created",
+          "vtimer-stop-not-started",
+          "vtimer-start",
+          "vtimer-time-running-early",
+          "vtimer-refer-running-early",
+          "vtimer-delay-20ms",
+          "vtimer-time-running-20ms",
+          "vtimer-stop",
+          "vtimer-time-stopped",
+          "vtimer-refer-stopped",
+          "vtimer-delay-20ms-stopped",
+          "vtimer-time-stopped-later",
+          "vtimer-start-restart",
+          "vtimer-refer-size-0x08",
+          "vtimer-delete-running",
+          "vtimer-refer-after-delete",
+          "vtimer-delete-again",
+          "hle-vtimer-done"
+        ],
+        "invariant": "VTimer create, start, stop, time and status words, with 20 ms bounded delays; every created VTimer is deleted and a stale-UID refer and delete are recorded",
+        "issues": [],
+        "risk": "low; one probe-owned VTimer, bounded 20 ms waits, deleted in the case",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-HLE-POWER-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "CASE=hle-power-clock is built from fixtures/psp_oracle/probe_hle_measure.c and strictly parsed; no PSP capture exists, so every return value and struct word it records remains NOT_RUN (H-oracle-hle-measure-1009).",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_power_clock.prx",
+        "apis": [
+          "scePowerGetPllClockFrequencyInt",
+          "scePowerGetPllClockFrequencyFloat",
+          "scePowerGetCpuClockFrequency",
+          "scePowerGetCpuClockFrequencyInt",
+          "scePowerGetCpuClockFrequencyFloat",
+          "scePowerGetBusClockFrequency",
+          "scePowerGetBusClockFrequencyInt",
+          "scePowerGetBusClockFrequencyFloat"
+        ],
+        "diagnostic_case_ids": [
+          "hle-power-clock"
+        ],
+        "case_ids": [
+          "pll-clock-int",
+          "pll-clock-float",
+          "cpu-clock-int",
+          "cpu-clock-float",
+          "cpu-clock-alias",
+          "bus-clock-int",
+          "bus-clock-float",
+          "bus-clock-alias",
+          "cpu-clock-int-repeat",
+          "hle-power-clock-done"
+        ],
+        "invariant": "PLL, CPU and bus clock queries (int, float and alias forms) recorded as returned bit patterns; read-only, no Set function is imported",
+        "issues": [],
+        "risk": "low; read-only queries",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-HLE-HPRM-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "CASE=hle-hprm is built from fixtures/psp_oracle/probe_hle_measure.c and strictly parsed; no PSP capture exists, so every return value and struct word it records remains NOT_RUN (H-oracle-hle-measure-1009).",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_hprm.prx",
+        "apis": [
+          "sceHprmIsRemoteExist",
+          "sceHprmIsHeadphoneExist",
+          "sceHprmIsMicrophoneExist"
+        ],
+        "diagnostic_case_ids": [
+          "hle-hprm"
+        ],
+        "case_ids": [
+          "hprm-remote-first",
+          "hprm-headphone-first",
+          "hprm-microphone-first",
+          "hprm-remote-second",
+          "hprm-headphone-second",
+          "hprm-microphone-second",
+          "hle-hprm-done"
+        ],
+        "invariant": "remote, headphone and microphone presence flags, each read twice; the maintainer may run with and without headphones",
+        "issues": [],
+        "risk": "low; read-only presence queries",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-HLE-CTRL-LATCH-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "CASE=hle-ctrl-latch is built from fixtures/psp_oracle/probe_hle_measure.c and strictly parsed; no PSP capture exists, so every return value and struct word it records remains NOT_RUN (H-oracle-hle-measure-1009).",
+        "group": "io",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_ctrl_latch.prx",
+        "apis": [
+          "sceCtrlReadLatch",
+          "sceCtrlPeekLatch",
+          "sceKernelDelayThread"
+        ],
+        "diagnostic_case_ids": [
+          "hle-ctrl-latch"
+        ],
+        "case_ids": [
+          "latch-read-initial",
+          "latch-peek-initial",
+          "latch-poll-window",
+          "latch-read-after-poll",
+          "latch-peek-after-poll",
+          "latch-read-clears-peek-keeps",
+          "hle-ctrl-latch-done"
+        ],
+        "invariant": "Read and Peek latch structs with no input, a bounded 2 s poll of 200 peeks, and a Read/Peek semantics sequence that runs only when the poll observes a non-zero latch",
+        "issues": [],
+        "risk": "low; read-only latch queries, bounded poll",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-HLE-SYSPARAM-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "CASE=hle-sysparam is built from fixtures/psp_oracle/probe_hle_measure.c and strictly parsed; no PSP capture exists, so every return value and struct word it records remains NOT_RUN (H-oracle-hle-measure-1009).",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_sysparam.prx",
+        "apis": [
+          "sceUtilityGetSystemParamInt",
+          "sceUtilityGetSystemParamString"
+        ],
+        "diagnostic_case_ids": [
+          "hle-sysparam"
+        ],
+        "case_ids": [
+          "int-id-2",
+          "int-id-3",
+          "int-id-4",
+          "int-id-5",
+          "int-id-6",
+          "int-id-7",
+          "int-id-8",
+          "int-id-9",
+          "int-unknown-0",
+          "int-unknown-10",
+          "int-unknown-64",
+          "string-id-1-len-0x80",
+          "string-id-1-len-0x04",
+          "hle-sysparam-done"
+        ],
+        "invariant": "every documented int id (2-9), three unknown int ids, and the documented string id (nickname) with return codes and string lengths; string bytes go to a private host0 file, never a TEST record",
+        "issues": [],
+        "risk": "low; read-only; the nickname is written only to the private host0 scratch",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-HLE-GE-EDRAM-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "CASE=hle-ge-edram is built from fixtures/psp_oracle/probe_hle_measure.c and strictly parsed; no PSP capture exists, so every return value and struct word it records remains NOT_RUN (H-oracle-hle-measure-1009).",
+        "group": "ge",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_ge_edram.prx",
+        "apis": [
+          "sceGeEdramGetSize",
+          "sceGeEdramGetAddr",
+          "sceGeEdramSetAddrTranslation"
+        ],
+        "diagnostic_case_ids": [
+          "hle-ge-edram"
+        ],
+        "case_ids": [
+          "edram-size",
+          "edram-addr",
+          "edram-width-query-initial",
+          "edram-width-set-512",
+          "edram-width-set-1024",
+          "edram-width-set-2048",
+          "edram-width-set-4096",
+          "edram-width-restore",
+          "edram-width-query-final",
+          "hle-ge-edram-done"
+        ],
+        "invariant": "eDRAM size and address, and the translation width returned for each documented width; the original width is restored and checked by validate_hle_edram_restore, and a width that cannot be restored skips every width cell",
+        "issues": [],
+        "risk": "medium; changes the GE translation width and restores it before exit",
+        "reset": "one PRX launch; the restore is verified before the probe exits; PSPLink soft reset before the next launch"
+      }
   ]
 }
