@@ -278,14 +278,64 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/registry_readonly_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
+#define PROBE_HOST0_LOG "host0:/smoke_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
+#define PROBE_HOST0_LOG "host0:/thread_exit_delete_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
+#define PROBE_HOST0_LOG "host0:/teardown_test_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_MASK_DUTY
+#define PROBE_HOST0_LOG "host0:/display_mask_duty_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_LATE
+#define PROBE_HOST0_LOG "host0:/display_wait_late_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_WAIT_PRIORITY
+#define PROBE_HOST0_LOG "host0:/display_wait_priority_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_VBLANK_WINDOW
+#define PROBE_HOST0_LOG "host0:/display_vblank_window_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_REFER_UNLOCKED
+#define PROBE_HOST0_LOG "host0:/mutex_refer_unlocked_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA
+#define PROBE_HOST0_LOG "host0:/mutex_timeout_quanta_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE
+#define PROBE_HOST0_LOG "host0:/mutex_priority_inheritance_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
+#define PROBE_HOST0_LOG "host0:/mutex_interrupt_context_log.txt"
 #endif
+
+/* Durable line writer: every record, step marker and the metadata line goes
+   to the probe output (PSPLink stdout or the emulator channel) and, on
+   hardware, is appended to the case's host0 log, which is closed again
+   before the writer returns.  Closing after every line is what makes the log
+   durable: a launch that later hangs or faults keeps every line written so
+   far.  The campaign runner reads the per-case host0 log; stdout stays a
+   secondary copy. */
+static void probe_emit_durable(int emulated, const char *line, size_t length) {
+    emit(emulated, line);
+#ifdef PROBE_HOST0_LOG
+    if (!emulated) {
+        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+        if (fd >= 0) {
+            size_t offset = 0;
+            while (offset < length) {
+                const int wrote = sceIoWrite(fd, line + offset,
+                                             (SceSize)(length - offset));
+                if (wrote <= 0) break;
+                offset += (size_t)wrote;
+            }
+            (void)sceIoClose(fd);
+        }
+    }
+#else
+    (void)length;
+#endif
+}
 
 /* Durable progress marker.  Before a call that could hang or fault the
    console, a probe writes
        NAKAGAWA_PSP_STEP schema=1 case_id=<id> step=<name>
-   to its output and, on hardware, appends it to the host0 log and closes the
-   file before the call runs, the same open/append/close the record writer
-   uses.  A launch that never returns then still names its last step in the
+   through probe_emit_durable(), the same writer every record uses, so it is
+   in the host0 log (closed) before the call runs.  A launch that never returns then still names its last step in the
    host log.  Step lines are progress, not results: the host parser
    (tools/psp_oracle/protocol.py) collects them and never counts them as
    records.  Names use [A-Za-z0-9_.:/-] only. */
@@ -296,17 +346,7 @@ static void probe_step(int emulated, const char *case_id, const char *step) {
                               "NAKAGAWA_PSP_STEP schema=1 case_id=%s step=%s\n",
                               case_id, step);
     if (used <= 0 || (size_t)used >= sizeof(line)) return;
-    emit(emulated, line);
-#ifdef PROBE_HOST0_LOG
-    if (!emulated) {
-        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
-                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-        if (fd >= 0) {
-            (void)sceIoWrite(fd, line, (SceSize)used);
-            (void)sceIoClose(fd);
-        }
-    }
-#endif
+    probe_emit_durable(emulated, line, (size_t)used);
 }
 
 #define PROBE_TEARDOWN_CAPACITY 64u
@@ -657,7 +697,7 @@ static void emit_test(int emulated, const char *case_id, int pass,
              case_id, pass ? "PASS" : "FAIL", (unsigned int)result,
              (unsigned int)out0, (unsigned int)out1,
              (unsigned int)out2, (unsigned int)out3);
-    emit(emulated, line);
+    probe_emit_durable(emulated, line, strlen(line));
 }
 #endif
 
@@ -682,17 +722,7 @@ static void emit_record_extended(int emulated, const char *test_id,
         line[used++] = '\n';
         line[used] = '\0';
     }
-    emit(emulated, line);
-#ifdef PROBE_HOST0_LOG
-    if (!emulated) {
-        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
-                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-        if (fd >= 0) {
-            sceIoWrite(fd, line, strlen(line));
-            sceIoClose(fd);
-        }
-    }
-#endif
+    probe_emit_durable(emulated, line, strlen(line));
 }
 #endif
 
@@ -1959,18 +1989,7 @@ static void dmac_invalid_emit_record(int emulated, const char *case_id,
              (unsigned int)cache_discipline, tier, (unsigned int)executed,
              (unsigned int)payload_mutations, (unsigned int)source_addr,
              (unsigned int)destination_addr);
-    emit(emulated, line);
-#ifdef PROBE_HOST0_LOG
-    if (!emulated) {
-        const SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
-                                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND,
-                                    0777);
-        if (fd >= 0) {
-            sceIoWrite(fd, line, strlen(line));
-            sceIoClose(fd);
-        }
-    }
-#endif
+    probe_emit_durable(emulated, line, strlen(line));
 }
 
 static int dmac_invalid_probe_neighbor(const char *name, uint8_t *address) {
@@ -6079,16 +6098,6 @@ static int registry_name_is_safe(const char *name) {
     return 1;
 }
 
-static int registry_write_all(SceUID fd, const char *data, size_t size) {
-    size_t offset = 0;
-    while (offset < size) {
-        int wrote = sceIoWrite(fd, data + offset, (SceSize)(size - offset));
-        if (wrote <= 0) return 0;
-        offset += (size_t)wrote;
-    }
-    return 1;
-}
-
 static void emit_registry_record(int emulated, const char *case_id,
                                  const char *status, uint32_t result,
                                  const uint32_t *out, size_t out_count,
@@ -6139,15 +6148,7 @@ static void emit_registry_record(int emulated, const char *case_id,
     if (used > 0 && (size_t)used + 1u < capacity) {
         line[used++] = '\n';
         line[used] = '\0';
-        emit(emulated, line);
-        if (!emulated) {
-            SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
-                PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-            if (fd >= 0) {
-                (void)registry_write_all(fd, line, (size_t)used);
-                (void)sceIoClose(fd);
-            }
-        }
+        probe_emit_durable(emulated, line, (size_t)used);
         s_registry_records++;
     }
     free(line);
@@ -6794,7 +6795,7 @@ int main(int argc, char *argv[]) {
              "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-SMOKE-001 case_id=sum-1-to-100 "
              "status=%s result=0x%08x out0=0x%08x\n",
              sum == 5050 ? "PASS" : "FAIL", (unsigned int)sum, sum == 5050 ? 1u : 0u);
-    emit(emulated, line);
+    probe_emit_durable(emulated, line, strlen(line));
 #endif
 
     probe_teardown(emulated);

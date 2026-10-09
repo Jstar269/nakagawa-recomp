@@ -43,9 +43,11 @@ from psp_oracle.protocol import (
     DMAC_SIZE_MATRIX_TRIALS,
 )
 from psp_oracle.run_psplink import (
+    CAMPAIGN_QUEUE_CASES,
     PsplinkCampaignRunner,
     PsplinkSnapshot,
     _campaign_completeness_contract,
+    _campaign_host0_log_path,
     _campaign_stream_complete,
     _parse_campaign_records,
     _record_summary,
@@ -2299,9 +2301,11 @@ class PspDmacProbeTests(unittest.TestCase):
                 re.DOTALL,
             ),
         )
-        writer = self.probe.split("static void emit_record_extended", 1)[1].split(
+        record_writer = self.probe.split("static void emit_record_extended", 1)[1].split(
             "\n}\n#endif", 1
         )[0]
+        self.assertIn("probe_emit_durable(emulated, line,", record_writer)
+        writer = self.probe.split("static void probe_emit_durable", 1)[1].split("\n}\n", 1)[0]
         self.assertLess(writer.index("sceIoWrite(fd"), writer.index("sceIoClose(fd)"))
 
     def test_model_profile_uses_the_user_bridge_and_raw_firmware_word(self) -> None:
@@ -3161,6 +3165,49 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertLess(body.index(earlier), bad, earlier)
         self.assertLess(bad, body.index("sceRegGetKeysNum((REGHANDLE)0xffffffffu"))
         self.assertLess(body.index('"registry-bad-handle"'), body.index('"registry-done"'))
+
+
+class CampaignHost0LogTests(unittest.TestCase):
+    """Every campaign case writes its evidence to the host0 log the runner reads."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8")
+
+    def _probe_logs_by_case(self) -> dict[str, str]:
+        case_ids = {name: int(value) for name, value in re.findall(
+            r"^(?:else )?ifeq \(\$\(CASE\),([^)]+)\)\nCASE_ID = (\d+)$", self.makefile,
+            re.MULTILINE)}
+        macros = {int(value): name for name, value in re.findall(
+            r"^#define PSP_ORACLE_CASE_(\w+) (\d+)$", self.probe, re.MULTILINE)}
+        logs = dict(re.findall(
+            r"^#(?:el)?if PSP_ORACLE_CASE == PSP_ORACLE_CASE_(\w+)\n"
+            r"#define PROBE_HOST0_LOG \"host0:/([^\"]+)\"$", self.probe, re.MULTILINE))
+        return {case: logs.get(macros.get(case_id, ""), "")
+                for case, case_id in case_ids.items()}
+
+    def test_every_campaign_case_has_the_host0_log_the_runner_reads(self) -> None:
+        logs = self._probe_logs_by_case()
+        for case in CAMPAIGN_QUEUE_CASES:
+            expected = _campaign_host0_log_path(Path("host0"), case).name
+            self.assertEqual(logs.get(case), expected, case)
+
+    def test_host0_lines_go_through_the_durable_writer(self) -> None:
+        # Records and step markers append through probe_emit_durable(); only
+        # the metadata line (which truncates the log at start) and the final
+        # completion marker open the log themselves.
+        self.assertEqual(self.probe.count("sceIoOpen(PROBE_HOST0_LOG"), 3)
+        writer = self.probe[self.probe.index("static void probe_emit_durable("):]
+        writer = writer[:writer.index("\n}\n")]
+        self.assertIn("PSP_O_APPEND", writer)
+        self.assertIn("sceIoClose(fd);", writer)
+        self.assertIn("emit(emulated, line);", writer)
+        for emitter in ("static void emit_record_extended(", "static void probe_step("):
+            body = self.probe[self.probe.index(emitter):]
+            body = body[:body.index("\n}\n")]
+            self.assertIn("probe_emit_durable(emulated, line,", body, emitter)
 
 
 if __name__ == "__main__":

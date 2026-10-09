@@ -6,7 +6,13 @@ files, keys, and private traces.
 
 The fixture prints the versioned `NAKAGAWA_PSP_META` and
 `NAKAGAWA_PSP_TEST` records defined in
-[`tools/psp_oracle/protocol.py`](../../tools/psp_oracle/protocol.py). Before a
+[`tools/psp_oracle/protocol.py`](../../tools/psp_oracle/protocol.py). Every
+campaign case also writes each line to its own host0 log through one durable
+writer (`probe_emit_durable()`: append, then close). The log is named as
+`_campaign_host0_log_path` in `tools/psp_oracle/run_psplink.py` expects: the
+case id with `-` turned into `_` and a `dma_` prefix turned into `dmac_`, plus
+`_log.txt` (for example `host0:/smoke_log.txt`). The campaign runner reads that
+log; PSPLink stdout is a secondary copy. Before a
 call that could hang or fault the console, a probe also writes a
 `NAKAGAWA_PSP_STEP schema=1 case_id=<id> step=<name>` progress marker
 (`probe_step()`), appended to the host0 log and closed before the call runs,
