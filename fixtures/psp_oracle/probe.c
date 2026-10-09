@@ -47,10 +47,18 @@ _Static_assert(
 #include <pspreg.h>
 #endif
 #if PSP_ORACLE_CASE == 67
-#include <pspimpose_driver.h>
+/* User-mode sceDisplay and sceImpose functions only: a user-mode PRX that
+   imports the kernel libraries sceDisplay_driver or sceImpose_driver fails to
+   load on the PSP. display_user_imports.S supplies the sceDisplay stubs. The
+   PSPSDK libpspuser.a supplies the user sceImpose stubs; it names NID
+   0x8C943191 (sceImposeGetBatteryIconStatus) sceImposeBatteryIconStatus. The
+   SDK's pspimpose_driver.h is deliberately not included: it describes the
+   kernel-only sceImpose_driver library. */
 int sceDisplaySetHoldMode(int mode);
 int sceDisplayWaitVblankStartMultiCB(unsigned int count);
-int sceImposeGetBatteryIconStatus(int *charging, int *icon_status);
+int sceImposeBatteryIconStatus(int *charging, int *icon_status);
+int sceImposeGetUMDPopup(void);
+int sceImposeSetUMDPopup(int value);
 #endif
 #include <stdint.h>
 #include <stdio.h>
@@ -6401,7 +6409,7 @@ static void run_kernel_misc(int emulated) {
 
     int charging = (int)0x5a5a5a5a;
     int icon_status = (int)0x5a5a5a5a;
-    int battery_rc = sceImposeGetBatteryIconStatus(&charging, &icon_status);
+    int battery_rc = sceImposeBatteryIconStatus(&charging, &icon_status);
     int popup_before = sceImposeGetUMDPopup();
     int popup_set_rc = popup_before >= 0 ?
         sceImposeSetUMDPopup(popup_before) : popup_before;
