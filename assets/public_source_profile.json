@@ -772,6 +772,7 @@
     "tools/soak_audit.py",
     "tools/stage_runtime_dlls.py",
     "tools/sync_drift_check.py",
+    "tools/test_analyze_import_stub_entries.py",
     "tools/test_analyze_tailcall.py",
     "tools/test_analyze_toml_emit.py",
     "tools/test_analyzer_span_scope.py",
