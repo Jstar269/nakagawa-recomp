@@ -23,6 +23,7 @@ TOOLS = ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+import ge_stat_windows  # noqa: E402
 import prxload  # noqa: E402
 import vulkan_sdk  # noqa: E402
 
@@ -606,12 +607,12 @@ def _run_package(manifest_path: Path, guest: Path, package_dir: Path,
     if "-> 0x4000" not in output:
         raise AssertionError(f"controller replay was not sampled for {manifest['id']}")
 
-    ge_line = next((line for line in output.splitlines() if line.startswith("GESTAT f=60 ")), "")
-    tri2d = re.search(r"\btri2d=(\d+)", ge_line)
-    pixels2d = re.search(r"\bpx2d=(\d+)", ge_line)
-    if not tri2d or not pixels2d or int(tri2d.group(1)) == 0 or int(pixels2d.group(1)) == 0:
+    # The checkpoint is the first GE statistics window that rasterized the primitive, at
+    # whatever vblank closed it: a loaded host pushes both later (tools/ge_stat_windows.py).
+    window = ge_stat_windows.first_window(output, require=("tri2d", "px2d"))
+    if window is None:
         raise AssertionError(f"GE did not rasterize the source-owned primitive for {manifest['id']}")
-    ppm = package_dir / "snap_f00060.ppm"
+    ppm = package_dir / window.snapshot_name
     if not ppm.is_file():
         raise AssertionError(f"runtime framebuffer capture is missing for {manifest['id']}")
     colors, foreground = _read_ppm_metrics(ppm)
