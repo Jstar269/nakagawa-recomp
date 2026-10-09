@@ -190,9 +190,6 @@ endif
 # touching a developer's real build/ and logs/.
 BUILD_ROOT ?= build
 LOG_DIR    ?= logs
-ifneq ($(subst $(SPACE),,$(BUILD_ROOT)),$(BUILD_ROOT))
-$(error BUILD_ROOT '$(BUILD_ROOT)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a BUILD_ROOT without spaces (the default is build))
-endif
 # Every default output is created beneath BUILD_ROOT and clean-fixtures and clean-all
 # delete beneath it, so an overridden root is refused, before the parse-time mkdir or
 # any recipe runs, when it would reach the checkout itself: the repository root or one
@@ -200,11 +197,20 @@ endif
 # (sources, place_game_here/, logs/, memstick/ ...). A root outside the checkout is the
 # caller's explicit choice, exactly as BUILD_DIR is for `clean`. The default root needs
 # no check, so an ordinary invocation starts no extra interpreter.
+#
+# This scope check runs BEFORE the space refusal below, so the more specific safety
+# reason wins: in a checkout whose own path contains a space (which is supported), its
+# parent directory is spaced too, and naming it must report "an ancestor of the
+# repository root", not only that Make cannot spell it. The value travels to Python as
+# one quoted argument, so a space in it cannot split it.
 ifneq ($(BUILD_ROOT),build)
 _BUILD_ROOT_SCOPE := $(strip $(shell "$(PYTHON)" -c "import sys; from pathlib import Path; repo = Path.cwd().resolve(); root = Path(sys.argv[1]).resolve(); print('the repository root or one of its ancestors' if repo.is_relative_to(root) else 'inside the checkout but outside its build/ tree' if root.is_relative_to(repo) and not root.is_relative_to(repo / 'build') else 'ok')" "$(BUILD_ROOT)"))
 ifneq ($(_BUILD_ROOT_SCOPE),ok)
 $(error BUILD_ROOT '$(BUILD_ROOT)' is $(or $(_BUILD_ROOT_SCOPE),uncheckable (the scope check printed nothing)); build outputs are created and clean-fixtures and clean-all delete beneath it, so it must be the checkout's build/ tree (the default), a directory beneath it, or a directory outside the checkout)
 endif
+endif
+ifneq ($(subst $(SPACE),,$(BUILD_ROOT)),$(BUILD_ROOT))
+$(error BUILD_ROOT '$(BUILD_ROOT)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a BUILD_ROOT without spaces (the default is build))
 endif
 
 # SDL3 dependency discovery and isolation (issue #331).

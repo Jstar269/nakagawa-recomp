@@ -1863,6 +1863,36 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         self.assertIn("BUILD_ROOT", proc.stderr)
         self.assertIn("contains a space", proc.stderr)
 
+    def test_checkout_scope_refusal_outranks_the_space_refusal(self) -> None:
+        """A spaced root that reaches the checkout is refused for the checkout, not the space.
+
+        A checkout may live under a path with spaces, so its parent -- the root a
+        typo most plausibly names -- is spaced too. When the space refusal ran first
+        it hid the safety reason, which is how the relocated-clone check failed. The
+        spellings below carry a space wherever the checkout lives, so the order is
+        pinned in every checkout; tools/test_relocated_clone.py repeats it from a
+        genuinely spaced checkout. A spaced root inside build/ or outside the
+        checkout is still refused for its space.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        cases = {
+            "x y/..": "the repository root or one of its ancestors",
+            "src/x y": "inside the checkout but outside its build/ tree",
+            "build/x y": "contains a space",
+            f"{self.scratch.as_posix()}/x y": "contains a space",
+        }
+        for value, reason in cases.items():
+            with self.subTest(build_root=value):
+                proc = subprocess.run(
+                    [self.make, "--no-print-directory", "help", f"BUILD_ROOT={value}"],
+                    cwd=ROOT, capture_output=True, text=True, check=False,
+                )
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn(reason, proc.stderr)
+                if reason != "contains a space":
+                    self.assertNotIn("contains a space", proc.stderr)
+
     def test_clean_removes_specified_build_dir(self) -> None:
         """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""
         target_dir = self.build_root / "clean-target"
