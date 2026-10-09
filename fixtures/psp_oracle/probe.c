@@ -5356,6 +5356,54 @@ static int probe_teardown_host0(int emulated) {
                : PROBE_TEARDOWN_FAILED;
 }
 
+/* Module lifecycle for repeated launches. PSPSDK's PRX CRT (crt0_prx) creates
+   the main thread in module_start and exports no module_stop. Its only path
+   that ends main is exit() -> _exit(), which runs _fini and __libcglue_deinit
+   and then calls sceKernelExitGame(). PSPLink hooks that call: it resets when
+   resetonexit=1 (its default) and otherwise exits the calling thread without
+   deleting it. Stopping and unloading a module neither ends nor deletes the
+   threads it created. A probe that parks main and is then stopped and
+   unloaded by PSPLink therefore leaves main (and the newlib heap) behind.
+
+   The probe owns the stop half of its lifecycle. module_stop asks the parked
+   main thread to end. Main runs the CRT's runtime de-initialisation (the
+   _exit steps before sceKernelExitGame, which free the newlib heap and the
+   C runtime's kernel objects), then exits. module_stop waits a bounded time
+   for that end, deletes main, and returns 0. When main does not end within
+   the bound, module_stop returns 1 ("cannot stop") instead of removing a
+   thread that may still be running: the module stays loaded, and the host's
+   unload and snapshot checks report the failure. Main never deletes itself;
+   see docs/HARDWARE_ORACLE.md, "Probe teardown for repeated launches". */
+extern void _fini(void);
+extern void __libcglue_deinit(void);
+
+#define PROBE_MAIN_STOP_TIMEOUT_US 1000000u
+
+static volatile SceUID s_probe_main_thread = -1;
+static volatile int s_probe_stop_requested;
+
+static void probe_park_until_stop(void) {
+    /* A wakeup that arrives before the sleep is counted, not lost. */
+    while (!s_probe_stop_requested) sceKernelSleepThread();
+    _fini();
+    __libcglue_deinit();
+    sceKernelExitThread(0);
+}
+
+int module_stop(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    const SceUID main_thread = s_probe_main_thread;
+    if (main_thread < 0) return 1;
+    s_probe_stop_requested = 1;
+    (void)sceKernelWakeupThread(main_thread); /* fails harmlessly if main already ended */
+    SceUInt timeout = PROBE_MAIN_STOP_TIMEOUT_US;
+    if (sceKernelWaitThreadEnd(main_thread, &timeout) < 0) return 1;
+    if (sceKernelDeleteThread(main_thread) < 0) return 1;
+    s_probe_main_thread = -1;
+    return 0;
+}
+
 static void probe_teardown(int emulated) {
     sceKernelDcacheWritebackAll();
     int success = !s_teardown_tracking_failed && s_have_clock_state;
@@ -5393,7 +5441,7 @@ static void probe_teardown(int emulated) {
     }
 #endif
     emit(emulated, sentinel);
-    for (;;) sceKernelSleepThread();
+    probe_park_until_stop();
 }
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_ALARM
@@ -6421,6 +6469,7 @@ static void run_kernel_misc(int emulated) {
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
+    s_probe_main_thread = sceKernelGetThreadId();
 #if defined(__mips__)
     uint32_t boot_fcr31 = 0;
     /* Save FCR31 before probe code; the FPU vector case then starts from zero. */

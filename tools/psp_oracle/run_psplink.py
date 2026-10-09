@@ -436,13 +436,24 @@ def evaluate_teardown_snapshots(
         if disappeared_before_unload:
             issues.append("S1 is missing a pre-probe thread")
             confirmed_teardown_failure = True
+    leftover_threads: set[tuple[str, str]] = set()
+    missing_threads: set[tuple[str, str]] = set()
     if after_unload is None:
         issues.append("S2 snapshot unavailable")
         blocked = True
     else:
+        leftover_threads = set(after_unload.threads) - set(before.threads)
+        missing_threads = set(before.threads) - set(after_unload.threads)
         if after_probe is not None and set(after_unload.threads) != set(before.threads):
             issues.append("post-unload thread set differs from S0")
             confirmed_teardown_failure = True
+            if leftover_threads and module_threads and leftover_threads <= set(module_threads):
+                # Name the boundary: the module was stopped and unloaded but the
+                # thread it created survived, so its module_stop did not end it.
+                issues.append(
+                    "probe main thread survived module stop/unload; "
+                    "the probe's module_stop did not end and delete it"
+                )
         if set(after_unload.modules) != set(before.modules):
             issues.append("post-unload module set differs from S0")
             confirmed_teardown_failure = True
@@ -500,6 +511,8 @@ def evaluate_teardown_snapshots(
         "s0_thread_count": len(before.threads),
         "s1_thread_count": len(after_probe.threads) if after_probe is not None else None,
         "s2_thread_count": len(after_unload.threads) if after_unload is not None else None,
+        "s2_leftover_threads": [list(item) for item in sorted(leftover_threads)],
+        "s2_missing_threads": [list(item) for item in sorted(missing_threads)],
         "s0_module_count": len(before.modules),
         "s2_module_count": len(after_unload.modules) if after_unload is not None else None,
         "module_uid": uid,
