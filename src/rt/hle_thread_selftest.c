@@ -81,6 +81,8 @@ extern int sr_route_test_cadence_state(uint32_t *last_attempt);
 extern void sr_route_test_import(uint32_t nid);
 extern uint32_t sr_route_test_nid(const char *tok);
 void sr_display_test_reset(void);
+/* Forget the latched SR_FBSNAP configuration (defined in hle.c under SR_HLE_THREAD_SELFTEST). */
+extern void sr_fbcap_test_reset_config(void);
 /* Test-build-only call-throughs to the production title-qualified HLE handlers. */
 extern uint32_t sr_hle_test_display_set_mode(CpuState *s);
 extern int sr_hle_test_is_registered(uint32_t nid);
@@ -419,6 +421,9 @@ static int s_audio_queue_seq_len;
 static unsigned long s_cap_arm_calls;
 static char s_cap_arm_path[128];
 static int s_cap_pending;      /* armed and not yet resolved by the present path */
+/* 0 = refuse every arm after recording it: lets a test observe which presents the policy
+ * arms without the report path writing legacy snapshot files. */
+static int s_cap_arm_accept = 1;
 
 void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     (void)ch; (void)volL; (void)volR;
@@ -506,6 +511,7 @@ int sr_capture_arm(const char *path) {
         strncpy(s_cap_arm_path, path, sizeof(s_cap_arm_path) - 1);
         s_cap_arm_path[sizeof(s_cap_arm_path) - 1] = '\0';
     }
+    if (!s_cap_arm_accept) return 0;
     s_cap_pending = 1;
     return 1;   /* an armed capture is never published by this harness */
 }
@@ -7043,6 +7049,69 @@ static void test_display_capture_arms_on_latched_flip(void) {
            "an arm no presenter serviced is resolved before the immediate flip returns");
 
     _putenv_s("SR_FBSNAP", "");
+}
+
+/* Immediate flip at the next vblank; returns how many captures the policy armed for it and
+ * the vblank it presented at. */
+static unsigned long capture_test_flip(CpuState *cpu, uint32_t *vcount) {
+    static const uint32_t NID_DISPLAY_SET_FRAME_BUF = 0x289d82feu;
+    static const uint32_t NID_DISPLAY_GET_VCOUNT = 0x9c6eaad7u;
+    s_cap_arm_calls = 0;
+    s_cap_arm_path[0] = 0;
+    sr_display_advance_vcount(1u);
+    *vcount = sr_syscall(cpu, NID_DISPLAY_GET_VCOUNT);
+    cpu->r[4] = 0x04000000u; cpu->r[5] = 512; cpu->r[6] = 3; cpu->r[7] = 0;
+    expect(sr_syscall(cpu, NID_DISPLAY_SET_FRAME_BUF) == 0u,
+           "capture fixture's immediate flip is accepted");
+    return s_cap_arm_calls;
+}
+
+/* SR_FBSNAP_WINDOWS is self-sufficient (issue #57 capture policy). The slot owner used to
+ * be decided from the SR_FBSNAP switch alone, before the windows were read, so a run with
+ * only SR_FBSNAP_WINDOWS armed nothing. With SR_FBSNAP unset, a window must select the
+ * FBSNAP slot and arm every present inside it under its vblank name; an explicit
+ * SR_FBSNAP=0 still disables FBSNAP. Every arm is refused after it is recorded, so the
+ * harness writes no legacy snapshot file. */
+static void test_display_capture_windows_alone_select_fbsnap(void) {
+    static const uint32_t NID_DISPLAY_GET_VCOUNT = 0x9c6eaad7u;
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    _putenv_s("SR_FBSNAP", "");
+    _putenv_s("SR_FBDUMP", "");
+    uint32_t first = sr_syscall(&cpu, NID_DISPLAY_GET_VCOUNT) + 2u;
+    char window[32], expected[32];
+    snprintf(window, sizeof window, "%u-%u", (unsigned)first, (unsigned)(first + 1u));
+    _putenv_s("SR_FBSNAP_WINDOWS", window);
+    sr_fbcap_test_reset_config();
+    s_cap_arm_accept = 0;
+
+    for (int i = 0; i < 4; i++) {
+        uint32_t v = 0;
+        unsigned long arms = capture_test_flip(&cpu, &v);
+        int inside = v >= first && v <= first + 1u;
+        expect(arms == (inside ? 1u : 0u),
+               "windows alone arm every present inside the window and none outside it");
+        snprintf(expected, sizeof expected, "frame_v%u.ppm", (unsigned)v);
+        expect(!inside || strcmp(s_cap_arm_path, expected) == 0,
+               "a windowed capture is named by the vblank that presented it");
+    }
+
+    snprintf(window, sizeof window, "%u-%u", (unsigned)(first + 4u), (unsigned)(first + 5u));
+    _putenv_s("SR_FBSNAP_WINDOWS", window);
+    _putenv_s("SR_FBSNAP", "0");
+    sr_fbcap_test_reset_config();
+    for (int i = 0; i < 4; i++) {
+        uint32_t v = 0;
+        expect(capture_test_flip(&cpu, &v) == 0u,
+               "an explicit SR_FBSNAP=0 keeps FBSNAP off even inside a window");
+    }
+
+    _putenv_s("SR_FBSNAP", "");
+    _putenv_s("SR_FBSNAP_WINDOWS", "");
+    s_cap_arm_accept = 1;
+    sr_fbcap_test_reset_config();
 }
 
 /* No-frame watchdog observation boundary semantics.
@@ -23850,6 +23919,7 @@ int main(int argc, char **argv) {
     test_missing_root_fails_once_and_stays_failed();
     test_display_setframebuf_flip_accounting();
     test_display_capture_arms_on_latched_flip();
+    test_display_capture_windows_alone_select_fbsnap();
     test_watchdog_no_new_frame_observation();
     test_watchdog_fires_on_boundary_crossing_not_exact_multiple();
     test_interrupt_nid_semantics();

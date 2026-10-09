@@ -679,6 +679,20 @@ so existing routes and tooling are unaffected. `-SnapEvery` still sets the caden
 window. Like the other controls this is a host-side gate: no guest work is skipped and captured
 frames are byte-identical to an ungated run.
 
+`SR_FBSNAP_WINDOWS` is self-sufficient. The full contract:
+
+| `SR_FBSNAP` | `SR_FBSNAP_WINDOWS` | Captured presents |
+| --- | --- | --- |
+| unset or empty | unset | none |
+| unset or empty | set | every present inside the windows (`N` = 1) |
+| `N` >= 1 | unset | presents at least `N` vblanks apart |
+| `N` >= 1 | set | presents at least `N` vblanks apart, inside the windows |
+| `0`, negative or non-numeric | either | none: an explicit `0` still disables FBSNAP |
+
+`SR_FBSNAP_AFTER` applies in every row, and `SR_FBDUMP` still takes the capture slot when it
+is set. A window whose text does not parse leaves no window active (reported on stderr as
+`FBSNAP_WINDOWS: could not parse`), so it selects nothing by itself.
+
 FBSNAP/FBDUMP capture is **present-truthful** (the old `sdl3vk_capture_swapchain_ppm`
 was an invalid acquisition that could read a stale/undefined image and published a PPM under a
 `.png` name). The capture is armed *before* the present and published by whichever presenter
@@ -816,7 +830,7 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_VBLOG=1` | Log vblank events |
 | `SR_FBSNAP=N` | Every N vblanks: legacy guest-VRAM `snap_<n>.ppm` (route evidence) plus present-truthful P6 `build/snapshots/frame_<n>.ppm` (see below) |
 | `SR_FBSNAP_AFTER=V` | Suppress every capture before vblank V (host-side gate only) |
-| `SR_FBSNAP_WINDOWS=a-b[,c-d]` | Capture only inside these vblank ranges; names files `frame_v<vcount>.ppm` so windows cannot overwrite each other (legacy `snap_v<vcount>.ppm` still written) |
+| `SR_FBSNAP_WINDOWS=a-b[,c-d]` | Capture only inside these vblank ranges; names files `frame_v<vcount>.ppm` so windows cannot overwrite each other (legacy `snap_v<vcount>.ppm` still written). Without `SR_FBSNAP` it captures every present inside the windows |
 | `SR_EXIT_AT_VBLANK=V` | Terminate cleanly (status 0) at the **end** of vblank V's tick (see above) |
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |

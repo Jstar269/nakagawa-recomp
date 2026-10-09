@@ -10,15 +10,16 @@
 //     so a capture means the same thing whichever presenter showed the frame;
 //   - a skipped present (cancel) and a refused re-arm never publish or report stale results;
 //   - a failed publication or present resolves as failed (-1), never as success;
-//   - the publisher creates the parent directory it needs.
+//   - the publisher creates the parent directory it needs;
+//   - SR_FBSNAP_WINDOWS alone selects the FBSNAP slot with every present captured
+//     (fbcap_policy.c), while an explicit SR_FBSNAP keeps its meaning.
 // No game data, no GPU, no window: exit 0 = every check passed.
 
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
 
-#include "fbcap.h"
-
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,9 @@
 #else
 #include <unistd.h>
 #endif
+
+#include "fbcap.h"
+#include "fbcap_policy.h" /* declares sr_fbcap_path with size_t: after <stdio.h> */
 
 #define PSP_W 480u
 #define PSP_H 272u
@@ -311,6 +315,28 @@ static void test_parent_directory(void) {
     CHECK(ppm_matches(path, PSP_W, PSP_H, s_frame_rgb), "parent: file exact in the new dir");
 }
 
+/* SR_FBSNAP_WINDOWS is self-sufficient: with SR_FBSNAP unset, configured windows select the
+ * FBSNAP slot and capture every present inside them. An explicit SR_FBSNAP keeps its
+ * meaning, and SR_FBDUMP keeps priority over windows. */
+static void test_windows_imply_every_present(void) {
+    CHECK(sr_fbcap_snap_every(NULL, 0) == 0, "policy: nothing configured is off");
+    CHECK(sr_fbcap_snap_every("", 0) == 0, "policy: an empty switch without windows is off");
+    CHECK(sr_fbcap_snap_every(NULL, 1) == 1, "policy: windows alone capture every present");
+    CHECK(sr_fbcap_snap_every("", 1) == 1, "policy: an empty switch counts as unset");
+    CHECK(sr_fbcap_snap_every("0", 1) == 0, "policy: an explicit SR_FBSNAP=0 stays off");
+    CHECK(sr_fbcap_snap_every("-2", 1) == 0, "policy: a negative cadence is off");
+    CHECK(sr_fbcap_snap_every("every", 1) == 0, "policy: a non-numeric cadence is off");
+    CHECK(sr_fbcap_snap_every("3", 0) == 3, "policy: SR_FBSNAP=3 alone keeps its cadence");
+    CHECK(sr_fbcap_snap_every("3", 1) == 3, "policy: windows keep an explicit cadence");
+    CHECK(sr_fbcap_snap_every("99999999999", 0) == INT_MAX, "policy: a huge cadence saturates");
+    CHECK(sr_fbcap_owner(0, sr_fbcap_snap_every(NULL, 1) > 0) == SR_FBCAP_FBSNAP,
+          "policy: windows without SR_FBSNAP own the FBSNAP slot");
+    CHECK(sr_fbcap_owner(0, sr_fbcap_snap_every("0", 1) > 0) == SR_FBCAP_NONE,
+          "policy: SR_FBSNAP=0 with windows owns nothing");
+    CHECK(sr_fbcap_owner(1, sr_fbcap_snap_every(NULL, 1) > 0) == SR_FBCAP_FBDUMP,
+          "policy: SR_FBDUMP keeps priority over windows");
+}
+
 int main(int argc, char **argv) {
     snprintf(s_dir, sizeof s_dir, "%s", argc > 1 ? argv[1] : "build/fbcap_selftest");
     make_dir(s_dir);
@@ -324,6 +350,7 @@ int main(int argc, char **argv) {
     test_failed_publication();
     test_explicit_failures();
     test_parent_directory();
+    test_windows_imply_every_present();
     if (s_failures) {
         fprintf(stderr, "fbcap_selftest: %d check(s) failed\n", s_failures);
         return 1;

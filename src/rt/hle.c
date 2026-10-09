@@ -14966,6 +14966,10 @@ int sr_route_test_cadence_state(uint32_t *last_attempt) {
 #define SR_FBSNAP_MAX_WINDOWS 8
 static uint32_t s_fbsnap_win_lo[SR_FBSNAP_MAX_WINDOWS], s_fbsnap_win_hi[SR_FBSNAP_MAX_WINDOWS];
 static int s_fbsnap_win_n = 0;
+static int s_fbsnap_win_parsed;  /* SR_FBSNAP_WINDOWS is read once per process */
+static int s_fbsnap_every = -1;  /* cadence latched by the first FBSNAP-owned present */
+static uint32_t s_fbsnap_after;  /* SR_FBSNAP_AFTER, latched with the cadence */
+static uint32_t s_fbsnap_last;   /* vcount of the last FBSNAP arm */
 static char s_fbcap_armed[128];  /* path armed for the CURRENT frame's present ("" = none) */
 static char s_fbcap_legacy[64];  /* legacy snap_*.ppm path for the same frame ("" = none) */
 
@@ -15050,9 +15054,8 @@ static void vramdump_note_vblank(uint32_t vcount) {
 }
 
 static void fbcap_parse_windows_once(void) {
-    static int done = 0;
-    if (done) return;
-    done = 1;
+    if (s_fbsnap_win_parsed) return;
+    s_fbsnap_win_parsed = 1;
     const char *w = getenv("SR_FBSNAP_WINDOWS");
     if (!w || !w[0]) return;
     const char *p = w;
@@ -15084,8 +15087,12 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
     s_fbcap_armed[0] = '\0';
     s_fbcap_legacy[0] = '\0';
     if (sync != 0u) return NULL;
-    int fbsnap_on = sr_fbcap_env_on("SR_FBSNAP");
-    int owner = sr_fbcap_owner(sr_fbcap_env_on("SR_FBDUMP"), fbsnap_on);
+    /* SR_FBSNAP_WINDOWS alone selects FBSNAP (every present inside the windows), so the
+     * windows are parsed before the owner decision, which uses the same effective cadence
+     * as the gate below (sr_fbcap_snap_every). */
+    fbcap_parse_windows_once();
+    int fbsnap_every = sr_fbcap_snap_every(getenv("SR_FBSNAP"), s_fbsnap_win_n > 0);
+    int owner = sr_fbcap_owner(sr_fbcap_env_on("SR_FBDUMP"), fbsnap_every > 0);
     if (owner == SR_FBCAP_NONE) return NULL;
     if (!framebuf_set || !display_host_span_valid(fb)) return NULL;
     if (owner == SR_FBCAP_FBDUMP) {
@@ -15104,15 +15111,13 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
     }
     /* SR_FBSNAP: <N> every / AFTER / WINDOWS gates. */
     {
-        static int fs = -2; static uint32_t fs_last = 0; static uint32_t fs_after = 0;
-        if (fs == -2) {
-            const char *e = getenv("SR_FBSNAP"); fs = e ? atoi(e) : 0;
+        if (s_fbsnap_every < 0) {    /* only an FBSNAP owner gets here: fbsnap_every >= 1 */
+            s_fbsnap_every = fbsnap_every;
             const char *a = getenv("SR_FBSNAP_AFTER");
             unsigned long av = a && a[0] ? strtoul(a, NULL, 10) : 0ul;
-            fs_after = av > UINT32_MAX ? UINT32_MAX : (uint32_t)av;
-            fbcap_parse_windows_once();
+            s_fbsnap_after = av > UINT32_MAX ? UINT32_MAX : (uint32_t)av;
         }
-        if (fs <= 0) return NULL;
+        const int fs = s_fbsnap_every;
         int in_window = 1;
         if (s_fbsnap_win_n > 0) {
             in_window = 0;
@@ -15121,8 +15126,9 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
                     in_window = 1; break;
                 }
         }
-        if (!in_window || vcount < fs_after || vcount - fs_last < (uint32_t)fs) return NULL;
-        fs_last = vcount;
+        if (!in_window || vcount < s_fbsnap_after || vcount - s_fbsnap_last < (uint32_t)fs)
+            return NULL;
+        s_fbsnap_last = vcount;
         if (s_fbsnap_win_n > 0)
             snprintf(s_fbcap_armed, sizeof s_fbcap_armed, "frame_v%u.ppm", vcount);
         else if (!sr_fbcap_path(SR_FBCAP_FBSNAP, vcount, s_fbcap_armed, sizeof s_fbcap_armed))
@@ -15140,6 +15146,19 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         return s_fbcap_armed;
     }
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Selftest-only: forget the latched SR_FBSNAP configuration (windows, cadence, AFTER and
+ * the last armed vcount) so the executable regression can drive a fresh configuration
+ * through the production arm path. Production latches it once per process. */
+void sr_fbcap_test_reset_config(void) {
+    s_fbsnap_win_parsed = 0;
+    s_fbsnap_win_n = 0;
+    s_fbsnap_every = -1;
+    s_fbsnap_after = 0;
+    s_fbsnap_last = 0;
+}
+#endif
 
 static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     static int first_present = 1;
