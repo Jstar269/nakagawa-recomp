@@ -391,8 +391,11 @@ def _windows_process_names() -> set[str]:
         entry = ProcessEntry32W()
         entry.dwSize = ctypes.sizeof(ProcessEntry32W)
         names: set[str] = set()
+        # Clear the thread's last error first: an end of walk is told apart from a
+        # failure only by ERROR_NO_MORE_FILES, and a stale value must not pass for it.
+        ctypes.set_last_error(0)
         more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-        for _ in range(_MAX_PROCESS_ENTRIES):
+        for listed in range(_MAX_PROCESS_ENTRIES + 1):
             if not more:
                 error = ctypes.get_last_error()
                 if error != _ERROR_NO_MORE_FILES:
@@ -400,7 +403,10 @@ def _windows_process_names() -> set[str]:
                         f"process snapshot walk failed (Windows error {error})"
                     )
                 return names
+            if listed == _MAX_PROCESS_ENTRIES:
+                break
             names.add(entry.szExeFile.casefold().removesuffix(".exe"))
+            ctypes.set_last_error(0)
             more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
         raise ProcessInspectionError(
             f"process snapshot listed more than {_MAX_PROCESS_ENTRIES} processes"
@@ -415,9 +421,16 @@ def _posix_process_names() -> set[str]:
             ["ps", "-A", "-o", "comm="],
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
             timeout=10,
         )
+    except (FileNotFoundError, PermissionError) as exc:
+        # A missing or forbidden ps does not heal by waiting.
+        raise RuntimeError(
+            f"could not inspect running processes before the next title: ps is unavailable "
+            f"({type(exc).__name__})"
+        ) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ProcessInspectionError(f"ps could not run ({type(exc).__name__})") from exc
     if completed.returncode != 0:
@@ -453,8 +466,11 @@ def _wait_for_machine_idle(
 
     A failed process inspection is retried within the same deadline. A title never
     starts unless an inspection succeeded, so if none succeeds before the deadline the
-    sweep stops instead of running blind.
+    sweep stops instead of running blind. ``sleeper`` must advance ``clock``: tests that
+    inject one inject both.
     """
+    if poll_seconds <= 0 or retry_seconds <= 0:
+        raise ValueError("machine poll and retry intervals must be positive")
     started = clock()
     deadline = started + max_wait_seconds
     while True:
@@ -1650,6 +1666,7 @@ def run_sweep(
     source_commit: str | None = None,
     process_reader=_process_names,
     sleeper=time.sleep,
+    clock=time.monotonic,
     poll_seconds: int = MACHINE_POLL_SECONDS,
     max_wait_seconds: int = MACHINE_MAX_WAIT_SECONDS,
 ) -> dict:
@@ -1703,6 +1720,7 @@ def run_sweep(
         load_wait_ms, load_remained_active = _wait_for_machine_idle(
             process_reader=process_reader,
             sleeper=sleeper,
+            clock=clock,
             poll_seconds=poll_seconds,
             max_wait_seconds=max_wait_seconds,
         )

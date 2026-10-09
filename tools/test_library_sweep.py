@@ -1891,6 +1891,33 @@ class MachineIdleInspectionTests(unittest.TestCase):
         self.assertEqual((wait_ms, remained_active), (120_000, False))
         self.assertEqual(clock.sleeps, [60, 60])
 
+    def test_blocking_process_until_the_deadline_runs_the_title_flagged_active(self) -> None:
+        clock = _FakeClock()
+        wait_ms, remained_active = library_sweep._wait_for_machine_idle(
+            process_reader=lambda: {"verify_flagship"}, sleeper=clock.sleep, clock=clock,
+            poll_seconds=60, retry_seconds=5, max_wait_seconds=150,
+        )
+        self.assertEqual((wait_ms, remained_active), (150_000, True))
+        self.assertEqual(clock.sleeps, [60, 60, 30])
+
+    def test_non_positive_intervals_are_refused(self) -> None:
+        for poll_seconds, retry_seconds in ((0, 5), (60, 0), (-1, 5)):
+            with self.subTest(poll=poll_seconds, retry=retry_seconds), \
+                    self.assertRaises(ValueError):
+                library_sweep._wait_for_machine_idle(
+                    process_reader=lambda: set(), sleeper=lambda _s: None,
+                    poll_seconds=poll_seconds, retry_seconds=retry_seconds,
+                    max_wait_seconds=10,
+                )
+
+    def test_missing_or_forbidden_ps_stops_at_once(self) -> None:
+        for failure in (FileNotFoundError("ps"), PermissionError("ps")):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.object(library_sweep.subprocess, "run", side_effect=failure), \
+                    self.assertRaisesRegex(RuntimeError, "ps is unavailable") as caught:
+                library_sweep._posix_process_names()
+            self.assertNotIsInstance(caught.exception, library_sweep.ProcessInspectionError)
+
     def test_ps_failures_are_retryable_inspection_errors(self) -> None:
         for failure in (
             subprocess.TimeoutExpired(["ps"], 10),
