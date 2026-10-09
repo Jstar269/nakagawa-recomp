@@ -109,6 +109,8 @@ static UiFont g_font;
  * font was active. Layout is measured with the TTF font, so any such string
  * is drawn wider than it was laid out. The harness asserts this stays zero. */
 static unsigned s_ui_test_bitmap_text_draws;
+/* Badge text of the package build screen as last drawn. */
+static const char *s_ui_test_build_badge;
 #endif
 
 static uint32_t ui_color_key(SDL_Color c) {
@@ -1681,6 +1683,10 @@ int ui_test_error_details_lines(void) {
 
 unsigned ui_test_bitmap_text_draws(void) {
     return s_ui_test_bitmap_text_draws;
+}
+
+const char *ui_test_build_badge(void) {
+    return s_ui_test_build_badge ? s_ui_test_build_badge : "none";
 }
 #endif
 
@@ -3639,7 +3645,17 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
     /* Badge & Title */
-    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "BUILDING RUNTIME PACKAGE", COLOR_BLUE);
+    /* The screen follows the build session. is_complete means the package was
+     * written and is being checked; this screen leaves when the check passes,
+     * and a failed check opens the error card. Before, only the stage chips
+     * reflected completion, so a finished build still read as running. */
+    bool built = app->build_session.is_complete && !app->build_session.is_failed;
+    const char *badge = built ? "PACKAGE BUILT" : "BUILDING RUNTIME PACKAGE";
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, badge,
+               built ? COLOR_EMERALD : COLOR_BLUE);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_badge = badge;
+#endif
 
     char title_buf[256];
     if (app->build_session.title_name[0]) {
@@ -3687,12 +3703,18 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
 
     /* Progress bar */
     float bar_y = stage_y + 40.0f;
-    draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
+    if (built) {
+        draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, 100.0f);
+    } else {
+        draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
+    }
 
     /* Current status message & elapsed time */
     float info_y = bar_y + 24.0f;
-    const char *msg = app->build_session.current_message[0]
-        ? app->build_session.current_message : "Building package...";
+    const char *msg = built
+        ? "Package written. Checking it before PLAY NOW is offered."
+        : (app->build_session.current_message[0]
+               ? app->build_session.current_message : "Building package...");
     draw_text_ellipsized(ren, card_x + 32.0f, info_y, msg, 1.1f, card_w - 180.0f, COLOR_TEXT_WHITE);
 
     char elapsed_str[64];
@@ -3720,8 +3742,11 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     /* Cancel button */
     float btn_y = card_y + card_h - 58.0f;
     bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 180.0f, 44.0f, "CANCEL BUILD", false, in, focused)) {
-        player_app_cancel_package_build(app);
+    /* Cancelling stops a running build. Once the package is written there is
+     * nothing to stop, so the same control leaves the screen instead. */
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 180.0f, 44.0f,
+                            built ? "BACK TO LIBRARY" : "CANCEL BUILD", false, in, focused)) {
+        if (!built) player_app_cancel_package_build(app);
         player_app_set_view(app, VIEW_LIBRARY);
     }
 }

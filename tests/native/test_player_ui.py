@@ -1641,6 +1641,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(build_frames[1]["package_cancelled"], "1")
         self.assertEqual(build_frames[1]["view"], "library")
 
+    def test_build_screen_follows_the_build_state(self) -> None:
+        """The build screen names the state the session is in.
+
+        A package that has been written reads PACKAGE BUILT while it is checked.
+        It used to keep reading BUILDING RUNTIME PACKAGE, because only the stage
+        chips looked at completion."""
+        running = self.run_player("building", ("KEY_ESCAPE",))
+        running_frames = running["frames"]
+        assert isinstance(running_frames, list)
+        self.assertEqual(running_frames[0]["build_badge"], "BUILDING_RUNTIME_PACKAGE")
+
+        built = self.run_player("build-ready")
+        built_frames = built["frames"]
+        assert isinstance(built_frames, list)
+        self.assertEqual(built_frames[0]["view"], "building_package")
+        self.assertEqual(built_frames[0]["build_badge"], "PACKAGE_BUILT", built["stdout"])
+
     def test_controller_bind_conflict_calibration_and_profile_save(self) -> None:
         bind = self.run_player("controller", ("KEY_TAB", "KEY_RETURN", "PAD_SOUTH"))
         bind_frames = bind["frames"]

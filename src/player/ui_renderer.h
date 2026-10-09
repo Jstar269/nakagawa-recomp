@@ -56,6 +56,7 @@ int ui_test_error_text_lines(void);
 bool ui_test_error_details_complete(void);
 int ui_test_error_details_lines(void);
 unsigned ui_test_bitmap_text_draws(void);
+const char *ui_test_build_badge(void);
 #endif
 
 /* Pixel-density multiplier applied to raster point sizes (crisper type on
