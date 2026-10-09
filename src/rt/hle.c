@@ -2746,6 +2746,7 @@ typedef struct {
     int used;
     uint32_t block_uid;
     uint32_t attr;
+    char name[32];
     uint32_t *free_blocks;
     int nfree;
     int nblocks;
@@ -2788,6 +2789,8 @@ static void fpl_remove_waiter(FplPool *p, uint32_t thread_uid) {
 
 static uint32_t h_CreateFpl(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=blockSize. 5th arg (numBlocks) is in t0 (r8). */
+    char name[32] = {0};
+    if (A0) (void)guest_cstr(A0, name, sizeof(name));
     uint32_t bsize = A3;
     uint32_t nblocks = stack_arg(s, 0);
     if (bsize == 0) bsize = 16;
@@ -2811,6 +2814,7 @@ static uint32_t h_CreateFpl(CpuState *s) {
             p->used = 1;
             p->block_uid = block_uid;
             p->attr = A2;
+            memcpy(p->name, name, sizeof(p->name));
             p->nblocks = (int)nblocks;
             p->free_blocks = (uint32_t *)calloc(nblocks, sizeof(uint32_t));
             p->allocated = (uint8_t *)calloc(nblocks, sizeof(uint8_t));
@@ -3030,6 +3034,50 @@ static uint32_t h_FreeFpl(CpuState *s) {
         sched_wake_one_object_waiter(uid, next_thread);
         sched_preempt();
     }
+    return 0;
+}
+
+/* sceKernelReferFplStatus(fplid, SceKernelFplInfo *info). The 56-byte struct follows the public
+ * PSPSDK SceKernelFplInfo field order: size(0), name[32](4), attr(36), blockSize(40),
+ * numBlocks(44), freeBlocks(48), numWaitThreads(52). The write rule is the one measured for the
+ * sema, event-flag and mailbox status calls (PSP-KERNEL-STATUS-001): a caller size of 0 writes
+ * nothing and succeeds; otherwise min(size, 56) bytes of a struct whose size word is 56 reach
+ * guest memory. The FPL struct size itself is the documented layout, not separately measured.
+ * freeBlocks is the free-list length plus the blocks not yet handed out from the bump region. */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  blockSize;
+    int32_t  numBlocks;
+    int32_t  freeBlocks;
+    int32_t  numWaitThreads;
+} SceKernelFplInfo;
+
+static uint32_t h_ReferFplStatus(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4u))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    FplPool *p = fpl_lookup(uid);
+    if (!p) return FPL_BAD_ID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelFplInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelFplInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SceKernelFplInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelFplInfo);
+    memcpy(info.name, p->name, sizeof(info.name));
+    info.attr = p->attr;
+    info.blockSize = (int32_t)p->bsize;
+    info.numBlocks = p->nblocks;
+    info.freeBlocks = p->nfree + (int32_t)((p->end - p->cur) / p->bsize);
+    info.numWaitThreads = p->nwaiters;
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
     return 0;
 }
 
@@ -21488,6 +21536,7 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
+    sr_hle_register(0xd8199e4c, "sceKernelReferFplStatus", h_ReferFplStatus);
     /* VPL set (PSP_INTR_WAITS_MATRIX.md PR-G coverage rows; blocking AllocateVpl
      * forms registered with fiber wait queues). */
     sr_hle_register(0x56c039b5, "sceKernelCreateVpl", h_CreateVpl);

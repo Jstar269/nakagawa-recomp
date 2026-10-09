@@ -10603,6 +10603,107 @@ static uint32_t fpl_call(uint32_t nid, uint32_t uid, uint32_t outptr) {
     return sr_syscall(&cpu, nid);
 }
 
+/* sceKernelReferFplStatus (0xd8199e4c): SceKernelFplInfo is 56 bytes -- size(0), name[32](4),
+ * attr(36), blockSize(40), numBlocks(44), freeBlocks(48), numWaitThreads(52). The field order is
+ * the public PSPSDK one; the partial-write rule is the sema family's measured one. Covers the
+ * fresh pool, freeBlocks after allocations and a free, a caller size of 40 (bytes 40..55 kept),
+ * a caller size of 0, the unknown-UID code and a null info pointer. */
+#define NID_RFS_REFER_FPL  0xd8199e4cu
+#define RFS_INFO           0x00241a00u
+#define RFS_NAME           0x00241a80u
+#define RFS_UNKNOWN_UID    0x0badf00du
+#define RFS_ILLEGAL_ADDR   0x80000103u   /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+
+static uint32_t rfs_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid; cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_RFS_REFER_FPL);
+}
+
+/* name[32] at RFS_INFO+4 holds `want` followed by NUL bytes out to 32. */
+static int rfs_name_is(const char *want) {
+    size_t n = strlen(want);
+    for (uint32_t i = 0; i < 32u; i++) {
+        uint8_t expected = i < n ? (uint8_t)want[i] : 0u;
+        if (MEM_R8(RFS_INFO + 4u + i) != expected) return 0;
+    }
+    return 1;
+}
+
+static int rfs_bytes_are(uint32_t from, uint32_t to, uint8_t value) {
+    for (uint32_t i = from; i < to; i++)
+        if (MEM_R8(RFS_INFO + i) != value) return 0;
+    return 1;
+}
+
+static void test_fpl_refer_status(void) {
+    static const char rfs_name[] = "rfs-fpl";
+    for (size_t i = 0; i < sizeof(rfs_name); i++) MEM_W8(RFS_NAME + (uint32_t)i, (uint8_t)rfs_name[i]);
+
+    CpuState setup;
+    memset(&setup, 0, sizeof setup);
+    setup.r[4] = RFS_NAME; setup.r[5] = 0; setup.r[6] = 0x100u; setup.r[7] = FPL_BSIZE;
+    setup.r[8] = (uint32_t)FPL_NBLOCKS;     /* numBlocks, read via stack_arg(0) */
+    uint32_t fpl = sr_syscall(&setup, NID_FPL_CREATE);
+    expect((int32_t)fpl > 0, "ReferFplStatus: test pool created (16 x 0x100, attr 0x100, name rfs-fpl)");
+
+    /* Fresh pool, full caller size: every field is stored and the sentinel is overwritten. */
+    MEM_W32(RFS_INFO, 56u);
+    for (uint32_t i = 4u; i < 56u; i++) MEM_W8(RFS_INFO + i, 0xa5u);
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds on a live pool");
+    expect(MEM_R32(RFS_INFO) == 56u, "ReferFplStatus writes the struct size (56) into the size word");
+    expect(rfs_name_is(rfs_name), "ReferFplStatus copies the create-time name and zero-fills name[32]");
+    expect(MEM_R32(RFS_INFO + 36u) == 0x100u, "ReferFplStatus reports the create-time attr");
+    expect(MEM_R32(RFS_INFO + 40u) == FPL_BSIZE, "ReferFplStatus reports blockSize");
+    expect(MEM_R32(RFS_INFO + 44u) == FPL_NBLOCKS, "ReferFplStatus reports numBlocks");
+    expect(MEM_R32(RFS_INFO + 48u) == FPL_NBLOCKS, "ReferFplStatus reports all blocks free on a fresh pool");
+    expect(MEM_R32(RFS_INFO + 52u) == 0u, "ReferFplStatus reports zero waiting threads with no waiter");
+
+    /* One block handed out: freeBlocks drops by one (bump-region accounting). */
+    expect(fpl_call(NID_FPL_TRY_ALLOCATE, fpl, FPL_OUTPTR) == 0u, "ReferFplStatus: first TryAllocate succeeds");
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds after one allocation");
+    expect(MEM_R32(RFS_INFO + 48u) == FPL_NBLOCKS - 1u, "ReferFplStatus freeBlocks is 15 after one allocation");
+
+    /* Every block out: freeBlocks reaches zero. */
+    for (uint32_t i = 1u; i < FPL_NBLOCKS; i++)
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, fpl, FPL_OUTPTR) == 0u, "ReferFplStatus: TryAllocate fills the pool");
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds on an exhausted pool");
+    expect(MEM_R32(RFS_INFO + 48u) == 0u, "ReferFplStatus freeBlocks is 0 when the pool is exhausted");
+
+    /* Free the last block handed out: the free list is now the only free source. */
+    uint32_t last = MEM_R32(FPL_OUTPTR);
+    CpuState freec;
+    memset(&freec, 0, sizeof freec);
+    freec.r[4] = fpl; freec.r[5] = last;
+    expect(sr_syscall(&freec, NID_FPL_FREE) == 0u, "ReferFplStatus: FreeFpl of the last block succeeds");
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds after a free");
+    expect(MEM_R32(RFS_INFO + 48u) == 1u, "ReferFplStatus freeBlocks is 1 after one free");
+
+    /* Caller size 40: bytes 0..39 are written; bytes 40..55 keep the sentinel. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RFS_INFO + i, 0xa5u);
+    MEM_W32(RFS_INFO, 40u);
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds with caller size 40");
+    expect(MEM_R32(RFS_INFO) == 56u, "ReferFplStatus with caller size 40 writes the struct size word");
+    expect(rfs_name_is(rfs_name), "ReferFplStatus with caller size 40 writes the name");
+    expect(rfs_bytes_are(40u, 56u, 0xa5u),
+           "ReferFplStatus with caller size 40 leaves bytes 40..55 untouched");
+
+    /* Caller size 0: nothing is written and the call succeeds. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RFS_INFO + i, 0x5au);
+    MEM_W32(RFS_INFO, 0u);
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus with caller size 0 returns 0");
+    expect(MEM_R32(RFS_INFO) == 0u && rfs_bytes_are(4u, 56u, 0x5au),
+           "ReferFplStatus with caller size 0 writes nothing");
+
+    expect(rfs_refer(RFS_UNKNOWN_UID, RFS_INFO) == FPL_BAD_ID_ERR,
+           "ReferFplStatus with an unknown UID returns FPL_BAD_ID (0x800200d3)");
+    expect(rfs_refer(fpl, 0u) == RFS_ILLEGAL_ADDR,
+           "ReferFplStatus with a null info pointer returns ILLEGAL_ADDR");
+
+    fpl_free_pool(fpl);
+}
+
 static void test_allocate_fpl_context_precedence(void) {
     char msg[160];
 
@@ -25454,6 +25555,7 @@ int main(int argc, char **argv) {
     test_can_not_wait_semantics();
     test_sema_hardware_codes();
     test_sema_refer_status();
+    test_fpl_refer_status();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_wait_sema_count_validation();
