@@ -81,6 +81,7 @@ from psp_oracle.parse_golden import (
     parse_dmac_cells_output,
     parse_dmac_invalid_tail_output,
     parse_ge_nan_output,
+    parse_registry_font_output,
     parse_registry_readonly_output,
 )
 
@@ -2210,12 +2211,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 67)
+        self.assertEqual(len(routes), 68)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 68)))
+        self.assertEqual(set(ids), set(range(1, 69)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3400,3 +3401,424 @@ class RegistryProbeNeverWritesTests(unittest.TestCase):
         self.assertIn("registry_category_reopenable(name)", self.source)
         self.assertRegex(self.source, r"#define REGISTRY_SAFE_NAME_MAX 26u")
         self.assertNotIn("__NAKAGAWA_ORACLE_UNKNOWN_CATEGORY__", self.source)
+
+
+REGISTRY_READ_CALLS = frozenset(user_mode_imports.REGISTRY_READ_NIDS.values())
+_HOST_CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+
+
+def _hex(name: str | bytes) -> str:
+    """Hex for the harness scenario; "-" stands for zero bytes."""
+    raw = name.encode("ascii") if isinstance(name, str) else name
+    return raw.hex() or "-"
+
+
+def _node(kind: int, parent: str, name: str | bytes, value: bytes | None = None) -> str:
+    line = f"node {kind} {parent} {_hex(name)}"
+    return line + (f" {_hex(value)}" if value is not None else "")
+
+
+def _font_tree(info_count: int = 2) -> list[str]:
+    """A synthetic registry shaped like the one libfont reads, plus off-route neighbours."""
+
+    nodes = [
+        _node(1, "/", "REGISTRY"),
+        _node(1, "/", "SYSPROFILE"),
+        _node(1, "/", "DATA"),
+        _node(1, "/", "CONFIG"),
+        _node(2, "/REGISTRY", "category_version", b"\x01\x00\x00\x00"),
+        _node(1, "/SYSPROFILE", "SOUND"),
+        _node(2, "/SYSPROFILE/SOUND", "dynamic_normalizer", b"\x00\x00\x00\x00"),
+        _node(1, "/SYSPROFILE", "RESOLUTION"),
+        _node(2, "/SYSPROFILE/RESOLUTION", "horizontal", b"\x11\x00\x00\x00"),
+        _node(2, "/SYSPROFILE/RESOLUTION", "vertical", b"\x22\x00\x00\x00"),
+        _node(1, "/DATA", "COUNT"),
+        _node(2, "/DATA/COUNT", "boot_count", b"\x05\x00\x00\x00"),
+        _node(2, "/DATA", "data_version", b"\x01\x00\x00\x00"),
+        _node(1, "/DATA", "FONT"),
+        _node(3, "/DATA/FONT", "path_name", b"synthetic:/f/\x00"),
+        _node(2, "/DATA/FONT", "num_fonts", info_count.to_bytes(4, "little")),
+        _node(1, "/DATA/FONT", "PROPERTY"),
+        _node(2, "/CONFIG", "language", b"\x01\x00\x00\x00"),
+        _node(1, "/CONFIG", "SYSTEM"),
+        _node(1, "/CONFIG", "__NAKAGAWA_ORACLE_UNKNOWN_"),
+    ]
+    for index in range(info_count):
+        info = f"/DATA/FONT/PROPERTY/INFO{index}"
+        nodes += [
+            _node(1, "/DATA/FONT/PROPERTY", f"INFO{index}"),
+            _node(2, info, "h_size", (0x288 + index).to_bytes(4, "little")),
+            _node(3, info, "font_name", f"Synthetic {index}".encode() + b"\x00"),
+            _node(3, info, "file_name", f"s{index}.bin".encode() + b"\x00"),
+        ]
+    return nodes
+
+
+@unittest.skipUnless(_HOST_CC, "no host C compiler on PATH")
+class RegistryFontWalkHostTests(unittest.TestCase):
+    """registry_walk.h, the probe's font-registry walk, run against a fake registry.
+
+    The fake follows the measured PSP-3000 behaviour: opening a missing category creates it
+    (logged as CREATED), a missing key is 0x8008271D and an unknown handle 0x8008272E. Every
+    test replays the call log and checks the walk's safety contract, not only its records.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(__file__).resolve().parents[1]
+        cls.fixture = cls.root / "fixtures" / "psp_oracle"
+        cls.tmp = tempfile.mkdtemp(prefix="registry_walk_host_")
+        cls.exe = str(Path(cls.tmp) / "registry_walk_host.exe")
+        result = subprocess.run(
+            [_HOST_CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+             f"-I{cls.fixture}", "-o", cls.exe, str(cls.fixture / "registry_walk_host.c")],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            raise AssertionError("registry_walk_host.c did not compile:\n" + result.stderr)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _run(self, nodes: list[str], *, root_lists: bool = True,
+             options: tuple[str, ...] = ()) -> SimpleNamespace:
+        scenario = "\n".join([f"option root-lists {int(root_lists)}", *options, *nodes]) + "\n"
+        result = subprocess.run([self.exe], input=scenario, capture_output=True, text=True,
+                                check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        emitted = "".join(line[5:] + "\n" for line in lines if line.startswith("EMIT "))
+        summary = dict(item.split("=", 1) for item in lines[-1].split()[1:])
+        self.assertTrue(lines[-1].startswith("SUMMARY "), lines[-1])
+        run = SimpleNamespace(
+            lines=lines,
+            stream=META.format(source="psp", model="PSP-3000", firmware="6.6.1",
+                               binary=MEASURED_SHA, commit=MEASURED_COMMIT) + emitted,
+            summary={key: int(value) for key, value in summary.items()},
+            opens=[line.split()[2][5:] for line in lines
+                   if line.startswith("CALL sceRegOpenCategory ")],
+        )
+        self._assert_safe(run)
+        return run
+
+    def _assert_safe(self, run: SimpleNamespace) -> None:
+        """Replay the call log: the walk's safety contract, independent of its records."""
+
+        calls = {line.split()[1] for line in run.lines if line.startswith("CALL ")}
+        self.assertLessEqual(calls, REGISTRY_READ_CALLS)
+        self.assertFalse([line for line in run.lines if line.startswith("CREATED ")])
+        self.assertFalse([line for line in run.lines if line.startswith("OPEN-NOT-A-CATEGORY")])
+        self.assertEqual(run.summary["created"], 0)
+        self.assertEqual(run.summary["nodes_before"], run.summary["nodes_after"])
+        self.assertEqual(run.summary["open_categories"], 0)
+        self.assertEqual(run.summary["open_registries"], 0)
+        listed: set[tuple[str, str]] = set()
+        directories: set[str] = set()
+        open_paths: list[str] = ["/"]
+        for line in run.lines:
+            fields = dict(item.split("=", 1) for item in line.split()[1:] if "=" in item)
+            if line.startswith("LISTED "):
+                listed.add((fields["category"], bytes.fromhex(fields["name_hex"]).decode("latin-1")))
+            elif line.startswith("INFO "):
+                if fields["type"] == "1":
+                    directories.add(fields["path"])
+            elif line.startswith("CALL sceRegGetKeyInfo "):
+                # A lookup only ever names something its handle just listed.
+                self.assertIn((fields["category"], fields["name"]), listed, line)
+            elif line.startswith("CALL sceRegOpenCategory "):
+                path = fields["path"]
+                parent, _, name = path.rpartition("/")
+                parent = parent or "/"
+                self.assertEqual(fields["mode"], "1", line)
+                self.assertIn(parent, open_paths, line)
+                self.assertIn((parent, name), listed, line)
+                self.assertIn(path, directories, line)
+                self.assertRegex(name, r"^[A-Za-z0-9_.-]{1,25}$", line)
+                parts = path[1:].split("/")
+                self.assertTrue(
+                    any(tuple(parts[:2]) == route[:len(parts[:2])]
+                        for route in (("DATA", "FONT"), ("SYSPROFILE", "RESOLUTION"))),
+                    line,
+                )
+                self.assertLessEqual(len(parts), 6, line)
+                open_paths.append(path)
+
+    def _records(self, run: SimpleNamespace):
+        return parse_output(run.stream).results
+
+    def test_full_tree_opens_only_the_font_routes_and_reads_only_their_values(self) -> None:
+        run = self._run(_font_tree())
+        self.assertEqual(run.opens, [
+            "/SYSPROFILE", "/SYSPROFILE/RESOLUTION", "/DATA", "/DATA/FONT",
+            "/DATA/FONT/PROPERTY", "/DATA/FONT/PROPERTY/INFO0", "/DATA/FONT/PROPERTY/INFO1",
+        ])
+        report = parse_registry_font_output(run.stream)
+        self.assertTrue(report.complete and report.registry_opened and report.root_enumerated)
+        self.assertEqual(report.opened, tuple(run.opens))
+        values = {key.path: key.value for key in report.keys if key.value is not None}
+        self.assertEqual(values["/DATA/FONT/path_name"], b"synthetic:/f/\x00")
+        self.assertEqual(values["/DATA/FONT/num_fonts"], b"\x02\x00\x00\x00")
+        self.assertEqual(values["/SYSPROFILE/RESOLUTION/vertical"], b"\x22\x00\x00\x00")
+        self.assertEqual(values["/DATA/FONT/PROPERTY/INFO1/file_name"], b"s1.bin\x00")
+        self.assertTrue(all(path.startswith(("/DATA/FONT/", "/SYSPROFILE/RESOLUTION/"))
+                            for path in values))
+        self.assertEqual(len(values), 2 + 2 + 3 * 2)
+        # Enumeration order is recorded: every key carries its index in its parent's listing.
+        info0 = [key for key in report.keys if key.path.startswith("/DATA/FONT/PROPERTY/INFO0/")]
+        self.assertEqual([(key.path.rsplit("/", 1)[1], key.index) for key in info0],
+                         [("h_size", 0), ("font_name", 1), ("file_name", 2)])
+        dispositions = {key.path: key.disposition for key in report.keys}
+        self.assertEqual(dispositions["/CONFIG"], 3)
+        self.assertEqual(dispositions["/REGISTRY"], 3)
+        self.assertEqual(dispositions["/DATA/COUNT"], 3)
+        self.assertEqual(dispositions["/SYSPROFILE/SOUND"], 3)
+        self.assertEqual(dispositions["/DATA/data_version"], 0)
+        steps = [line for line in run.lines if line.startswith("STEP ")]
+        self.assertEqual(steps[:3], ["STEP open-registry", "STEP root-count", "STEP root-keys"])
+        self.assertIn("STEP open:/DATA/FONT/PROPERTY/INFO1", steps)
+        self.assertEqual(steps[-1], "STEP close-registry")
+
+    def test_a_registry_handle_that_does_not_list_the_root_opens_nothing(self) -> None:
+        run = self._run(_font_tree(), root_lists=False)
+        self.assertEqual(run.opens, [])
+        self.assertFalse([line for line in run.lines if line.startswith("CALL sceRegGetKeyInfo")])
+        self.assertFalse([line for line in run.lines if line.startswith("CALL sceRegGetKeys ")])
+        report = parse_registry_font_output(run.stream)
+        self.assertFalse(report.root_enumerated)
+        self.assertEqual(report.categories, ("/",))
+        root = self._records(run)[1]
+        self.assertEqual(root.status, "FAIL")
+        self.assertEqual(dict(root.values)["out0"], "0x8008272e")
+        done = dict(self._records(run)[-1].values)
+        self.assertEqual(done["out5"], "0x00000000")
+
+    def test_absent_or_non_directory_routes_are_never_opened(self) -> None:
+        nodes = [
+            _node(1, "/", "CONFIG"),
+            _node(2, "/", "DATA", b"\x00\x00\x00\x00"),
+            _node(1, "/", "SYSPROFILEX"),
+            _node(1, "/SYSPROFILEX", "RESOLUTION"),
+        ]
+        run = self._run(nodes)
+        self.assertEqual(run.opens, [])
+        report = parse_registry_font_output(run.stream)
+        self.assertEqual({key.path: key.disposition for key in report.keys},
+                         {"/CONFIG": 3, "/DATA": 0, "/SYSPROFILEX": 3})
+
+    def test_names_that_may_not_round_trip_are_never_opened_or_queried(self) -> None:
+        nodes = _font_tree(info_count=0) + [
+            _node(1, "/DATA/FONT/PROPERTY", "I" * 25),
+            _node(1, "/DATA/FONT/PROPERTY", "J" * 26),
+            _node(1, "/DATA/FONT/PROPERTY", b"BAD NAME"),
+            _node(1, "/DATA/FONT/PROPERTY", b"a/b"),
+            _node(1, "/DATA/FONT/PROPERTY", b"K" * 27),
+            _node(1, "/DATA/FONT/PROPERTY", b"\x01ctl"),
+            _node(1, "/DATA/FONT/PROPERTY", b""),
+        ]
+        run = self._run(nodes)
+        self.assertIn("/DATA/FONT/PROPERTY/" + "I" * 25, run.opens)
+        self.assertEqual([path for path in run.opens if "PROPERTY/" in path],
+                         ["/DATA/FONT/PROPERTY/" + "I" * 25])
+        queried = [line for line in run.lines if line.startswith("CALL sceRegGetKeyInfo ")
+                   and "category=/DATA/FONT/PROPERTY " in line]
+        self.assertEqual([line.split("name=", 1)[1] for line in queried], ["I" * 25, "J" * 26])
+        report = parse_registry_font_output(run.stream)
+        below = [key for key in report.keys
+                 if key.path.startswith("/DATA/FONT/PROPERTY") and key.path != "/DATA/FONT/PROPERTY"]
+        self.assertEqual([key.disposition for key in below if key.disposition != 9], [2, 4])
+        self.assertEqual(sum(1 for key in report.keys if key.disposition == 9), 5)
+        self.assertEqual(int(dict(self._records(run)[-1].values)["out4"], 16), 1)
+
+    def test_depth_and_open_limits_bound_the_walk(self) -> None:
+        chain = ["/DATA/FONT"]
+        nodes = _font_tree(info_count=0)
+        for name in ("D3", "D4", "D5", "D6", "D7"):
+            nodes.append(_node(1, chain[-1], name))
+            chain.append(f"{chain[-1]}/{name}")
+        run = self._run(nodes)
+        self.assertIn("/DATA/FONT/D3/D4/D5/D6", run.opens)
+        self.assertNotIn("/DATA/FONT/D3/D4/D5/D6/D7", run.opens)
+        report = parse_registry_font_output(run.stream)
+        self.assertEqual({key.path: key.disposition for key in report.keys}[
+            "/DATA/FONT/D3/D4/D5/D6/D7"], 5)
+
+        nodes = _font_tree(info_count=0)
+        for index in range(60):
+            nodes.append(_node(1, "/DATA/FONT/PROPERTY", f"INFO{index}"))
+            nodes.append(_node(1, f"/DATA/FONT/PROPERTY/INFO{index}", "SUB"))
+        run = self._run(nodes)
+        self.assertEqual(len(run.opens), 96)
+        report = parse_registry_font_output(run.stream)
+        # Five route opens, then INFO<k> and its SUB alternate until the 96th open (INFO45):
+        # SUB of INFO45 and INFO46..INFO59 are refused, and nothing below them is listed.
+        limited = [key for key in report.keys if key.disposition == 6]
+        self.assertEqual([key.path for key in limited],
+                         ["/DATA/FONT/PROPERTY/INFO45/SUB"]
+                         + [f"/DATA/FONT/PROPERTY/INFO{index}" for index in range(46, 60)])
+        self.assertEqual(int(dict(self._records(run)[-1].values)["out4"], 16), len(limited))
+
+    def test_an_oversized_listing_is_refused_before_any_name_is_read(self) -> None:
+        nodes = _font_tree(info_count=0)
+        for index in range(65):
+            nodes.append(_node(1, "/DATA/FONT/PROPERTY", f"INFO{index}"))
+        run = self._run(nodes)
+        self.assertFalse([path for path in run.opens if path.startswith("/DATA/FONT/PROPERTY/")])
+        self.assertFalse([line for line in run.lines if line.startswith("CALL sceRegGetKeys ")
+                          and "category=/DATA/FONT/PROPERTY " in line])
+        report = parse_registry_font_output(run.stream)
+        property_record = next(record for record in self._records(run)
+                               if dict(record.values).get("detail") == "/DATA/FONT/PROPERTY"
+                               and record.case_id.startswith("font-category-"))
+        self.assertEqual(property_record.status, "FAIL")
+        self.assertIn("/DATA/FONT/PROPERTY", report.opened)
+
+    def test_failed_calls_are_recorded_and_the_walk_continues(self) -> None:
+        nodes = _font_tree(info_count=3) + [
+            _node(4, "/DATA/FONT", "oversized", bytes(1025)),
+            _node(4, "/DATA/FONT", "empty", b""),
+        ]
+        run = self._run(nodes, options=(
+            "option open-fails /DATA/FONT/PROPERTY/INFO1",
+            "option info-fails /DATA/FONT/num_fonts",
+            "option value-fails /DATA/FONT/path_name",
+        ))
+        self.assertIn("/DATA/FONT/PROPERTY/INFO2", run.opens)
+        report = parse_registry_font_output(run.stream)
+        self.assertNotIn("/DATA/FONT/PROPERTY/INFO1", report.opened)
+        self.assertIn("/DATA/FONT/PROPERTY/INFO1", report.categories)
+        keys = {key.path: key for key in report.keys}
+        self.assertEqual(keys["/DATA/FONT/num_fonts"].disposition, 8)
+        self.assertEqual(keys["/DATA/FONT/path_name"].disposition, 1)
+        self.assertIsNone(keys["/DATA/FONT/path_name"].value)
+        self.assertEqual(keys["/DATA/FONT/oversized"].disposition, 7)
+        self.assertEqual(keys["/DATA/FONT/empty"].disposition, 7)
+        self.assertFalse([line for line in run.lines if line.startswith("CALL sceRegGetKeyValue")
+                          and ("oversized" in line or "empty" in line)])
+
+    def test_parser_rejects_evidence_of_an_unsafe_or_incomplete_walk(self) -> None:
+        run = self._run(_font_tree())
+        lines = run.stream.splitlines(keepends=True)
+        self.assertTrue(parse_registry_font_output(run.stream).complete)
+
+        def mutate(old: str, new: str) -> str:
+            self.assertIn(old, run.stream)
+            return run.stream.replace(old, new, 1)
+
+        for bad in (
+            # A category whose listing key named something else was opened by a literal path.
+            mutate("out3=0x00000002 out4=0xffffffff detail=/DATA/FONT/PROPERTY\n",
+                   "out3=0x00000002 out4=0xffffffff detail=/DATA/FONT/PROPERTZ\n"),
+            mutate("detail=/DATA\n", "detail=/CONFIG\n"),
+            mutate("out3=0x00000003 out4=0xffffffff detail=/CONFIG",
+                   "out3=0x00000003 out4=0xffffffff detail=/CONFIG value_hex=00"),
+            mutate("out3=0x00000000 out4=0xffffffff detail=/DATA/data_version",
+                   "out3=0x00000001 out4=0x00000000 detail=/DATA/data_version value_hex=01000000"),
+            mutate("test_id=PSP-REGISTRY-002 case_id=font-key-0003",
+                   "test_id=PSP-REGISTRY-001 case_id=font-key-0003"),
+            "".join(line for line in lines if "case_id=font-key-0005 " not in line),
+        ):
+            with self.assertRaises(ProtocolError):
+                parse_registry_font_output(bad)
+        truncated = "".join(lines[:-1])
+        with self.assertRaises(ProtocolError):
+            parse_registry_font_output(truncated)
+        self.assertFalse(parse_registry_font_output(truncated, require_complete=False).complete)
+
+    def test_runner_completion_contract_accepts_the_walk(self) -> None:
+        run = self._run(_font_tree())
+        self.assertEqual(_campaign_completeness_contract("registry-font"),
+                         "strict-golden-sequence")
+        self.assertEqual(_campaign_host0_log_path(Path("host0"), "registry-font").name,
+                         "registry_font_log.txt")
+        complete = run.stream + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
+        self.assertTrue(_campaign_stream_complete(complete, "registry-font"))
+        cut = run.stream.rsplit("NAKAGAWA_PSP_TEST", 1)[0]
+        self.assertFalse(_campaign_stream_complete(cut, "registry-font"))
+        self.assertIn("registry-font", CAMPAIGN_QUEUE_CASES)
+        self.assertEqual(CAMPAIGN_QUEUE_CASES.index("registry-font"),
+                         CAMPAIGN_QUEUE_CASES.index("registry-readonly") + 1)
+
+
+class RegistryFontSourceTests(unittest.TestCase):
+    """Source-level rules for the registry-font case and its read-only import set."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.walk = (self.fixture / "registry_walk.h").read_text(encoding="utf-8")
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    def test_walk_calls_only_the_read_set_and_opens_no_literal_path(self) -> None:
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", "", self.walk, flags=re.DOTALL)
+        self.assertLessEqual(set(re.findall(r"\b(sceReg\w+)\s*\(", code)), REGISTRY_READ_CALLS)
+        self.assertEqual(re.findall(r'sceRegOpenCategory\s*\([^,]+,\s*"', code), [])
+        self.assertEqual(
+            re.findall(r"sceRegOpenCategory\s*\(([^;]*)\);", code),
+            ["registry, child->path, REGWALK_OPEN_MODE, &handle"],
+        )
+        self.assertIn("#define REGWALK_NAME_MAX 26u", self.walk)
+        self.assertIn("#define REGWALK_OPEN_MODE 1", self.walk)
+        self.assertNotRegex(code, r"\bmalloc\s*\(|\bcalloc\s*\(")
+        block = self.probe[self.probe.index(
+            "#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT\n"):]
+        block = block[:block.index("\n#endif")]
+        self.assertNotIn("sceReg", block)
+        self.assertIn('#include "registry_walk.h"', block)
+
+    def test_registry_cases_pin_exactly_the_read_nids(self) -> None:
+        self.assertIn("REGISTRY_CASES = registry-readonly registry-font", self.makefile)
+        line = next(line for line in self.makefile.splitlines()
+                    if line.startswith("USER_MODE_IMPORT_GATE_ARGS += --exact-library sceReg="))
+        nids = {int(item, 16) for item in line.split("sceReg=", 1)[1].split(",")}
+        self.assertEqual(nids, set(user_mode_imports.REGISTRY_READ_NIDS))
+        fixup = next(line for line in self.makefile.splitlines() if line.startswith("FIXUP = "))
+        self.assertIn('"$(USER_MODE_IMPORT_GATE)" $(USER_MODE_IMPORT_GATE_ARGS) "$$1"', fixup)
+        self.assertIn("$(BUILD_DIR)/probe.o: probe.c registry_walk.h", self.makefile)
+        self.assertRegex(self.makefile, r"(?m)^else ifeq \(\$\(CASE\),registry-font\)\nCASE_ID = 68$")
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/registry_font_log.txt"', self.probe)
+
+    def _gate(self, libs: list[tuple[str, list[int]]], *extra: str,
+              module_attributes: int = 0) -> tuple[int, str, str]:
+        data = build_import_elf(libs, module_attributes=module_attributes)
+        with tempfile.TemporaryDirectory() as tmp:
+            module = Path(tmp) / "probe.elf"
+            module.write_bytes(data)
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                status = user_mode_imports.main([*extra, str(module)])
+        return status, out.getvalue(), err.getvalue()
+
+    def test_gate_accepts_the_read_set_and_refuses_every_other_registry_nid(self) -> None:
+        read = sorted(user_mode_imports.REGISTRY_READ_NIDS)
+        exact = "sceReg=" + ",".join(f"0x{nid:08X}" for nid in read)
+        status, out, _err = self._gate([("IoFileMgrForUser", [0x109F50BC]), ("sceReg", read)],
+                                       "--exact-library", exact)
+        self.assertEqual(status, user_mode_imports.EXIT_OK, out)
+        refused = sorted(user_mode_imports.REGISTRY_REFUSED_NIDS) + [0x12345678]
+        for nid in refused:
+            for attributes in (0, user_mode_imports.PSP_MODULE_KERNEL):
+                status, _out, err = self._gate([("sceReg", read[:2] + [nid])],
+                                               module_attributes=attributes)
+                self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT, hex(nid))
+                self.assertIn(f"0x{nid:08X}", err)
+                self.assertIn(user_mode_imports.registry_call_name(nid), err)
+        self.assertEqual(user_mode_imports.registry_call_name(0x17768E14), "sceRegSetKeyValue")
+
+    def test_exact_library_set_must_match(self) -> None:
+        read = sorted(user_mode_imports.REGISTRY_READ_NIDS)
+        exact = "sceReg=" + ",".join(f"0x{nid:08X}" for nid in read)
+        status, _out, err = self._gate([("sceReg", read[:-1])], "--exact-library", exact)
+        self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+        self.assertIn(f"missing 0x{read[-1]:08X}", err)
+        narrow = "sceReg=" + ",".join(f"0x{nid:08X}" for nid in read[:-1])
+        status, _out, err = self._gate([("sceReg", read)], "--exact-library", narrow)
+        self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+        self.assertIn(f"unexpected 0x{read[-1]:08X}", err)
+        for bad in (["--exact-library"], ["--exact-library", "sceReg"],
+                    ["--exact-library", "sceReg=0x1"],
+                    ["--exact-library", "sceReg=0x92E41280,0x92E41280"],
+                    ["--exact-library", exact, "--exact-library", exact]):
+            status, _out, _err = self._gate([("sceReg", read)], *bad)
+            self.assertEqual(status, user_mode_imports.EXIT_UNREADABLE, bad)

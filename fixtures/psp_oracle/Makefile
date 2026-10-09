@@ -158,6 +158,8 @@ else ifeq ($(CASE),registry-readonly)
 CASE_ID = 66
 else ifeq ($(CASE),kernel-misc)
 CASE_ID = 67
+else ifeq ($(CASE),registry-font)
+CASE_ID = 68
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -309,8 +311,12 @@ endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
 endif
-ifeq ($(CASE),registry-readonly)
+# The registry cases may import only the eight read-only sceReg calls, exactly: the gate
+# below fails the build on any other sceReg NID (a set, create, remove or flush call).
+REGISTRY_CASES = registry-readonly registry-font
+ifneq ($(filter $(REGISTRY_CASES),$(CASE)),)
 LIBS += -lpspreg
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceReg=0x92E41280,0xFA8A5739,0x1D8A762E,0x0CAE832B,0x2C0DB9DD,0x2D211135,0xD4475AA8,0x28A8E98A
 endif
 ifeq ($(CASE),kernel-misc)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/display_user_imports.o
@@ -341,13 +347,13 @@ include $(PSPSDK)/lib/build.mak
 # .DELETE_ON_ERROR removes a rejected ELF so a later make cannot package it.
 PYTHON ?= python3
 USER_MODE_IMPORT_GATE = $(FIXTURE_DIR)../../tools/psp_oracle/user_mode_imports.py
-FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" "$$1"' --
+FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" $(USER_MODE_IMPORT_GATE_ARGS) "$$1"' --
 .DELETE_ON_ERROR:
 
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
-$(BUILD_DIR)/probe.o: probe.c
+$(BUILD_DIR)/probe.o: probe.c registry_walk.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exports.exp: Makefile

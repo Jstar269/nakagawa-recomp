@@ -43,7 +43,7 @@ _Static_assert(
 #include <pspaudio.h>
 #include <pspgu.h>
 #include <pspgum.h>
-#if PSP_ORACLE_CASE == 66
+#if PSP_ORACLE_CASE == 66 || PSP_ORACLE_CASE == 68
 #include <pspreg.h>
 #endif
 #if PSP_ORACLE_CASE == 67
@@ -119,6 +119,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REFER_STATUS_SIZE 65
 #define PSP_ORACLE_CASE_REGISTRY_READONLY 66
 #define PSP_ORACLE_CASE_KERNEL_MISC 67
+#define PSP_ORACLE_CASE_REGISTRY_FONT 68
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -278,6 +279,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/registry_readonly_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
+#define PROBE_HOST0_LOG "host0:/registry_font_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
 #define PROBE_HOST0_LOG "host0:/smoke_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
@@ -6474,6 +6477,36 @@ static void run_registry_readonly(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
+/* Read-only walk of /DATA/FONT and /SYSPROFILE/RESOLUTION (PSP-REGISTRY-002). The walk, its
+ * safety rules and its record format live in registry_walk.h, which a host harness also runs
+ * against a fake registry (tools/test_psp_oracle.py). Records and step markers go through the
+ * durable host0 writer; every walk buffer is static. */
+#include "registry_walk.h"
+
+static int s_registry_font_emulated;
+
+static void registry_font_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_registry_font_emulated, line, length);
+}
+
+static void registry_font_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_registry_font_emulated, "registry-font", step);
+}
+
+static RegWalk s_registry_font_walk;
+
+static void run_registry_font(int emulated) {
+    s_registry_font_emulated = emulated;
+    memset(&s_registry_font_walk, 0, sizeof(s_registry_font_walk));
+    s_registry_font_walk.emit = registry_font_emit;
+    s_registry_font_walk.step = registry_font_step;
+    regwalk_run(&s_registry_font_walk);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 static void emit_ge_control(int emulated, const char *case_id, const char *status,
                             uint32_t result, const uint32_t *out, size_t count) {
@@ -6863,6 +6896,8 @@ int main(int argc, char *argv[]) {
     run_registry_readonly(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
     run_kernel_misc(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
+    run_registry_font(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

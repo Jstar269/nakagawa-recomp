@@ -486,7 +486,7 @@ validation and K3/K4 remain `NOT_RUN` under #303.
 
 ## Pending PSP-3000 campaign
 
-The seven cases below are new synthetic probes. Their hardware expectations
+The eight cases below are new synthetic probes. Their hardware expectations
 remain `NOT_RUN`; a complete parser only proves that the record stream is
 complete and well formed. It does not decide which PSP return values or
 ordering semantics are correct.
@@ -499,6 +499,7 @@ ordering semantics are correct.
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, list/draw sync statuses for paused work, the continue result with a bounded drain (`ge-continue-drain`, `TIMEOUT` with the last states if the GE does not go idle), a queue reset when needed (`ge-quiesce-after-continue`), cancelled work, and a final quiesce (`ge-quiesce-after-cancel`). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | Semaphore, event-flag, and mailbox status structures with size words 0, 8, 40, and full size; records the changed bytes and returned size word. |
 | `registry-readonly` | `PSP-REGISTRY-001` | Read-only registry/category enumeration under `/CONFIG`, key names/types/sizes, modeled setting values only, and unknown-category/key, small-buffer, and handle-exhaustion results (`registry-errors`; at most 256 opens, `out6` says whether an open failed first), then the forged-handle call last (`registry-bad-handle`). |
+| `registry-font` | `PSP-REGISTRY-002` | Read-only walk of `/DATA/FONT` (with `PROPERTY/INFO<n>`) and `/SYSPROFILE/RESOLUTION`: whether the registry handle lists the root (`font-category-0000`), then every key's name, type, size, value and enumeration order (`font-category-*`, `font-key-*`), and `font-registry-done` with the record, open and refusal counts. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
 
 The registry case opens the registry and every category in read mode. It never
@@ -508,9 +509,33 @@ runtime-modeled keys `language`, `button_assign`, date/time format, `timezone`,
 and size. Registry and console-specific capture output stays in the private
 campaign output directory.
 
+The font-registry case (`registry-font`) runs the walk in `registry_walk.h`.
+Opening a missing category creates it on the console, so the walk never opens
+a category by a literal path:
+
+- The root is listed through the registry handle (`sceRegGetKeysNum` and
+  `sceRegGetKeys` take no name, so they cannot create anything). If the handle
+  does not list the root, nothing is opened.
+- A category is opened only after its already-open parent listed it,
+  `sceRegGetKeyInfo` on that parent reported a directory, and its name is 1 to
+  25 bytes of `[A-Za-z0-9_.-]`. Its path is the parent's path plus that name.
+- Only `/DATA`, `/DATA/FONT` and below, `/SYSPROFILE`, and
+  `/SYSPROFILE/RESOLUTION` and below are entered. Values are read only inside
+  `/DATA/FONT` and `/SYSPROFILE/RESOLUTION`; other keys record name, type and
+  size.
+- Keys per category (64), depth (6), categories opened (96) and value size
+  (1024 bytes) are bounded, and every buffer is static.
+
+`registry_walk_host.c` runs the same walk against a fake registry that creates
+a category on a missing open, as the console does; `tools/test_psp_oracle.py`
+replays its call log against these rules. The Makefile passes
+`--exact-library sceReg=...` to `tools/psp_oracle/user_mode_imports.py` for both
+registry cases, so a build fails unless the probe imports exactly the eight
+read calls; the gate also refuses any other `sceReg` NID in every probe.
+
 The host campaign plan requires one staged PRX for each queued case. It launches
 one PRX per boot and issues a PSPLink soft reset between completed cases. The
-queue starts with `transport-write`, then runs the seven new cases in the table
+queue starts with `transport-write`, then runs the eight new cases in the table
 order, then every remaining README `NOT_RUN` probe: `smoke`,
 `thread-exit-delete`, `teardown-test`, `io-matrix`, `display-mask-duty`,
 `display-wait-late`, `display-wait-priority`, `display-vblank-window`,

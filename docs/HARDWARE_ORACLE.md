@@ -503,7 +503,7 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 ## Pending PSP-3000 measurement campaign
 
-The following seven source-owned cases are built for a future PSP-3000 / 6.61
+The following eight source-owned cases are built for a future PSP-3000 / 6.61
 session. Every row remains `NOT_RUN` until a complete physical capture is
 validated. Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
@@ -516,6 +516,7 @@ they do not encode expected PSP return values.
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `NOT_RUN` | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
 | `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
+| `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `NOT_RUN` | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 
 The registry probe opens the registry and categories in read mode and never
@@ -525,8 +526,18 @@ the runtime models (`language`, `button_assign`, date/time format, `timezone`,
 The resulting registry and console-specific files remain in the private
 campaign output directory.
 
+The font-registry probe (`registry-font`, `fixtures/psp_oracle/registry_walk.h`)
+opens no category by a literal path. On PSP-3000 6.6.1 opening a missing
+category creates it, so the probe lists the root through the registry handle
+itself and opens a category only after its open parent listed it as a
+directory with a name shorter than the 26-byte stored-name limit. If the
+registry handle does not list the root, the probe opens nothing and records
+that result. It enters only `/DATA`, `/DATA/FONT`, `/SYSPROFILE` and
+`/SYSPROFILE/RESOLUTION` and what lies below the last two, and reads values only
+there. The build pins the probe's `sceReg` imports to the eight read calls.
+
 The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
-with the host0 `transport-write` preflight, then the seven cases above, followed
+with the host0 `transport-write` preflight, then the eight cases above, followed
 by the remaining README `NOT_RUN` cases: smoke, thread exit/delete, teardown,
 I/O matrix, display mask duty, display waits, FPU, cache alias, audio, GE
 non-finite, DMA cells, five invalid-tail cases, and four mutex cases. The

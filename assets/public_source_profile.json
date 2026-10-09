@@ -318,6 +318,8 @@
     "fixtures/psp_oracle/psp_b1.c",
     "fixtures/psp_oracle/psp_b2.c",
     "fixtures/psp_oracle/psp_b3.c",
+    "fixtures/psp_oracle/registry_walk.h",
+    "fixtures/psp_oracle/registry_walk_host.c",
     "fixtures/psp_oracle/threadman_user_imports.S",
     "fixtures/psp_oracle_captures/display_wait_late.20261008-run5.txt",
     "fixtures/psp_oracle_captures/ge_break_continue.20261008-manual-partial.txt",

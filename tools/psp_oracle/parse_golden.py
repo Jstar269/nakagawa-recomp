@@ -762,6 +762,312 @@ def _validate_registry_name(value: str, *, category: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# PSP-REGISTRY-002 read-only font-registry walk (fixtures/psp_oracle/registry_walk.h)
+#
+# The stream is font-registry-open, then font-category/font-key records in the
+# walk's enumeration order, then font-registry-done. The parser re-checks the
+# walk's safety contract on the evidence itself: a category appears only right
+# after the key record that listed it as an on-route directory with a name
+# that round-trips, the root is never opened (it is listed through the registry
+# handle), values appear only inside /DATA/FONT and /SYSPROFILE/RESOLUTION, and
+# every listed key is accounted for in order. It does not decide PSP values.
+# ---------------------------------------------------------------------------
+
+REGISTRY_FONT_TEST_ID = "PSP-REGISTRY-002"
+REGISTRY_FONT_HOST0_LOG = "host0:/registry_font_log.txt"
+REGISTRY_FONT_ROUTES = (("DATA", "FONT"), ("SYSPROFILE", "RESOLUTION"))
+REGISTRY_FONT_NAME_MAX = 26
+REGISTRY_FONT_KEYS_MAX = 64
+REGISTRY_FONT_DEPTH_MAX = 6
+REGISTRY_FONT_VALUE_MAX = 1024
+REGISTRY_FONT_ERROR = 0xFFFFFFFF
+REGISTRY_FONT_TYPE_DIR = 1
+REGISTRY_FONT_KEY_METADATA = 0
+REGISTRY_FONT_KEY_VALUE = 1
+REGISTRY_FONT_KEY_OPENED = 2
+REGISTRY_FONT_KEY_OFF_ROUTE = 3
+REGISTRY_FONT_KEY_NAME_REFUSED = 4
+REGISTRY_FONT_KEY_DEPTH_LIMIT = 5
+REGISTRY_FONT_KEY_OPEN_LIMIT = 6
+REGISTRY_FONT_KEY_VALUE_SIZE = 7
+REGISTRY_FONT_KEY_INFO_FAILED = 8
+REGISTRY_FONT_KEY_NAME_UNSAFE = 9
+_REGISTRY_FONT_REFUSALS = frozenset({
+    REGISTRY_FONT_KEY_NAME_REFUSED, REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT,
+})
+_REGISTRY_FONT_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,26}")
+
+
+@dataclass(frozen=True)
+class RegistryFontKey:
+    path: str
+    index: int
+    type: int
+    size: int
+    disposition: int
+    value: bytes | None
+
+
+@dataclass(frozen=True)
+class RegistryFontReport:
+    parsed: object
+    complete: bool
+    registry_opened: bool
+    root_enumerated: bool
+    categories: tuple[str, ...]
+    opened: tuple[str, ...]
+    keys: tuple[RegistryFontKey, ...]
+
+
+def _font_components(path: str) -> list[str]:
+    if path == "/":
+        return []
+    if not path.startswith("/") or path.endswith("/"):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: malformed registry path {path!r}")
+    parts = path[1:].split("/")
+    if any(not _REGISTRY_FONT_NAME_RE.fullmatch(part) for part in parts):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: unsafe registry path {path!r}")
+    return parts
+
+
+def _font_on_route(parts: list[str]) -> bool:
+    """Whether a directory at ``parts`` may be entered: a route prefix or below a route."""
+
+    span = min(len(parts), 2)
+    return bool(parts) and any(tuple(parts[:span]) == route[:span] for route in REGISTRY_FONT_ROUTES)
+
+
+def _font_value_subtree(parent: list[str]) -> bool:
+    """Whether keys of the directory ``parent`` are inside a value subtree."""
+
+    return len(parent) >= 2 and tuple(parent[:2]) in REGISTRY_FONT_ROUTES
+
+
+def _font_reopenable(name: str) -> bool:
+    return 0 < len(name) < REGISTRY_FONT_NAME_MAX and not name.startswith("__NAKAGAWA")
+
+
+def _font_fields(record, expected: set[str]) -> dict[str, int | str]:
+    values = dict(record.values)
+    if set(values) != expected:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: {record.case_id} fields must be {sorted(expected)}, "
+            f"got {sorted(values)}"
+        )
+    out: dict[str, int | str] = {}
+    for field, value in values.items():
+        if field in {"detail", "value_hex", "name_hex"}:
+            if field != "detail" and not re.fullmatch(r"(?:[0-9a-f]{2})*", value):
+                raise ProtocolError(
+                    f"{REGISTRY_FONT_TEST_ID}: {record.case_id} {field} is not byte encoded"
+                )
+            out[field] = value
+            continue
+        try:
+            out[field] = int(value, 0)
+        except ValueError as exc:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} {field} is not an integer"
+            ) from exc
+    return out
+
+
+def parse_registry_font_output(
+    text: str, *, require_complete: bool = True
+) -> RegistryFontReport:
+    """Validate the read-only font-registry walk and its safety contract."""
+
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != REGISTRY_FONT_TEST_ID for record in records):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: foreign test_id in font-registry stream")
+    if records[0].case_id != "font-registry-open":
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: stream must start with font-registry-open")
+    opening = _font_fields(records[0], {"result", "out0", "out1"})
+    registry_opened = opening["result"] == 0
+    if (records[0].status == "PASS") != registry_opened:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-open status disagrees")
+    terminal = records[-1].case_id == "font-registry-done" and len(records) > 1
+    body = records[1:-1] if terminal else records[1:]
+    if not registry_opened and body:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: records after a failed registry open")
+
+    categories: list[str] = []
+    opened: list[str] = []
+    keys: list[RegistryFontKey] = []
+    stack: list[list] = []  # [path, count, next index]
+    pending_open: str | None = None
+    root_enumerated = False
+    for record in body:
+        if record.case_id.startswith("font-category-"):
+            if record.case_id != f"font-category-{len(categories):04d}":
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is out of sequence")
+            values = _font_fields(record, {"result", "out0", "out1", "out2", "out3", "detail"})
+            path = str(values["detail"])
+            parts = _font_components(path)
+            usable = (values["result"] == 0 and values["out0"] == 0
+                      and values["out1"] <= REGISTRY_FONT_KEYS_MAX
+                      and (values["out1"] == 0 or values["out2"] == 0))
+            if (record.status == "PASS") != usable:
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} status disagrees")
+            if values["out3"] != len(parts):
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} depth disagrees")
+            if not categories:
+                if path != "/" or values["result"] != 0:
+                    raise ProtocolError(
+                        f"{REGISTRY_FONT_TEST_ID}: the first category must be the root listing"
+                    )
+                root_enumerated = usable
+            else:
+                # Safety: a category exists in the evidence only because the key record just
+                # before it listed it as an on-route directory whose name round-trips.
+                if pending_open != path:
+                    raise ProtocolError(
+                        f"{REGISTRY_FONT_TEST_ID}: {path} was opened without being listed "
+                        "as an on-route directory just before"
+                    )
+                if (not _font_on_route(parts) or len(parts) > REGISTRY_FONT_DEPTH_MAX
+                        or not all(_font_reopenable(part) for part in parts)):
+                    raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {path} must never be opened")
+                if values["result"] == 0:
+                    opened.append(path)
+            pending_open = None
+            categories.append(path)
+            if usable and values["out1"] > 0:
+                stack.append([path, values["out1"], 0])
+            continue
+
+        if not record.case_id.startswith("font-key-"):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: unexpected record {record.case_id!r}")
+        if pending_open is not None:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {pending_open} was listed as opened but has no category"
+            )
+        if record.case_id != f"font-key-{len(keys):04d}":
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is out of sequence")
+        base = {"result", "out0", "out1", "out2", "out3", "out4", "detail"}
+        raw = dict(record.values)
+        extra = set(raw) - base
+        if extra not in (set(), {"value_hex"}, {"name_hex"}):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has invalid fields")
+        values = _font_fields(record, base | extra)
+        while stack and stack[-1][2] >= stack[-1][1]:
+            stack.pop()
+        if not stack:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has no listing parent")
+        parent_path, _count, index = stack[-1]
+        if values["out2"] != index:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} breaks the enumeration order"
+            )
+        stack[-1][2] += 1
+        disposition = values["out3"]
+        path = str(values["detail"])
+        if disposition == REGISTRY_FONT_KEY_NAME_UNSAFE:
+            # name_hex is the whole listing slot; a usable name is NUL-terminated inside it.
+            slot = bytes.fromhex(str(values.get("name_hex", "")))
+            name = slot.split(b"\0", 1)[0] if b"\0" in slot else None
+            if ("name_hex" not in values or len(slot) != REGISTRY_FONT_NAME_MAX + 1
+                    or path != parent_path or values["result"] != REGISTRY_FONT_ERROR
+                    or record.status != "FAIL"
+                    or (name is not None
+                        and _REGISTRY_FONT_NAME_RE.fullmatch(name.decode("latin-1")))):
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} unsafe-name record")
+            keys.append(RegistryFontKey(parent_path, index, REGISTRY_FONT_ERROR,
+                                        REGISTRY_FONT_ERROR, disposition, None))
+            continue
+        if "name_hex" in values:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has a stray name_hex")
+        parts = _font_components(path)
+        parent_parts = _font_components(parent_path)
+        if parts[:-1] != parent_parts or not parts:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is not a child of {parent_path}"
+            )
+        is_dir = values["out0"] == REGISTRY_FONT_TYPE_DIR
+        in_values = _font_value_subtree(parent_parts)
+        value = None
+        if "value_hex" in values:
+            if disposition != REGISTRY_FONT_KEY_VALUE or values["out4"] != 0 or not in_values:
+                raise ProtocolError(
+                    f"{REGISTRY_FONT_TEST_ID}: {record.case_id} carries a value it must not have"
+                )
+            value = bytes.fromhex(str(values["value_hex"]))
+            if len(value) != values["out1"]:
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} value size disagrees")
+        ok = values["result"] == 0
+        if (record.status == "PASS") != ok:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} status disagrees")
+        if disposition == REGISTRY_FONT_KEY_INFO_FAILED:
+            consistent = not ok
+        elif not ok:
+            consistent = False
+        elif disposition == REGISTRY_FONT_KEY_METADATA:
+            consistent = not is_dir and not in_values and values["out4"] == REGISTRY_FONT_ERROR
+        elif disposition == REGISTRY_FONT_KEY_VALUE:
+            consistent = (not is_dir and in_values
+                          and 0 < values["out1"] <= REGISTRY_FONT_VALUE_MAX
+                          and (values["out4"] == 0) == (value is not None))
+        elif disposition == REGISTRY_FONT_KEY_VALUE_SIZE:
+            consistent = (not is_dir and in_values and values["out4"] == REGISTRY_FONT_ERROR
+                          and not 0 < values["out1"] <= REGISTRY_FONT_VALUE_MAX)
+        elif disposition == REGISTRY_FONT_KEY_OPENED:
+            consistent = (is_dir and _font_on_route(parts) and _font_reopenable(parts[-1])
+                          and len(parts) <= REGISTRY_FONT_DEPTH_MAX)
+            pending_open = path
+        elif disposition == REGISTRY_FONT_KEY_OFF_ROUTE:
+            consistent = is_dir and not _font_on_route(parts)
+        elif disposition == REGISTRY_FONT_KEY_NAME_REFUSED:
+            consistent = is_dir and _font_on_route(parts) and not _font_reopenable(parts[-1])
+        elif disposition in (REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT):
+            consistent = is_dir and _font_on_route(parts)
+        else:
+            consistent = False
+        if not consistent:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} disposition {disposition} "
+                "disagrees with its key"
+            )
+        keys.append(RegistryFontKey(path, index, values["out0"], values["out1"],
+                                    disposition, value))
+
+    if pending_open is not None:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: {pending_open} was listed as opened but has no category"
+        )
+    if terminal:
+        done = _font_fields(records[-1], {
+            "result", "out0", "out1", "out2", "out3", "out4", "out5",
+        })
+        while stack and stack[-1][2] >= stack[-1][1]:
+            stack.pop()
+        if stack:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: listed keys are missing before done")
+        refused = sum(1 for key in keys if key.disposition in _REGISTRY_FONT_REFUSALS)
+        expected = {
+            "out0": len(categories), "out1": len(keys), "out2": len(records) - 1,
+            "out3": len(opened), "out4": refused, "out5": int(root_enumerated),
+        }
+        if any(done[field] != value for field, value in expected.items()):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-done counts disagree")
+        if not registry_opened and done["result"] != REGISTRY_FONT_ERROR:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: registry closed without being opened")
+        if registry_opened and not categories:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: the root listing record is missing")
+    elif require_complete:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: stream is missing font-registry-done")
+    return RegistryFontReport(
+        parsed=parsed,
+        complete=terminal,
+        registry_opened=registry_opened,
+        root_enumerated=root_enumerated,
+        categories=tuple(categories),
+        opened=tuple(opened),
+        keys=tuple(keys),
+    )
+
+
+# ---------------------------------------------------------------------------
 # PSP-CACHE-001 dcache/uncached-alias probe
 #
 # The record contract is derived from ``fixtures/psp_oracle/probe.c``
