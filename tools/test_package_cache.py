@@ -555,6 +555,30 @@ class PackageCacheTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "PACKAGE_REPORT_TOO_LARGE")
         self.assertIn("rejected by the package reader", str(caught.exception))
 
+    def test_artifact_order_ignores_the_profile_stamp_hash(self) -> None:
+        # A profile stamp is named by a hash over its entries, and the entries carry CFLAGS,
+        # which carry the build directory. Two output roots that build the same inputs
+        # therefore name the stamp differently: a hash starting with "f" sorts the stamp
+        # after the entries file, any other hash sorts it before. The manifest records must
+        # come out in the same order either way. Both orders are forced here by name.
+        with tempfile.TemporaryDirectory() as tmp:
+            for stamp_hash in ("0123456789abcdef0123", "fedcba9876543210fedc"):
+                package = Path(tmp) / stamp_hash
+                package.mkdir()
+                (package / ".runtime-profile-entries").write_text(
+                    "CFLAGS=fixture\n", encoding="utf-8")
+                (package / f".runtime-profile-{stamp_hash}").write_bytes(b"")
+                (package / "build-report.json").write_text("{}", encoding="utf-8")
+                paths = [record["path"] for record in package_cache._artifact_records(package)]
+                self.assertEqual(
+                    paths,
+                    [f".runtime-profile-{stamp_hash}",
+                     ".runtime-profile-entries",
+                     "build-report.json"],
+                    "the record order follows the stamp's hash, so two output roots "
+                    "building the same inputs write different completion manifests",
+                )
+
     def test_completion_manifest_accepts_gcc_runtime_dll_artifact_names(self) -> None:
         # Host runtime closure DLLs ship inside packages and GCC/MSYS2 library
         # names contain '+' (libstdc++-6.dll). The artifact rule must mirror

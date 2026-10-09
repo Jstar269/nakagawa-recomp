@@ -1132,9 +1132,26 @@ def compare_cache_keys(
     return CacheDecision("native-recompile", True, False, tuple(reasons))
 
 
+# A profile stamp is named by a hash over its entries, and the entries carry CFLAGS, which
+# carry the build directory (-DSR_BUILD_DIR). Two output roots that build the same inputs
+# therefore name the stamp differently, and a raw name sort would move the stamp relative
+# to its siblings with each root. Records are ordered by the name with that hash removed,
+# and by the full name only to break a tie between two stamps of one kind.
+_PROFILE_STAMP_HASH_RE = re.compile(
+    r"(\.(?:runtime-profile|codegen-profile|recomp-profile|title-config))-[0-9a-f]{4,}"
+)
+
+
+def _record_order(relative: str) -> tuple[str, str]:
+    return (_PROFILE_STAMP_HASH_RE.sub(r"\1", relative), relative)
+
+
 def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
-    for path in sorted(package_dir.rglob("*")):
+    for path in sorted(
+        package_dir.rglob("*"),
+        key=lambda item: _record_order(item.relative_to(package_dir).as_posix()),
+    ):
         if path.is_symlink():
             raise PackageCacheError("package contains a symlink artifact")
         if not path.is_file():
