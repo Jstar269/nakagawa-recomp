@@ -1829,5 +1829,94 @@ class LibrarySweepExternalJsonTests(unittest.TestCase):
         self.assertEqual(status, "RUNTIME_ONLY")
         self.assertEqual(rows[0]["nid"], "0x87654321")
 
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class MachineIdleInspectionTests(unittest.TestCase):
+    def test_transient_inspection_failures_are_retried_before_the_title(self) -> None:
+        clock = _FakeClock()
+        outcomes = [
+            library_sweep.ProcessInspectionError("snapshot failed"),
+            library_sweep.ProcessInspectionError("snapshot failed"),
+            {"python", "explorer"},
+        ]
+
+        def reader() -> set[str]:
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            wait_ms, remained_active = library_sweep._wait_for_machine_idle(
+                process_reader=reader, sleeper=clock.sleep, clock=clock,
+                poll_seconds=60, retry_seconds=5, max_wait_seconds=1200,
+            )
+        self.assertEqual((wait_ms, remained_active), (10_000, False))
+        self.assertEqual(clock.sleeps, [5, 5])
+        self.assertEqual(stderr.getvalue().count("process inspection failed"), 2)
+
+    def test_no_successful_inspection_before_the_deadline_stops_the_sweep(self) -> None:
+        clock = _FakeClock()
+
+        def reader() -> set[str]:
+            raise library_sweep.ProcessInspectionError("snapshot failed")
+
+        with mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaisesRegex(RuntimeError, "could not inspect running processes"):
+            library_sweep._wait_for_machine_idle(
+                process_reader=reader, sleeper=clock.sleep, clock=clock,
+                poll_seconds=60, retry_seconds=5, max_wait_seconds=12,
+            )
+        self.assertEqual(clock.sleeps, [5, 5, 2])
+
+    def test_blocking_process_still_waits_on_the_poll_interval(self) -> None:
+        clock = _FakeClock()
+        outcomes = [{"hst"}, {"ppssppwindows64"}, set()]
+        wait_ms, remained_active = library_sweep._wait_for_machine_idle(
+            process_reader=lambda: outcomes.pop(0), sleeper=clock.sleep, clock=clock,
+            poll_seconds=60, retry_seconds=5, max_wait_seconds=1200,
+        )
+        self.assertEqual((wait_ms, remained_active), (120_000, False))
+        self.assertEqual(clock.sleeps, [60, 60])
+
+    def test_ps_failures_are_retryable_inspection_errors(self) -> None:
+        for failure in (
+            subprocess.TimeoutExpired(["ps"], 10),
+            OSError("fork failed"),
+        ):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.object(library_sweep.subprocess, "run", side_effect=failure), \
+                    self.assertRaises(library_sweep.ProcessInspectionError):
+                library_sweep._posix_process_names()
+        failed = subprocess.CompletedProcess(["ps"], 1, stdout="", stderr="")
+        with mock.patch.object(library_sweep.subprocess, "run", return_value=failed), \
+                self.assertRaises(library_sweep.ProcessInspectionError):
+            library_sweep._posix_process_names()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows process snapshot")
+    def test_windows_snapshot_lists_this_process_without_starting_a_child(self) -> None:
+        with mock.patch.object(
+            library_sweep.subprocess, "run", side_effect=AssertionError("child process started"),
+        ):
+            names = library_sweep._process_names()
+        own_name = Path(sys.executable).name.casefold().removesuffix(".exe")
+        self.assertIn(own_name, names)
+        self.assertIn("system", names)
+        self.assertTrue(all(name == name.casefold() and not name.endswith(".exe")
+                            for name in names))
+
+
 if __name__ == "__main__":
     unittest.main()
