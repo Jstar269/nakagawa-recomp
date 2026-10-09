@@ -221,6 +221,7 @@ extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right
 extern void sr_hle_test_power_reset(void);
 extern void sr_hle_test_hprm_set_remote(int attached);
 extern void sr_hle_test_hprm_set_headphone(int attached);
+extern void sr_hle_test_hprm_set_microphone(int attached);
 extern uint32_t sr_vblank_handler(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
@@ -11320,6 +11321,16 @@ static void test_td24b_cheap_hle_batch(void) {
     sr_hle_test_hprm_set_headphone(0);
     expect(td24b_dispatch4(0x7e69eda4u, 0u, 0u, 0u, 0u) == 0u,
            "sceHprmIsHeadphoneExist returns to no headphones when the model detaches it");
+
+    /* sceHprmIsMicrophoneExist (0x219c58f1): PSPSDK psphprm.h, 1 when the microphone is plugged in. */
+    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsMicrophoneExist reports no microphone (the runtime models no microphone accessory)");
+    sr_hle_test_hprm_set_microphone(1);
+    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsMicrophoneExist follows a modeled attached microphone");
+    sr_hle_test_hprm_set_microphone(0);
+    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsMicrophoneExist returns to no microphone when the model detaches it");
 
     /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
     reset_fixture();

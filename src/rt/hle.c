@@ -2559,6 +2559,18 @@ static uint32_t h_HprmIsHeadphoneExist(CpuState *s) {
 void sr_hle_test_hprm_set_headphone(int attached) { s_hprm_headphone_attached = attached != 0; }
 #endif
 
+/* sceHprmIsMicrophoneExist(void): 1 when the microphone is plugged in, else 0 (PSPSDK psphprm.h).
+ * Modeled absent by default, like the other accessories. */
+static int s_hprm_microphone_attached = 0;
+static uint32_t h_HprmIsMicrophoneExist(CpuState *s) {
+    (void)s;
+    return s_hprm_microphone_attached ? 1u : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_hprm_set_microphone(int attached) { s_hprm_microphone_attached = attached != 0; }
+#endif
+
 /* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): report the
  * stored thresholds (power-on default: both "disabled", -1). */
 static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
@@ -21977,6 +21989,7 @@ static void hle_register_power_clock_handlers(void) {
 static void hle_register_ctrl_sampling_handlers(void) {
     sr_hle_register(0x208db1bd, "sceHprmIsRemoteExist", h_HprmIsRemoteExist);
     sr_hle_register(0x7e69eda4, "sceHprmIsHeadphoneExist", h_HprmIsHeadphoneExist);
+    sr_hle_register(0x219c58f1, "sceHprmIsMicrophoneExist", h_HprmIsMicrophoneExist);
     sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
