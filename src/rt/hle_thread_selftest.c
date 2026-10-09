@@ -4149,6 +4149,10 @@ static void test_named_refusals(void) {
            "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
     expect(refuse_call(NID_REFUSE_REFER_SYSTEM_STATUS) == REFUSE_UNSUPPORTED_CODE,
            "sceKernelReferSystemStatus is a named refusal (0x80020002) until its fields are measured");
+    expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
+           "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
+    expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
+           "sceRtcGetAccumulativeTime is a named refusal (0x80020002): not in the PSPSDK RTC header");
 }
 
 /* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Width 0 leaves the width unset and

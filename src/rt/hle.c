@@ -22143,6 +22143,11 @@ static void hle_register_unregistered_import_batch(void) {
     /* sceNetInit follows the same offline network policy as sceNetGetLocalEtherAddr: the runtime
      * has no network stack, so the call refuses with that code rather than reporting success. */
     sr_hle_register_unsupported(0x39af39a6u, "sceNetInit", 0x80010086u);
+    /* sceHttpsEnd follows the offline HTTP policy of sceHttpEnd and sceHttpInit: no network stack. */
+    sr_hle_register_unsupported(0xf9d8eb63u, "sceHttpsEnd", 0x80010086u);
+    /* sceRtcGetAccumulativeTime (0x011f03c1) is not declared in the PSPSDK RTC header, so its contract
+     * is not established here and it is refused under its name rather than guessed. */
+    sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);
     sr_hle_register_unsupported(0x0282a3bdu, "sceHttpGetContentLength", 0x80010086u);
     sr_hle_register_unsupported(0x03d9526fu, "sceHttpSetResolveRetry", 0x80010086u);
     sr_hle_register_unsupported(0x1f0fc3e3u, "sceHttpSetRecvTimeOut", 0x80010086u);
