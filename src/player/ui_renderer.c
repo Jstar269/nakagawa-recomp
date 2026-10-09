@@ -104,6 +104,13 @@ typedef struct {
 
 static UiFont g_font;
 
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+/* Strings that had to be drawn with the bitmap font although the system TTF
+ * font was active. Layout is measured with the TTF font, so any such string
+ * is drawn wider than it was laid out. The harness asserts this stays zero. */
+static unsigned s_ui_test_bitmap_text_draws;
+#endif
+
 static uint32_t ui_color_key(SDL_Color c) {
     return ((uint32_t)c.r << 24) | ((uint32_t)c.g << 16) | ((uint32_t)c.b << 8) | c.a;
 }
@@ -1061,13 +1068,37 @@ static UiFontCacheEntry *ui_font_cache_lookup(const char *str, int bucket, uint3
 
 /* Render one string through the cache. Returns false when the caller must
  * use the DebugText fallback (TTF off, overlong string, or GPU failure). */
+/* A string too long to key the cache is still drawn with the TTF font it was
+ * laid out with. Rendering it fresh costs one texture per draw, and long text
+ * is rare; the alternative was a silent switch to the bitmap font, which is
+ * wider and overran the panel. */
+static bool ui_font_draw_uncached(SDL_Renderer *ren, float x, float y, const char *str,
+                                  size_t len, SDL_Color c) {
+    SDL_Surface *surf = g_font.f_render(g_font.font, str, len, c);
+    if (!surf) return false;
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+    int sw = surf->w;
+    int sh = surf->h;
+    SDL_DestroySurface(surf);
+    if (!tex || sw <= 0 || sh <= 0) {
+        if (tex) SDL_DestroyTexture(tex);
+        return false;
+    }
+    SDL_FRect dst = { x, y, (float)sw / g_font.density, (float)sh / g_font.density };
+    bool drawn = SDL_RenderTexture(ren, tex, NULL, &dst);
+    SDL_DestroyTexture(tex);
+    return drawn;
+}
+
 static bool ui_font_draw_cached(SDL_Renderer *ren, float x, float y, const char *str, float scale, SDL_Color c) {
     ui_font_ensure();
     if (!g_font.ready || !str || !*str || scale <= 0.0f) return false;
     size_t len = strlen(str);
-    if (len >= UI_FONT_CACHE_TEXT) return false;
     int bucket = (int)(scale * 10.0f);
     if (!ui_font_begin_bucket(bucket, g_font.density)) return false;
+    if (len >= UI_FONT_CACHE_TEXT) {
+        return ui_font_draw_uncached(ren, x, y, str, len, c);
+    }
     uint32_t key = ui_color_key(c);
     UiFontCacheEntry *e = ui_font_cache_lookup(str, bucket, key, g_font.density);
     if (!e->tex) {
@@ -1110,6 +1141,9 @@ static void draw_text(SDL_Renderer *ren, float x, float y, const char *str, floa
         free(shown);
         return;
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (g_font.ready) s_ui_test_bitmap_text_draws++;
+#endif
     char *ascii = (char *)malloc(len + 1);
     if (ascii) {
         player_text_for_bitmap_font(shown, ascii, len + 1);
@@ -1643,6 +1677,10 @@ bool ui_test_error_details_complete(void) {
 
 int ui_test_error_details_lines(void) {
     return s_ui_test_error_details_lines;
+}
+
+unsigned ui_test_bitmap_text_draws(void) {
+    return s_ui_test_bitmap_text_draws;
 }
 #endif
 
@@ -2649,7 +2687,10 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 60.0f, "Graphics & Controller Settings",
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
     if (app->settings_notice[0]) {
-        draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
+        /* Settings rows keep to the panel: a value that is too long is
+         * ellipsized at the panel's inner edge, never drawn past it. */
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice,
+                             1.0f, card_w - 64.0f, COLOR_AMBER);
     } else {
         draw_text_wrapped(ren, card_x + 32.0f, card_y + 96.0f,
                           card_w - 64.0f,
@@ -2812,7 +2853,8 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                          app->settings.controller_name[0] ? app->settings.controller_name : "Controller");
                 draw_text_ellipsized(ren, col1_x, y + 24.0f, dev_line, 1.0f, inner_r - col1_x, COLOR_TEXT_WHITE);
             } else {
-                draw_text(ren, col1_x, y + 24.0f, "No controller connected (keyboard ready).", 1.0f, COLOR_TEXT_WHITE);
+                draw_text_ellipsized(ren, col1_x, y + 24.0f, "No controller connected (keyboard ready).",
+                                     1.0f, inner_r - col1_x, COLOR_TEXT_WHITE);
             }
             draw_text_ellipsized(ren, col1_x, y + 44.0f,
                                  saves_root_display(),

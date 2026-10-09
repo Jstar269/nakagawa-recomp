@@ -879,6 +879,21 @@ class NativePlayerUiTests(unittest.TestCase):
                 assert isinstance(frames, list)
                 self.assertEqual(frames[0]["settings_two_col"], expected_two_col)
 
+    def test_settings_text_is_drawn_with_the_font_it_was_laid_out_with(self) -> None:
+        """Long settings text (the VBlank note) never switches to the bitmap font.
+
+        Wrapping is measured with the TTF font. A string longer than the glyph
+        cache used to fall back to the wider bitmap font, so the note ran past
+        the panel's right edge. No frame may draw text that way while TTF is on."""
+        run = self.run_player("settings", width=1280, height=720)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        ttf_frames = [frame for frame in frames if frame["font"] == "ttf"]
+        if not ttf_frames:
+            self.skipTest("the system TTF font is not available in this environment")
+        for frame in ttf_frames:
+            self.assertEqual(frame["bitmap_text_draws"], "0", run["stdout"])
+
     def test_script_can_wait_for_a_view_and_a_minimum_duration(self) -> None:
         started = time.monotonic()
         run = self.run_player(
