@@ -240,7 +240,8 @@ The runtime executes generated guest functions and implements the host side of P
 | `pgf_public.c` | Project-authored public PGF reader linked under `PUBLIC_SAFE=1`, written from `docs/cleanroom/PGF_SPEC.md` (#349); the lineage-sensitive backend `pgf.c` stays private-only, with provenance/distribution review separate |
 | `h264_mf.c` | Windows Media Foundation video-decode integration |
 | `h264_null.c` | Host-neutral/null video-decoder path used by portability/test builds |
-| `osk_win.c` | Win32 on-screen keyboard integration |
+| `osk_win.c` | Win32 on-screen keyboard input box; it blocks its caller until the person answers, so only the text-entry worker shows it |
+| `osk_text_entry.c` / `osk_text_entry.h` | Project-authored, non-blocking keyboard text entry: shows the input box on a worker thread so the keyboard never stops guest time, closes it when the title drops the keyboard, and opens nothing under the offscreen presenter |
 | `gui.c` | Host GUI/input integration and fallback presentation plumbing |
 
 Unknown/unregistered PSP operations are not intentionally converted into fabricated success in a
