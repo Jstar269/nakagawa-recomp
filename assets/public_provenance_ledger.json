@@ -6556,7 +6556,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "66a9ebb25098a2deec86e34b3d03f89732d25ee693035944febbab9bc88662ce"
+      "sha256": "7abf3b20c665ce104314ef6b917d793127dcbec4c5f3760235f0a44a0ef17890"
     },
     {
       "path": "tools/imports.py",
@@ -8472,7 +8472,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "67292b919e715f9ee1047695f2435ecf31bd58f0c9fcb3ab4b05b979691f315f"
+      "sha256": "8bb4f6caf1abf1d3761a14b813cd3f973a96c50afe6aef8efde92e2afba4d3af"
     },
     {
       "path": "tools/test_imports.py",
