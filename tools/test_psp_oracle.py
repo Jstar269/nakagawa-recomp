@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+import io
 import json
 import re
 from pathlib import Path
@@ -18,6 +20,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_manifest
+from import_fixtures import (
+    INTERLEAVED_NIDS,
+    INTERLEAVED_SHAPE,
+    build_import_elf,
+    build_interleaved_import_elf,
+)
+from psp_import_table import UNATTRIBUTED_LIBRARY
+from psp_oracle import user_mode_imports
 from psp_oracle.protocol import (
     ProtocolError,
     ge_corpus_report,
@@ -33,9 +43,11 @@ from psp_oracle.protocol import (
     DMAC_SIZE_MATRIX_TRIALS,
 )
 from psp_oracle.run_psplink import (
+    CAMPAIGN_QUEUE_CASES,
     PsplinkCampaignRunner,
     PsplinkSnapshot,
     _campaign_completeness_contract,
+    _campaign_host0_log_path,
     _campaign_stream_complete,
     _parse_campaign_records,
     _record_summary,
@@ -691,7 +703,10 @@ class NewProbeResultParserTests(unittest.TestCase):
             "case_id=registry-key-0001 status=PASS result=0x0 out0=0x3 out1=0x8 "
             "out2=0x0 out3=0xffffffff detail=CONFIG/nickname\n",
             "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
-            "case_id=registry-done status=PASS result=0x0 out0=0x1 out1=0x2 out2=0x5\n",
+            "case_id=registry-bad-handle status=PASS result=0x80082715 "
+            "out0=0x80082715 out1=0xffffffff\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-done status=PASS result=0x0 out0=0x1 out1=0x2 out2=0x6\n",
         ]
         report = parse_registry_readonly_output(self._stream(rows))
         self.assertTrue(report.complete)
@@ -705,7 +720,38 @@ class NewProbeResultParserTests(unittest.TestCase):
             "value_hex=6e69636b6e616d65"
         )
         with self.assertRaises(ProtocolError):
-            parse_registry_readonly_output(self._stream(rows[:4] + [leaked, rows[5]]))
+            parse_registry_readonly_output(self._stream(rows[:4] + [leaked] + rows[5:]))
+
+    def test_registry_bad_handle_record_is_last_before_done(self) -> None:
+        rows = [
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-open status=PASS result=0x0 out0=0x1 out1=0x1\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-errors status=PASS result=0x0 out0=0x1 out1=0x2 "
+            "out2=0x3 out3=0x0 out4=0x100 out5=0x100 out6=0x0\n",
+            "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly step=walk-config\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-category-0000 status=PASS result=0x0 out0=0x0 out1=0x0 "
+            "detail=CONFIG\n",
+            "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly step=bad-handle\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-bad-handle status=PASS result=0x1 out0=0x1 out1=0x0\n",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            "case_id=registry-done status=PASS result=0x0 out0=0x1 out1=0x0 out2=0x4\n",
+        ]
+        report = parse_registry_readonly_output(self._stream(rows))
+        self.assertTrue(report.complete)
+        self.assertEqual(report.parsed.last_step.step, "bad-handle")
+        # A launch that hung in the forged-handle call keeps every earlier
+        # measurement and names the step it stopped in.
+        hung = parse_registry_readonly_output(self._stream(rows[:5]), require_complete=False)
+        self.assertFalse(hung.complete)
+        self.assertEqual(hung.parsed.last_step.step, "bad-handle")
+        with self.assertRaises(ProtocolError):
+            parse_registry_readonly_output(self._stream(rows[:5] + rows[6:]))
+        moved = rows[:2] + rows[4:6] + rows[2:4] + rows[6:]
+        with self.assertRaises(ProtocolError):
+            parse_registry_readonly_output(self._stream(moved))
 
 
 class GeCorpusGateTests(unittest.TestCase):
@@ -2379,9 +2425,11 @@ class PspDmacProbeTests(unittest.TestCase):
                 re.DOTALL,
             ),
         )
-        writer = self.probe.split("static void emit_record_extended", 1)[1].split(
+        record_writer = self.probe.split("static void emit_record_extended", 1)[1].split(
             "\n}\n#endif", 1
         )[0]
+        self.assertIn("probe_emit_durable(emulated, line,", record_writer)
+        writer = self.probe.split("static void probe_emit_durable", 1)[1].split("\n}\n", 1)[0]
         self.assertLess(writer.index("sceIoWrite(fd"), writer.index("sceIoClose(fd)"))
 
     def test_model_profile_uses_the_user_bridge_and_raw_firmware_word(self) -> None:
@@ -2953,5 +3001,368 @@ class PspMutexProbeTests(unittest.TestCase):
         )
 
 
+class UserModeImportGateTests(unittest.TestCase):
+    """The link-time gate that keeps kernel-only imports out of user-mode probes."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    def _run_main(self, data: bytes) -> tuple[int, str, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            module = Path(tmp) / "probe.elf"
+            module.write_bytes(data)
+            out = io.StringIO()
+            err = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                status = user_mode_imports.main([str(module)])
+        return status, out.getvalue(), err.getvalue()
+
+    def test_kernel_only_reason_classifies_library_names(self) -> None:
+        for library in ("sceDisplay_driver", "sceImpose_driver", "sceCtrl_driver",
+                        "InterruptManagerForKernel", "ThreadManForKernel", "sceUmd"):
+            self.assertIsNotNone(user_mode_imports.kernel_only_reason(library), library)
+        for library in ("sceDisplay", "sceImpose", "ThreadManForUser", "Kernel_Library",
+                        "InterruptManager", "SysMemUserForUser", "sceUmdUser", "sceCtrl"):
+            self.assertIsNone(user_mode_imports.kernel_only_reason(library), library)
+
+    def test_user_mode_module_with_only_user_libraries_passes(self) -> None:
+        data = build_import_elf([
+            ("ThreadManForUser", [0x0F000001, 0x0F000002]),
+            ("sceDisplay", [0x0F000003]),
+            ("sceImpose", [0x0F000004]),
+        ])
+        result = user_mode_imports.check_module(data)
+        self.assertTrue(result.passed)
+        self.assertFalse(result.kernel_mode)
+        self.assertEqual(result.libraries, ("ThreadManForUser", "sceDisplay", "sceImpose"))
+        status, out, err = self._run_main(data)
+        self.assertEqual(status, user_mode_imports.EXIT_OK)
+        self.assertIn("OK", out)
+        self.assertEqual(err, "")
+
+    def test_user_mode_module_importing_kernel_libraries_fails_with_names_and_nids(self) -> None:
+        data = build_import_elf([
+            ("ThreadManForUser", [0x0F000001]),
+            ("sceDisplay_driver", [0x0F000002]),
+            ("sceImpose_driver", [0x0F000003, 0x0F000004]),
+            ("InterruptManagerForKernel", [0x0F000005]),
+        ])
+        result = user_mode_imports.check_module(data)
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            [(v.library, v.nids) for v in result.violations],
+            [("sceDisplay_driver", (0x0F000002,)),
+             ("sceImpose_driver", (0x0F000003, 0x0F000004)),
+             ("InterruptManagerForKernel", (0x0F000005,))],
+        )
+        status, out, err = self._run_main(data)
+        self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+        self.assertEqual(out, "")
+        self.assertIn("sceDisplay_driver (name ends in _driver): 0x0F000002", err)
+        self.assertIn("sceImpose_driver (name ends in _driver): 0x0F000003, 0x0F000004", err)
+        self.assertIn("InterruptManagerForKernel (name ends in ForKernel): 0x0F000005", err)
+        self.assertIn("0x8002013C", err)
+        self.assertNotIn("ThreadManForUser (", err)
+
+    def test_kernel_mode_module_is_outside_the_rule(self) -> None:
+        data = build_import_elf(
+            [("sceDisplay_driver", [0x0F000002])],
+            module_attributes=user_mode_imports.PSP_MODULE_KERNEL,
+        )
+        result = user_mode_imports.check_module(data)
+        self.assertTrue(result.kernel_mode)
+        self.assertTrue(result.passed)
+        status, out, _err = self._run_main(data)
+        self.assertEqual(status, user_mode_imports.EXIT_OK)
+        self.assertIn("kernel-mode module (SceModuleInfo attribute 0x1000)", out)
+
+    def test_unattributed_stub_slots_fail_closed(self) -> None:
+        user_shape = [(name.replace("ForKernel", "ForUser"), first, count)
+                      for name, first, count in INTERLEAVED_SHAPE]
+        result = user_mode_imports.check_module(
+            build_interleaved_import_elf(user_shape, INTERLEAVED_NIDS))
+        self.assertFalse(result.passed)
+        self.assertEqual([v.library for v in result.violations], [UNATTRIBUTED_LIBRARY])
+
+    def test_malformed_import_table_fails_closed(self) -> None:
+        status, out, err = self._run_main(build_import_elf(
+            [("ThreadManForUser", [0x0F000001])], corrupt="truncated_file"))
+        self.assertEqual(status, user_mode_imports.EXIT_UNREADABLE)
+        self.assertEqual(out, "")
+        self.assertIn("cannot read import table", err)
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(user_mode_imports.main([]), user_mode_imports.EXIT_UNREADABLE)
+
+    def test_hand_written_import_blocks_name_only_user_libraries(self) -> None:
+        sources = sorted(self.fixture.glob("*.S"))
+        self.assertTrue(sources)
+        for source in sources:
+            text = source.read_text(encoding="utf-8")
+            for library in re.findall(r'IMPORT_(?:START|FUNC)\s+"([^"]+)"', text):
+                self.assertIsNone(
+                    user_mode_imports.kernel_only_reason(library),
+                    f"{source.name} imports kernel-only library {library}",
+                )
+
+    def test_probe_sources_use_no_kernel_headers_or_kernel_archives(self) -> None:
+        for source in sorted(self.fixture.glob("*.c")):
+            text = source.read_text(encoding="utf-8")
+            self.assertIsNone(
+                re.search(r"#include\s*<psp\w*_(?:driver|kernel)\.h>", text),
+                f"{source.name} includes a kernel-only PSPSDK header",
+            )
+        self.assertEqual(re.findall(r"-lpsp\w*(?:_kernel|_driver)\w*", self.makefile), [])
+
+    def test_makefile_runs_the_gate_after_fixup_and_deletes_rejected_elves(self) -> None:
+        fixup = next(line for line in self.makefile.splitlines() if line.startswith("FIXUP = "))
+        self.assertLess(fixup.index("psp-fixup-imports"), fixup.index("$(USER_MODE_IMPORT_GATE)"))
+        self.assertIn(
+            "USER_MODE_IMPORT_GATE = $(FIXTURE_DIR)../../tools/psp_oracle/user_mode_imports.py",
+            self.makefile,
+        )
+        self.assertTrue((self.root / "tools" / "psp_oracle" / "user_mode_imports.py").is_file())
+        self.assertIn("\n.DELETE_ON_ERROR:\n", self.makefile)
+
+    def test_display_user_imports_are_linked_into_kernel_misc_only(self) -> None:
+        links = re.findall(r"^OBJS \+?= .*display_user_imports\.o.*$", self.makefile, re.MULTILINE)
+        self.assertEqual(len(links), 1)
+        start = self.makefile.index(links[0])
+        self.assertEqual(self.makefile.rfind("ifeq ($(CASE),kernel-misc)", 0, start),
+                         self.makefile.rfind("ifeq (", 0, start))
+        shared = (self.fixture / "threadman_user_imports.S").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'IMPORT_START\s+"([^"]+)"', shared), ["ThreadManForUser"])
+
+
+class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
+    """Step markers, bounded waits and record shapes of the campaign probes."""
+
+    NEW_CASES = ("KERNEL_ALARM", "THREAD_SCHEDULER", "WAIT_OUTCOMES", "GE_BREAK_CONTINUE",
+                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC")
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+
+    def _case_block(self, macro: str) -> str:
+        start = self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n")
+        end = self.probe.index("\n#endif", start)
+        return self.probe[start:end]
+
+    def _function(self, signature: str) -> str:
+        start = self.probe.index(signature)
+        end = self.probe.index("\n}\n", start)
+        return self.probe[start:end]
+
+    def _stream(self, rows: list[str]) -> str:
+        return META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        ) + "".join(rows)
+
+    def _campaign_rows(self, case: str, statuses: dict[str, str] | None = None) -> list[str]:
+        spec, counts = CAMPAIGN_PROBE_CASES[case]
+        rows = []
+        for case_id in spec.ordered_cases:
+            if case_id == spec.terminal_case:
+                outs = f" out0=0x{len(spec.ordered_cases) - 1:x}"
+            else:
+                outs = "".join(f" out{i}=0x0" for i in range(counts[case_id]))
+            status = (statuses or {}).get(case_id, "PASS")
+            rows.append(
+                f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={case_id} "
+                f"status={status} result=0x0{outs}\n"
+            )
+        return rows
+
+    def test_step_markers_are_collected_and_never_count_as_results(self) -> None:
+        rows = self._campaign_rows("ge-break-continue")
+        stepped = (rows[:5]
+                   + ["NAKAGAWA_PSP_STEP schema=1 case_id=ge-break-continue step=continue-drain\n"]
+                   + rows[5:])
+        report = parse_campaign_probe_output(self._stream(stepped), "ge-break-continue")
+        self.assertEqual(len(report.results), len(rows))
+        parsed = parse_output(self._stream(stepped))
+        self.assertEqual(parsed.last_step.case_id, "ge-break-continue")
+        self.assertEqual(parsed.last_step.step, "continue-drain")
+        self.assertIsNone(parse_output(self._stream(rows)).last_step)
+        for bad in (
+            "NAKAGAWA_PSP_STEP schema=1 case_id=x\n",
+            "NAKAGAWA_PSP_STEP schema=2 case_id=x step=y\n",
+            "NAKAGAWA_PSP_STEP schema=1 case_id=x step=has space\n",
+            "NAKAGAWA_PSP_STEP schema=1 case_id=x step=y extra=1\n",
+        ):
+            with self.assertRaises(ProtocolError, msg=bad):
+                parse_output(self._stream(rows[:1] + [bad]))
+
+    def test_runner_completion_gate_accepts_host0_logs_with_step_markers(self) -> None:
+        rows = self._campaign_rows("ge-break-continue")
+        host0 = self._stream(
+            ["NAKAGAWA_PSP_STEP schema=1 case_id=ge-break-continue step=break-active-list\n"]
+            + rows
+        ) + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
+        self.assertTrue(_campaign_stream_complete(host0, "ge-break-continue"))
+        truncated = self._stream(
+            rows[:5]
+            + ["NAKAGAWA_PSP_STEP schema=1 case_id=ge-break-continue step=continue-drain\n"]
+        )
+        self.assertFalse(_campaign_stream_complete(truncated, "ge-break-continue"))
+
+    def test_ge_break_continue_records_a_timeout_as_a_measured_outcome(self) -> None:
+        rows = self._campaign_rows(
+            "ge-break-continue",
+            {"ge-continue-drain": "TIMEOUT", "ge-quiesce-after-continue": "TIMEOUT"},
+        )
+        report = parse_campaign_probe_output(self._stream(rows), "ge-break-continue")
+        statuses = {record.case_id: record.status for record in report.results.values()}
+        self.assertEqual(statuses["ge-continue-drain"], "TIMEOUT")
+
+    def test_campaign_specs_match_the_records_the_probe_emits(self) -> None:
+        defines = {name: int(value) for name, value in
+                   re.findall(r"^#define (\w+) (\d+)u?$", self.probe, re.MULTILINE)}
+        for case, signature, helpers in (
+            ("kernel-misc", "static void run_kernel_misc(int emulated) {", {}),
+            ("ge-break-continue", "static void run_ge_break_continue(int emulated) {",
+             {"emit_ge_quiesce": defines["GE_QUIESCE_OUTS"]}),
+        ):
+            body = self._function(signature)
+            emitted: dict[str, int] = {}
+            for call in re.finditer(
+                    r"\b(emit_record_extended|emit_ge_control|emit_ge_quiesce)\((.*?)\);",
+                    body, re.DOTALL):
+                name, args = call.groups()
+                ids = re.findall(r'"([a-z0-9][a-z0-9-]*)"', args)
+                self.assertEqual(len(ids), 1, args)
+                if name in helpers:
+                    emitted[ids[0]] = helpers[name]
+                    continue
+                count = re.search(r",\s*(\w+)\s*$", args).group(1)
+                emitted[ids[0]] = int(count) if count.isdigit() else defines[count]
+            spec, counts = CAMPAIGN_PROBE_CASES[case]
+            self.assertEqual(emitted, counts, case)
+            self.assertEqual(tuple(emitted), spec.ordered_cases, case)
+            done = re.search(r"uint32_t done = (\d+);", body)
+            self.assertEqual(int(done.group(1)), len(spec.ordered_cases) - 1, case)
+
+    def test_no_probe_blocks_on_the_ge_without_a_bound(self) -> None:
+        for source in sorted(self.fixture.glob("*.c")):
+            text = re.sub(r"/\*.*?\*/|//[^\n]*", "", source.read_text(encoding="utf-8"),
+                          flags=re.DOTALL)
+            self.assertIsNone(re.search(r"sceGeListSync\([^;]*,\s*0\s*\)", text), source.name)
+            self.assertIsNone(re.search(r"sceGeDrawSync\(\s*0\s*\)", text), source.name)
+            self.assertNotIn("sceGuSync(", text, source.name)
+
+    def test_ge_break_continue_writes_the_list_back_before_enqueueing_it(self) -> None:
+        body = self._function("static void run_ge_break_continue(int emulated) {")
+        build = body.index("ge_build_list(")
+        writeback = body.index("sceKernelDcacheWritebackAll();")
+        enqueue = body.index("sceGeListEnQueue(")
+        self.assertLess(build, writeback)
+        self.assertLess(writeback, enqueue)
+        self.assertNotIn("sceGeListUpdateStallAddr", body)
+
+    def test_new_campaign_cases_have_no_unbounded_waits_or_loops(self) -> None:
+        for macro in self.NEW_CASES:
+            block = self._case_block(macro)
+            self.assertNotIn("for (;;)", block, macro)
+            self.assertNotIn("sceKernelSleepThread(", block, macro)
+            for call in re.finditer(r"sceKernel(?:WaitSema|WaitThreadEnd)\(([^;]*)\);", block):
+                self.assertFalse(call.group(1).rstrip().endswith("NULL"), (macro, call.group(0)))
+            self.assertIn("probe_step(emulated,", block, macro)
+
+    def test_exhaustion_loops_are_capped_and_record_the_cap(self) -> None:
+        registry = self._case_block("REGISTRY_READONLY")
+        self.assertIn("#define REGISTRY_OPEN_CAP 256u", registry)
+        self.assertIn("while (opened_handles < REGISTRY_OPEN_CAP)", registry)
+        self.assertIn("REGISTRY_OPEN_CAP,\n", registry)
+        alarm = self._case_block("KERNEL_ALARM")
+        self.assertIn("#define ALARM_EXHAUSTION_CAP 1024u", alarm)
+        self.assertIn("while (alarm_count < ALARM_EXHAUSTION_CAP)", alarm)
+        self.assertIn("out[2] = ALARM_EXHAUSTION_CAP;", alarm)
+
+    def test_registry_forged_handle_call_runs_last_under_its_own_step(self) -> None:
+        body = self._function("static void run_registry_readonly(int emulated) {")
+        bad = body.index('REGISTRY_STEP("bad-handle");')
+        for earlier in ('"registry-errors"', 'walk_registry_category(', 'REGISTRY_STEP("handle-exhaustion");'):
+            self.assertLess(body.index(earlier), bad, earlier)
+        self.assertLess(bad, body.index("sceRegGetKeysNum((REGHANDLE)0xffffffffu"))
+        self.assertLess(body.index('"registry-bad-handle"'), body.index('"registry-done"'))
+
+
+class CampaignHost0LogTests(unittest.TestCase):
+    """Every campaign case writes its evidence to the host0 log the runner reads."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8")
+
+    def _probe_logs_by_case(self) -> dict[str, str]:
+        case_ids = {name: int(value) for name, value in re.findall(
+            r"^(?:else )?ifeq \(\$\(CASE\),([^)]+)\)\nCASE_ID = (\d+)$", self.makefile,
+            re.MULTILINE)}
+        macros = {int(value): name for name, value in re.findall(
+            r"^#define PSP_ORACLE_CASE_(\w+) (\d+)$", self.probe, re.MULTILINE)}
+        logs = dict(re.findall(
+            r"^#(?:el)?if PSP_ORACLE_CASE == PSP_ORACLE_CASE_(\w+)\n"
+            r"#define PROBE_HOST0_LOG \"host0:/([^\"]+)\"$", self.probe, re.MULTILINE))
+        return {case: logs.get(macros.get(case_id, ""), "")
+                for case, case_id in case_ids.items()}
+
+    def test_every_campaign_case_has_the_host0_log_the_runner_reads(self) -> None:
+        logs = self._probe_logs_by_case()
+        for case in CAMPAIGN_QUEUE_CASES:
+            expected = _campaign_host0_log_path(Path("host0"), case).name
+            self.assertEqual(logs.get(case), expected, case)
+
+    def test_host0_lines_go_through_the_durable_writer(self) -> None:
+        # Records and step markers append through probe_emit_durable(); only
+        # the metadata line (which truncates the log at start) and the final
+        # completion marker open the log themselves.
+        self.assertEqual(self.probe.count("sceIoOpen(PROBE_HOST0_LOG"), 3)
+        writer = self.probe[self.probe.index("static void probe_emit_durable("):]
+        writer = writer[:writer.index("\n}\n")]
+        self.assertIn("PSP_O_APPEND", writer)
+        self.assertIn("sceIoClose(fd);", writer)
+        self.assertIn("emit(emulated, line);", writer)
+        for emitter in ("static void emit_record_extended(", "static void probe_step("):
+            body = self.probe[self.probe.index(emitter):]
+            body = body[:body.index("\n}\n")]
+            self.assertIn("probe_emit_durable(emulated, line,", body, emitter)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegistryProbeNeverWritesTests(unittest.TestCase):
+    """The registry oracle must be read-only on real firmware.
+
+    On PSP-3000 6.6.1 sceRegOpenCategory on a category that does not exist creates it and
+    persists it to flash even in mode 1, and stored category names are cut to 26 bytes so a
+    long name cannot be reopened (a reopen then creates another copy). These checks pin the
+    source-level rules that keep the probe from issuing such an implicit write.
+    """
+
+    PROBE = Path(__file__).resolve().parent.parent / "fixtures" / "psp_oracle" / "probe.c"
+    WRITE_APIS = ("sceRegSetKeyValue", "sceRegCreateKey", "sceRegRemoveCategory",
+                  "sceRegRemoveRegistry", "sceRegFlushRegistry", "sceRegFlushCategory")
+
+    def setUp(self) -> None:
+        self.source = self.PROBE.read_text(encoding="utf-8")
+
+    def test_no_registry_write_api_is_called(self) -> None:
+        for api in self.WRITE_APIS:
+            self.assertNotRegex(self.source, rf"\b{api}\s*\(", api)
+
+    def test_open_category_literals_name_only_the_config_root(self) -> None:
+        literals = re.findall(r'sceRegOpenCategory\s*\([^,]+,\s*"([^"]*)"', self.source)
+        self.assertEqual(sorted(set(literals)), ["/CONFIG"], literals)
+
+    def test_walk_descends_only_into_reopenable_categories(self) -> None:
+        self.assertIn("registry_category_reopenable(name)", self.source)
+        self.assertRegex(self.source, r"#define REGISTRY_SAFE_NAME_MAX 26u")
+        self.assertNotIn("__NAKAGAWA_ORACLE_UNKNOWN_CATEGORY__", self.source)

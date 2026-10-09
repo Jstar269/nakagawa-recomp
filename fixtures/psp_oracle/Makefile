@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
+FIXTURE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 BUILD_DIR ?= build
 TARGET = $(BUILD_DIR)/nakagawa_psp_oracle
 OBJS = $(BUILD_DIR)/probe.o
@@ -308,16 +309,11 @@ endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
 endif
-# Case 22 (mutex-interrupt-context) uses sceKernelIsIntrContext() from the
-# kernel interrupt manager library for independent ISR execution proof.
-ifeq ($(CASE),mutex-interrupt-context)
-LIBS += -lpspinterruptmanager_kernel_660
-endif
 ifeq ($(CASE),registry-readonly)
 LIBS += -lpspreg
 endif
 ifeq ($(CASE),kernel-misc)
-OBJS += $(BUILD_DIR)/threadman_user_imports.o
+OBJS += $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/display_user_imports.o
 LIBS += -lpspctrl
 endif
 ifeq ($(CASE),wait-outcomes)
@@ -338,8 +334,15 @@ $(error PSPDEV/PSPSDK is not available: psp-config --pspsdk-path failed)
 endif
 include $(PSPSDK)/lib/build.mak
 
-# Fail closed if psp-fixup-imports reports out-of-order stubs (issue #400).
-FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; exit $$rc' --
+# Fail closed if psp-fixup-imports reports out-of-order stubs (issue #400),
+# then run the user-mode import gate on the fixed-up ELF: a user-mode probe
+# that imports a kernel-only library (*_driver, *ForKernel, ...) cannot load
+# on the PSP, so the build stops and names the library and its NIDs.
+# .DELETE_ON_ERROR removes a rejected ELF so a later make cannot package it.
+PYTHON ?= python3
+USER_MODE_IMPORT_GATE = $(FIXTURE_DIR)../../tools/psp_oracle/user_mode_imports.py
+FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" "$$1"' --
+.DELETE_ON_ERROR:
 
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
@@ -356,6 +359,9 @@ $(BUILD_DIR)/mutex_imports.o: mutex_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/threadman_user_imports.o: threadman_user_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/display_user_imports.o: display_user_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exception_a1.o: probe_exception_a1.c

@@ -510,12 +510,12 @@ they do not encode expected PSP return values.
 
 | Case | Evidence id | Hardware status | Contract being measured |
 | --- | --- | --- | --- |
-| `kernel-alarm` | `PSP-ALARM-001` | `NOT_RUN` | Alarm creation with a null handler and zero clock; dynamic alarm-table exhaustion; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
+| `kernel-alarm` | `PSP-ALARM-001` | `NOT_RUN` | Alarm creation with a null handler and zero clock; alarm-table exhaustion capped at 1024 pending alarms; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
 | `thread-scheduler` | `PSP-THREAD-003` | `NOT_RUN` | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
 | `wait-outcomes` | `PSP-WAIT-001` | `NOT_RUN` | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
-| `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, and list/draw sync states for paused/cancelled lists. |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `NOT_RUN` | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
-| `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, and handle exhaustion. |
+| `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `NOT_RUN` | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 
 The registry probe opens the registry and categories in read mode and never
