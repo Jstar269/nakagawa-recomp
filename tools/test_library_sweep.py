@@ -1498,7 +1498,7 @@ class LibrarySweepTests(unittest.TestCase):
         )
         seen: list[list[str]] = []
 
-        def route(_iso_path, work_dir, _report, _sidecar, _budget):
+        def route(_iso_path, work_dir, _report, _sidecar, _budget, _launch_timeout):
             manifest_dir = work_dir / "user-data" / "manifests"
             seen.append(sorted(path.name for path in manifest_dir.glob("*.json")))
             return library_sweep.RouteOutcome(_bringup_report())
