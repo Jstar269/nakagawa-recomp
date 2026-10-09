@@ -10,10 +10,12 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
+import functools
 from pathlib import Path
 import struct
 from typing import Dict, Iterator, Optional, Sequence
 
+import psp_import_table
 import title_manifest
 from .decrypt_boundary import BoundaryOutcome, decrypt_bytes_to, key_file_path
 from .title_registry import TitleRegistry, get_default_registry
@@ -91,145 +93,137 @@ def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
     )
 
 
-def _extract_prx_module_info(elf_bytes: bytes) -> tuple[str, list[str]] | None:
-    """Extract (modname, exported_libraries) from .rodata.sceModuleInfo if present."""
-    try:
-        from analyze import Elf
+class RuntimeRegistryUnavailableError(IsoInspectionError):
+    """The runtime HLE registry (src/rt/hle.c) could not be read.
 
-        elf = Elf(elf_bytes)
-        sec = elf.sec(".rodata.sceModuleInfo")
-        if not sec:
-            return None
-        raw = elf.read_at_vaddr(sec["addr"], 52)
-        if not raw or len(raw) < 44:
-            return None
-        name_bytes = raw[4:32]
-        nul = name_bytes.find(b"\0")
-        modname = (
-            name_bytes[:nul].decode("ascii", "replace")
-            if nul >= 0
-            else name_bytes.decode("ascii", "replace")
-        )
-        ent_top, ent_end = struct.unpack_from("<2I", raw, 36)
-        exports: list[str] = []
-        pos = ent_top
-        max_entries = 128
-        while pos < ent_end and len(exports) < max_entries:
-            entry_bytes = elf.read_at_vaddr(pos, 20)
-            if not entry_bytes or len(entry_bytes) < 20:
-                break
-            val_name_ptr, _ver, _flags, val_size, _num_vars, _num_funcs = struct.unpack_from(
-                "<IHHBBH", entry_bytes, 0
-            )
-            entry_size = val_size * 4 if val_size else 20
-            if entry_size <= 0:
-                break
-            if val_name_ptr:
-                str_bytes = bytearray()
-                for cur in range(val_name_ptr, val_name_ptr + 64):
-                    ch = elf.read_at_vaddr(cur, 1)
-                    if not ch or ch[0] == 0:
-                        break
-                    str_bytes.append(ch[0])
-                if str_bytes:
-                    exports.append(str_bytes.decode("ascii", "replace"))
-            pos += entry_size
-        return modname, exports
-    except Exception:
-        return None
-
-
-# Firmware modules whose export tables are empty (genuinely unknowable from PRX
-# metadata) so they cannot be matched by exported library names.
-UNKNOWABLE_EXPORT_FIRMWARE_MODULES = frozenset({
-    "usbpspcm.prx",
-})
-
-_CACHED_HLE_SERVED_LIBRARIES: frozenset[str] | None = None
-
-
-def get_hle_served_libraries() -> frozenset[str]:
-    """Return the set of HLE-served library names derived from the runtime registry."""
-    global _CACHED_HLE_SERVED_LIBRARIES
-    if _CACHED_HLE_SERVED_LIBRARIES is None:
-        try:
-            import hle_manifest
-
-            _CACHED_HLE_SERVED_LIBRARIES = hle_manifest.extract_hle_libraries()
-        except Exception:
-            _CACHED_HLE_SERVED_LIBRARIES = frozenset()
-    return _CACHED_HLE_SERVED_LIBRARIES
-
-
-def _is_hle_served_module(name: str, elf_bytes: bytes | None = None) -> bool:
-    """Return whether a module is a PSP firmware library served host-side by HLE."""
-    clean_name = Path(name).name.casefold()
-    if clean_name in UNKNOWABLE_EXPORT_FIRMWARE_MODULES:
-        return True
-    if elf_bytes is not None:
-        info = _extract_prx_module_info(elf_bytes)
-        if info is not None:
-            _modname, exports = info
-            if not exports:
-                if clean_name in UNKNOWABLE_EXPORT_FIRMWARE_MODULES:
-                    return True
-            else:
-                served_libs = get_hle_served_libraries()
-                for exp in exports:
-                    cf = exp.casefold()
-                    if any(cf.startswith(lib) or cf == lib for lib in served_libs):
-                        return True
-    return False
-
-
-def _is_kernel_mode_module(elf_bytes: bytes) -> bool:
-    """Return whether a module is marked kernel-mode or imports kernel libraries.
-
-    Corrupt or unparseable ELF/PRX headers raise IsoInspectionError.
-    Plain ELFs without .rodata.sceModuleInfo are treated as user-mode.
+    Guest-module planning needs the exact set of NIDs the runtime registers to
+    decide which disc modules the runtime itself provides; without it there is
+    no correct decision, so planning stops with a named boundary instead of
+    guessing that nothing (or everything) is served.
     """
-    if len(elf_bytes) < 4:
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, boundary_code="RUNTIME_HLE_REGISTRY_UNAVAILABLE")
+
+
+@functools.lru_cache(maxsize=1)
+def runtime_registered_nids() -> frozenset[int]:
+    """Every function NID the runtime registers, from its single source of truth.
+
+    The set comes from tools/hle_manifest.registered_nids(), the fail-closed
+    extraction of src/rt/hle.c that the HLE manifest and the import audit gate
+    use. A failure raises RuntimeRegistryUnavailableError; only a successful
+    read is cached.
+    """
+    try:
+        import hle_manifest
+    except ImportError as exc:
+        raise RuntimeRegistryUnavailableError(
+            f"the runtime HLE registry reader could not be loaded: {exc}"
+        ) from exc
+    try:
+        return hle_manifest.registered_nids()
+    except (OSError, ValueError, hle_manifest.ManifestError) as exc:
+        raise RuntimeRegistryUnavailableError(
+            f"the runtime HLE registry (src/rt/hle.c) could not be read: {exc}"
+        ) from exc
+
+
+@dataclass(frozen=True)
+class GuestModuleInterface:
+    """What one disc module offers the title, read from its PSP module tables.
+
+    ``callable_nids`` and ``callable_variables`` cover only the libraries a
+    user-mode importer can link against (psp_import_table.ExportTable.
+    user_callable_libraries). ``requires_kernel`` is true for a module whose
+    SceModuleInfo carries the kernel-mode attribute or which imports
+    CFW/kernel-only libraries; neither can run as translated user-mode code.
+    """
+
+    requires_kernel: bool
+    callable_nids: frozenset[int]
+    callable_variables: int
+
+
+def read_guest_module_interface(name: str, module_bytes: bytes) -> GuestModuleInterface:
+    """Read a plain disc module's export interface, failing closed by name.
+
+    An encrypted container is GUEST_MODULE_DECRYPTION_REQUIRED and a malformed
+    module or export table is GUEST_MODULE_FORMAT_UNSUPPORTED. An image that
+    declares no SceModuleInfo at all (no module-info section and a zero
+    phdr[0].p_paddr) exports nothing and carries no kernel-mode attribute, so
+    it is a user-mode module with an empty interface. The CFW/kernel-only
+    import check reads the import table with the analyzer's model; a table it
+    cannot read names no such library here, and code generation refuses that
+    module by its import-table boundary when it translates it.
+    """
+    if module_bytes[:4] in (b"~PSP", b"~SCE"):
         raise IsoInspectionError(
-            "module image is truncated",
-            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-        )
-    if elf_bytes[:4] in (b"~PSP", b"~SCE"):
-        raise IsoInspectionError(
-            "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+            f"guest module is an encrypted container (~PSP/~SCE) and needs decryption: {name}",
             boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
         )
     try:
-        from analyze import Elf
-
-        elf = Elf(elf_bytes)
-    except Exception as exc:
+        table = psp_import_table.parse_export_table(module_bytes)
+    except psp_import_table.ImportTableError as exc:
         raise IsoInspectionError(
-            f"corrupt or unparseable ELF header: {exc}",
+            f"guest module has an invalid module or export table: {name}: {exc}",
             boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
         ) from exc
+    if table is None:
+        return GuestModuleInterface(False, frozenset(), 0)
+    libraries = table.user_callable_libraries()
+    return GuestModuleInterface(
+        requires_kernel=table.kernel_mode or _has_cfw_or_kernel_only_imports(module_bytes),
+        callable_nids=frozenset(nid for library in libraries for nid in library.function_nids),
+        callable_variables=sum(len(library.variable_nids) for library in libraries),
+    )
 
-    if _has_cfw_or_kernel_only_imports(elf_bytes):
-        return True
 
-    sec = elf.sec(".rodata.sceModuleInfo")
-    if sec is not None:
-        try:
-            b = elf.read_at_vaddr(sec["addr"], 2)
-            if not b or len(b) < 2:
-                raise IsoInspectionError(
-                    "corrupt .rodata.sceModuleInfo section",
-                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-                )
-            modattribute = struct.unpack_from("<H", b, 0)[0]
-            if (modattribute & 0x1000) != 0:
-                return True
-        except (IndexError, OSError, TypeError, ValueError, struct.error) as exc:
-            raise IsoInspectionError(
-                f"corrupt .rodata.sceModuleInfo section: {exc}",
-                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-            ) from exc
+def runtime_serves_module(interface: GuestModuleInterface, registered: frozenset[int]) -> bool:
+    """Whether the runtime replaces this module completely.
 
-    return False
+    The threshold is every exported function a user-mode importer can call:
+    the module is runtime-served when it exports at least one such function,
+    the runtime registers every one of those NIDs, and it exports no variable
+    to user mode (the runtime registers functions only). A module whose
+    callable exports are partly registered keeps its own code for the rest,
+    so it is not served; a module that exports nothing callable (for example
+    one that only runs from module_start) is never served.
+    """
+    return (
+        bool(interface.callable_nids)
+        and interface.callable_variables == 0
+        and interface.callable_nids <= registered
+    )
+
+
+def _main_executable_imported_nids(main_elf: Path | str) -> frozenset[int]:
+    """Every function NID the main executable imports, as code generation reads it.
+
+    Uses the analyzer's import model (tools/imports.parse_imports), so the set
+    is exactly what the translated main executable calls. As in the analyzer,
+    an executable without SceModuleInfo imports nothing; an import table the
+    analyzer would refuse stops planning with the analyzer's own boundary.
+    """
+    from analyze import Elf
+    from imports import ImportTableError, parse_imports
+
+    try:
+        elf = Elf(str(main_elf))
+    except (OSError, ValueError, struct.error) as exc:
+        raise IsoInspectionError(
+            f"main executable could not be read for its import table: {exc}",
+            boundary_code="ANALYZER_IMPORT_TABLE_INVALID",
+        ) from exc
+    if elf.sec(".rodata.sceModuleInfo") is None:
+        return frozenset()
+    try:
+        return frozenset(nid for _library, nid in parse_imports(elf).values())
+    except ImportTableError as exc:
+        raise IsoInspectionError(
+            f"main executable import table is not supported: {exc}",
+            boundary_code=exc.code,
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -353,6 +347,23 @@ def plan_provisional_module_bindings(
     reserves the exact manifest address when each module is loaded; provisional
     evidence records that this deterministic layout is a project policy, not a
     measured firmware placement.
+
+    Only modules that run as translated guest code are placed. Each module's
+    export table is compared, NID by NID, with the NIDs the runtime registers
+    (runtime_registered_nids):
+
+    * a module the runtime replaces completely (runtime_serves_module) is not
+      placed: the runtime answers every function it exports;
+    * a kernel-mode module is never placed, because the runtime does not run
+      PSP kernel-mode code. It stops planning with
+      GUEST_MODULE_FORMAT_UNSUPPORTED only when the main executable imports
+      one of its user-callable functions that neither the runtime registers
+      nor a placed module exports: the title's own program then depends on
+      kernel code nothing provides. Without such an import (for example a
+      firmware driver that only another firmware library calls) the module
+      is left out, and a call into it from a library that does run fails
+      closed at the call as a named unimplemented NID;
+    * every other module is placed.
     """
     main_type, _main_low, main_high = _elf32_load_span(main_elf)
     if main_type in (3, 0xFFA0):
@@ -384,6 +395,8 @@ def plan_provisional_module_bindings(
 
     fixed_modules: list[dict] = []
     reloc_modules: list[tuple[str, str, int]] = []
+    kernel_modules: list[tuple[str, GuestModuleInterface]] = []
+    placed_exports: set[int] = set()
     folded_names: set[str] = set()
     for name, module_path, guest_path in module_inputs:
         folded = name.casefold()
@@ -400,14 +413,14 @@ def plan_provisional_module_bindings(
                 f"guest module could not be read: {name}",
                 boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
             ) from exc
-        if _is_hle_served_module(name, mod_bytes):
+        interface = read_guest_module_interface(name, mod_bytes)
+        if interface.callable_nids and runtime_serves_module(interface, runtime_registered_nids()):
             continue
+        if interface.requires_kernel:
+            kernel_modules.append((name, interface))
+            continue
+        placed_exports.update(interface.callable_nids)
         module_type, module_low, module_high = _elf32_load_span(module_path)
-        if _is_kernel_mode_module(mod_bytes):
-            raise IsoInspectionError(
-                f"guest module requires PSP kernel mode: {name}",
-                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-            )
         span = module_high - module_low
         if module_type in (3, 0xFFA0) and module_low == 0:
             reloc_modules.append((name, guest_path, span))
@@ -435,6 +448,21 @@ def plan_provisional_module_bindings(
                 f"guest module is not a supported ELF/PRX: {name}",
                 boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
             )
+
+    if any(interface.callable_nids for _name, interface in kernel_modules):
+        main_imports = _main_executable_imported_nids(main_elf)
+        for name, interface in sorted(kernel_modules, key=lambda item: item[0].casefold()):
+            missing = sorted(
+                (interface.callable_nids & main_imports) - runtime_registered_nids() - placed_exports
+            )
+            if missing:
+                nid_list = ", ".join(f"0x{nid:08x}" for nid in missing)
+                raise IsoInspectionError(
+                    f"guest module requires PSP kernel mode: {name}: the main executable "
+                    f"imports {len(missing)} of its functions that neither the runtime nor "
+                    f"a translated module provides (NIDs {nid_list})",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
 
     fixed_modules.sort(key=lambda m: m["load_address"])
     for i in range(len(fixed_modules) - 1):
