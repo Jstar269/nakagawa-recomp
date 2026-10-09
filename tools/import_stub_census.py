@@ -26,8 +26,12 @@ A slot failing (a) or (b) is MISSING and carries one reason:
   other                     anything else, including a refused or unanalysable image
 
 Usage:
-  import_stub_census.py --image PATH [--image PATH ...] [--corpus DIR] [--out OUT.jsonl]
-                        [--markdown OUT.md] [--check [--allow-reason REASON ...]]
+  import_stub_census.py --image PATH [--image PATH ...] [--corpus DIR]
+                        [--manifest TITLE.json --title-dir DIR]
+                        [--out OUT.jsonl] [--markdown OUT.md] [--check [--allow-reason REASON ...]]
+
+--manifest takes an archive-format title manifest: its EBOOT is analyzed with the
+manifest's base and extra executable span, and each guest module at its load address.
 """
 
 import argparse
@@ -201,6 +205,44 @@ def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
     return rec
 
 
+def manifest_images(manifest_path, title_dir):
+    """Return (path, label, base, extra_spans) for one archive-format title.
+
+    The EBOOT takes the manifest's base and extra executable span; each guest module
+    is analyzed at its manifest load address with no extra span (its own title
+    configuration never reaches another module). A module file the title directory
+    lacks is returned with path None, so the census names it rather than skipping it.
+    """
+    with open(manifest_path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    disc = manifest["disc"]["id"]
+    executable = manifest.get("executable", {})
+    spans = [(int(span["start"]), int(span["end"]))
+             for span in executable.get("extra_executable_spans", [])] or None
+    found = {}
+    for root, _dirs, files in os.walk(title_dir):
+        for name in sorted(files):
+            found.setdefault(name.lower(), os.path.join(root, name))
+    images = []
+    eboot = found.get("eboot.elf")
+    if eboot is None:
+        raise ValueError(f"no EBOOT.elf under {title_dir}")
+    images.append((eboot, f"{disc}/EBOOT.elf", executable.get("base") or None, spans))
+    for module in manifest.get("modules", []):
+        name = module["name"]
+        images.append((found.get(name.lower()), f"{disc}/{name}",
+                       int(module["load_address"]), None))
+    return images
+
+
+def unlocated_record(label, detail):
+    """A census record for an image the census cannot read at all: one named finding."""
+    rec = {"image": label, "status": "error", "refusal": None, "detail": detail, "stubs": 0,
+           "handled": 0, "trapped": 0, "missing": [], "runtime_missing": [], "reasons": {}}
+    _image_level(rec, detail)
+    return rec
+
+
 def discover_corpus(corpus):
     """Return (path, label, base) for every staged executable and guest module under corpus."""
     images = []
@@ -280,6 +322,8 @@ def main(argv=None):
     parser.add_argument("--image", action="append", default=[],
                         help="an executable or guest module to census (repeatable)")
     parser.add_argument("--corpus", help="a directory of <title>/decrypted/ staged images")
+    parser.add_argument("--manifest", help="an archive-format title manifest (JSON)")
+    parser.add_argument("--title-dir", help="the directory holding that title's EBOOT and modules")
     parser.add_argument("--out", help="write one JSON record per image to this file")
     parser.add_argument("--markdown", help="write the rendered census to this file")
     parser.add_argument("--check", action="store_true",
@@ -288,20 +332,32 @@ def main(argv=None):
                         help="a named reason a decision still owns; does not fail --check")
     args = parser.parse_args(argv)
 
-    images = [(p, os.path.basename(p), default_base(p)) for p in args.image]
+    images = [(p, os.path.basename(p), default_base(p), None) for p in args.image]
     if args.corpus:
-        images += discover_corpus(args.corpus)
+        images += [(p, label, base, None) for p, label, base in discover_corpus(args.corpus)]
+    if args.manifest:
+        if not args.title_dir:
+            parser.error("--manifest needs --title-dir")
+        images += manifest_images(args.manifest, args.title_dir)
     if not images:
-        parser.error("no images: pass --image or --corpus")
+        parser.error("no images: pass --image, --corpus or --manifest")
 
     repo_root = os.path.dirname(TOOLS_DIR)
     handled = handled_nids(repo_root)
     records = []
     out = open(args.out, "w", encoding="utf-8") if args.out else None
     try:
-        for path, label, base in images:
+        for path, label, base, spans in images:
+            if path is None:
+                rec = unlocated_record(label, "guest module file not found in the title directory")
+                records.append(rec)
+                if out is not None:
+                    out.write(json.dumps(rec, sort_keys=True) + "\n")
+                    out.flush()
+                print(f"{label} error module file not found", flush=True)
+                continue
             try:
-                rec = census_image(path, base, label=label, handled=handled)
+                rec = census_image(path, base, label=label, extra_spans=spans, handled=handled)
             except Exception as exc:  # a census fault is a recorded finding, never a lost run
                 rec = {"image": label, "status": "error", "refusal": None,
                        "detail": f"{type(exc).__name__}: {str(exc)[:200]}", "stubs": 0,

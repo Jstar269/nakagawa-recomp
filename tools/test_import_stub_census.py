@@ -13,6 +13,7 @@ keeps such stubs (analyze._import_stub_is_file_executable) must make the census 
 every stub as dropped by a late pass, so a regression can never drop stubs silently.
 """
 
+import json
 import os
 import struct
 import sys
@@ -251,6 +252,40 @@ class CensusGateAndReporting(unittest.TestCase):
         self.assertIn("dropped by a late pass", text)
         self.assertIn("0x08800010", text)
         self.assertIn("0x11000001", text)
+
+
+class ManifestImages(unittest.TestCase):
+    """An archive-format title: the EBOOT takes its manifest span; modules their load addresses."""
+
+    def test_manifest_images_apply_the_eboot_span_and_each_module_load_address(self):
+        with tempfile.TemporaryDirectory() as root:
+            title_dir = os.path.join(root, "title")
+            os.makedirs(title_dir)
+            data, _stubs = import_fixtures.build_text_stub_run_elf(2)
+            with open(os.path.join(title_dir, "EBOOT.elf"), "wb") as fh:
+                fh.write(data)
+            with open(os.path.join(title_dir, "lib.prx"), "wb") as fh:
+                fh.write(b"")
+            manifest_path = os.path.join(root, "title.json")
+            with open(manifest_path, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "disc": {"id": "TESTDISC"},
+                    "executable": {"base": 0,
+                                   "extra_executable_spans": [{"start": 16, "end": 32}]},
+                    "modules": [{"name": "lib.prx", "load_address": 0x08900000},
+                                {"name": "gone.prx", "load_address": 0x08A00000}],
+                }, fh)
+            images = census.manifest_images(manifest_path, title_dir)
+        self.assertEqual([image[1] for image in images],
+                         ["TESTDISC/EBOOT.elf", "TESTDISC/lib.prx", "TESTDISC/gone.prx"])
+        self.assertIsNone(images[0][2])
+        self.assertEqual(images[0][3], [(16, 32)])
+        self.assertEqual(images[1][2], 0x08900000)
+        self.assertIsNone(images[1][3], "a module takes no executable span of the title")
+        self.assertIsNone(images[2][0], "a module the directory lacks is named, not skipped")
+        rec = census.unlocated_record(images[2][1], "guest module file not found")
+        self.assertEqual([m["reason"] for m in rec["missing"]], [census.REASON_OTHER])
+        self.assertEqual(census.check_failures([rec]), [rec])
 
 
 if __name__ == "__main__":
