@@ -10,10 +10,12 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
+import functools
 from pathlib import Path
 import struct
 from typing import Dict, Iterator, Optional, Sequence
 
+import psp_import_table
 import title_manifest
 from .decrypt_boundary import BoundaryOutcome, decrypt_bytes_to, key_file_path
 from .title_registry import TitleRegistry, get_default_registry
@@ -91,6 +93,139 @@ def _has_cfw_or_kernel_only_imports(elf_bytes: bytes) -> bool:
     )
 
 
+class RuntimeRegistryUnavailableError(IsoInspectionError):
+    """The runtime HLE registry (src/rt/hle.c) could not be read.
+
+    Guest-module planning needs the exact set of NIDs the runtime registers to
+    decide which disc modules the runtime itself provides; without it there is
+    no correct decision, so planning stops with a named boundary instead of
+    guessing that nothing (or everything) is served.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, boundary_code="RUNTIME_HLE_REGISTRY_UNAVAILABLE")
+
+
+@functools.lru_cache(maxsize=1)
+def runtime_registered_nids() -> frozenset[int]:
+    """Every function NID the runtime registers, from its single source of truth.
+
+    The set comes from tools/hle_manifest.registered_nids(), the fail-closed
+    extraction of src/rt/hle.c that the HLE manifest and the import audit gate
+    use. A failure raises RuntimeRegistryUnavailableError; only a successful
+    read is cached.
+    """
+    try:
+        import hle_manifest
+    except ImportError as exc:
+        raise RuntimeRegistryUnavailableError(
+            f"the runtime HLE registry reader could not be loaded: {exc}"
+        ) from exc
+    try:
+        return hle_manifest.registered_nids()
+    except (OSError, ValueError, hle_manifest.ManifestError) as exc:
+        raise RuntimeRegistryUnavailableError(
+            f"the runtime HLE registry (src/rt/hle.c) could not be read: {exc}"
+        ) from exc
+
+
+@dataclass(frozen=True)
+class GuestModuleInterface:
+    """What one disc module offers the title, read from its PSP module tables.
+
+    ``callable_nids`` and ``callable_variables`` cover only the libraries a
+    user-mode importer can link against (psp_import_table.ExportTable.
+    user_callable_libraries). ``requires_kernel`` is true for a module whose
+    SceModuleInfo carries the kernel-mode attribute or which imports
+    CFW/kernel-only libraries; neither can run as translated user-mode code.
+    """
+
+    requires_kernel: bool
+    callable_nids: frozenset[int]
+    callable_variables: int
+
+
+def read_guest_module_interface(name: str, module_bytes: bytes) -> GuestModuleInterface:
+    """Read a plain disc module's export interface, failing closed by name.
+
+    An encrypted container is GUEST_MODULE_DECRYPTION_REQUIRED and a malformed
+    module or export table is GUEST_MODULE_FORMAT_UNSUPPORTED. An image that
+    declares no SceModuleInfo at all (no module-info section and a zero
+    phdr[0].p_paddr) exports nothing and carries no kernel-mode attribute, so
+    it is a user-mode module with an empty interface. The CFW/kernel-only
+    import check reads the import table with the analyzer's model; a table it
+    cannot read names no such library here, and code generation refuses that
+    module by its import-table boundary when it translates it.
+    """
+    if module_bytes[:4] in (b"~PSP", b"~SCE"):
+        raise IsoInspectionError(
+            f"guest module is an encrypted container (~PSP/~SCE) and needs decryption: {name}",
+            boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+        )
+    try:
+        table = psp_import_table.parse_export_table(module_bytes)
+    except psp_import_table.ImportTableError as exc:
+        raise IsoInspectionError(
+            f"guest module has an invalid module or export table: {name}: {exc}",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        ) from exc
+    if table is None:
+        return GuestModuleInterface(False, frozenset(), 0)
+    libraries = table.user_callable_libraries()
+    return GuestModuleInterface(
+        requires_kernel=table.kernel_mode or _has_cfw_or_kernel_only_imports(module_bytes),
+        callable_nids=frozenset(nid for library in libraries for nid in library.function_nids),
+        callable_variables=sum(len(library.variable_nids) for library in libraries),
+    )
+
+
+def runtime_serves_module(interface: GuestModuleInterface, registered: frozenset[int]) -> bool:
+    """Whether the runtime replaces this module completely.
+
+    The threshold is every exported function a user-mode importer can call:
+    the module is runtime-served when it exports at least one such function,
+    the runtime registers every one of those NIDs, and it exports no variable
+    to user mode (the runtime registers functions only). A module whose
+    callable exports are partly registered keeps its own code for the rest,
+    so it is not served; a module that exports nothing callable (for example
+    one that only runs from module_start) is never served.
+    """
+    return (
+        bool(interface.callable_nids)
+        and interface.callable_variables == 0
+        and interface.callable_nids <= registered
+    )
+
+
+def _main_executable_imported_nids(main_elf: Path | str) -> frozenset[int]:
+    """Every function NID the main executable imports, as code generation reads it.
+
+    Uses the analyzer's import model (tools/imports.parse_imports), so the set
+    is exactly what the translated main executable calls. As in the analyzer,
+    an executable without SceModuleInfo imports nothing; an import table the
+    analyzer would refuse stops planning with the analyzer's own boundary.
+    """
+    from analyze import Elf
+    from imports import ImportTableError, parse_imports
+
+    try:
+        elf = Elf(str(main_elf))
+    except (OSError, ValueError, struct.error) as exc:
+        raise IsoInspectionError(
+            f"main executable could not be read for its import table: {exc}",
+            boundary_code="ANALYZER_IMPORT_TABLE_INVALID",
+        ) from exc
+    if elf.sec(".rodata.sceModuleInfo") is None:
+        return frozenset()
+    try:
+        return frozenset(nid for _library, nid in parse_imports(elf).values())
+    except ImportTableError as exc:
+        raise IsoInspectionError(
+            f"main executable import table is not supported: {exc}",
+            boundary_code=exc.code,
+        ) from exc
+
+
 @dataclass(frozen=True)
 class IsoDirectoryEntry:
     """One bounded ISO9660 directory entry with its validated extent."""
@@ -109,41 +244,92 @@ def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
         file_size = image_path.stat().st_size
         with image_path.open("rb") as stream:
             header = stream.read(52)
-            if len(header) < 52 or header[:7] != b"\x7fELF\x01\x01\x01":
-                raise IsoInspectionError("ELF32 load binding needs a little-endian ELF32 image")
+            if len(header) < 52:
+                if header[:4] in (b"~PSP", b"~SCE"):
+                    raise IsoInspectionError(
+                        "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+                        boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+                    )
+                raise IsoInspectionError(
+                    "ELF32 image is truncated",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            if header[:7] != b"\x7fELF\x01\x01\x01":
+                if header[:4] in (b"~PSP", b"~SCE"):
+                    raise IsoInspectionError(
+                        "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+                        boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+                    )
+                raise IsoInspectionError(
+                    "ELF32 load binding needs a little-endian ELF32 image",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             e_type, machine, version = struct.unpack_from("<HHI", header, 16)
             _entry, phoff = struct.unpack_from("<II", header, 24)
             ehsize, phentsize, phnum = struct.unpack_from("<HHH", header, 40)
             if machine != 8 or version != 1 or ehsize != 52 or phentsize != 32:
-                raise IsoInspectionError("ELF32 load binding needs a supported MIPS program-header table")
+                raise IsoInspectionError(
+                    "ELF32 load binding needs a supported MIPS program-header table",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             if not 1 <= phnum <= 128 or phoff < ehsize:
-                raise IsoInspectionError("ELF32 load binding has an unsupported program-header count")
+                raise IsoInspectionError(
+                    "ELF32 load binding has an unsupported program-header count",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             ph_end = phoff + phentsize * phnum
             if ph_end < phoff or ph_end > file_size:
-                raise IsoInspectionError("ELF32 program headers exceed the input image")
+                raise IsoInspectionError(
+                    "ELF32 program headers exceed the input image",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
             stream.seek(phoff)
             table = stream.read(phentsize * phnum)
     except OSError as exc:
-        raise IsoInspectionError("ELF32 image could not be read for guest-module placement") from exc
+        raise IsoInspectionError(
+            "ELF32 image could not be read for guest-module placement",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        ) from exc
     if len(table) != phentsize * phnum:
-        raise IsoInspectionError("ELF32 program headers are truncated")
+        raise IsoInspectionError(
+            "ELF32 program headers are truncated",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        )
 
+    segments: list[tuple[int, int]] = []
     low: int | None = None
     high = 0
     for index in range(phnum):
         p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _flags, _align = \
             struct.unpack_from("<8I", table, index * phentsize)
         if p_offset + p_filesz < p_offset or p_offset + p_filesz > file_size:
-            raise IsoInspectionError("ELF32 segment file range exceeds the input image")
+            raise IsoInspectionError(
+                "ELF32 segment file range exceeds the input image",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
         if p_type != 1:
             continue
         end = p_vaddr + p_memsz
         if p_memsz < p_filesz or end < p_vaddr or end > 0xFFFFFFFF:
-            raise IsoInspectionError("ELF32 segment memory range is invalid")
+            raise IsoInspectionError(
+                "ELF32 segment memory range is invalid",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
+        segments.append((p_vaddr, end))
         low = p_vaddr if low is None else min(low, p_vaddr)
         high = max(high, end)
     if low is None or high <= low:
-        raise IsoInspectionError("ELF32 image has no non-empty loadable segment")
+        raise IsoInspectionError(
+            "ELF32 image has no non-empty loadable segment",
+            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+        )
+    segments.sort(key=lambda seg: seg[0])
+    for i in range(len(segments) - 1):
+        if segments[i][1] > segments[i + 1][0]:
+            raise IsoInspectionError(
+                "ELF32 image has overlapping loadable segments",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
     return e_type, low, high
 
 
@@ -161,6 +347,23 @@ def plan_provisional_module_bindings(
     reserves the exact manifest address when each module is loaded; provisional
     evidence records that this deterministic layout is a project policy, not a
     measured firmware placement.
+
+    Only modules that run as translated guest code are placed. Each module's
+    export table is compared, NID by NID, with the NIDs the runtime registers
+    (runtime_registered_nids):
+
+    * a module the runtime replaces completely (runtime_serves_module) is not
+      placed: the runtime answers every function it exports;
+    * a kernel-mode module is never placed, because the runtime does not run
+      PSP kernel-mode code. It stops planning with
+      GUEST_MODULE_FORMAT_UNSUPPORTED only when the main executable imports
+      one of its user-callable functions that neither the runtime registers
+      nor a placed module exports: the title's own program then depends on
+      kernel code nothing provides. Without such an import (for example a
+      firmware driver that only another firmware library calls) the module
+      is left out, and a call into it from a library that does run fails
+      closed at the call as a named unimplemented NID;
+    * every other module is placed.
     """
     main_type, _main_low, main_high = _elf32_load_span(main_elf)
     if main_type in (3, 0xFFA0):
@@ -168,9 +371,15 @@ def plan_provisional_module_bindings(
     elif main_type == 2:
         main_end = main_high
     else:
-        raise IsoInspectionError("main executable type has no supported guest-module layout")
+        raise IsoInspectionError(
+            "main executable type has no supported guest-module layout",
+            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
     if main_end > PSP_CONVENTIONAL_USER_MEMORY_TOP:
-        raise IsoInspectionError("main executable exceeds the conventional user-memory ceiling")
+        raise IsoInspectionError(
+            "main executable exceeds the conventional user-memory ceiling",
+            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
 
     floor_unaligned = max(
         main_end + PSP_MODULE_HEAP_RESERVE,
@@ -179,27 +388,104 @@ def plan_provisional_module_bindings(
     alignment = PSP_MODULE_ADDRESS_ALIGNMENT
     floor = (floor_unaligned + alignment - 1) & ~(alignment - 1)
     if floor < floor_unaligned or floor >= PSP_MODULE_ADDRESS_TOP:
-        raise IsoInspectionError("main image leaves no safe guest-module address range")
+        raise IsoInspectionError(
+            "main image leaves no safe guest-module address range",
+            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
 
-    modules: list[tuple[str, str, int]] = []
+    fixed_modules: list[dict] = []
+    reloc_modules: list[tuple[str, str, int]] = []
+    kernel_modules: list[tuple[str, GuestModuleInterface]] = []
+    placed_exports: set[int] = set()
     folded_names: set[str] = set()
     for name, module_path, guest_path in module_inputs:
         folded = name.casefold()
         if folded in folded_names:
-            raise IsoInspectionError("guest-module filenames collide under the placement policy")
+            raise IsoInspectionError(
+                f"guest-module filenames collide under the placement policy: {name}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
         folded_names.add(folded)
+        try:
+            mod_bytes = Path(module_path).read_bytes()
+        except OSError as exc:
+            raise IsoInspectionError(
+                f"guest module could not be read: {name}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            ) from exc
+        interface = read_guest_module_interface(name, mod_bytes)
+        if interface.callable_nids and runtime_serves_module(interface, runtime_registered_nids()):
+            continue
+        if interface.requires_kernel:
+            kernel_modules.append((name, interface))
+            continue
+        placed_exports.update(interface.callable_nids)
         module_type, module_low, module_high = _elf32_load_span(module_path)
-        if module_type not in (3, 0xFFA0) or module_low != 0:
-            raise IsoInspectionError("guest module is not a base-zero relocatable ELF/PRX")
-        modules.append((name, guest_path, module_high))
+        span = module_high - module_low
+        if module_type in (3, 0xFFA0) and module_low == 0:
+            reloc_modules.append((name, guest_path, span))
+        elif module_type == 2 or (module_type in (3, 0xFFA0) and module_low != 0):
+            if (
+                module_low < title_manifest.GUEST_MODULE_RAM_LO
+                or module_high > PSP_MODULE_ADDRESS_TOP
+                or module_low < main_end
+            ):
+                raise IsoInspectionError(
+                    f"guest module has fixed load address 0x{module_low:08x} that collides with layout: {name}",
+                    boundary_code="GUEST_MODULE_LOAD_BINDING_REQUIRED",
+                )
+            fixed_modules.append({
+                "name": name,
+                "load_address": module_low,
+                "end": module_high,
+                "required": True,
+                "role": "guest-prx",
+                "guest_path": guest_path,
+                "load_address_evidence": "fixed-address",
+            })
+        else:
+            raise IsoInspectionError(
+                f"guest module is not a supported ELF/PRX: {name}",
+                boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+            )
+
+    if any(interface.callable_nids for _name, interface in kernel_modules):
+        main_imports = _main_executable_imported_nids(main_elf)
+        for name, interface in sorted(kernel_modules, key=lambda item: item[0].casefold()):
+            missing = sorted(
+                (interface.callable_nids & main_imports) - runtime_registered_nids() - placed_exports
+            )
+            if missing:
+                nid_list = ", ".join(f"0x{nid:08x}" for nid in missing)
+                raise IsoInspectionError(
+                    f"guest module requires PSP kernel mode: {name}: the main executable "
+                    f"imports {len(missing)} of its functions that neither the runtime nor "
+                    f"a translated module provides (NIDs {nid_list})",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+
+    fixed_modules.sort(key=lambda m: m["load_address"])
+    for i in range(len(fixed_modules) - 1):
+        if fixed_modules[i]["end"] > fixed_modules[i + 1]["load_address"]:
+            raise IsoInspectionError(
+                f"fixed guest modules collide: {fixed_modules[i]['name']} and {fixed_modules[i + 1]['name']}",
+                boundary_code="GUEST_MODULE_LOAD_BINDING_REQUIRED",
+            )
 
     cursor = floor
     placed: list[dict] = []
-    for name, guest_path, span in sorted(modules, key=lambda item: item[0].casefold()):
+    for name, guest_path, span in sorted(reloc_modules, key=lambda item: item[0].casefold()):
         address = (cursor + alignment - 1) & ~(alignment - 1)
         end = address + span
+        for fm in fixed_modules:
+            if not (end <= fm["load_address"] or address >= fm["end"]):
+                address = (fm["end"] + alignment - 1) & ~(alignment - 1)
+                end = address + span
         if address < cursor or end < address or end > PSP_MODULE_ADDRESS_TOP:
-            raise IsoInspectionError("guest modules do not fit above the main-image heap reserve")
+            raise IsoInspectionError(
+                "guest modules do not fit above the main-image heap reserve",
+                boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+            )
         placed.append({
             "name": name,
             "load_address": address,
@@ -209,7 +495,15 @@ def plan_provisional_module_bindings(
             "load_address_evidence": "provisional",
         })
         cursor = end
-    return placed
+
+    all_placed = []
+    for fm in fixed_modules:
+        entry = dict(fm)
+        del entry["end"]
+        all_placed.append(entry)
+    all_placed.extend(placed)
+    all_placed.sort(key=lambda item: item["name"].casefold())
+    return all_placed
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})

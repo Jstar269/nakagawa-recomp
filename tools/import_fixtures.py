@@ -30,6 +30,8 @@ def _elf(
     sectionless: bool = False,
     paddr_override: int | None = None,
     extra_sections: list[tuple[bytes, int, int]] | None = None,
+    e_type: int = 2,
+    base_vaddr: int = BASE_VADDR,
 ) -> bytes:
     """Wrap a guest segment into a minimal ELF32 MIPS file.
 
@@ -40,23 +42,26 @@ def _elf(
     extra_sections appends named SHT_PROGBITS/SHF_ALLOC section headers in
     (name, vaddr, size) order, so fixtures can carry the real
     .sceStub.text/.rodata.sceNid pairing sections.
+
+    e_type and base_vaddr default to an ET_EXEC loaded at BASE_VADDR; a
+    relocatable PRX fixture passes e_type=0xFFA0 and base_vaddr=0.
     """
     e_phoff = 52
     e_shoff_placeholder = 0
-    modinfo_file_off = DATA_FILE_OFF + (modinfo_vaddr - BASE_VADDR)
+    modinfo_file_off = DATA_FILE_OFF + (modinfo_vaddr - base_vaddr)
     extra_sections = extra_sections or []
     if sectionless:
         p_paddr = modinfo_file_off if paddr_override is None else paddr_override
         e_shnum, e_shstrndx = 0, 0
     else:
-        p_paddr = BASE_VADDR
+        p_paddr = base_vaddr
         e_shnum, e_shstrndx = 3 + len(extra_sections), 2 + len(extra_sections)
     ehdr = struct.pack(
         "<4s5B7x2H5I6H",
         b"\x7fELF", 1, 1, 1, 0, 0,      # ELFCLASS32, ELFDATA2LSB, EV_CURRENT
-        2, 8,                            # ET_EXEC, EM_MIPS
+        e_type, 8,                       # e_type, EM_MIPS
         1,                               # e_version
-        BASE_VADDR,                      # e_entry
+        base_vaddr,                      # e_entry
         e_phoff, e_shoff_placeholder, 0,  # e_phoff, e_shoff (patched), e_flags
         52, 32, 1,                       # e_ehsize, e_phentsize, e_phnum
         40, e_shnum, e_shstrndx,         # e_shentsize, e_shnum, e_shstrndx
@@ -64,7 +69,7 @@ def _elf(
     phdr = struct.pack(
         "<8I",
         1,                               # PT_LOAD
-        DATA_FILE_OFF, BASE_VADDR, p_paddr,
+        DATA_FILE_OFF, base_vaddr, p_paddr,
         len(segment), len(segment),      # p_filesz, p_memsz
         7, 0x1000,                       # rwx, align
     )
@@ -86,7 +91,7 @@ def _elf(
     sh_null = struct.pack("<10I", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     sh_modinfo = struct.pack(
         "<10I", 1, 1, 2,                 # name, SHT_PROGBITS, SHF_ALLOC
-        modinfo_vaddr, DATA_FILE_OFF + (modinfo_vaddr - BASE_VADDR), 52,
+        modinfo_vaddr, DATA_FILE_OFF + (modinfo_vaddr - base_vaddr), 52,
         0, 0, 4, 0,
     )
     sh_extras = []
@@ -94,7 +99,7 @@ def _elf(
         sh_extras.append(
             struct.pack(
                 "<10I", extra_name_offs[nm], 1, 2,
-                vaddr, DATA_FILE_OFF + (vaddr - BASE_VADDR), size,
+                vaddr, DATA_FILE_OFF + (vaddr - base_vaddr), size,
                 0, 0, 4, 0,
             )
         )
@@ -350,6 +355,130 @@ def build_interleaved_import_elf(
         modinfo_vaddr,
         sectionless=sectionless,
         extra_sections=extra_sections,
+    )
+
+
+# The nameless syslib entry every PSP module exports: module_start and the
+# module_info variable, under their public PSPSDK lifecycle NIDs.
+SYSLIB_MODULE_START_NID = 0xD632ACDB
+SYSLIB_MODULE_INFO_NID = 0xF01D73A7
+SYSLIB_EXPORT = (None, 0x8000, [SYSLIB_MODULE_START_NID], [SYSLIB_MODULE_INFO_NID])
+
+
+def build_module_elf(
+    exports: list[tuple[str | None, int, list[int], list[int]]],
+    *,
+    imports: list[tuple[str, list[int]]] | None = None,
+    module_attributes: int = 0,
+    e_type: int = 0xFFA0,
+    base_vaddr: int = 0,
+    sectionless: bool = False,
+    corrupt: str | None = None,
+) -> bytes:
+    """Build a synthetic PSP module with an export table and optional imports.
+
+    exports lists SceLibraryEntryTable entries in order as (library name, or
+    None for the nameless syslib entry; attribute; function NIDs; variable
+    NIDs). Each entry is the 16-byte header the loader reads; its entry table
+    holds the function NIDs, then the variable NIDs, then one guest address
+    per export. imports, when given, adds a psp-fixup-imports style stub
+    table (one 8-byte slot per NID) with .sceStub.text/.rodata.sceNid
+    sections. The defaults model a relocatable PRX at base 0; a fixed-address
+    module or main executable passes e_type=2 and its load address.
+
+    corrupt values (each breaks exactly one export-table property):
+      "entry_too_short"         -- first entry declares 3 words, below the header
+      "entry_overrun"           -- first entry's length runs past ent_end
+      "entry_table_unmapped"    -- first entry's entry table is outside the segment
+      "address_table_truncated" -- last entry's addresses run past the segment end
+      "ent_range_reversed"      -- ent_top above ent_end
+      "bad_name_ptr"            -- first named entry's name pointer is unmapped
+    """
+    seg = bytearray()
+
+    def alloc(b: bytes, align: int = 4) -> int:
+        while len(seg) % align:
+            seg.append(0)
+        off = len(seg)
+        seg.extend(b)
+        return base_vaddr + off
+
+    modinfo_vaddr = alloc(b"\0" * 52)
+    code_vaddr = alloc(struct.pack("<2I", 0x03E00008, 0))  # jr $ra; nop
+
+    name_vaddrs = [
+        alloc(name.encode("ascii") + b"\0", 1) if name is not None else 0
+        for name, _attr, _funcs, _vars in exports
+    ]
+    table_vaddrs = []
+    for _name, _attr, funcs, variables in exports:
+        nids = list(funcs) + list(variables)
+        addresses = [code_vaddr] * len(nids)
+        table_vaddrs.append(
+            alloc(b"".join(struct.pack("<I", value) for value in nids + addresses)) if nids else 0
+        )
+    entries = bytearray()
+    for (_name, attr, funcs, variables), name_ptr, table in zip(
+        exports, name_vaddrs, table_vaddrs, strict=True
+    ):
+        entries += struct.pack(
+            "<IHHBBHI", name_ptr, 0x0101, attr, 4, len(variables), len(funcs), table
+        )
+    ent_top = alloc(bytes(entries))
+    ent_end = ent_top + len(entries)
+
+    stub_top = stub_end = 0
+    extra_sections = []
+    if imports:
+        import_names = [alloc(name.encode("ascii") + b"\0", 1) for name, _nids in imports]
+        all_nids = [nid for _name, nids in imports for nid in nids]
+        nid_array = alloc(b"".join(struct.pack("<I", nid) for nid in all_nids))
+        first_sym = alloc(b"\0" * (8 * len(all_nids)))
+        stub_entries = bytearray()
+        position = 0
+        for (_name, nids), name_ptr in zip(imports, import_names, strict=True):
+            stub_entries += struct.pack(
+                "<IHHBBHII", name_ptr, 0x0101, 0x0009, 5, 0, len(nids),
+                nid_array + position * 4, first_sym + position * 8,
+            )
+            position += len(nids)
+        stub_top = alloc(bytes(stub_entries))
+        stub_end = stub_top + len(stub_entries)
+        extra_sections = [
+            (b".sceStub.text", first_sym, 8 * len(all_nids)),
+            (b".rodata.sceNid", nid_array, 4 * len(all_nids)),
+        ]
+
+    entry0 = ent_top - base_vaddr
+    if corrupt == "entry_too_short":
+        seg[entry0 + 8] = 3
+    elif corrupt == "entry_overrun":
+        seg[entry0 + 8] = 0x40
+    elif corrupt == "entry_table_unmapped":
+        struct.pack_into("<I", seg, entry0 + 12, base_vaddr + 0x00100000)
+    elif corrupt == "address_table_truncated":
+        last = entry0 + 16 * (len(exports) - 1)
+        _name, _attr, funcs, variables = exports[-1]
+        count = len(funcs) + len(variables)
+        struct.pack_into("<I", seg, last + 12, base_vaddr + len(seg) - count * 4)
+    elif corrupt == "ent_range_reversed":
+        ent_top, ent_end = ent_end, ent_top
+    elif corrupt == "bad_name_ptr":
+        named = next(index for index, (name, *_rest) in enumerate(exports) if name is not None)
+        struct.pack_into("<I", seg, entry0 + 16 * named, base_vaddr + 0x00100000)
+
+    struct.pack_into(
+        "<HH28sI4I", seg, modinfo_vaddr - base_vaddr,
+        module_attributes, 0x0101, b"SynthModule", base_vaddr + 0x8000,
+        ent_top, ent_end, stub_top, stub_end,
+    )
+    return _elf(
+        bytes(seg),
+        modinfo_vaddr,
+        sectionless=sectionless,
+        extra_sections=None if sectionless else extra_sections,
+        e_type=e_type,
+        base_vaddr=base_vaddr,
     )
 
 

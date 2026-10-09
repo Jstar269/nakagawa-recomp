@@ -219,6 +219,7 @@ class RouteOutcome:
     stage_durations_ms: dict | None = None
     build_log_path: str | None = None
     build_diagnostic: str | None = None
+    module_layout_diagnostic: str | None = None
     analyzer_diagnostic: str | None = None
 
 
@@ -576,6 +577,18 @@ def _first_build_diagnostic(log_path: Path) -> str | None:
     return None
 
 
+def _first_module_layout_diagnostic(log_path: Path) -> str | None:
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as stream:
+            while raw := stream.readline(65536):
+                line = raw.strip()
+                if line:
+                    return line[:300]
+    except OSError:
+        return None
+    return None
+
+
 def _run_bringup(
     iso_path: Path,
     work_dir: Path,
@@ -590,6 +603,8 @@ def _run_bringup(
     progress_path.unlink(missing_ok=True)
     build_log_path = work_dir / "bringup-build.log"
     build_log_path.unlink(missing_ok=True)
+    layout_log_path = work_dir / "bringup-module-layout.log"
+    layout_log_path.unlink(missing_ok=True)
     command = [
         sys.executable,
         str(NK_CLI),
@@ -636,6 +651,7 @@ def _run_bringup(
             stage_durations_ms=durations,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     except OSError:
         return RouteOutcome(None)
@@ -651,6 +667,7 @@ def _run_bringup(
             stage_durations_ms=durations,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     try:
         report = package_cache.read_bounded_json(
@@ -667,6 +684,7 @@ def _run_bringup(
             return_code=process.returncode,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     if not isinstance(report, dict):
         return RouteOutcome(
@@ -674,6 +692,7 @@ def _run_bringup(
             return_code=process.returncode,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     progress = _read_bringup_progress(progress_path)
     _active_stage, _active_elapsed_ms, durations = _progress_stage_details(progress)
@@ -688,6 +707,7 @@ def _run_bringup(
         stage_durations_ms=durations,
         build_log_path=str(build_log_path),
         build_diagnostic=_first_build_diagnostic(build_log_path),
+        module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         analyzer_diagnostic=(
             _read_private_analyzer_diagnostic(private_import_report_path)
             if isinstance(analyze_stage, dict) and analyze_stage.get("status") == "FAIL"
@@ -1282,6 +1302,11 @@ def _validate_sweep_rows(rows: object) -> None:
             not isinstance(log_path, str) or not log_path or len(log_path) > 4096
         ):
             raise ValueError(f"sweep row {index} build_log_path is invalid")
+        layout_diag = row.get("module_layout_diagnostic")
+        if layout_diag is not None and (
+            not isinstance(layout_diag, str) or len(layout_diag) > 300
+        ):
+            raise ValueError(f"sweep row {index} module_layout_diagnostic is invalid")
 
 
 def _public_aggregate(
@@ -1653,6 +1678,12 @@ def run_sweep(
             ):
                 row["build_log_path"] = outcome.build_log_path
                 row["build_diagnostic"] = outcome.build_diagnostic
+            if (
+                isinstance(stages.get("prepare_import"), dict)
+                and stages["prepare_import"].get("status") == "FAIL"
+                and outcome.module_layout_diagnostic is not None
+            ):
+                row["module_layout_diagnostic"] = outcome.module_layout_diagnostic
             analyze_stage = stages.get("analyze")
             if (
                 isinstance(analyze_stage, dict)

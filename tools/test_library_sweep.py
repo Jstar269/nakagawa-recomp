@@ -375,6 +375,69 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertNotIn("DIAGNOSTIC_PRIVATE_SENTINEL", public_text)
         self.assertNotIn(str(work_dir), public_text)
 
+    def test_prepare_import_module_layout_failure_keeps_diagnostic_only_in_private_report(self) -> None:
+        work_dir = self.private_dir / "layout-failure-work"
+        work_dir.mkdir(parents=True)
+        iso = _write_iso(self.iso_dir, "layout-failure.iso", "UCUS99994", "Layout Failure Sentinel")
+
+        class FailedLayout:
+            pid = 9004
+            returncode = 1
+
+            def __init__(self, command, **_kwargs):
+                self.command = command
+
+            def communicate(self, timeout=None):
+                report_path = Path(self.command[self.command.index("--report") + 1])
+                report_path.write_text(json.dumps({
+                    **_bringup_report(failure="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE"),
+                    "reached_stage": "prepare_import",
+                    "stages": {
+                        **_bringup_report()["stages"],
+                        "prepare_import": {"status": "FAIL", "duration_ms": 100},
+                    },
+                }), encoding="utf-8")
+                (work_dir / "bringup-module-layout.log").write_text(
+                    "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE: DIAGNOSTIC_LAYOUT_SENTINEL\n",
+                    encoding="utf-8",
+                )
+                return "", ""
+
+        with (
+            mock.patch.object(library_sweep.subprocess, "Popen", FailedLayout),
+            mock.patch.object(library_sweep, "_route_environment", return_value={}),
+        ):
+            outcome = library_sweep._run_bringup(
+                iso,
+                work_dir,
+                work_dir / "bringup.json",
+                work_dir / "sweep-imports.json",
+                7,
+                7,
+            )
+
+        self.assertEqual(outcome.report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertEqual(
+            outcome.module_layout_diagnostic,
+            "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE: DIAGNOSTIC_LAYOUT_SENTINEL",
+        )
+
+        with mock.patch.object(library_sweep, "_run_bringup", return_value=outcome):
+            library_sweep.run_sweep(
+                self.iso_dir, self.private_dir / "layout-failure", self.public_output,
+                **self._run_kwargs(),
+            )
+        private = json.loads(
+            (self.private_dir / "layout-failure" / "library-sweep.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        public_text = self.public_output.read_text(encoding="utf-8")
+        row = private["rows"][0]
+        self.assertEqual(row["module_layout_diagnostic"], outcome.module_layout_diagnostic)
+        self.assertNotIn("DIAGNOSTIC_LAYOUT_SENTINEL", public_text)
+        self.assertNotIn(str(work_dir), public_text)
+
     def test_analysis_failure_keeps_first_diagnostic_only_in_private_report(self) -> None:
         iso = _write_iso(
             self.iso_dir, "analysis-failure.iso", "TEST00002", "Analyzer Diagnostic Fixture"
