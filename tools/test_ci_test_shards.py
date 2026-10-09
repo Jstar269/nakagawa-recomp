@@ -45,22 +45,44 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _install_root(start: Path) -> Path | None:
+    """The Git for Windows root at or above start: the directory that holds git-bash.exe."""
+    return next((parent for parent in (start, *start.parents)
+                 if (parent / "git-bash.exe").is_file()), None)
+
+
 def _git_for_windows_roots() -> list[Path]:
     """Candidate Git for Windows installation roots, most specific first."""
     roots: list[Path] = []
     git = shutil.which("git")
     if git:
-        # The install that owns the git on PATH: its root holds git-bash.exe.
-        owner = next((parent for parent in Path(git).resolve().parents
-                      if (parent / "git-bash.exe").is_file()), None)
-        if owner is not None:
-            roots.append(owner)
+        # The install that owns the git on PATH. A launcher, shim or package-manager link may
+        # live outside the install, so ask git for its own exec path first (it lies inside
+        # the install), then fall back to the resolved executable's location.
+        try:
+            exec_path = subprocess.run([git, "--exec-path"], capture_output=True, text=True,
+                                       check=False, timeout=30).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            exec_path = ""
+        for start in ((Path(exec_path),) if exec_path else ()) + (Path(git).resolve().parent,):
+            owner = _install_root(start)
+            if owner is not None and owner not in roots:
+                roots.append(owner)
     for variable in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
         if os.environ.get(variable):
             roots.append(Path(os.environ[variable]) / "Git")
     if os.environ.get("LOCALAPPDATA"):
         roots.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Git")
-    return roots
+    return list(dict.fromkeys(roots))  # first occurrence wins; one install may be found twice
+
+
+def _bash_path(path: str | Path) -> str:
+    """path as the step's bash sees it. Git for Windows bash mounts each drive at /<drive>;
+    a Windows path in a ':'-separated PATH would split at its drive colon."""
+    text = str(path)
+    if os.name != "nt" or len(text) < 2 or text[1] != ":":
+        return text
+    return "/" + text[0].lower() + text[2:].replace("\\", "/")
 
 
 def _step_bash() -> tuple[str | None, str]:
@@ -198,12 +220,12 @@ class LiveRepositoryPlanTests(unittest.TestCase):
                 ran = Path(scratch) / "unittest-args"
                 stub.write_text(
                     "#!/bin/sh\n"
-                    'if [ "$1" = "-m" ]; then shift 3; echo "$@" > "' + str(ran) + '"; exit 0; fi\n'
+                    'if [ "$1" = "-m" ]; then shift 3; echo "$@" > "' + _bash_path(ran) + '"; exit 0; fi\n'
                     + planner + "\n",
                     encoding="utf-8",
                 )
                 stub.chmod(0o755)
-                env = {"PATH": f"{scratch}:/usr/bin:/bin", "SHARD": "0", "NUM_SHARDS": "4",
+                env = {"PATH": f"{_bash_path(scratch)}:/usr/bin:/bin", "SHARD": "0", "NUM_SHARDS": "4",
                        "PYTHON_SCOPE": "all"}
                 result = subprocess.run([bash, "-c", script], env=env, capture_output=True,
                                         text=True, check=False)

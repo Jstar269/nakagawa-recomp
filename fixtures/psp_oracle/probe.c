@@ -1307,10 +1307,10 @@ static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
     const uint64_t elapsed = end >= start ? end - start : 0;
     return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
 }
-#endif
-#endif
-#endif
-#endif
+#endif /* launches that time transfers (dmac_elapsed_us) */
+#endif /* PSP_ORACLE_CASE != PSP_ORACLE_CASE_DMAC_CELLS (dmac_pattern) */
+#endif /* launches that issue DMAC copies (dmac_call) */
+#endif /* DMAC launches (DMAC_API_* and DMAC_* constants) */
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
