@@ -15,10 +15,15 @@ import subprocess
 
 try:
     from .nk_core.git_isolation import isolated_git_env
+    from .publication_policy import load_policy
 except ImportError:
     from nk_core.git_isolation import isolated_git_env
+    from publication_policy import load_policy
 
 ROOT = Path(__file__).resolve().parent.parent
+#: The canonical publication policy; its ``private_roots`` name the local
+#: workspace roots that must never appear in published bytes or messages.
+POLICY_PATH = Path("assets") / "public_source_profile.json"
 
 HEX_16_BYTES = re.compile(r"\b[0-9a-fA-F]{32}\b")
 PRIVATE_KEY_HEADER = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
@@ -303,35 +308,60 @@ def audit_history_blob_contents(repo_root: Path = ROOT) -> list[HistoryFinding]:
     return findings
 
 
-def audit_history_commit_metadata(repo_root: Path = ROOT) -> list[HistoryFinding]:
-    """Pass 2: Audit all author/committer emails and commit log metadata across all commits."""
+def policy_private_roots(repo_root: Path = ROOT) -> tuple[str, ...]:
+    """Return the canonical policy's ``private_roots``; a repository without a policy has none.
+
+    A policy that exists but cannot be loaded raises ``PolicyError``: the audit fails
+    closed rather than silently scanning without the deny-list.
+    """
+    path = repo_root / POLICY_PATH
+    if not path.is_file():
+        return ()
+    return load_policy(path).private_roots
+
+
+def audit_history_commit_metadata(repo_root: Path = ROOT,
+                                  private_roots: tuple[str, ...] | None = None) -> list[HistoryFinding]:
+    """Pass 2: audit every reachable commit's full message, not only its subject.
+
+    A squash merge writes the pull-request body into the message, and a body line
+    naming a local path reaches public history as surely as a subject does.
+    """
     findings: list[HistoryFinding] = []
-    log_output = _git(["log", "--all", "--format=%H|%an|%ae|%cn|%ce|%s"], repo_root=repo_root)
+    roots = policy_private_roots(repo_root) if private_roots is None else private_roots
+    roots_lower = [root.lower() for root in roots if root]
+    log_output = _git(["log", "--all", "-z", "--format=%H%x1f%B"], repo_root=repo_root)
 
-    for line in log_output.splitlines():
-        if not line:
+    for record in log_output.split("\0"):
+        commit_sha, separator, message = record.strip("\n").partition("\x1f")
+        if not separator:
             continue
-        parts = line.split("|", 5)
-        if len(parts) < 6:
-            continue
-        commit_sha, author_name, author_email, committer_name, committer_email, subject = parts
+        commit_id = commit_sha[:12]
 
-        # Check local/private user path or private metadata in subject
-        if WINDOWS_USER_PATH.search(subject) or POSIX_USER_PATH.search(subject) or ONEDRIVE_PATH.search(subject):
+        if WINDOWS_USER_PATH.search(message) or POSIX_USER_PATH.search(message) or ONEDRIVE_PATH.search(message):
             findings.append(HistoryFinding(
                 category="PRIVACY_METADATA",
                 code="COMMIT_LOG_LOCAL_PATH",
-                commit=commit_sha[:8],
+                commit=commit_id,
                 path="<commit_message>",
                 detail="Commit message contains local path or directory fragment",
             ))
 
-        # Check for direct key or secret patterns in commit message
-        if PEM_KEY_MATERIAL.search(subject) or API_TOKEN_PATTERN.search(subject):
+        message_lower = message.lower()
+        if any(root in message_lower for root in roots_lower):
+            findings.append(HistoryFinding(
+                category="PRIVACY_METADATA",
+                code="COMMIT_LOG_PRIVATE_ROOT",
+                commit=commit_id,
+                path="<commit_message>",
+                detail="Commit message names a configured private root [REDACTED]",
+            ))
+
+        if PEM_KEY_MATERIAL.search(message) or API_TOKEN_PATTERN.search(message):
             findings.append(HistoryFinding(
                 category="DEFINITE_SECRET",
                 code="COMMIT_LOG_SECRET",
-                commit=commit_sha[:8],
+                commit=commit_id,
                 path="<commit_message>",
                 detail="Commit message contains private key or API token literal [REDACTED]",
             ))
@@ -383,11 +413,12 @@ REVIEWED_FINDINGS_PATH = ROOT / "assets" / "history_audit_reviewed.json"
 
 
 def load_reviewed_findings(path: Path = REVIEWED_FINDINGS_PATH) -> list[dict]:
-    """Maintainer-reviewed historical findings: an exact (blob, code, path) triple each.
+    """Maintainer-reviewed historical findings: an exact (blob or commit, code, path) triple each.
 
-    A blob id names immutable content, so an entry can never excuse different bytes;
-    any new blob with the same problem is still a finding. Each entry must say why it
-    was accepted. A malformed file fails closed.
+    A blob id names immutable content and a commit id names an immutable message, so
+    an entry can never excuse different bytes; any new blob or commit with the same
+    problem is still a finding. Each entry names exactly one of ``blob`` and
+    ``commit`` and must say why it was accepted. A malformed file fails closed.
     """
     if not path.exists():
         return []
@@ -400,9 +431,12 @@ def load_reviewed_findings(path: Path = REVIEWED_FINDINGS_PATH) -> list[dict]:
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ValueError(f"{path}: reviewed[{index}] must be an object")
-        blob = entry.get("blob")
-        if not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{40}", blob):
-            raise ValueError(f"{path}: reviewed[{index}].blob must be a full 40-hex blob id")
+        kinds = [key for key in ("blob", "commit") if key in entry]
+        if len(kinds) != 1:
+            raise ValueError(f"{path}: reviewed[{index}] must name exactly one of 'blob' or 'commit'")
+        object_id = entry[kinds[0]]
+        if not isinstance(object_id, str) or not re.fullmatch(r"[0-9a-f]{40}", object_id):
+            raise ValueError(f"{path}: reviewed[{index}].{kinds[0]} must be a full 40-hex {kinds[0]} id")
         for key in ("code", "path", "reason"):
             if not isinstance(entry.get(key), str) or not entry[key].strip():
                 raise ValueError(f"{path}: reviewed[{index}].{key} must be a non-empty string")
@@ -411,8 +445,11 @@ def load_reviewed_findings(path: Path = REVIEWED_FINDINGS_PATH) -> list[dict]:
 
 def _is_reviewed(finding: HistoryFinding, reviewed: list[dict]) -> dict | None:
     for entry in reviewed:
-        if (finding.commit == "blob:" + entry["blob"][:12] and finding.code == entry["code"]
-                and finding.path == entry["path"]):
+        if finding.code != entry["code"] or finding.path != entry["path"]:
+            continue
+        if "blob" in entry and finding.commit == "blob:" + entry["blob"][:12]:
+            return entry
+        if "commit" in entry and finding.commit == entry["commit"][:12]:
             return entry
     return None
 

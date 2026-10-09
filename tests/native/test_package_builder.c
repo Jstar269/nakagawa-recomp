@@ -164,10 +164,10 @@ static void test_reused_session_restarts_the_clock(void) {
 static void test_state_machine_transitions(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 2: state machine transitions\n");
     PackageBuildSession session;
-    package_builder_init_session(&session, "ULUS10041", "Street Supremacy");
+    package_builder_init_session(&session, "TEST80001", "Synthetic Package Fixture");
 
-    assert(strcmp(session.disc_id, "ULUS10041") == 0);
-    assert(strcmp(session.title_name, "Street Supremacy") == 0);
+    assert(strcmp(session.disc_id, "TEST80001") == 0);
+    assert(strcmp(session.title_name, "Synthetic Package Fixture") == 0);
     assert(session.current_stage == PACKAGE_BUILD_STAGE_IDLE);
     assert(!session.is_building);
     assert(!session.is_complete);
@@ -207,7 +207,7 @@ static void test_state_machine_transitions(void) {
 
     /* Test failure transition */
     PackageBuildSession fail_session;
-    package_builder_init_session(&fail_session, "ULES00123", "Encrypted Title");
+    package_builder_init_session(&fail_session, "TEST80002", "Encrypted Title");
     const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable. Supply a matching local key or decrypted modules.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
@@ -274,7 +274,7 @@ static void test_python_and_cli_discovery(void) {
 static void test_session_cancellation(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 5: session cancellation\n");
     PackageBuildSession session;
-    package_builder_init_session(&session, "ULUS10041", "Cancel Test");
+    package_builder_init_session(&session, "TEST80001", "Cancel Test");
     session.is_building = true;
 
     package_builder_cancel(&session);

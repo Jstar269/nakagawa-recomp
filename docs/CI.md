@@ -92,7 +92,9 @@ Vulkan development headers. It configures and builds the CMake player with `BUIL
 runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
 archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
 SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
-source-owned showcase packages with dummy SDL video and audio drivers, then passes the generated
+source-owned showcase packages with dummy SDL video and audio drivers. A failed smoke uploads its
+`runtime.log` files and frame captures as the `showcase-smoke-linux-attempt-<n>` artifact. After a
+passing smoke, the job passes the generated
 TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requires
 `STAGING_RESULT status=PASS`. This is build, test, and headless staging evidence for the named
 synthetic fixtures. Separately, the job runs `make CC=gcc player-ui-regressions`: scripted native

@@ -600,6 +600,17 @@ The build system provides scoped and explicit cleanup targets:
 
 These targets strictly operate within `build/` and transient log paths, never deleting protected directories (`place_game_here/`, `memstick/`, `keys/`, `oracle/`, `assets/`, `fixtures/`, `docs/`, `src/`, `tools/`).
 
+Two variables relocate everything these targets touch. `BUILD_ROOT` (default `build`) holds the
+default per-title `BUILD_DIR` (`$(BUILD_ROOT)/$(GAME_NAME)`), the shared fixture trees
+`clean-fixtures` removes, and the SDL3 discovery cache; `clean-all` empties it. `LOG_DIR` (default
+`logs`) holds the ephemeral logs `distclean` and `clean-all` remove; every other log there is kept.
+For example, `mingw32-make clean-all BUILD_ROOT=../scratch/build LOG_DIR=../scratch/logs` cleans
+only that scratch tree beside the checkout, which is how the Python suite exercises these targets
+without touching your real `build/` and `logs/`. An overridden `BUILD_ROOT` must be the checkout's
+`build/` tree, a directory beneath it, or a directory outside the checkout; Make refuses the
+repository root, an ancestor of it, or any other directory inside the checkout before anything is
+created or deleted.
+
 ### Checkout path and `BUILD_DIR`
 
 The repository may be cloned under a path that contains spaces (`C:/path/with spaces/nakagawa`): a
@@ -648,9 +659,13 @@ baseline Ruff correctness, large files, secret detection, and the publication au
 ```powershell
 python -m pip install pre-commit
 python -m pre_commit install
-python -m pre_commit install --hook-type pre-push
 python -m pre_commit run --all-files
 ```
+
+`install` sets up both the commit and the push hook (`default_install_hook_types` in
+`.pre-commit-config.yaml`). The publication audit runs at both stages on purpose: the push stage
+audits the index, not each pushed commit, and a pushed branch is public, so only the commit stage
+checks every commit before it can leave the machine.
 
 Invoked as `python -m pre_commit` rather than the bare `pre-commit` console script: pip
 installs that script into a user `Scripts/` directory that is frequently absent from `PATH` on

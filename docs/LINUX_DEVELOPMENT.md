@@ -79,7 +79,7 @@ The player binary builds, and its CLI help works without opening a display:
 
 ```bash
 SDL_VIDEODRIVER=offscreen ./build/cmake-linux/nakagawa_player --help
-# Usage: nakagawa_player [--iso=<path>] [--stage|--stage-only] ...
+# Usage: nakagawa_player [--user-data-root=<folder>] [--iso=<path> [--stage|--stage-only|--launch-now]] ...
 ```
 
 The bounded headless staging smoke uses the source-owned TEST00007 showcase ISO. It needs

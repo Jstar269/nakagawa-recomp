@@ -68,6 +68,12 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode);
 /* Structured path routing */
 bool nk_platform_get_path(NkPathType type, char *out_path, size_t max_len);
 
+/* Point every per-user data lookup in this process (the library, title
+ * manifests, packages, staged games, fonts) at `path` instead of the
+ * platform default, the player's counterpart of nk_cli's --user-data-root.
+ * NULL or "" restores the default. Returns false, leaving the previous
+ * setting, when the path is too long. Call before the first data lookup. */
+bool nk_platform_set_app_data_dir_override(const char *path);
 /* Resolve the canonical per-user data directory without creating it. */
 bool nk_platform_resolve_app_data_dir(char *out_path, size_t max_len);
 /* Get/create the canonical per-user data directory. */

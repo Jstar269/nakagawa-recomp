@@ -180,13 +180,46 @@ VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
 VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
 endif
 
+# BUILD AND LOG ROOTS. BUILD_ROOT is the shared build tree: the default per-title
+# BUILD_DIR, the shared fixture trees clean-fixtures removes and the parse-time SDL3
+# discovery cache all live beneath it, and clean-all empties it. LOG_DIR holds the
+# ephemeral build and run logs distclean and clean-all remove; every other log there
+# (oracle, evidence and private-run logs) is preserved. Overriding both points every
+# lifecycle target, and every parse-time write those goals make, at another tree:
+# that is how tools/test_build_truth.py exercises the destructive targets without
+# touching a developer's real build/ and logs/.
+BUILD_ROOT ?= build
+LOG_DIR    ?= logs
+# Every default output is created beneath BUILD_ROOT and clean-fixtures and clean-all
+# delete beneath it, so an overridden root is refused, before the parse-time mkdir or
+# any recipe runs, when it would reach the checkout itself: the repository root or one
+# of its ancestors, or a directory inside the checkout other than its build/ tree
+# (sources, place_game_here/, logs/, memstick/ ...). A root outside the checkout is the
+# caller's explicit choice, exactly as BUILD_DIR is for `clean`. The default root needs
+# no check, so an ordinary invocation starts no extra interpreter.
+#
+# This scope check runs BEFORE the space refusal below, so the more specific safety
+# reason wins: in a checkout whose own path contains a space (which is supported), its
+# parent directory is spaced too, and naming it must report "an ancestor of the
+# repository root", not only that Make cannot spell it. The value travels to Python as
+# one quoted argument, so a space in it cannot split it.
+ifneq ($(BUILD_ROOT),build)
+_BUILD_ROOT_SCOPE := $(strip $(shell "$(PYTHON)" -c "import sys; from pathlib import Path; repo = Path.cwd().resolve(); root = Path(sys.argv[1]).resolve(); print('the repository root or one of its ancestors' if repo.is_relative_to(root) else 'inside the checkout but outside its build/ tree' if root.is_relative_to(repo) and not root.is_relative_to(repo / 'build') else 'ok')" "$(BUILD_ROOT)"))
+ifneq ($(_BUILD_ROOT_SCOPE),ok)
+$(error BUILD_ROOT '$(BUILD_ROOT)' is $(or $(_BUILD_ROOT_SCOPE),uncheckable (the scope check printed nothing)); build outputs are created and clean-fixtures and clean-all delete beneath it, so it must be the checkout's build/ tree (the default), a directory beneath it, or a directory outside the checkout)
+endif
+endif
+ifneq ($(subst $(SPACE),,$(BUILD_ROOT)),$(BUILD_ROOT))
+$(error BUILD_ROOT '$(BUILD_ROOT)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a BUILD_ROOT without spaces (the default is build))
+endif
+
 # SDL3 dependency discovery and isolation (issue #331).
 # An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
 # found (MSYS2 UCRT64 on Windows, pkg-config/system elsewhere). One Python pass
 # writes every SDL3 variable to a fragment, so a parse costs one interpreter
 # start rather than one per variable. Info-only goals skip discovery entirely.
 SDL3_DIR ?=
-SDL3_MAKE_FRAGMENT := build/.sdl3-discovery.mk
+SDL3_MAKE_FRAGMENT := $(BUILD_ROOT)/.sdl3-discovery.mk
 ifeq ($(strip $(filter clean distclean clean-preview,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
 _SDL3_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
 ifneq ($(strip $(_SDL3_DISCOVERY)),)
@@ -249,7 +282,7 @@ POSIX_RUNTIME_LIBS := -lm
 endif
 LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS) $(POSIX_RUNTIME_LIBS)
 
-BUILD_DIR  ?= build/$(GAME_NAME)
+BUILD_DIR  ?= $(BUILD_ROOT)/$(GAME_NAME)
 # Refuse a BUILD_DIR GNU Make cannot represent, before any target name is derived
 # from it and before the parse-time mkdir below runs. Make splits a target or
 # prerequisite name on whitespace, so a BUILD_DIR containing a space silently
@@ -259,10 +292,11 @@ BUILD_DIR  ?= build/$(GAME_NAME)
 # the boundary instead of corrupting the tree.
 #
 # The repository ROOT may contain spaces: BUILD_DIR defaults to the relative
-# `build/$(GAME_NAME)`, which carries none; every parse-time $(shell) call
-# quotes "$(PYTHON)" so no command interpreter re-splits a spaced path; and the
-# -I/-L search paths are quoted before they reach the compiler or the profile
-# hasher, whose entries travel through the environment rather than argv (#667).
+# `$(BUILD_ROOT)/$(GAME_NAME)` (`build/<game>`), which carries none; every
+# parse-time $(shell) call quotes "$(PYTHON)" so no command interpreter re-splits
+# a spaced path; and the -I/-L search paths are quoted before they reach the
+# compiler or the profile hasher, whose entries travel through the environment
+# rather than argv (#667).
 # tools/title_codegen_plan.py already picks a Make-safe build root
 # (NK_BUILD_ROOT, then the 8.3 short name) for every route that accepts an
 # operator-chosen output directory (#296).
@@ -335,7 +369,7 @@ PSP_ORACLE_SMOKE_ADAPTER := $(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c
 # Public, source-owned end-to-end production smoke. The recipe emits its binary
 # inputs only under the ignored build tree, then deliberately re-enters the normal
 # two-phase `all` path so the test cannot substitute a reduced link harness.
-PRODUCTION_SMOKE_DIR       := build/production-smoke
+PRODUCTION_SMOKE_DIR       := $(BUILD_ROOT)/production-smoke
 PRODUCTION_SMOKE_FIXTURE   := $(PRODUCTION_SMOKE_DIR)/fixture
 PRODUCTION_SMOKE_GENERATOR := fixtures/production_smoke/generate.py
 PRODUCTION_SMOKE_PRX       := $(PRODUCTION_SMOKE_FIXTURE)/guest.prx
@@ -370,7 +404,7 @@ DISPLAY_SMOKE_DEMO_FRAMES := 1800
 # through the ordinary production dispatch() seam. The address must match
 # HELPER in fixtures/production_smoke/generate.py (it moved to 0x08804068 when
 # the sceImpose language round trip extended region A).
-PRODUCTION_SMOKE_GAP_DIR       := build/production-smoke-gap
+PRODUCTION_SMOKE_GAP_DIR       := $(BUILD_ROOT)/production-smoke-gap
 PRODUCTION_SMOKE_GAP_FIXTURE   := $(PRODUCTION_SMOKE_GAP_DIR)/fixture
 PRODUCTION_SMOKE_GAP_MAP       := $(PRODUCTION_SMOKE_GAP_DIR)/production_smoke_gap.map
 PRODUCTION_SMOKE_GAP_CODEGEN_ARGS := --omit-aot=0x08804068
@@ -1613,7 +1647,7 @@ $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h
 
 $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
@@ -1716,7 +1750,7 @@ DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR
 # to one guest instruction -- generated code does not maintain an architectural
 # PC in CpuState, so the trace is the only per-instruction attribution the AOT
 # lane has.
-COSIM_DIR        := build/cosim
+COSIM_DIR        := $(BUILD_ROOT)/cosim
 COSIM_FIXTURE    := $(COSIM_DIR)/fixture
 COSIM_TRACES     := $(COSIM_FIXTURE)/traces
 COSIM_GENERATOR  := fixtures/cosim/generate.py
@@ -1804,19 +1838,29 @@ compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUI
 clean:
 	$(PYTHON) -c "import shutil, sys; from pathlib import Path; p = Path(r'$(BUILD_DIR)'); [shutil.rmtree(p) if p.is_dir() else p.unlink()] if p.exists() else None"
 
+# The shared fixture trees clean-fixtures removes, all beneath BUILD_ROOT.
+CLEAN_FIXTURE_DIRS := $(PRODUCTION_SMOKE_DIR) $(PRODUCTION_SMOKE_GAP_DIR) $(COSIM_DIR) \
+	$(addprefix $(BUILD_ROOT)/,nakagawa_psp_oracle vfpu_oracle portable-core verify link)
+
+# The ephemeral build and run logs distclean and clean-all remove from LOG_DIR (the set
+# nk_manager.ps1 writes there). Every other file under LOG_DIR is preserved.
+EPHEMERAL_LOG_NAMES := build_out_recomp.log build_err_recomp.log recomp_err.log obj_err.log \
+	link_err.log stdout_run.log stderr_run.log
+REMOVE_EPHEMERAL_LOGS = $(PYTHON) -c "import sys; from pathlib import Path; [Path(sys.argv[1], name).unlink(missing_ok=True) for name in sys.argv[2:]]" "$(LOG_DIR)" $(EPHEMERAL_LOG_NAMES)
+
 clean-fixtures:
-	$(PYTHON) -c "import shutil, sys; from pathlib import Path; [shutil.rmtree(Path(d)) if Path(d).is_dir() else Path(d).unlink() for d in ('$(PRODUCTION_SMOKE_DIR)', '$(PRODUCTION_SMOKE_GAP_DIR)', '$(COSIM_DIR)', 'build/nakagawa_psp_oracle', 'build/vfpu_oracle', 'build/portable-core', 'build/verify', 'build/link') if Path(d).exists()]"
+	$(PYTHON) -c "import shutil, sys; from pathlib import Path; [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in map(Path, sys.argv[1:]) if p.exists()]" $(foreach d,$(CLEAN_FIXTURE_DIRS),"$(d)")
 
 tidy: distclean
 
 distclean:
 	@echo "Removing stale build artefacts (preserving .exe and .pdb for debugger)"
 	$(PYTHON) -c "from pathlib import Path; r=Path(r'$(BUILD_DIR)'); [p.unlink(missing_ok=True) for g in ('**/*.o','**/*.d','.*-profile-*','*_profile.json') for p in r.glob(g)] if r.exists() else None"
-	$(PYTHON) -c "from pathlib import Path; [Path(p).unlink(missing_ok=True) for p in ('logs/build_out_recomp.log', 'logs/build_err_recomp.log', 'logs/recomp_err.log', 'logs/obj_err.log', 'link_err.log', 'logs/stdout_run.log', 'logs/stderr_run.log')]"
+	$(REMOVE_EPHEMERAL_LOGS)
 
 clean-all: clean clean-fixtures
-	$(PYTHON) -c "import shutil, sys; from pathlib import Path; b = Path('build'); [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in b.iterdir()] if b.exists() else None"
-	$(PYTHON) -c "from pathlib import Path; [Path(p).unlink(missing_ok=True) for p in ('logs/build_out_recomp.log', 'logs/build_err_recomp.log', 'logs/recomp_err.log', 'logs/obj_err.log', 'link_err.log', 'logs/stdout_run.log', 'logs/stderr_run.log')]"
+	$(PYTHON) -c "import shutil, sys; from pathlib import Path; b = Path(sys.argv[1]); [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in b.iterdir()] if b.exists() else None" "$(BUILD_ROOT)"
+	$(REMOVE_EPHEMERAL_LOGS)
 
 # Preview-first workspace clean (issue #368): plans allowlisted output roots and
 # prints the exact file set. Deletion requires CONFIRM=1 (which passes --yes);
@@ -2537,7 +2581,7 @@ shader-repro-verify:
 player-state-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/player \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c src/player/setup_staging.c \
 		tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o build/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
@@ -2588,7 +2632,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_package_builder$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
-		tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_xb_parser$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_xb_parser$(EXE_EXT)
 	./build/test_xb_parser$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \

@@ -1660,15 +1660,19 @@ static void player_package_status_recover_lost_handoff(
                                  build_check_pending);
 }
 
+static bool copy_bounded_text(char *destination, size_t destination_size,
+                              const char *source) {
+    if (!destination || destination_size == 0 || !source) return false;
+    size_t length = strlen(source);
+    if (length >= destination_size) return false;
+    memcpy(destination, source, length + 1);
+    return true;
+}
+
 typedef struct {
     SDL_Thread *thread;
     SDL_Mutex *mutex;
-    char iso_path[NK_MAX_PATH];
-    char staging_root[4096];
-    char final_root[4096];
-    char loose_content_root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241];
-    const char *loose_content_roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS];
-    size_t loose_content_root_count;
+    PlayerStagePlan plan;
     bool cancel_requested;
     bool finished;
     bool completion_handled;
@@ -1677,89 +1681,31 @@ typedef struct {
     size_t files_extracted;
     size_t total_files;
     char current_file[4096];
-    char error_message[256];
+    char error_message[1024];
+    char prepared_root[NK_MAX_PATH];
+    PlayerStageTitleOutcome outcome;
     PlayerStageSummary summary;
 } PlayerStagingJob;
 
-static bool player_copy_staging_roots(
-    const GameRecord *game,
-    char storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241],
-    const char *roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS],
-    size_t *root_count
-) {
-    if (!game || !storage || !roots || !root_count) return false;
-    *root_count = 0;
-    if (game->is_experimental) {
-        char user_data_root[NK_MAX_PATH];
-        char profile_hash[65];
-        char error[256];
-        NkTitleEntrySnapshot snapshot = {0};
-        if (!nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root)) ||
-            !nk_title_manifest_read_experimental_profile(
-                user_data_root, game->disc_id, game->title_id,
-                game->selected_executable, &snapshot,
-                profile_hash, error, sizeof(error))) {
-            nk_title_catalog_snapshot_release(&snapshot);
-            return false;
-        }
-        const NkTitleEntry *entry = &snapshot.entry;
-        bool valid = entry->id && strcmp(entry->id, game->title_id) == 0 &&
-            entry->primary_disc_id &&
-            strcmp(entry->primary_disc_id, game->disc_id) == 0 &&
-            entry->loose_content_root_count >= 0 &&
-            entry->loose_content_root_count <= NK_TITLE_MAX_LOOSE_CONTENT_ROOTS &&
-            (entry->loose_content_root_count == 0 || entry->loose_content_roots);
-        for (int i = 0; valid && i < entry->loose_content_root_count; i++) {
-            const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
-            if (!binding->root || strlen(binding->root) >= sizeof(storage[i])) {
-                valid = false;
-                break;
-            }
-            snprintf(storage[i], sizeof(storage[i]), "%s", binding->root);
-            roots[i] = storage[i];
-            (*root_count)++;
-        }
-        nk_title_catalog_snapshot_release(&snapshot);
-        if (!valid) *root_count = 0;
-        return valid;
-    }
+#define PLAYER_STAGE_PROFILE_UNAVAILABLE \
+    "[STAGE_PROFILE_UNAVAILABLE] This game's title settings could not be read, " \
+    "so its files were not set up. Add the disc again from the library."
 
-    nk_title_catalog_lock();
-    const NkTitleEntry *by_disc = game->disc_id[0]
-        ? nk_title_catalog_find_by_disc_id_locked(game->disc_id) : NULL;
-    const NkTitleEntry *by_id = game->title_id[0]
-        ? nk_title_catalog_find_by_id_locked(game->title_id) : NULL;
-    if (!by_disc && !by_id) {
-        nk_title_catalog_unlock();
-        return true;
-    }
-    if (by_disc && game->title_id[0] &&
-        (!by_id || strcmp(by_disc->id, by_id->id) != 0)) {
-        nk_title_catalog_unlock();
-        return false;
-    }
-    if (!by_disc) {
-        nk_title_catalog_unlock();
-        return true;
-    }
-    const NkTitleEntry *entry = by_disc;
-    if (!entry || entry->loose_content_root_count < 0 ||
-        entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
-        (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) {
-        nk_title_catalog_unlock();
-        return false;
-    }
-    for (int i = 0; i < entry->loose_content_root_count; i++) {
-        const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
-        if (!binding->root || strlen(binding->root) >= sizeof(storage[i])) {
-            nk_title_catalog_unlock();
-            return false;
-        }
-        snprintf(storage[i], sizeof(storage[i]), "%s", binding->root);
-        roots[i] = storage[i];
-        (*root_count)++;
-    }
-    nk_title_catalog_unlock();
+/* Record a finished staging run on the inspected game. */
+static bool player_take_staged_title(PlayerApp *app, const char *prepared_root,
+                                     const PlayerStageSummary *summary) {
+    if (!copy_bounded_text(app->inspecting_game.prepared_root,
+                           sizeof(app->inspecting_game.prepared_root),
+                           prepared_root)) return false;
+    app->inspecting_game.assets_staged = true;
+    app->inspecting_game.extracted_asset_count = summary->extracted_asset_count;
+    app->inspecting_game.extracted_audio_count = summary->extracted_audio_count;
+    app->inspecting_game.extracted_visual_count = summary->extracted_visual_count;
+    app->inspecting_game.extracted_layout_count = summary->extracted_layout_count;
+    app->inspecting_game.is_prepared = false;
+    app->inspecting_game.status = NK_STATUS_SUPPORTED_PREPARATION;
+    copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
+                      prepared_root);
     return true;
 }
 
@@ -1809,124 +1755,24 @@ static int SDLCALL staging_thread_main(void *userdata) {
     callbacks.on_progress = staging_progress;
     callbacks.userdata = job;
 
-    char error_message[256];
-    NkResult result = player_stage_game_with_summary(job->iso_path,
-                                                     job->staging_root,
-                                                     job->loose_content_roots,
-                                                     job->loose_content_root_count,
-                                                     &callbacks, &job->summary,
-                                                     error_message,
-                                                     sizeof(error_message));
+    char error_message[sizeof(job->error_message)];
+    char prepared_root[sizeof(job->prepared_root)];
+    PlayerStageSummary summary;
+    PlayerStageTitleOutcome outcome = PLAYER_STAGE_TITLE_STAGED;
+    NkResult result = player_stage_title(&job->plan.request, &callbacks, &summary,
+                                         &outcome, prepared_root,
+                                         sizeof(prepared_root), error_message,
+                                         sizeof(error_message));
     SDL_LockMutex(job->mutex);
     job->result = result;
-    snprintf(job->error_message, sizeof(job->error_message), "%s",
-             error_message[0] ? error_message : "");
+    job->summary = summary;
+    job->outcome = outcome;
+    snprintf(job->prepared_root, sizeof(job->prepared_root), "%s", prepared_root);
+    snprintf(job->error_message, sizeof(job->error_message), "%s", error_message);
     job->finished = true;
     SDL_UnlockMutex(job->mutex);
     staging_push_event(job, PLAYER_STAGING_EVENT_COMPLETE);
     return result == NK_OK ? 0 : 1;
-}
-
-static bool valid_disc_id_for_staging(const char *disc_id) {
-    if (!disc_id || !disc_id[0]) return false;
-    for (const unsigned char *p = (const unsigned char *)disc_id; *p; p++) {
-        if (!(isalnum(*p) || *p == '_' || *p == '-')) return false;
-    }
-    return true;
-}
-
-static bool staging_paths_for_disc(const char *disc_id, char *staging_root,
-                                   size_t staging_size, char *final_root,
-                                   size_t final_size) {
-    if (!valid_disc_id_for_staging(disc_id) || !staging_root || !final_root ||
-        staging_size == 0 || final_size == 0) return false;
-    char games_root[4096];
-    int games_written;
-    char app_data[NK_MAX_PATH];
-    if (!nk_platform_get_app_data_dir(app_data, sizeof(app_data))) return false;
-    games_written = snprintf(games_root, sizeof(games_root), "%s%cgames",
-                                 app_data, nk_platform_path_separator());
-    if (games_written < 0 || (size_t)games_written >= sizeof(games_root)) return false;
-    int staging_written = snprintf(staging_root, staging_size, "%s%c.staging_%s",
-                                   games_root, nk_platform_path_separator(), disc_id);
-    int final_written = snprintf(final_root, final_size, "%s%c%s", games_root,
-                                 nk_platform_path_separator(), disc_id);
-    return staging_written >= 0 && final_written >= 0 &&
-           (size_t)staging_written < staging_size && (size_t)final_written < final_size;
-}
-
-static bool copy_bounded_text(char *destination, size_t destination_size,
-                              const char *source) {
-    if (!destination || destination_size == 0 || !source) return false;
-    size_t length = strlen(source);
-    if (length >= destination_size) return false;
-    memcpy(destination, source, length + 1);
-    return true;
-}
-
-static bool promote_staging_root(const char *staging_root, const char *final_root) {
-    if (!staging_root || !final_root || nk_platform_dir_exists(final_root)) return false;
-#if defined(_WIN32) || defined(_WIN64)
-    WCHAR w_staging[32768];
-    WCHAR w_final[32768];
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, staging_root, -1, w_staging,
-                            (int)(sizeof(w_staging) / sizeof(w_staging[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, final_root, -1, w_final,
-                            (int)(sizeof(w_final) / sizeof(w_final[0]))) <= 0) return false;
-    return MoveFileExW(w_staging, w_final, MOVEFILE_WRITE_THROUGH) != 0;
-#else
-    return rename(staging_root, final_root) == 0;
-#endif
-}
-
-static bool staged_payload_is_complete(const char *root,
-                                       const char *const *loose_content_roots,
-                                       size_t loose_content_root_count) {
-    if (!root || !root[0]) return false;
-    char eboot_path[4096];
-    int eboot_written = snprintf(eboot_path, sizeof(eboot_path), "%s%cEBOOT.BIN",
-                                 root, nk_platform_path_separator());
-    if (eboot_written <= 0 || (size_t)eboot_written >= sizeof(eboot_path) ||
-        !nk_platform_file_exists(eboot_path) ||
-        loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
-        (loose_content_root_count != 0u && !loose_content_roots)) return false;
-    for (size_t i = 0; i < loose_content_root_count; i++) {
-        if (strcmp(loose_content_roots[i], ".") == 0) continue;
-        char content_root[4096];
-        int written = snprintf(content_root, sizeof(content_root), "%s%c%s", root,
-                               nk_platform_path_separator(), loose_content_roots[i]);
-        if (written <= 0 || (size_t)written >= sizeof(content_root)) return false;
-        for (char *p = content_root + strlen(root) + 1u; *p; p++) {
-            if (*p == '/' || *p == '\\') *p = nk_platform_path_separator();
-        }
-        if (!nk_platform_dir_exists(content_root)) return false;
-    }
-    return true;
-}
-
-/* A completed promotion can outlive the library write if the user-data
- * filesystem is full or temporarily unavailable. Reuse only the exact root
- * derived from the inspected disc ID and only when the executable and all
- * manifest-configured staging roots are present; never replace it with a fresh tree. */
-static bool adopt_existing_staged_root(PlayerApp *app, const char *final_root) {
-    if (!app || !final_root) return false;
-    char root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
-    const char *loose_content_roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS] = {0};
-    size_t loose_content_root_count = 0;
-    if (!player_copy_staging_roots(&app->inspecting_game, root_storage,
-                                   loose_content_roots,
-                                   &loose_content_root_count) ||
-        !staged_payload_is_complete(final_root, loose_content_roots,
-                                    loose_content_root_count) ||
-        !copy_bounded_text(app->inspecting_game.prepared_root,
-                           sizeof(app->inspecting_game.prepared_root),
-                           final_root)) return false;
-    app->inspecting_game.assets_staged = true;
-    app->inspecting_game.is_prepared = false;
-    app->inspecting_game.status = NK_STATUS_SUPPORTED_PREPARATION;
-    copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
-                      final_root);
-    return player_app_register_staged_game(app);
 }
 
 static void request_staging_cancel(PlayerStagingJob *job) {
@@ -1950,49 +1796,10 @@ static bool start_staging_job(PlayerApp *app, PlayerStagingJob **job_slot) {
                                             "Could not allocate the staging worker.");
         return false;
     }
-    if (!player_copy_staging_roots(&app->inspecting_game,
-                                   job->loose_content_root_storage,
-                                   job->loose_content_roots,
-                                   &job->loose_content_root_count)) {
+    if (!player_app_build_stage_plan(&app->inspecting_game, &job->plan)) {
         free(job);
-        player_app_wizard_finish_extraction(
-            app, NK_ERROR_UNSUPPORTED_TITLE,
-            "The selected title's loose-content root configuration could not be resolved.");
-        return false;
-    }
-    if (!staging_paths_for_disc(app->inspecting_game.disc_id, job->staging_root,
-                                sizeof(job->staging_root), job->final_root,
-                                sizeof(job->final_root))) {
-        free(job);
-        player_app_wizard_finish_extraction(app, NK_ERROR_INVALID_XB,
-                                            "The inspected disc ID cannot be used for a safe staging directory.");
-        return false;
-    }
-    if (!copy_bounded_text(job->iso_path, sizeof(job->iso_path), app->inspecting_game.iso_path) ||
-        !copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
-                           job->staging_root) ||
-        strlen(job->final_root) >= sizeof(app->inspecting_game.prepared_root)) {
-        free(job);
-        player_app_wizard_finish_extraction(app, NK_ERROR_IO,
-                                            "The local application data path is too long for the player record.");
-        return false;
-    }
-    if (nk_platform_dir_exists(job->final_root)) {
-        bool complete = staged_payload_is_complete(job->final_root,
-                                                   job->loose_content_roots,
-                                                   job->loose_content_root_count);
-        if (complete && adopt_existing_staged_root(app, job->final_root)) {
-            free(job);
-            player_app_wizard_finish_extraction(
-                app, NK_OK, "Recovered the previously promoted staging tree.");
-            return true;
-        }
-        free(job);
-        player_app_wizard_finish_extraction(
-            app, NK_ERROR_IO,
-            complete
-                ? "The existing staged title could not be saved to the library."
-                : "An incomplete staged title already exists; it was left untouched.");
+        player_app_wizard_finish_extraction(app, NK_ERROR_UNSUPPORTED_TITLE,
+                                            PLAYER_STAGE_PROFILE_UNAVAILABLE);
         return false;
     }
     job->mutex = SDL_CreateMutex();
@@ -2031,7 +1838,7 @@ static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
     if (!app || !job || !job->mutex || job->completion_handled) return;
     SDL_LockMutex(job->mutex);
     NkResult result = job->result;
-    char error_message[256];
+    char error_message[sizeof(job->error_message)];
     snprintf(error_message, sizeof(error_message), "%s", job->error_message);
     bool finished = job->finished;
     SDL_UnlockMutex(job->mutex);
@@ -2040,38 +1847,19 @@ static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
         SDL_WaitThread(job->thread, NULL);
         job->thread = NULL;
     }
-    if (result == NK_OK && !promote_staging_root(job->staging_root, job->final_root)) {
+    if (result == NK_OK &&
+        !player_take_staged_title(app, job->prepared_root, &job->summary)) {
         result = NK_ERROR_IO;
         snprintf(error_message, sizeof(error_message),
-                 "Asset staging completed, but atomic promotion to the game directory failed.");
-        player_stage_discard(job->staging_root);
+                 "The game's folder path is too long for the library record.");
     }
-    if (result == NK_OK) {
-        if (!copy_bounded_text(app->inspecting_game.prepared_root,
-                               sizeof(app->inspecting_game.prepared_root),
-                               job->final_root)) {
-            result = NK_ERROR_IO;
-            snprintf(error_message, sizeof(error_message),
-                     "The promoted game path is too long for the player record.");
-        }
-    }
-    if (result == NK_OK) {
-        app->inspecting_game.assets_staged = true;
-        app->inspecting_game.extracted_asset_count = job->summary.extracted_asset_count;
-        app->inspecting_game.extracted_audio_count = job->summary.extracted_audio_count;
-        app->inspecting_game.extracted_visual_count = job->summary.extracted_visual_count;
-        app->inspecting_game.extracted_layout_count = job->summary.extracted_layout_count;
-        /* Package status is refreshed by the package worker after this result
-           is returned to the UI thread. */
-        app->inspecting_game.is_prepared = false;
-        app->inspecting_game.status = NK_STATUS_SUPPORTED_PREPARATION;
-        copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
-                          job->final_root);
-        if (!player_app_register_staged_game(app)) {
-            result = NK_ERROR_IO;
-            snprintf(error_message, sizeof(error_message),
-                     "Assets were staged, but the title could not be saved to the library.");
-        }
+    /* Package status is refreshed by the package worker after this result is
+       returned to the UI thread. */
+    if (result == NK_OK && !player_app_register_staged_game(app)) {
+        result = NK_ERROR_IO;
+        snprintf(error_message, sizeof(error_message),
+                 "The game's files are in place, but the game could not be saved to the "
+                 "library. Check that Nakagawa's data folder is writable, then add the disc again.");
     }
     player_app_wizard_finish_extraction(app, result,
                                         error_message[0] ? error_message : NULL);
@@ -2091,118 +1879,101 @@ static void destroy_staging_job(PlayerStagingJob **job_slot) {
     *job_slot = NULL;
 }
 
-/* Headless verification path for `--iso=<path> --stage-only`. It uses the
- * same native staging and promotion functions as the SDL worker, then the
- * same PlayerApp registration path. No window or timer is needed for this
- * deterministic CLI contract. */
-static int stage_iso_synchronously(PlayerApp *app) {
+/* Console progress for the synchronous routes: one line per whole-percent
+ * step, so a long disc shows it is moving without flooding the log. */
+static void staging_console_progress(const char *current_path, int percent,
+                                     size_t files_extracted, size_t total_files,
+                                     void *userdata) {
+    (void)current_path;
+    int *last_percent = (int *)userdata;
+    if (!last_percent || percent <= *last_percent) return;
+    *last_percent = percent;
+    printf("[PLAYER] STAGING_PROGRESS percent=%d files=%zu/%zu\n", percent,
+           files_extracted, total_files);
+    fflush(stdout);
+}
+
+/* Stage the inspected game synchronously through the same transaction the
+ * wizard's worker runs, then save it to the library the same way. Used by
+ * `--stage-only` and by `--launch-now` when the game's files are not in place
+ * yet. Returns 0 on success or the process exit code to report. */
+static int player_stage_inspected_title(PlayerApp *app) {
     if (!app || !app->inspecting_game.iso_path[0] ||
         !app->inspecting_game.disc_id[0]) {
-        fprintf(stderr, "[PLAYER] --stage-only requires a supported --iso=<path>.\n");
+        fprintf(stderr, "[PLAYER] Staging needs a supported --iso=<path>.\n");
         return 2;
     }
-
-    char staging_root[4096];
-    char final_root[4096];
-    char root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
-    const char *loose_content_roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS] = {0};
-    size_t loose_content_root_count = 0;
-    if (!player_copy_staging_roots(&app->inspecting_game, root_storage,
-                                   loose_content_roots,
-                                   &loose_content_root_count)) {
-        fprintf(stderr, "[PLAYER] The selected title's loose-content root configuration could not be resolved.\n");
+    PlayerStagePlan *plan = (PlayerStagePlan *)calloc(1, sizeof(*plan));
+    if (!plan) {
+        fprintf(stderr, "[PLAYER] Not enough memory to set up this game's files.\n");
         return 3;
     }
-    if (!staging_paths_for_disc(app->inspecting_game.disc_id,
-                                staging_root, sizeof(staging_root),
-                                final_root, sizeof(final_root))) {
-        fprintf(stderr, "[PLAYER] Could not derive a safe staging path for %s.\n",
-                app->inspecting_game.disc_id);
+    if (!player_app_build_stage_plan(&app->inspecting_game, plan)) {
+        free(plan);
+        player_app_wizard_finish_extraction(app, NK_ERROR_UNSUPPORTED_TITLE,
+                                            PLAYER_STAGE_PROFILE_UNAVAILABLE);
+        fprintf(stderr, "[PLAYER] %s\n", PLAYER_STAGE_PROFILE_UNAVAILABLE);
+        printf("[PLAYER] STAGING_RESULT status=FAIL disc_id=%s\n",
+               app->inspecting_game.disc_id);
         return 3;
     }
 
-    if (nk_platform_dir_exists(final_root)) {
-        if (adopt_existing_staged_root(app, final_root)) {
-            char data_reason[1024] = "";
-            NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
-                app, &app->inspecting_game, NULL, 0, data_reason,
-                sizeof(data_reason));
-            if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
-                data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
-                fprintf(stderr, "[PLAYER] %s\n", data_reason[0] ? data_reason :
-                        "This game's data folder could not be checked.");
-                printf("[PLAYER] STAGING_RESULT status=INCOMPLETE recovered=1 "
-                       "disc_id=%s assets=%u runtime=not-ready data_root=missing\n",
-                       app->inspecting_game.disc_id,
-                       (unsigned)app->inspecting_game.extracted_asset_count);
-                return 8;
-            }
-            player_app_wizard_finish_extraction(
-                app, NK_OK, "Recovered the previously promoted staging tree.");
-            printf("[PLAYER] STAGING_RESULT status=PASS recovered=1 disc_id=%s\n",
-                   app->inspecting_game.disc_id);
-            return 0;
-        }
-        fprintf(stderr, "[PLAYER] --stage-only found an existing staged title that could not be adopted.\n");
-        return 7;
-    }
-
+    printf("[PLAYER] Setting up the game's files for %s. A large disc can take a few minutes.\n",
+           app->inspecting_game.disc_id);
+    fflush(stdout);
+    int last_percent = -1;
+    PlayerStageCallbacks callbacks = { NULL, staging_console_progress, &last_percent };
     PlayerStageSummary summary;
-    char error_message[256];
-    NkResult result = player_stage_game_with_summary(
-        app->inspecting_game.iso_path, staging_root, loose_content_roots,
-        loose_content_root_count, NULL, &summary,
-        error_message, sizeof(error_message));
+    PlayerStageTitleOutcome outcome = PLAYER_STAGE_TITLE_STAGED;
+    char prepared_root[NK_MAX_PATH];
+    char message[1024];
+    NkResult result = player_stage_title(&plan->request, &callbacks, &summary,
+                                         &outcome, prepared_root, sizeof(prepared_root),
+                                         message, sizeof(message));
+    free(plan);
     if (result != NK_OK) {
-        fprintf(stderr, "[PLAYER] --stage-only failed (%d): %s\n", (int)result,
-                error_message[0] ? error_message : "native staging failed");
-        return 4;
+        player_app_wizard_finish_extraction(app, result, message);
+        fprintf(stderr, "[PLAYER] %s\n", message);
+        printf("[PLAYER] STAGING_RESULT status=FAIL disc_id=%s result=%d\n",
+               app->inspecting_game.disc_id, (int)result);
+        /* 9: another run holds this title's staging, or a file takes its folder
+           name; 4: staging itself failed. */
+        return result == NK_ERROR_ALREADY_EXISTS ? 9 : 4;
     }
-    if (!promote_staging_root(staging_root, final_root)) {
-        player_stage_discard(staging_root);
-        fprintf(stderr, "[PLAYER] --stage-only could not promote the staging tree.\n");
-        return 5;
-    }
-    if (!copy_bounded_text(app->inspecting_game.prepared_root,
-                           sizeof(app->inspecting_game.prepared_root),
-                           final_root)) {
-        fprintf(stderr, "[PLAYER] --stage-only promoted a path too long for the library record.\n");
+    if (!player_take_staged_title(app, prepared_root, &summary)) {
+        fprintf(stderr, "[PLAYER] The game's folder path is too long for the library record.\n");
         return 6;
     }
 
-    app->inspecting_game.assets_staged = true;
-    app->inspecting_game.extracted_asset_count = summary.extracted_asset_count;
-    app->inspecting_game.extracted_audio_count = summary.extracted_audio_count;
-    app->inspecting_game.extracted_visual_count = summary.extracted_visual_count;
-    app->inspecting_game.extracted_layout_count = summary.extracted_layout_count;
     char data_reason[1024] = "";
     NkLaunchDataRootStatus data_status = player_app_game_data_root_status(
         app, &app->inspecting_game, NULL, 0, data_reason, sizeof(data_reason));
+    bool data_ready = data_status == NK_LAUNCH_DATA_ROOT_READY ||
+                      data_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED;
     app->inspecting_game.is_prepared =
+        data_ready &&
         player_app_validate_runtime_package(app, &app->inspecting_game,
-                                            NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK &&
-        (data_status == NK_LAUNCH_DATA_ROOT_READY ||
-         data_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
+                                            NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK;
     app->inspecting_game.status = app->inspecting_game.is_prepared
         ? NK_STATUS_PREPARED : NK_STATUS_SUPPORTED_PREPARATION;
-    copy_bounded_text(app->wizard.staging_root, sizeof(app->wizard.staging_root),
-                      final_root);
 
     if (!player_app_register_staged_game(app)) {
         player_app_wizard_finish_extraction(
             app, NK_ERROR_IO,
-            "Assets were staged, but the title could not be saved to the library.");
-        fprintf(stderr, "[PLAYER] --stage-only could not save the staged title.\n");
+            "The game's files are in place, but the game could not be saved to the library.");
+        fprintf(stderr, "[PLAYER] The game's files are in place, but the game could not be "
+                "saved to the library. Check that Nakagawa's data folder is writable, then "
+                "run this again; the files will be reused.\n");
         return 7;
     }
-    if (data_status != NK_LAUNCH_DATA_ROOT_READY &&
-        data_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+    printf("[PLAYER] STAGED_ROOT %s\n", prepared_root);
+    if (!data_ready) {
         fprintf(stderr, "[PLAYER] %s\n", data_reason[0] ? data_reason :
                 "This game's data folder could not be checked.");
         printf("[PLAYER] STAGING_RESULT status=INCOMPLETE view=PLAYER_VIEW_READY_LIBRARY "
-               "disc_id=%s assets=%u audio=%u visual=%u layout=%u "
+               "disc_id=%s reused=%d assets=%u audio=%u visual=%u layout=%u "
                "runtime=not-ready data_root=missing\n",
-               app->inspecting_game.disc_id,
+               app->inspecting_game.disc_id, outcome == PLAYER_STAGE_TITLE_REUSED,
                (unsigned)summary.extracted_asset_count,
                (unsigned)summary.extracted_audio_count,
                (unsigned)summary.extracted_visual_count,
@@ -2211,8 +1982,8 @@ static int stage_iso_synchronously(PlayerApp *app) {
     }
     player_app_wizard_finish_extraction(app, NK_OK, NULL);
     printf("[PLAYER] STAGING_RESULT status=PASS view=PLAYER_VIEW_READY_LIBRARY "
-           "disc_id=%s assets=%u audio=%u visual=%u layout=%u runtime=%s\n",
-           app->inspecting_game.disc_id,
+           "disc_id=%s reused=%d assets=%u audio=%u visual=%u layout=%u runtime=%s\n",
+           app->inspecting_game.disc_id, outcome == PLAYER_STAGE_TITLE_REUSED,
            (unsigned)summary.extracted_asset_count,
            (unsigned)summary.extracted_audio_count,
            (unsigned)summary.extracted_visual_count,
@@ -2221,9 +1992,92 @@ static int stage_iso_synchronously(PlayerApp *app) {
     return 0;
 }
 
+/* --launch-now stands in for PLAY NOW, so a disc whose files are not in place
+ * yet is set up first through the same staging transaction. A disc already in
+ * the library keeps its staged files: re-adding it merges the earlier record,
+ * and a complete staged tree is reused rather than extracted again. */
+static int player_stage_for_launch_now(PlayerApp *app) {
+    int existing = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    if (existing >= 0) {
+        (void)player_merge_readded_game(&app->games[existing], &app->inspecting_game);
+    }
+    NkLaunchDataRootStatus status = player_app_game_data_root_status(
+        app, &app->inspecting_game, NULL, 0, NULL, 0);
+    if (status != NK_LAUNCH_DATA_ROOT_MISSING) return 0;
+    return player_stage_inspected_title(app);
+}
+
 /* Bound on one headless --launch-index run. A guest that reaches its own exit
    ends the run sooner; this only caps a run that would otherwise wait forever. */
 #define NK_HEADLESS_LAUNCH_TIMEOUT_MS 120000
+
+/* PLAY for one library entry from the command line, shared by --launch-index
+ * and `--launch-now --headless-launch`: the launcher's own player_app_launch_game,
+ * then a wait for the child. A headless run is bounded by the timeout above. */
+static int player_run_command_line_launch(PlayerApp *app, int game_index,
+                                          const char *route) {
+    if (!player_app_launch_game(app, game_index)) {
+        const char *reason = app->launch_session.last_error[0]
+            ? app->launch_session.last_error
+            : app->last_error.boundary_text[0] ? app->last_error.boundary_text
+                                               : app->last_error.message;
+        fprintf(stderr, "[PLAYER] %s failed: %s\n", route, reason);
+        return 4;
+    }
+    printf("[PLAYER] Launch argv contains --gui: %s\n",
+           app->launch_session.argv_has_gui ? "yes" : "no");
+    if (!app->launch_session.argv_has_gui && !app->launch_headless) {
+        /* A windowed launch that lost its --gui request is a failure. */
+        player_app_stop_game(app);
+        return 5;
+    }
+    if (!app->launch_session.argv_has_gui) {
+        /* Headless launch: the same player-owned session, spawned without a
+           window so a host with no display can still run it. The bound is
+           the whole check -- a run that has not ended inside it is reported
+           as a timeout with a distinct status, never as a launch. */
+        int headless_code = nk_launch_wait(&app->launch_session,
+                                           NK_HEADLESS_LAUNCH_TIMEOUT_MS);
+        app->is_game_running = false;
+        if (headless_code < 0) {
+            fprintf(stderr,
+                    "[PLAYER] Headless launch did not finish within %d ms; stopping the child.\n",
+                    NK_HEADLESS_LAUNCH_TIMEOUT_MS);
+            player_app_stop_game(app);
+            return 7;
+        }
+        printf("[PLAYER] Headless launch child exited with code %d.\n", headless_code);
+        return headless_code;
+    }
+    int child_code = nk_launch_wait(&app->launch_session, -1);
+    app->is_game_running = false;
+    printf("[PLAYER] %s child exited with code %d.\n", route, child_code);
+    return child_code < 0 ? 6 : child_code;
+}
+
+/* --user-data-root=<folder> makes this process keep its library, title
+ * manifests, packages and staged games in <folder>, the same meaning as
+ * nk_cli's --user-data-root. It must apply before the library loads. */
+static bool player_apply_user_data_root(int argc, char *argv[]) {
+    static const char prefix[] = "--user-data-root=";
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], prefix, sizeof(prefix) - 1u) != 0) continue;
+        const char *requested = argv[i] + sizeof(prefix) - 1u;
+        char absolute[NK_MAX_PATH];
+        if (!requested[0] ||
+            !nk_platform_mkdir_p_private(requested) ||
+            !nk_platform_absolute_path(requested, absolute, sizeof(absolute)) ||
+            strlen(absolute) + 64u >= NK_MAX_PATH ||
+            !nk_platform_set_app_data_dir_override(absolute)) {
+            fprintf(stderr,
+                    "[PLAYER] The data folder given with --user-data-root could not be "
+                    "used: '%s'. Choose a short folder path you can write to and try again.\n",
+                    requested);
+            return false;
+        }
+    }
+    return true;
+}
 
 static bool player_prerequisite_data_root(const PlayerApp *app,
                                           char *out, size_t out_size) {
@@ -2435,6 +2289,7 @@ int main(int argc, char *argv[]) {
     argv = u8_argv;
 #endif
 
+    if (!player_apply_user_data_root(argc, argv)) return 2;
     player_report_legacy_data_root();
 
     PlayerApp app;
@@ -2488,9 +2343,10 @@ int main(int argc, char *argv[]) {
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: nakagawa_player [--iso=<path>] [--stage|--stage-only] "
+            printf("Usage: nakagawa_player [--user-data-root=<folder>] "
+                   "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
-                   "[--launch-index=N [--headless-launch]]\n");
+                   "[--launch-index=N] [--headless-launch]\n");
             return 0;
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
@@ -2533,6 +2389,8 @@ int main(int argc, char *argv[]) {
             manifest_overlay_path = argv[i] + 19;
         } else if (strncmp(argv[i], "--iso=", 6) == 0) {
             initial_iso_path = argv[i] + 6;
+        } else if (strncmp(argv[i], "--user-data-root=", 17) == 0) {
+            /* Applied by player_apply_user_data_root before the library loaded. */
         } else if (strncmp(argv[i], "--runtime-root=", 15) == 0) {
             runtime_root_path = argv[i] + 15;
         } else if (strncmp(argv[i], "--runtime-bin=", 14) == 0) {
@@ -2678,15 +2536,16 @@ int main(int argc, char *argv[]) {
              * build; the entry keeps the inspection-reported status. */
 
             if (stage_only && !res.is_supported) {
-                fprintf(stderr, "[PLAYER] --stage-only refuses unsupported disc ID %s.\n",
+                fprintf(stderr, "[PLAYER] Disc %s is not in Nakagawa's title list yet, so "
+                        "its files cannot be set up. Nothing was changed.\n",
                         app.inspecting_game.disc_id);
                 return 3;
             }
 
             if (res.is_supported && stage_initial_iso) {
                 /* --stage enters the same wizard state used by the file picker,
-                   while --stage-only drives the same native worker synchronously
-                   for CI/headless verification. */
+                   while --stage-only runs the same staging transaction
+                   synchronously for the command line and CI. */
                 player_app_start_setup_wizard(&app);
                 app.wizard.iso_selected = true;
                 app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
@@ -2694,12 +2553,9 @@ int main(int argc, char *argv[]) {
                                                           res.param_sfo_parsed,
                                                           &res.executables);
                 if (stage_only) {
-                    return stage_iso_synchronously(&app);
+                    return player_stage_inspected_title(&app);
                 }
-                app.wizard.is_extracting = true;
-                app.wizard.extraction_requested = true;
-                snprintf(app.wizard.status_message, sizeof(app.wizard.status_message),
-                         "Extracting game assets into local application data...");
+                player_app_wizard_begin_extraction(&app);
             } else {
             /* Catalogued titles and structurally identified experimental discs
                are offered on their card. The card's ADD TO LIBRARY stores them,
@@ -2711,7 +2567,9 @@ int main(int argc, char *argv[]) {
             bool should_store = res.is_supported || app.inspecting_game.is_experimental;
             bool add_before_launch = should_store && launch_now &&
                                      !app.inspecting_game.is_experimental;
-            bool stored = add_before_launch && player_app_add_game(&app, &app.inspecting_game);
+            int staging_exit = add_before_launch ? player_stage_for_launch_now(&app) : 0;
+            bool stored = add_before_launch && staging_exit == 0 &&
+                          player_app_add_game(&app, &app.inspecting_game);
 
             if (launch_now && app.inspecting_game.is_experimental) {
                 const char *message =
@@ -2722,9 +2580,18 @@ int main(int argc, char *argv[]) {
                 player_app_set_error(&app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
                                      "Experimental Title Cannot Launch Yet", message,
                                      "Review Compatibility", VIEW_EXPERIMENTAL_TITLE);
+            } else if (add_before_launch && staging_exit != 0) {
+                /* The staging transaction already explained itself on stderr. */
+                if (app.launch_headless) return staging_exit;
+                player_app_set_error(&app, "GAME_FILES_NOT_READY", "Game Files Not Set Up",
+                                     app.wizard.extraction_error[0]
+                                         ? app.wizard.extraction_error
+                                         : "This game's files could not be set up.",
+                                     "Return to Library", VIEW_LIBRARY);
             } else if (add_before_launch && !stored) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
                         app.inspecting_game.disc_id);
+                if (app.launch_headless) return 2;
                 player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
                                      "The title could not be stored. The library may be full, "
                                      "or the user data directory is not writable.",
@@ -2733,65 +2600,38 @@ int main(int argc, char *argv[]) {
                 player_app_set_view(&app, app.inspecting_game.is_experimental
                     ? VIEW_EXPERIMENTAL_TITLE : VIEW_SUPPORTED_TITLE);
                 if (stored) {
-                    printf("[PLAYER] Launching supported title now...\n");
-                    const char *target_root = app.runtime_root[0] ? app.runtime_root : NULL;
+                    printf("[PLAYER] Launching %s now...\n", app.inspecting_game.disc_id);
                     /* nk_library_add_or_update updates an existing record in
                        place rather than appending it, so in a library holding
                        several games the last entry is a DIFFERENT title
-                       whenever this disc was already known. Taking
-                       app.game_count - 1 therefore prepared and launched some
-                       other game while the console said it was launching the
-                       requested ISO. Find the entry by its inspected disc ID. */
+                       whenever this disc was already known. Find the entry by
+                       its inspected disc ID. */
                     int game_idx = player_app_find_game_by_disc_id(&app, app.inspecting_game.disc_id);
-                    NkResult lres;
                     if (game_idx < 0) {
-                        memset(&app.launch_session, 0, sizeof(app.launch_session));
-                        snprintf(app.launch_session.last_error, sizeof(app.launch_session.last_error),
-                                 "Inspected disc %s is not present in the library after adding it.",
-                                 app.inspecting_game.disc_id);
-                        lres = NK_ERROR_FILE_NOT_FOUND;
-                    } else {
-                        lres = nk_launch_prepare_session(&app.launch_session, &app.games[game_idx], target_root);
-                    }
-                    /* --launch-now stands in for pressing PLAY NOW. The
-                       launcher's default is headless for test harnesses, so
-                       this inline path must explicitly request the window too. */
-                    app.launch_session.config.gui_mode = true;
-                    if (lres == NK_OK) {
-                        printf("[PLAYER] Launch session prepared successfully!\n");
-                        printf("[PLAYER] Executable: %s\n", app.launch_session.executable_path);
-                        printf("[PLAYER] ISO: %s\n", app.launch_session.iso_path);
-                        NkResult sres = nk_launch_start(&app.launch_session);
-                        if (sres == NK_OK) {
-                            printf("[PLAYER] Child process started! PID: %d\n", app.launch_session.process.process_id);
-                            app.is_game_running = true;
-                            app.launch_time_ms = SDL_GetTicks();
-                            /* The disc is in the library now, so the card's
-                               ADD TO LIBRARY would be stale: show the library,
-                               as the wizard's LAUNCH GAME NOW does. */
-                            player_app_set_view(&app, VIEW_LIBRARY);
-                        } else {
-                            fprintf(stderr, "[PLAYER] Failed to start runtime: %s\n", app.launch_session.last_error);
-                            player_app_set_error(&app, "PROCESS_SPAWN_FAILED", "Failed to Spawn Process",
-                                                 app.launch_session.last_error[0] ? app.launch_session.last_error : "CreateProcess failed.",
-                                                 "Return to Library", VIEW_LIBRARY);
-                        }
-                    } else {
-                        fprintf(stderr, "[PLAYER] Failed to prepare launch session: %s\n", app.launch_session.last_error);
-                        const char *err_code = "RUNTIME_NOT_FOUND";
-                        const char *err_title = "Recompiled Binary Not Available";
-                        if (lres == NK_ERROR_INVALID_EXECUTABLE) {
-                            err_code = "STAGED_EXECUTABLE_INVALID";
-                            err_title = "Staged Executable Is Invalid";
-                        } else if (strstr(app.launch_session.last_error, "manifest") != NULL ||
-                            strstr(app.launch_session.last_error, "profile") != NULL ||
-                            strstr(app.launch_session.last_error, "catalog") != NULL) {
-                            err_code = "MANIFEST_MISMATCH";
-                            err_title = "Title Manifest Mismatch";
-                        }
-                        player_app_set_error(&app, err_code, err_title,
-                                             app.launch_session.last_error[0] ? app.launch_session.last_error : "Launch preparation failed.",
+                        fprintf(stderr, "[PLAYER] Disc %s is not in the library after adding it.\n",
+                                app.inspecting_game.disc_id);
+                        if (app.launch_headless) return 4;
+                        player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                             "The title could not be found in the library after "
+                                             "adding it. Add the disc again from the library.",
                                              "Return to Library", VIEW_LIBRARY);
+                    } else if (app.launch_headless) {
+                        /* --launch-now stands in for pressing PLAY NOW: the
+                           same launch function and the same bounded wait as
+                           --launch-index. */
+                        return player_run_command_line_launch(&app, game_idx, "--launch-now");
+                    } else if (player_app_launch_game(&app, game_idx)) {
+                        app.launch_time_ms = SDL_GetTicks();
+                        /* The disc is in the library now, so the card's
+                           ADD TO LIBRARY would be stale: show the library,
+                           as the wizard's LAUNCH GAME NOW does. */
+                        player_app_set_view(&app, VIEW_LIBRARY);
+                    } else {
+                        fprintf(stderr, "[PLAYER] --launch-now could not start %s: %s\n",
+                                app.inspecting_game.disc_id,
+                                app.launch_session.last_error[0]
+                                    ? app.launch_session.last_error
+                                    : app.last_error.message);
                     }
                 }
             } else {
@@ -2962,9 +2802,9 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0) {
             player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
             const char *disc = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
-                ? app.games[app.selected_game_index].disc_id : "ULUS10041";
+                ? app.games[app.selected_game_index].disc_id : "TEST80001";
             const char *title = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
-                ? app.games[app.selected_game_index].title_name : "Street Supremacy";
+                ? app.games[app.selected_game_index].title_name : "Synthetic Package Fixture";
             package_builder_init_session(&app.build_session, disc, title);
             app.build_session.is_building = true;
             app.build_session.current_stage = PACKAGE_BUILD_STAGE_COMPILE;
@@ -3075,40 +2915,7 @@ int main(int argc, char *argv[]) {
                    launch_index, app.games[launch_index].disc_id,
                    app.games[launch_index].title_name);
         }
-        if (!player_app_launch_game(&app, launch_index)) {
-            fprintf(stderr, "[PLAYER] --launch-index failed: %s\n",
-                    app.launch_session.last_error);
-            return 4;
-        }
-        printf("[PLAYER] Launch argv contains --gui: %s\n",
-               app.launch_session.argv_has_gui ? "yes" : "no");
-        if (!app.launch_session.argv_has_gui && !app.launch_headless) {
-            /* A windowed launch that lost its --gui request is a failure. */
-            player_app_stop_game(&app);
-            return 5;
-        }
-        if (!app.launch_session.argv_has_gui) {
-            /* Headless launch: the same player-owned session, spawned without a
-               window so a host with no display can still run it. The bound is
-               the whole check -- a run that has not ended inside it is reported
-               as a timeout with a distinct status, never as a launch. */
-            int headless_code = nk_launch_wait(&app.launch_session,
-                                               NK_HEADLESS_LAUNCH_TIMEOUT_MS);
-            app.is_game_running = false;
-            if (headless_code < 0) {
-                fprintf(stderr,
-                        "[PLAYER] Headless launch did not finish within %d ms; stopping the child.\n",
-                        NK_HEADLESS_LAUNCH_TIMEOUT_MS);
-                player_app_stop_game(&app);
-                return 7;
-            }
-            printf("[PLAYER] Headless launch child exited with code %d.\n", headless_code);
-            return headless_code;
-        }
-        int child_code = nk_launch_wait(&app.launch_session, -1);
-        app.is_game_running = false;
-        printf("[PLAYER] Launch-index child exited with code %d.\n", child_code);
-        return child_code < 0 ? 6 : child_code;
+        return player_run_command_line_launch(&app, launch_index, "--launch-index");
     }
 
     /* Initialize SDL3 */

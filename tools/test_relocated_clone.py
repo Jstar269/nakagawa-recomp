@@ -142,6 +142,29 @@ class RelocatedCloneTests(unittest.TestCase):
         self.assertTrue((self.clone / "Makefile").is_file())
         self.assertTrue((self.clone / "tools" / "contrib_check.py").is_file())
 
+    def test_build_root_naming_the_spaced_parent_is_refused_as_an_ancestor(self) -> None:
+        """From a spaced checkout, BUILD_ROOT=<its parent> names the checkout, not the space.
+
+        The clone's parent directory contains a space, so it trips both of the
+        Makefile's BUILD_ROOT refusals. The checkout-scope refusal must win: it is
+        the one that says clean-all would reach the checkout. `help` is
+        information-only, so the probe creates and deletes nothing even if the
+        refusal were lost.
+        """
+        parent = self.clone.parent.as_posix()
+        self.assertIn(" ", parent)
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "help", f"BUILD_ROOT={parent}"],
+            cwd=self.clone,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=COMMAND_TIMEOUT_S,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("the repository root or one of its ancestors", proc.stderr)
+        self.assertNotIn("contains a space", proc.stderr)
+
     def test_relocated_contributor_quick_check(self) -> None:
         """Makefile parse, one hermetic C selftest, and the path-sensitive tests."""
         self.run_step("make help", [self.make, "--no-print-directory", "help"])
