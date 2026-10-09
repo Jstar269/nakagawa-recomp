@@ -153,16 +153,20 @@ _FIXED_CAMPAIGN_CASES = {
         [(f"display-mask-duty-{duration}us", 13, _PASS)
          for duration in (33000, 66000)],
     ),
+    # run_display_wait_late emits, per API, its five late cells and then that
+    # API's in-vblank cell (PASS, or SKIP when the in-vblank phase was not
+    # reached), after one calibration record.
     "display-wait-late": _fixed_campaign_rows(
         "PSP-DISPLAY-002",
         [("calibration", 5, _PASS)]
         + [
-            (f"late-{api}-{offset}eighths", 22, _PASS)
+            row
             for api in ("waitvblankstart", "waitvblank")
-            for offset in (2, 6, 10, 14, 20)
-        ]
-        + [(f"invblank-{api}", 22, _PASS_OR_SKIP)
-           for api in ("waitvblankstart", "waitvblank")],
+            for row in (
+                [(f"late-{api}-{offset}eighths", 22, _PASS) for offset in (2, 6, 10, 14, 20)]
+                + [(f"invblank-{api}", 22, _PASS_OR_SKIP)]
+            )
+        ],
     ),
     "display-wait-priority": _fixed_campaign_rows(
         "PSP-DISPLAY-003",
@@ -182,12 +186,36 @@ _FIXED_CAMPAIGN_CASES = {
     "mutex-priority-inheritance": _fixed_campaign_rows(
         "PSP-MUTEX-001", [("mutex-priority-inheritance", 7, _PASS)]
     ),
+    # Each trial records sceKernelIsCpuIntrEnable() from the VBLANK handler in
+    # out0 and the six mutex returns in out1..out6. By the probe's design a
+    # trial counts (PASS) only when out0 is 0; FAIL marks a trial that does not
+    # count. _check_mutex_interrupt_trial enforces that pairing exactly.
     "mutex-interrupt-context": _fixed_campaign_rows(
         "PSP-MUTEX-001",
         [("mutex-interrupt-context", 3, _PASS)]
-        + [(f"mutex-interrupt-context-t{index:02d}", 7, _PASS)
+        + [(f"mutex-interrupt-context-t{index:02d}", 7, frozenset({"PASS", "FAIL"}))
            for index in range(20)],
     ),
+}
+
+
+def _check_mutex_interrupt_trial(record) -> None:
+    """A trial's status must follow its recorded interrupt state, nothing else."""
+
+    if not record.case_id.startswith("mutex-interrupt-context-t"):
+        return
+    values = dict(record.values)
+    interrupts_enabled = int(values["out0"], 0)
+    expected = "PASS" if interrupts_enabled == 0 else "FAIL"
+    if record.status != expected or int(values["result"], 0) != (expected == "PASS"):
+        raise ProtocolError(
+            f"mutex-interrupt-context: {record.case_id} status {record.status} "
+            f"disagrees with its interrupt state out0={values['out0']}"
+        )
+
+
+_FIXED_CAMPAIGN_RECORD_CHECKS = {
+    "mutex-interrupt-context": _check_mutex_interrupt_trial,
 }
 
 
@@ -829,6 +857,9 @@ def _parse_fixed_campaign_records(text: str, case_id: str):
                 f"{case_id}: {record.case_id} fields must be "
                 f"{sorted(expected_fields)}, got {sorted(values)}"
             )
+        record_check = _FIXED_CAMPAIGN_RECORD_CHECKS.get(case_id)
+        if record_check is not None:
+            record_check(record)
     return parsed
 
 

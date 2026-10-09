@@ -4014,6 +4014,7 @@ COMPLETE_CONSOLE_CAPTURES = {
     "kernel_alarm.20261008-manual.txt": "kernel-alarm",
     "thread_scheduler.20261008-manual.txt": "thread-scheduler",
     "refer_status_size.20261008-manual.txt": "refer-status-size",
+    "display_wait_late.20261008-run5.txt": "display-wait-late",
 }
 PARTIAL_CONSOLE_CAPTURES = {
     "ge_break_continue.20261008-manual-partial.txt": "ge-break-continue",
@@ -4486,6 +4487,86 @@ class ProgressiveHost0StreamTests(unittest.TestCase):
         problem = " ".join(registry["QUALIFICATION_BLOCKERS"])
         self.assertIn("reached no completion marker within the 1.5s case timeout", problem)
         self.assertIn("last step marker:", problem)
+
+
+class RealProbeContractTests(unittest.TestCase):
+    """Fixed contracts follow what the probes really emit (2026-10-08 run 5)."""
+
+    DISPLAY = "display_wait_late.20261008-run5.txt"
+    MUTEX = "mutex_interrupt_context.20261008-run5.txt"
+
+    @staticmethod
+    def _records(text: str) -> str:
+        return text.split("NAKAGAWA_PSP_COMPLETE", 1)[0]
+
+    def test_display_wait_late_contract_is_the_probe_emission_order(self):
+        text = _console_capture(self.DISPLAY)
+        parsed = _parse_campaign_records(self._records(text), "display-wait-late")
+        self.assertEqual(
+            [record.case_id for record in parsed.results],
+            ["calibration"]
+            + [f"late-waitvblankstart-{n}eighths" for n in (2, 6, 10, 14, 20)]
+            + ["invblank-waitvblankstart"]
+            + [f"late-waitvblank-{n}eighths" for n in (2, 6, 10, 14, 20)]
+            + ["invblank-waitvblank"],
+        )
+        # The previous contract grouped both APIs' late cells before either
+        # in-vblank cell; the probe never emits that order.
+        lines = self._records(text).splitlines(keepends=True)
+        start_invblank = next(i for i, line in enumerate(lines)
+                              if "case_id=invblank-waitvblankstart " in line)
+        regrouped = lines[:start_invblank] + lines[start_invblank + 1:-1] + \
+            [lines[start_invblank], lines[-1]]
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records("".join(regrouped), "display-wait-late")
+
+    def test_mutex_interrupt_trials_follow_their_recorded_interrupt_state(self):
+        text = _console_capture(self.MUTEX)
+        self.assertTrue(run_psplink_module._campaign_stream_complete(text, "mutex-interrupt-context"))
+        parsed = _parse_campaign_records(self._records(text), "mutex-interrupt-context")
+        trials = [record for record in parsed.results if record.case_id.endswith(tuple(
+            f"-t{index:02d}" for index in range(20)))]
+        self.assertEqual(len(trials), 20)
+        for record in trials:
+            values = dict(record.values)
+            # PSP-3000 / 6.6.1: every VBLANK handler trial saw interrupts enabled,
+            # so by the probe's design none counts; the mutex returns stay recorded.
+            self.assertEqual((record.status, values["out0"]), ("FAIL", "0x00000001"))
+            self.assertEqual(values["out1"], "0x80020064")
+        for forged in (
+            # A trial claiming to count while it recorded interrupts enabled.
+            self._records(text).replace(
+                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000",
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001", 1),
+            # A trial that recorded interrupts disabled but was not counted.
+            self._records(text).replace(
+                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000001",
+                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000000",
+                1),
+        ):
+            with self.assertRaises(PspProtocolError):
+                _parse_campaign_records(forged, "mutex-interrupt-context")
+
+    def test_mutex_interrupt_capture_is_qualified_but_not_eligible(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="capture-mutex-", dir=fixture_dir) as name:
+            runner, _transport, cases = ConsoleCaptureRegressionTests()._campaign(
+                Path(name), ("transport-write", "mutex-interrupt-context"),
+                host0_log_contents={"mutex-interrupt-context": _console_capture(self.MUTEX)},
+                stdout_record_cases={"mutex-interrupt-context"},
+            )
+            report = runner.run(cases, reset_between_cases=True, stop_on_incomplete=True)
+
+        envelope = report["envelopes"][1]
+        self.assertIsNone(report["terminal_reason"])
+        self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "PASS")
+        self.assertFalse(any(
+            "strict protocol validation" in blocker
+            for blocker in envelope["QUALIFICATION_BLOCKERS"]
+        ))
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+        self.assertIn("one or more scalar result records did not pass",
+                      envelope["ACCEPTANCE_BLOCKERS"])
 
 
 class Host0RemotePathTests(unittest.TestCase):
