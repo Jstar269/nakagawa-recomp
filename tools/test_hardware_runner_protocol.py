@@ -312,8 +312,15 @@ class SimulatedPsplinkTransport:
         lock_held_checks: int | None = None,
         lock_refusal_status: str = "HARDWARE_LOCK_NOT_HELD",
         unfinished_cases: set[str] | None = None,
+        host0_driver_thread: bool = False,
+        fail_host0_warmup: bool = False,
     ):
         self.unfinished_cases = unfinished_cases or set()
+        # Synthetic model of the PSPLink host0 driver thread: created by the first
+        # host0 I/O after a shell start and kept until `reset`.
+        self.host0_driver_thread = host0_driver_thread
+        self.fail_host0_warmup = fail_host0_warmup
+        self._host0_driver_alive = False
         self.start_error = start_error
         self.lock_held_checks = lock_held_checks
         self.lock_refusal_status = lock_refusal_status
@@ -365,8 +372,14 @@ class SimulatedPsplinkTransport:
             2: ("0x88000000", 53687091, 33554432, 25165824),
         }
 
+    def _touch_host0_driver(self) -> None:
+        if self.host0_driver_thread:
+            self._host0_driver_alive = True
+
     def _snapshot_threads(self) -> str:
         threads = set(self._baseline_threads)
+        if self._host0_driver_alive:
+            threads.add(("0x00000004", "host0-driver"))
         if self._probe_loaded:
             threads.add(self._probe_thread)
         rows = "".join(
@@ -494,11 +507,17 @@ class SimulatedPsplinkTransport:
             return 0, "Version: 6.6.1 (0x06060110)\n", "", "PROCESS_EXITED"
         if command == "exprint":
             return 0, "Synthetic exception query is unqualified\n", "", "PROCESS_EXITED"
+        if command == "ls host0:/":
+            if self.fail_host0_warmup:
+                return None, "", "", "TIMEOUT"
+            self._touch_host0_driver()
+            return 0, "", "", "PROCESS_EXITED"
         if command.startswith("ldstart host0:/"):
             case_id = Path(command).name.removesuffix(".prx")
             self.current_case = case_id
             self.case_started = True
             self._probe_loaded = True
+            self._touch_host0_driver()
             if (
                 self.host0_root is not None
                 and case_id not in self.fail_host0_roundtrip_cases
@@ -593,6 +612,7 @@ class SimulatedPsplinkTransport:
             return None, "", "", "TIMEOUT"
         if command == "reset":
             self._probe_loaded = False
+            self._host0_driver_alive = False
             return self.reset_returncode, "Reset\n", "", "PROCESS_EXITED"
         raise AssertionError(f"unexpected PSPLINK command: {command}")
 
@@ -2194,9 +2214,11 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 binary = scratch / f"{case_id}.prx"
                 binary.write_bytes(b"synthetic PRX")
                 cases.append(CampaignCase(case_id, binary, 0.02))
+            # thlist calls per case: S0, baseline re-read, S1, S2. Call 7 is the
+            # model-profile S1 (case 1 uses 1-4, case 2 S0 and re-read use 5-6).
             transport = SimulatedPsplinkTransport(
                 fail_modstun_cases={"model-profile"},
-                fail_snapshot_call={"thlist": 5},
+                fail_snapshot_call={"thlist": 7},
             )
             transport.host0_root = scratch
             report = PsplinkCampaignRunner(
@@ -4666,6 +4688,53 @@ class Host0RemotePathTests(unittest.TestCase):
             outside.write_bytes(b"\x00")
             with self.assertRaises(ValueError):
                 run_psplink_module._host0_remote_path(outside, Path(root))
+
+
+class Host0DriverWarmupTests(unittest.TestCase):
+    """The host0 driver thread belongs to the S0 baseline, not to the teardown diff."""
+
+    def _run_transport_write(self, **transport_options):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-host0-warmup-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(**transport_options)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+        return report, [command for command, _timeout in transport.commands]
+
+    def test_host0_driver_thread_created_by_first_host0_io_is_in_the_baseline(self):
+        report, commands = self._run_transport_write(host0_driver_thread=True)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["issues"], [])
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["s0_thread_count"], 3)
+        self.assertEqual(teardown["s2_thread_count"], 3)
+        ldstart = next(index for index, command in enumerate(commands)
+                       if command.startswith("ldstart host0:/"))
+        self.assertLess(commands.index("ls host0:/"), commands.index("thlist"))
+        self.assertLess(commands.index("ls host0:/"), ldstart)
+
+    def test_host0_driver_absent_on_this_device_still_passes(self):
+        report, _commands = self._run_transport_write(host0_driver_thread=False)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["s0_thread_count"], 2)
+
+    def test_failed_host0_warmup_blocks_before_any_probe_launch(self):
+        report, commands = self._run_transport_write(fail_host0_warmup=True)
+        envelope = report["envelopes"][0]
+        self.assertEqual(report["terminal_reason"], "TEARDOWN_S0_SNAPSHOT_FAILED")
+        self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "BLOCKED")
+        self.assertEqual(envelope["TEARDOWN_CHECK"]["stage"], "S0")
+        self.assertIn("ls host0:/", commands)
+        self.assertFalse([command for command in commands if command.startswith("ldstart")])
 
 
 if __name__ == "__main__":

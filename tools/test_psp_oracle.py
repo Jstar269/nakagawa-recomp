@@ -1630,6 +1630,138 @@ class PspLinkTeardownSnapshotTests(unittest.TestCase):
             ["thlist", "meminfo", "modlist"],
         )
 
+    # Synthetic copies shaped like the recorded PSP-3000 `thlist` captures: 17
+    # rows, system names replaced by placeholders, UIDs invented. Not device output.
+    RECORDED_SHAPE_ROWS = frozenset(
+        [(f"0x00a0{number:04x}", f"sys-thread-{number:02d}") for number in range(15)]
+        + [("0x04310001", "PspLink"), ("0x04310002", "USBThread")]
+    )
+    PROBE_MODULE = ("0x04280001", "NAKAGAWA_PSP_ORACLE")
+    PROBE_MAIN = ("0x04280002", "user_main")
+    # Stand-in row for the host0 driver thread until hardware names it.
+    DRIVER_ROW = ("0x00000004", "host0-driver")
+
+    @staticmethod
+    def thlist(rows) -> str:
+        return f"<Thread List ({len(rows)} entries)>\n" + "".join(
+            f"UID: {uid} - Name: {name}\n" for uid, name in sorted(rows)
+        )
+
+    def probe_triplet(self, baseline_threads, *, unload_threads=None):
+        before = self.snapshot(threads=baseline_threads)
+        after_probe = self.snapshot(
+            threads=set(baseline_threads) | {self.PROBE_MAIN},
+            modules={("0x00000003", "PspLink"), self.PROBE_MODULE},
+        )
+        after_unload = self.snapshot(
+            threads=baseline_threads if unload_threads is None else unload_threads
+        )
+        return before, after_probe, after_unload
+
+    def evaluate(self, before, after_probe, after_unload):
+        return evaluate_teardown_snapshots(
+            before, after_probe, after_unload, self.PROBE_MODULE[0], {self.PROBE_MAIN},
+            unload_confirmed=True, sentinel_status="PASS", shell_qualified=True,
+            host0_roundtrip=True,
+        )
+
+    def test_recorded_shape_thread_lists_parse_and_probe_main_is_the_only_delta(self) -> None:
+        s0 = parse_psplink_thread_snapshot(self.thlist(self.RECORDED_SHAPE_ROWS))
+        s1 = parse_psplink_thread_snapshot(
+            self.thlist(self.RECORDED_SHAPE_ROWS | {self.PROBE_MAIN})
+        )
+        self.assertEqual(len(s0), 17)
+        self.assertEqual(s1 - s0, {self.PROBE_MAIN})
+        self.assertEqual(s0 - s1, set())
+
+    def test_unwarmed_baseline_reproduces_the_recorded_teardown_failure(self) -> None:
+        # The recorded transport-write run read S0 before the driver existed:
+        # S0 17, S1 18, S2 18, and the verifier reported this exact issue.
+        before, after_probe, after_unload = self.probe_triplet(
+            self.RECORDED_SHAPE_ROWS,
+            unload_threads=self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW},
+        )
+        report = self.evaluate(before, after_probe, after_unload)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(report["issues"], ["post-unload thread set differs from S0"])
+        self.assertEqual(report["s0_thread_count"], 17)
+        self.assertEqual(report["s2_thread_count"], 18)
+
+    def test_warmed_baseline_passes_when_the_driver_thread_survives_unload(self) -> None:
+        warmed = self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW}
+        report = self.evaluate(*self.probe_triplet(warmed))
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["issues"], [])
+        self.assertEqual((report["s0_thread_count"], report["s2_thread_count"]), (18, 18))
+
+    def test_warmed_baseline_still_fails_on_a_genuine_post_unload_leak(self) -> None:
+        warmed = self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW}
+        leaked = ("0x04290009", "stray-thread")
+        report = self.evaluate(*self.probe_triplet(warmed, unload_threads=warmed | {leaked}))
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("post-unload thread set differs from S0", report["issues"])
+        self.assertNotIn(
+            "probe main thread survived module stop/unload; "
+            "the probe's module_stop did not end and delete it",
+            report["issues"],
+        )
+        self.assertEqual(report["s2_leftover_threads"], [list(leaked)])
+
+    def test_baseline_warms_host0_driver_before_reading_s0_and_rereads_threads(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        warmed = self.thlist(self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW})
+        outputs = [
+            (0, "", "", "PROCESS_EXITED"),
+            (0, warmed, "", "PROCESS_EXITED"),
+            (0, self.MEMORY, "", "PROCESS_EXITED"),
+            (0, self.MODULES, "", "PROCESS_EXITED"),
+            (0, warmed, "", "PROCESS_EXITED"),
+        ]
+        with patch.object(runner, "_request", side_effect=outputs) as request:
+            snapshot, problem = runner._take_baseline()
+        self.assertIsNone(problem)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.threads, self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW})
+        self.assertEqual(
+            [entry.args[0] for entry in request.call_args_list],
+            ["ls host0:/", "thlist", "meminfo", "modlist", "thlist"],
+        )
+
+    def test_baseline_refuses_when_the_host0_warm_up_fails(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        with patch.object(
+            runner, "_request", side_effect=[(None, "", "", "TIMEOUT")]
+        ) as request:
+            snapshot, problem = runner._take_baseline()
+        self.assertIsNone(snapshot)
+        self.assertIn("warm-up", problem)
+        self.assertEqual(request.call_count, 1)
+
+    def test_baseline_refuses_a_thread_set_that_moves_after_warm_up(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        warmed_rows = self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW}
+        moved_rows = (warmed_rows - {("0x04310002", "USBThread")}) | {
+            ("0x04310009", "USBThread")
+        }
+        outputs = [
+            (0, "", "", "PROCESS_EXITED"),
+            (0, self.thlist(warmed_rows), "", "PROCESS_EXITED"),
+            (0, self.MEMORY, "", "PROCESS_EXITED"),
+            (0, self.MODULES, "", "PROCESS_EXITED"),
+            (0, self.thlist(moved_rows), "", "PROCESS_EXITED"),
+        ]
+        with patch.object(runner, "_request", side_effect=outputs) as request:
+            snapshot, problem = runner._take_baseline()
+        self.assertIsNone(snapshot)
+        self.assertIn("not stable", problem)
+        self.assertEqual(request.call_count, 5)
+
     def test_three_snapshot_check_passes_clean_unload(self) -> None:
         before, after_probe, after_unload, module_main = self.clean_triplet()
         report = evaluate_teardown_snapshots(

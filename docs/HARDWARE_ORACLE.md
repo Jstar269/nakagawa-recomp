@@ -761,7 +761,12 @@ and round-trip file remain available until the host has captured and checked the
 `tools/psp_oracle/run_psplink.py` compares three PSPLink snapshots around each launch.
 It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
 single-module query used for the unload handshake. S0 records threads,
-per-partition total/largest free bytes, and modules before load.
+per-partition total/largest free bytes, and modules before load. Before S0, the
+runner issues `ls host0:/`, a listing that writes nothing. The aim (issue #698) is that
+the host0 driver thread which first host0 I/O starts is already in the baseline, not
+counted as a teardown leak; hardware confirmation is pending. The thread list is then
+read again and must match S0; a failed warm-up or a thread set that still moves blocks
+the case before load.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
 must show that the probe's only remaining thread is its main thread. After the
 `modstun` stop/unload handshake, S2 must match S0 for thread UID/name pairs and

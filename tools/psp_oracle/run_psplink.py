@@ -315,6 +315,12 @@ _MODULE_THREAD_HEADER_RE = re.compile(r"^Module Thread \((\d+)\)$")
 _PROBE_COMPLETE_RE = re.compile(
     r"^NAKAGAWA_PSP_COMPLETE schema=1 status=(PASS|FAIL|NOT_RUN)$", re.MULTILINE
 )
+# Issue #698: after the first host0 transfer, S2 read one thread above S0, which the
+# teardown check reports as a leak. The working explanation is PSPLink's host0 driver
+# thread, created on first host0 I/O and kept until reset. A directory listing is
+# that I/O without writes: it creates and removes nothing on host0 or device storage.
+# The thread's name and lifetime are not yet confirmed on hardware.
+HOST0_WARMUP_COMMAND = "ls host0:/"
 
 
 def parse_psplink_thread_snapshot(text: str) -> frozenset[tuple[str, str]]:
@@ -1636,6 +1642,33 @@ class PsplinkCampaignRunner:
             modules=parsed["modlist"],
         ), None
 
+    def _take_baseline(self) -> tuple[PsplinkSnapshot | None, str | None]:
+        """Read S0 only after the host0 driver is warm and the thread set has settled.
+
+        The driver thread is then part of the baseline the teardown check compares
+        against. A baseline whose thread set still moves is refused, so the check
+        can never pass against a moving reference.
+        """
+        result = self._request(HOST0_WARMUP_COMMAND, self.cleanup_timeout)
+        if not self._ok(result):
+            return None, "host0 driver warm-up (`ls host0:/`) failed before the S0 baseline"
+        before, problem = self._take_snapshot()
+        if before is None:
+            return None, problem
+        reread = self._request("thlist", self.cleanup_timeout)
+        if not self._ok(reread):
+            return None, "S0 baseline re-read failed (thlist)"
+        try:
+            reread_threads = parse_psplink_thread_snapshot(reread[1] + reread[2])
+        except ValueError as exc:
+            return None, f"S0 baseline re-read could not be parsed ({exc})"
+        if reread_threads != before.threads:
+            return None, "S0 thread set changed after host0 warm-up; baseline is not stable"
+        self.recovery_events.append(
+            f"S0: host0 driver warm-up done; {len(before.threads)} threads, baseline re-read stable"
+        )
+        return before, None
+
     def _module_threads(
         self, module_uid: str
     ) -> tuple[frozenset[tuple[str, str]], str | None]:
@@ -2396,7 +2429,7 @@ class PsplinkCampaignRunner:
                 )
             )
             return False
-        before, snapshot_problem = self._take_snapshot()
+        before, snapshot_problem = self._take_baseline()
         progress.before = before
         if before is None:
             self.state = "STOPPED"
