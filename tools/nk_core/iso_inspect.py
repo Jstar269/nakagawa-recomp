@@ -334,7 +334,20 @@ def plan_guest_module_bindings(
     main_elf: Path | str,
     module_inputs: Sequence[tuple[str, Path | str, str]],
 ) -> list[dict]:
+    """The declared guest modules of plan_guest_module_layout (deferred items omitted)."""
+    return plan_guest_module_layout(main_elf, module_inputs)[0]
+
+
+def plan_guest_module_layout(
+    main_elf: Path | str,
+    module_inputs: Sequence[tuple[str, Path | str, str]],
+) -> tuple[list[dict], list[dict]]:
     """Declare each translated guest module placed by the guest allocator at run time.
+    Returns (declared modules, deferred items). A deferred item is named and carries its
+    reason; it is not declared and not placed at boot: a byte-identical copy of the main
+    executable is recorded as a duplicate, and a fixed-address ET_EXEC image that lies on
+    the main image is a separate executable, not pre-placed beside main (whether the
+    title loads it later is not established).
 
     The PSP kernel's loader takes a module's memory from the user partition when the
     game loads it, so the build reserves nothing: modules need not fit together, and a
@@ -385,9 +398,17 @@ def plan_guest_module_bindings(
         )
 
     modules: list[dict] = []
+    deferred: list[dict] = []
     kernel_modules: list[tuple[str, GuestModuleInterface]] = []
     placed_exports: set[int] = set()
     folded_names: set[str] = set()
+    try:
+        main_bytes = Path(main_elf).read_bytes()
+    except OSError as exc:
+        raise IsoInspectionError(
+            "main executable could not be read for guest-module planning",
+            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        ) from exc
     for name, module_path, guest_path in module_inputs:
         folded = name.casefold()
         if folded in folded_names:
@@ -403,19 +424,32 @@ def plan_guest_module_bindings(
                 f"guest module could not be read: {name}",
                 boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
             ) from exc
+        if mod_bytes == main_bytes:
+            deferred.append({
+                "name": name,
+                "reason": "duplicate of the main executable, not loaded as a module",
+            })
+            continue
         interface = read_guest_module_interface(name, mod_bytes)
         if interface.callable_nids and runtime_serves_module(interface, runtime_registered_nids()):
             continue
         if interface.requires_kernel:
             kernel_modules.append((name, interface))
             continue
-        placed_exports.update(interface.callable_nids)
         module_type, module_low, module_high = _elf32_load_span(module_path)
+        if module_type == 2 and module_low < main_end and main_start < module_high:
+            # An executable on the main image's base is a separate program, not a
+            # module the title places beside main at boot: deferred, not declared.
+            deferred.append({
+                "name": name,
+                "reason": "separate executable on the main image base, not pre-placed",
+            })
+            continue
+        placed_exports.update(interface.callable_nids)
         if module_type == 2:
             if (
                 module_low < title_manifest.GUEST_MODULE_RAM_LO
                 or module_high > PSP_CONVENTIONAL_USER_MEMORY_TOP
-                or (module_low < main_end and main_start < module_high)
             ):
                 raise IsoInspectionError(
                     f"guest module has fixed load address 0x{module_low:08x} that collides "
@@ -450,7 +484,10 @@ def plan_guest_module_bindings(
                     boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
                 )
 
-    return sorted(modules, key=lambda module: module["name"].casefold())
+    return (
+        sorted(modules, key=lambda module: module["name"].casefold()),
+        sorted(deferred, key=lambda item: item["name"].casefold()),
+    )
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})
@@ -1101,72 +1138,109 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
     return (lba, size) if not is_dir else None
 
 
-def _elf32_mips_usable(
-    stream, file_size: int, lba: int, size: int, *,
-    require_segment_alignment: bool = True, module: bool = False,
-) -> bool:
-    """Whether an ELF32/MIPS file is usable as a plain executable or guest module.
+def _image_read(read, offset: int, count: int) -> bytes | None:
+    """Bytes of one image range, or None when the range is not fully readable."""
+    try:
+        data = read(offset, count)
+    except (IsoInspectionError, OSError):
+        return None
+    if data is None or len(data) != count:
+        return None
+    return data
 
-    The executable rule (``module=False``) needs ``e_entry`` inside an
-    executable PT_LOAD, because the launcher starts at ``e_entry``.  A PSP PRX
-    (``e_type 0xFFA0``) checked as a guest module (``module=True``) is a
-    relocatable module whose start routine comes from its module info, so its
-    ``e_entry`` (commonly 0xFFFFFFFF) is not checked; it needs an executable
-    PT_LOAD that carries code bytes instead.  Header and program-header bounds
-    apply to both rules.  Mirrored by ``player_is_usable_mips_elf32`` and
-    ``player_iso_elf32_mips_usable`` in ``src/player/player_state.c``.
+
+def _elf32_mips_layout_violation(read, image_size: int, *, module: bool) -> str | None:
+    """The PSP ELF32/MIPS image layout rule. Returns None when usable, else the name
+    of the first rule the image breaks.
+
+    Python mirror of nk_elf32_mips_layout_violation in src/core/nk_iso.c; the two
+    must accept and refuse the same inputs (tools/test_iso_parity.py checks it). The
+    rule copies segment bytes from their file offsets, so p_offset and p_vaddr need
+    not be congruent modulo p_align. Every bounds check stays, and loadable segments
+    must not overlap. ``read(offset, count)`` returns the image bytes at that range.
+    ``module`` selects the guest-module entry rule: a PSP PRX (e_type 0xFFA0) needs a
+    code segment, not an e_entry in an executable segment.
     """
-    if size < 52:
-        return False
-    header = _read_iso_extent(stream, file_size, lba, size, 0, 52)
+    if image_size < 52:
+        return "header-truncated"
+    header = _image_read(read, 0, 52)
+    if header is None:
+        return "image-read-failed"
     if header[:4] != b"\x7fELF" or header[4:7] != b"\x01\x01\x01":
-        return False
+        return "header-magic"
     e_type, machine, version = struct.unpack_from("<HHI", header, 16)
     entry, phoff, shoff = struct.unpack_from("<III", header, 24)
     ehsize, phentsize, phnum, shentsize, shnum = struct.unpack_from("<HHHHH", header, 40)
-    # Mirrors nk_iso.c: the analyzer accepts ET_REL/EXEC/DYN and PSP PRX (0xFFA0).
+    # The analyzer takes relocatable (1), executable (2), shared (3) and PSP PRX (0xFFA0).
     if e_type not in (1, 2, 3, 0xFFA0) or machine != 8 or version != 1 or ehsize != 52:
-        return False
+        return "header-fields"
     if phentsize != 32 or not 1 <= phnum <= 128 or phoff < ehsize:
-        return False
-    ph_end = phoff + phentsize * phnum
-    if ph_end < phoff or ph_end > size:
-        return False
+        return "program-table-fields"
+    if phoff + phentsize * phnum > image_size:
+        return "program-table-bounds"
     if shnum:
-        sh_end = shoff + shentsize * shnum
-        if shentsize != 40 or shoff < ehsize or sh_end < shoff or sh_end > size:
-            return False
+        if shentsize != 40 or shoff < ehsize or shoff + shentsize * shnum > image_size:
+            return "section-table-bounds"
     elif shoff:
-        return False
+        return "section-table-bounds"
+    table = _image_read(read, phoff, phentsize * phnum)
+    if table is None:
+        return "image-read-failed"
 
-    table = _read_iso_extent(stream, file_size, lba, size, phoff, phentsize * phnum)
     have_load = False
     entry_executable = False
     code_segment = False
+    spans: list[tuple[int, int]] = []
     for index in range(phnum):
-        p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags, p_align = struct.unpack_from(
-            "<8I", table, index * phentsize
+        p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, p_flags, p_align = (
+            struct.unpack_from("<8I", table, index * phentsize)
         )
-        if p_offset + p_filesz > size:
-            return False
+        if p_offset + p_filesz > image_size:
+            return "segment-file-range"
         if p_type != 1:
             continue
+        if p_memsz < p_filesz:
+            return "segment-memory-below-file"
         memory_end = p_vaddr + p_memsz
-        if p_memsz < p_filesz or memory_end > 0x100000000:
-            return False
-        if require_segment_alignment and p_align > 1 and (
-            p_align & (p_align - 1) or p_offset % p_align != p_vaddr % p_align
-        ):
-            return False
+        if memory_end > 0x100000000:
+            return "segment-memory-range"
+        if p_align > 1 and p_align & (p_align - 1):
+            return "segment-alignment"
+        spans.append((p_vaddr, memory_end))
         have_load = True
         executable = bool(p_flags & 1)
         if executable and p_vaddr <= entry < memory_end:
             entry_executable = True
         if executable and p_filesz > 0:
             code_segment = True
+    if not have_load:
+        return "no-load-segment"
+    # Sorted by (start, end), any overlap shows between neighbours.
+    spans.sort()
+    for (_start, end), (next_start, _next_end) in zip(spans, spans[1:], strict=False):
+        if end > next_start:
+            return "segment-overlap"
     if module and e_type == 0xFFA0:
-        return have_load and code_segment
-    return have_load and entry_executable
+        return None if code_segment else "no-code-segment"
+    return None if entry_executable else "entry-not-executable"
+
+
+def _elf32_mips_iso_violation(
+    stream, file_size: int, lba: int, size: int, module: bool = False
+) -> str | None:
+    """The layout rule an ELF32/MIPS image in an ISO extent (or a plain file at lba 0)
+    breaks, or None when it is usable."""
+    return _elf32_mips_layout_violation(
+        lambda offset, count: _read_iso_extent(stream, file_size, lba, size, offset, count),
+        size,
+        module=module,
+    )
+
+
+def _elf32_mips_usable(stream, file_size: int, lba: int, size: int, module: bool = False) -> bool:
+    """Whether an ELF32/MIPS image is usable as a plain executable (``module=False``) or
+    as a guest module (``module=True``)."""
+    return _elf32_mips_iso_violation(stream, file_size, lba, size, module=module) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1598,10 +1672,7 @@ def _classify_decrypted_elf_file(path: Path | str, *, module: bool = False) -> s
             if header.startswith(b"\x7fELF"):
                 # The original ELF is read by the static analyzer, not a host
                 # ELF loader; its bounded guest spans remain required.
-                usable = _elf32_mips_usable(
-                    stream, size, 0, size, require_segment_alignment=False,
-                    module=module,
-                )
+                usable = _elf32_mips_usable(stream, size, 0, size, module=module)
                 return "PLAIN_MIPS_ELF32" if usable else "UNKNOWN"
     except (OSError, IsoInspectionError, struct.error):
         return "UNKNOWN"

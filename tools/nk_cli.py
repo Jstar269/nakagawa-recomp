@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import traceback
 import time
 import zlib
 
@@ -58,6 +59,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     MAX_MODULE_CANDIDATES,
     IsoInspectionError,
     IsoDirectoryEntry,
+    _elf32_mips_iso_violation,
     _elf32_mips_usable,
     _lookup_iso_file,
     _read_iso_extent,
@@ -65,7 +67,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
     inspect_compatibility_preflight,
-    plan_guest_module_bindings,
+    plan_guest_module_layout,
     walk_disc_module_entries,
     write_experimental_profile,
 )
@@ -335,6 +337,22 @@ def _require_child(root: Path, child: Path, label: str) -> Path:
     return resolved
 
 
+def _run_codegen_step(command, *, cwd, env, log_path: Path) -> int:
+    """Run one codegen step and keep its output in a private log, so a failure always
+    has its cause on disk. Returns the exit code."""
+    completed = subprocess.run(
+        command, cwd=cwd, env=env, capture_output=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    text = (
+        f"exit {completed.returncode}\n"
+        f"--- stdout ---\n{completed.stdout}"
+        f"\n--- stderr ---\n{completed.stderr}\n"
+    )
+    _write_private_file(log_path, text.encode("utf-8", errors="replace"))
+    return completed.returncode
+
+
 def _write_private_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary_path: Path | None = None
@@ -494,18 +512,11 @@ def _source_media_identity(iso_path: Path, selected: str,
 
 
 def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
-    """Name the rule an ELF32/MIPS module candidate fails, for the refusal detail only.
-
-    The relaxed check differs from the guest-module check only by the segment
-    congruence rule, so a candidate that passes it fails on congruence alone.
-    """
-    if _elf32_mips_usable(
-        stream, file_size, entry.lba, entry.size, module=True,
-        require_segment_alignment=False,
-    ):
-        return ("its PT_LOAD segments are not congruent: the file offset and "
-                "the virtual address differ modulo p_align")
-    return "its ELF32/MIPS program headers do not describe a usable guest module"
+    """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks."""
+    rule = _elf32_mips_iso_violation(
+        stream, file_size, entry.lba, entry.size, module=True
+    )
+    return f"its ELF32/MIPS image breaks the PSP layout rule {rule or 'unknown'}"
 
 
 def _unready_module_lines(candidates: list[dict]) -> list[str]:
@@ -3210,9 +3221,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         )
                         for candidate, _source, _folder_copy in module_sources
                     ]
-                    module_bindings = plan_guest_module_bindings(
+                    module_bindings, deferred_modules = plan_guest_module_layout(
                         selected_elf, module_inputs
                     )
+                    if deferred_modules:
+                        deferred_lines = [
+                            f"DEFERRED_MODULE {item['name']}: {item['reason']}"
+                            for item in deferred_modules
+                        ]
+                        for line in deferred_lines:
+                            print(line)
+                        _write_private_file(
+                            work_dir / "bringup-module-deferred.log",
+                            ("\n".join(deferred_lines) + "\n").encode("utf-8"),
+                        )
                 except (IsoInspectionError, OSError) as exc:
                     boundary_code = (
                         getattr(exc, "boundary_code", None)
@@ -3362,20 +3384,25 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         command = list(plan["commands"]["codegen"])
         if command and command[0] == "python":
             command[0] = sys.executable
-        completed = subprocess.run(
-            command, cwd=ROOT, env=env, capture_output=True, text=True,
-            check=False,
+        returncode = _run_codegen_step(
+            command, cwd=ROOT, env=env, log_path=work_dir / "bringup-codegen.log"
         )
         report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
             codegen_dir / f"{game_name}_recomp_stubs.txt", sources
         )
-        if completed.returncode != 0:
+        if returncode != 0:
             fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                           int((time.perf_counter() - started) * 1000))
             _write_bringup_report(report, report_path)
             print(_bringup_human_summary(report))
             return 1
     except Exception:
+        _write_private_file(
+            work_dir / "bringup-codegen.log",
+            ("codegen stage raised:\n" + traceback.format_exc()).encode(
+                "utf-8", errors="replace"
+            ),
+        )
         fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
