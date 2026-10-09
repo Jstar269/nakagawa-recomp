@@ -114,15 +114,13 @@ nidseq_mine.txt
 /benchmarks_report.*
 /watchpoints.json
 
-# Superseded investigations and local scratch
-/Archive/
+# Local scratch
 /scratch/
 /tmp/
-/nul
 /.tmp/
-/backups/
-/tmp_show.txt
-/docs/UNSEEN_ISSUES.md
+# Git Bash turns a Windows-style `>nul` / `2>nul` redirection into a real file
+# named nul that holds the redirected command output.
+/nul
 
 # Python caches and local environments
 __pycache__/
@@ -175,11 +173,10 @@ opencode.json
 # Local secrets and credentials
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 
-# Locally supplied PSP KIRK/amctrl constants. Never commit these.
-# See docs/PGD_KEYS.md.
+# Locally supplied PSP KIRK/amctrl constants (default keys/pgd_keys.txt, or
+# wherever SR_PGD_KEYS points). Never commit these.
 keys/
 pgd_keys.txt
