@@ -68,9 +68,17 @@ def _scratch_build_root(test: unittest.TestCase) -> pathlib.Path:
     GAME_NAME=hst probe would therefore invalidate a developer's private title
     build under build/hst. The probes run against a scratch root instead.
     """
-    scratch = tempfile.TemporaryDirectory(prefix="nakagawa-make-probe-")
-    test.addCleanup(scratch.cleanup)
-    return pathlib.Path(scratch.name) / "build"
+    scratch = pathlib.Path(tempfile.mkdtemp(prefix="nakagawa-make-probe-"))
+    test.addCleanup(shutil.rmtree, scratch, True)
+    if any(char.isspace() for char in scratch.as_posix()):
+        # GNU Make cannot name a path with whitespace; use the 8.3 short form.
+        short = title_codegen_plan._windows_short_path(scratch)
+        if short is None or any(char.isspace() for char in short.as_posix()):
+            test.skipTest(f"the temporary directory {scratch} contains whitespace GNU Make "
+                          "cannot name and has no 8.3 short form; point TMP/TEMP at a "
+                          "folder without spaces")
+        scratch = short
+    return scratch / "build"
 
 
 # HST constants that must never appear in a generic plan or be inherited silently.
@@ -842,25 +850,24 @@ class DirectMakeRetirementTests(unittest.TestCase):
         self.assertEqual(self._get("EFFECTIVE_EXTRA_SPANS", "hst", *extra), "")
 
     def test_direct_hst_make_without_manifest_fails_named(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nakagawa-hst-make-") as temp:
-            build_dir = pathlib.Path(temp).resolve()
-            target = pathlib.Path(build_dir.as_posix()) / "sr_title_config.h"
-            proc = subprocess.run(
-                [
-                    self.MAKE,
-                    "-f",
-                    str(ROOT / "Makefile"),
-                    "GAME_NAME=hst",
-                    f"BUILD_DIR={build_dir.as_posix()}",
-                    f"BUILD_ROOT={build_dir.as_posix()}",
-                    target.as_posix(),
-                ],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-            )
-            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertIn("needs a validated title manifest", proc.stdout + proc.stderr)
+        build_dir = _scratch_build_root(self)
+        target = build_dir / "sr_title_config.h"
+        proc = subprocess.run(
+            [
+                self.MAKE,
+                "-f",
+                str(ROOT / "Makefile"),
+                "GAME_NAME=hst",
+                f"BUILD_DIR={build_dir.as_posix()}",
+                f"BUILD_ROOT={build_dir.as_posix()}",
+                target.as_posix(),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("needs a validated title manifest", proc.stdout + proc.stderr)
 
 
 class ArtifactFutureCompatibleTests(unittest.TestCase):

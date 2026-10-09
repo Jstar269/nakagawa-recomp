@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import build_profile
 import codegen
+import title_codegen_plan
 
 
 _MTIME_MARGIN_NS = 2_000_000_000
@@ -57,6 +58,26 @@ def _set_mtime_before(path: Path) -> None:
     os.utime(path, ns=(target, target))
 
 
+def _make_safe_temp_dir(prefix: str) -> Path:
+    """A new temporary directory whose path GNU Make can name (no whitespace).
+
+    On a Windows profile whose name contains a space the temporary directory does
+    too; its 8.3 short form is used then. Without one the calling test is skipped
+    with the remedy instead of failing on the Makefile's space guard.
+    """
+    created = Path(tempfile.mkdtemp(prefix=prefix))
+    if not any(char.isspace() for char in created.as_posix()):
+        return created
+    short = title_codegen_plan._windows_short_path(created)
+    if short is not None and not any(char.isspace() for char in short.as_posix()):
+        return short
+    shutil.rmtree(created, ignore_errors=True)
+    raise unittest.SkipTest(
+        f"the temporary directory {created} contains whitespace GNU Make cannot name and "
+        "has no 8.3 short form; point TMP/TEMP at a folder without spaces"
+    )
+
+
 def _make_safe_fixture_dir(name: str) -> Path:
     """A BUILD_DIR a lifecycle test may hand to Make.
 
@@ -69,7 +90,7 @@ def _make_safe_fixture_dir(name: str) -> Path:
     such a BUILD_DIR outright; these tests must therefore pass a path Make can
     represent, and a temporary directory is also the right place for a fixture.
     """
-    return Path(tempfile.mkdtemp(prefix=f"nakagawa-lifecycle-{name}-")) / "build"
+    return _make_safe_temp_dir(f"nakagawa-lifecycle-{name}-") / "build"
 
 
 #: Make goals that delete files. A test may run one only against scratch roots.
@@ -1168,14 +1189,11 @@ class GuestInputTransportTests(unittest.TestCase):
         self.make = shutil.which("mingw32-make") or shutil.which("make")
         if not self.make:
             self.skipTest("GNU Make is required")
-        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-guest-input-")
-        self.root = Path(self.temp.name)
+        self.root = _make_safe_temp_dir("nakagawa-guest-input-")
+        self.addCleanup(shutil.rmtree, self.root, True)
         # The scratch BUILD_ROOT every build here lands under. Nothing is written to
         # the checkout's own build/, so a developer's title builds are never touched.
         self.build_root = self.root / "build"
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
 
     # -- helpers ---------------------------------------------------------
 
