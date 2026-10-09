@@ -70,7 +70,6 @@ from nk_core.iso_inspect import (  # noqa: E402
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
-import stage_runtime_dlls as _runtime_dlls  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1148,11 +1147,22 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         # step the Makefile's player target uses. The prerequisite installer
         # (#324) does not provide it yet, so a package without it still builds:
         # the player then draws with its bitmap fallback and logs why.
+        # Imported here, not at CLI start: the stager loads the notice inventory and
+        # the codegen planner, which only a package build needs.
+        import stage_runtime_dlls as _runtime_dlls
         try:
             _runtime_dlls.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
         except _runtime_dlls.StageError as exc:
             print(f"warning: the readable UI font runtime was not staged: {exc}. "
                   "The player will use its bitmap fallback font.", file=sys.stderr)
+
+
+def __getattr__(name: str) -> object:
+    """Resolve the runtime DLL stager on first access, for code that names ``nk_cli._runtime_dlls``."""
+    if name == "_runtime_dlls":
+        import stage_runtime_dlls
+        return stage_runtime_dlls
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:
