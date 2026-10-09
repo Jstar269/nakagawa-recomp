@@ -625,6 +625,7 @@ ATRAC3P_OBJ_DIRS := $(sort $(patsubst %/,%,$(dir $(ATRAC3P_OBJS))))
 ifeq ($(strip $(filter clean-preview,$(MAKECMDGOALS))),)
 ifndef NK_INFO_ONLY
 _MKDIRS := $(shell "$(PYTHON)" -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" "$(BUILD_DIR)" "$(BUILD_DIR)/portable-core" $(ATRAC3P_OBJ_DIRS))
+NK_BUILD_DIR_READY := 1
 endif
 endif
 
@@ -1533,12 +1534,27 @@ profile-zero-e2e:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
-# The codegen profile's entries travel in the environment, like the runtime profile's:
-# EXTRA_ELF_ARGS names every guest module, and a title with a hundred modules under a
-# long private path overruns the command line a shell will accept. The entries and
-# their order are the ones the --entry form used, so the hash is unchanged.
+# profile_hash(ENTRIES_VAR, COMPILER, ENTRIES_FILE): the parse-time hash of a build
+# profile whose entries are the newline-separated value of the exported ENTRIES_VAR.
+# Recipes read that variable from their environment (--entries-env), but GNU Make
+# before 4.4 -- the Linux runners' 4.3 among them -- does not hand exported variables
+# to $(shell ...), which silently hashed an empty profile there. So the parse-time
+# hash reads the same text from ENTRIES_FILE, written with $(file ...): no command
+# line, no quoting, any length. The file sits beside the profile stamps in
+# $(BUILD_DIR), which the parse-time mkdir creates; a parse that creates nothing (a
+# clean preview or an info-only parse) keeps the environment form.
+ifdef NK_BUILD_DIR_READY
+profile_hash = $(file >$(3),$($(1)))$(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(2)" --entries-file "$(3)" --file "$(CPU_STATE_ABI_HEADER)")
+else
+profile_hash = $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(2)" --entries-env $(1) --file "$(CPU_STATE_ABI_HEADER)")
+endif
+
+# The codegen profile's entries never travel on a command line: EXTRA_ELF_ARGS names
+# every guest module, and a title with a hundred modules under a long private path
+# overruns the command line a shell will accept. The entries and their order are the
+# ones the --entry form used, so the hash is unchanged.
 export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)
-CODEGEN_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)")
+CODEGEN_PROFILE_HASH := $(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,$(PYTHON),$(BUILD_DIR)/.codegen-profile-entries)
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
@@ -1579,7 +1595,7 @@ ifeq ($(TRACE),1)
 override CFLAGS += -DSR_INSTRUCTION_TRACE
 endif
 export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
-RUNTIME_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)")
+RUNTIME_PROFILE_HASH := $(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,$(CC),$(BUILD_DIR)/.runtime-profile-entries)
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
 

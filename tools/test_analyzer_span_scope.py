@@ -1518,8 +1518,9 @@ class MakefileSpanBindingTests(unittest.TestCase):
 
     def test_span_participates_in_the_codegen_profile_hash(self) -> None:
         # Changing the span must invalidate previously generated code. The codegen
-        # profile's entries travel in NK_CODEGEN_PROFILE_ENTRIES; the span is one of
-        # them, and both the hash and the record read that variable.
+        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them,
+        # the parse-time hash reads them through profile_hash and the record recipe
+        # from its environment.
         export_line = next(
             line for line in self.makefile.splitlines()
             if line.startswith("export NK_CODEGEN_PROFILE_ENTRIES :=")
@@ -1529,7 +1530,7 @@ class MakefileSpanBindingTests(unittest.TestCase):
             line for line in self.makefile.splitlines()
             if line.startswith("CODEGEN_PROFILE_HASH :=")
         )
-        self.assertIn("--entries-env NK_CODEGEN_PROFILE_ENTRIES", hash_line)
+        self.assertIn("$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,", hash_line)
         record_line = next(
             line for line in self.makefile.splitlines() if "--section codegen" in line
         )

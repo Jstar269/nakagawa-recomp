@@ -1130,11 +1130,13 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
 
     def test_makefile_binds_the_configuration_into_the_runtime_profile(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        # The parse-time hash reads the exported entries through profile_hash, which
+        # writes them to a file because Make < 4.4 does not export to $(shell ...).
         hash_line = next(
             line for line in makefile.splitlines()
             if line.startswith("RUNTIME_PROFILE_HASH :=")
         )
-        self.assertIn("--entries-env NK_RUNTIME_PROFILE_ENTRIES", hash_line)
+        self.assertIn("$(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,", hash_line)
         record_line = next(
             line for line in makefile.splitlines()
             if "--section runtime" in line

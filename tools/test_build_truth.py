@@ -2569,6 +2569,37 @@ class ProfileEntriesEnvTransportTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("conflicting sources", proc.stderr)
 
+    def test_entries_file_hash_matches_identical_env_entries(self) -> None:
+        entries = [
+            'CFLAGS=-O0 -I"C:/a b/include" -DSR_BUILD_DIR=\\"build/x\\"',
+            "EXTRA_ELF_ARGS=--extra-elf=a.prx@runtime --extra-elf=b.prx@0x08900000",
+        ]
+        env = dict(os.environ, **{self.ENV_VAR: "\n".join(entries)})
+        env_run = self._run(
+            ["hash", "--compiler", self._compiler(), "--entries-env", self.ENV_VAR], env)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "entries"
+            # Make's $(file ...) writes the value and a trailing newline.
+            path.write_text("\n".join(entries) + "\n", encoding="utf-8", newline="\n")
+            file_run = self._run(
+                ["hash", "--compiler", self._compiler(), "--entries-file", str(path)],
+                dict(os.environ))
+            conflict = self._run(
+                ["hash", "--compiler", self._compiler(), "--entries-file", str(path),
+                 "--entry", "A=1"],
+                dict(os.environ))
+        self.assertEqual(env_run.returncode, 0, env_run.stderr)
+        self.assertEqual(file_run.returncode, 0, file_run.stderr)
+        self.assertEqual(env_run.stdout.strip(), file_run.stdout.strip())
+        self.assertEqual(conflict.returncode, 2, conflict.stderr)
+        self.assertIn("conflicting sources", conflict.stderr)
+        missing = self._run(
+            ["hash", "--compiler", self._compiler(), "--entries-file",
+             str(Path(tempfile.gettempdir()) / "nakagawa-no-such-entries-file")],
+            dict(os.environ))
+        self.assertEqual(missing.returncode, 2, missing.stderr)
+        self.assertIn("could not be read", missing.stderr)
+
     def test_unset_entries_env_fails_closed(self) -> None:
         env = dict(os.environ)
         env.pop(self.ENV_VAR, None)
