@@ -47,7 +47,9 @@ _REAL_SUBPROCESS_RUN = subprocess.run
 
 
 def _is_compiler_target_query(command) -> bool:
-    return bool(command) and command[-1] == "-dumpmachine"
+    # Match the flag anywhere in the argv, not only as the last element, so the helper
+    # keeps working if the query ever gains trailing arguments.
+    return bool(command) and "-dumpmachine" in command
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
