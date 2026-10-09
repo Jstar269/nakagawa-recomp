@@ -9167,16 +9167,14 @@ static uint32_t h_LoadModule(CpuState *s) {
 static const char *hle_fd_guest_path(uint32_t fd);
 
 /* sceKernelLoadModuleByID(fd, flags, option). The file was opened by path, and that path
- * names the module: a guest-placed module loads exactly as sceKernelLoadModule loads it.
- * Otherwise every fixed-address manifest module is populated idempotently (the sorted
+ * names the module: it loads exactly as sceKernelLoadModule loads the same path, with a
+ * module record its start/stop/unload can find -- guest-placed, fixed-address, or
+ * (undeclared) host-served. Only a descriptor without a recorded path keeps the older
+ * behaviour: every fixed-address manifest module is populated idempotently (the sorted
  * registry replaces duplicate NIDs, so repeated loads stay safe). */
 static uint32_t h_LoadModuleByID(CpuState *s) {
     const char *opened = hle_fd_guest_path(A0);
-    SrGuestModulePlacement opened_placement = SR_GUEST_MODULE_FIXED;
-    if (opened && sr_title_config_guest_module(opened, NULL, NULL, NULL, &opened_placement) &&
-        opened_placement == SR_GUEST_MODULE_RUNTIME) {
-        return load_module_by_guest_path(opened, A2);
-    }
+    if (opened) return load_module_by_guest_path(opened, A2);
     for (unsigned i = 0; i < sr_title_config_guest_module_count(); i++) {
         const char *file = NULL;
         uint32_t base = 0;

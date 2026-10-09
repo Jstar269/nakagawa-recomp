@@ -1883,6 +1883,38 @@ static void test_runtime_placed_modules(void) {
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
         remove(host);
+
+        /* A module the manifest does not declare (a firmware module a disc ships, for
+         * example) gets a record its start can find, as sceKernelLoadModule gives it:
+         * the host serves it, and StartModule succeeds instead of reporting a bad id. */
+        static const char undeclared_guest[] = "ms0:/NKRT/UNDECLARED.PRX";
+        fd_host_path(host, sizeof(host), undeclared_guest);
+        marker = fopen(host, "wb");
+        if (marker) {
+            fputs("undeclared module", marker);
+            fclose(marker);
+        }
+        title_hle_write_cstr(RT_PATH_ADDR, undeclared_guest);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        cpu.r[5] = 1u;
+        fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        uid = sr_hle_test_load_module_by_id(&cpu);
+        unsigned modules_after_load = sr_hle_test_module_count();
+        expect(marker != NULL && fd < 64u && uid != 0u && (uid & 0x80000000u) == 0u &&
+                   modules_after_load == 1u,
+               "runtime placement: LoadModuleByID of an undeclared path records the module");
+        expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   sr_hle_test_module_count() == 0u,
+               "runtime placement: an undeclared module loaded by descriptor starts host-served");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        (void)sr_hle_test_io_close(&cpu);
+        remove(host);
         SetEnvironmentVariableA("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
         _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
     }
