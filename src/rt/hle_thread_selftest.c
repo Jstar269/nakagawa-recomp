@@ -4119,6 +4119,35 @@ static void test_sysreg_write_model(void) {
 
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
+/* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Width 0 leaves the width unset and
+ * reports the current setting (0 when none); 512, 1024, 2048 and 4096 set it and return the
+ * previous width (0 when none was set). An unsupported width fails and leaves the setting alone.
+ * The failing code is the project choice noted in hle.c. */
+#define NID_GE_EDRAM_SET_TRANSLATION 0xb77905eau
+#define GE_EDRAM_BAD_WIDTH_ERR       0x80000107u
+void sr_hle_test_ge_edram_reset(void);
+
+static uint32_t ge_edram_translation(uint32_t width) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = width;
+    return sr_syscall(&cpu, NID_GE_EDRAM_SET_TRANSLATION);
+}
+
+static void test_ge_edram_addr_translation(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_edram_reset();
+    expect(ge_edram_translation(0u) == 0u, "EDRAM translation width 0 with nothing set returns 0");
+    expect(ge_edram_translation(1024u) == 0u, "the first width set (1024) returns 0, no previous width");
+    expect(ge_edram_translation(512u) == 1024u, "setting 512 returns the previous width 1024");
+    expect(ge_edram_translation(0u) == 512u, "width 0 reports the current width 512 without changing it");
+    expect(ge_edram_translation(333u) == GE_EDRAM_BAD_WIDTH_ERR,
+           "an unsupported width (333) fails with the documented-negative code");
+    expect(ge_edram_translation(0u) == 512u, "a failed set leaves the width at 512");
+    sr_hle_test_ge_edram_reset();
+}
+
 /* sceUtilityGetSystemParamString (0x34b78343), nickname id 1: the value is the registry's
  * /CONFIG/SYSTEM/owner_name. The default is the neutral empty string; the test writes a fixture
  * value through the registry (a test value, not a user's name) to show the source, then restores
@@ -25531,6 +25560,7 @@ int main(int argc, char **argv) {
     test_sysreg_virtual_registry();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
+    test_ge_edram_addr_translation();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();

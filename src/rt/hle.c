@@ -18216,6 +18216,27 @@ static uint32_t h_GeEdramGetSize(CpuState *s) {
     (void)s;
     return 0x00200000u;
 }
+
+/* sceGeEdramSetAddrTranslation(int width) (PSPSDK pspge.h): width 0 leaves the translation width
+ * unset, and 512, 1024, 2048 and 4096 set it. The return is the previous width when one was set,
+ * else 0, and < 0 on error. Width 0 reports the current setting. The retained width is reported
+ * back, but this runtime does not apply address translation to GE memory accesses, so the setting
+ * changes no rendering. The error code for an unsupported width is not documented: 0x80000107 (the
+ * GE invalid-mode code measured on PSP-3000 for sceGeBreak) is a project choice, UNMEASURED here. */
+static uint32_t s_ge_edram_width = 0u;
+static uint32_t h_GeEdramSetAddrTranslation(CpuState *s) {
+    uint32_t width = A0;
+    uint32_t previous = s_ge_edram_width;
+    if (width == 0u) return previous;
+    if (width != 512u && width != 1024u && width != 2048u && width != 4096u) return 0x80000107u;
+    s_ge_edram_width = width;
+    return previous;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only reset so the executable harness can start from an unset width. */
+void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = 0u; }
+#endif
 static uint32_t h_GeDrawSync(CpuState *s) {
     /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
      * completion of every queued GE list. Public behaviour reference: the
@@ -21711,6 +21732,7 @@ static void hle_register_ge_handlers(void) {
     sr_hle_register(0x03444eb4, "sceGeListSync", h_GeListSync);
     sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
     sr_hle_register(0x1f6752ad, "sceGeEdramGetSize", h_GeEdramGetSize);
+    sr_hle_register(0xb77905ea, "sceGeEdramSetAddrTranslation", h_GeEdramSetAddrTranslation);
     sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
     sr_hle_register(0xdc93cfef, "sceGeGetCmd", h_GeGetCmd);
 }
