@@ -25,6 +25,16 @@ numbers, other unrecognized or title-specific fields before comparing it. Issue 
 come from the checked-in schema allowlist also used by the public `nk_cli.py` report
 generator; no network lookup is involved.
 
+Each title's bring-up launch (the recompiled title actually running) is limited by
+`--launch-timeout SECONDS`: 1..120, the range `nk_cli.py bringup --launch-timeout` accepts,
+default 20. An out-of-range value is rejected before any title runs. `--time-budget` still
+bounds the whole per-title route (inspect, import, analyze, codegen, compile, package and
+launch), so the launch limit passed to bring-up is `min(--launch-timeout, --time-budget)`
+and the default reproduces the earlier fixed `min(20, --time-budget)`. To let titles run for
+60 s or 110 s, raise `--launch-timeout` and give `--time-budget` enough room for the build
+stages as well. The aggregate records `time_budget_seconds` but not the launch limit, so
+compare aggregates produced with the same `--launch-timeout`.
+
 Parallel shard runs are combined with `--merge-private-reports PATH [PATH ...]`. Each
 argument may be either the shard's `library-sweep.json` file or the shard's private
 directory (the `--private-dir` the shard was run with), and the two forms may be mixed in
@@ -104,6 +114,6 @@ at a named semantic boundary rather than simulating phantom success.
 
 ### Issue #299: libfont registry import boundary
 
-`sceRegOpenRegistry` (NID `0x92e41280`, library `sceReg`) and the rest of the `sceReg` family run against a read-only virtual system registry for modeled `/CONFIG` keys, and its integer values share the table used by `sceUtilityGetSystemParamInt`. Unknown categories and keys, and all writes, fail closed.
+`sceRegOpenRegistry` (NID `0x92e41280`, library `sceReg`) and the rest of the `sceReg` family run against a read/write virtual system registry opened in mode 1 (read) or mode 2 (read/write). Its `/CONFIG` tree (the category and key names, types, sizes and listing order) was measured on a PSP-3000 running 6.6.1 on 2026-10-09 by a read-only enumeration, as were the not-found (`0x8008271D`) and bad-handle (`0x8008272E`) codes and the fact that opening a missing category creates it. Only six non-personal values were captured (language, both `button_assign` keys, date format, time format, summer time); every other key, including personal ones such as the nickname (`/CONFIG/SYSTEM/owner_name`), passwords and network or account keys, is present with a neutral placeholder (0, an empty string, or zero bytes), never a real value, and a game that reads a placeholder is named once in the log. The player has no nickname setting yet. `sceUtilityGetSystemParamInt` reads the registry's shared keys, so a setting a game writes is the value both surfaces report. Writes need a mode-2 handle; key creation, category creation and removal of empty game-created categories are supported, while the measured categories cannot be removed. `sceRegFlushCategory` and `sceRegFlushRegistry` save every change atomically to one per-user overlay file (`registry/system.json` in the per-user data directory, or `SR_SYSTEM_REGISTRY`); a corrupt overlay is reported, ignored and moved aside on the next save, never a crash. The write semantics and the remaining error codes are project-authored from the public PSPSDK documentation and public homebrew behaviour and are not hardware measured, because the console oracle never writes the registry. Unknown keys still fail closed by name, and `sceRegRemoveKey` (no public argument documentation), `sceRegRemoveRegistry` and `sceRegExit` remain unimplemented.
 
 Repeated `sceKernelStartModule` calls return `SCE_KERNEL_ERROR_ALREADY_STARTED` (`0x80020133`), matching the public [PSP kernel error table](https://github.com/pspdev/prxtool/blob/master/pspkerror.C). This source-backed value and the stopped-module restart rule have not been verified on physical hardware; restartability remains an inference.

@@ -137,6 +137,12 @@
     "name": "sceRegCloseCategory",
     "status": "partial"
   },
+  "0x0d69bf40": {
+    "classification": "dedicated",
+    "handler": "h_RegFlushCategory",
+    "name": "sceRegFlushCategory",
+    "status": "partial"
+  },
   "0x0d81716a": {
     "classification": "dedicated",
     "handler": "h_PollMbx",
@@ -288,6 +294,12 @@
     "handler": "h_StdFd",
     "name": "sceKernelStdin",
     "status": "unreviewed"
+  },
+  "0x17768e14": {
+    "classification": "dedicated",
+    "handler": "h_RegSetKeyValue",
+    "name": "sceRegSetKeyValue",
+    "status": "partial"
   },
   "0x17c1684e": {
     "classification": "dedicated",
@@ -552,6 +564,12 @@
     "name": "scePsmfPlayerBreak",
     "status": "unreviewed"
   },
+  "0x2c0db9dd": {
+    "classification": "dedicated",
+    "handler": "h_RegGetKeysNum",
+    "name": "sceRegGetKeysNum",
+    "status": "partial"
+  },
   "0x2c34e053": {
     "classification": "dedicated",
     "handler": "h_ReleaseWaitThread",
@@ -570,6 +588,12 @@
     "name": "scePsmfPlayerSetTempBuf",
     "status": "unreviewed"
   },
+  "0x2d211135": {
+    "classification": "dedicated",
+    "handler": "h_RegGetKeys",
+    "name": "sceRegGetKeys",
+    "status": "partial"
+  },
   "0x2d53f36e": {
     "classification": "dedicated",
     "handler": "h_AudioOutput2Blocking",
@@ -587,6 +611,12 @@
     "handler": "h_UnloadModule_Trace",
     "name": "sceKernelUnloadModule",
     "status": "unreviewed"
+  },
+  "0x30be0259": {
+    "classification": "dedicated",
+    "handler": "h_RegGetKeyValueByName",
+    "name": "sceRegGetKeyValueByName",
+    "status": "partial"
   },
   "0x30fd48f0": {
     "classification": "dedicated",
@@ -738,6 +768,12 @@
     "handler": "h_TerminateDeleteThread",
     "name": "sceKernelTerminateDeleteThread",
     "status": "unreviewed"
+  },
+  "0x39461b4d": {
+    "classification": "dedicated",
+    "handler": "h_RegFlushRegistry",
+    "name": "sceRegFlushRegistry",
+    "status": "partial"
   },
   "0x39810265": {
     "classification": "dedicated",
@@ -982,6 +1018,12 @@
     "name": "sceKernelReferLwMutexStatusByID",
     "status": "unreviewed"
   },
+  "0x4ca16893": {
+    "classification": "dedicated",
+    "handler": "h_RegRemoveCategory",
+    "name": "sceRegRemoveCategory",
+    "status": "partial"
+  },
   "0x4cfa57b0": {
     "classification": "dedicated",
     "handler": "h_RtcGetCurrentClock",
@@ -1090,6 +1132,12 @@
     "handler": "h_FontDoneLib",
     "name": "sceFontDoneLib",
     "status": "unreviewed"
+  },
+  "0x57641a81": {
+    "classification": "dedicated",
+    "handler": "h_RegCreateKey",
+    "name": "sceRegCreateKey",
+    "status": "partial"
   },
   "0x58b1f937": {
     "classification": "dedicated",
@@ -2330,6 +2378,12 @@
     "handler": "h_SharingDialogInit",
     "name": "sceUtilityGameSharingInitStart",
     "status": "unreviewed"
+  },
+  "0xc5768d02": {
+    "classification": "dedicated",
+    "handler": "h_RegGetKeyInfoByName",
+    "name": "sceRegGetKeyInfoByName",
+    "status": "partial"
   },
   "0xc6183d47": {
     "classification": "dedicated",

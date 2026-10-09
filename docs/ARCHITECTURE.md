@@ -600,6 +600,7 @@ the maintained references for exact behavior.
 | `PSP_ISO` | path | Private ISO path where a route consumes it |
 | `SR_MEMSTICK` | path | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
 | `SR_FSDIR` | path | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root (default `fs/`) |
+| `SR_SYSTEM_REGISTRY` | path | Per-user overlay file of the virtual PSP system registry that `sceRegFlush*` writes (default `registry/system.json` in the per-user data directory) |
 
 Many legacy Boolean diagnostics are enabled by **presence**, so setting them to the literal string
 `"0"` may still enable them. Remove/unset such variables to disable them. Value-parsed switches

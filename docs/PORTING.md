@@ -170,7 +170,12 @@ the game loads it by (`guest_path`), and its placement:
   `sceKernelLoadModule`, wherever the user-partition allocator puts it (the
   lowest free range that holds it, as the kernel's loader does). Unloading it
   returns the memory, so overlays that never fit together run one after another.
-  This is what `nk_cli.py bringup` declares for every discovered module.
+  This is what `nk_cli.py bringup` declares for every discovered module that
+  runs as translated guest code. A module whose every user-callable export the
+  runtime registers is served by the runtime and not translated at all, and a
+  kernel-mode module is left out (planning stops with
+  `GUEST_MODULE_FORMAT_UNSUPPORTED` only when the main executable needs one of its
+  functions that nothing else provides).
 - a fixed `load_address` (the default placement): the runtime reserves exactly
   that range and fails closed if it is occupied.
 
