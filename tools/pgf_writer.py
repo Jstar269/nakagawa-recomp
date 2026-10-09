@@ -438,9 +438,10 @@ def build_pgf(
     """
     name_bytes = _validate_font_name(font_name)
     type_bytes = _font_field(font_type, "font type")
+    # bool is an int subclass, so it is refused by name.
     if (
-        isinstance(nominal_em_26_6, bool)
-        or not isinstance(nominal_em_26_6, int)
+        not isinstance(nominal_em_26_6, int)
+        or isinstance(nominal_em_26_6, bool)
         or not 1 <= nominal_em_26_6 <= MAX_NOMINAL_EM_26_6
     ):
         raise _refuse(
