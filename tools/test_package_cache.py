@@ -478,6 +478,111 @@ class PackageCacheTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("unreadable", reason)
 
+    def test_completion_validation_reads_each_artifact_once_and_keeps_the_set_check(self) -> None:
+        # Fast path: the artifact-set check enumerates paths and reads no bytes.
+        # Slow path: the digest-bearing writer enumeration must describe the same
+        # path set on every layout, and validation must still accept or refuse
+        # the package exactly as the set check always did.
+        package_dir = self.root / "reads-once"
+        package_dir.mkdir()
+        executable = package_dir / "synthetic.exe"
+        image = package_dir / "synthetic_image.bin"
+        generated = package_dir / "synthetic_recomp.o"
+        executable.write_bytes(b"native")
+        image.write_bytes(b"image" * 4096)
+        generated.write_bytes(b"object")
+        (package_dir / "assets").mkdir()
+        (package_dir / "assets" / "nested.bin").write_bytes(b"nested")
+        key = self.key()
+        cache = package_cache.cache_metadata(
+            key, {"profile": "none", "funcs_per_chunk": 2000}
+        )
+        package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
+            "cache": cache,
+            "inputs": self.inputs,
+            "executable": {
+                "path": executable.name,
+                "sha256": package_cache.sha256_file(executable),
+            },
+            "generated_objects": [{
+                "path": generated.name,
+                "sha256": package_cache.sha256_file(generated),
+            }],
+        }
+        (package_dir / "package.json").write_text(
+            package_cache.canonical_json(package), encoding="utf-8"
+        )
+        (package_dir / "build-report.json").write_text(
+            package_cache.canonical_json({"cache": cache}), encoding="utf-8"
+        )
+        package_cache.write_completion_manifest(package_dir, key)
+
+        real_sha256 = package_cache.sha256_file
+        hashed: list[str] = []
+
+        def recording(path):
+            hashed.append(Path(path).name)
+            return real_sha256(path)
+
+        with mock.patch.object(package_cache, "sha256_file", side_effect=recording):
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertTrue(valid, reason)
+        # Listed artifacts are read once each, by the completion check's own loop.
+        # The set check no longer reads them a second time.
+        self.assertEqual(hashed.count("synthetic_image.bin"), 1)
+        self.assertEqual(hashed.count("nested.bin"), 1)
+        self.assertEqual(hashed.count("package.json"), 1)
+
+        extra = package_dir / "late_extra.bin"
+        extra.write_bytes(b"unlisted" * 1024)
+        hashed.clear()
+        with mock.patch.object(package_cache, "sha256_file", side_effect=recording):
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertIn("artifact set does not match", reason)
+        # An unlisted file is refused by its path alone; its bytes are never read.
+        self.assertNotIn("late_extra.bin", hashed)
+        extra.unlink()
+
+        def paths_fast(directory: Path) -> set[str]:
+            return {
+                package_cache._safe_relative(relative)
+                for relative, _ in package_cache._artifact_candidates(directory)
+            }
+
+        def paths_slow(directory: Path) -> set[str]:
+            return {record["path"] for record in package_cache._artifact_records(directory)}
+
+        nested_dir = package_dir / "deep" / "er"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "leaf.bin").write_bytes(b"leaf")
+        (package_dir / "empty_dir").mkdir()
+        self.assertIn("deep/er/leaf.bin", paths_fast(package_dir))
+        self.assertEqual(paths_fast(package_dir), paths_slow(package_dir), "with-deep-leaf")
+        (nested_dir / "leaf.bin").unlink()
+        self.assertNotIn("deep/er/leaf.bin", paths_fast(package_dir))
+        self.assertEqual(paths_fast(package_dir), paths_slow(package_dir), "after-leaf-removed")
+
+        link = package_dir / "linked.bin"
+        try:
+            os.symlink(image, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are unavailable on this host")
+        for enumerate_paths in (paths_fast, paths_slow):
+            with self.assertRaisesRegex(package_cache.PackageCacheError, "symlink artifact"):
+                enumerate_paths(package_dir)
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertIn("symlink artifact", reason)
+        link.unlink()
+
     def test_flagship_sized_build_report_is_accepted(self) -> None:
         # A flagship build report is about 1.3 MB, past the shared 1 MiB byte
         # ceiling, so the package route rejected it with PACKAGE_BUILD_INCOMPLETE
