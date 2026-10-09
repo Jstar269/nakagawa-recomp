@@ -220,6 +220,7 @@ extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
 extern void sr_hle_test_power_reset(void);
 extern void sr_hle_test_hprm_set_remote(int attached);
+extern void sr_hle_test_hprm_set_headphone(int attached);
 extern uint32_t sr_vblank_handler(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
@@ -11304,6 +11305,17 @@ static void test_td24b_cheap_hle_batch(void) {
     sr_hle_test_hprm_set_remote(0);
     expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 0u,
            "sceHprmIsRemoteExist returns to no remote when the model detaches it");
+
+    /* sceHprmIsHeadphoneExist (0x7e69eda4): PSPSDK psphprm.h, 1 when headphones are plugged in. The
+     * runtime models them as absent by default, and the answer follows the modeled state. */
+    expect(td24b_dispatch4(0x7e69eda4u, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsHeadphoneExist reports no headphones (the runtime models no headphone accessory)");
+    sr_hle_test_hprm_set_headphone(1);
+    expect(td24b_dispatch4(0x7e69eda4u, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsHeadphoneExist follows a modeled attached headset");
+    sr_hle_test_hprm_set_headphone(0);
+    expect(td24b_dispatch4(0x7e69eda4u, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsHeadphoneExist returns to no headphones when the model detaches it");
 
     /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
     reset_fixture();
