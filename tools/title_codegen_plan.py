@@ -999,7 +999,9 @@ def _cache_codegen_options(
     selected_optional: set[str],
     funcs_per_chunk: int,
 ) -> dict[str, Any]:
-    return {
+    from nk_core import package_cache
+
+    options = {
         "base": plan["environment"]["GAME_BASE"],
         "entry": plan["environment"]["GAME_ENTRY"],
         "title_extra_spans": plan["environment"]["TITLE_EXTRA_SPANS"],
@@ -1014,6 +1016,11 @@ def _cache_codegen_options(
         ),
         "chunk_target_bytes": os.environ.get("CHUNK_TARGET_BYTES", ""),
     }
+    # Mirrors nk_cli._package_codegen_options: the Makefile adds --nan-trap itself, so the
+    # options name it only when it is on, leaving untrapped keys unchanged.
+    if package_cache.nan_trap_enabled(os.environ):
+        options["nan_trap"] = True
+    return options
 
 
 def _aot_required_outputs(game_name: str) -> set[str]:

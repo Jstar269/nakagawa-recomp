@@ -910,7 +910,22 @@ def native_compile_flags(
         env.get("STALE_CODE_POLICY", env.get("SR_STALE_POLICY", "")),
         "PUBLIC_SAFE=1" if public_safe else "PUBLIC_SAFE=0",
     )
-    return "|".join(values)
+    flags = "|".join(values)
+    # The NaN trap adds -DSR_NAN_TRAP inside the Makefile, where CFLAGS above cannot see it.
+    # It is appended only when on, so every untrapped key stays exactly what it was.
+    return flags + "|NAN_TRAP=1" if nan_trap_enabled(env) else flags
+
+
+def nan_trap_enabled(environment: Mapping[str, str] | None = None) -> bool:
+    """Whether a Make build in this environment turns on the NaN trap (issue #69).
+
+    `make NAN_TRAP=1` turns on both halves at once, `--nan-trap` codegen and `-DSR_NAN_TRAP`,
+    and it does so inside the Makefile (`ifeq ($(NAN_TRAP),1)`). So neither
+    CODEGEN_USER_ARGS nor CFLAGS in the environment shows it, and the cache key has to ask
+    for it by name: a trapped and an untrapped build must never share a cache entry.
+    """
+    env = os.environ if environment is None else environment
+    return env.get("NAN_TRAP", "").strip() == "1"
 
 
 def _input_sha(value: Any, label: str) -> str:

@@ -1997,6 +1997,77 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
+    def test_run_budget_detection_needs_the_runtime_budget_event(self):
+        self.assertTrue(nk_cli._runtime_run_budget_ended(
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(
+            "note: BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(""))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(None))
+
+    def test_budget_ended_live_guest_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x446D8DE6}],
+            launch_output=(
+                "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"
+            ),
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertEqual(report["issue_numbers"], [308])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("run budget ended", summary)
+        self.assertNotIn("exited zero", summary.casefold())
+        nk_cli.validate_bringup_report(report)
+
+    def test_budget_ended_before_any_hle_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[],
+            launch_output="BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        nk_cli.validate_bringup_report(report)
+
+    def test_bounded_launch_output_keeps_both_ends_and_names_the_elision(self):
+        text = "HEAD" + ("x" * 1000) + "TAIL"
+        bounded = nk_cli._bounded_launch_output(text, 300)
+
+        self.assertLessEqual(len(bounded), 300)
+        self.assertTrue(bounded.startswith(b"HEAD"))
+        self.assertTrue(bounded.endswith(b"TAIL"))
+        self.assertIn(b"bytes elided", bounded)
+        short = nk_cli._bounded_launch_output("small\n", 300)
+        self.assertEqual(short, b"small\n")
+
+    def test_bringup_keeps_the_launch_log_in_the_work_dir(self):
+        self._run_case(launch_output="LAUNCH-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"LAUNCH-LOG-MARKER", log.read_bytes())
+
+    def test_bringup_launch_log_is_bounded(self):
+        with mock.patch.object(nk_cli, "BRINGUP_LAUNCH_LOG_MAX_BYTES", 512):
+            self._run_case(launch_output="y" * 4000 + "LAUNCH-LOG-END\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        data = log.read_bytes()
+        self.assertLessEqual(len(data), 512)
+        self.assertIn(b"LAUNCH-LOG-END", data)
+
+    def test_timed_out_launch_still_keeps_its_output(self):
+        self._run_case(timeout=True, launch_output="TIMEOUT-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"TIMEOUT-LOG-MARKER", log.read_bytes())
+
     def test_zero_exit_with_dropped_flight_events_is_unverified(self):
         status, report = self._run_case(flight_events=[], flight_dropped=1)
 

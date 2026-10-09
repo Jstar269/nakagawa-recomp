@@ -1173,7 +1173,7 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
         title_extra_spans = ",".join(
             f"0x{int(span['start']):08x},0x{int(span['end']):08x}" for span in spans
         )
-    return {
+    options = {
         "base": f"0x{int(executable['base']):08x}",
         "entry": f"0x{int(executable['entry']):08x}",
         "title_extra_spans": title_extra_spans,
@@ -1190,6 +1190,11 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
         # The planner writes this into the package's cache metadata, so the key must carry it too.
         "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }
+    # `make NAN_TRAP=1` adds --nan-trap to codegen inside the Makefile, out of sight of
+    # CODEGEN_USER_ARGS above. Named only when on, so untrapped keys are unchanged.
+    if package_cache.nan_trap_enabled(environment):
+        options["nan_trap"] = True
+    return options
 
 
 def _has_private_backends(root: Path = ROOT) -> bool:
@@ -2626,6 +2631,9 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (the runtime exited zero before PSP display framebuffer setup)"
     elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
         detail = " (runtime telemetry did not verify a PSP kernel import)"
+    elif report["failure_class"] == "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP":
+        detail = (" (the run budget ended while the guest was still running, before PSP display "
+                  "framebuffer setup; the runtime did not exit on its own)")
     elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
     elif report["failure_class"] == "DISC_FILES_STAGE_FAILED":
@@ -2897,6 +2905,54 @@ def _set_bringup_presentation(report: dict, output: str) -> bool:
         "backend": backend,
     }
     return evidence_ok
+
+
+# The runtime's own record of the SR_EXIT_AT_VBLANK run budget (src/rt/hle.c). The budget
+# exit is a clean process exit with status 0 in the middle of a live guest.
+_RUNTIME_RUN_BUDGET_END = re.compile(
+    r"^BOOT_EVENT phase=exit_at_vblank vblanks=\d+ \(SR_EXIT_AT_VBLANK=\d+\)\s*$",
+    re.MULTILINE,
+)
+
+
+def _runtime_run_budget_ended(launch_output: str | None) -> bool:
+    """True when the runtime stopped at its vblank run budget, not at a guest exit."""
+    return bool(_RUNTIME_RUN_BUDGET_END.search(launch_output or ""))
+
+
+BRINGUP_LAUNCH_LOG_NAME = "bringup-launch.log"
+BRINGUP_LAUNCH_LOG_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _bounded_launch_output(text: str | None, limit: int) -> bytes:
+    """Return the launch output within `limit` bytes: its head and tail, with the middle elided.
+
+    The start of a run (how it came up) and its last events (where it stopped) are what
+    triage reads, so both ends are kept and the elided span is named in the middle.
+    """
+    data = (text or "").encode("utf-8", errors="replace")
+    if len(data) <= limit:
+        return data
+    reserve = 128  # room for the elision marker, which is always shorter
+    keep = limit - reserve
+    head = keep // 4
+    tail = keep - head
+    dropped = len(data) - head - tail
+    marker = b"\n[... %d bytes elided to keep the launch log bounded ...]\n" % dropped
+    return data[:head] + marker + data[len(data) - tail:]
+
+
+def _write_bringup_launch_log(work_dir: Path, launch_output: str | None) -> None:
+    """Keep the launched runtime's stdout and stderr in the work dir, bounded.
+
+    A failure to write the log is reported and does not change the launch result.
+    """
+    try:
+        (work_dir / BRINGUP_LAUNCH_LOG_NAME).write_bytes(
+            _bounded_launch_output(launch_output, BRINGUP_LAUNCH_LOG_MAX_BYTES)
+        )
+    except OSError as exc:
+        print(f"bring-up: could not keep the launch log: {exc}", file=sys.stderr)
 
 
 def _flight_has_hle_import(path: Path | None) -> bool | None:
@@ -3597,18 +3653,28 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
+            _write_bringup_launch_log(work_dir, launch_output)
             presentation_evidence_ok = _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
             report["runtime_output_kind"] = _runtime_output_kind(
                 launch_output, report["runtime_imports"]
             )
             report["process_exit_code"] = process.returncode
-            report["exit_classification"] = "EXITED_ZERO" if process.returncode == 0 else "EXITED_NONZERO"
+            budget_ended = _runtime_run_budget_ended(launch_output)
+            if process.returncode != 0:
+                report["exit_classification"] = "EXITED_NONZERO"
+            elif budget_ended:
+                report["exit_classification"] = "RUN_BUDGET_ENDED"
+            else:
+                report["exit_classification"] = "EXITED_ZERO"
             if process.returncode == 0:
                 hle_observed = _flight_has_hle_import(flight_output)
                 if hle_observed is False:
+                    # A run the budget ended is a live guest, not an exit: name the budget.
+                    failure = ("RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP" if budget_ended
+                               else "EXITED_ZERO_BEFORE_HLE")
                     fail_stage(
-                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [308],
+                        report, "launch", failure, [308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 elif hle_observed is None:
@@ -3621,6 +3687,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     if framebuffer_observed is False:
                         if _flight_has_module_self_unload(flight_output) is True:
                             failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 308]
+                        elif budget_ended:
+                            failure, issues = "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP", [308]
                         else:
                             failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [308]
                         fail_stage(report, "launch", failure, issues,
@@ -3671,6 +3739,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         except subprocess.TimeoutExpired:
             process.kill()
             launch_output, _ = process.communicate()
+            _write_bringup_launch_log(work_dir, launch_output)
             _set_bringup_presentation(report, launch_output)
             report["exit_classification"] = "TIMED_OUT"
             fail_stage(report, "launch", "LAUNCH_TIMEOUT", [308],
