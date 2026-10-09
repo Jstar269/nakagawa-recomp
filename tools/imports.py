@@ -19,18 +19,14 @@
 # binary may or may not work") and the loader patches only the covered positions.
 #
 # Parsing by the per-entry run alone (stub = firstSym + i*8) therefore both drops the
-# unclaimed slots and double-counts overlapped ones. This module instead:
-#   * derives the full stub/NID regions (.sceStub.text/.rodata.sceNid when present,
-#     else the union of the window runs), requiring stub_bytes == 2 * nid_bytes;
-#   * pairs every stub slot with its global NID;
-#   * treats each window as a claim of numFuncs positions, attributing the library
-#     name (the last claimer wins on overlap -- the toolchain emits each library's
-#     run from its first slot, so the last window to reach a position owns it);
-#   * emits exactly one (stub_addr -> (library, NID)) pair per slot, using the
-#     "(unattributed)" marker for slots no window claims, and reports structural
-#     findings (unclaimed/ambiguously claimed slots) via the findings list;
-#   * fails closed on malformed bounds, truncated records, overflow, impossible
-#     counts, and windows whose NID position disagrees with their stub position.
+# unclaimed slots and double-counts overlapped ones. The pairing is the layout model
+# psp_import_table.layout_import_windows, which the strict audit parser shares with
+# this module: it derives the stub/NID regions, pairs every slot with its global NID,
+# attributes library names by window claims, reports unclaimed and multi-claimed
+# slots as findings, and fails closed on malformed or unpairable layouts.
+# AuditAnalyzerParityTests in test_imports.py keeps the two parsers in step. This
+# module supplies the analyzer's own reads: guest strings, the rebased and relocated
+# image, the module-info record, and the variable-import boundary.
 #
 # The PSP loader itself only ever reads the windows: an entry patches the slot at
 # firstSym + 8*i with the function named by nidData[i]. Every window therefore has a
@@ -61,6 +57,12 @@ if _TOOLS_DIRECTORY not in sys.path:
 import build_profile
 
 from analyze import Elf
+from psp_import_table import UNATTRIBUTED_LIBRARY as UNATTRIBUTED_LIBRARY  # re-exported marker
+from psp_import_table import (
+    ImportWindow,
+    layout_import_windows,
+)
+from psp_import_table import ImportTableError as LayoutImportError
 
 
 # Guest strings are metadata, not trusted host-language source. PSP import-library names in
@@ -152,10 +154,6 @@ def _variable_import_table(elf, pos, entry_bytes, size_words, library, count, re
     return VariableImportTable(library, count, pos, vstub_table)
 
 
-# Marker for stub slots that no library window claims (interleaved stub tables). Kept
-# out of the guest-name alphabet (percent-encoding turns any guest byte into %XX) so it
-# can never collide with a real library name.
-UNATTRIBUTED_LIBRARY = "(unattributed)"
 
 
 def _encode_import_library_name(raw):
@@ -244,7 +242,7 @@ def _import_model_impl(elf):
         return v
 
     # Pass 1: walk the PspLibStubEntry window table (libstub..libstubend).
-    windows = []  # (library name, numFuncs, numVars, nidData, firstSym)
+    windows = []  # ImportWindow(library, numFuncs, nidData, firstSym), in table order
     variable_tables = []  # one VariableImportTable per window that declares variables
     pos = libstub
     while pos < libstubend:
@@ -274,299 +272,31 @@ def _import_model_impl(elf):
         if numVars:
             variable_tables.append(
                 _variable_import_table(elf, pos, e, size, libname, numVars, rebase))
-        windows.append((libname, numFuncs, numVars, nidData, firstSym))
+        windows.append(ImportWindow(libname, numFuncs, nidData, firstSym))
         step = size * 4
         if step <= 0 or pos + step > 0xFFFFFFFF:
             raise ValueError("import stub table step wraps 32-bit guest space")
         pos += step
-    if not windows:
-        # A PSP module may legally import nothing: an empty declared window
-        # table with no stub/NID regions is a valid zero-import module, not a
-        # malformed one. Fail only when the shapes disagree.
-        st_empty = True
-        nid_empty = True
-        st = elf.sec(".sceStub.text")
-        nidsec = elf.sec(".rodata.sceNid")
-        if st is not None and st["size"]:
-            st_empty = False
-        if nidsec is not None and nidsec["size"]:
-            nid_empty = False
-        if st_empty and nid_empty:
-            return {}, ["module declares an empty import table"]
-        raise ValueError("import stub table is empty")
     if variable_tables:
         raise VariableImportsUnsupported(variable_tables)
 
-    function_windows = [w for w in windows if w[1] > 0]
-    if not function_windows:
-        raise ImportTableError(
-            "ANALYZER_IMPORT_TABLE_INVALID",
-            "import stub table has no function windows",
-        )
-
-    # Pass 2: pairing regions. The primary region is the psp-fixup-imports one:
-    # the named sections (.sceStub.text/.rodata.sceNid) when the input has them,
-    # else the union of every window's runs. With named sections, a window whose
-    # stub run and NID run both lie outside them is a detached run: the loader
-    # patches its slots from its own NID run, so it is paired by that run alone
-    # (grouped with overlapping runs that share its pairing offset). Without
-    # section bounds a detached run cannot be told from a corrupted window, so
-    # stripped inputs keep the single fail-closed region.
-    st = elf.sec(".sceStub.text")
-    nidsec = elf.sec(".rodata.sceNid")
-
+    # Passes 2-4: the shared layout model (psp_import_table.layout_import_windows)
+    # pairs stub slots with NIDs for the audit parser and the analyzer alike.
     def sec_base(s):
         return s["addr"] + base if (base != 0 and s["addr"] < base) else s["addr"]
 
-    section_stub = section_nid = None
-    if st is not None:
-        if st["size"] % 8:
-            raise ValueError(".sceStub.text size is not a multiple of 8 (stub slots are 8 bytes)")
-        section_stub = (sec_base(st), sec_base(st) + st["size"])
-    if nidsec is not None:
-        if nidsec["size"] % 4:
-            raise ValueError(".rodata.sceNid size is not a multiple of 4")
-        section_nid = (sec_base(nidsec), sec_base(nidsec) + nidsec["size"])
+    st = elf.sec(".sceStub.text")
+    nidsec = elf.sec(".rodata.sceNid")
+    stub_section = (sec_base(st), st["size"]) if st is not None else None
+    nid_section = (sec_base(nidsec), nidsec["size"]) if nidsec is not None else None
 
-    primary_windows = function_windows
-    detached = []
-    if section_stub is not None or section_nid is not None:
-        primary_windows = []
-        for w in function_windows:
-            stub_run = (w[4], w[4] + w[1] * 8)
-            nid_run = (w[3], w[3] + w[1] * 4)
-            if _spans_overlap(stub_run, section_stub) or _spans_overlap(nid_run, section_nid):
-                primary_windows.append(w)
-            else:
-                detached.append(w)
-        if not primary_windows:
-            raise ImportTableError(
-                "ANALYZER_IMPORT_TABLE_INVALID",
-                "no import window lies in the named import sections",
-            )
-    regions = [_primary_pairing_region(primary_windows, section_stub, section_nid)]
-    for group in _pairing_groups(detached):
-        for run in _contiguous_runs(group):
-            regions.append(_window_pairing_region(run))
+    def read_nids(address, count):
+        blob = elf.read_at_vaddr(address, count * 4)
+        if blob is None or len(blob) != count * 4:
+            raise ValueError(f"truncated import NID region at 0x{address:08x}")
+        return struct.unpack(f"<{count}I", blob)
 
-    # Two pairing runs with different offsets must never claim one stub slot:
-    # the slot would pair with two different NIDs.
-    ordered = sorted(regions, key=lambda r: (r["stub_base"], r["stub_end"]))
-    for left, right in zip(ordered, ordered[1:], strict=False):
-        if right["stub_base"] < left["stub_end"]:
-            raise ImportTableError(
-                "ANALYZER_IMPORT_REGIONS_MISMATCH",
-                f"import stub runs at 0x{left['stub_base']:08x} and "
-                f"0x{right['stub_base']:08x} overlap but pair with different NID positions",
-            )
-
-    # Passes 3 and 4, per region: read the region's NID array once, lay window
-    # claims over its positions, and emit one (stub_addr -> (library, NID)) pair
-    # per slot by the region's pairing.
-    stubs = {}
-    findings = []
-    for region in regions:
-        prefix = "" if region["primary"] else f"import run at 0x{region['stub_base']:08x}: "
-        region_stubs, region_findings = _pair_region(elf, region, prefix)
-        stubs.update(region_stubs)
-        findings.extend(region_findings)
-    if detached:
-        findings.append(
-            "import windows outside the named import sections: "
-            f"{len(detached)} windows, "
-            f"{sum((r['stub_end'] - r['stub_base']) // 8 for r in regions[1:])} slots "
-            "paired by their own runs")
-    return stubs, findings
-
-
-def _spans_overlap(a, b):
-    """True when half-open span ``a`` shares an address with ``b`` (``b`` may be None)."""
-    return b is not None and a[0] < b[1] and b[0] < a[1]
-
-
-def _pairing_groups(windows):
-    """Group function windows by pairing offset, in first-appearance order.
-
-    Inside one pairing region stub slot p sits at stub_base + 8*p and its NID at
-    nid_base + 4*p, so firstSym - 2*nidData is the same for every window of the
-    region; windows with different offsets can never share a region.
-    """
-    groups = {}
-    for w in windows:
-        groups.setdefault(w[4] - 2 * w[3], []).append(w)
-    return list(groups.values())
-
-
-def _contiguous_runs(windows):
-    """Split same-offset windows into runs whose stub slots touch or overlap.
-
-    Each run keeps its windows in table order, so the last claimer of a slot
-    stays the one later in the table.
-    """
-    runs = []  # [[table indices], stub end]
-    # Visit windows by first stub slot, so a window either overlaps or touches
-    # the run being built (extend it to the furthest end seen) or starts a new
-    # run after a gap. Ties keep table order (sorted() is stable); a tie cannot
-    # change the runs because each run's end is the maximum over its windows.
-    order = sorted(range(len(windows)), key=lambda i: windows[i][4])
-    for i in order:
-        w = windows[i]
-        if runs and w[4] <= runs[-1][1]:
-            runs[-1][0].append(i)
-            runs[-1][1] = max(runs[-1][1], w[4] + w[1] * 8)
-        else:
-            runs.append([[i], w[4] + w[1] * 8])
-    return [[windows[i] for i in sorted(indices)] for indices, _end in runs]
-
-
-def _byte_count(nbytes, unit, label):
-    """Name ``nbytes`` in whole ``label`` units of ``unit`` bytes, else in bytes."""
-    if nbytes % unit:
-        return f"{nbytes} bytes"
-    count = nbytes // unit
-    return f"{count} {label}{'' if count == 1 else 's'}"
-
-
-def _window_pairing_region(windows):
-    """A pairing region bounded by the union of its windows' runs."""
-    return dict(
-        primary=False,
-        windows=windows,
-        stub_base=min(w[4] for w in windows),
-        stub_end=max(w[4] + w[1] * 8 for w in windows),
-        nid_base=min(w[3] for w in windows),
-        nid_end=max(w[3] + w[1] * 4 for w in windows),
-        finding=None,
-    )
-
-
-def _primary_pairing_region(windows, section_stub, section_nid):
-    """The psp-fixup-imports pairing region and the windows in it.
-
-    Prefer the real sections (the psp-fixup-imports pairing regions); fall back
-    to the union of the windows' runs for a section the input does not name.
-    """
-    window_region = _window_pairing_region(windows)
-    window_stub_base, window_stub_end = window_region["stub_base"], window_region["stub_end"]
-    window_nid_base, window_nid_end = window_region["nid_base"], window_region["nid_end"]
-    stub_base, stub_end = section_stub or (window_stub_base, window_stub_end)
-    nid_base, nid_end = section_nid or (window_nid_base, window_nid_end)
-    finding = None
-
-    # When the named sections do not pair 1:1, only the windows' own runs can be
-    # paired. The two sections then differ in kind:
-    #   * .rodata.sceNid words outside the window run are data the loader never
-    #     reads, so unreferenced words may sit before it (a head) or after it (a
-    #     tail); retail executables carry zero-filled ones on both sides.
-    #   * .sceStub.text slots are code. A slot no window claims is a possible
-    #     call target that the loader never patches, and without a 1:1 section
-    #     pairing it has no NID, so any unreferenced stub slot on either side
-    #     fails closed. No staged retail executable has one.
-    # The PSP fixup utility rejects every non-1:1 shape because it rewrites
-    # whole sections. Any window inconsistent with the run still fails in
-    # _pair_region; the unreferenced NID words are surfaced as a diagnostic.
-    if stub_end - stub_base != 2 * (nid_end - nid_base):
-        if (window_stub_end - window_stub_base != 2 * (window_nid_end - window_nid_base)
-                or not stub_base <= window_stub_base <= window_stub_end <= stub_end
-                or not nid_base <= window_nid_base <= window_nid_end <= nid_end
-                or (window_nid_base - nid_base) % 4):
-            raise ImportTableError(
-                "ANALYZER_IMPORT_REGIONS_MISMATCH",
-                "import stub region size does not match NID region size "
-                "(psp-fixup-imports requires stub slots to pair 1:1 with NIDs)"
-            )
-        stub_head, stub_tail = window_stub_base - stub_base, stub_end - window_stub_end
-        if stub_head or stub_tail:
-            raise ImportTableError(
-                "ANALYZER_IMPORT_REGIONS_MISMATCH",
-                f".sceStub.text has {_byte_count(stub_head, 8, 'stub slot')} before and "
-                f"{_byte_count(stub_tail, 8, 'stub slot')} after the import windows that no "
-                "window claims, and .rodata.sceNid does not pair 1:1 with it, so those "
-                "slots have no NID"
-            )
-        nid_head, nid_tail = window_nid_base - nid_base, nid_end - window_nid_end
-        parts = []
-        if nid_head:
-            parts.append(f"head of {_byte_count(nid_head, 4, 'NID word')}")
-        if nid_tail:
-            parts.append(f"tail of {_byte_count(nid_tail, 4, 'NID word')}")
-        finding = (
-            f".rodata.sceNid has an unreferenced {' and a '.join(parts)}; using the "
-            f"window-paired run ({(window_stub_end - window_stub_base) // 8} slots)"
-        )
-        stub_base, stub_end = window_stub_base, window_stub_end
-        nid_base, nid_end = window_nid_base, window_nid_end
-    return dict(
-        primary=True,
-        windows=windows,
-        stub_base=stub_base,
-        stub_end=stub_end,
-        nid_base=nid_base,
-        nid_end=nid_end,
-        finding=finding,
-    )
-
-
-def _pair_region(elf, region, prefix):
-    """Return (stubs, findings) for one pairing region; findings start with prefix."""
-    stub_base, stub_end = region["stub_base"], region["stub_end"]
-    nid_base, nid_end = region["nid_base"], region["nid_end"]
-    stub_count = (stub_end - stub_base) // 8
-    nid_count = (nid_end - nid_base) // 4
-    if stub_count != nid_count or nid_count <= 0:
-        raise ValueError(f"impossible import region: {stub_count} stub slots vs {nid_count} NIDs")
-
-    nid_blob = elf.read_at_vaddr(nid_base, nid_count * 4)
-    if nid_blob is None or len(nid_blob) != nid_count * 4:
-        raise ValueError(f"truncated import NID region at 0x{nid_base:08x}")
-    nids = struct.unpack(f"<{nid_count}I", nid_blob)
-
-    claims = {}    # position -> library name (last claimer wins)
-    claimers = {}  # position -> [libraries in table order]
-    for libname, numFuncs, _numVars, nidData, firstSym in region["windows"]:
-        if firstSym % 4:
-            raise ValueError(f"import stub area 0x{firstSym:08x} is not 4-byte aligned")
-        if firstSym + numFuncs * 8 > 0xFFFFFFFF or nidData + numFuncs * 4 > 0xFFFFFFFF:
-            raise ValueError("import table address arithmetic exceeds 32-bit guest space")
-        if firstSym < stub_base or (firstSym - stub_base) % 8:
-            raise ValueError(
-                f"import stub address 0x{firstSym:08x} is not an 8-byte slot of the stub region")
-        if nidData < nid_base or (nidData - nid_base) % 4:
-            raise ValueError(
-                f"import NID table 0x{nidData:08x} is not a 4-byte slot of the NID region")
-        first_pos = (firstSym - stub_base) // 8
-        nid_pos = (nidData - nid_base) // 4
-        if first_pos != nid_pos:
-            raise ValueError(
-                f"inconsistent import window {libname}: stub slot {first_pos} "
-                f"but NID slot {nid_pos}")
-        if first_pos + numFuncs > stub_count:
-            raise ValueError(
-                f"import window {libname} with {numFuncs} functions runs past "
-                f"the stub region ({stub_count} slots)")
-        for i in range(numFuncs):
-            p = first_pos + i
-            claims[p] = libname
-            claimers.setdefault(p, []).append(libname)
-
-    stubs = {}
-    for p in range(nid_count):
-        stubs[stub_base + p * 8] = (claims.get(p, UNATTRIBUTED_LIBRARY), nids[p])
-
-    findings = []
-    if region["finding"]:
-        findings.append(region["finding"])
-    unclaimed = [p for p in range(nid_count) if p not in claims]
-    if unclaimed:
-        findings.append(
-            f"{prefix}stub slots not covered by any library window: {len(unclaimed)} "
-            f"positions {unclaimed}")
-    ambiguous = sorted(p for p, libs in claimers.items() if len(libs) > 1)
-    if ambiguous:
-        findings.append(
-            f"{prefix}stub slots claimed by multiple library windows: {len(ambiguous)} "
-            f"positions {ambiguous}")
-    return stubs, findings
+    return layout_import_windows(windows, stub_section, nid_section, read_nids)
 
 
 def _import_model(elf):
@@ -575,6 +305,8 @@ def _import_model(elf):
         return _import_model_impl(elf)
     except ImportTableError:
         raise
+    except LayoutImportError as exc:
+        raise ImportTableError(exc.code or "ANALYZER_IMPORT_TABLE_INVALID", str(exc)) from exc
     except (ValueError, RuntimeError, struct.error) as exc:
         raise ImportTableError("ANALYZER_IMPORT_TABLE_INVALID", str(exc)) from exc
 
