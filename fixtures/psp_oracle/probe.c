@@ -702,6 +702,9 @@ static void emit_test(int emulated, const char *case_id, int pass,
 #endif
 
 #if PSP_ORACLE_CASE >= PSP_ORACLE_CASE_THREAD_DELETE
+/* Some launches emit no extended records (the DMA invalid-tail launches do not),
+   so the helper is unused in those builds; it is not an error there. */
+__attribute__((unused))
 static void emit_record_extended(int emulated, const char *test_id,
                                  const char *case_id, const char *status,
                                  uint32_t result, const uint32_t *out,
@@ -1295,13 +1298,19 @@ static uint8_t dmac_pattern(uint32_t offset) {
     return (uint8_t)(0x10u + (offset & 0x3fu));
 }
 
+/* Only the concurrency and size-matrix launches time transfers, so the helper
+   is compiled for those launches alone (the invalid-tail launches never use it). */
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
 static uint32_t dmac_elapsed_us(uint64_t start, uint64_t end) {
     const uint64_t elapsed = end >= start ? end - start : 0;
     return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
 }
-#endif
-#endif
-#endif
+#endif /* launches that time transfers (dmac_elapsed_us) */
+#endif /* PSP_ORACLE_CASE != PSP_ORACLE_CASE_DMAC_CELLS (dmac_pattern) */
+#endif /* launches that issue DMAC copies (dmac_call) */
+#endif /* DMAC launches (DMAC_API_* and DMAC_* constants) */
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
