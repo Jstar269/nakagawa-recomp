@@ -834,6 +834,28 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
     )
 
 
+def _disc_psp_header(iso_path: Path, manifest: dict, executable: str,
+                     destination: Path) -> Path | None:
+    """The disc's own ~PSP executable header, when the manifest reads BSS from it.
+
+    Its metadata carries the true BSS size, so it is read from the ISO instead
+    of asking the user for a file they already have inside the disc image. Both
+    build-package and bring-up's code generation use it.
+    """
+    if manifest["executable"].get("bss_metadata_source") != "psp-header":
+        return None
+    _extract_iso_executable(iso_path, executable, destination)
+    with destination.open("rb") as header_file:
+        magic = header_file.read(4)
+    if magic != b"~PSP":
+        destination.unlink(missing_ok=True)
+        raise PackageBuildError(
+            "This manifest reads BSS metadata from the disc's ~PSP executable header, "
+            f"but {executable} on this disc has no such header; provide --psp-header."
+        )
+    return destination
+
+
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            module_dir_arg: Path | None,
                            default_module_dir: Path | None = None,
@@ -1560,20 +1582,10 @@ def _build_package(args: argparse.Namespace, stage_observer,
         if psp_header is not None:
             cached_header = cache_dir / "selected.psp"
             shutil.copyfile(psp_header, cached_header)
-        elif manifest["executable"].get("bss_metadata_source") == "psp-header":
-            # The header is the disc's own ~PSP-wrapped executable: its metadata
-            # carries the true BSS size. Read it from the ISO instead of asking
-            # the user for a file they already have inside the disc image.
-            cached_header = cache_dir / "selected.psp"
-            _extract_iso_executable(iso_path, manifest_selected, cached_header)
-            with cached_header.open("rb") as header_file:
-                magic = header_file.read(4)
-            if magic != b"~PSP":
-                cached_header.unlink(missing_ok=True)
-                raise PackageBuildError(
-                    "This manifest reads BSS metadata from the disc's ~PSP executable header, "
-                    f"but {manifest_selected} on this disc has no such header; provide --psp-header."
-                )
+        else:
+            cached_header = _disc_psp_header(
+                iso_path, manifest, manifest_selected, cache_dir / "selected.psp"
+            )
         module_dir = _copy_optional_modules(
             iso_path,
             manifest,
@@ -3254,6 +3266,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         # The package route's naming rule: game_name is optional in a title
         # manifest (a user manifest often omits it) and defaults to the id.
         game_name = title_codegen_plan._package_game_name(manifest, None)
+        psp_header = _disc_psp_header(
+            iso_path, manifest, library_executable, work_dir / "selected.psp"
+        )
         plan = title_codegen_plan.build_plan(
             manifest,
             game_name=game_name,
@@ -3261,6 +3276,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             build_dir=codegen_dir,
             codegen_profile=manifest.get("codegen_profile"),
             module_dir=module_dir,
+            psp_header=psp_header,
             python_command=sys.executable,
         )
         env = _runtime_build_environment()

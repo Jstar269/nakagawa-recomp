@@ -2293,6 +2293,53 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn(str(staged.resolve()), env["SR_LOOSE_CONTENT_ROOTS"])
         nk_cli.validate_bringup_report(report)
 
+    def test_bringup_codegen_reads_bss_from_the_disc_psp_header(self):
+        """Failing-before: a psp-header manifest stopped bring-up at codegen.
+
+        build-package reads the disc's own ~PSP header when the manifest takes
+        BSS metadata from it, but bring-up's code generation did not, so such a
+        title (the encrypted-executable case, with a user-supplied EBOOT.elf)
+        failed with "psp_header is required" hidden behind CODEGEN_FAILED.
+        """
+        from nk_core import PreparationResult
+        from test_iso_parity import archive_title_manifest, create_archive_title_iso
+
+        work_root = self.root / "archive-psp-header"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "archive.iso"
+        create_archive_title_iso(iso_path, disc_id="ULUS99998", title="Synthetic Archive",
+                                 executable=build_psp_container())
+        manifest = archive_title_manifest("ULUS99998", "archive-ulus99998")
+        manifest["executable"]["base"] = 0x08804000
+        manifest["executable"]["entry"] = 0x08804000
+        manifest["executable"]["bss_metadata_source"] = "psp-header"
+        staged = work_root / "work" / "user-data" / "games" / "ULUS99998"
+        headers = []
+        real_build_plan = title_codegen_plan.build_plan
+
+        def recording_build_plan(*args, **kwargs):
+            headers.append(kwargs.get("psp_header"))
+            return real_build_plan(*args, **kwargs)
+
+        def stager_factory(root, *args, **kwargs):
+            def stage(iso, disc_id, progress):
+                (staged / "xbdata").mkdir(parents=True, exist_ok=True)
+                return PreparationResult(success=True, disc_id=disc_id, prepared_root=staged)
+            return stage
+
+        with mock.patch.object(title_codegen_plan, "build_plan", side_effect=recording_build_plan):
+            status, report = self._run_module_fixture(
+                iso_path, work_root, user_manifest=manifest, native_stager=stager_factory,
+                user_decrypted_eboot=bytes(build_synthetic_iso_elf()),
+            )
+
+        self.assertEqual(report["stages"]["codegen"]["status"], "PASS", report)
+        self.assertEqual(status, 0, report)
+        self.assertEqual(len(headers), 1)
+        self.assertIsNotNone(headers[0])
+        self.assertEqual(Path(headers[0]).read_bytes()[:4], b"~PSP")
+        nk_cli.validate_bringup_report(report)
+
     def test_archive_disc_staging_failure_is_a_named_bringup_boundary(self):
         from nk_core import PreparationResult
 
