@@ -17613,7 +17613,7 @@ void sr_vblank_tick(void) {
           if (wde < 0) { const char *e = getenv("SR_WATCHDOG_EXIT"); wde = e ? atoi(e) : 0; }
           if (wde > 0 && diff >= (uint32_t)wde) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
-              sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, diff, (uint32_t)wde);
+              sr_flight_hang(diff, (uint32_t)wde);
               _Exit(1);
           }
         }
@@ -17685,7 +17685,7 @@ void sr_vblank_tick(void) {
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);
-            sr_flight_exit(0u);
+            sr_flight_budget(s_vcount);
             _Exit(0);
         }
     }

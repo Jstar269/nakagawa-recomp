@@ -1106,6 +1106,31 @@ write watches for both source vertex records. Later reuse of those records is re
 the normal `MEM_WATCH[...]` log with the exact guest writer PC. The shared 16-range watch limit
 still applies, and the option never changes vertex data or rendering.
 
+## Flight Recorder (`SR_FLIGHT`)
+
+`SR_FLIGHT=<classes>;<limit>` retains the last `<limit>` (at most 4096) structured events of the
+named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`)
+and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
+`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles.
+
+`terminal.reason` names what ended the run:
+
+| Reason | Meaning |
+| --- | --- |
+| `running` | No terminal yet. The bundle is rewritten at each named refusal (at each power of two of the refusal count), so a run killed later reads as still running. |
+| `exit` | Normal exit; `arg0` is the exit status. |
+| `budget` | `SR_EXIT_AT_VBLANK` was reached; `arg0` is the vblank. |
+| `hang` | The no-frame watchdog (`SR_WATCHDOG_EXIT`) aborted; `arg0` is the vblanks without a new frame. |
+| `fatal` | A fatal event; `kind` names it. |
+| `unsupported-nid` | An NID with no handler ended the run (`kind` 13). |
+
+A named refusal is a call answered with its registered error while the guest keeps running. It is
+never the terminal record. It is an `unsupported` event, counted in the bundle's `refusals` block:
+`count`, `first_nid` and `first_pc` (the first refusal, in its own fields), and `nids`, the distinct
+refused NIDs in first-seen order with a count each (up to 32; further NIDs are counted in
+`nids_unlisted`). Schema 1 to 4 bundles froze at their first refusal (`unsupported-nid`, kind 2), so
+they cannot show what ran after it; the grouping script reports those as `frozen-at-refusal`.
+
 ## Crash Reporter
 
 When the program crashes (access violation, etc.), the crash reporter dumps:
