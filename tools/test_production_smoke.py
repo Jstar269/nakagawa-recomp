@@ -1850,7 +1850,7 @@ class TestSanitizedBringup(unittest.TestCase):
                     report_path.read_text(encoding="utf-8")
                 )
 
-    def test_multi_module_iso_gets_provisional_non_overlapping_bindings(self):
+    def test_multi_module_iso_modules_are_placed_by_the_guest_allocator(self):
         work_root = self.root / "multi-module-case"
         work_root.mkdir(parents=True)
         module_bytes = build_synthetic_decrypted_prx()
@@ -1887,10 +1887,11 @@ class TestSanitizedBringup(unittest.TestCase):
         profile = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
         modules = profile["manifest"]["modules"]
         self.assertEqual([module["name"] for module in modules], ["alpha.prx", "beta.elf"])
-        self.assertTrue(all(module["load_address_evidence"] == "provisional" for module in modules))
+        # No build-time address: each module is translated position-independently and
+        # laid out by the guest allocator when the game loads it (#704).
+        self.assertTrue(all(module["placement"] == "runtime" for module in modules))
+        self.assertTrue(all("load_address" not in module for module in modules))
         self.assertTrue(all(module["required"] and module["role"] == "guest-prx" for module in modules))
-        self.assertNotEqual(modules[0]["load_address"], modules[1]["load_address"])
-        self.assertTrue(all(module["load_address"] % 0x10000 == 0 for module in modules))
         nk_cli.validate_bringup_report(report)
 
     def test_cfw_loader_without_decrypted_original_stops_with_named_finding(self):
@@ -2064,13 +2065,44 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(executable["base"], 0x08804000)
         self.assertEqual(executable["entry"], 0x08804000)
 
-    def test_module_placement_without_safe_runtime_range_is_named(self):
+    def test_main_image_leaving_little_memory_still_plans_its_modules(self):
+        # Nothing is reserved at build time: a main image that leaves little user
+        # memory gets its modules planned, and whether one fits is the guest
+        # allocator's answer when the game loads it (#704).
+        work_root = self.root / "little-memory-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "little-memory.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_plain_mips_elf(e_type=2, vaddr=0x09E00000, memsz=0x10000),
+            sysdir_modules={
+                "module.prx": build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x100),
+            },
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Little Memory",
+        )
+        status, report = self._run_module_fixture(iso_path, work_root)
+
+        self.assertNotEqual(report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertEqual(report["stages"]["prepare_import"]["status"], "PASS", report)
+        profile = json.loads(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998" / "profile.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["manifest"]["modules"], [{
+            "name": "module.prx", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/SYSDIR/module.prx",
+        }])
+        nk_cli.validate_bringup_report(report)
+
+    def test_main_image_past_user_memory_is_named(self):
         work_root = self.root / "no-module-range-case"
         work_root.mkdir(parents=True)
         iso_path = work_root / "no-module-range.iso"
         create_test_iso_with_modules(
             iso_path,
-            build_plain_mips_elf(e_type=2, vaddr=0x09E00000, memsz=0x10000),
+            build_plain_mips_elf(e_type=2, vaddr=0x09FF0000, memsz=0x20000),
             sysdir_modules={
                 "module.prx": build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x100),
             },

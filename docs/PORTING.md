@@ -160,23 +160,38 @@ Some games load additional modules (libraries). HST loads 3 extra PRXs from `pla
 
 Check the game's `MODULE.SYS` and the disc's directory listing to identify the PRXs it loads.
 
-If your game has extra PRXs, declare their names and load addresses in the
-manifest. Keep the decrypted module directory as a local private binding. Do
-not edit HST Makefile constants to configure a new title. Each module needs:
+If your game has extra PRXs, declare them in the manifest. Keep the decrypted
+module directory as a local private binding. Do not edit HST Makefile constants
+to configure a new title. Each module entry names the decrypted file, the path
+the game loads it by (`guest_path`), and its placement:
 
-- Path to the decrypted PRX
-- Load address (base + offset for that module)
+- `"placement": "runtime"` (no `load_address`): the module is translated once,
+  position-independently, and the runtime lays it out when the game calls
+  `sceKernelLoadModule`, wherever the user-partition allocator puts it (the
+  lowest free range that holds it, as the kernel's loader does). Unloading it
+  returns the memory, so overlays that never fit together run one after another.
+  This is what `nk_cli.py bringup` declares for every discovered module.
+- a fixed `load_address` (the default placement): the runtime reserves exactly
+  that range and fails closed if it is occupied.
 
-For an uncatalogued ISO, `nk_cli.py bringup` can assign provisional addresses
-to discovered plain, base-zero ET_DYN/ET_SCE_PRX modules. It sorts filenames
-case-insensitively, starts at the next 64 KiB boundary after the main image's
-highest PT_LOAD end plus a 1 MiB reserve (or `0x08800000`, whichever is later),
-and keeps every module below `0x09ef0000`. This leaves the runtime's dedicated
-VBLANK stack and nested-call frame regions clear. These are project placement
-bindings, not measured firmware addresses; manifests retain
-`load_address_evidence: provisional`. The HLE loader honors each declared
-address exactly and fails closed on an occupied range instead of relocating
-the module. A layout or collision remains in the works (#308).
+No memory is reserved for modules at build time and no two modules need to fit
+at once. A main image must lie inside user memory (below `0x0a000000`); whatever
+it and the game's own allocations leave is what the guest allocator has to give,
+and a module load that finds no room fails at run time with
+`SCE_KERNEL_ERROR_NO_MEMORY` and a `GUEST_MODULE_LOAD_NO_MEMORY` line. One known
+difference from the PSP remains: the runtime's thread stacks and nested-call
+frames sit in a fixed region near the top of user memory instead of being taken
+from the partition, so the allocator neither counts nor avoids them. A fixed-address
+module (ELF type 2) must lie inside user memory without overlapping the main image.
+
+What the runtime cannot yet reproduce faithfully fails closed with
+`SCE_KERNEL_ERROR_NOTIMP` and a `GUEST_MODULE_BOUNDARY: <name>` line: a module the
+build did not translate (`guest-module-untranslated`), a staged file that is not
+the one that was translated (`guest-module-identity-mismatch`), a module codegen
+could not translate, for example one with GPREL16 relocations
+(`guest-module-translation-unsupported`), a second live instance of one module
+(`guest-module-second-instance`), and a load option asking for another partition
+or for High placement. These are in the works (#704).
 
 ## Step 5: Build
 

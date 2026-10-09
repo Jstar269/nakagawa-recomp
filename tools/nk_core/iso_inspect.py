@@ -32,9 +32,6 @@ MAX_CFW_EBOOT_SCAN_BYTES = 256 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
 PSP_DEFAULT_MAIN_LOAD_ADDRESS = 0x08804000
 PSP_CONVENTIONAL_USER_MEMORY_TOP = 0x0A000000
-PSP_MODULE_ADDRESS_TOP = 0x09EF0000
-PSP_MODULE_ADDRESS_ALIGNMENT = 0x00010000
-PSP_MODULE_HEAP_RESERVE = 0x00100000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
@@ -147,41 +144,33 @@ def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
     return e_type, low, high
 
 
-def plan_provisional_module_bindings(
+def plan_guest_module_bindings(
     main_elf: Path | str,
     module_inputs: Sequence[tuple[str, Path | str, str]],
 ) -> list[dict]:
-    """Place relocatable modules below the conventional partition top.
+    """Declare each discovered guest module placed by the guest allocator at run time.
 
-    The lowest address leaves at least 1 MiB after the main image (including
-    PT_LOAD BSS) for the initial user heap. Modules then occupy ascending,
-    64-KiB-aligned ranges in filename order, below 0x09EF0000. That ceiling is
-    the runtime's VBlank-stack base; the 64-KiB VBlank stack and the 1-MiB
-    nested-call frame arena above it remain reserved. The HLE allocator
-    reserves the exact manifest address when each module is loaded; provisional
-    evidence records that this deterministic layout is a project policy, not a
-    measured firmware placement.
+    The PSP kernel's loader takes a module's memory from the user partition when the
+    game loads it, so the build reserves nothing: modules need not fit together, and a
+    load that finds no room fails at run time with the status the kernel reports
+    (#704). Each module is translated position-independently (``placement:
+    runtime``). Only what is fixed before the game runs is checked here: the main
+    image must lie inside user memory, and a fixed-address module (ELF type 2), which
+    can only load at its link address, must lie inside user memory without
+    overlapping the main image. Modules are listed by case-insensitive filename.
     """
-    main_type, _main_low, main_high = _elf32_load_span(main_elf)
+    main_type, main_low, main_high = _elf32_load_span(main_elf)
     if main_type in (3, 0xFFA0):
+        main_start = PSP_DEFAULT_MAIN_LOAD_ADDRESS + main_low
         main_end = PSP_DEFAULT_MAIN_LOAD_ADDRESS + main_high
     elif main_type == 2:
-        main_end = main_high
+        main_start, main_end = main_low, main_high
     else:
         raise IsoInspectionError("main executable type has no supported guest-module layout")
     if main_end > PSP_CONVENTIONAL_USER_MEMORY_TOP:
         raise IsoInspectionError("main executable exceeds the conventional user-memory ceiling")
 
-    floor_unaligned = max(
-        main_end + PSP_MODULE_HEAP_RESERVE,
-        title_manifest.GUEST_MODULE_RAM_LO,
-    )
-    alignment = PSP_MODULE_ADDRESS_ALIGNMENT
-    floor = (floor_unaligned + alignment - 1) & ~(alignment - 1)
-    if floor < floor_unaligned or floor >= PSP_MODULE_ADDRESS_TOP:
-        raise IsoInspectionError("main image leaves no safe guest-module address range")
-
-    modules: list[tuple[str, str, int]] = []
+    modules: list[dict] = []
     folded_names: set[str] = set()
     for name, module_path, guest_path in module_inputs:
         folded = name.casefold()
@@ -189,27 +178,23 @@ def plan_provisional_module_bindings(
             raise IsoInspectionError("guest-module filenames collide under the placement policy")
         folded_names.add(folded)
         module_type, module_low, module_high = _elf32_load_span(module_path)
-        if module_type not in (3, 0xFFA0) or module_low != 0:
-            raise IsoInspectionError("guest module is not a base-zero relocatable ELF/PRX")
-        modules.append((name, guest_path, module_high))
-
-    cursor = floor
-    placed: list[dict] = []
-    for name, guest_path, span in sorted(modules, key=lambda item: item[0].casefold()):
-        address = (cursor + alignment - 1) & ~(alignment - 1)
-        end = address + span
-        if address < cursor or end < address or end > PSP_MODULE_ADDRESS_TOP:
-            raise IsoInspectionError("guest modules do not fit above the main-image heap reserve")
-        placed.append({
+        if module_type == 2:
+            if (module_low < title_manifest.GUEST_MODULE_RAM_LO
+                    or module_high > PSP_CONVENTIONAL_USER_MEMORY_TOP
+                    or (module_low < main_end and main_start < module_high)):
+                raise IsoInspectionError(
+                    "fixed-address guest module lies outside the user memory the main image leaves"
+                )
+        elif module_type not in (3, 0xFFA0):
+            raise IsoInspectionError("guest module is not a relocatable or fixed-address PSP module")
+        modules.append({
             "name": name,
-            "load_address": address,
             "required": True,
             "role": "guest-prx",
+            "placement": "runtime",
             "guest_path": guest_path,
-            "load_address_evidence": "provisional",
         })
-        cursor = end
-    return placed
+    return sorted(modules, key=lambda module: module["name"].casefold())
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})

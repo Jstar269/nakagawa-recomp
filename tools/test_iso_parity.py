@@ -28,7 +28,7 @@ from nk_core.iso_inspect import (
     inspect_compatibility_preflight,
     inspect_iso,
     list_disc_module_candidates,
-    plan_provisional_module_bindings,
+    plan_guest_module_bindings,
     write_experimental_profile,
 )
 import nk_cli
@@ -1855,7 +1855,7 @@ int main(int argc, char **argv) {{
                 )
                 self.assertTrue(profile_path.is_relative_to(user_root))
 
-    def test_provisional_guest_module_placement_is_deterministic_and_disjoint(self) -> None:
+    def test_guest_modules_are_runtime_placed_and_listed_deterministically(self) -> None:
         main_elf = self.temp_dir / "placement-main.elf"
         alpha = self.temp_dir / "alpha.prx"
         beta = self.temp_dir / "beta.prx"
@@ -1867,34 +1867,76 @@ int main(int argc, char **argv) {{
             ("alpha.prx", alpha, "disc0:/PSP_GAME/SYSDIR/alpha.prx"),
         ]
 
-        first = plan_provisional_module_bindings(main_elf, inputs)
-        second = plan_provisional_module_bindings(main_elf, list(reversed(inputs)))
+        first = plan_guest_module_bindings(main_elf, inputs)
+        second = plan_guest_module_bindings(main_elf, list(reversed(inputs)))
         self.assertEqual(first, second)
-        self.assertEqual([module["name"] for module in first], ["alpha.prx", "beta.prx"])
-        self.assertTrue(all(module["load_address_evidence"] == "provisional" for module in first))
-        self.assertTrue(all(module["role"] == "guest-prx" and module["required"] for module in first))
-        spans = {"alpha.prx": 0x21001, "beta.prx": 0x17001}
-        ranges = sorted(
-            (module["load_address"], module["load_address"] + spans[module["name"]])
-            for module in first
-        )
-        self.assertGreaterEqual(ranges[0][0], 0x08800000 + 0x40000 + 0x00100000)
-        self.assertLessEqual(ranges[-1][1], 0x09EF0000)
-        self.assertLess(ranges[0][1], ranges[1][0])
+        self.assertEqual(first, [
+            {"name": "alpha.prx", "required": True, "role": "guest-prx",
+             "placement": "runtime", "guest_path": "disc0:/PSP_GAME/SYSDIR/alpha.prx"},
+            {"name": "beta.prx", "required": True, "role": "guest-prx",
+             "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/beta.prx"},
+        ])
+        # The manifest validator accepts the plan exactly as written.
+        from title_manifest import validate_manifest
+        manifest = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
+        manifest["modules"] = first
+        self.assertEqual(validate_manifest(manifest)["modules"], first)
 
-    def test_provisional_guest_module_placement_fails_when_no_safe_span_remains(self) -> None:
+    def test_modules_that_never_fit_together_are_still_planned(self) -> None:
+        # The guest allocator places each module when it is loaded, so no concurrent
+        # fit and no build-time reserve is required: two 16 MiB modules beside a main
+        # image that leaves little user memory are both planned (#704).
         main_elf = self.temp_dir / "placement-full-main.elf"
         huge_a = self.temp_dir / "huge-a.prx"
         huge_b = self.temp_dir / "huge-b.prx"
-        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x09E00000, memsz=0x1F0000))
         huge_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
         huge_b.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
-        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve"):
-            plan_provisional_module_bindings(
-                main_elf,
-                [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
-                 ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
-            )
+        planned = plan_guest_module_bindings(
+            main_elf,
+            [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
+             ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
+        )
+        self.assertEqual([module["name"] for module in planned], ["a.prx", "b.prx"])
+        self.assertTrue(all(module["placement"] == "runtime" for module in planned))
+
+    def test_guest_module_planning_refuses_what_cannot_load(self) -> None:
+        main_elf = self.temp_dir / "placement-main-checks.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08804000, memsz=0x40000))
+        module = self.temp_dir / "module.prx"
+        cases = (
+            ("a main image past user memory",
+             build_plain_mips_elf(e_type=2, vaddr=0x09FF0000, memsz=0x20000), None,
+             "exceeds the conventional user-memory ceiling"),
+            ("a fixed-address module over the main image", None,
+             build_plain_mips_elf(e_type=2, vaddr=0x08820000, memsz=0x1000),
+             "outside the user memory the main image leaves"),
+            ("a fixed-address module past user memory", None,
+             build_plain_mips_elf(e_type=2, vaddr=0x09FFF000, memsz=0x2000),
+             "outside the user memory the main image leaves"),
+            ("an image that is not a PSP module", None,
+             build_plain_mips_elf(e_type=4, vaddr=0, memsz=0x100),
+             "not a relocatable or fixed-address PSP module"),
+        )
+        for label, main_bytes, module_bytes, expected in cases:
+            with self.subTest(case=label):
+                main = main_elf
+                if main_bytes is not None:
+                    main = self.temp_dir / "placement-oversized-main.elf"
+                    main.write_bytes(main_bytes)
+                module.write_bytes(module_bytes if module_bytes is not None else
+                                   build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x100))
+                with self.assertRaisesRegex(IsoInspectionError, expected):
+                    plan_guest_module_bindings(
+                        main, [("module.prx", module, "disc0:/PSP_GAME/USRDIR/module.prx")])
+        fixed = self.temp_dir / "fixed.prx"
+        fixed.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x09000000, memsz=0x1000))
+        planned = plan_guest_module_bindings(
+            main_elf, [("fixed.prx", fixed, "disc0:/PSP_GAME/USRDIR/fixed.prx")])
+        self.assertEqual(planned[0]["placement"], "runtime")
+        with self.assertRaisesRegex(IsoInspectionError, "collide"):
+            plan_guest_module_bindings(
+                main_elf, [("A.prx", fixed, "disc0:/a"), ("a.PRX", fixed, "disc0:/b")])
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""

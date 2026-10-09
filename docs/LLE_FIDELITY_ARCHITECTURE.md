@@ -91,6 +91,47 @@ To execute original middleware (`libfont.prx`, `scePsmf_library.prx`, `scePsmfP_
    - Invocation of `module_start` in a dedicated thread context with proper `argc` and `argv` pointer blocks.
    - Return value propagation and module status tracking (`SCE_KERNEL_ERROR_ALREADY_STARTED`, etc.).
 
+#### Guest-Placed Modules (Current State)
+
+A module the title manifest declares with `"placement": "runtime"` is translated
+ahead of time without a load address and laid out only when the game loads it
+(#704):
+
+- **Build time.** `tools/prx_reloc_model.py` models every relocation site as a
+  function of the load base and is pinned to the runtime loader at several bases.
+  `tools/codegen.py --extra-elf=<module>@runtime` translates the module once in its
+  link space: every guest address of its image is `sr_m<k>_base + link`, an
+  immediate the loader relocates (LO16/HI16) is read from the loaded image, and the
+  module's functions are reachable only through its `SrModuleCode` descriptor,
+  which records the identity (size and FNV-1a digest) of the translated file.
+- **Load.** `sceKernelLoadModule` (and `sceKernelLoadModuleByID`, through the path
+  the descriptor was opened with) takes memory from the user partition with the
+  ordinary allocator -- the lowest free range that holds the image, as
+  `PSP_SMEM_Low` does -- relocates the image with the project PRX loader, clears its
+  BSS, binds the translation at that base and registers the module's exports. The
+  bound image is the only dispatch and fetch authority for its range.
+- **Lifecycle.** `module_start` and `module_stop` run with the module's own `$gp`;
+  `sceKernelUnloadModule` unbinds the translation (dispatch, fetch authority and
+  stale-code records), unlinks the exports and frees the memory, so a module later
+  placed at the same addresses never meets this one's code.
+- **Memory policy.** Nothing is reserved for modules at build time and modules need
+  not fit together; a main image must lie inside user memory, and a load the
+  partition cannot hold fails at run time with `SCE_KERNEL_ERROR_NO_MEMORY`.
+- **Named boundaries.** A module the build did not translate, a staged file that is
+  not the translated one, a module codegen could not translate (for example one
+  with GPREL16 relocations), a second live instance of one translation, and a load
+  option asking for another partition or High placement fail closed with
+  `SCE_KERNEL_ERROR_NOTIMP` and a `GUEST_MODULE_BOUNDARY` line.
+
+Remaining work on this path: `module_start` runs as a nested call on the caller's
+thread rather than in its own thread, start/stop statuses other than 0 are not
+acted on, one translation binds one live image, `PSP_SMEM_High` and fixed
+`PSP_SMEM_Addr` module placement are not modelled, and the runtime's thread stacks
+and nested-call frames occupy a fixed region near the top of user memory instead
+of partition blocks, so the allocator neither counts nor avoids them. The same
+machinery is the groundwork for late PRX user-memory bases and for
+`sceKernelLoadExec`.
+
 #### Why Guest PRXs Previously Failed
 
 In early Nakagawa development, executing `module_start` for `libfont.prx` and `psmf.prx` resulted in hangs on `sceKernelWaitSema`. This was an artifact of incomplete kernel synchronization emulation, not an inherent impossibility of running the code. Rather than fixing the underlying kernel semaphore and thread scheduling contracts, previous passes short-circuited `module_start`, wrote hardcoded compatibility flags into guest memory, and provided wholesale HLE stubs. Under the LLE doctrine, this short-circuit is recognized as technical debt to be systematically eliminated.

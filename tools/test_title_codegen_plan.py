@@ -285,6 +285,42 @@ class TitleCodegenPlanTests(unittest.TestCase):
         for call in captured:
             self.assertEqual(call["codegen_options"].get("planner_sha256"), expected)
 
+    def test_player_and_planner_hash_a_runtime_placed_module_alike(self) -> None:
+        manifest = copy.deepcopy(self.synthetic)
+        module = {"name": "level01.prx", "required": True, "role": "guest-prx",
+                  "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/level01.prx"}
+        manifest["modules"] = [module]
+        captured = []
+
+        def capture_cache_key(**kwargs):
+            captured.append(kwargs)
+            return {}
+
+        with tempfile.TemporaryDirectory(prefix="title_codegen_runtime_hash_") as temp_dir:
+            module_dir = Path(temp_dir)
+            (module_dir / "level01.prx").write_bytes(b"synthetic runtime-placed module")
+            game_elf = module_dir / "game.elf"
+            game_elf.write_bytes(b"synthetic executable")
+            with mock.patch.object(
+                package_cache, "build_cache_key", side_effect=capture_cache_key
+            ), mock.patch.object(
+                package_cache, "compiler_identity", return_value="synthetic-compiler"
+            ), mock.patch.object(
+                package_cache, "compiler_target", return_value="synthetic-target"
+            ):
+                nk_cli._current_package_cache_key(
+                    manifest, self.synthetic_path, "synthetic-executable-hash",
+                    module_dir, None, {}, public_safe=True,
+                )
+            planned = title_codegen_plan._hash_package_inputs(
+                self.synthetic_path, game_elf, [module],
+                {"level01.prx": module_dir / "level01.prx"}, None,
+            )
+        self.assertEqual(len(captured), 1)
+        player_modules = captured[0]["input_hashes"]["modules"]
+        self.assertEqual(player_modules, planned["modules"])
+        self.assertEqual(player_modules[0]["load_address"], "runtime")
+
     def test_optional_guest_modules_require_explicit_selection(self) -> None:
         manifest = copy.deepcopy(self.synthetic)
         manifest["modules"] = [
