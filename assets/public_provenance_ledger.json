@@ -569,7 +569,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f3f1ce9a82c67b0a8e2390e5b8611a67443b5b229c0f6a897223b0a31bf81a03"
+      "sha256": "2e3cabc3ce6621e63732c74b4c22c880981add2dd3d0f668c6fc832fe34c3353"
     },
     {
       "path": "assets/enhancement_package.schema.json",
@@ -1084,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9bc41c692405a75443420ca75e8a7c777d5e95d958cf8ed3a9657ce2f61d92f3"
+      "sha256": "f92bd775b2b952e9d3c1a7afdc5dd6c92b3cae66ab29e2857f218803d6fe6bbf"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4842,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e9ddd1b9f692aba7742bd397ebc181c1dea07ec2c9ecf7a6a34c82ce16a87942"
+      "sha256": "f89a29c5e8707f72aa8861fbce512fbb21673133d878e4d73c6a19f05f0933c9"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4880,7 +4880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3e8e515533589c193b83c82b2faa8b91c265bb5e41ace43250633404aab0d124"
+      "sha256": "1e73ca46d61b985564b2f5d60041ef1c00060f4b8fee956ea777c72a9d0211b8"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5259,7 +5259,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0091f8b695700866e23648bc6ac949d7d789c194dd107c22b1f0c132568f5101"
+      "sha256": "eecec612d01b45850bb23df9e18c76761a96a092c9c939ad5f4747c4751828b1"
     },
     {
       "path": "src/rt/sdkver.h",
@@ -5928,7 +5928,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4efa8f5ef6c872d19a0a443288245f55143d842000a8234baaccfd44d74a3ceb"
+      "sha256": "c9f3e609d2d085fc2e7e24a61cbaf20c581cade1ac467853020b63f434645e70"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -6763,7 +6763,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "237ba29b2374e7fb1d6883383a361e129e3a80586c368cfd93bab3facb0982ee"
+      "sha256": "b9f33240abdbf11113f22ae8d0f65263368d06241a5841e5884d340fc4530afa"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -7522,7 +7522,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c61fd9c51530015b360410c506cb4c3a597afeabc8740c72f6eb1b927dda355c"
+      "sha256": "c962e43b3aca7f70ac0f4f0afd20d31d78781b2bb506aa9acdee047c88c1b248"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -8484,7 +8484,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "656265352066934740fbd375db934cfe2afe71c5c50dcdc49b63871b2624b90d"
+      "sha256": "1886df44be327be417ff510b6b95e2accd81540fcfae41124860c1612ad63462"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -8508,7 +8508,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "045c29a91d656875be6f74ae1df49425310e5e752d3be96060e7f30c43301b39"
+      "sha256": "0a0b388479152cb7f17b4e8bc4adea6e0c739945b0a52677c72c9e9cc2dac353"
     },
     {
       "path": "tools/test_lint_docs.py",
@@ -8880,7 +8880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca766ac1d6f48e5e67805afc0942a675d1788e2d1fc6de06ab2a47b4f9564adb"
+      "sha256": "dc10beeee85257abe6358c25830f17905bc703a64c80f12bbb29874a952ced1f"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
@@ -9361,7 +9361,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bc7f1a629752e4b5a6f75b081f166b22da42f534514b39448c2551d123e5ebe1"
+      "sha256": "cdaac9bc7aeda9d515468bf23bf86d661ccf82aaf70e6ea50599a7d2dc046020"
     },
     {
       "path": "tools/test_sdkver_c.py",
