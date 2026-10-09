@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import struct
 import sys
 from dataclasses import dataclass, fields
@@ -65,6 +66,42 @@ SUPPORTED_ROW_ORDERS = (1, 2)
 
 #: PSP firmware family names. A project-generated font must never claim one.
 RESERVED_FONT_NAMES = frozenset({"jpn0", "kr0", *(f"ltn{index}" for index in range(16))})
+
+#: Denylisted output-name markers (plan section 3.3), one row per refusal reason:
+#: (reason, markers, whole_word). A part marker matches anywhere in a name, ignoring case; a
+#: whole-word marker matches only as a separate word, so a short mark never refuses an
+#: ordinary word that contains it. The vendor camouflage markers are split across literals,
+#: so this file never holds them whole (the convention tools/history_audit.py uses for its own
+#: private vocabulary).
+DENIED_FONT_NAME_RULES = (
+    ("camouflage-font-name", ("New" "Rodin", "Asia" "KNHH", "Asia" "NHH", "Font" "works"), False),
+    ("camouflage-font-name", ("F" "TT", "SO" "NY"), True),
+    ("reserved-font-name",
+     ("Source", "Atkinson", "Hyperlegible", "Sawarabi", "Gowun", "Nanum", "Gudea"), False),
+    ("reserved-font-name", ("Noto", "Lato", "Ume", "M PLUS"), True),
+)
+
+
+def _compile_denied_rule(markers: tuple[str, ...], whole_word: bool) -> re.Pattern[str]:
+    body = "|".join(re.escape(marker) for marker in markers)
+    if whole_word:
+        body = r"(?<![0-9A-Za-z])(?:" + body + r")(?![0-9A-Za-z])"
+    return re.compile(body, re.IGNORECASE)
+
+
+_DENIED_FONT_NAME_PATTERNS = tuple(
+    (reason, _compile_denied_rule(markers, whole_word))
+    for reason, markers, whole_word in DENIED_FONT_NAME_RULES
+)
+
+
+def denied_font_name(name: str) -> str | None:
+    """Return the refusal reason for the first denylisted marker in ``name``, else None."""
+    for reason, pattern in _DENIED_FONT_NAME_PATTERNS:
+        if pattern.search(name) is not None:
+            return reason
+    return None
+
 
 TABLE_COUNT = 4
 #: Metric groups in record order: dimension, X adjustment, Y adjustment, advance.
@@ -312,6 +349,8 @@ def _validate_font_name(value: object) -> bytes:
         stem = stem[: -len(".pgf")]
     if stem in RESERVED_FONT_NAMES:
         raise _refuse("font-field-invalid", f"{value!r} is a PSP firmware font name and must not be claimed")
+    if isinstance(value, str) and denied_font_name(value) is not None:
+        raise _refuse("font-field-invalid", f"{value!r} carries a vendor or reserved font name and must not be claimed")
     return encoded
 
 
