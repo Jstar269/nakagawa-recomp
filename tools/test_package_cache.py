@@ -1284,5 +1284,71 @@ class BoundedJsonArtifactTests(unittest.TestCase):
         self.assertLess(len(many), 8 * (package_cache.MAX_JSON_ECHO_CHARS + 2) + 64)
 
 
+class NanTrapCacheKeyTests(unittest.TestCase):
+    """`make NAN_TRAP=1` changes both the generated C and the native flags inside the Makefile,
+    so the cache key must name it: a trapped and an untrapped build never share an entry."""
+
+    MANIFEST = {"executable": {"base": 0x08804000, "entry": 0x08804100}}
+    PLAN = {
+        "environment": {"GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100", "TITLE_EXTRA_SPANS": ""},
+        "codegen_profile": "none",
+    }
+
+    def test_only_make_s_enabling_value_turns_the_trap_on(self):
+        for value, expected in (("1", True), (" 1 ", True), ("0", False), ("", False),
+                                ("yes", False), ("11", False)):
+            with self.subTest(value=value):
+                self.assertIs(package_cache.nan_trap_enabled({"NAN_TRAP": value}), expected)
+        self.assertFalse(package_cache.nan_trap_enabled({}))
+
+    def test_native_flags_name_the_trap_and_leave_untrapped_flags_unchanged(self):
+        untrapped = package_cache.native_compile_flags(environment={})
+        self.assertNotIn("NAN_TRAP", untrapped)
+        self.assertEqual(package_cache.native_compile_flags(environment={"NAN_TRAP": "0"}), untrapped)
+        self.assertEqual(
+            package_cache.native_compile_flags(environment={"NAN_TRAP": "1"}),
+            untrapped + "|NAN_TRAP=1",
+        )
+
+    def test_both_option_builders_name_the_trap_identically(self):
+        for environment in ({}, {"NAN_TRAP": "1"}):
+            with self.subTest(environment=environment):
+                cli = nk_cli._package_codegen_options(self.MANIFEST, environment)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    planner = title_codegen_plan._cache_codegen_options(
+                        self.PLAN, selected_optional=set(), funcs_per_chunk=2000
+                    )
+                self.assertEqual(cli.get("nan_trap"), planner.get("nan_trap"))
+                if environment:
+                    self.assertIs(cli["nan_trap"], True)
+                else:
+                    self.assertNotIn("nan_trap", cli)
+                    self.assertNotIn("nan_trap", planner)
+
+    def test_a_trapped_key_never_matches_an_untrapped_package(self):
+        def key(environment):
+            return package_cache.build_cache_key(
+                input_hashes={
+                    "executable": {"sha256": "1" * 64},
+                    "manifest": {"sha256": "2" * 64},
+                    "modules": [],
+                    "psp_header": None,
+                },
+                codegen_options=nk_cli._package_codegen_options(self.MANIFEST, environment),
+                analyzer_sha256="3" * 64,
+                codegen_sha256="4" * 64,
+                compiler="gcc:test",
+                target="x86_64-test",
+                runtime_source_digest="5" * 64,
+                compile_flags=package_cache.native_compile_flags(environment=environment),
+            )
+
+        untrapped, trapped = key({}), key({"NAN_TRAP": "1"})
+        self.assertNotEqual(untrapped["aot"]["digest"], trapped["aot"]["digest"])
+        self.assertNotEqual(untrapped["native"]["digest"], trapped["native"]["digest"])
+        decision = package_cache.compare_cache_keys(trapped, untrapped)
+        self.assertEqual(decision.action, "aot-regenerate")
+
+
 if __name__ == "__main__":
     unittest.main()
