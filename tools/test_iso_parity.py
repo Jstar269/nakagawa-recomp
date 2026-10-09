@@ -9,6 +9,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -2753,6 +2754,26 @@ int main(int argc, char **argv) {{
         res = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertIn("READER:OPEN_FAILED", res.stdout)
+
+
+class PbpBoundaryCodeParityTests(unittest.TestCase):
+    """The PBP identify codes are one set in the Python emitter and the C emitter.
+
+    This runs without gcc: it reads the C emitter's source rather than
+    executing it, so a new code added only on the C side fails here even on a
+    machine that cannot build the native harness.
+    """
+
+    C_EMITTER = ROOT / "src" / "core" / "nk_iso.c"
+    # A C string literal naming a PBP boundary code. Only quoted literals match,
+    # so identifiers such as PBP_MAGIC or PBP_HEADER_SIZE are not counted.
+    C_CODE_LITERAL = re.compile(r'"(PBP_[A-Z0-9_]+)"')
+
+    def test_c_emitter_emits_exactly_the_python_boundary_codes(self) -> None:
+        source = self.C_EMITTER.read_text(encoding="utf-8")
+        emitted = set(self.C_CODE_LITERAL.findall(source))
+        self.assertTrue(emitted, "no PBP boundary code literal found in nk_iso.c")
+        self.assertEqual(emitted, set(iso_inspect.PBP_BOUNDARY_CODES))
 
 
 class PackageBuildFailureMessageTests(unittest.TestCase):
