@@ -711,16 +711,38 @@ so existing routes and tooling are unaffected. `-SnapEvery` still sets the caden
 window. Like the other controls this is a host-side gate: no guest work is skipped and captured
 frames are byte-identical to an ungated run.
 
+`SR_FBSNAP_WINDOWS` is self-sufficient. The full contract:
+
+| `SR_FBSNAP` | `SR_FBSNAP_WINDOWS` | Captured presents |
+| --- | --- | --- |
+| unset or empty | unset | none |
+| unset or empty | set | every present inside the windows (`N` = 1) |
+| `N` >= 1 | unset | presents at least `N` vblanks apart |
+| `N` >= 1 | set | presents at least `N` vblanks apart, inside the windows |
+| `0`, negative or non-numeric | either | none: an explicit `0` still disables FBSNAP |
+
+`SR_FBSNAP_AFTER` applies in every row, and `SR_FBDUMP` still takes the capture slot when it
+is set. A window whose text does not parse leaves no window active (reported on stderr as
+`FBSNAP_WINDOWS: could not parse`), so it selects nothing by itself.
+
 FBSNAP/FBDUMP capture is **present-truthful** (the old `sdl3vk_capture_swapchain_ppm`
 was an invalid acquisition that could read a stale/undefined image and published a PPM under a
-`.png` name). The swapchain capture is now armed *before* the present and recorded inside the same
-command buffer that blits the displayed frame, then published atomically as an exact P6 `.ppm`
-(`build/snapshots/frame_<n>.ppm`, or `frame_v<vcount>.ppm` with windows). The legacy guest-VRAM
+`.png` name). The capture is armed *before* the present and published by whichever presenter
+shows the frame, through the presenter-neutral capture service (`src/rt/fbcap.{h,c}`): the
+SDL3/Vulkan presenter records a readback inside the same command buffer that blits the displayed
+frame, while the headless `SR_VIDEO=offscreen` sink and the GDI window publish the converted frame
+they accepted. Either way the file is an exact P6 `.ppm` published atomically
+(`build/snapshots/frame_<n>.ppm`, or `frame_v<vcount>.ppm` with windows), and the same guest frame
+produces the same bytes on every presenter. A frame whose present did not run (its output slot was
+skipped) is reported `SKIPPED` and is never published later with newer pixels; with no presenter at
+all (no `--gui`) nothing is armed. The legacy guest-VRAM
 `snap_*.ppm`/`snap_v*.ppm` files (route evidence via `dump_fb_fmt`) are still written unchanged.
 `SR_FBDUMP=<N>` publishes the presented frame as `present_source.ppm` and exits; the exit status is
 0 only if a capture was truly published, 1 otherwise (the run must not be claimed as captured when
 nothing was written). `gpu-capture-selftest` (Verify step 15) byte-checks both CPU- and GPU-source
-captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`.
+captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`;
+`fbcap-selftest` (part of `native-core-tests`) byte-checks the presenter-neutral publisher
+itself, with no GPU or window.
 
 #### Headless VRAM capture and PNG export
 
@@ -739,7 +761,7 @@ nk_cli vram --from-sidecar capture/vram_120.json --out-dir capture/png
 
 Supported formats are `5650`, `5551`, `4444`, `8888`, `CLUT4`, `CLUT8`, `CLUT16`, `CLUT32`, `DXT1`, `DXT3`, `DXT5`, and `DEPTH16`. `--swizzled` applies PSP swizzle addressing to non-DXT textures. Sidecar mode exports each named VRAM surface, including the loaded palette and a grayscale depth preview. The CLI compiles the existing GE sampler into a temporary decoder with GCC, so Windows users need UCRT64 GCC on `PATH`.
 
-`mingw32-make --no-print-directory display-smoke-run` checks raw-to-PNG pixels against the display smoke fixture's host-sink PPM and checks that enabling the capture leaves that PPM byte-identical. The explicit `SR_VIDEO=offscreen` backend has no Vulkan swapchain, so this headless check uses the existing `SR_FIRST_FRAME_DUMP` host-sink PPM rather than `SR_FBDUMP`'s swapchain-only `present_source.ppm`. The interactive in-player VRAM panel remains UNBUILT; the headless viewer is the partial capability tracked by [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314).
+`mingw32-make --no-print-directory display-smoke-run` checks raw-to-PNG pixels against the display smoke fixture's host-sink PPM and checks that enabling the capture leaves that PPM byte-identical. This headless check uses the existing `SR_FIRST_FRAME_DUMP` host-sink PPM; `SR_FBSNAP` and `SR_FBDUMP` captures are published from the same `SR_VIDEO=offscreen` sink as well. The interactive in-player VRAM panel remains UNBUILT; the headless viewer is the partial capability tracked by [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314).
 
 #### Where `SR_EXIT_AT_VBLANK` actually stops
 
@@ -841,7 +863,7 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_VBLOG=1` | Log vblank events |
 | `SR_FBSNAP=N` | Every N vblanks: legacy guest-VRAM `snap_<n>.ppm` (route evidence) plus present-truthful P6 `build/snapshots/frame_<n>.ppm` (see below) |
 | `SR_FBSNAP_AFTER=V` | Suppress every capture before vblank V (host-side gate only) |
-| `SR_FBSNAP_WINDOWS=a-b[,c-d]` | Capture only inside these vblank ranges; names files `frame_v<vcount>.ppm` so windows cannot overwrite each other (legacy `snap_v<vcount>.ppm` still written) |
+| `SR_FBSNAP_WINDOWS=a-b[,c-d]` | Capture only inside these vblank ranges; names files `frame_v<vcount>.ppm` so windows cannot overwrite each other (legacy `snap_v<vcount>.ppm` still written). Without `SR_FBSNAP` it captures every present inside the windows |
 | `SR_EXIT_AT_VBLANK=V` | Terminate cleanly (status 0) at the **end** of vblank V's tick (see above) |
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
@@ -871,6 +893,7 @@ committed.
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
 | `SR_MEMSTICK=PATH` | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
+| `SR_SYSTEM_REGISTRY=PATH` | Overlay file of the virtual PSP system registry: every `sceReg` change a game saves with `sceRegFlushCategory`/`sceRegFlushRegistry`, as schema-versioned JSON replaced atomically (default `registry/system.json` in the per-user data directory). A corrupt file is reported, ignored, and moved to `<file>.corrupt` on the next save |
 
 ### Scheduling & Behavior
 

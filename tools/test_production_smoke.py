@@ -43,7 +43,9 @@ from test_iso_parity import (  # noqa: E402
     create_test_iso_with_executables,
 )
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
+from import_fixtures import SYSLIB_EXPORT, build_module_elf  # noqa: E402
 from nk_core import package_cache  # noqa: E402
+from nk_core.iso_inspect import runtime_registered_nids  # noqa: E402
 from nk_core.types import TitleProfile  # noqa: E402
 
 
@@ -449,7 +451,7 @@ class TestProductionSmoke(unittest.TestCase):
             "production_smoke_recomp_3.o",
             "production_smoke_recomp_4.o",
             "ge.o", "flight_recorder.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
-            "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
+            "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o", "fbcap.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
             "iso_public.o", "pgd_unavailable.o", "mpeg.o", "pgf_public.o",
             "gui.o", "audio_unavailable.o", "h264_mf.o", "h264_null.o", "savedata.o",
@@ -1201,7 +1203,14 @@ class TestPresenterContract(unittest.TestCase):
         """The headless suite cannot open GDI, so pin its acceptance contract in source."""
         source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
         presenter = source[source.index("int gui_present"):]
-        gdi = presenter[:presenter.index("#else")]
+        accepted = presenter[:presenter.index("#else")]
+        # The present accepts a GDI frame only when the blit drew it; a failed blit
+        # resolves an armed capture as failed and reports the frame as not presented.
+        self.assertRegex(
+            accepted,
+            r"if \(!gdi_blit\(\)\)\s*\{\s*sr_capture_fail\([^;]*\);\s*return 0;\s*\}",
+        )
+        gdi = source[source.index("static int gdi_blit(void)"):source.index("int gui_present")]
         self.assertIn("if (!s_hwnd) return 0;", gdi)
         self.assertIn("HDC dc = GetDC(s_hwnd);", gdi)
         self.assertIn("if (!dc) return 0;", gdi)
@@ -1215,7 +1224,7 @@ class TestPresenterContract(unittest.TestCase):
             gdi.index("int scanlines = StretchDIBits"),
         )
         self.assertIn("int scanlines = StretchDIBits", gdi)
-        self.assertIn("if (scanlines <= 0) return 0;", gdi)
+        self.assertIn("return scanlines > 0;", gdi)
 
     def test_offscreen_frame_event_is_quiet_without_present_trace(self):
         source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
@@ -1786,6 +1795,7 @@ class TestSanitizedBringup(unittest.TestCase):
                 ), None
 
         def fake_package_build(build_args, stage_observer=None):
+            self.last_build_module_dir = build_args.module_dir
             stage_observer("compile", "PASS", 1)
             package_dir = build_args.user_data_root / "packages" / "ULUS99998"
             package_dir.mkdir(parents=True, exist_ok=True)
@@ -1891,6 +1901,42 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertTrue(all(module["required"] and module["role"] == "guest-prx" for module in modules))
         self.assertNotEqual(modules[0]["load_address"], modules[1]["load_address"])
         self.assertTrue(all(module["load_address"] % 0x10000 == 0 for module in modules))
+        nk_cli.validate_bringup_report(report)
+
+    def test_disc_whose_modules_the_runtime_serves_translates_no_guest_module(self):
+        """A disc module the runtime replaces completely is left out of translation.
+
+        When that leaves no module to place, the title continues exactly like a
+        disc without modules instead of handing code generation a module
+        folder with nothing selected from it.
+        """
+        work_root = self.root / "runtime-served-module-case"
+        work_root.mkdir(parents=True)
+        served_nids = sorted(runtime_registered_nids())[:4]
+        iso_path = work_root / "runtime-served-module.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_synthetic_iso_elf(),
+            sysdir_modules={},
+            usrdir_modules={
+                "served.prx": build_module_elf(
+                    [SYSLIB_EXPORT, ("SynthServed", 0x0001, served_nids, [])]
+                ),
+            },
+            disc_id="ULUS99998",
+            title="Synthetic Runtime Served Module",
+        )
+        status, report = self._run_module_fixture(iso_path, work_root)
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["failure_class"], "NONE")
+        self.assertTrue(all(stage["status"] == "PASS" for stage in report["stages"].values()))
+        self.assertEqual(report["counts"]["modules"], 1)
+        profile_dir = work_root / "work" / "user-data" / "experimental" / "ULUS99998"
+        profile = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+        self.assertEqual(profile["manifest"]["modules"], [])
+        self.assertIsNone(self.last_build_module_dir)
         nk_cli.validate_bringup_report(report)
 
     def test_cfw_loader_without_decrypted_original_stops_with_named_finding(self):

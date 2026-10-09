@@ -39,6 +39,11 @@ from prxload import Prx
 BUILD_ROOT = Path(os.environ.get("NK_SHOWCASE_BUILD_ROOT") or ROOT / "build" / "showcase")
 DEMO_ROOT = Path(os.environ.get("NK_SHOWCASE_DEMO_ROOT") or ROOT / "build" / "demos")
 SCREENSHOT_ROOT = BUILD_ROOT / "screenshots"
+# Vblank window (inclusive) whose presented frames the headless capture smoke publishes
+# and checks. A window, not a single vblank: a demo need not flip on every vblank (the 3D
+# scene flips about every fourth one in the capture run), and every frame it does present
+# inside the window must be captured.
+HEADLESS_CAPTURE_WINDOW = (60, 71)
 SECTOR = 2048
 PSP_PRX_ELF_TYPE = 0xFFA0
 
@@ -428,6 +433,45 @@ def _runtime_command(demo: dict[str, object], padscript: Path) -> tuple[list[str
     return command, env, package_dir
 
 
+def _headless_capture_command(
+    demo: dict[str, object], padscript: Path
+) -> tuple[list[str], dict[str, str], Path]:
+    """The scripted run on the explicit headless presenter with one capture switch.
+
+    SR_FBSNAP_WINDOWS is the only capture variable set, so the run proves both that a window
+    is self-sufficient (every present inside it is captured) and that the offscreen sink
+    publishes the frames it presents. The run must not depend on host speed: with real-time
+    vblank pacing a loaded host lets wall-clock vblanks pass without a guest flip, so
+    SR_NOVBPACE=1 advances vblanks with the guest instead, and SR_FPS_CAP=0 hands every
+    guest flip to the presenter (the wall-clock output cap would legitimately drop, and
+    report SKIPPED, presents that land early in their output slot). SR_PRESENT_TRACE=1 logs
+    every presented vblank so the published set can be checked against it."""
+    command, env, package_dir = _runtime_command(demo, padscript)
+    command.append("--gui")
+    for name in ("SR_FBSNAP", "SR_FBSNAP_AFTER", "SR_FBDUMP"):
+        env.pop(name, None)
+    first, last = HEADLESS_CAPTURE_WINDOW
+    env.update({
+        "SR_VIDEO": "offscreen",
+        "SR_FBSNAP_WINDOWS": f"{first}-{last}",
+        "SR_NOVBPACE": "1",
+        "SR_FPS_CAP": "0",
+        "SR_PRESENT_TRACE": "1",
+        "SR_EXIT_AT_VBLANK": str(last + 20),
+    })
+    return command, env, package_dir
+
+
+def _ppm_size(path: Path) -> tuple[int, int]:
+    parts = path.read_bytes().split(b"\n", 3)
+    if len(parts) != 4 or parts[0] != b"P6" or parts[2] != b"255":
+        raise ShowcaseError(f"invalid P6 framebuffer capture: {path}")
+    width, height = (int(value) for value in parts[1].split())
+    if len(parts[3]) != width * height * 3:
+        raise ShowcaseError(f"truncated P6 framebuffer capture: {path}")
+    return width, height
+
+
 def _ppm_metrics(path: Path, background: bytes) -> tuple[int, int]:
     parts = path.read_bytes().split(b"\n", 3)
     if len(parts) != 4 or parts[0] != b"P6" or len(background) != 3:
@@ -533,6 +577,59 @@ def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
     return result.stdout
 
 
+def _window_vblanks(pattern: str, output: str) -> set[int]:
+    first, last = HEADLESS_CAPTURE_WINDOW
+    return {int(v) for v in re.findall(pattern, output, re.MULTILINE) if first <= int(v) <= last}
+
+
+def _smoke_headless_capture(demo: dict[str, object], padscript: Path, smoke_dir: Path) -> list[Path]:
+    """Run the demo headless and prove every frame it presented inside the capture window
+    was published as a real 480x272 frame, and nothing else was."""
+    disc_id = str(demo["disc_id"])
+    command, env, package_dir = _headless_capture_command(demo, padscript)
+    for stale in package_dir.glob("frame_v*.ppm"):
+        stale.unlink()
+    try:
+        result = subprocess.run(command, cwd=package_dir, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=15, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ShowcaseError(f"{disc_id} headless capture run exceeded the 15 second window") from exc
+    output = result.stdout
+    log_path = smoke_dir / "runtime-headless-capture.log"
+    log_path.write_text(output, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise ShowcaseError(f"{disc_id} headless capture run exited {result.returncode}; see {log_path}")
+    if "BOOT_EVENT phase=window_ready backend=offscreen" not in output:
+        raise ShowcaseError(f"{disc_id} did not select the offscreen presenter; see {log_path}")
+    presented = _window_vblanks(r"^HOST_PRESENT_SUBMITTED f=(\d+) ", output)
+    # A latched flip is reported at the next SetFrameBuf, so read the vblank from the file
+    # name the capture was armed with, not from the report's own f= field.
+    reported = _window_vblanks(
+        r"^FBSNAP f=\d+ swapchain capture -> frame_v(\d+)\.ppm \(result=1\)$", output
+    )
+    written = {int(path.stem[len("frame_v"):]) for path in package_dir.glob("frame_v*.ppm")}
+    if not presented:
+        raise ShowcaseError(f"{disc_id} presented no frame inside the capture window; see {log_path}")
+    if not (presented == reported and reported == written):
+        raise ShowcaseError(
+            f"{disc_id} offscreen captures do not match the presented frames "
+            f"(presented {sorted(presented)}, published {sorted(reported)}, "
+            f"files {sorted(written)}); see {log_path}"
+        )
+    captures = [package_dir / f"frame_v{vblank}.ppm" for vblank in sorted(written)]
+    for capture in captures:
+        if _ppm_size(capture) != (480, 272):
+            raise ShowcaseError(f"{disc_id} offscreen capture is not a 480x272 frame: {capture}")
+        color_count, lit_pixels = _ppm_metrics(capture, bytes((0, 0, 0)))
+        if color_count < 4 or lit_pixels < 1000:
+            raise ShowcaseError(
+                f"{disc_id} offscreen capture is visually empty ({color_count} colors, "
+                f"{lit_pixels} non-black pixels); see {capture}"
+            )
+    return captures
+
+
 def smoke_all() -> None:
     SCREENSHOT_ROOT.mkdir(parents=True, exist_ok=True)
     padscript_root = BUILD_ROOT / "smoke"
@@ -584,8 +681,10 @@ def smoke_all() -> None:
             save_root = Path(env["SR_MEMSTICK"])
             if not save_root.exists() or not any(path.is_file() for path in save_root.rglob("*")):
                 raise ShowcaseError(f"Breakout did not create savedata under {save_root}")
-        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio; "
-              f"first frame checkpoint=vblank {checkpoint.frame}; screenshot={screenshot}")
+        captures = _smoke_headless_capture(demo, smoke_dir / "padscript.txt", smoke_dir)
+        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio/headless-capture; "
+              f"first frame checkpoint=vblank {checkpoint.frame}; screenshot={screenshot} "
+              f"captures={len(captures)} first={captures[0]}")
 
 
 def main() -> int:
