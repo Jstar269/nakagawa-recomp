@@ -25,6 +25,7 @@ import time
 from nk_core import inspect_iso, package_cache
 from nk_core.decrypt_boundary import key_file_path
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
+import title_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -454,6 +455,44 @@ def _stage_decrypted_inputs(
         return copied, "DIRECT_FOLDER" if copied else "NO_VALID_FILES"
 
     return 0, "NO_MATCH"
+
+
+def _stage_title_manifests(
+    title_manifests: Path | None,
+    disc_id: str | None,
+    work_dir: Path,
+) -> tuple[int, str]:
+    """Stage the user's own title manifests for this disc into the route's user data.
+
+    The player and ``bringup`` read ``<user data>/manifests``, so a title that is
+    described only by a user manifest (for example one whose data ships in
+    archives on the disc) is recognized, and its files are set up, only when
+    its manifest is there. Only manifests naming this disc ID are copied.
+    """
+    if title_manifests is None or disc_id is None:
+        return 0, "NOT_CONFIGURED"
+    source_root = title_manifests.resolve(strict=False)
+    if not source_root.is_dir():
+        return 0, "NO_MATCH"
+    target_dir = work_dir / "user-data" / "manifests"
+    wanted = disc_id.upper()
+    copied = 0
+    for source in sorted(source_root.glob("*.json"), key=lambda path: path.name.casefold()):
+        try:
+            manifest = title_manifest.load_manifest(source)
+        except (OSError, ValueError):
+            continue
+        disc = manifest.get("disc") if isinstance(manifest, dict) else None
+        if not isinstance(disc, dict):
+            continue
+        revisions = disc.get("compatible_revisions", [])
+        disc_ids = [disc.get("id"), *(revisions if isinstance(revisions, list) else [])]
+        if wanted not in {value.upper() for value in disc_ids if isinstance(value, str)}:
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target_dir / source.name)
+        copied += 1
+    return copied, "DIRECT_MATCH" if copied else "NO_MATCH"
 
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:
@@ -1523,6 +1562,7 @@ def run_sweep(
     time_budget_seconds: int = DEFAULT_TIME_BUDGET_SECONDS,
     launch_timeout_seconds: int = DEFAULT_LAUNCH_TIMEOUT_SECONDS,
     decrypted_titles: Path | None = None,
+    title_manifests: Path | None = None,
     previous_public_output: Path | None = None,
     source_commit: str | None = None,
     process_reader=_process_names,
@@ -1605,6 +1645,15 @@ def run_sweep(
         except (OSError, ValueError):
             staged_input_count = 0
             decrypted_input_status = "COPY_FAILED"
+        try:
+            staged_manifests, manifest_status = _stage_title_manifests(
+                title_manifests, disc_id, work_dir
+            )
+        except OSError:
+            staged_manifests, manifest_status = 0, "COPY_FAILED"
+        if title_manifests is not None:
+            print(f"[{index}/{len(paths)}] title manifests: {manifest_status} "
+                  f"({staged_manifests} staged)")
         started = time.perf_counter()
         outcome = _run_bringup(
             iso_path,
@@ -1898,6 +1947,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Destination for the aggregate without title names or disc IDs")
     parser.add_argument("--decrypted-titles", type=Path,
                         help="Optional root containing per-title decrypted input folders")
+    parser.add_argument("--title-manifests", type=Path,
+                        help="Optional folder of your own title manifests (*.json); the ones "
+                             "naming a disc are used for that disc's route")
     parser.add_argument("--previous-public-output", type=Path,
                         help="Existing title-free aggregate used as a comparison baseline")
     parser.add_argument("--time-budget", type=_positive_int, default=DEFAULT_TIME_BUDGET_SECONDS,
@@ -1932,6 +1984,7 @@ def main(argv: list[str] | None = None) -> int:
                 time_budget_seconds=args.time_budget,
                 launch_timeout_seconds=args.launch_timeout,
                 decrypted_titles=args.decrypted_titles,
+                title_manifests=args.title_manifests,
                 previous_public_output=args.previous_public_output,
             )
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:

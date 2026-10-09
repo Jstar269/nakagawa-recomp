@@ -10,6 +10,7 @@
 #include "nk_launch.h"
 #include "input_settings.h"
 #include "package_builder.h"
+#include "setup_staging.h"
 #include "generated/nk_title_catalog.h"
 
 #include <stdbool.h>
@@ -558,6 +559,41 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms);
  * and enter PLAYER_VIEW_READY_LIBRARY. Runtime readiness remains separate:
  * assets_staged may be true while is_prepared is false. */
 bool player_app_register_staged_game(PlayerApp *app);
+
+/* Everything one staging run needs, taken from the title's manifest. The
+ * request points into the plan's own storage, so a plan is built in place and
+ * never copied. It owns its strings because the wizard's worker thread reads
+ * it while the UI thread keeps running. */
+typedef struct {
+    char iso_path[NK_MAX_PATH];
+    char disc_id[NK_MAX_DISC_ID_LEN];
+    char disc_version[16];
+    char user_data_root[NK_MAX_PATH];
+    char data_root[257];
+    char root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241];
+    const char *roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS];
+    PlayerStageTitleRequest request;
+} PlayerStagePlan;
+
+
+/* Fill the one staging request every route uses (the wizard's worker,
+ * --stage-only, --launch-now, ADD TO LIBRARY) from the game's catalog or
+ * experimental profile entry. Returns false when that entry cannot be read. */
+bool player_app_build_stage_plan(const GameRecord *game, PlayerStagePlan *plan);
+
+/* True when the inspected disc's title takes its data from the disc and the
+ * data is not in place yet, so ADD TO LIBRARY must set its files up first. */
+bool player_app_inspected_game_needs_staging(const PlayerApp *app);
+
+/* ADD TO LIBRARY for the inspected disc. A title that takes its data from the
+ * disc goes through the setup wizard's staging worker first (the same
+ * progress, cancel, retry and messages); the worker saves the game to the
+ * library once its files are in place. Any other title is saved directly and
+ * the library is shown. Returns false only when saving directly failed. */
+bool player_app_add_inspected_game(PlayerApp *app);
+
+/* Start the wizard's staging worker for the inspected disc. */
+void player_app_wizard_begin_extraction(PlayerApp *app);
 
 /* Setup Wizard API */
 void player_app_start_setup_wizard(PlayerApp *app);

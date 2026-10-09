@@ -1656,6 +1656,119 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     return true;
 }
 
+static bool player_copy_bounded_text(char *destination, size_t destination_size,
+                                     const char *source) {
+    if (!destination || destination_size == 0 || !source) return false;
+    size_t length = strlen(source);
+    if (length >= destination_size) return false;
+    memcpy(destination, source, length + 1);
+    return true;
+}
+
+static bool player_plan_take_entry(PlayerStagePlan *plan, const NkTitleEntry *entry) {
+    if (!entry || entry->loose_content_root_count < 0 ||
+        entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
+        (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) return false;
+    if (entry->data_root &&
+        !player_copy_bounded_text(plan->data_root, sizeof(plan->data_root), entry->data_root)) {
+        return false;
+    }
+    for (int i = 0; i < entry->loose_content_root_count; i++) {
+        const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
+        if (!binding->root ||
+            !player_copy_bounded_text(plan->root_storage[i], sizeof(plan->root_storage[i]),
+                               binding->root)) return false;
+        plan->roots[i] = plan->root_storage[i];
+        plan->request.loose_content_root_count++;
+    }
+    return true;
+}
+
+bool player_app_build_stage_plan(const GameRecord *game, PlayerStagePlan *plan) {
+    if (!game || !plan) return false;
+    memset(plan, 0, sizeof(*plan));
+    if (!player_copy_bounded_text(plan->iso_path, sizeof(plan->iso_path), game->iso_path) ||
+        !player_copy_bounded_text(plan->disc_id, sizeof(plan->disc_id), game->disc_id) ||
+        !player_copy_bounded_text(plan->disc_version, sizeof(plan->disc_version),
+                           game->disc_version) ||
+        !nk_platform_get_app_data_dir(plan->user_data_root,
+                                      sizeof(plan->user_data_root))) return false;
+    plan->request.iso_path = plan->iso_path;
+    plan->request.user_data_root = plan->user_data_root;
+    plan->request.disc_id = plan->disc_id;
+    plan->request.disc_version = plan->disc_version;
+    plan->request.loose_content_roots = plan->roots;
+    plan->request.data_root = plan->data_root;
+
+    bool valid;
+    if (game->is_experimental) {
+        char profile_hash[65];
+        char error[256];
+        NkTitleEntrySnapshot snapshot = {0};
+        valid = nk_title_manifest_read_experimental_profile(
+                    plan->user_data_root, game->disc_id, game->title_id,
+                    game->selected_executable, &snapshot, profile_hash, error,
+                    sizeof(error)) &&
+                snapshot.entry.id && strcmp(snapshot.entry.id, game->title_id) == 0 &&
+                snapshot.entry.primary_disc_id &&
+                strcmp(snapshot.entry.primary_disc_id, game->disc_id) == 0 &&
+                player_plan_take_entry(plan, &snapshot.entry);
+        nk_title_catalog_snapshot_release(&snapshot);
+    } else {
+        nk_title_catalog_lock();
+        const NkTitleEntry *by_disc = game->disc_id[0]
+            ? nk_title_catalog_find_by_disc_id_locked(game->disc_id) : NULL;
+        const NkTitleEntry *by_id = game->title_id[0]
+            ? nk_title_catalog_find_by_id_locked(game->title_id) : NULL;
+        if (!by_disc) {
+            /* Not catalogued by disc: only the executable is staged. */
+            valid = true;
+        } else if (game->title_id[0] && (!by_id || strcmp(by_disc->id, by_id->id) != 0)) {
+            valid = false;
+        } else {
+            valid = player_plan_take_entry(plan, by_disc);
+        }
+        nk_title_catalog_unlock();
+    }
+    if (!valid) {
+        plan->request.loose_content_root_count = 0;
+        plan->data_root[0] = '\0';
+    }
+    return valid;
+}
+
+bool player_app_inspected_game_needs_staging(const PlayerApp *app) {
+    if (!app || !app->inspecting_game.disc_id[0]) return false;
+    /* A disc already in the library keeps its staged files: judge the record
+       ADD TO LIBRARY will actually save. */
+    GameRecord merged = app->inspecting_game;
+    for (int i = 0; i < app->library.count; i++) {
+        if (strcmp(app->library.entries[i].disc_id, merged.disc_id) == 0) {
+            (void)player_merge_readded_game(&app->library.entries[i], &merged);
+            break;
+        }
+    }
+    PlayerStagePlan *plan = (PlayerStagePlan *)calloc(1, sizeof(*plan));
+    bool takes_data_from_disc = plan && player_app_build_stage_plan(&merged, plan) &&
+                                player_stage_title_takes_data_from_disc(&plan->request);
+    free(plan);
+    if (!takes_data_from_disc) return false;
+    return player_app_game_data_root_status(app, &merged, NULL, 0, NULL, 0) !=
+           NK_LAUNCH_DATA_ROOT_READY;
+}
+
+bool player_app_add_inspected_game(PlayerApp *app) {
+    if (!app) return false;
+    if (player_app_inspected_game_needs_staging(app)) {
+        player_app_start_setup_wizard(app);
+        player_app_wizard_begin_extraction(app);
+        return true;
+    }
+    if (!player_app_add_game(app, &app->inspecting_game)) return false;
+    player_app_set_view(app, VIEW_LIBRARY);
+    return true;
+}
+
 bool player_app_register_staged_game(PlayerApp *app) {
     if (!app || !app->inspecting_game.disc_id[0] ||
         !app->inspecting_game.assets_staged ||
@@ -2173,18 +2286,7 @@ void player_app_wizard_next(PlayerApp *app) {
                 app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
             } else if (app->inspecting_game.status == NK_STATUS_VERIFIED &&
                        !app->wizard.is_extracting) {
-                app->wizard.is_extracting = true;
-                app->wizard.extraction_requested = true;
-                app->wizard.extraction_cancel_requested = false;
-                app->wizard.extraction_failed = false;
-                app->wizard.extraction_result = NK_OK;
-                app->wizard.extraction_percent = 0;
-                app->wizard.files_extracted = 0;
-                app->wizard.total_files = 0;
-                app->wizard.extraction_current_file[0] = '\0';
-                app->wizard.extraction_error[0] = '\0';
-                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "Extracting game assets into local application data...");
+                player_app_wizard_begin_extraction(app);
             } else if (app->wizard.is_extracting) {
                 /* The only action exposed while the worker is active is
                    cancellation; ignore an accidental second activation. */
@@ -2214,6 +2316,26 @@ void player_app_wizard_next(PlayerApp *app) {
         default:
             break;
     }
+}
+
+void player_app_wizard_begin_extraction(PlayerApp *app) {
+    if (!app) return;
+    app->wizard.iso_selected = true;
+    app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+    app->wizard.is_extracting = true;
+    app->wizard.extraction_requested = true;
+    app->wizard.extraction_cancel_requested = false;
+    app->wizard.extraction_complete = false;
+    app->wizard.extraction_failed = false;
+    app->wizard.extraction_result = NK_OK;
+    app->wizard.extraction_percent = 0;
+    app->wizard.files_extracted = 0;
+    app->wizard.total_files = 0;
+    app->wizard.extraction_current_file[0] = '\0';
+    app->wizard.extraction_error[0] = '\0';
+    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+             "Extracting game assets into local application data...");
+    app->focus_index = 0;
 }
 
 void player_app_wizard_back(PlayerApp *app) {

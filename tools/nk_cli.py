@@ -40,6 +40,8 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
+from nk_core.prep_engine import NativeTitleStager, SUPPORTED_ARCHIVE_FORMATS  # noqa: E402
+from nk_core.title_registry import get_default_registry  # noqa: E402
 from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
@@ -832,6 +834,28 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
     )
 
 
+def _disc_psp_header(iso_path: Path, manifest: dict, executable: str,
+                     destination: Path) -> Path | None:
+    """The disc's own ~PSP executable header, when the manifest reads BSS from it.
+
+    Its metadata carries the true BSS size, so it is read from the ISO instead
+    of asking the user for a file they already have inside the disc image. Both
+    build-package and bring-up's code generation use it.
+    """
+    if manifest["executable"].get("bss_metadata_source") != "psp-header":
+        return None
+    _extract_iso_executable(iso_path, executable, destination)
+    with destination.open("rb") as header_file:
+        magic = header_file.read(4)
+    if magic != b"~PSP":
+        destination.unlink(missing_ok=True)
+        raise PackageBuildError(
+            "This manifest reads BSS metadata from the disc's ~PSP executable header, "
+            f"but {executable} on this disc has no such header; provide --psp-header."
+        )
+    return destination
+
+
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            module_dir_arg: Path | None,
                            default_module_dir: Path | None = None,
@@ -1558,20 +1582,10 @@ def _build_package(args: argparse.Namespace, stage_observer,
         if psp_header is not None:
             cached_header = cache_dir / "selected.psp"
             shutil.copyfile(psp_header, cached_header)
-        elif manifest["executable"].get("bss_metadata_source") == "psp-header":
-            # The header is the disc's own ~PSP-wrapped executable: its metadata
-            # carries the true BSS size. Read it from the ISO instead of asking
-            # the user for a file they already have inside the disc image.
-            cached_header = cache_dir / "selected.psp"
-            _extract_iso_executable(iso_path, manifest_selected, cached_header)
-            with cached_header.open("rb") as header_file:
-                magic = header_file.read(4)
-            if magic != b"~PSP":
-                cached_header.unlink(missing_ok=True)
-                raise PackageBuildError(
-                    "This manifest reads BSS metadata from the disc's ~PSP executable header, "
-                    f"but {manifest_selected} on this disc has no such header; provide --psp-header."
-                )
+        else:
+            cached_header = _disc_psp_header(
+                iso_path, manifest, manifest_selected, cache_dir / "selected.psp"
+            )
         module_dir = _copy_optional_modules(
             iso_path,
             manifest,
@@ -1997,18 +2011,37 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_prepare(args: argparse.Namespace) -> int:
-    engine = PreparationEngine()
+    try:
+        user_data_root = _user_data_root(args.user_data_root)
+    except PackageBuildError as exc:
+        sys.stderr.write(f"\nPreparation failed [USER_DATA_ROOT_INVALID]: {exc}\n")
+        return 1
+    # The same title list the player uses: the built-in manifests plus the
+    # user's own manifests in <user data>/manifests.
+    registry = get_default_registry()
+    registry.load_local_manifests(user_data_root / "manifests")
+    stager = NativeTitleStager(user_data_root, player=args.player)
+    engine = PreparationEngine(registry=registry, native_stager=stager)
     result = engine.prepare_game(
         args.iso,
         on_progress=print_progress,
         destination_root=Path(args.dest) if args.dest else None,
     )
-    if result.success:
-        print(f"\nPreparation successful! Manifest written to: {result.manifest_path}")
-        return 0
-    else:
+    if not result.success:
         sys.stderr.write(f"\nPreparation failed [{result.error_code}]: {result.error_message}\n")
         return 1
+    if result.manifest_path is not None:
+        print(f"\nPreparation successful! Manifest written to: {result.manifest_path}")
+        return 0
+    already = " were already in place and" if stager.reused else ""
+    print(
+        f"\nPreparation successful! The game's files{already} are in {result.prepared_root}, "
+        f"and {result.disc_id} is in your Nakagawa library.\n"
+        f"Next: build the game with `python tools/nk_cli.py build-package {result.disc_id}"
+        + (f" --user-data-root {user_data_root}" if args.user_data_root else "")
+        + "`, then press Play in the Nakagawa player."
+    )
+    return 0
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
@@ -2488,6 +2521,9 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (runtime telemetry did not verify a PSP kernel import)"
     elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
+    elif report["failure_class"] == "DISC_FILES_STAGE_FAILED":
+        detail = (" (the game's files on the disc could not be set up; the message above "
+                  "says why and what to do next)")
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
     elif report["failure_class"] == "PBP_PACKAGE_UNSUPPORTED":
@@ -2922,7 +2958,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     started = time.perf_counter()
     module_dir: Path | None = None
     try:
-        metadata = inspect_iso(iso_path)
+        # The player's title list: the built-in manifests plus the user's own
+        # manifests in the bring-up user-data root.
+        from nk_core.title_registry import TitleRegistry
+
+        registry = TitleRegistry(include_defaults=True)
+        registry.load_local_manifests(user_root / "manifests")
+        metadata = inspect_iso(iso_path, registry=registry)
         preflight = inspect_compatibility_preflight(
             iso_path, metadata=metadata, runtime_root=user_root
         )
@@ -2972,6 +3014,24 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     if progress is not None:
         progress.start("prepare_import")
     started = time.perf_counter()
+    # A disc whose data ships in archives gets its files from the player's
+    # staging transaction (the one the setup wizard and `prepare` run), into
+    # this bring-up's own user-data root; the launch below reads them there.
+    staged_root: Path | None = None
+    if (metadata.matched_profile is not None and
+            metadata.matched_profile.archive_format not in SUPPORTED_ARCHIVE_FORMATS):
+        staged = NativeTitleStager(user_root)(
+            iso_path, metadata.disc_id.upper(), lambda _percent, _files: None
+        )
+        if not staged.success or staged.prepared_root is None:
+            print(f"Setting up the game's files failed [{staged.error_code}]: "
+                  f"{staged.error_message}")
+            fail_stage(report, "prepare_import", "DISC_FILES_STAGE_FAILED", [],
+                       int((time.perf_counter() - started) * 1000))
+            _write_bringup_report(report, report_path)
+            print(_bringup_human_summary(report))
+            return 1
+        staged_root = staged.prepared_root
     try:
         profile_path: Path | None = None
         profile: dict | None = None
@@ -2984,7 +3044,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             title_id = manifest["id"]
             is_experimental = True
         else:
-            _manifest_source, manifest = _find_public_manifest(metadata.matched_profile.id)
+            _manifest_source, manifest = _find_public_manifest(
+                metadata.matched_profile.id, user_root
+            )
             title_id = manifest["id"]
             is_experimental = False
         selected_elf = work_dir / "selected.elf"
@@ -3235,13 +3297,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         codegen_dir.mkdir(parents=True, exist_ok=True)
         if not codegen_dir.resolve().is_relative_to(work_dir):
             raise PackageBuildError("Code generation output escaped the work directory.")
+        # The package route's naming rule: game_name is optional in a title
+        # manifest (a user manifest often omits it) and defaults to the id.
+        game_name = title_codegen_plan._package_game_name(manifest, None)
+        psp_header = _disc_psp_header(
+            iso_path, manifest, library_executable, work_dir / "selected.psp"
+        )
         plan = title_codegen_plan.build_plan(
             manifest,
-            game_name=manifest["game_name"],
+            game_name=game_name,
             game_elf=selected_elf,
             build_dir=codegen_dir,
             codegen_profile=manifest.get("codegen_profile"),
             module_dir=module_dir,
+            psp_header=psp_header,
             python_command=sys.executable,
         )
         env = _runtime_build_environment()
@@ -3254,7 +3323,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             check=False,
         )
         report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
-            codegen_dir / f"{manifest['game_name']}_recomp_stubs.txt", sources
+            codegen_dir / f"{game_name}_recomp_stubs.txt", sources
         )
         if completed.returncode != 0:
             fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
@@ -3323,7 +3392,14 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         env = os.environ.copy()
         env.pop("SR_DATAROOT", None)
         env.pop("SR_LOOSE_CONTENT_ROOTS", None)
-        data_root = (ROOT / manifest["filesystem"]["data_root"]).resolve(strict=False)
+        # The same order the launcher resolves SR_DATAROOT in: the staged
+        # copy of the disc first, then the source tree.
+        declared_data_root = manifest["filesystem"]["data_root"]
+        if (staged_root is not None and declared_data_root and
+                (staged_root / declared_data_root).is_dir()):
+            data_root = (staged_root / declared_data_root).resolve()
+        else:
+            data_root = (ROOT / declared_data_root).resolve(strict=False)
         try:
             loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)
         except (OSError, ValueError) as exc:
@@ -3524,7 +3600,12 @@ def main() -> int:
 
     p_prep = subparsers.add_parser("prepare", help="Prepare an ISO for native execution")
     p_prep.add_argument("iso", help="Path to PSP ISO image")
-    p_prep.add_argument("--dest", help="Optional destination games directory")
+    p_prep.add_argument("--dest", help="Optional destination games directory (raw discs only)")
+    p_prep.add_argument("--user-data-root", type=Path,
+                        help="Override the player per-user data directory")
+    p_prep.add_argument("--player", type=Path,
+                        help="The nakagawa_player executable that sets up archive discs "
+                             "(default: build/ in this checkout, or the release bin/ folder)")
     p_prep.set_defaults(func=cmd_prepare)
 
     p_launch = subparsers.add_parser("launch", help="Plan launch arguments for a prepared game")
