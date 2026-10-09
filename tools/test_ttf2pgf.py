@@ -819,8 +819,16 @@ class VendorFontNameScanTests(unittest.TestCase):
 
     The scan covers every tracked file except Markdown and binary files. Markdown is the
     provenance record (docs/provenance/FONT_ORIGINS.md) that documents where each name was
-    found, so it names the vendor fonts on purpose. The vendor set here is independent of
-    the converter's denylist, so weakening that list cannot hide a name from this scan.
+    found, so it names the vendor fonts on purpose.
+
+    The marker set is this class's own literal list, not read from the converter's
+    denylist, so weakening that denylist cannot hide a name from this scan. It is narrower
+    than the denylist on one point, deliberately: the console maker's name is not a
+    whole-word marker here. That name is the platform's own identity and appears
+    legitimately across tracked source (the PSP's device identifiers, the non-affiliation
+    notice, third-party attribution), so a whole-word match would fail on those lines.
+    Consequently a maker-branded font name in tracked source passes this scan; the
+    converter's denylist refuses it at output instead.
     Each name is split across literals so this file does not contain it whole.
     """
 
@@ -833,6 +841,30 @@ class VendorFontNameScanTests(unittest.TestCase):
         + r"|(?<![0-9A-Za-z])" + re.escape(_joined("F", "TT")) + r"(?![0-9A-Za-z])",
         re.IGNORECASE,
     )
+
+    @classmethod
+    def _hit_lines(cls, text: str) -> list[int]:
+        """1-based numbers of the lines in ``text`` that the scan flags."""
+        return [number for number, line in enumerate(text.splitlines(), start=1)
+                if cls.PATTERN.search(line)]
+
+    def test_scan_catches_each_listed_marker(self) -> None:
+        # The tree test passes vacuously if the pattern is broken, so prove it fires.
+        markers = (
+            _joined("New", "Rodin"), _joined("Asia", "KNHH"), _joined("Asia", "NHH"),
+            _joined("Font", "works"), _joined("F", "TT"),
+        )
+        for marker in markers:
+            with self.subTest(marker=marker):
+                self.assertEqual(self._hit_lines("font = '" + marker + "'\n"), [1])
+
+    def test_whole_word_marker_needs_a_word_boundary(self) -> None:
+        self.assertEqual(self._hit_lines("x = 'X" + _joined("F", "TT") + "Y'\n"), [])
+
+    def test_platform_prose_naming_the_console_maker_is_not_flagged(self) -> None:
+        # The maker's name is deliberately not a marker here (see the class docstring).
+        prose = "# Not affiliated with " + _joined("SO", "NY") + " Interactive Entertainment.\n"
+        self.assertEqual(self._hit_lines(prose), [])
 
     def test_tracked_source_names_no_vendor_font(self) -> None:
         if shutil.which("git") is None:
@@ -854,9 +886,7 @@ class VendorFontNameScanTests(unittest.TestCase):
                 text = data.decode("utf-8")
             except UnicodeDecodeError:
                 continue
-            for number, line in enumerate(text.splitlines(), start=1):
-                if self.PATTERN.search(line):
-                    offenders.append(f"{entry}:{number}")
+            offenders.extend(f"{entry}:{number}" for number in self._hit_lines(text))
         self.assertEqual(offenders, [], "tracked source names a vendor font; use a project-owned name")
 
 
