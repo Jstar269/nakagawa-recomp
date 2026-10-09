@@ -24,6 +24,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
 #include "gpu_sdl3vk/sdl3vk.h"
+#include "fbcap.h"
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #endif
@@ -436,18 +437,32 @@ void gui_pump(void) {
 #endif
 }
 
+#ifdef _WIN32
+/* Blit the converted frame (s_px) into the GDI window. 1 = the frame was drawn. */
+static int gdi_blit(void) {
+    if (!s_hwnd) return 0;
+    HDC dc = GetDC(s_hwnd);
+    if (!dc) return 0;
+    RECT cr;
+    if (!GetClientRect(s_hwnd, &cr)) {
+        ReleaseDC(s_hwnd, dc);
+        return 0;
+    }
+    int scanlines = StretchDIBits(dc, 0, 0, cr.right, cr.bottom, 0, 0, PSP_W, PSP_H,
+                                  s_px, &s_bmi, DIB_RGB_COLORS, SRCCOPY);
+    ReleaseDC(s_hwnd, dc);
+    return scanlines > 0;
+}
+#endif
+
 int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return 0;
     if (stride == 0) stride = 512;
 
     if (!present_slot_due()) {
+        /* No presenter runs, so an armed capture stays unserviced; the caller resolves it
+         * as "nothing attempted" when this returns (fbcap.h). */
         if (sr_perf_enabled) sr_perf_present_skip();
-#ifdef SR_SDL3VK
-        /* A host present that never runs must not service an armed capture: otherwise a
-         * later present would publish the old path with newer pixels. Resolve it as
-         * "nothing attempted" so the next request can arm cleanly. */
-        if (s_sdl3) sdl3vk_capture_cancel();
-#endif
         gui_pump();
         return 0;
     }
@@ -463,6 +478,9 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             sr_gui_boot_event("BOOT_EVENT phase=frame_present backend=offscreen frame=%llu",
                     (unsigned long long)s_offscreen_frames);
         }
+        /* The converted frame is what this sink accepted: an armed capture publishes
+         * exactly these pixels, the same host frame the other presenters show. */
+        sr_capture_serve_host(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
         return 1;
     }
 
@@ -511,18 +529,12 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_pad_present = 0;
 
     convert_fb(fbaddr, fmt, stride);
-    if (!s_hwnd) return 0;
-    HDC dc = GetDC(s_hwnd);
-    if (!dc) return 0;
-    RECT cr;
-    if (!GetClientRect(s_hwnd, &cr)) {
-        ReleaseDC(s_hwnd, dc);
+    if (!gdi_blit()) {
+        sr_capture_fail("GDI present failed");
         return 0;
     }
-    int scanlines = StretchDIBits(dc, 0, 0, cr.right, cr.bottom, 0, 0, PSP_W, PSP_H,
-                                  s_px, &s_bmi, DIB_RGB_COLORS, SRCCOPY);
-    ReleaseDC(s_hwnd, dc);
-    if (scanlines <= 0) return 0;
+    /* The DIB just blitted is the converted frame: an armed capture publishes it. */
+    sr_capture_serve_host(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
 #else
     /* No GDI presenter on this host and the SDL3 presenter is not active: gui_init
      * reported that, so there is nothing to present and nothing to claim. */

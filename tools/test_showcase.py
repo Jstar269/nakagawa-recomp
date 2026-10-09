@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,59 @@ class ShowcaseImageTests(unittest.TestCase):
             path = Path(temp) / "frame.ppm"
             path.write_bytes(b"P6\n2 2\n255\n" + pixels)
             self.assertEqual(showcase._ppm_metrics(path, background), (4, 3))
+
+    def test_ppm_size_rejects_truncated_or_non_p6_captures(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "frame.ppm"
+            path.write_bytes(b"P6\n2 1\n255\n" + bytes(6))
+            self.assertEqual(showcase._ppm_size(path), (2, 1))
+            path.write_bytes(b"P6\n2 1\n255\n" + bytes(5))
+            with self.assertRaises(showcase.ShowcaseError):
+                showcase._ppm_size(path)
+            path.write_bytes(b"P3\n2 1\n255\n" + bytes(6))
+            with self.assertRaises(showcase.ShowcaseError):
+                showcase._ppm_size(path)
+
+    def test_headless_capture_reads_presented_and_published_vblanks_in_the_window(self) -> None:
+        first, last = showcase.HEADLESS_CAPTURE_WINDOW
+        output = "\n".join([
+            f"HOST_PRESENT_SUBMITTED f={first - 1} buf=0x04000000 fmt=3 stride=512",
+            f"HOST_PRESENT_SUBMITTED f={first} buf=0x04000000 fmt=3 stride=512",
+            f"HOST_PRESENT_SUBMITTED f={last} buf=0x04000000 fmt=3 stride=512",
+            f"FBSNAP f={first} swapchain capture -> frame_v{first}.ppm (result=1)",
+            # A latched flip is reported at the next SetFrameBuf: the file name, not the
+            # report's own f=, names the presented vblank.
+            f"FBSNAP f={last + 1} swapchain capture -> frame_v{last}.ppm (result=1)",
+            f"FBSNAP f={last + 2} swapchain capture -> frame_v{last + 2}.ppm (result=-1)",
+        ])
+        presented = showcase._window_vblanks(r"^HOST_PRESENT_SUBMITTED f=(\d+) ", output)
+        published = showcase._window_vblanks(
+            r"^FBSNAP f=\d+ swapchain capture -> frame_v(\d+)\.ppm \(result=1\)$", output
+        )
+        self.assertEqual(presented, {first, last})
+        self.assertEqual(published, {first, last})
+
+    def test_headless_capture_sets_only_the_capture_window(self) -> None:
+        demo = showcase.DEMOS[0]
+        with tempfile.TemporaryDirectory() as temp:
+            package = Path(temp) / "packages" / str(demo["disc_id"])
+            package.mkdir(parents=True)
+            (package / "package.json").write_text(
+                '{"executable": {"path": "game.exe"}, "runtime": {"run_entry": "0x08804000"}}',
+                encoding="utf-8",
+            )
+            with mock.patch.object(showcase, "DEMO_ROOT", Path(temp)), \
+                    mock.patch.dict("os.environ", {"SR_FBSNAP": "4", "SR_FBDUMP": "9"}):
+                command, env, _ = showcase._headless_capture_command(demo, Path(temp) / "pad.txt")
+        first, last = showcase.HEADLESS_CAPTURE_WINDOW
+        self.assertEqual(command[-1], "--gui")
+        self.assertEqual(env["SR_VIDEO"], "offscreen")
+        self.assertEqual(env["SR_FBSNAP_WINDOWS"], f"{first}-{last}")
+        # Host-speed independence: guest-driven vblanks and no wall-clock output cap.
+        self.assertEqual(env["SR_NOVBPACE"], "1")
+        self.assertEqual(env["SR_FPS_CAP"], "0")
+        self.assertNotIn("SR_FBSNAP", env)
+        self.assertNotIn("SR_FBDUMP", env)
 
     def test_icon_png_is_deterministic_144_by_80_rgba(self) -> None:
         palette = ((20, 40, 60), (80, 160, 200))
