@@ -176,6 +176,88 @@ class TestHistoryAudit(unittest.TestCase):
                 history_audit.get_repository_baseline(root),
             )
 
+    def test_literal_prefilters_agree_with_their_regexes(self):
+        # Fast path: each _has_* prefilter, which skips a regex unless a literal every
+        # match contains is present. Slow path: the named regex alone. Seeds match each
+        # signature in several letter cases, and seeded random edits add near-misses and
+        # the characters whose case folding is special (dotless i, long s, Kelvin sign).
+        # Every verdict must agree, and both outcomes must occur for every signature.
+        import random
+        bs = chr(92)
+        seeds = [
+            "ghp_" + "A" * 36, "github_pat_" + "B" * 80, "sk_live_" + "C" * 24, "AKIA" + "D" * 16,
+            "C:" + bs + "Users" + bs + "someone" + bs + "notes",
+            "C:" + bs + "Documents and Settings" + bs + "someone" + bs + "x",
+            "/ho" + "me/someone/x", "/Us" + "ers/someone/x", "/mnt/c/Us" + "ers/someone/x",
+            bs + bs + "server" + bs + "share",
+            "~/One" + "Drive - Contoso", "/tm" + "p/build", "/var/tm" + "p/build",
+            "C:" + bs + "AppData" + bs + "Local" + bs + "Temp" + bs + "x",
+            "github.com/Jstar269/nakagawa-recomp-history-private", "HST_PGD_VKEY_HEX",
+            "private save baseline", "private trace capture", "private dump evidence",
+        ]
+        checks = {
+            "api token": (lambda t, low: history_audit._has_api_token(t),
+                          history_audit.API_TOKEN_PATTERN),
+            "windows path": (lambda t, low: history_audit._has_windows_user_path(t),
+                             history_audit.WINDOWS_USER_PATH),
+            "cloud folder": (lambda t, low: history_audit._has_onedrive_path(t, low),
+                         history_audit.ONEDRIVE_PATH),
+            "temp path": (lambda t, low: history_audit._has_temp_path(t, low),
+                          history_audit.TEMP_PATH),
+            "private repo": (lambda t, low: history_audit._has_private_repo_url(t),
+                             history_audit.PRIVATE_REPO_URL),
+            "vocabulary": (lambda t, low: history_audit._has_private_operational_vocabulary(t, low),
+                           history_audit.PRIVATE_OPERATIONAL_VOCABULARY),
+        }
+        rng = random.Random(20261009)
+        alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_./:" + bs + chr(10)
+        special = "\u0131\u0130\u017f\u212a\u212b\u00df\u1e9e"
+        corpus = []
+        for seed in seeds:
+            corpus += [seed, seed.upper(), seed.lower()]
+            for _ in range(150):
+                text = list(seed)
+                for _ in range(rng.randint(1, 3)):
+                    op = rng.random()
+                    if op < 0.4 and text:
+                        index = rng.randrange(len(text))
+                        if rng.random() < 0.3:
+                            text[index] = rng.choice(special + alphabet)
+                        else:
+                            text[index] = text[index].swapcase()
+                    elif op < 0.7 and text:
+                        del text[rng.randrange(len(text))]
+                    else:
+                        text.insert(rng.randint(0, len(text)), rng.choice(special + alphabet))
+                corpus.append("".join(text))
+        for name, (prefilter, pattern) in checks.items():
+            verdicts = []
+            for text in corpus:
+                lowered = text.lower()
+                fast = prefilter(text, lowered)
+                slow = pattern.search(text) is not None
+                verdicts.append(slow)
+                self.assertEqual(fast, slow, f"{name}: {text!r}")
+            self.assertIn(True, verdicts, f"{name}: the corpus must contain matches")
+            self.assertIn(False, verdicts, f"{name}: the corpus must contain near-misses")
+
+    def test_each_content_signature_is_still_found_through_the_prefilters(self):
+        # End to end, the audit must still report each signature from a committed blob.
+        bs = chr(92)
+        token = "gh" + "p_" + "1" * 36
+        tests = {
+            "HISTORICAL_BLOB_SECRET": "key " + token + chr(10),
+            "HISTORICAL_BLOB_LOCAL_PATH": "see C:" + bs + "Users" + bs + "someone" + bs + "notes.txt" + chr(10),
+            "HISTORICAL_BLOB_PRIVATE_REPO": "clone github.com/Jstar269/nakagawa-recomp-history-private" + chr(10),
+            "HISTORICAL_BLOB_PRIVATE_VOCABULARY": "run HST_PGD_VKEY_HEX now" + chr(10),
+        }
+        for code, content in tests.items():
+            with self.subTest(code=code):
+                self.assertTrue(
+                    any(f.code == code for f in self._blob_findings(content)),
+                    f"{code} must still be reported",
+                )
+
     def test_ancestor_only_sensitive_blob_is_scanned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
