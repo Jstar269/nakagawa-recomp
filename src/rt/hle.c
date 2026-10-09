@@ -45,6 +45,9 @@
 #include "pgf_api.h"
 #include "pgd_api.h"
 #include "nk_input_profile.h"
+#include "nk_platform.h"   /* per-user data directory and UTF-8 file primitives (sceReg overlay) */
+#define NK_JSON_NO_LEGACY_ALIASES
+#include "nk_json.h"       /* sceReg overlay parser */
 #include "evf.h"         /* pure sceKernelEventFlag pattern/mode semantics */
 #include "asset_index.h" /* dynamic extracted-data index (issue #223) */
 #include "archive_vfs.h" /* validated read-only XB provider (issue #298) */
@@ -53,6 +56,7 @@
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
 #include "atrac3p_bridge.h" /* PR-B: real ATRAC3+ decode in sceAtracDecodeData */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
+#include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
@@ -934,223 +938,1494 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
 }
 #endif
 
-/* sceUtilityGetSystemParamInt(id, int *out): write the system setting and return 0. PPSSPP's
- * defaults (Core/HLE/sceUtility.cpp registry): English (1), Western button order, 24h clock.
- * A no-op that leaves *out untouched makes the game read garbage for the language and load the
- * wrong region assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. */
+/* sceUtilityGetSystemParamInt(id, int *out): write the system setting and return 0. A no-op that
+ * leaves *out untouched makes the game read garbage for the language and load the wrong region
+ * assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. LANGUAGE (1, English), BUTTON_PREFERENCE (1, cross
+ * = enter), DATE_FORMAT (1), TIME_FORMAT (1) and DAYLIGHTSAVINGS (1) are the values of their
+ * registry keys measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration: that console's
+ * configured settings, not factory defaults (which are unmeasured). The ad-hoc channel, WLAN power
+ * save and time zone values are unmeasured project defaults. The registry (sreg_systemparam_int)
+ * is the source sceUtilityGetSystemParamInt reads; this table seeds it. */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
-        case 2:  return 1;   /* ADHOC_CHANNEL: automatic */
-        case 3:  return 0;   /* WLAN_POWERSAVE: off */
-        case 4:  return 1;   /* DATE_FORMAT: MMDDYYYY */
-        case 5:  return 0;   /* TIME_FORMAT: 24h */
-        case 6:  return 0;   /* TIMEZONE offset (minutes) */
-        case 7:  return 0;   /* DAYLIGHTSAVINGS: off */
-        case 8:  return 1;   /* LANGUAGE: English (PPSSPP default) */
-        case 9:  return 1;   /* BUTTON_PREFERENCE: cross = enter (Western) */
+        case 2:  return 1;   /* ADHOC_CHANNEL: automatic (unmeasured) */
+        case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured) */
+        case 4:  return 1;   /* DATE_FORMAT: measured */
+        case 5:  return 1;   /* TIME_FORMAT: measured (1 = 12-hour in the PSPSDK enumeration) */
+        case 6:  return 0;   /* TIMEZONE offset in minutes (unmeasured) */
+        case 7:  return 1;   /* DAYLIGHTSAVINGS: measured */
+        case 8:  return 1;   /* LANGUAGE: measured (English) */
+        case 9:  return 1;   /* BUTTON_PREFERENCE: measured */
         default: return 1;   /* safe default */
     }
 }
 
+static uint32_t sreg_systemparam_int(uint32_t id);
+
 static uint32_t h_GetSystemParamInt(CpuState *s) {
     uint32_t id = A0, out = A1;
-    uint32_t v = systemparam_int_value(id);
+    /* Read through the virtual system registry, so a setting a game wrote there is what this
+     * getter reports: the two surfaces share one value per modeled key. */
+    uint32_t v = sreg_systemparam_int(id);
     if (out) MEM_W32(out, v);
     if (hle_log_on()) fprintf(stderr, "sceUtilityGetSystemParamInt: id=%u -> %u\n", id, v);
     return 0;
 }
 
-/* ---- sceReg: read-only virtual system registry ----
- * Public reference: the PSPSDK Reg kernel library (pspdev.github.io/pspsdk, group__Reg and
- * structRegParam). struct RegParam is 272 bytes: regtype u32 at +0, name[256] at +4 (documented
- * as seemingly unused), namelen u32 at +260, unk2 u32 at +264, unk3 u32 at +268. Key types are
- * DIR=1, INT=2, STR=3, BIN=4; REGHANDLE is a 32-bit handle. The reference documents no regtype
- * values and no error codes, so regtype is not checked and the error codes below are errno-class
- * choices, not hardware measurements.
+/* ---- sceReg: virtual system registry with a per-user overlay ----
+ * Sources:
+ *  - MEASURED on PSP-3000 6.6.1, 2026-10-09, read-only enumeration (oracle case PSP-REGISTRY-001):
+ *    the names, types, sizes and sceRegGetKeys order of the /CONFIG tree in s_sreg_tree; directory
+ *    entries report size 0; empty strings report size 1 and longer strings their length, so a
+ *    string key's size follows its value; sceRegGetKeyInfo on an unknown key returns 0x8008271D;
+ *    sceRegGetKeysNum on a forged handle returns 0x8008272E and leaves the count untouched; 256
+ *    further sceRegOpenRegistry calls succeeded while one handle was open; and a mode-1
+ *    sceRegOpenCategory of a missing category returned 0 and the category then appeared in its
+ *    parent with its 36-byte name cut to 26 bytes (two such entries were present, so an earlier
+ *    run's category had persisted). Opening the 26-byte name afterwards failed; that is not
+ *    modeled. Values were read only for six non-personal keys (see systemparam_int_value and
+ *    s_sreg_measured_ints).
+ *  - PSPSDK Registry Kernel Library (pspdev.github.io/pspsdk group__Reg, src/registry/pspreg.h and
+ *    the sceReg.S import stubs): the signatures, REGHANDLE, the key types DIR=1, INT=2 ("Key is an
+ *    integer (4 bytes)"), STR=3 and BIN=4, REG_KEYNAME_SIZE 27, sceRegCreateKey's type ("cannot be
+ *    a directory type") and size ("Size of the allocated value space"), and the category open mode
+ *    ("can be 1 or 2, probably read or read/write"). struct RegParam is 272 bytes: regtype u32 at
+ *    +0, name[256] at +4 (documented as seemingly unused), namelen u32 at +260, unk2 u32 at +264,
+ *    unk3 u32 at +268. The Rust libc psp bindings name the first argument of sceRegRemoveCategory
+ *    the registry handle (not a category handle); it takes a category name.
+ *  - Public homebrew title behaviour (Adrenaline, cef/recovery/utils.c): reading or writing a
+ *    setting opens the registry and the category with mode 2; a write tries sceRegSetKeyValue first
+ *    and, when the key is missing, calls sceRegCreateKey and sets the value again; both paths call
+ *    sceRegFlushCategory and sceRegFlushRegistry before closing.
  *
- * Read model: the writers (sceRegSetKeyValue and friends) are not registered, so a write fails
- * closed as an unregistered import. Integer values come from systemparam_int_value(), the table
- * sceUtilityGetSystemParamInt reads, so the two surfaces cannot disagree. The nickname is a
- * project default because this runtime has no system-param string table yet. Nothing here
- * touches the host filesystem. */
+ * UNMEASURED: the oracle never writes the registry, so every write semantic below is unmeasured.
+ * Apart from the two measured codes (not-found 0x8008271D and bad handle 0x8008272E, applied to
+ * every not-found and invalid-handle case by analogy with the one call each was measured on), the
+ * error codes are errno-class (0x8001xxxx, newlib numbering) project choices, as is the check order.
+ *
+ * Model (project choices where the sources are silent; each one is unmeasured):
+ *  - Defaults: the measured tree, except the user's own saved network profiles
+ *    (/CONFIG/NETWORK/INFRASTRUCTURE/<n>), which a neutral console does not have. No value is
+ *    copied from the console except the six measured non-personal ones. The integer keys
+ *    sceUtilityGetSystemParamInt shares take their values from systemparam_int_value(), and the
+ *    getter reads the registry back through sreg_systemparam_int(), so the two surfaces agree after
+ *    a game writes a setting. Every other key holds a neutral placeholder (INT 0, an empty string,
+ *    or zero bytes); personal keys (owner_name, passwords, network and account keys) never hold a
+ *    real value. Reading a placeholder logs once, naming the key. RegParam regtype and name are
+ *    not checked; every open serves the one system registry.
+ *  - An open of a missing category creates it in either mode (measured for mode 1), cutting each
+ *    new name to 26 bytes; lookups compare whole names, so a longer name never matches a stored
+ *    one. sceRegCreateKey cuts names the same way (inferred: categories are DIR keys in the same
+ *    name table).
+ *  - Writes need a mode-2 category handle (sceRegSetKeyValue, sceRegCreateKey) or a mode-2 registry
+ *    handle (sceRegRemoveCategory); a mode-1 handle is refused with EACCES. A registry handle's mode
+ *    does not limit the categories opened under it. Default categories cannot be removed (EPERM),
+ *    and a category that still has entries is refused (ENOTEMPTY). sceRegRemoveKey stays
+ *    unregistered because no public header documents its arguments.
+ *  - A string key's size is its stored value: sceRegSetKeyValue replaces it with the bytes given.
+ *    INT writes are exactly 4 bytes; BIN keys keep their size and a shorter write zero-fills the rest.
+ *  - Writes change the live registry at once. sceRegFlushCategory and sceRegFlushRegistry persist
+ *    the whole overlay (every difference from the defaults) to one schema-versioned JSON file that
+ *    is replaced atomically; whether firmware persists only the flushed category, or commits on
+ *    close without a flush, is unmeasured. The file is SR_SYSTEM_REGISTRY when set, else
+ *    <per-user data dir>/registry/system.json; nothing is written anywhere resembling a console. A
+ *    missing file means no changes. An unreadable or invalid file is reported once and ignored as a
+ *    whole (the defaults are served), and the next flush moves it aside to <file>.corrupt.
+ *  - Project bounds, not console limits: 512 registry handles (the console served at least 257)
+ *    and 512 category handles, 1024 nodes, category paths and names read up to 255 bytes, STR/BIN
+ *    values up to 4096 bytes, an overlay file up to 1 MiB, and names of printable ASCII
+ *    without '/'. */
 #define SREG_REGPARAM_BYTES 272u
-#define SREG_SLOTS 4u
-#define SREG_TAG_REG 0x52470000u /* 'RG' registry handle; low byte = slot + 1 */
-#define SREG_TAG_CAT 0x52430000u /* 'RC' category handle; low byte = slot + 1 */
-#define SREG_TAG_KEY 0x524b0000u /* 'RK' key handle; bits 8..15 = category slot + 1, bits 0..7 = key index + 1 */
-#define SREG_ERR_ILLEGAL_ADDR 0x80000103u /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-#define SREG_ERR_BADF 0x80010009u /* EBADF: not an open handle of this kind */
-#define SREG_ERR_NOENT 0x80010002u /* ENOENT: unknown category or key */
-#define SREG_ERR_NOMEM 0x8001000cu /* ENOMEM: handle slots exhausted */
-#define SREG_ERR_INVAL 0x80010016u /* EINVAL: unsupported mode, or buffer smaller than the value */
+#define SREG_REG_SLOTS 512u
+#define SREG_CAT_SLOTS 512u
+#define SREG_MAX_NODES 1024u
+#define SREG_NAME_BYTES 27u       /* REG_KEYNAME_SIZE: up to 26 name bytes and the NUL */
+#define SREG_PATH_BYTES 256u      /* a category path or name read from the guest, and its NUL */
+#define SREG_VALUE_MAX 4096u
+#define SREG_OVERLAY_MAX_BYTES (1024u * 1024u)
+#define SREG_OVERLAY_SCHEMA "nakagawa.psp-system-registry-overlay"
+#define SREG_OVERLAY_VERSION 1u
+#define SREG_ALL_NODES (-2)
+#define SREG_TAG_REG 0x52470000u /* 'RG' registry handle; low 16 bits = slot + 1 */
+#define SREG_TAG_CAT 0x52430000u /* 'RC' category handle; low 16 bits = slot + 1 */
+#define SREG_TAG_KEY 0x524b0000u /* 'RK' key handle; low 16 bits = the entry's node id */
+#define SREG_ERR_ILLEGAL_ADDR 0x80000103u /* SCE_KERNEL_ERROR_ILLEGAL_ADDR: bad guest pointer or span */
+#define SREG_ERR_NOT_FOUND 0x8008271du    /* measured: sceRegGetKeyInfo of an unknown key */
+#define SREG_ERR_BAD_HANDLE 0x8008272eu   /* measured: sceRegGetKeysNum on a forged handle */
+#define SREG_ERR_PERM 0x80010001u         /* EPERM: a default category cannot be removed */
+#define SREG_ERR_IO 0x80010005u           /* EIO: a flush could not persist the overlay */
+#define SREG_ERR_NOMEM 0x8001000cu        /* ENOMEM: handle slots exhausted */
+#define SREG_ERR_ACCES 0x8001000du        /* EACCES: a write through a mode-1 (read-only) handle */
+#define SREG_ERR_EXIST 0x80010011u        /* EEXIST: the name is already an entry of the category */
+#define SREG_ERR_INVAL 0x80010016u        /* EINVAL: bad mode/type/size/name; buffer below the value */
+#define SREG_ERR_NOSPC 0x8001001cu        /* ENOSPC: value larger than the key's space, or no free node */
+#define SREG_ERR_FTYPE 0x8001004fu        /* EFTYPE: value use of a DIR entry; INT write not 4 bytes */
+#define SREG_ERR_NOTEMPTY 0x8001005au     /* ENOTEMPTY: the category still has entries */
+#define SREG_ERR_NAMETOOLONG 0x8001005bu  /* ENAMETOOLONG: no NUL in the first 256 bytes of a guest name */
+#define SREG_TYPE_DIR 1u
 #define SREG_TYPE_INT 2u
 #define SREG_TYPE_STR 3u
+#define SREG_TYPE_BIN 4u
+#define SREG_NODE_DEFAULT 0x01u     /* part of the defaults: never persisted unchanged, never removed */
+#define SREG_NODE_PLACEHOLDER 0x02u /* default value neither measured nor modeled (neutral) */
+#define SREG_NODE_LOGGED 0x04u      /* the placeholder read was already reported */
 
 typedef struct {
-    const char *category; /* absolute path, exact match as passed to sceRegOpenCategory */
-    const char *key;
-    uint32_t type;        /* SREG_TYPE_INT or SREG_TYPE_STR */
-    int sysparam_id;      /* integer keys: PSP_SYSTEMPARAM_ID_INT_* read via systemparam_int_value() */
-    const char *str;      /* string keys: NUL-terminated value */
-} SregKey;
+    uint16_t id;          /* nonzero while live; key handles carry it */
+    uint8_t type;         /* SREG_TYPE_DIR for a category, else the value type */
+    uint8_t flags;        /* SREG_NODE_* */
+    int parent;           /* parent category node, or -1 at the top level */
+    int sysparam_id;      /* default INT keys: PSP_SYSTEMPARAM_ID_INT_*, else -1 */
+    uint32_t seq;         /* creation order; sceRegGetKeys lists entries in this order */
+    uint32_t size;        /* value bytes; 0 for a category */
+    uint8_t *value;
+    char name[SREG_NAME_BYTES];
+} SregNode;
 
-static const SregKey s_sreg_keys[] = {
-    { "/CONFIG/SYSTEM/XMB",    "language",         SREG_TYPE_INT, 8, NULL },
-    { "/CONFIG/SYSTEM/XMB",    "button_assign",    SREG_TYPE_INT, 9, NULL },
-    { "/CONFIG/SYSTEM",        "nickname",         SREG_TYPE_STR, -1, "PSP" },
-    { "/CONFIG/DATE",          "date_format",      SREG_TYPE_INT, 4, NULL },
-    { "/CONFIG/DATE",          "time_format",      SREG_TYPE_INT, 5, NULL },
-    { "/CONFIG/DATE",          "time_zone_offset", SREG_TYPE_INT, 6, NULL },
-    { "/CONFIG/DATE",          "summer_time",      SREG_TYPE_INT, 7, NULL },
-    { "/CONFIG/NETWORK/ADHOC", "channel",          SREG_TYPE_INT, 2, NULL },
+typedef struct {
+    uint8_t open;
+    uint8_t mode;         /* 1 = read, 2 = read/write */
+} SregRegSlot;
+
+typedef struct {
+    uint8_t open;
+    uint8_t mode;         /* 1 = read, 2 = read/write */
+    int node;             /* the category node */
+    uint16_t node_id;     /* its id when opened; a removed category leaves the handle stale */
+} SregCatSlot;
+
+/* The /CONFIG tree measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration: every entry's
+ * path, type and size, in the console's sceRegGetKeys order, minus the probe's own stray
+ * categories and the user's saved network profiles. A string key's measured size depended on that
+ * console's value, so every string row holds the empty-string size 1 instead. */
+static const struct {
+    const char *path;
+    uint8_t type;
+    uint16_t size;
+} s_sreg_tree[] = {
+    { "/CONFIG/VIDEO", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/VIDEO/menu_language", SREG_TYPE_BIN, 2u },
+    { "/CONFIG/VIDEO/sound_language", SREG_TYPE_BIN, 2u },
+    { "/CONFIG/VIDEO/subtitle_language", SREG_TYPE_BIN, 2u },
+    { "/CONFIG/VIDEO/appended_volume", SREG_TYPE_INT, 4u },
+    { "/CONFIG/VIDEO/lr_button_enable", SREG_TYPE_INT, 4u },
+    { "/CONFIG/VIDEO/list_play_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/VIDEO/title_display_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/VIDEO/output_ext_menu", SREG_TYPE_INT, 4u },
+    { "/CONFIG/VIDEO/output_ext_func", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PHOTO", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/PHOTO/slideshow_speed", SREG_TYPE_INT, 4u },
+    { "/CONFIG/MUSIC", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/MUSIC/wma_play", SREG_TYPE_INT, 4u },
+    { "/CONFIG/MUSIC/visualizer_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/MUSIC/track_info_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BROWSER/home_uri", SREG_TYPE_STR, 1u },
+    { "/CONFIG/BROWSER/cookie_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/proxy_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/proxy_address", SREG_TYPE_STR, 1u },
+    { "/CONFIG/BROWSER/proxy_port", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/picture", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/animation", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/javascript", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/cache_size", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/char_size", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/disp_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/connect_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/flash_activated", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/flash_play", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/proxy_protect", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/proxy_autoauth", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER/proxy_user", SREG_TYPE_STR, 1u },
+    { "/CONFIG/BROWSER/proxy_password", SREG_TYPE_STR, 1u },
+    { "/CONFIG/BROWSER/webpage_quality", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER2", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BROWSER2/tm_service", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER2/tm_ec_ttl", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BROWSER2/tm_ec_ttl_update_time", SREG_TYPE_BIN, 8u },
+    { "/CONFIG/BROWSER2/tm_service_sub_status", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/LFTV/easy_reg_done", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/netav_domain_name", SREG_TYPE_STR, 1u },
+    { "/CONFIG/LFTV/netav_ip_address", SREG_TYPE_STR, 1u },
+    { "/CONFIG/LFTV/netav_port_no_home", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/netav_port_no_away", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/netav_nonce", SREG_TYPE_STR, 1u },
+    { "/CONFIG/LFTV/base_station_version", SREG_TYPE_STR, 1u },
+    { "/CONFIG/LFTV/base_station_region", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/tuner_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/input_line", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/tv_channel", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/bitrate_home", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/bitrate_away", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/channel_setting_jp", SREG_TYPE_BIN, 24u },
+    { "/CONFIG/LFTV/channel_setting_us", SREG_TYPE_BIN, 68u },
+    { "/CONFIG/LFTV/channel_setting_us_catv", SREG_TYPE_BIN, 125u },
+    { "/CONFIG/LFTV/overwrite_netav_setting", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/screen_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/remocon_setting_region", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/remocon_setting", SREG_TYPE_BIN, 96u },
+    { "/CONFIG/LFTV/remocon_setting_revision", SREG_TYPE_STR, 1u },
+    { "/CONFIG/LFTV/external_tuner_channel", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/ssid", SREG_TYPE_STR, 1u },
+    { "/CONFIG/LFTV/audio_gain", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/broadcast_standard_video1", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/broadcast_standard_video2", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/version", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/tv_channel_range", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/tuner_type_no", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/input_line_no", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/audio_channel", SREG_TYPE_INT, 4u },
+    { "/CONFIG/LFTV/shared_remocon_setting", SREG_TYPE_BIN, 96u },
+    { "/CONFIG/RSS", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/RSS/download_items", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/ALARM/alarm_0_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_1_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_2_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_3_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_4_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_5_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_6_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_7_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_8_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_9_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_0_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_1_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_2_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_3_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_4_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_5_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_6_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_7_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_8_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ALARM/alarm_9_property", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/PREMO/guide_page", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/response", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/ps3_name", SREG_TYPE_STR, 1u },
+    { "/CONFIG/PREMO/ps3_mac", SREG_TYPE_BIN, 6u },
+    { "/CONFIG/PREMO/ps3_keytype", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/ps3_key", SREG_TYPE_BIN, 16u },
+    { "/CONFIG/PREMO/custom_video_bitrate1", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/custom_video_bitrate2", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/custom_video_buffer1", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/custom_video_buffer2", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/setting_internet", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/button_assign", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/flags", SREG_TYPE_INT, 4u },
+    { "/CONFIG/PREMO/account_id", SREG_TYPE_BIN, 16u },
+    { "/CONFIG/PREMO/login_id", SREG_TYPE_STR, 1u },
+    { "/CONFIG/PREMO/password", SREG_TYPE_STR, 1u },
+    { "/CONFIG/CAMERA", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/CAMERA/still_size", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/movie_size", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/still_quality", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/movie_quality", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/movie_fps", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/white_balance", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/exposure_bias", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/shutter_sound_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/file_folder", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/file_number", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/msid", SREG_TYPE_BIN, 16u },
+    { "/CONFIG/CAMERA/still_effect", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/medium_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/file_number_eflash", SREG_TYPE_INT, 4u },
+    { "/CONFIG/CAMERA/folder_number_eflash", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DISPLAY", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/DISPLAY/aspect_ratio", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DISPLAY/scan_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DISPLAY/screensaver_start_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DISPLAY/color_space_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DISPLAY/pi_blending_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/NP/env", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NP/account_id", SREG_TYPE_BIN, 16u },
+    { "/CONFIG/NP/login_id", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NP/password", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NP/auto_sign_in_enable", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/nav_only", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/np_ad_clock_diff", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/view_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/np_geo_filtering", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/guest_country", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NP/guest_lang", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NP/guest_yob", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/guest_mob", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/guest_dob", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NP/check_drm", SREG_TYPE_INT, 4u },
+    { "/CONFIG/ONESEG", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/ONESEG/schedule_data_key", SREG_TYPE_BIN, 16u },
+    { "/CONFIG/SYSTEM", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/SYSTEM/owner_name", SREG_TYPE_STR, 1u },
+    { "/CONFIG/SYSTEM/backlight_brightness", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/umd_autoboot", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/usb_charge", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/umd_cache", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/usb_auto_connect", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/slide_action", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/first_boot_tick", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/SYSTEM/owner_mob", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/owner_dob", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/slide_welcome", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/exh_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/XMB", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/SYSTEM/XMB/theme_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/XMB/language", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/XMB/button_assign", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/XMB/THEME", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/SYSTEM/XMB/THEME/color_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/XMB/THEME/wallpaper_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/XMB/THEME/system_color", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/XMB/THEME/custom_theme_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/SOUND", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/SYSTEM/SOUND/main_volume", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/SOUND/mute", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/SOUND/avls", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/SOUND/equalizer_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/SOUND/operation_sound_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/SOUND/dynamic_normalizer", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/POWER_SAVING", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/SYSTEM/POWER_SAVING/suspend_interval", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/POWER_SAVING/backlight_off_interval", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/POWER_SAVING/wlan_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/POWER_SAVING/active_backlight_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/LOCK", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/SYSTEM/LOCK/password", SREG_TYPE_BIN, 4u },
+    { "/CONFIG/SYSTEM/LOCK/parental_level", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/LOCK/browser_start", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/CHARACTER_SET", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/SYSTEM/CHARACTER_SET/oem", SREG_TYPE_INT, 4u },
+    { "/CONFIG/SYSTEM/CHARACTER_SET/ansi", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DATE", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/DATE/time_format", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DATE/date_format", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DATE/summer_time", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DATE/time_zone_offset", SREG_TYPE_INT, 4u },
+    { "/CONFIG/DATE/time_zone_area", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NETWORK", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/NETWORK/ADHOC", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/NETWORK/ADHOC/channel", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NETWORK/ADHOC/ssid_prefix", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NETWORK/INFRASTRUCTURE", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/NETWORK/INFRASTRUCTURE/latest_id", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NETWORK/INFRASTRUCTURE/eap_md5", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NETWORK/INFRASTRUCTURE/auto_setting", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NETWORK/INFRASTRUCTURE/wifisvc_setting", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NETWORK/INFRASTRUCTURE/btdun_warnings_check", SREG_TYPE_INT, 4u },
+    { "/CONFIG/NETWORK/GO_MESSENGER", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/NETWORK/GO_MESSENGER/auth_name", SREG_TYPE_STR, 1u },
+    { "/CONFIG/NETWORK/GO_MESSENGER/auth_key", SREG_TYPE_STR, 1u },
+    { "/CONFIG/OSK", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/OSK/version_id", SREG_TYPE_INT, 4u },
+    { "/CONFIG/OSK/disp_locale", SREG_TYPE_INT, 4u },
+    { "/CONFIG/OSK/writing_locale", SREG_TYPE_INT, 4u },
+    { "/CONFIG/OSK/input_char_mask", SREG_TYPE_INT, 4u },
+    { "/CONFIG/OSK/keytop_index", SREG_TYPE_INT, 4u },
+    { "/CONFIG/INFOBOARD", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/INFOBOARD/locale_lang", SREG_TYPE_STR, 1u },
+    { "/CONFIG/INFOBOARD/qa_server", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/connect_mode", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE0", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE0/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE0/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE0/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/BT/DEVICE1", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE1/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE1/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE1/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/BT/DEVICE2", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE2/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE2/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE2/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/BT/DEVICE3", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE3/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE3/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE3/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/BT/DEVICE4", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE4/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE4/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE4/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/BT/DEVICE5", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE5/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE5/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE5/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/BT/DEVICE6", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE6/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE6/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE6/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/BT/DEVICE7", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/BT/DEVICE7/audio_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE7/device_type", SREG_TYPE_INT, 4u },
+    { "/CONFIG/BT/DEVICE7/device_name", SREG_TYPE_BIN, 64u },
+    { "/CONFIG/GAME", SREG_TYPE_DIR, 0u },
+    { "/CONFIG/GAME/hibernation_ow_guide", SREG_TYPE_INT, 4u },
+    { "/CONFIG/GAME/hibernation_op_guide", SREG_TYPE_INT, 4u },
+    { "/CONFIG/GAME/subs_expiration_guide", SREG_TYPE_INT, 4u },
 };
 
-/* Categories that open successfully. CHARACTER_SET opens but has no modeled keys: its value source
- * is not in this runtime yet, so key lookups under it fail closed. */
-static const char *const s_sreg_categories[] = {
-    "/CONFIG/SYSTEM", "/CONFIG/SYSTEM/XMB", "/CONFIG/SYSTEM/CHARACTER_SET",
-    "/CONFIG/DATE", "/CONFIG/NETWORK/ADHOC",
+/* The integer keys sceUtilityGetSystemParamInt shares, with their PSP_SYSTEMPARAM_ID_INT_* id. */
+static const struct {
+    const char *path;
+    uint32_t sysparam_id;
+} s_sreg_sysparam_keys[] = {
+    { "/CONFIG/SYSTEM/XMB/language",      8u },
+    { "/CONFIG/SYSTEM/XMB/button_assign", 9u },
+    { "/CONFIG/DATE/date_format",         4u },
+    { "/CONFIG/DATE/time_format",         5u },
+    { "/CONFIG/DATE/time_zone_offset",    6u },
+    { "/CONFIG/DATE/summer_time",         7u },
+    { "/CONFIG/NETWORK/ADHOC/channel",    2u },
 };
 
-static uint8_t s_sreg_reg_open[SREG_SLOTS];
-static uint8_t s_sreg_cat_open[SREG_SLOTS];
-static int s_sreg_cat_index[SREG_SLOTS];
+/* Measured values of keys with no system-param id (PSP-3000 6.6.1, 2026-10-09). */
+static const struct {
+    const char *path;
+    uint32_t value;
+} s_sreg_measured_ints[] = {
+    { "/CONFIG/PREMO/button_assign", 0u },
+};
 
-static int sreg_slot_of(uint32_t h, uint32_t tag, const uint8_t *open) {
-    uint32_t n = h & 0xffu;
-    if ((h & 0xffff0000u) != tag || (h & 0xff00u) || n == 0u || n > SREG_SLOTS) return -1;
-    return open[n - 1u] ? (int)(n - 1u) : -1;
+static SregNode s_sreg_nodes[SREG_MAX_NODES];
+static SregRegSlot s_sreg_reg[SREG_REG_SLOTS];
+static SregCatSlot s_sreg_cat[SREG_CAT_SLOTS];
+static uint32_t s_sreg_seq;
+static uint16_t s_sreg_next_id;
+static int s_sreg_loaded;
+static int s_sreg_dirty;            /* the live registry differs from the last persisted overlay */
+static int s_sreg_corrupt_on_disk;  /* an ignored corrupt overlay is moved aside by the next flush */
+
+static void sreg_put_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
 }
 
-static int sreg_free_slot(const uint8_t *open) {
-    for (uint32_t i = 0; i < SREG_SLOTS; i++)
-        if (!open[i]) return (int)i;
+static uint32_t sreg_get_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* A name this model can store and persist: 1..26 bytes of printable ASCII without '/'. */
+static int sreg_name_ok(const char *name) {
+    size_t n = strlen(name);
+    if (n == 0u || n >= SREG_NAME_BYTES) return 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c < 0x20u || c > 0x7eu || c == '/') return 0;
+    }
+    return 1;
+}
+
+static void sreg_free_node(int i) {
+    free(s_sreg_nodes[i].value);
+    memset(&s_sreg_nodes[i], 0, sizeof(s_sreg_nodes[i]));
+}
+
+static void sreg_clear_nodes(void) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) sreg_free_node((int)i);
+    s_sreg_seq = 0;
+    s_sreg_next_id = 0;
+    s_sreg_dirty = 0;
+}
+
+static uint32_t sreg_free_node_count(void) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++)
+        if (!s_sreg_nodes[i].id) n++;
+    return n;
+}
+
+static int sreg_child(int parent, const char *name) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        const SregNode *n = &s_sreg_nodes[i];
+        if (n->id && n->parent == parent && strcmp(n->name, name) == 0) return (int)i;
+    }
     return -1;
 }
 
-static int sreg_find_category(const char *path) {
-    for (uint32_t i = 0; i < sizeof(s_sreg_categories) / sizeof(s_sreg_categories[0]); i++)
-        if (strcmp(s_sreg_categories[i], path) == 0) return (int)i;
+static int sreg_has_entries(int cat) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++)
+        if (s_sreg_nodes[i].id && s_sreg_nodes[i].parent == cat) return 1;
+    return 0;
+}
+
+/* A fresh nonzero id that no live node carries, so a stale key handle can never name a newer
+ * entry while fewer than 65535 ids are live (the node table holds 512). */
+static uint16_t sreg_new_id(void) {
+    for (uint32_t tries = 0; tries < 0x10000u; tries++) {
+        uint16_t id = ++s_sreg_next_id;
+        int used = 0;
+        if (!id) continue;
+        for (uint32_t i = 0; i < SREG_MAX_NODES && !used; i++) used = s_sreg_nodes[i].id == id;
+        if (!used) return id;
+    }
+    return 0;
+}
+
+/* Add an entry (name already validated) under parent, -1 being the top level. A value starts
+ * zero-filled. Returns the node index, or -1 when no node or value storage is free. */
+static int sreg_add(int parent, const char *name, uint32_t type, uint32_t size, uint8_t flags) {
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        SregNode *n = &s_sreg_nodes[i];
+        uint8_t *value = NULL;
+        uint16_t id;
+        if (n->id) continue;
+        if (size) {
+            value = (uint8_t *)calloc(1u, size);
+            if (!value) return -1;
+        }
+        id = sreg_new_id();
+        if (!id) {
+            free(value);
+            return -1;
+        }
+        memset(n, 0, sizeof(*n));
+        n->id = id;
+        n->type = (uint8_t)type;
+        n->flags = flags;
+        n->parent = parent;
+        n->sysparam_id = -1;
+        n->seq = ++s_sreg_seq;
+        n->size = size;
+        n->value = value;
+        memcpy(n->name, name, strlen(name) + 1u);
+        return (int)i;
+    }
     return -1;
 }
 
-static int sreg_find_key(int cat, const char *name) {
-    for (uint32_t i = 0; i < sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]); i++)
-        if (strcmp(s_sreg_keys[i].category, s_sreg_categories[cat]) == 0 &&
-            strcmp(s_sreg_keys[i].key, name) == 0)
-            return (int)i;
+/* Resolve an absolute category path such as "/CONFIG/SYSTEM" (one trailing '/' is ignored). With
+ * create, missing components are made as categories carrying flags, each new name cut to 26 bytes
+ * (measured), and *created reports it. Lookups compare whole components, so a component longer
+ * than 26 bytes never matches a stored name. The first pass validates every component and counts
+ * free nodes, so a refused path creates nothing. Returns the node index, or -1 with *err set. */
+static int sreg_walk(const char *path, int create, uint8_t flags, uint32_t *err, int *created) {
+    char comp[SREG_PATH_BYTES];
+    size_t len = strlen(path);
+    int cur = -1;
+    if (created) *created = 0;
+    if (len > 1u && path[len - 1u] == '/') len--;
+    if (len < 2u || len >= SREG_PATH_BYTES || path[0] != '/') {
+        *err = SREG_ERR_NOT_FOUND;
+        return -1;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        size_t at = 1u;
+        uint32_t missing = 0;
+        int exists = 1;
+        cur = -1;
+        while (at < len) {
+            size_t end = at, n;
+            int child;
+            while (end < len && path[end] != '/') end++;
+            n = end - at;
+            if (n == 0u) {
+                *err = SREG_ERR_NOT_FOUND; /* an empty component ("//") names nothing */
+                return -1;
+            }
+            memcpy(comp, path + at, n);
+            comp[n] = '\0';
+            child = exists && n < SREG_NAME_BYTES ? sreg_child(cur, comp) : -1;
+            if (child >= 0) {
+                if (s_sreg_nodes[child].type != SREG_TYPE_DIR) {
+                    /* A value key, not a category: it cannot be opened, nor replaced by one. */
+                    *err = create ? SREG_ERR_EXIST : SREG_ERR_NOT_FOUND;
+                    return -1;
+                }
+                cur = child;
+            } else {
+                exists = 0;
+                if (!create) {
+                    *err = SREG_ERR_NOT_FOUND;
+                    return -1;
+                }
+                if (n >= SREG_NAME_BYTES) comp[SREG_NAME_BYTES - 1u] = '\0';
+                if (!sreg_name_ok(comp)) {
+                    *err = SREG_ERR_INVAL;
+                    return -1;
+                }
+                if (pass == 0) {
+                    missing++;
+                } else {
+                    cur = sreg_add(cur, comp, SREG_TYPE_DIR, 0u, flags);
+                    if (cur < 0) {
+                        *err = SREG_ERR_NOSPC;
+                        return -1;
+                    }
+                    if (created) *created = 1;
+                }
+            }
+            at = end + 1u;
+        }
+        if (pass == 0) {
+            if (missing == 0u) return cur;
+            if (missing > sreg_free_node_count()) {
+                *err = SREG_ERR_NOSPC;
+                return -1;
+            }
+        }
+    }
+    return cur;
+}
+
+/* The absolute path of a category node. */
+static int sreg_node_path(int node, char *out, size_t cap) {
+    int chain[SREG_PATH_BYTES / 2u];
+    int depth = 0;
+    size_t at = 0;
+    for (int n = node; n >= 0; n = s_sreg_nodes[n].parent) {
+        if (depth >= (int)(sizeof(chain) / sizeof(chain[0]))) return 0;
+        chain[depth++] = n;
+    }
+    for (int d = depth - 1; d >= 0; d--) {
+        const char *name = s_sreg_nodes[chain[d]].name;
+        size_t n = strlen(name);
+        if (at + n + 2u > cap) return 0;
+        out[at++] = '/';
+        memcpy(out + at, name, n);
+        at += n;
+    }
+    if (at + 1u > cap) return 0;
+    out[at] = '\0';
+    return 1;
+}
+
+/* Live nodes in creation order: the entries of one category, or every node with SREG_ALL_NODES.
+ * out holds SREG_MAX_NODES indices. */
+static uint32_t sreg_ordered(int parent, int *out) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        const SregNode *n = &s_sreg_nodes[i];
+        uint32_t at;
+        if (!n->id || (parent != SREG_ALL_NODES && n->parent != parent)) continue;
+        at = count++;
+        while (at > 0u && s_sreg_nodes[out[at - 1u]].seq > n->seq) {
+            out[at] = out[at - 1u];
+            at--;
+        }
+        out[at] = (int)i;
+    }
+    return count;
+}
+
+/* The node an absolute key path names ("/CONFIG/DATE/time_format"), or -1. */
+static int sreg_find_path(const char *path) {
+    char cat[SREG_PATH_BYTES];
+    const char *slash = strrchr(path, '/');
+    uint32_t err = 0;
+    int parent;
+    size_t n = slash ? (size_t)(slash - path) : 0u;
+    if (!slash || n == 0u || n >= sizeof(cat)) return -1;
+    memcpy(cat, path, n);
+    cat[n] = '\0';
+    parent = sreg_walk(cat, 0, 0u, &err, NULL);
+    return parent < 0 ? -1 : sreg_child(parent, slash + 1);
+}
+
+/* Build the defaults: the measured tree, then the system-param-backed and measured values. Every
+ * other value key keeps its neutral placeholder (INT 0, an empty string, or zero bytes). */
+static void sreg_build_defaults(void) {
+    uint32_t err = 0;
+    (void)sreg_walk("/CONFIG", 1, SREG_NODE_DEFAULT, &err, NULL);
+    for (uint32_t i = 0; i < sizeof(s_sreg_tree) / sizeof(s_sreg_tree[0]); i++) {
+        const char *path = s_sreg_tree[i].path;
+        const char *slash = strrchr(path, '/');
+        char cat[SREG_PATH_BYTES];
+        size_t n = (size_t)(slash - path);
+        int parent;
+        memcpy(cat, path, n);
+        cat[n] = '\0';
+        parent = sreg_walk(cat, 0, 0u, &err, NULL);
+        if (parent < 0) continue;
+        (void)sreg_add(parent, slash + 1, s_sreg_tree[i].type, s_sreg_tree[i].size,
+                       (uint8_t)(SREG_NODE_DEFAULT |
+                                 (s_sreg_tree[i].type == SREG_TYPE_DIR ? 0u : SREG_NODE_PLACEHOLDER)));
+    }
+    for (uint32_t i = 0; i < sizeof(s_sreg_sysparam_keys) / sizeof(s_sreg_sysparam_keys[0]); i++) {
+        int node = sreg_find_path(s_sreg_sysparam_keys[i].path);
+        if (node < 0 || s_sreg_nodes[node].type != SREG_TYPE_INT) continue;
+        s_sreg_nodes[node].sysparam_id = (int)s_sreg_sysparam_keys[i].sysparam_id;
+        s_sreg_nodes[node].flags &= (uint8_t)~SREG_NODE_PLACEHOLDER;
+        sreg_put_le32(s_sreg_nodes[node].value, systemparam_int_value(s_sreg_sysparam_keys[i].sysparam_id));
+    }
+    for (uint32_t i = 0; i < sizeof(s_sreg_measured_ints) / sizeof(s_sreg_measured_ints[0]); i++) {
+        int node = sreg_find_path(s_sreg_measured_ints[i].path);
+        if (node < 0 || s_sreg_nodes[node].type != SREG_TYPE_INT) continue;
+        s_sreg_nodes[node].flags &= (uint8_t)~SREG_NODE_PLACEHOLDER;
+        sreg_put_le32(s_sreg_nodes[node].value, s_sreg_measured_ints[i].value);
+    }
+}
+
+/* True when a value key holds its default, so the overlay need not record it. */
+static int sreg_is_default_value(const SregNode *n) {
+    if (!(n->flags & SREG_NODE_DEFAULT) || n->type == SREG_TYPE_DIR) return 0;
+    if (n->sysparam_id >= 0)
+        return n->size == 4u && sreg_get_le32(n->value) == systemparam_int_value((uint32_t)n->sysparam_id);
+    for (uint32_t i = 0; i < sizeof(s_sreg_measured_ints) / sizeof(s_sreg_measured_ints[0]); i++) {
+        if (n->type == SREG_TYPE_INT && n->size == 4u &&
+            sreg_find_path(s_sreg_measured_ints[i].path) == (int)(n - s_sreg_nodes))
+            return sreg_get_le32(n->value) == s_sreg_measured_ints[i].value;
+    }
+    if (n->type == SREG_TYPE_STR && n->size != 1u) return 0; /* the default is the empty string */
+    for (uint32_t i = 0; i < n->size; i++)
+        if (n->value[i]) return 0;
+    return 1;
+}
+
+static int sr_utf8_env_alloc(const wchar_t *name, char **value_out, int *present_out);
+
+/* The overlay file: SR_SYSTEM_REGISTRY when set, else <per-user data dir>/registry/system.json.
+ * NULL when neither resolves, or when the variable is set but cannot be read as UTF-8 (falling
+ * back to the default file then would silently write somewhere the user did not choose). */
+static char *sreg_overlay_path(void) {
+    char *env = NULL, *path;
+    char dir[4096];
+    char sep = nk_platform_path_separator();
+    int present = 0;
+    size_t need;
+    if (!sr_utf8_env_alloc(L"SR_SYSTEM_REGISTRY", &env, &present)) return NULL;
+    if (present && env && env[0]) return env;
+    free(env);
+    if (!nk_platform_resolve_app_data_dir(dir, sizeof(dir))) return NULL;
+    need = strlen(dir) + sizeof("/registry/system.json");
+    path = (char *)malloc(need);
+    if (!path) return NULL;
+    snprintf(path, need, "%s%cregistry%csystem.json", dir, sep, sep);
+    return path;
+}
+
+/* Read the overlay file. Returns 1 with a NUL-terminated copy, 0 when there is no file, and -1
+ * with *why set when it exists but cannot be read within the size bound. */
+static int sreg_read_file(const char *path, char **out, size_t *len_out, char *why, size_t why_len) {
+    FILE *f;
+    char *buf;
+    size_t got;
+    int failed;
+    *out = NULL;
+    *len_out = 0;
+    if (!nk_platform_file_exists(path)) return 0;
+    f = nk_fopen_utf8(path, "rb");
+    if (!f) {
+        snprintf(why, why_len, "the file cannot be opened");
+        return -1;
+    }
+    buf = (char *)malloc((size_t)SREG_OVERLAY_MAX_BYTES + 1u);
+    if (!buf) {
+        fclose(f);
+        snprintf(why, why_len, "no memory to read it");
+        return -1;
+    }
+    got = fread(buf, 1u, (size_t)SREG_OVERLAY_MAX_BYTES + 1u, f);
+    failed = ferror(f);
+    fclose(f);
+    if (failed || got > SREG_OVERLAY_MAX_BYTES) {
+        free(buf);
+        snprintf(why, why_len, "%s", failed ? "the file cannot be read" : "the file is larger than 1 MiB");
+        return -1;
+    }
+    buf[got] = '\0';
+    *out = buf;
+    *len_out = got;
+    return 1;
+}
+
+static int sreg_hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
 
-static uint32_t sreg_key_size(const SregKey *k) {
-    return k->type == SREG_TYPE_INT ? 4u : (uint32_t)strlen(k->str) + 1u;
+static uint32_t sreg_type_from_name(const char *name) {
+    if (strcmp(name, "int") == 0) return SREG_TYPE_INT;
+    if (strcmp(name, "str") == 0) return SREG_TYPE_STR;
+    if (strcmp(name, "bin") == 0) return SREG_TYPE_BIN;
+    return 0;
 }
 
-static int guest_cstr(uint32_t addr, char *out, int max);
+static const char *sreg_type_name(uint32_t type) {
+    return type == SREG_TYPE_INT ? "int" : type == SREG_TYPE_STR ? "str" : "bin";
+}
 
-/* sceRegOpenRegistry(RegParam *reg, int mode, REGHANDLE *h): mode 1 only. */
+/* Apply a parsed overlay onto the defaults. Returns 1, or 0 with *why set; the caller discards a
+ * partial application and serves the defaults. */
+static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) {
+    const NkJsonNode *schema = nk_json_obj_get(doc, "schema");
+    const NkJsonNode *cats = nk_json_obj_get(doc, "categories");
+    const NkJsonNode *keys = nk_json_obj_get(doc, "keys");
+    uint32_t version = 0, err = 0;
+    static uint8_t value[SREG_VALUE_MAX];
+    if (!nk_json_is_object(doc) || !nk_json_is_string(schema) ||
+        strcmp(nk_json_get_string(schema), SREG_OVERLAY_SCHEMA) != 0) {
+        snprintf(why, why_len, "it is not a system registry overlay");
+        return 0;
+    }
+    if (!nk_json_get_uint32(nk_json_obj_get(doc, "schema_version"), &version) ||
+        version != SREG_OVERLAY_VERSION) {
+        snprintf(why, why_len, "its schema_version is not %u", SREG_OVERLAY_VERSION);
+        return 0;
+    }
+    if (!nk_json_is_array(cats) || !nk_json_is_array(keys)) {
+        snprintf(why, why_len, "it lacks the categories and keys arrays");
+        return 0;
+    }
+    for (size_t i = 0; i < nk_json_array_count(cats); i++) {
+        const NkJsonNode *item = nk_json_array_get(cats, i);
+        const char *path = nk_json_is_string(item) ? nk_json_get_string(item) : NULL;
+        if (!path || strlen(path) >= SREG_PATH_BYTES || sreg_walk(path, 1, 0u, &err, NULL) < 0) {
+            snprintf(why, why_len, "categories[%u] is not a valid category path", (unsigned)i);
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < nk_json_array_count(keys); i++) {
+        const NkJsonNode *item = nk_json_array_get(keys, i);
+        const NkJsonNode *jcat = nk_json_obj_get(item, "category");
+        const NkJsonNode *jname = nk_json_obj_get(item, "name");
+        const NkJsonNode *jtype = nk_json_obj_get(item, "type");
+        const NkJsonNode *jhex = nk_json_obj_get(item, "value_hex");
+        const char *name, *hex;
+        uint32_t type, bytes;
+        size_t hex_len;
+        int cat, node;
+        if (!nk_json_is_object(item) || !nk_json_is_string(jcat) || !nk_json_is_string(jname) ||
+            !nk_json_is_string(jtype) || !nk_json_is_string(jhex)) {
+            snprintf(why, why_len, "keys[%u] lacks category, name, type or value_hex", (unsigned)i);
+            return 0;
+        }
+        name = nk_json_get_string(jname);
+        hex = nk_json_get_string(jhex);
+        type = sreg_type_from_name(nk_json_get_string(jtype));
+        hex_len = strlen(hex);
+        cat = strlen(nk_json_get_string(jcat)) < SREG_PATH_BYTES
+                  ? sreg_walk(nk_json_get_string(jcat), 0, 0u, &err, NULL) : -1;
+        if (cat < 0 || !sreg_name_ok(name) || !type || hex_len == 0u || (hex_len & 1u) ||
+            hex_len > 2u * SREG_VALUE_MAX || (type == SREG_TYPE_INT && hex_len != 8u)) {
+            snprintf(why, why_len, "keys[%u] is not a valid key record", (unsigned)i);
+            return 0;
+        }
+        bytes = (uint32_t)(hex_len / 2u);
+        for (uint32_t b = 0; b < bytes; b++) {
+            int hi = sreg_hex_nibble(hex[2u * b]), lo = sreg_hex_nibble(hex[2u * b + 1u]);
+            if (hi < 0 || lo < 0) {
+                snprintf(why, why_len, "keys[%u] value_hex is not hexadecimal", (unsigned)i);
+                return 0;
+            }
+            value[b] = (uint8_t)((hi << 4) | lo);
+        }
+        node = sreg_child(cat, name);
+        if (node >= 0) {
+            /* Only a default may be overridden, with its own type (and size, unless a string);
+             * anything else is a duplicate record or a key that is a category. */
+            SregNode *n = &s_sreg_nodes[node];
+            if (!(n->flags & SREG_NODE_DEFAULT) || n->type != type ||
+                (type != SREG_TYPE_STR && n->size != bytes)) {
+                snprintf(why, why_len, "keys[%u] conflicts with an existing entry", (unsigned)i);
+                return 0;
+            }
+            if (n->size != bytes) {
+                uint8_t *grown = (uint8_t *)realloc(n->value, bytes);
+                if (!grown) {
+                    snprintf(why, why_len, "no memory for keys[%u]", (unsigned)i);
+                    return 0;
+                }
+                n->value = grown;
+                n->size = bytes;
+            }
+            n->flags &= (uint8_t)~SREG_NODE_PLACEHOLDER;
+        } else {
+            node = sreg_add(cat, name, type, bytes, 0u);
+            if (node < 0) {
+                snprintf(why, why_len, "it holds more entries than the registry model's %u", SREG_MAX_NODES);
+                return 0;
+            }
+        }
+        memcpy(s_sreg_nodes[node].value, value, bytes);
+    }
+    return 1;
+}
+
+/* Load the defaults and the per-user overlay once per process. */
+static void sreg_ensure_loaded(void) {
+    char *path, *text = NULL;
+    char why[192];
+    size_t len = 0;
+    int got;
+    if (s_sreg_loaded) return;
+    s_sreg_loaded = 1;
+    s_sreg_corrupt_on_disk = 0;
+    sreg_clear_nodes();
+    sreg_build_defaults();
+    path = sreg_overlay_path();
+    if (!path) return; /* the first flush that needs a file reports it */
+    why[0] = '\0';
+    got = sreg_read_file(path, &text, &len, why, sizeof(why));
+    if (got > 0) {
+        char parse_error[128];
+        NkJsonNode *doc = nk_json_parse(text, len, parse_error, sizeof(parse_error));
+        if (!doc) {
+            snprintf(why, sizeof(why), "it is not valid JSON (%s)", parse_error);
+            got = -1;
+        } else {
+            if (!sreg_overlay_apply(doc, why, sizeof(why))) got = -1;
+            nk_json_free(doc);
+        }
+    }
+    if (got < 0) {
+        fprintf(stderr, "sceReg: ignoring the per-user registry overlay %s: %s; serving the modeled "
+                        "defaults (the next flush moves it to %s.corrupt)\n", path, why, path);
+        sreg_clear_nodes();
+        sreg_build_defaults();
+        s_sreg_corrupt_on_disk = 1;
+    }
+    s_sreg_dirty = 0;
+    free(text);
+    free(path);
+}
+
+typedef struct {
+    char *data;
+    size_t len, cap;
+    int failed;
+} SregText;
+
+static void sreg_text_add(SregText *t, const char *s, size_t n) {
+    if (t->failed) return;
+    if (t->len + n + 1u > t->cap) {
+        size_t cap = t->cap ? t->cap : 1024u;
+        char *grown;
+        while (cap < t->len + n + 1u) cap *= 2u;
+        grown = (char *)realloc(t->data, cap);
+        if (!grown) {
+            t->failed = 1;
+            return;
+        }
+        t->data = grown;
+        t->cap = cap;
+    }
+    memcpy(t->data + t->len, s, n);
+    t->len += n;
+    t->data[t->len] = '\0';
+}
+
+static void sreg_text_str(SregText *t, const char *s) { sreg_text_add(t, s, strlen(s)); }
+
+/* Names and paths are printable ASCII (sreg_name_ok), so only '"' and '\\' need escaping. */
+static void sreg_text_json_string(SregText *t, const char *s) {
+    sreg_text_add(t, "\"", 1u);
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') sreg_text_add(t, "\\", 1u);
+        sreg_text_add(t, s, 1u);
+    }
+    sreg_text_add(t, "\"", 1u);
+}
+
+/* The overlay is every difference from the defaults: the categories a game created, the keys it
+ * created, and the default keys whose value it changed, in creation order. */
+static void sreg_overlay_render(SregText *t) {
+    static int order[SREG_MAX_NODES];
+    uint32_t count = sreg_ordered(SREG_ALL_NODES, order);
+    char path[SREG_PATH_BYTES];
+    int first = 1;
+    sreg_text_str(t, "{\n  \"schema\": \"" SREG_OVERLAY_SCHEMA "\",\n  \"schema_version\": 1,\n"
+                     "  \"categories\": [");
+    for (uint32_t i = 0; i < count; i++) {
+        const SregNode *n = &s_sreg_nodes[order[i]];
+        if (n->type != SREG_TYPE_DIR || (n->flags & SREG_NODE_DEFAULT)) continue;
+        if (!sreg_node_path(order[i], path, sizeof(path))) {
+            t->failed = 1;
+            return;
+        }
+        sreg_text_str(t, first ? "\n    " : ",\n    ");
+        sreg_text_json_string(t, path);
+        first = 0;
+    }
+    sreg_text_str(t, "\n  ],\n  \"keys\": [");
+    first = 1;
+    for (uint32_t i = 0; i < count; i++) {
+        const SregNode *n = &s_sreg_nodes[order[i]];
+        static const char digits[] = "0123456789abcdef";
+        if (n->type == SREG_TYPE_DIR || sreg_is_default_value(n)) continue;
+        if (!sreg_node_path(n->parent, path, sizeof(path))) {
+            t->failed = 1;
+            return;
+        }
+        sreg_text_str(t, first ? "\n    {\"category\": " : ",\n    {\"category\": ");
+        sreg_text_json_string(t, path);
+        sreg_text_str(t, ", \"name\": ");
+        sreg_text_json_string(t, n->name);
+        sreg_text_str(t, ", \"type\": \"");
+        sreg_text_str(t, sreg_type_name(n->type));
+        sreg_text_str(t, "\", \"value_hex\": \"");
+        for (uint32_t b = 0; b < n->size; b++) {
+            char pair[2] = { digits[n->value[b] >> 4], digits[n->value[b] & 0x0fu] };
+            sreg_text_add(t, pair, 2u);
+        }
+        sreg_text_str(t, "\"}");
+        first = 0;
+    }
+    sreg_text_str(t, "\n  ]\n}\n");
+}
+
+static int sreg_sync_file(FILE *f) {
+#ifdef _WIN32
+    return _commit(_fileno(f)) == 0;
+#else
+    return fsync(fileno(f)) == 0;
+#endif
+}
+
+/* Replace path with data atomically: write and sync <path>.tmp, then rename it over path. The
+ * parent directory is created owner-private, since the overlay can hold the user's settings. */
+static int sreg_write_atomic(const char *path, const char *data, size_t len) {
+    size_t plen = strlen(path);
+    char *tmp = (char *)malloc(plen + 5u), *dir = (char *)malloc(plen + 1u);
+    char *cut;
+    FILE *f;
+    int ok;
+    if (!tmp || !dir) {
+        free(tmp);
+        free(dir);
+        return 0;
+    }
+    snprintf(tmp, plen + 5u, "%s.tmp", path);
+    memcpy(dir, path, plen + 1u);
+    cut = strrchr(dir, '/');
+    {
+        char *back = strrchr(dir, '\\');
+        if (back && (!cut || back > cut)) cut = back;
+    }
+    if (cut && cut != dir) {
+        *cut = '\0';
+        (void)nk_platform_mkdir_p_private(dir);
+    }
+    free(dir);
+    f = nk_platform_fopen_private(tmp, "wb");
+    ok = f && fwrite(data, 1u, len, f) == len && fflush(f) == 0;
+    if (f) {
+        ok = sreg_sync_file(f) && ok;
+        if (fclose(f) != 0) ok = 0;
+    }
+    if (ok && nk_rename_utf8(tmp, path) != 0) ok = 0;
+    if (!ok) (void)nk_remove_utf8(tmp);
+    free(tmp);
+    return ok;
+}
+
+/* sceRegFlushRegistry / sceRegFlushCategory: persist the overlay when the live registry changed
+ * since the last persist (a flush after reads writes nothing). */
+static uint32_t sreg_persist(const char *caller) {
+    SregText text = { NULL, 0u, 0u, 0 };
+    char *path;
+    uint32_t rc = 0;
+    if (!s_sreg_dirty) return 0;
+    path = sreg_overlay_path();
+    if (!path) {
+        fprintf(stderr, "%s: no per-user data directory resolves for the registry overlay; set "
+                        "SR_SYSTEM_REGISTRY (the change stays in memory only)\n", caller);
+        return SREG_ERR_IO;
+    }
+    sreg_overlay_render(&text);
+    if (text.failed) rc = SREG_ERR_IO;
+    if (!rc && s_sreg_corrupt_on_disk && nk_platform_file_exists(path)) {
+        size_t need = strlen(path) + sizeof(".corrupt");
+        char *aside = (char *)malloc(need);
+        if (aside) snprintf(aside, need, "%s.corrupt", path);
+        if (!aside || nk_rename_utf8(path, aside) != 0) {
+            fprintf(stderr, "%s: cannot move the unreadable registry overlay %s aside; nothing written\n",
+                    caller, path);
+            rc = SREG_ERR_IO;
+        } else {
+            fprintf(stderr, "%s: moved the unreadable registry overlay to %s\n", caller, aside);
+        }
+        free(aside);
+    }
+    if (!rc) {
+        s_sreg_corrupt_on_disk = 0;
+        if (!sreg_write_atomic(path, text.data, text.len)) {
+            fprintf(stderr, "%s: cannot write the registry overlay %s (the change stays in memory only)\n",
+                    caller, path);
+            rc = SREG_ERR_IO;
+        }
+    }
+    if (!rc) s_sreg_dirty = 0;
+    free(text.data);
+    free(path);
+    return rc;
+}
+
+/* Read a NUL-terminated guest name of at most cap - 1 bytes into out. Returns 0, ILLEGAL_ADDR when
+ * the pointer is NULL or a byte before the terminator is unreadable, or NAMETOOLONG when the first
+ * cap bytes hold no terminator. */
+static uint32_t sreg_guest_name(uint32_t addr, char *out, uint32_t cap) {
+    out[0] = '\0';
+    if (!addr) return SREG_ERR_ILLEGAL_ADDR;
+    for (uint32_t i = 0; i < cap; i++) {
+        uint32_t cur = 0;
+        if (!sr_size_add_ok(addr, i, &cur) || !sr_guest_span_readable(cur, 1u)) {
+            out[0] = '\0';
+            return SREG_ERR_ILLEGAL_ADDR;
+        }
+        out[i] = (char)MEM_R8(cur);
+        if (!out[i]) return 0;
+    }
+    out[0] = '\0';
+    return SREG_ERR_NAMETOOLONG;
+}
+
+static int sreg_slot_index(uint32_t h, uint32_t tag, uint32_t slots) {
+    uint32_t n = h & 0xffffu;
+    if ((h & 0xffff0000u) != tag || n == 0u || n > slots) return -1;
+    return (int)(n - 1u);
+}
+
+static int sreg_reg_slot(uint32_t h) {
+    int slot = sreg_slot_index(h, SREG_TAG_REG, SREG_REG_SLOTS);
+    return slot >= 0 && s_sreg_reg[slot].open ? slot : -1;
+}
+
+/* An open category handle whose category still exists: removing a category leaves its handles
+ * stale, and they are refused as bad handles (closing one still succeeds). */
+static int sreg_cat_slot(uint32_t h) {
+    int slot = sreg_slot_index(h, SREG_TAG_CAT, SREG_CAT_SLOTS), node;
+    if (slot < 0 || !s_sreg_cat[slot].open) return -1;
+    node = s_sreg_cat[slot].node;
+    if (node < 0 || node >= (int)SREG_MAX_NODES || s_sreg_nodes[node].id != s_sreg_cat[slot].node_id)
+        return -1;
+    return slot;
+}
+
+/* The entry a key handle names, provided it belongs to the category. */
+static int sreg_key_by_handle(uint32_t hk, int cat) {
+    uint32_t id = hk & 0xffffu;
+    if ((hk & 0xffff0000u) != SREG_TAG_KEY || id == 0u) return -1;
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++)
+        if (s_sreg_nodes[i].id == id) return s_sreg_nodes[i].parent == cat ? (int)i : -1;
+    return -1;
+}
+
+/* Look up the entry named by a guest string in an open category. A name longer than 26 bytes can
+ * never match a stored one, so it is not found. */
+static uint32_t sreg_lookup_entry(int slot, uint32_t name_addr, const char *caller, int *node_out) {
+    char key[SREG_PATH_BYTES];
+    uint32_t rc = sreg_guest_name(name_addr, key, SREG_PATH_BYTES);
+    int node;
+    if (rc) return rc;
+    node = strlen(key) < SREG_NAME_BYTES ? sreg_child(s_sreg_cat[slot].node, key) : -1;
+    if (node < 0) {
+        char path[SREG_PATH_BYTES];
+        if (!sreg_node_path(s_sreg_cat[slot].node, path, sizeof(path))) path[0] = '\0';
+        fprintf(stderr, "%s: unknown key \"%s\" in category \"%s\" (virtual system registry fails closed)\n",
+                caller, key, path);
+        return SREG_ERR_NOT_FOUND;
+    }
+    *node_out = node;
+    return 0;
+}
+
+static uint32_t sreg_refuse_read_only(const char *caller) {
+    fprintf(stderr, "%s: refused: the handle was opened with mode 1 (read only)\n", caller);
+    return SREG_ERR_ACCES;
+}
+
+/* Copy a value key into a guest buffer of buf_size bytes; a buffer smaller than the value is
+ * refused, and a string value includes whatever NUL it was stored with. The first read of a
+ * placeholder (a default whose value is neither measured nor modeled) names the key. */
+static uint32_t sreg_copy_out(int node, uint32_t buf, uint32_t buf_size, const char *caller) {
+    SregNode *n = &s_sreg_nodes[node];
+    if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
+    if (buf_size < n->size) return SREG_ERR_INVAL;
+    if (!buf || !sr_guest_span_writable(buf, n->size)) return SREG_ERR_ILLEGAL_ADDR;
+    if ((n->flags & (SREG_NODE_PLACEHOLDER | SREG_NODE_LOGGED)) == SREG_NODE_PLACEHOLDER) {
+        char path[SREG_PATH_BYTES];
+        n->flags |= SREG_NODE_LOGGED;
+        if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
+        fprintf(stderr, "%s: %s/%s has no measured or modeled value; serving the neutral default "
+                        "(%s)\n", caller, path, n->name,
+                n->type == SREG_TYPE_INT ? "0" : n->type == SREG_TYPE_STR ? "an empty string" : "zero bytes");
+    }
+    for (uint32_t i = 0; i < n->size; i++) MEM_W8(buf + i, n->value[i]);
+    return 0;
+}
+
+/* sceUtilityGetSystemParamInt's value for a modeled id: the registry key it shares, else the
+ * system-param table. */
+static uint32_t sreg_systemparam_int(uint32_t id) {
+    sreg_ensure_loaded();
+    for (uint32_t i = 0; i < SREG_MAX_NODES; i++) {
+        const SregNode *n = &s_sreg_nodes[i];
+        if (n->id && (n->flags & SREG_NODE_DEFAULT) && n->sysparam_id >= 0 &&
+            (uint32_t)n->sysparam_id == id && n->type == SREG_TYPE_INT && n->size == 4u)
+            return sreg_get_le32(n->value);
+    }
+    return systemparam_int_value(id);
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Drop the live registry and every handle, as a new process starts: the next sceReg call or
+ * system-param read loads the defaults and the overlay file again. */
+void sr_hle_test_sysreg_reset(void) {
+    sreg_clear_nodes();
+    memset(s_sreg_reg, 0, sizeof(s_sreg_reg));
+    memset(s_sreg_cat, 0, sizeof(s_sreg_cat));
+    s_sreg_loaded = 0;
+    s_sreg_corrupt_on_disk = 0;
+}
+#endif
+
+/* sceRegOpenRegistry(struct RegParam *reg, int mode, REGHANDLE *h): mode 1 (read) or 2 (read/write). */
 static uint32_t h_RegOpenRegistry(CpuState *s) {
     uint32_t reg = A0, mode = A1, out = A2;
-    int slot;
+    int slot = -1;
     if (!reg || !sr_guest_span_readable(reg, SREG_REGPARAM_BYTES)) return SREG_ERR_ILLEGAL_ADDR;
     if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
-    if (mode != 1u) {
-        fprintf(stderr, "sceRegOpenRegistry: mode %u unsupported (the registry opens with mode 1)\n", mode);
+    if (mode != 1u && mode != 2u) {
+        fprintf(stderr, "sceRegOpenRegistry: mode %u unsupported (1 = read, 2 = read/write)\n", mode);
         return SREG_ERR_INVAL;
     }
-    slot = sreg_free_slot(s_sreg_reg_open);
+    for (uint32_t i = 0; i < SREG_REG_SLOTS && slot < 0; i++)
+        if (!s_sreg_reg[i].open) slot = (int)i;
     if (slot < 0) return SREG_ERR_NOMEM;
-    s_sreg_reg_open[slot] = 1;
+    sreg_ensure_loaded();
+    s_sreg_reg[slot].open = 1;
+    s_sreg_reg[slot].mode = (uint8_t)mode;
     MEM_W32(out, SREG_TAG_REG | (uint32_t)(slot + 1));
     return 0;
 }
 
-/* sceRegOpenCategory(REGHANDLE h, const char *name, int mode, REGHANDLE *hd). Mode 2 (read/write)
- * is accepted, but no writer is registered, so an open category cannot change any value. */
+static uint32_t h_RegCloseRegistry(CpuState *s) {
+    int slot = sreg_reg_slot(A0);
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    s_sreg_reg[slot].open = 0;
+    return 0;
+}
+
+/* sceRegFlushRegistry(REGHANDLE h) */
+static uint32_t h_RegFlushRegistry(CpuState *s) {
+    if (sreg_reg_slot(A0) < 0) return SREG_ERR_BAD_HANDLE;
+    return sreg_persist("sceRegFlushRegistry");
+}
+
+/* sceRegOpenCategory(REGHANDLE h, const char *name, int mode, REGHANDLE *hd). An open of a missing
+ * category creates it in either mode (measured for mode 1; see the model above); mode 2 also
+ * allows writes through the handle. */
 static uint32_t h_RegOpenCategory(CpuState *s) {
-    uint32_t reg = A0, name = A1, mode = A2, out = A3;
-    char path[128];
-    int cat, slot;
-    if (sreg_slot_of(reg, SREG_TAG_REG, s_sreg_reg_open) < 0) return SREG_ERR_BADF;
+    uint32_t reg = A0, name = A1, mode = A2, out = A3, err = 0, rc;
+    char path[SREG_PATH_BYTES];
+    int slot = -1, node, created = 0;
+    if (sreg_reg_slot(reg) < 0) return SREG_ERR_BAD_HANDLE;
     if (!out || !sr_guest_span_writable(out, 4u)) return SREG_ERR_ILLEGAL_ADDR;
-    /* guest_cstr reports unreadable and unterminated names alike; both are refused as bad spans. */
-    if (!guest_cstr(name, path, (int)sizeof(path))) return SREG_ERR_ILLEGAL_ADDR;
+    rc = sreg_guest_name(name, path, SREG_PATH_BYTES);
+    if (rc) return rc;
     if (mode != 1u && mode != 2u) return SREG_ERR_INVAL;
-    cat = sreg_find_category(path);
-    if (cat < 0) {
-        fprintf(stderr, "sceRegOpenCategory: unknown category \"%s\" (virtual system registry fails closed)\n",
-                path);
-        return SREG_ERR_NOENT;
-    }
-    slot = sreg_free_slot(s_sreg_cat_open);
+    for (uint32_t i = 0; i < SREG_CAT_SLOTS && slot < 0; i++)
+        if (!s_sreg_cat[i].open) slot = (int)i;
     if (slot < 0) return SREG_ERR_NOMEM;
-    s_sreg_cat_open[slot] = 1;
-    s_sreg_cat_index[slot] = cat;
+    node = sreg_walk(path, 1, 0u, &err, &created);
+    if (node < 0) {
+        fprintf(stderr, "sceRegOpenCategory: refused category path \"%s\" (0x%08x)\n", path, err);
+        return err;
+    }
+    if (created) {
+        s_sreg_dirty = 1;
+        fprintf(stderr, "sceRegOpenCategory: created category \"%s\" (an open of a missing category "
+                        "creates it, as measured on a PSP-3000)\n", path);
+    }
+    s_sreg_cat[slot].open = 1;
+    s_sreg_cat[slot].mode = (uint8_t)mode;
+    s_sreg_cat[slot].node = node;
+    s_sreg_cat[slot].node_id = s_sreg_nodes[node].id;
     MEM_W32(out, SREG_TAG_CAT | (uint32_t)(slot + 1));
+    return 0;
+}
+
+static uint32_t h_RegCloseCategory(CpuState *s) {
+    int slot = sreg_slot_index(A0, SREG_TAG_CAT, SREG_CAT_SLOTS);
+    if (slot < 0 || !s_sreg_cat[slot].open) return SREG_ERR_BAD_HANDLE;
+    s_sreg_cat[slot].open = 0;
+    return 0;
+}
+
+/* sceRegFlushCategory(REGHANDLE hd) */
+static uint32_t h_RegFlushCategory(CpuState *s) {
+    if (sreg_cat_slot(A0) < 0) return SREG_ERR_BAD_HANDLE;
+    return sreg_persist("sceRegFlushCategory");
+}
+
+/* sceRegRemoveCategory(REGHANDLE h, const char *name): h is the registry handle and name a
+ * category path. Only an empty category a game created can be removed. */
+static uint32_t h_RegRemoveCategory(CpuState *s) {
+    uint32_t err = 0, rc;
+    char path[SREG_PATH_BYTES];
+    int slot = sreg_reg_slot(A0), node;
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    if (s_sreg_reg[slot].mode != 2u) return sreg_refuse_read_only("sceRegRemoveCategory");
+    rc = sreg_guest_name(A1, path, SREG_PATH_BYTES);
+    if (rc) return rc;
+    node = sreg_walk(path, 0, 0u, &err, NULL);
+    if (node < 0) {
+        if (err == SREG_ERR_NOT_FOUND)
+            fprintf(stderr, "sceRegRemoveCategory: unknown category \"%s\"\n", path);
+        return err;
+    }
+    if (s_sreg_nodes[node].flags & SREG_NODE_DEFAULT) {
+        fprintf(stderr, "sceRegRemoveCategory: refused: \"%s\" is a modeled system category\n", path);
+        return SREG_ERR_PERM;
+    }
+    if (sreg_has_entries(node)) return SREG_ERR_NOTEMPTY;
+    sreg_free_node(node);
+    s_sreg_dirty = 1;
     return 0;
 }
 
 /* sceRegGetKeyInfo(REGHANDLE hd, const char *name, REGHANDLE *hk, unsigned int *type, SceSize *size).
  * The fifth argument (t0/r8 under MIPS EABI) is the size pointer, read through stack_arg. */
 static uint32_t h_RegGetKeyInfo(CpuState *s) {
-    uint32_t cat = A0, name = A1, hk_out = A2, type_out = A3, size_out = stack_arg(s, 0);
-    char key[64];
-    int slot, idx;
-    slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
-    if (slot < 0) return SREG_ERR_BADF;
+    uint32_t hk_out = A2, type_out = A3, size_out = stack_arg(s, 0), rc;
+    int slot = sreg_cat_slot(A0), node = -1;
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
     if (!hk_out || !sr_guest_span_writable(hk_out, 4u) || !type_out ||
         !sr_guest_span_writable(type_out, 4u) || !size_out || !sr_guest_span_writable(size_out, 4u))
         return SREG_ERR_ILLEGAL_ADDR;
-    if (!guest_cstr(name, key, (int)sizeof(key))) return SREG_ERR_ILLEGAL_ADDR;
-    idx = sreg_find_key(s_sreg_cat_index[slot], key);
-    if (idx < 0) {
-        fprintf(stderr, "sceRegGetKeyInfo: unknown key \"%s\" in category \"%s\" (virtual system registry fails closed)\n",
-                key, s_sreg_categories[s_sreg_cat_index[slot]]);
-        return SREG_ERR_NOENT;
-    }
-    MEM_W32(hk_out, SREG_TAG_KEY | ((uint32_t)(slot + 1) << 8) | (uint32_t)(idx + 1));
-    MEM_W32(type_out, s_sreg_keys[idx].type);
-    MEM_W32(size_out, sreg_key_size(&s_sreg_keys[idx]));
+    rc = sreg_lookup_entry(slot, A1, "sceRegGetKeyInfo", &node);
+    if (rc) return rc;
+    MEM_W32(hk_out, SREG_TAG_KEY | s_sreg_nodes[node].id);
+    MEM_W32(type_out, s_sreg_nodes[node].type);
+    MEM_W32(size_out, s_sreg_nodes[node].size);
     return 0;
 }
 
-/* sceRegGetKeyValue(REGHANDLE hd, REGHANDLE hk, void *buf, SceSize size): copies the value. A
- * buffer smaller than the value is refused; a string value includes its terminating NUL. */
+/* sceRegGetKeyInfoByName(REGHANDLE hd, const char *name, unsigned int *type, SceSize *size) */
+static uint32_t h_RegGetKeyInfoByName(CpuState *s) {
+    uint32_t type_out = A2, size_out = A3, rc;
+    int slot = sreg_cat_slot(A0), node = -1;
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    if (!type_out || !sr_guest_span_writable(type_out, 4u) || !size_out ||
+        !sr_guest_span_writable(size_out, 4u))
+        return SREG_ERR_ILLEGAL_ADDR;
+    rc = sreg_lookup_entry(slot, A1, "sceRegGetKeyInfoByName", &node);
+    if (rc) return rc;
+    MEM_W32(type_out, s_sreg_nodes[node].type);
+    MEM_W32(size_out, s_sreg_nodes[node].size);
+    return 0;
+}
+
+/* sceRegGetKeyValue(REGHANDLE hd, REGHANDLE hk, void *buf, SceSize size) */
 static uint32_t h_RegGetKeyValue(CpuState *s) {
-    uint32_t cat = A0, keyh = A1, buf = A2, size = A3;
-    uint32_t kcat, kidx, need;
-    const SregKey *k;
-    int slot = sreg_slot_of(cat, SREG_TAG_CAT, s_sreg_cat_open);
-    if (slot < 0 || (keyh & 0xffff0000u) != SREG_TAG_KEY) return SREG_ERR_BADF;
-    kcat = (keyh >> 8) & 0xffu;
-    kidx = keyh & 0xffu;
-    if (kcat != (uint32_t)(slot + 1) || kidx == 0u || kidx > sizeof(s_sreg_keys) / sizeof(s_sreg_keys[0]))
-        return SREG_ERR_BADF;
-    k = &s_sreg_keys[kidx - 1u];
-    /* A stale key handle can name this slot after it was reopened on another category. */
-    if (strcmp(k->category, s_sreg_categories[s_sreg_cat_index[slot]]) != 0) return SREG_ERR_BADF;
-    need = sreg_key_size(k);
-    if (size < need) return SREG_ERR_INVAL;
-    if (!buf || !sr_guest_span_writable(buf, need)) return SREG_ERR_ILLEGAL_ADDR;
-    if (k->type == SREG_TYPE_INT) {
-        MEM_W32(buf, systemparam_int_value((uint32_t)k->sysparam_id));
-    } else {
-        for (uint32_t i = 0; i < need; i++) MEM_W8(buf + i, (uint8_t)k->str[i]);
+    int slot = sreg_cat_slot(A0), node;
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    /* A key handle of another category, or of an entry removed since, is stale. */
+    node = sreg_key_by_handle(A1, s_sreg_cat[slot].node);
+    if (node < 0) return SREG_ERR_BAD_HANDLE;
+    return sreg_copy_out(node, A2, A3, "sceRegGetKeyValue");
+}
+
+/* sceRegGetKeyValueByName(REGHANDLE hd, const char *name, void *buf, SceSize size) */
+static uint32_t h_RegGetKeyValueByName(CpuState *s) {
+    uint32_t rc;
+    int slot = sreg_cat_slot(A0), node = -1;
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    rc = sreg_lookup_entry(slot, A1, "sceRegGetKeyValueByName", &node);
+    if (rc) return rc;
+    return sreg_copy_out(node, A2, A3, "sceRegGetKeyValueByName");
+}
+
+/* sceRegSetKeyValue(REGHANDLE hd, const char *name, const void *buf, SceSize size): the key must
+ * exist (a missing one is not found; titles then call sceRegCreateKey). A string takes exactly the
+ * bytes given and its size becomes size (measured: a string key's size follows its value). */
+static uint32_t h_RegSetKeyValue(CpuState *s) {
+    uint32_t buf = A2, size = A3, rc;
+    int slot = sreg_cat_slot(A0), node = -1, changed = 0;
+    SregNode *n;
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    if (s_sreg_cat[slot].mode != 2u) return sreg_refuse_read_only("sceRegSetKeyValue");
+    rc = sreg_lookup_entry(slot, A1, "sceRegSetKeyValue", &node);
+    if (rc) return rc;
+    n = &s_sreg_nodes[node];
+    if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
+    if (size == 0u) return SREG_ERR_INVAL;
+    if (n->type == SREG_TYPE_INT && size != 4u) return SREG_ERR_FTYPE;
+    if (size > (n->type == SREG_TYPE_STR ? SREG_VALUE_MAX : n->size)) return SREG_ERR_NOSPC;
+    if (!buf || !sr_guest_span_readable(buf, size)) return SREG_ERR_ILLEGAL_ADDR;
+    if (n->type == SREG_TYPE_STR && size != n->size) {
+        uint8_t *resized = (uint8_t *)realloc(n->value, size);
+        if (!resized) return SREG_ERR_NOSPC;
+        if (size > n->size) memset(resized + n->size, 0, size - n->size);
+        n->value = resized;
+        n->size = size;
+        changed = 1;
     }
+    for (uint32_t i = 0; i < n->size; i++) {
+        uint8_t b = i < size ? MEM_R8(buf + i) : 0u;
+        if (n->value[i] != b) {
+            n->value[i] = b;
+            changed = 1;
+        }
+    }
+    n->flags &= (uint8_t)~SREG_NODE_PLACEHOLDER;
+    if (changed) s_sreg_dirty = 1;
+    if (hle_log_on())
+        fprintf(stderr, "sceRegSetKeyValue: \"%s\" <- %u bytes%s\n", n->name, size,
+                changed ? "" : " (unchanged)");
     return 0;
 }
 
-static uint32_t h_RegCloseCategory(CpuState *s) {
-    int slot = sreg_slot_of(A0, SREG_TAG_CAT, s_sreg_cat_open);
-    if (slot < 0) return SREG_ERR_BADF;
-    s_sreg_cat_open[slot] = 0;
+/* sceRegCreateKey(REGHANDLE hd, const char *name, int type, SceSize size): an INT, STR or BIN key
+ * with size bytes of zero-filled value space. A name over 26 bytes is cut to 26, as the console
+ * cuts a new category's name (categories are DIR keys in the same name table; inferred). */
+static uint32_t h_RegCreateKey(CpuState *s) {
+    uint32_t type = A2, size = A3, rc;
+    char key[SREG_PATH_BYTES];
+    int slot = sreg_cat_slot(A0), cat;
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    if (s_sreg_cat[slot].mode != 2u) return sreg_refuse_read_only("sceRegCreateKey");
+    rc = sreg_guest_name(A1, key, SREG_PATH_BYTES);
+    if (rc) return rc;
+    key[SREG_NAME_BYTES - 1u] = '\0';
+    if (!sreg_name_ok(key)) return SREG_ERR_INVAL;
+    if (type != SREG_TYPE_INT && type != SREG_TYPE_STR && type != SREG_TYPE_BIN) return SREG_ERR_INVAL;
+    if (size == 0u || (type == SREG_TYPE_INT && size != 4u)) return SREG_ERR_INVAL;
+    if (size > SREG_VALUE_MAX) return SREG_ERR_NOSPC;
+    cat = s_sreg_cat[slot].node;
+    if (sreg_child(cat, key) >= 0) return SREG_ERR_EXIST;
+    if (sreg_add(cat, key, type, size, 0u) < 0) return SREG_ERR_NOSPC;
+    s_sreg_dirty = 1;
+    if (hle_log_on()) fprintf(stderr, "sceRegCreateKey: \"%s\" type %u size %u\n", key, type, size);
     return 0;
 }
 
-static uint32_t h_RegCloseRegistry(CpuState *s) {
-    int slot = sreg_slot_of(A0, SREG_TAG_REG, s_sreg_reg_open);
-    if (slot < 0) return SREG_ERR_BADF;
-    s_sreg_reg_open[slot] = 0;
+/* sceRegGetKeysNum(REGHANDLE hd, int *num): the category's keys plus its child categories. */
+static uint32_t h_RegGetKeysNum(CpuState *s) {
+    static int entries[SREG_MAX_NODES];
+    int slot = sreg_cat_slot(A0);
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    if (!A1 || !sr_guest_span_writable(A1, 4u)) return SREG_ERR_ILLEGAL_ADDR;
+    MEM_W32(A1, sreg_ordered(s_sreg_cat[slot].node, entries));
+    return 0;
+}
+
+/* sceRegGetKeys(REGHANDLE hd, char *buf, int num): the first num entry names in creation order,
+ * each NUL-padded to REG_KEYNAME_SIZE (27) bytes. A num below the entry count returns that many
+ * names (truncation is a project choice); a negative num is EINVAL. */
+static uint32_t h_RegGetKeys(CpuState *s) {
+    static int entries[SREG_MAX_NODES];
+    uint32_t buf = A1, num = A2, count;
+    int slot = sreg_cat_slot(A0);
+    if (slot < 0) return SREG_ERR_BAD_HANDLE;
+    if ((int32_t)num < 0) return SREG_ERR_INVAL;
+    count = sreg_ordered(s_sreg_cat[slot].node, entries);
+    if (num < count) count = num;
+    if (count == 0u) return 0;
+    /* count <= SREG_MAX_NODES, so the byte count cannot overflow. */
+    if (!buf || !sr_guest_span_writable(buf, count * SREG_NAME_BYTES)) return SREG_ERR_ILLEGAL_ADDR;
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = s_sreg_nodes[entries[i]].name;
+        size_t len = strlen(name);
+        for (uint32_t j = 0; j < SREG_NAME_BYTES; j++)
+            MEM_W8(buf + i * SREG_NAME_BYTES + j, j < len ? (uint8_t)name[j] : 0u);
+    }
     return 0;
 }
 
@@ -1166,9 +2441,10 @@ static uint32_t h_RegCloseRegistry(CpuState *s) {
  *   sceImposeGetLanguageMode(int *language, int *buttonConfirm) writes both back and returns 0.
  *     Either out-pointer is optional in the wrapper ('xx'), so each is written only when the guest
  *     supplied a writable 4-byte span.
- * Defaults come from the same table as sceUtilityGetSystemParamInt, so the two surfaces cannot
- * disagree before the game's first set. The numeric convention for the confirm button is whatever
- * that table reports for id 9; it is deliberately not reinterpreted here. */
+ * Defaults come from the same source as sceUtilityGetSystemParamInt (the system registry over the
+ * system-param table), so the two surfaces cannot disagree before the game's first set. The
+ * numeric convention for the confirm button is whatever that source reports for id 9; it is
+ * deliberately not reinterpreted here. */
 static uint32_t s_impose_language;
 static uint32_t s_impose_button;
 static int s_impose_inited;
@@ -1176,8 +2452,8 @@ static int s_impose_inited;
 static void impose_init_once(void) {
     if (s_impose_inited) return;
     s_impose_inited = 1;
-    s_impose_language = systemparam_int_value(8);  /* SCE_SYSTEMPARAM_ID_INT_LANGUAGE */
-    s_impose_button = systemparam_int_value(9);    /* SCE_SYSTEMPARAM_ID_INT_BUTTON_PREFERENCE */
+    s_impose_language = sreg_systemparam_int(8);  /* SCE_SYSTEMPARAM_ID_INT_LANGUAGE */
+    s_impose_button = sreg_systemparam_int(9);    /* SCE_SYSTEMPARAM_ID_INT_BUTTON_PREFERENCE */
 }
 
 static uint32_t h_ImposeSetLanguageMode(CpuState *s) {
@@ -14746,7 +16022,7 @@ static int display_host_span_valid(const DisplayFrameState *fb) {
     return sr_guest_span_readable(fb->addr, bytes);
 }
 
-static void display_present_active(void) {
+static void display_present_frame(void) {
     if (!gui_on() || !s_display_active.addr) return;
     if (!display_host_span_valid(&s_display_active)) {
         fprintf(stderr, "DISPLAY_PRESENT: refusing invalid span addr=0x%08x stride=%d fmt=%d\n",
@@ -14764,6 +16040,15 @@ static void display_present_active(void) {
                     s_vcount, s_display_active.addr, s_display_active.fmt,
                     s_display_active.stride);
     }
+}
+
+/* Present the active framebuffer, then close this frame's capture (fbcap.h): the presenter
+ * that showed the frame has already serviced an armed capture, and an arm nobody serviced
+ * (a skipped output slot, a presenter that declined the frame) resolves here as "nothing
+ * attempted", so a later present can never publish this frame's path with newer pixels. */
+static void display_present_active(void) {
+    display_present_frame();
+    sr_capture_cancel();
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------
@@ -14937,7 +16222,7 @@ int sr_route_test_cadence_state(uint32_t *last_attempt) {
 }
 #endif
 
-/* ---- swapchain-truthful present capture (issue #57) -------------------------------
+/* ---- present-truthful frame capture (issue #57) -----------------------------------
  *
  * The capture-slot policy (fbcap_policy.h) decides who owns the next present:
  *   - SR_FBDUMP owns the first present whose vblank reaches the SR_FBDUMP threshold and
@@ -14949,11 +16234,17 @@ int sr_route_test_cadence_state(uint32_t *last_attempt) {
  *     exact historical naming, so existing routes and tooling are unaffected.
  *
  * The arm MUST run before the present call so the recorded frame is exactly the one
- * being presented; the file is published inside the presenting submit, so a published
- * capture always corresponds to a presented frame. */
+ * being presented. Whichever presenter shows the frame (Vulkan window, GDI window or the
+ * headless offscreen sink) publishes it through the presenter-neutral capture service
+ * (fbcap.h), and display_present_active() resolves an arm no presenter serviced, so a
+ * published capture always corresponds to a presented frame. */
 #define SR_FBSNAP_MAX_WINDOWS 8
 static uint32_t s_fbsnap_win_lo[SR_FBSNAP_MAX_WINDOWS], s_fbsnap_win_hi[SR_FBSNAP_MAX_WINDOWS];
 static int s_fbsnap_win_n = 0;
+static int s_fbsnap_win_parsed;  /* SR_FBSNAP_WINDOWS is read once per process */
+static int s_fbsnap_every = -1;  /* cadence latched by the first FBSNAP-owned present */
+static uint32_t s_fbsnap_after;  /* SR_FBSNAP_AFTER, latched with the cadence */
+static uint32_t s_fbsnap_last;   /* vcount of the last FBSNAP arm */
 static char s_fbcap_armed[128];  /* path armed for the CURRENT frame's present ("" = none) */
 static char s_fbcap_legacy[64];  /* legacy snap_*.ppm path for the same frame ("" = none) */
 
@@ -15038,9 +16329,8 @@ static void vramdump_note_vblank(uint32_t vcount) {
 }
 
 static void fbcap_parse_windows_once(void) {
-    static int done = 0;
-    if (done) return;
-    done = 1;
+    if (s_fbsnap_win_parsed) return;
+    s_fbsnap_win_parsed = 1;
     const char *w = getenv("SR_FBSNAP_WINDOWS");
     if (!w || !w[0]) return;
     const char *p = w;
@@ -15069,20 +16359,27 @@ static void fbcap_parse_windows_once(void) {
  * and the frames that do get captured are byte-identical to an ungated run. */
 static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameState *fb,
                                          uint32_t sync, int framebuf_set) {
-    extern int sdl3vk_capture_arm(const char *path);
     s_fbcap_armed[0] = '\0';
     s_fbcap_legacy[0] = '\0';
     if (sync != 0u) return NULL;
-    int fbsnap_on = sr_fbcap_env_on("SR_FBSNAP");
-    int owner = sr_fbcap_owner(sr_fbcap_env_on("SR_FBDUMP"), fbsnap_on);
+    /* SR_FBSNAP_WINDOWS alone selects FBSNAP (every present inside the windows), so the
+     * windows are parsed before the owner decision, which uses the same effective cadence
+     * as the gate below (sr_fbcap_snap_every). */
+    fbcap_parse_windows_once();
+    int fbsnap_every = sr_fbcap_snap_every(getenv("SR_FBSNAP"), s_fbsnap_win_n > 0);
+    int owner = sr_fbcap_owner(sr_fbcap_env_on("SR_FBDUMP"), fbsnap_every > 0);
     if (owner == SR_FBCAP_NONE) return NULL;
-    if (!framebuf_set || !display_host_span_valid(fb)) return NULL;
+    /* Arm only a frame display_present_active() will hand to a presenter -- the same gate
+     * vramdump_try_present() applies. With no presenter (no --gui, or none initialised)
+     * there is nothing to capture, so neither the capture nor its legacy VRAM-side
+     * snapshot is taken. */
+    if (!gui_on() || !framebuf_set || !display_host_span_valid(fb)) return NULL;
     if (owner == SR_FBCAP_FBDUMP) {
         const char *fd = getenv("SR_FBDUMP");
         if (!fd || vcount < (uint32_t)atoi(fd)) return NULL;
         if (!sr_fbcap_path(SR_FBCAP_FBDUMP, 0, s_fbcap_armed, sizeof s_fbcap_armed))
             return NULL;
-        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+        if (!sr_capture_arm(s_fbcap_armed)) {
             /* A refused arm must not leave a path behind: the report below would
              * otherwise print a stale result from an earlier capture. */
             s_fbcap_armed[0] = '\0';
@@ -15093,15 +16390,13 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
     }
     /* SR_FBSNAP: <N> every / AFTER / WINDOWS gates. */
     {
-        static int fs = -2; static uint32_t fs_last = 0; static uint32_t fs_after = 0;
-        if (fs == -2) {
-            const char *e = getenv("SR_FBSNAP"); fs = e ? atoi(e) : 0;
+        if (s_fbsnap_every < 0) {    /* only an FBSNAP owner gets here: fbsnap_every >= 1 */
+            s_fbsnap_every = fbsnap_every;
             const char *a = getenv("SR_FBSNAP_AFTER");
             unsigned long av = a && a[0] ? strtoul(a, NULL, 10) : 0ul;
-            fs_after = av > UINT32_MAX ? UINT32_MAX : (uint32_t)av;
-            fbcap_parse_windows_once();
+            s_fbsnap_after = av > UINT32_MAX ? UINT32_MAX : (uint32_t)av;
         }
-        if (fs <= 0) return NULL;
+        const int fs = s_fbsnap_every;
         int in_window = 1;
         if (s_fbsnap_win_n > 0) {
             in_window = 0;
@@ -15110,8 +16405,9 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
                     in_window = 1; break;
                 }
         }
-        if (!in_window || vcount < fs_after || vcount - fs_last < (uint32_t)fs) return NULL;
-        fs_last = vcount;
+        if (!in_window || vcount < s_fbsnap_after || vcount - s_fbsnap_last < (uint32_t)fs)
+            return NULL;
+        s_fbsnap_last = vcount;
         if (s_fbsnap_win_n > 0)
             snprintf(s_fbcap_armed, sizeof s_fbcap_armed, "frame_v%u.ppm", vcount);
         else if (!sr_fbcap_path(SR_FBCAP_FBSNAP, vcount, s_fbcap_armed, sizeof s_fbcap_armed))
@@ -15121,7 +16417,7 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         else
             snprintf(s_fbcap_legacy, sizeof s_fbcap_legacy, "snap_%u.ppm",
                      (vcount / (uint32_t)fs) % 8u);
-        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+        if (!sr_capture_arm(s_fbcap_armed)) {
             s_fbcap_armed[0] = '\0';
             s_fbcap_legacy[0] = '\0';
             return NULL;
@@ -15129,6 +16425,19 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         return s_fbcap_armed;
     }
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Selftest-only: forget the latched SR_FBSNAP configuration (windows, cadence, AFTER and
+ * the last armed vcount) so the executable regression can drive a fresh configuration
+ * through the production arm path. Production latches it once per process. */
+void sr_fbcap_test_reset_config(void) {
+    s_fbsnap_win_parsed = 0;
+    s_fbsnap_win_n = 0;
+    s_fbsnap_every = -1;
+    s_fbsnap_after = 0;
+    s_fbsnap_last = 0;
+}
+#endif
 
 static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     static int first_present = 1;
@@ -15220,8 +16529,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     /* The active state was presented above. A sync=1 request is intentionally
      * deferred until sr_vblank_tick applies the pending scanout state. */
     /* SR_FBSNAP report (issue #57): fbcap_arm_for_present() above already armed the
-     * swapchain-truthful capture for this frame (path in s_fbcap_armed); the capture is
-     * recorded inside the presenting submit and completes before this code runs. The
+     * present-truthful capture for this frame (path in s_fbcap_armed); the presenter
+     * resolved it before display_present_active() returned. The
      * legacy VRAM-side oracle keeps its exact historical naming: rotating snap_%u.ppm
      * (8 most recent kept) without windows, snap_v<vcount>.ppm when windows are set, so
      * existing routes and tooling are unaffected. Host-side gate only: no guest work is
@@ -15241,14 +16550,14 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 fprintf(stderr, "FBSNAP f=%u -> SKIPPED (synchronisation failed)\n", s_vcount);
             }
         }
-        extern int sdl3vk_capture_result(void);
-        int cres = sdl3vk_capture_result();
+        int cres = sr_capture_result();
         if (cres != 0) {
             fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
                     s_vcount, s_fbcap_armed, cres);
         } else {
-            /* The output cap dropped this frame's present: the arm was cancelled and
-             * must not be serviced by a later frame, nor reported with a stale result. */
+            /* No presenter serviced this frame's arm (the output cap dropped the present):
+             * display_present_active() cancelled it, so it can neither be serviced by a
+             * later frame nor reported with a stale result. */
             fprintf(stderr, "FBSNAP f=%u swapchain capture -> SKIPPED (no present serviced this frame)\n",
                     s_vcount);
         }
@@ -15258,7 +16567,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     /* The buffer handed to SetFrameBuf is a freshly-completed frame. With SR_FBDUMP=<N>, once N
      * frames have elapsed, the pre-present arm above recorded exactly this presented buffer in
      * present_source.ppm and the process exits with a policy verdict (issue #57): success(0)
-     * only if the swapchain-truthful capture really was published, failure(1) otherwise. */
+     * only if the present-truthful capture really was published, failure(1) otherwise. */
     {
         static int fbdu = -1; static int fbdu_n = 0;
         if (fbdu < 0) {
@@ -15271,8 +16580,6 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             display_host_span_valid(&s_display_active)) {
             extern unsigned long g_ge_pixels;
             extern unsigned long g_tex_samples, g_tex_nonzero;
-            extern int sdl3vk_capture_result(void);
-            extern const char *sdl3vk_capture_source_label(void);
             int snap_ok = snapshot_sync_ok(s_display_active.addr,
                                             (uint32_t)s_display_active.fmt,
                                             (uint32_t)s_display_active.stride, "SR_FBDUMP");
@@ -15294,9 +16601,9 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             extern void sched_dump_threads(void); sched_dump_threads();
             /* Only a capture serviced by this frame's present may affect the exit
              * verdict. An unserviced arm is a failed attempt, never a stale success. */
-            int cres = sdl3vk_capture_result();
+            int cres = sr_capture_result();
             fprintf(stderr, "present capture result=%d (source=%s)%s\n", cres,
-                    sdl3vk_capture_source_label(),
+                    sr_capture_source_label(),
                     cres == 0 ? " (not serviced: no present this frame)" : "");
             if (!snap_ok) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
@@ -19964,17 +21271,28 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
 
-/* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The registry reads the same
- * integer table as the system-param getter, so both are registered here: the executable harness
- * and the production registry then dispatch one mapping. */
+/* sceReg (virtual system registry) and sceUtilityGetSystemParamInt. The system-param getter reads
+ * the registry's modeled keys, so both are registered here: the executable harness and the
+ * production registry then dispatch one mapping. sceRegExit (0x9b25edf1), sceRegRemoveKey
+ * (0x3615bc87, no public argument documentation) and sceRegRemoveRegistry (0xdeda92bf, which this
+ * model never performs) stay unregistered, so a call is a visible dispatch miss. */
 static void hle_register_sysreg_handlers(void) {
     sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
     sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_RegOpenRegistry);
-    sr_hle_register(0x1d8a762e, "sceRegOpenCategory", h_RegOpenCategory);
-    sr_hle_register(0xd4475aa8, "sceRegGetKeyInfo", h_RegGetKeyInfo);
-    sr_hle_register(0x28a8e98a, "sceRegGetKeyValue", h_RegGetKeyValue);
-    sr_hle_register(0x0cae832b, "sceRegCloseCategory", h_RegCloseCategory);
     sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_RegCloseRegistry);
+    sr_hle_register(0x39461b4d, "sceRegFlushRegistry", h_RegFlushRegistry);
+    sr_hle_register(0x1d8a762e, "sceRegOpenCategory", h_RegOpenCategory);
+    sr_hle_register(0x0cae832b, "sceRegCloseCategory", h_RegCloseCategory);
+    sr_hle_register(0x0d69bf40, "sceRegFlushCategory", h_RegFlushCategory);
+    sr_hle_register(0x4ca16893, "sceRegRemoveCategory", h_RegRemoveCategory);
+    sr_hle_register(0xd4475aa8, "sceRegGetKeyInfo", h_RegGetKeyInfo);
+    sr_hle_register(0xc5768d02, "sceRegGetKeyInfoByName", h_RegGetKeyInfoByName);
+    sr_hle_register(0x28a8e98a, "sceRegGetKeyValue", h_RegGetKeyValue);
+    sr_hle_register(0x30be0259, "sceRegGetKeyValueByName", h_RegGetKeyValueByName);
+    sr_hle_register(0x17768e14, "sceRegSetKeyValue", h_RegSetKeyValue);
+    sr_hle_register(0x57641a81, "sceRegCreateKey", h_RegCreateKey);
+    sr_hle_register(0x2c0db9dd, "sceRegGetKeysNum", h_RegGetKeysNum);
+    sr_hle_register(0x2d211135, "sceRegGetKeys", h_RegGetKeys);
 }
 
 /* Public APIs reported as first-stop kernel imports in the library sweep.
@@ -20330,8 +21648,7 @@ void sr_hle_init(void) {
     /* Event flag handlers are registered by hle_register_wait_conformance_handlers. */
     /* Lightweight mutexes: created and locked via hle_register_wait_conformance_handlers. */
 
-    /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers().
-     * The real sceRegExit NID (0x9b25edf1) remains unregistered. */
+    /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers(). */
     hle_register_sysreg_handlers();
     /* sceOpenPSID: returns 16-byte console unique ID; zero-fill is fine for boot. */
     sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);

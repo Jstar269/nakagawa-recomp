@@ -1,0 +1,11 @@
+NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 source_commit=5497dece74819ef6789fcfede9305f7c6041eaa1 fixture=nakagawa-psp-oracle-v1
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-null-handler status=PASS result=0x800200d3 out0=0x800200d3 out1=0xffffffff
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-zero-clock status=PASS result=0x04277643 out0=0x04277643 out1=0x00000001 out2=0x00000001
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-table-exhaustion status=PASS result=0x80020190 out0=0x000010c1 out1=0x80020190 out2=0x00000000
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-cancel-fired-once status=PASS result=0x8002019f out0=0x0427764f out1=0x00000001 out2=0x8002019f
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-cancel-cancelled status=PASS result=0x00000000 out0=0x04277655 out1=0x00000000 out2=0x8002019f
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-cancel-unknown status=PASS result=0x8002019f out0=0x8002019f
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-rearm-base status=PASS result=0x0427765f out0=0x0427765f out1=0x00000002 out2=0x000186a0 out3=0x0001878d out4=0x0000c350
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=alarm-blocking-in-handler status=PASS result=0x80020064 out0=0x042a0067 out1=0x00000001 out2=0x80020064 out3=0x00000001 out4=0x00000001
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-ALARM-001 case_id=kernel-alarm-done status=PASS result=0x00000000 out0=0x00000008
+NAKAGAWA_PSP_COMPLETE schema=1 status=PASS
