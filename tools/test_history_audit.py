@@ -181,7 +181,7 @@ class TestHistoryAudit(unittest.TestCase):
             root = Path(tmp)
             sha = self._repo_with_message(
                 root, "clean subject",
-                f"Landed from {root_literal}/tmp/landing.json and {user_path}.")
+                f"Landed from {root_literal}/landings/landing.json and {user_path}.")
             findings = history_audit.audit_history_commit_metadata(
                 root, private_roots=(root_literal.upper(),))
         codes = sorted((f.code, f.commit, f.path) for f in findings)
