@@ -278,6 +278,166 @@ static void late_body_b(CpuState *s) {
     s->pc = s->r[31];
 }
 
+/* ---- runtime-placed module bindings (issue #704) ---------------------------------
+ * Two synthetic module translations share link addresses, as every relocatable PSP
+ * module does. Each is bound only while "loaded", at whatever base the test chooses,
+ * with its relocated words laid out exactly as the runtime loader would write them.
+ * The proof: a bound image is the only dispatch and fetch authority for its range
+ * (a static registration at the same address does not run there), unbinding hands the
+ * range back, a different module bound at the same addresses runs its own bodies, the
+ * same translation runs at a base with nonzero low bits, and a fixed-address
+ * translation binds only at its link addresses. */
+#define MODULE_BASE_LOW   0x08A00000u
+#define MODULE_BASE_ODD   0x08A08100u   /* low 16 bits nonzero: exercises the HI16 carry */
+#define MODULE_STATIC_OFF 0x40u
+#define MODULE_GAP_OFF    0x80u          /* inside the image, outside every span */
+#define MODULE_FIXED_LINK 0x08B00000u
+
+static uint32_t g_module_a_base, g_module_b_base, g_module_fixed_base;
+static int g_module_a_entry_hits, g_module_a_second_hits, g_module_b_hits;
+static int g_module_static_hits;
+
+static void module_a_entry(CpuState *s) { g_body_hits++; g_module_a_entry_hits++; s->r[2] = 0xa0u; s->pc = s->r[31]; }
+static void module_a_second(CpuState *s) { g_body_hits++; g_module_a_second_hits++; s->r[2] = 0xa1u; s->pc = s->r[31]; }
+static void module_b_entry(CpuState *s) { g_body_hits++; g_module_b_hits++; s->r[2] = 0xb0u; s->pc = s->r[31]; }
+static void module_static_body(CpuState *s) { g_body_hits++; g_module_static_hits++; s->r[2] = 0x5au; s->pc = s->r[31]; }
+
+static const SrModuleFunc k_module_a_funcs[] = {
+    { 0x00u, 4u, module_a_entry }, { MODULE_STATIC_OFF, 2u, module_a_second },
+};
+static const SrModuleFunc k_module_b_funcs[] = {
+    { 0x00u, 4u, module_b_entry }, { MODULE_STATIC_OFF, 2u, module_b_entry },
+};
+static const SrModuleSpan k_module_spans[] = { { 0x00u, 0x60u } };
+static const SrModuleCode k_module_a = {
+    "overlay_a.prx", 0x200u, 0x1111u, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
+    k_module_a_funcs, 2u, k_module_spans, 1u,
+};
+static const SrModuleCode k_module_b = {
+    "overlay_b.prx", 0x300u, 0x2222u, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
+    k_module_b_funcs, 2u, k_module_spans, 1u,
+};
+static const SrModuleFunc k_module_fixed_funcs[] = { { MODULE_FIXED_LINK, 2u, module_a_entry } };
+static const SrModuleSpan k_module_fixed_spans[] = { { MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x20u } };
+static const SrModuleCode k_module_fixed = {
+    "fixed.prx", 0x80u, 0x3333u, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
+    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u,
+};
+static const SrModuleCode k_module_unsupported = {
+    "untranslatable.prx", 0x80u, 0x4444u, 0x00u, 0x40u, 0x4u, 1u,
+    "relocations cannot be translated: synthetic", &g_module_fixed_base,
+    NULL, 0u, NULL, 0u,
+};
+
+static void test_runtime_module_binding_is_the_authority_for_its_range(void) {
+    SrModuleBindDetail detail;
+    sr_module_code_reset();
+    sr_exec_span_reset();
+    sr_module_code_register(&k_module_a);
+    sr_module_code_register(&k_module_b);
+    sr_module_code_register(&k_module_fixed);
+    sr_module_code_register(&k_module_unsupported);
+    sr_module_code_register(&k_module_a);   /* the same descriptor registers once */
+    CHECK(sr_module_code_count() == 4u, "four module descriptors are registered");
+    CHECK(sr_module_code_find("OVERLAY_A.PRX") == &k_module_a,
+          "module descriptors are found by case-insensitive file name");
+    CHECK(sr_module_code_find("overlay_c.prx") == NULL, "an absent module is not found");
+
+    /* A stale fixed-address registration over the same addresses: before any module is
+     * bound it is the ordinary owner of its word. */
+    own_synthetic_aot_word(MODULE_BASE_LOW + MODULE_STATIC_OFF);
+    sr_register(MODULE_BASE_LOW + MODULE_STATIC_OFF, module_static_body);
+    /* ...and one where the module's span has bytes but no translated entry. */
+    own_synthetic_aot_word(MODULE_BASE_LOW + 0x20u);
+    sr_register(MODULE_BASE_LOW + 0x20u, module_static_body);
+    CHECK(sr_lookup(MODULE_BASE_LOW + 0x20u) == module_static_body,
+          "the static registration is reachable while no module is bound");
+    g_module_static_hits = 0;
+    Probe before = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(before.body_ran && g_module_static_hits == 1, "an unbound range keeps its static owner");
+    CHECK(sr_module_code_fetch_authority(MODULE_BASE_LOW) == -1,
+          "no module owns a range before it is bound");
+
+    CHECK(sr_module_code_bind(&k_module_a, MODULE_BASE_LOW, &detail) == SR_MODULE_BIND_OK,
+          "module A binds at its loaded base (address 0x%08x)", detail.address);
+    CHECK(g_module_a_base == MODULE_BASE_LOW, "binding publishes the base to the generated code");
+    g_module_a_entry_hits = g_module_a_second_hits = g_module_static_hits = 0;
+    Probe entry = probe(MODULE_BASE_LOW, PROBE_PC, PROBE_RA);
+    Probe second = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(entry.body_ran && entry.v0 == 0xa0u && g_module_a_entry_hits == 1,
+          "dispatch at base + link address runs the module's translation");
+    CHECK(second.body_ran && second.v0 == 0xa1u && g_module_a_second_hits == 1 &&
+          g_module_static_hits == 0,
+          "the bound module, not the static registration, owns its range");
+    CHECK(sr_module_code_fetch_authority(MODULE_BASE_LOW + 0x10u) == 1 &&
+          sr_module_code_fetch_authority(MODULE_BASE_LOW + MODULE_GAP_OFF) == 0 &&
+          sr_module_code_fetch_authority(MODULE_BASE_LOW + 0x12u) == 0,
+          "fetch authority covers exactly the module's aligned span words");
+    CHECK(sr_lookup(MODULE_BASE_LOW + MODULE_GAP_OFF) == NULL &&
+          !sr_exec_span_owns_fetch(MODULE_BASE_LOW + MODULE_GAP_OFF),
+          "an image word outside every span is not executable");
+    CHECK(sr_lookup(MODULE_BASE_LOW + 0x20u) == NULL &&
+          sr_exec_span_owns_fetch(MODULE_BASE_LOW + 0x20u),
+          "a span word with no translated entry is interpreter-owned, never the static body");
+    CHECK(sr_module_code_bind(&k_module_a, MODULE_BASE_ODD, &detail) ==
+              SR_MODULE_BIND_ALREADY_BOUND,
+          "one translation has at most one live binding");
+    CHECK(sr_module_code_bind(&k_module_b, MODULE_BASE_LOW + 0x80u, &detail) ==
+              SR_MODULE_BIND_OVERLAP && detail.address == MODULE_BASE_LOW,
+          "a second image may not overlap a bound one");
+
+    uint32_t stale_before = sr_stale_entry_count();
+    sr_stale_register_block(MODULE_BASE_LOW, 4u, 0x12345678u);
+    sr_module_code_unbind(&k_module_a);
+    CHECK(sr_stale_entry_count() == stale_before,
+          "unbinding forgets the stale-code expectations of the module's range");
+    CHECK(!sr_module_code_is_bound(&k_module_a, NULL), "module A is unbound");
+    g_module_static_hits = 0;
+    Probe after = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(after.body_ran && g_module_static_hits == 1 && g_module_a_second_hits == 1,
+          "unbinding hands the range back; the unloaded module's bodies are unreachable");
+
+    /* A different module at the same addresses runs its own translation. */
+    CHECK(sr_module_code_bind(&k_module_b, MODULE_BASE_LOW, &detail) == SR_MODULE_BIND_OK,
+          "module B binds where module A was");
+    g_module_b_hits = 0;
+    Probe reused = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(reused.body_ran && reused.v0 == 0xb0u && g_module_b_hits == 1 &&
+          g_module_a_second_hits == 1 && g_module_static_hits == 1,
+          "address reuse by another module dispatches to that module only");
+    sr_module_code_unbind(&k_module_b);
+
+    /* The same translation at a base whose low half is nonzero. */
+    CHECK(sr_module_code_bind(&k_module_a, MODULE_BASE_ODD, &detail) == SR_MODULE_BIND_OK &&
+          g_module_a_base == MODULE_BASE_ODD,
+          "the same translation binds at a base with nonzero low bits");
+    Probe moved = probe(MODULE_BASE_ODD + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(moved.body_ran && moved.v0 == 0xa1u, "the module runs at its new base");
+    sr_module_code_unbind(&k_module_a);
+
+    CHECK(sr_module_code_bind(&k_module_fixed, 0x100u, &detail) == SR_MODULE_BIND_BAD_BASE,
+          "a fixed-address translation binds only at its link addresses");
+    CHECK(sr_module_code_bind(&k_module_fixed, 0u, &detail) == SR_MODULE_BIND_OK,
+          "a fixed-address translation binds at base 0");
+    Probe fixed = probe(MODULE_FIXED_LINK, PROBE_PC, PROBE_RA);
+    CHECK(fixed.body_ran && fixed.v0 == 0xa0u, "a fixed-address module dispatches at its link address");
+    sr_module_code_unbind(&k_module_fixed);
+    CHECK(sr_module_code_bind(&k_module_unsupported, MODULE_BASE_LOW, &detail) ==
+              SR_MODULE_BIND_UNSUPPORTED,
+          "a module the build could not translate is refused at bind");
+    CHECK(sr_module_code_bind(&k_module_a, 0x0BFFFF80u, &detail) ==
+              SR_MODULE_BIND_IMAGE_UNREADABLE && detail.address == 0x0BFFFF80u &&
+          sr_module_code_fetch_authority(0x0BFFFF80u) == -1,
+          "an image range beyond guest memory is refused and owns nothing");
+    CHECK(strcmp(sr_module_bind_result_name(SR_MODULE_BIND_ALREADY_BOUND),
+                 "second-instance") == 0,
+          "bind results have stable semantic-boundary names");
+    CHECK(sr_module_code_fnv1a64("", 0u) == 0xcbf29ce484222325ull &&
+          sr_module_code_fnv1a64("a", 1u) == 0xaf63dc4c8601ec8cull,
+          "the module identity digest matches the shared FNV-1a/64 vectors");
+    sr_module_code_reset();
+}
+
 static void test_late_import_retirement_is_visible_after_warm_dispatch(void) {
     sr_exec_span_reset();
     own_synthetic_aot_word(LATE_EXPORT_A);
@@ -1557,6 +1717,7 @@ int main(int argc, char **argv) {
     test_retired_bindings_are_inert();
     test_call_boundary_keeps_callee_register_writes();
     test_historical_call_target_fails_at_named_boundary();
+    test_runtime_module_binding_is_the_authority_for_its_range();
     test_late_import_retirement_is_visible_after_warm_dispatch();
     test_historical_target_shapes_fail_closed();
     test_diagnostic_exact_hooks_never_consume();

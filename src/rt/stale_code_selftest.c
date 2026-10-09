@@ -269,9 +269,35 @@ static void test_invalidation_half(void) {
           "re-registration must clear the flag");
 }
 
+/* Forgetting a range retires exactly the records whose span overlaps it, word and
+ * block alike, and leaves every neighbour registered. A runtime-placed module that is
+ * unbound (src/rt/guest_interp.c) relies on this so its expectations never describe the
+ * next module bound at the same addresses. Independent of the gate: records are kept
+ * whether or not checks run. */
+static void test_forget_range(void) {
+    sr_stale_reset();
+    sr_stale_register_word(FAKE_BASE + 0x00u, WORD_W0);
+    sr_stale_register_word(FAKE_BASE + 0x40u, WORD_W1);
+    sr_stale_register_block(FAKE_BASE + 0x10u, 4u, PAIR_HASH);   /* [0x10, 0x20) */
+    sr_stale_register_block(FAKE_BASE + 0x30u, 2u, PAIR_HASH);   /* [0x30, 0x38) */
+    CHECK(sr_stale_entry_count() == 4u, "four records registered");
+    sr_stale_forget_range(FAKE_BASE + 0x1cu, 0x18u);             /* [0x1c, 0x34) */
+    CHECK(sr_stale_entry_count() == 2u,
+          "the two blocks overlapping the range are forgotten (%u left)", sr_stale_entry_count());
+    sr_stale_forget_range(FAKE_BASE + 0x00u, 0u);
+    sr_stale_forget_range(0xFFFFFFF0u, 0x20u);
+    CHECK(sr_stale_entry_count() == 2u, "an empty or wrapping range forgets nothing");
+    sr_stale_forget_range(FAKE_BASE + 0x3cu, 0x8u);               /* covers the word at 0x40 */
+    CHECK(sr_stale_entry_count() == 1u, "a word record overlapping the range is forgotten");
+    sr_stale_forget_range(FAKE_BASE + 0x04u, 0x4u);
+    CHECK(sr_stale_entry_count() == 1u, "a range just past a word leaves it registered");
+    sr_stale_reset();
+}
+
 int main(void) {
     if (!sr_stale_enabled()) {
         test_gate_off_is_silent();
+        test_forget_range();
         if (g_failed) {
             fprintf(stderr, "stale_code selftest: FAILED (gate off)\n");
             return 1;
@@ -282,6 +308,7 @@ int main(void) {
     test_fnv_vectors();
     test_detector_matrix();
     test_invalidation_half();
+    test_forget_range();
     sr_stale_reset();
     if (g_failed) {
         fprintf(stderr, "stale_code selftest: FAILED\n");
