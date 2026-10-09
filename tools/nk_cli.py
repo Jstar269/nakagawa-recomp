@@ -1173,7 +1173,7 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
         title_extra_spans = ",".join(
             f"0x{int(span['start']):08x},0x{int(span['end']):08x}" for span in spans
         )
-    return {
+    options = {
         "base": f"0x{int(executable['base']):08x}",
         "entry": f"0x{int(executable['entry']):08x}",
         "title_extra_spans": title_extra_spans,
@@ -1190,6 +1190,11 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
         # The planner writes this into the package's cache metadata, so the key must carry it too.
         "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }
+    # `make NAN_TRAP=1` adds --nan-trap to codegen inside the Makefile, out of sight of
+    # CODEGEN_USER_ARGS above. Named only when on, so untrapped keys are unchanged.
+    if package_cache.nan_trap_enabled(environment):
+        options["nan_trap"] = True
+    return options
 
 
 def _has_private_backends(root: Path = ROOT) -> bool:
