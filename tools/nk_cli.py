@@ -40,6 +40,8 @@ from nk_core import (  # noqa: E402
     inspect_iso,
 )
 from nk_core import package_cache  # noqa: E402
+from nk_core.prep_engine import NativeTitleStager  # noqa: E402
+from nk_core.title_registry import get_default_registry  # noqa: E402
 from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
@@ -1997,18 +1999,37 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_prepare(args: argparse.Namespace) -> int:
-    engine = PreparationEngine()
+    try:
+        user_data_root = _user_data_root(args.user_data_root)
+    except PackageBuildError as exc:
+        sys.stderr.write(f"\nPreparation failed [USER_DATA_ROOT_INVALID]: {exc}\n")
+        return 1
+    # The same title list the player uses: the built-in manifests plus the
+    # user's own manifests in <user data>/manifests.
+    registry = get_default_registry()
+    registry.load_local_manifests(user_data_root / "manifests")
+    stager = NativeTitleStager(user_data_root, player=args.player)
+    engine = PreparationEngine(registry=registry, native_stager=stager)
     result = engine.prepare_game(
         args.iso,
         on_progress=print_progress,
         destination_root=Path(args.dest) if args.dest else None,
     )
-    if result.success:
-        print(f"\nPreparation successful! Manifest written to: {result.manifest_path}")
-        return 0
-    else:
+    if not result.success:
         sys.stderr.write(f"\nPreparation failed [{result.error_code}]: {result.error_message}\n")
         return 1
+    if result.manifest_path is not None:
+        print(f"\nPreparation successful! Manifest written to: {result.manifest_path}")
+        return 0
+    already = " were already in place and" if stager.reused else ""
+    print(
+        f"\nPreparation successful! The game's files{already} are in {result.prepared_root}, "
+        f"and {result.disc_id} is in your Nakagawa library.\n"
+        f"Next: build the game with `python tools/nk_cli.py build-package {result.disc_id}"
+        + (f" --user-data-root {user_data_root}" if args.user_data_root else "")
+        + "`, then press Play in the Nakagawa player."
+    )
+    return 0
 
 
 def cmd_launch(args: argparse.Namespace) -> int:
@@ -3490,7 +3511,12 @@ def main() -> int:
 
     p_prep = subparsers.add_parser("prepare", help="Prepare an ISO for native execution")
     p_prep.add_argument("iso", help="Path to PSP ISO image")
-    p_prep.add_argument("--dest", help="Optional destination games directory")
+    p_prep.add_argument("--dest", help="Optional destination games directory (raw discs only)")
+    p_prep.add_argument("--user-data-root", type=Path,
+                        help="Override the player per-user data directory")
+    p_prep.add_argument("--player", type=Path,
+                        help="The nakagawa_player executable that sets up archive discs "
+                             "(default: build/ in this checkout, or the release bin/ folder)")
     p_prep.set_defaults(func=cmd_prepare)
 
     p_launch = subparsers.add_parser("launch", help="Plan launch arguments for a prepared game")

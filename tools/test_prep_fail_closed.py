@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Fail-closed preparation regressions for issue #374.
+"""Fail-closed preparation regressions, and the archive-disc staging route.
 
 Every fixture is generated in-process from synthetic bytes: no retail disc,
 archive, module, texture, name, or hash appears in this file.
 
 The suite pins the claims the Python preparation route previously got wrong:
 
-* a ``claphanz_xb`` profile whose required archive stage performs no work is
-  never promoted as a READY installation (the failing-before false success);
+* a ``claphanz_xb`` profile is never staged by Python: without the native
+  player's staging transaction it is refused before any filesystem mutation,
+  and with it the disc is handed to that transaction, never promoted as READY
+  on the strength of a Python-side no-op;
 * hostile XB archive bytes -- truncated FST, unsafe member path, decode
   failure -- and an XB-parser import failure cannot convert preparation into
   success, and a previous install survives every failure untouched;
@@ -18,7 +20,9 @@ The suite pins the claims the Python preparation route previously got wrong:
   promotion rename failure all fail the transaction with the previous install
   intact;
 * the documented ``python tools/nk_cli.py prepare ...`` invocation fails
-  closed instead of reporting success for blocked or unsupported work.
+  closed instead of reporting success for blocked or unsupported work, and
+  sets up an archive disc through the player's staging transaction (the same
+  one the setup wizard runs) when the player is built.
 """
 
 from __future__ import annotations
@@ -37,10 +41,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from nk_core import (  # noqa: E402
     PreparationEngine,
+    PreparationResult,
     ProgressEvent,
     TitleProfile,
     TitleRegistry,
 )
+from nk_core.prep_engine import NativeTitleStager, PLAYER_EXECUTABLE  # noqa: E402
 from test_extract_xb_security import _make_raw_archive  # noqa: E402
 from test_nk_core import _create_mock_iso  # noqa: E402
 from test_xb_probe import _make_archive  # noqa: E402
@@ -48,6 +54,7 @@ from xb_probe import XBCompression  # noqa: E402
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
+BUILT_PLAYER = TOOLS_DIR.parent / "build" / PLAYER_EXECUTABLE
 CLAPHANZ_ISO = "TEST90001"
 RAW_ISO = "TEST00001"
 UNSUPPORTED_ISO = "ULUS12345"
@@ -268,6 +275,115 @@ class RouteBlockedTests(PreparationFailClosedCase):
         self.assertTrue(raw.prepared_root.is_dir())
 
 
+class _RecordingStager:
+    """Stands in for the player's staging transaction and records each call."""
+
+    def __init__(self, result: PreparationResult, progress: tuple[int, ...] = ()) -> None:
+        self.result = result
+        self.progress = progress
+        self.calls: list[tuple[Path, str]] = []
+
+    def __call__(self, iso: Path, disc_id: str, progress) -> PreparationResult:
+        self.calls.append((iso, disc_id))
+        for percent in self.progress:
+            progress(percent, f"{percent}/100")
+        return self.result
+
+
+class NativeStagingRouteTests(PreparationFailClosedCase):
+    """An archive disc is handed to the native staging transaction, never to Python."""
+
+    def _native_engine(self, stager) -> PreparationEngine:
+        return PreparationEngine(
+            base_dir=self.temp_dir, registry=_claphanz_registry(), native_stager=stager
+        )
+
+    def test_archive_disc_is_staged_by_the_native_transaction(self) -> None:
+        """Failing-before: the route refused every archive disc it was given."""
+        iso_file = self.temp_dir / "claphanz.iso"
+        _create_mock_iso(iso_file, disc_id=CLAPHANZ_ISO)
+        prepared = self.temp_dir / "user" / "games" / CLAPHANZ_ISO
+        stager = _RecordingStager(
+            PreparationResult(success=True, disc_id=CLAPHANZ_ISO, prepared_root=prepared),
+            progress=(25, 100),
+        )
+
+        events: list[ProgressEvent] = []
+        result = self._native_engine(stager).prepare_game(iso_file, on_progress=events.append)
+
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(result.prepared_root, prepared)
+        self.assertIsNone(result.manifest_path)
+        self.assertEqual(stager.calls, [(iso_file.resolve(), CLAPHANZ_ISO)])
+        stages = [event.stage.value for event in events]
+        self.assertIn("EXTRACTING_ARCHIVES", stages)
+        self.assertEqual(stages[-1], "READY")
+        self.assertEqual(
+            [event.completed for event in events if event.current_item], [25, 100]
+        )
+        # Python wrote nothing of its own: no games folder, no staging tree.
+        self.assertFalse((self.temp_dir / "games").exists())
+
+    def test_native_failure_is_reported_with_its_boundary_and_never_ready(self) -> None:
+        iso_file = self.temp_dir / "claphanz.iso"
+        _create_mock_iso(iso_file, disc_id=CLAPHANZ_ISO)
+        message = "[STAGE_DATA_FOLDER_MISSING] This disc image has no 'xbdata' folder."
+        stager = _RecordingStager(PreparationResult(
+            success=False, disc_id=CLAPHANZ_ISO,
+            error_code="STAGE_DATA_FOLDER_MISSING", error_message=message,
+        ))
+
+        events: list[ProgressEvent] = []
+        result = self._native_engine(stager).prepare_game(iso_file, on_progress=events.append)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "STAGE_DATA_FOLDER_MISSING")
+        self.assertEqual(result.error_message, message)
+        stages = [event.stage.value for event in events]
+        self.assertNotIn("READY", stages)
+        self.assertEqual(stages[-1], "FAILED")
+
+    def test_destination_is_refused_for_archive_discs(self) -> None:
+        """--dest cannot move archive staging out of the per-user data root."""
+        iso_file = self.temp_dir / "claphanz.iso"
+        _create_mock_iso(iso_file, disc_id=CLAPHANZ_ISO)
+        stager = _RecordingStager(PreparationResult(success=True, disc_id=CLAPHANZ_ISO))
+
+        result = self._native_engine(stager).prepare_game(
+            iso_file, destination_root=self.dest_root
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "PREPARATION_DESTINATION_UNSUPPORTED")
+        self.assertIn("--user-data-root", result.error_message)
+        self.assertEqual(stager.calls, [])
+        self.assertFalse(self.dest_root.exists())
+
+    def test_missing_player_is_named_with_the_next_step(self) -> None:
+        iso_file = self.temp_dir / "claphanz.iso"
+        _create_mock_iso(iso_file, disc_id=CLAPHANZ_ISO)
+        user_root = self.temp_dir / "user"
+        missing = self.temp_dir / "no-player-here" / PLAYER_EXECUTABLE
+        stager = NativeTitleStager(user_root, player=missing)
+
+        result = self._native_engine(stager).prepare_game(iso_file)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "PLAYER_NOT_FOUND")
+        self.assertIn(str(missing), result.error_message)
+        self.assertIn("--player", result.error_message)
+        self.assertFalse(user_root.exists())
+
+    def test_release_layout_player_is_found_beside_the_source_folder(self) -> None:
+        source_root = self.temp_dir / "release" / "source"
+        stager = NativeTitleStager(self.temp_dir / "user", source_root=source_root)
+        self.assertEqual(
+            stager.candidates(),
+            [source_root / "build" / PLAYER_EXECUTABLE,
+             self.temp_dir / "release" / "bin" / PLAYER_EXECUTABLE],
+        )
+
+
 class PrepPreflightSideEffectTests(PreparationFailClosedCase):
     """Compatibility selection must keep decrypt output out of the ISO folder."""
 
@@ -437,6 +553,18 @@ class CliFailClosedTests(PreparationFailClosedCase):
 
     def _run_cli(self, *args: str, env_extra: dict[str, str] | None = None):
         env = dict(os.environ)
+        # The CLI reads the per-user data root (its title manifests) on every
+        # prepare; keep that inside this test's scratch folder.
+        profile = self.temp_dir / "profile"
+        env.update({
+            "LOCALAPPDATA": str(profile / "localappdata"),
+            "APPDATA": str(profile / "appdata"),
+            "USERPROFILE": str(profile),
+            "HOME": str(profile),
+            "XDG_DATA_HOME": str(profile / "data"),
+            "XDG_CONFIG_HOME": str(profile / "config"),
+            "XDG_CACHE_HOME": str(profile / "cache"),
+        })
         if env_extra:
             env.update(env_extra)
         return subprocess.run(
@@ -495,12 +623,12 @@ class CliFailClosedTests(PreparationFailClosedCase):
         self.assertIn("Preparation failed", proc.stderr)
         self.assertFalse(self.dest_root.exists())
 
-    def test_cli_prepare_never_reports_success_for_claphanz_profile(self) -> None:
-        """The documented invocation shape, with a claphanz_xb profile registered.
+    def _claphanz_pythonpath(self) -> str:
+        """Seed a claphanz_xb profile into the CLI's default registry.
 
-        The CLI loads the default registry, which holds no XB profile, so the
-        test seeds one through ``sitecustomize`` on ``PYTHONPATH``. The command
-        under test remains a literal ``python tools/nk_cli.py prepare ...``.
+        The default registry holds no XB profile, so it is added through
+        ``sitecustomize`` on ``PYTHONPATH``; the command under test remains a
+        literal ``python tools/nk_cli.py prepare ...``.
         """
         site_dir = self.temp_dir / "sitecustom"
         site_dir.mkdir()
@@ -522,28 +650,105 @@ class CliFailClosedTests(PreparationFailClosedCase):
             "_tr._DEFAULT_REGISTRY = _reg\n",
             encoding="utf-8",
         )
-
-        iso_file = self.temp_dir / "claphanz.iso"
-        _create_mock_iso(iso_file, disc_id=CLAPHANZ_ISO)
-
         existing_pythonpath = os.environ.get("PYTHONPATH")
         pythonpath = str(site_dir)
         if existing_pythonpath:
             pythonpath = pythonpath + os.pathsep + existing_pythonpath
+        return pythonpath
+
+    def test_cli_prepare_never_reports_success_for_claphanz_profile(self) -> None:
+        """--dest cannot send an archive disc's files outside the data folder."""
+        iso_file = self.temp_dir / "claphanz.iso"
+        _create_mock_iso(iso_file, disc_id=CLAPHANZ_ISO)
 
         proc = self._run_cli(
             "prepare",
             str(iso_file),
             "--dest",
             str(self.dest_root),
-            env_extra={"PYTHONPATH": pythonpath},
+            env_extra={"PYTHONPATH": self._claphanz_pythonpath()},
         )
 
         self.assertEqual(proc.returncode, 1, proc.stdout)
-        self.assertIn("PREPARATION_ROUTE_UNSUPPORTED", proc.stderr)
+        self.assertIn("PREPARATION_DESTINATION_UNSUPPORTED", proc.stderr)
         self.assertNotIn("Preparation successful", proc.stdout)
         self.assertFalse((self.dest_root / CLAPHANZ_ISO).exists())
         self.assertEqual(list(self.dest_root.glob(".staging_*")), [])
+
+    def test_cli_prepare_names_a_missing_player_calmly(self) -> None:
+        iso_file = self.temp_dir / "claphanz.iso"
+        _create_mock_iso(iso_file, disc_id=CLAPHANZ_ISO)
+        user_root = self.temp_dir / "user-data"
+        missing = self.temp_dir / "missing" / PLAYER_EXECUTABLE
+
+        proc = self._run_cli(
+            "prepare", str(iso_file), "--user-data-root", str(user_root),
+            "--player", str(missing),
+            env_extra={"PYTHONPATH": self._claphanz_pythonpath()},
+        )
+
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("PLAYER_NOT_FOUND", proc.stderr)
+        self.assertIn("--player", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertFalse((user_root / "games").exists())
+
+    def test_cli_prepare_stages_an_archive_disc_through_the_player(self) -> None:
+        """The literal CLI command sets up an archive disc and Play can find it.
+
+        Failing-before: the command refused every archive disc
+        (PREPARATION_ROUTE_UNSUPPORTED). It now runs the player's staging
+        transaction: the archive is extracted, promoted into the per-user data
+        root, and recorded in the library; a second run reuses the files and
+        clears what an interrupted run left behind.
+        """
+        if not BUILT_PLAYER.is_file():
+            self.skipTest(
+                f"{BUILT_PLAYER} is not built; run `mingw32-make player` (`make player` "
+                "on Linux) to exercise the native staging route"
+            )
+        from test_iso_parity import (
+            archive_title_manifest,
+            build_plain_mips_elf,
+            create_archive_title_iso,
+        )
+
+        disc_id = "ULUS99996"
+        iso_file = self.temp_dir / "archive.iso"
+        create_archive_title_iso(iso_file, disc_id=disc_id, title="Synthetic Archive",
+                                 executable=build_plain_mips_elf())
+        user_root = self.temp_dir / "user-data"
+        (user_root / "manifests").mkdir(parents=True)
+        (user_root / "manifests" / "archive.json").write_text(
+            json.dumps(archive_title_manifest(disc_id, "archive-ulus99996")),
+            encoding="utf-8",
+        )
+
+        proc = self._run_cli("prepare", str(iso_file), "--user-data-root", str(user_root))
+
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("Preparation successful", proc.stdout)
+        self.assertIn(f"build-package {disc_id}", proc.stdout)
+        game_root = user_root / "games" / disc_id
+        member = game_root / "xbdata" / "menu" / "assets.xb.d" / "data" / "raw.bin"
+        self.assertEqual(member.read_bytes(), b"synthetic archive member")
+        library = json.loads((user_root / "library.json").read_text(encoding="utf-8"))
+        [game] = library["games"]
+        self.assertEqual(game["disc_id"], disc_id)
+        self.assertTrue(game["assets_staged"])
+        self.assertEqual(Path(game["prepared_root"]).resolve(), game_root.resolve())
+        self.assertEqual(game["extracted_asset_count"], 2)
+
+        # An interrupted earlier run left an unpromoted staging tree behind.
+        leftover = user_root / "games" / f".staging_{disc_id}"
+        leftover.mkdir()
+        (leftover / "partial.bin").write_bytes(b"partial")
+        again = self._run_cli("prepare", str(iso_file), "--user-data-root", str(user_root))
+
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already in place", again.stdout)
+        self.assertFalse(leftover.exists())
+        self.assertEqual(member.read_bytes(), b"synthetic archive member")
 
 
 if __name__ == "__main__":
