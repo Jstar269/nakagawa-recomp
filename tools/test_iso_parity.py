@@ -1375,9 +1375,17 @@ int main(int argc, char **argv) {{
         (package_dir / f"{title_name}_image.bin").write_bytes(b"synthetic image")
         data_root = runtime_root / "fixtures" / "profile_zero"
         data_root.mkdir(parents=True)
+        # The project fonts are one valid synthetic PGF per slot, built by the writer (no real font).
+        from pgf_writer import Glyph, build_pgf
+
+        def _glyph(code: int) -> Glyph:
+            return Glyph(code=code, width=2, height=2, samples=(1, 2, 3, 4), row_order=1)
+
         font_dir = runtime_root / "font"
         font_dir.mkdir()
-        (font_dir / "jpn0.pgf").write_bytes(b"synthetic font marker")
+        (font_dir / "nkjpn.pgf").write_bytes(build_pgf([_glyph(0x41), _glyph(0x3042)], font_name="Nakagawa Test Japanese"))
+        (font_dir / "nkltn.pgf").write_bytes(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
+        (font_dir / "nkkr.pgf").write_bytes(build_pgf([_glyph(0x41), _glyph(0xAC00)], font_name="Nakagawa Test Korean"))
         ready = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
              str(iso_file), "--json", "--root", str(runtime_root)],
