@@ -16,7 +16,7 @@ import re
 import shutil
 import sysconfig
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 CACHE_FORMAT = "nakagawa-aot-cache"
 COMPLETION_FORMAT = "nakagawa-aot-cache-completion"
@@ -1087,8 +1087,8 @@ def compare_cache_keys(
     return CacheDecision("native-recompile", True, False, tuple(reasons))
 
 
-def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
+def _artifact_candidates(package_dir: Path) -> Iterator[tuple[str, Path]]:
+    """Yield (raw relative path, file) for each artifact, without reading any bytes."""
     for path in sorted(package_dir.rglob("*")):
         if path.is_symlink():
             raise PackageCacheError("package contains a symlink artifact")
@@ -1097,6 +1097,12 @@ def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
         relative = path.relative_to(package_dir).as_posix()
         if relative == COMPLETION_MANIFEST:
             continue
+        yield relative, path
+
+
+def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for relative, path in _artifact_candidates(package_dir):
         records.append({"path": _safe_relative(relative), "sha256": sha256_file(path)})
     return records
 
@@ -1228,8 +1234,11 @@ def validate_completion_manifest(
     for relative in required_paths or set():
         if relative not in seen:
             return False, f"completion manifest does not cover {relative}", None
+    # Only the path set is compared here. The digests of unlisted files were
+    # computed and discarded, so enumerating without reading them keeps the
+    # same set check while removing a full second read of the package.
     try:
-        actual = {record["path"] for record in _artifact_records(package_dir)}
+        actual = {_safe_relative(relative) for relative, _ in _artifact_candidates(package_dir)}
     except PackageCacheError as exc:
         return False, str(exc), None
     if actual != seen:
