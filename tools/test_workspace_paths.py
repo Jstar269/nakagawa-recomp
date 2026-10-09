@@ -469,5 +469,71 @@ class ArtifactIgnoreTests(unittest.TestCase):
         )
 
 
+def _check_ignored(paths: list[str]) -> set[str]:
+    """Return the subset of ``paths`` the checkout's ignore rules exclude."""
+    # Bytes stdin for the same reason as ArtifactIgnoreTests above.
+    proc = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--stdin"],
+        input=("\n".join(paths) + "\n").encode("utf-8"),
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    return {line for line in proc.stdout.decode("utf-8", "replace").splitlines() if line}
+
+
+class KeyFileIgnoreTests(unittest.TestCase):
+    """A KeyStore file dropped anywhere in the tree stays out of `git add -A`.
+
+    publish_audit's KEY_FILE_NAME rejects such a file only when the hook or CI
+    runs; the .gitignore rules are the first line of defence and must cover the
+    JSON, text and binary forms of every name that rule blocks.
+    """
+
+    STEMS = (
+        "keystore", "key_store", "key-store", "keyfile", "key_file", "key-file",
+        "psp_key", "psp-keys", "kirk_key", "kirk-keys",
+    )
+    SUFFIXES = (".json", ".txt", ".dat", ".bin", ".key", ".pem")
+    PLACES = ("", "assets/", "tools/sub/")
+
+    def _key_paths(self) -> list[str]:
+        paths = [
+            f"{place}{prefix}{stem}{suffix}"
+            for place in self.PLACES
+            for prefix in ("", "my_")
+            for stem in self.STEMS
+            for suffix in self.SUFFIXES
+        ]
+        paths += [f"{place}{name}" for place in self.PLACES
+                  for name in ("keys.json", "keys.txt", "keys.dat", "keys.bin",
+                               "backup.keys", "psp-keyfile.json")]
+        return paths
+
+    def test_names_the_audit_rejects_are_gitignored(self) -> None:
+        paths = self._key_paths()
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertEqual(publish_audit._forbidden_path(path), "local-only key file")
+        missing = sorted(set(paths) - _check_ignored(paths))
+        self.assertEqual(
+            missing, [],
+            "these key-file names are rejected by publish_audit but no longer "
+            "gitignored, so `git add -A` can stage key material:\n  " + "\n  ".join(missing),
+        )
+
+    def test_sources_that_name_the_format_stay_trackable(self) -> None:
+        sources = [
+            "src/core/nk_psp_keystore.c",
+            "src/core/nk_psp_keystore.h",
+            "tools/test_keystore_loader.py",
+            "docs/KEYSTORE_FORMAT.md",
+        ]
+        for path in sources:
+            with self.subTest(path=path):
+                self.assertIsNone(publish_audit._forbidden_path(path))
+        self.assertEqual(sorted(_check_ignored(sources)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

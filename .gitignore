@@ -180,3 +180,30 @@ opencode.json
 # wherever SR_PGD_KEYS points). Never commit these.
 keys/
 pgd_keys.txt
+# Local-only KeyStore files dropped outside keys/ (the default
+# <user data>/keys/psp-keyfile.json can be relocated). These mirror the JSON,
+# text and .dat forms of KEY_FILE_NAME in tools/publish_audit.py; *.bin, *.key
+# and *.pem are ignored above, and publish_audit stays the complete,
+# case-insensitive authority for every other suffix.
+*keystore*.json
+*keystore*.txt
+*keystore*.dat
+*key[_-]store*.json
+*key[_-]store*.txt
+*key[_-]store*.dat
+*keyfile*.json
+*keyfile*.txt
+*keyfile*.dat
+*key[_-]file*.json
+*key[_-]file*.txt
+*key[_-]file*.dat
+*psp[_-]key*.json
+*psp[_-]key*.txt
+*psp[_-]key*.dat
+*kirk[_-]key*.json
+*kirk[_-]key*.txt
+*kirk[_-]key*.dat
+keys.json
+keys.txt
+keys.dat
+*.keys
