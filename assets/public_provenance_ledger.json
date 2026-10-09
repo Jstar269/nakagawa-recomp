@@ -2587,7 +2587,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "08877f66668b784a8ab796be71bd6f6af5ab5fc1ceb5109835a6bcb06fe94095"
+      "sha256": "749a3e1f6f4887806f9a2ff2c0e060b0ab626c4d6bf5479d4b0bec8ff09b3cd2"
     },
     {
       "path": "src/core/nk_library.h",
@@ -5765,7 +5765,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b96b8cec3a8e5e2cbd4a1d985c3a520b0e49edc3ee94d44ceba0f86bf738a42d"
+      "sha256": "a9eb358d0782941f2a8aae750aa3cc7dd7fdb9bad82d88411b19a77d4cc2793a"
     },
     {
       "path": "tests/native/test_player_ui.py",
