@@ -148,7 +148,8 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("sceRegOpenRegistry", issue_299)
         self.assertIn("NID `0x92e41280`, library `sceReg`", issue_299)
         self.assertIn("read/write virtual system registry", issue_299)
-        self.assertIn("Unknown categories and keys still fail closed", issue_299)
+        self.assertIn("Unknown keys still fail closed", issue_299)
+        self.assertIn("measured on a PSP-3000 running 6.6.1", issue_299)
         self.assertIn("not hardware measured", issue_299)
 
     def test_stopped_module_restart_comment_is_labeled_as_inference(self):
