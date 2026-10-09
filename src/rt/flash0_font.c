@@ -11,24 +11,20 @@
  * CREAT=0x0200, TRUNC=0x0400. Any of them is a write intent. */
 #define FLASH0_WRITE_INTENT_FLAGS 0x0702u
 
-/* The reader's ceiling (src/rt/pgf_public.c). A larger file is refused, not truncated. */
-#define FLASH0_FONT_MAX_BYTES (16u * 1024u * 1024u)
-
-/* PENDING MEASUREMENT. Each entry is the name a slot is served under, measured from the
- * console (FONT_PLAN M4 for the lookup, M2 for the slot order). Every entry is pending:
- * served_name is NULL and measured is 0, so the slot is not listed and no open of it
- * succeeds. This table is the only place those names may be filled in, and only from the
- * measurement, never from a vendor file name. */
+/* PENDING MEASUREMENT. One entry per slot, indexed by NkFontSlot. served_name is the
+ * flash0:/font/ name, and it is also the cache and project file name (nk_font_slots.h).
+ * Every entry is pending (measured 0) until the console measurement fixes the lookup (FONT_PLAN
+ * M4) and the slot order (M2). A pending entry fails closed: it is not listed and no open of it
+ * succeeds. The only writer of measured is the selftest seam. */
 typedef struct {
-    NkFontSlot slot;
-    const char *served_name;  /* the name under flash0:/font/; NULL while pending */
-    int measured;             /* 0 until the measurement lands */
+    const char *served_name;
+    int measured;
 } Flash0SlotEntry;
 
 static Flash0SlotEntry s_flash0_slots[NK_FONT_SLOT_COUNT] = {
-    { NK_FONT_SLOT_LATIN,    NULL, 0 },
-    { NK_FONT_SLOT_JAPANESE, NULL, 0 },
-    { NK_FONT_SLOT_KOREAN,   NULL, 0 },
+    [NK_FONT_SLOT_JAPANESE] = { NK_FONT_SLOT_JAPANESE_FILE, 0 },
+    [NK_FONT_SLOT_LATIN]    = { NK_FONT_SLOT_LATIN_FILE, 0 },
+    [NK_FONT_SLOT_KOREAN]   = { NK_FONT_SLOT_KOREAN_FILE, 0 },
 };
 
 typedef enum {
@@ -44,6 +40,15 @@ typedef enum {
     FLASH0_SOURCE_USER,
     FLASH0_SOURCE_PROJECT
 } Flash0Source;
+
+static const char *flash0_slot_label(NkFontSlot slot) {
+    switch (slot) {
+    case NK_FONT_SLOT_JAPANESE: return "japanese";
+    case NK_FONT_SLOT_LATIN:    return "latin";
+    case NK_FONT_SLOT_KOREAN:   return "korean";
+    default:                    return "unknown";
+    }
+}
 
 static int ascii_lower(int c) {
     return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
@@ -85,45 +90,47 @@ static Flash0PathKind flash0_parse(const char *path, const char **name_out) {
     return FLASH0_PATH_FONT_FILE;
 }
 
-/* The slot a served name belongs to, or NULL. A pending entry never matches. */
-static Flash0SlotEntry *flash0_slot_for_name(const char *name) {
-    for (size_t i = 0; i < NK_FONT_SLOT_COUNT; i++) {
-        Flash0SlotEntry *entry = &s_flash0_slots[i];
-        if (entry->measured && entry->served_name && ascii_ci_equal(name, entry->served_name))
-            return entry;
+/* The slot a served name belongs to. A pending entry never matches. */
+static int flash0_slot_for_name(const char *name, NkFontSlot *slot_out) {
+    for (int i = 0; i < NK_FONT_SLOT_COUNT; i++) {
+        const Flash0SlotEntry *entry = &s_flash0_slots[i];
+        if (entry->measured && ascii_ci_equal(name, entry->served_name)) {
+            *slot_out = (NkFontSlot)i;
+            return 1;
+        }
     }
-    return NULL;
+    return 0;
 }
 
-/* Joins with the host separator. The project root can be an extended Win32 path (\\?\...),
- * where '/' is not a separator, so a '/' join would name a file that does not exist. */
-static int flash0_build_path(char *out, size_t capacity, const char *dir,
-                             const char *subdir, const char *stem) {
+/* Host-separator joins. The project root can be an extended Win32 path (\\?\...), where '/'
+ * is not a separator, so the join uses nk_platform_path_separator() for every component. */
+static int flash0_user_cache_path(char *out, size_t capacity, const char *user_data_dir,
+                                  const char *file) {
     char sep = nk_platform_path_separator();
-    char rel[64];
-    if (subdir) {
-        if (strlen(subdir) >= sizeof(rel)) return 0;
-        memcpy(rel, subdir, strlen(subdir) + 1u);
-        for (char *p = rel; *p; p++)
-            if (*p == '/') *p = sep;
-    }
-    int n = subdir ? snprintf(out, capacity, "%s%c%s%c%s.pgf", dir, sep, rel, sep, stem)
-                   : snprintf(out, capacity, "%s%c%s.pgf", dir, sep, stem);
+    int n = snprintf(out, capacity, "%s%c%s%c%s%c%s", user_data_dir, sep, NK_FONT_CACHE_PARENT,
+                     sep, NK_FONT_CACHE_SUBDIR, sep, file);
     return n > 0 && (size_t)n < capacity;
 }
 
-/* Opens one candidate source and checks its size. A file that is empty or over the
+static int flash0_project_path(char *out, size_t capacity, const char *project_dir,
+                               const char *file) {
+    char sep = nk_platform_path_separator();
+    int n = snprintf(out, capacity, "%s%c%s", project_dir, sep, file);
+    return n > 0 && (size_t)n < capacity;
+}
+
+/* Opens one candidate source and checks its size. A file that is empty or over the reader's
  * ceiling is refused by name and treated as absent, so the next source is tried. */
-static int flash0_probe(const char *path, const char *stem, const char *source,
+static int flash0_probe(const char *path, const char *label, const char *source,
                         FILE **fp_out, uint32_t *size_out) {
     FILE *fp = nk_fopen_utf8(path, "rb");
     if (!fp) return 0;
     long end = -1;
     if (fseek(fp, 0, SEEK_END) == 0) end = ftell(fp);
-    if (end <= 0 || (unsigned long)end > FLASH0_FONT_MAX_BYTES ||
+    if (end <= 0 || (unsigned long)end > NK_FONT_PGF_MAX_BYTES ||
         fseek(fp, 0, SEEK_SET) != 0) {
         fprintf(stderr, "flash0: %s font for slot '%s' refused: size is outside 1 byte to 16 MiB\n",
-                source, stem);
+                source, label);
         fclose(fp);
         return 0;
     }
@@ -132,22 +139,23 @@ static int flash0_probe(const char *path, const char *stem, const char *source,
     return 1;
 }
 
-/* Source order for one slot (FONT_PLAN 5.2): the user-imported cache, then the project's
- * font, then nothing. No cross-slot substitution. */
+/* Source order for one slot (FONT_PLAN 5.2): the user-imported cache, then the project's font,
+ * then nothing. No cross-slot substitution. */
 static Flash0Source flash0_resolve(const Flash0Sources *sources, NkFontSlot slot,
                                    FILE **fp_out, uint32_t *size_out) {
-    const char *stem = nk_font_slot_file_stem(slot);
+    const char *file = s_flash0_slots[slot].served_name;
+    const char *label = flash0_slot_label(slot);
     char path[SR_FLASH0_PATH_MAX + 64];
     *fp_out = NULL;
     *size_out = 0;
-    if (!stem || !sources) return FLASH0_SOURCE_NONE;
+    if (!sources) return FLASH0_SOURCE_NONE;
     if (sources->user_data_dir[0] &&
-        flash0_build_path(path, sizeof(path), sources->user_data_dir, NK_FONT_CACHE_SUBDIR, stem) &&
-        flash0_probe(path, stem, "user-imported", fp_out, size_out))
+        flash0_user_cache_path(path, sizeof(path), sources->user_data_dir, file) &&
+        flash0_probe(path, label, "user-imported", fp_out, size_out))
         return FLASH0_SOURCE_USER;
     if (sources->project_dir[0] &&
-        flash0_build_path(path, sizeof(path), sources->project_dir, NULL, stem) &&
-        flash0_probe(path, stem, "project", fp_out, size_out))
+        flash0_project_path(path, sizeof(path), sources->project_dir, file) &&
+        flash0_probe(path, label, "project", fp_out, size_out))
         return FLASH0_SOURCE_PROJECT;
     return FLASH0_SOURCE_NONE;
 }
@@ -156,7 +164,7 @@ static uint32_t flash0_refuse_missing_slot(NkFontSlot slot, const char *guest_pa
     char detail[SR_FLASH0_PATH_MAX + 128];
     snprintf(detail, sizeof(detail),
              "font slot '%s' has no source (no user-imported or project font); %s",
-             nk_font_slot_file_stem(slot), guest_path);
+             flash0_slot_label(slot), guest_path);
     return flash0_refuse(SR_FLASH0_ERR_NOT_FOUND, "missing slot", detail);
 }
 
@@ -197,18 +205,17 @@ uint32_t sr_flash0_font_open(const char *guest_path, uint32_t flags,
         return flash0_refuse(SR_FLASH0_ERR_NOT_FOUND, "a directory is not a font file", guest_path);
     if (kind != FLASH0_PATH_FONT_FILE) return flash0_refuse_path(kind, guest_path);
 
-    Flash0SlotEntry *entry = flash0_slot_for_name(name);
-    if (!entry)
+    NkFontSlot slot = NK_FONT_SLOT_LATIN;
+    if (!flash0_slot_for_name(name, &slot))
         return flash0_refuse(SR_FLASH0_ERR_NOT_FOUND,
                              "no font slot serves this name (unknown, or pending measurement)",
                              guest_path);
     FILE *fp = NULL;
     uint32_t size = 0;
-    Flash0Source source = flash0_resolve(sources, entry->slot, &fp, &size);
-    if (source == FLASH0_SOURCE_NONE) return flash0_refuse_missing_slot(entry->slot, guest_path);
+    Flash0Source source = flash0_resolve(sources, slot, &fp, &size);
+    if (source == FLASH0_SOURCE_NONE) return flash0_refuse_missing_slot(slot, guest_path);
     if (getenv("SR_FONTLOG"))
-        fprintf(stderr, "flash0: slot=%s source=%s size=%u\n",
-                nk_font_slot_file_stem(entry->slot),
+        fprintf(stderr, "flash0: slot=%s source=%s size=%u\n", flash0_slot_label(slot),
                 source == FLASH0_SOURCE_USER ? "user" : "project", (unsigned)size);
     *host_out = fp;
     *size_out = size;
@@ -227,15 +234,15 @@ uint32_t sr_flash0_font_stat(const char *guest_path, const Flash0Sources *source
         return 0u;
     }
     if (kind != FLASH0_PATH_FONT_FILE) return flash0_refuse_path(kind, guest_path);
-    Flash0SlotEntry *entry = flash0_slot_for_name(name);
-    if (!entry)
+    NkFontSlot slot = NK_FONT_SLOT_LATIN;
+    if (!flash0_slot_for_name(name, &slot))
         return flash0_refuse(SR_FLASH0_ERR_NOT_FOUND,
                              "no font slot serves this name (unknown, or pending measurement)",
                              guest_path);
     FILE *fp = NULL;
     uint32_t size = 0;
-    if (flash0_resolve(sources, entry->slot, &fp, &size) == FLASH0_SOURCE_NONE)
-        return flash0_refuse_missing_slot(entry->slot, guest_path);
+    if (flash0_resolve(sources, slot, &fp, &size) == FLASH0_SOURCE_NONE)
+        return flash0_refuse_missing_slot(slot, guest_path);
     fclose(fp);
     *size_out = size;
     return 0u;
@@ -249,14 +256,14 @@ uint32_t sr_flash0_font_list_dir(const char *guest_path, const Flash0Sources *so
         return flash0_refuse(SR_FLASH0_ERR_NOT_FOUND, "only flash0:/font can be listed",
                              guest_path);
     list->exists = 1;
-    for (size_t i = 0; i < NK_FONT_SLOT_COUNT; i++) {
-        Flash0SlotEntry *entry = &s_flash0_slots[i];
-        if (!entry->measured || !entry->served_name) continue;
+    for (int i = 0; i < NK_FONT_SLOT_COUNT; i++) {
+        if (!s_flash0_slots[i].measured) continue;
+        NkFontSlot slot = (NkFontSlot)i;
         FILE *fp = NULL;
         uint32_t size = 0;
-        if (flash0_resolve(sources, entry->slot, &fp, &size) == FLASH0_SOURCE_NONE) continue;
+        if (flash0_resolve(sources, slot, &fp, &size) == FLASH0_SOURCE_NONE) continue;
         fclose(fp);
-        if (!sr_vfs_dirlist_merge_lba(list, entry->served_name, 0, size, 0u))
+        if (!sr_vfs_dirlist_merge_lba(list, s_flash0_slots[i].served_name, 0, size, 0u))
             return flash0_refuse(0x80010008u, "listing ran out of memory", guest_path);
     }
     sr_vfs_dirlist_sort(list);
@@ -264,9 +271,8 @@ uint32_t sr_flash0_font_list_dir(const char *guest_path, const Flash0Sources *so
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
-void sr_flash0_font_selftest_bind(NkFontSlot slot, const char *served_name) {
+void sr_flash0_font_selftest_set_measured(NkFontSlot slot, int measured) {
     if ((unsigned)slot >= NK_FONT_SLOT_COUNT) return;
-    s_flash0_slots[slot].served_name = served_name;
-    s_flash0_slots[slot].measured = served_name != NULL;
+    s_flash0_slots[slot].measured = measured != 0;
 }
 #endif

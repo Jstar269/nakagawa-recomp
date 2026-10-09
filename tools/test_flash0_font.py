@@ -4,17 +4,19 @@
 """Regression for the read-only flash0: font device (src/rt/flash0_font.c).
 
 The driver writes synthetic PGFs with tools/pgf_writer.py into a temporary root: the per-user
-cache copy of the latin slot, and the project fonts for the latin and japanese slots. It then runs
-the HLE selftest's ``--flash0-font`` mode, which drives the production hle.c IO entry points
-(open, read, seek, getstat, dopen, dread, dclose and the write-side refusals) against that root.
-The served names are synthetic; the measured names are not in the tree yet, so the native test
-binds slots through its seam.
+cache copy of the latin slot, and the project fonts for the latin and japanese slots. The file
+names and the cache layout are read from src/core/nk_font_slots.h, the header the device and the
+import flow share, so this driver cannot drift from it. It then runs the HLE selftest's
+``--flash0-font`` mode, which drives the production hle.c IO entry points (open, read, seek,
+getstat, dopen, dread, dclose and the write-side refusals) against that root. The native test marks
+slots measured through its seam, because the console measurement is not in the tree yet.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +27,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import pgf_writer  # noqa: E402
+
+SLOT_HEADER = ROOT / "src" / "core" / "nk_font_slots.h"
+
+
+def header_string(name: str) -> str:
+    """The string value of ``#define <name> "<value>"`` in the shared slot header."""
+    match = re.search(
+        rf'^#define {name} "([^"]+)"$', SLOT_HEADER.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    if match is None:
+        raise AssertionError(f"{name} is not a string define in {SLOT_HEADER.name}")
+    return match.group(1)
+
 
 # The Makefile default (GAME_NAME ?= mygame). It is passed explicitly, spelled the same way,
 # so make reuses the ordinary objects and the selftest binary lands at a known path.
@@ -47,12 +62,16 @@ def synthetic_pgf(glyph_count: int, first_code: int = 0x41) -> bytes:
 
 def write_fixture(root: Path) -> dict[str, bytes]:
     """Lay out the cache and project directories; return the bytes each file must serve."""
+    cache_parent = header_string("NK_FONT_CACHE_PARENT")
+    cache_subdir = header_string("NK_FONT_CACHE_SUBDIR")
+    latin = header_string("NK_FONT_SLOT_LATIN_FILE")
+    japanese = header_string("NK_FONT_SLOT_JAPANESE_FILE")
     files = {
         # User-imported cache: the source the device must prefer for latin.
-        root / "data" / "fonts" / "v2" / "latin.pgf": synthetic_pgf(5),
+        root / "data" / cache_parent / cache_subdir / latin: synthetic_pgf(5),
         # Project fonts: latin is a different size, so the source choice is observable.
-        root / "project" / "latin.pgf": synthetic_pgf(10),
-        root / "project" / "japanese.pgf": synthetic_pgf(3, first_code=0x30),
+        root / "project" / latin: synthetic_pgf(10),
+        root / "project" / japanese: synthetic_pgf(3, first_code=0x30),
     }
     for path, data in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)

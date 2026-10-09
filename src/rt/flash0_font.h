@@ -11,8 +11,9 @@
  * remove, rename and attribute change is refused with EACCES. The HLE hooks in hle.c call
  * these functions; the roots are supplied by the caller.
  *
- * The served names are measured values that are not in the tree yet. The slot table in
- * flash0_font.c is pending and fails closed until they are measured. */
+ * The served names, cache names and cache directory come from nk_font_slots.h, which is shared
+ * with the import flow. The slot table in flash0_font.c is pending and fails closed until the
+ * console measurement fixes the lookup and the slot order. */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -54,9 +55,9 @@ uint32_t sr_flash0_font_list_dir(const char *guest_path, const Flash0Sources *so
 uint32_t sr_flash0_font_refuse_write(const char *guest_path, const char *operation);
 
 #ifdef SR_HLE_THREAD_SELFTEST
-/* Test seam: binds a slot to a served name (NULL returns it to pending). Compiled only into
- * the HLE selftest, where synthetic names stand in for the measured ones. */
-void sr_flash0_font_selftest_bind(NkFontSlot slot, const char *served_name);
+/* Test seam: marks a slot measured (non-zero) or pending (zero). Compiled only into the HLE
+ * selftest, which stands in for the console measurement. */
+void sr_flash0_font_selftest_set_measured(NkFontSlot slot, int measured);
 #endif
 
 #endif /* SR_FLASH0_FONT_H */

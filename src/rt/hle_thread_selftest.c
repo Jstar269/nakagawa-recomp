@@ -25671,14 +25671,15 @@ static void test_issue339_wait_nids_production_dispatch(void) {
 
 /* ---- flash0: read-only font device (src/rt/flash0_font.c) -------------------------------
  * tools/test_flash0_font.py writes synthetic PGFs with tools/pgf_writer.py under
- * SR_FLASH0_TEST_ROOT: the user-imported cache is <root>/data/fonts/v2/latin.pgf and the
- * project fonts are <root>/project/{latin,japanese}.pgf, with SR_FONTDIR set to <root>/project.
- * The served names are synthetic and bound through the selftest seam, because the measured
- * names are not in the tree. The production path (hle.c IO entry points, roots, source order)
- * is exercised unchanged. */
-#define F0T_LATIN_NAME    "flash0-test-latin.pgf"
-#define F0T_JAPANESE_NAME "flash0-test-japanese.pgf"
-#define F0T_KOREAN_NAME   "flash0-test-korean.pgf"
+ * SR_FLASH0_TEST_ROOT: the user-imported cache is <root>/data/fonts/v2/<latin file> and the
+ * project fonts are <root>/project/<latin file> and <root>/project/<japanese file>, with
+ * SR_FONTDIR set to <root>/project. The file names are the ones nk_font_slots.h defines, and
+ * the slots are marked measured through the selftest seam, which stands in for the console
+ * measurement. The production path (hle.c IO entry points, roots, source order) is exercised
+ * unchanged. */
+#define F0T_LATIN_NAME    NK_FONT_SLOT_LATIN_FILE
+#define F0T_JAPANESE_NAME NK_FONT_SLOT_JAPANESE_FILE
+#define F0T_KOREAN_NAME   NK_FONT_SLOT_KOREAN_FILE
 #define F0T_ERR_ACCESS    0x8001000Du
 #define F0T_ERR_NOT_FOUND 0x80010014u
 #define F0T_FD_KIND_FILE  2
@@ -25783,9 +25784,10 @@ static void test_flash0_font_device(void) {
 
     char data_dir[512], user_latin[600], project_latin[600], project_japanese[600];
     snprintf(data_dir, sizeof(data_dir), "%s/data", root);
-    snprintf(user_latin, sizeof(user_latin), "%s/data/fonts/v2/latin.pgf", root);
-    snprintf(project_latin, sizeof(project_latin), "%s/project/latin.pgf", root);
-    snprintf(project_japanese, sizeof(project_japanese), "%s/project/japanese.pgf", root);
+    snprintf(user_latin, sizeof(user_latin), "%s/data/%s/%s/%s", root, NK_FONT_CACHE_PARENT,
+             NK_FONT_CACHE_SUBDIR, F0T_LATIN_NAME);
+    snprintf(project_latin, sizeof(project_latin), "%s/project/%s", root, F0T_LATIN_NAME);
+    snprintf(project_japanese, sizeof(project_japanese), "%s/project/%s", root, F0T_JAPANESE_NAME);
     expect(nk_platform_set_app_data_dir_override(data_dir),
            "the per-user data directory can be pointed at the synthetic cache");
 
@@ -25803,10 +25805,10 @@ static void test_flash0_font_device(void) {
     }
 
     sr_hle_init();
-    sr_flash0_font_selftest_bind(NK_FONT_SLOT_LATIN, F0T_LATIN_NAME);
-    sr_flash0_font_selftest_bind(NK_FONT_SLOT_JAPANESE, F0T_JAPANESE_NAME);
-    /* Korean stays pending: its name is not bound, so nothing under it can open. */
-    sr_flash0_font_selftest_bind(NK_FONT_SLOT_KOREAN, NULL);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 1);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 1);
+    /* Korean stays pending: a pending slot is not listed and nothing under it can open. */
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_KOREAN, 0);
 
     /* Pending slot fails closed, even though a source for it could exist. */
     expect(f0t_open("flash0:/font/" F0T_KOREAN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
@@ -25833,7 +25835,11 @@ static void test_flash0_font_device(void) {
            "closing a served font releases its descriptor");
 
     /* Case-insensitive device, prefix and name, and project fallback for japanese. */
-    fd = f0t_open("FLASH0:/FONT/FLASH0-TEST-JAPANESE.PGF", 0x0001u);
+    char upper_path[128];
+    snprintf(upper_path, sizeof(upper_path), "flash0:/font/%s", F0T_JAPANESE_NAME);
+    for (char *p = upper_path; *p; p++)
+        if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
+    fd = f0t_open(upper_path, 0x0001u);
     expect(fd >= 3u && f0t_getstat("flash0:/font/" F0T_JAPANESE_NAME) == 0u &&
                MEM_R32(F0T_STAT_ADDR + 8u) == project_japanese_size,
            "an upper-case flash0 path opens the project japanese font with its size");
@@ -25898,7 +25904,7 @@ static void test_flash0_font_device(void) {
            "an unknown file name under /font/ is refused");
 
     /* A bound slot with no source at all is a named missing-slot refusal. */
-    sr_flash0_font_selftest_bind(NK_FONT_SLOT_KOREAN, F0T_KOREAN_NAME);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_KOREAN, 1);
     expect(f0t_open("flash0:/font/" F0T_KOREAN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
            "a slot with no user-imported and no project font is refused");
     expect(f0t_getstat("flash0:/font/" F0T_KOREAN_NAME) == F0T_ERR_NOT_FOUND,
@@ -25947,9 +25953,9 @@ static void test_flash0_font_device(void) {
                "a listing outside /font/ is refused");
     }
 
-    sr_flash0_font_selftest_bind(NK_FONT_SLOT_LATIN, NULL);
-    sr_flash0_font_selftest_bind(NK_FONT_SLOT_JAPANESE, NULL);
-    sr_flash0_font_selftest_bind(NK_FONT_SLOT_KOREAN, NULL);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_KOREAN, 0);
     expect(f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
            "after every slot returns to pending, nothing is served");
 
