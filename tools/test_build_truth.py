@@ -484,6 +484,32 @@ def _logical_lines(makefile: str) -> list[tuple[int, str]]:
     return logical
 
 
+#: A link that names a response file (`@$(BUILD_DIR)/x.rsp`) and the `$(file >...)` statement
+#: that writes it.
+_RESPONSE_FILE_REF = re.compile(r"@\$\(BUILD_DIR\)/([\w.-]+\.rsp)\b")
+_RESPONSE_FILE_WRITE = re.compile(r"^\$\(file >\$\(BUILD_DIR\)/([\w.-]+\.rsp),(.*)\)\s*$")
+
+
+def _with_response_file_inputs(logical: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Each statement with the words of any response file it names appended.
+
+    A link may take its object list from `@$(BUILD_DIR)/x.rsp`, which make writes from an
+    earlier `$(file >$(BUILD_DIR)/x.rsp,<words>)` statement: a long BUILD_ROOT would push the
+    list past the shell's line limit. The link's inputs are those words, so these scans read
+    them as part of the link statement. The checks themselves are unchanged.
+    """
+    written: dict[str, str] = {}
+    for _, text in logical:
+        match = _RESPONSE_FILE_WRITE.match(text.strip())
+        if match:
+            written[match.group(1)] = match.group(2)
+    result: list[tuple[int, str]] = []
+    for number, text in logical:
+        words = [written[name] for name in _RESPONSE_FILE_REF.findall(text) if name in written]
+        result.append((number, " ".join([text, *words])))
+    return result
+
+
 class Sdl3vkLinkDependencyTests(unittest.TestCase):
     """sdl3vk.c calls into fbcap_policy.c and the presenter-neutral capture
     service fbcap.c, so every recipe that compiles the backend must also supply
@@ -589,7 +615,7 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
 
     def test_psmf_media_selftest_links_the_recorder_implementation(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        logical = _logical_lines(makefile)
+        logical = _with_response_file_inputs(_logical_lines(makefile))
         selftest = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
         mpeg = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
         recomp = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
@@ -670,7 +696,7 @@ def _hle_link_supplies_h264_backends(link: str, makefile: str) -> bool:
 
 def _hle_link_h264_offenders(makefile: str) -> list[str]:
     """Find Makefile link commands that compile HLE without its PSMF backends."""
-    logical = _logical_lines(makefile)
+    logical = _with_response_file_inputs(_logical_lines(makefile))
     hle_links = [
         (number, text)
         for number, text in logical
@@ -862,7 +888,7 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.lines = _logical_lines(self.makefile)
+        self.lines = _with_response_file_inputs(_logical_lines(self.makefile))
 
     def test_module_defines_the_symbols_its_callers_use(self) -> None:
         module = (ROOT / NESTED_FRAMES_C).read_text(encoding="utf-8")
@@ -3089,6 +3115,85 @@ def _makefile_literal_build_paths(text: str, label: str) -> list[str]:
     return findings
 
 
+#: sdl3vk.c holds product code and the GPU capture selftest in one file. Its test-only
+#: section runs from the selftest banner to the first product function after it, so the
+#: scan covers that span and nothing else.
+_SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk.c"
+_SDL3VK_SELFTEST_BEGIN = "/* ---- capture selftest (issue #57)"
+_SDL3VK_SELFTEST_END = "void sdl3vk_shutdown(void) {"
+#: One C comment, string literal or character literal. Literals are matched whole, so a
+#: `//` or `/*` inside a string is never taken for a comment.
+_C_LEXEME = re.compile(r"//[^\n]*|/\*.*?\*/|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'", re.S)
+#: A string literal, as its raw C spelling, that names the checkout's build/ tree: exactly
+#: `build`, or a `build` segment that starts the literal or follows a space, `>`, `=`, `:`,
+#: a slash or a backslash and is followed by a separator. That covers `build/x`, `build\\x`,
+#: the cwd-relative `%s\\build\\name` form the HLE selftest used, and a shell `> build/x`.
+#: A build segment glued to a format conversion (`%s%cbuild%c`) is not matched: those are
+#: built under a temporary root by the tests that use them.
+_C_BUILD_LITERAL = re.compile(r"^build$|(?:^|[\s>=:/\\])build(?:/|\\\\)")
+#: The macro's own default is the one place the scan allows the bare build root.
+_C_BUILD_ROOT_DEFAULT = re.compile(r"^\s*#\s*define\s+SR_SELFTEST_BUILD_ROOT\b")
+#: Literal spellings a test keeps on purpose, each with its reason. Every entry must still
+#: occur in its file, so a stale entry fails instead of quietly allowing a new write.
+_C_KEPT_BUILD_LITERALS: dict[tuple[str, str], str] = {
+    (_SDL3VK_C, "build/snapshots/frame_0012.ppm"):
+        "product default compared against sr_fbcap_path(): a string check, nothing is written",
+    (_SDL3VK_C, "build/snapshots"):
+        "product FBSNAP directory, cwd-relative: sdl3vk_capture_selftest runs in a scratch "
+        "working directory beneath SR_SELFTEST_BUILD_ROOT, so it resolves only there",
+    (_SDL3VK_C, "build/snapshots/selftest_frame.ppm"):
+        "FBSNAP publication target, cwd-relative inside the same scratch working directory",
+    (_SDL3VK_C, "build"):
+        "cwd-relative removal (cap_test_rmdir), acting only inside the same scratch working "
+        "directory, never the checkout's build/",
+    ("tests/native/test_launch_resolution.c", "build"):
+        "strstr() over the product's resolved executable path: a string read, nothing is written",
+}
+
+
+def _test_only_c_sources() -> list[tuple[str, str, int]]:
+    """(repo-relative label, source text, first line) for each test-only C source."""
+    sources: list[tuple[str, str, int]] = []
+    for path in (sorted((ROOT / "tests" / "native").glob("*.c"))
+                 + sorted((ROOT / "src" / "rt").glob("*selftest*.c"))):
+        sources.append((path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8"), 1))
+    sdl3vk = (ROOT / _SDL3VK_C).read_text(encoding="utf-8")
+    begin = sdl3vk.index(_SDL3VK_SELFTEST_BEGIN)
+    end = sdl3vk.index(_SDL3VK_SELFTEST_END, begin)
+    sources.append((_SDL3VK_C, sdl3vk[begin:end], sdl3vk.count("\n", 0, begin) + 1))
+    return sources
+
+
+def _c_build_literal_hits(source: str, first_line: int = 1) -> list[tuple[int, str, str]]:
+    """(line, raw spelling, physical line) for each string literal naming the build/ tree.
+
+    Comments and character literals are skipped; the literal is taken as spelled in the
+    source, so `"build\\\\x"` is reported as `build\\\\x`.
+    """
+    lines = source.splitlines()
+    hits: list[tuple[int, str, str]] = []
+    for match in _C_LEXEME.finditer(source):
+        lexeme = match.group(0)
+        if not lexeme.startswith('"'):
+            continue
+        raw = lexeme[1:-1]
+        if not _C_BUILD_LITERAL.search(raw):
+            continue
+        offset = source.count("\n", 0, match.start())
+        hits.append((offset + first_line, raw, lines[offset]))
+    return hits
+
+
+def _c_build_literal_findings(source: str, label: str, first_line: int = 1) -> list[str]:
+    """Literals that write under the checkout's build/ tree, not counting reasoned keeps."""
+    findings: list[str] = []
+    for number, raw, line in _c_build_literal_hits(source, first_line):
+        if _C_BUILD_ROOT_DEFAULT.match(line) or (label, raw) in _C_KEPT_BUILD_LITERALS:
+            continue
+        findings.append(f"{label}:{number}: {line.strip()}")
+    return findings
+
+
 class CheckoutDeletionGuardTests(unittest.TestCase):
     """No test may delete from, or build into, the real checkout's build/ or logs/ trees.
 
@@ -3135,6 +3240,86 @@ class CheckoutDeletionGuardTests(unittest.TestCase):
         ''')
         findings = _makefile_literal_build_paths(makefile, "case.mk")
         self.assertEqual([int(f.split(":")[1]) for f in findings], [2, 7], "\n".join(findings))
+
+    def test_test_only_c_writes_only_beneath_selftest_build_root(self) -> None:
+        """Test-only C writes go through SR_SELFTEST_BUILD_ROOT, never a literal build/.
+
+        A scratch run (BUILD_ROOT=<scratch>) must not create, modify or delete anything in the
+        checkout. The Makefile passes -DSR_SELFTEST_BUILD_ROOT=$(BUILD_ROOT) to each of these
+        binaries; a literal build/ path would silently ignore that and write into the checkout.
+        """
+        findings: list[str] = []
+        for label, source, first_line in _test_only_c_sources():
+            findings.extend(_c_build_literal_findings(source, label, first_line))
+        self.assertEqual(
+            findings, [],
+            "test-only C sources name the checkout's build/ tree literally; build each scratch "
+            "path from SR_SELFTEST_BUILD_ROOT (for example SR_SELFTEST_BUILD_ROOT \"/name\"), or "
+            "run a product default from a scratch working directory:\n" + "\n".join(findings),
+        )
+
+    def test_c_build_literal_allowlist_entries_still_occur(self) -> None:
+        present = {
+            (label, raw)
+            for label, source, first_line in _test_only_c_sources()
+            for _, raw, _ in _c_build_literal_hits(source, first_line)
+        }
+        stale = sorted(f"{label} {raw!r}" for label, raw in _C_KEPT_BUILD_LITERALS
+                       if (label, raw) not in present)
+        self.assertEqual(stale, [], "kept build/ literals no longer occur; drop them from "
+                         "_C_KEPT_BUILD_LITERALS:\n" + "\n".join(stale))
+
+    def test_test_only_compiles_pass_the_selftest_build_root(self) -> None:
+        """Each Makefile compile of a test-only source passes -DSR_SELFTEST_BUILD_ROOT.
+
+        The C scan proves no source names build/ literally; this proves the Makefile feeds
+        the macro. Without the define a scratch run would silently fall back to "build".
+        """
+        source_names = ("vfpu_tables_selftest.c", "fbcap_selftest.c", "cpu_lle_selftest.c",
+                        "gpu_coherence_selftest.c", "gpu_capture_selftest.c")
+        native = re.compile(r"tests/native/test_(?!ui_clip\.c)\w+\.c")
+        define = r'-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\"'
+        checked: list[str] = []
+        missing: list[str] = []
+        for number, command in _logical_lines(ROOT.joinpath("Makefile").read_text(encoding="utf-8")):
+            if "$(CC)" not in command:
+                continue
+            if not (native.search(command) or any(name in command for name in source_names)):
+                continue
+            checked.append(command)
+            if define not in command:
+                missing.append(f"Makefile:{number}: {command.strip()}")
+        # Vacuity guard: the scan must actually reach the selftest and native test compiles.
+        self.assertTrue(any("vfpu_tables_selftest.c" in c for c in checked), "no vfpu compile seen")
+        self.assertTrue(any("tests/native/test_xb_parser.c" in c for c in checked),
+                        "no native test compile seen")
+        self.assertEqual(missing, [], "test-only compile commands without " + define + ":\n"
+                         + "\n".join(missing))
+
+    def test_c_build_literal_scan_names_each_hardcoded_path(self) -> None:
+        source = textwrap.dedent(r'''
+            #ifndef SR_SELFTEST_BUILD_ROOT
+            #define SR_SELFTEST_BUILD_ROOT "build"
+            #endif
+            /* "build/in a comment is documentation" */
+            // "build/in a line comment"
+            static const char *a = "build/x.json";
+            static const char *b = "build\\argv_echo_helper.exe";
+            static const char *c = "build";
+            static const wchar_t *d = L"build/wide.bin";
+            static const char *e = SR_SELFTEST_BUILD_ROOT "/fine.json";
+            static const char *f = "builder/x";
+            static const char *g = "mybuild/x";
+            static const char h = '"';
+            static const char *i = "%s\\build\\archive_vfs_%lu";
+            static const char *j = "%s%cbuild%cdisplay-smoke";
+        ''')
+        findings = _c_build_literal_findings(source, "case.c")
+        self.assertEqual(
+            [int(finding.split(":")[1]) for finding in findings],
+            [7, 8, 9, 10, 15],
+            "\n".join(findings),
+        )
 
     def test_scan_reports_each_destructive_shape(self) -> None:
         source = textwrap.dedent('''
