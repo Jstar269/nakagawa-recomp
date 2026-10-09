@@ -404,7 +404,11 @@ def _contiguous_runs(windows):
     stays the one later in the table.
     """
     runs = []  # [[table indices], stub end]
-    order = sorted(range(len(windows)), key=lambda i: (windows[i][4], windows[i][1]))
+    # Visit windows by first stub slot, so a window either overlaps or touches
+    # the run being built (extend it to the furthest end seen) or starts a new
+    # run after a gap. Ties keep table order (sorted() is stable); a tie cannot
+    # change the runs because each run's end is the maximum over its windows.
+    order = sorted(range(len(windows)), key=lambda i: windows[i][4])
     for i in order:
         w = windows[i]
         if runs and w[4] <= runs[-1][1]:
@@ -413,6 +417,14 @@ def _contiguous_runs(windows):
         else:
             runs.append([[i], w[4] + w[1] * 8])
     return [[windows[i] for i in sorted(indices)] for indices, _end in runs]
+
+
+def _byte_count(nbytes, unit, label):
+    """Name ``nbytes`` in whole ``label`` units of ``unit`` bytes, else in bytes."""
+    if nbytes % unit:
+        return f"{nbytes} bytes"
+    count = nbytes // unit
+    return f"{count} {label}{'' if count == 1 else 's'}"
 
 
 def _window_pairing_region(windows):
@@ -441,42 +453,49 @@ def _primary_pairing_region(windows, section_stub, section_nid):
     nid_base, nid_end = section_nid or (window_nid_base, window_nid_end)
     finding = None
 
-    # Some retail inputs keep words in the named .rodata.sceNid section that no
-    # window references: after the import-window run (a tail) or before it (a
-    # head). The PSP fixup utility rejects that shape because it is asked to
-    # rewrite the whole section, but the PSP loader reads only the NID words the
-    # windows name, so static recompilation only needs those slots. Accept that
-    # shape only when the window-derived regions are themselves 1:1, the stub run
-    # starts at the stub section base, and both runs are fully contained by the
-    # sections. Any inconsistent window remains a hard failure in _pair_region;
-    # the unreferenced words are surfaced as a diagnostic.
-    if (stub_end - stub_base != 2 * (nid_end - nid_base)
-            and window_stub_end - window_stub_base == 2 * (window_nid_end - window_nid_base)
-            and stub_base == window_stub_base
-            and window_stub_end <= stub_end
-            and nid_base <= window_nid_base
-            and window_nid_end <= nid_end):
-        slots = (window_stub_end - window_stub_base) // 8
-        if nid_base == window_nid_base:
-            finding = (
-                "named import sections contain an unreferenced tail; using the "
-                f"window-paired prefix ({slots} slots)"
+    # When the named sections do not pair 1:1, only the windows' own runs can be
+    # paired. The two sections then differ in kind:
+    #   * .rodata.sceNid words outside the window run are data the loader never
+    #     reads, so unreferenced words may sit before it (a head) or after it (a
+    #     tail); retail executables carry zero-filled ones on both sides.
+    #   * .sceStub.text slots are code. A slot no window claims is a possible
+    #     call target that the loader never patches, and without a 1:1 section
+    #     pairing it has no NID, so any unreferenced stub slot on either side
+    #     fails closed. No staged retail executable has one.
+    # The PSP fixup utility rejects every non-1:1 shape because it rewrites
+    # whole sections. Any window inconsistent with the run still fails in
+    # _pair_region; the unreferenced NID words are surfaced as a diagnostic.
+    if stub_end - stub_base != 2 * (nid_end - nid_base):
+        if (window_stub_end - window_stub_base != 2 * (window_nid_end - window_nid_base)
+                or not stub_base <= window_stub_base <= window_stub_end <= stub_end
+                or not nid_base <= window_nid_base <= window_nid_end <= nid_end
+                or (window_nid_base - nid_base) % 4):
+            raise ImportTableError(
+                "ANALYZER_IMPORT_REGIONS_MISMATCH",
+                "import stub region size does not match NID region size "
+                "(psp-fixup-imports requires stub slots to pair 1:1 with NIDs)"
             )
-        else:
-            finding = (
-                "named import sections contain an unreferenced head of "
-                f"{(window_nid_base - nid_base) // 4} NID words and a tail of "
-                f"{(nid_end - window_nid_end) // 4} NID words; using the "
-                f"window-paired run ({slots} slots)"
+        stub_head, stub_tail = window_stub_base - stub_base, stub_end - window_stub_end
+        if stub_head or stub_tail:
+            raise ImportTableError(
+                "ANALYZER_IMPORT_REGIONS_MISMATCH",
+                f".sceStub.text has {_byte_count(stub_head, 8, 'stub slot')} before and "
+                f"{_byte_count(stub_tail, 8, 'stub slot')} after the import windows that no "
+                "window claims, and .rodata.sceNid does not pair 1:1 with it, so those "
+                "slots have no NID"
             )
+        nid_head, nid_tail = window_nid_base - nid_base, nid_end - window_nid_end
+        parts = []
+        if nid_head:
+            parts.append(f"head of {_byte_count(nid_head, 4, 'NID word')}")
+        if nid_tail:
+            parts.append(f"tail of {_byte_count(nid_tail, 4, 'NID word')}")
+        finding = (
+            f".rodata.sceNid has an unreferenced {' and a '.join(parts)}; using the "
+            f"window-paired run ({(window_stub_end - window_stub_base) // 8} slots)"
+        )
         stub_base, stub_end = window_stub_base, window_stub_end
         nid_base, nid_end = window_nid_base, window_nid_end
-    if stub_end - stub_base != 2 * (nid_end - nid_base):
-        raise ImportTableError(
-            "ANALYZER_IMPORT_REGIONS_MISMATCH",
-            "import stub region size does not match NID region size "
-            "(psp-fixup-imports requires stub slots to pair 1:1 with NIDs)"
-        )
     return dict(
         primary=True,
         windows=windows,

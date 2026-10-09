@@ -509,6 +509,8 @@ def build_import_layout_elf(
     per_library_stub_sections: bool = False,
     reverse_primary_layout: bool = False,
     detached_gap_slots: int | None = None,
+    stub_head_slots: int = 0,
+    stub_tail_slots: int = 0,
 ) -> tuple[bytes, dict[int, tuple[str, int]]]:
     """Build a sectioned ELF for the retail import-table layouts.
 
@@ -526,7 +528,9 @@ def build_import_layout_elf(
           whose NIDs follow their library name outside .rodata.sceNid;
       detached_gap_slots -- instead, emit the detached NIDs as one array and
           leave this many unused stub slots (and zero NID words) between
-          consecutive detached windows, so they share one pairing offset.
+          consecutive detached windows, so they share one pairing offset;
+      stub_head_slots / stub_tail_slots -- zero stub slots that no window
+          claims before / after the windows inside a single .sceStub.text.
 
     Returns (ELF bytes, expected {stub address: (library, NID)}).
     """
@@ -541,6 +545,9 @@ def build_import_layout_elf(
         return BASE_VADDR + off
 
     gap = detached_gap_slots or 0
+    # .text holds one 8-byte (two-word) `jr $ra; nop` pair as ordinary code,
+    # one more pair the detached runs start after, and then two words per
+    # detached stub slot, including the unused gap slots after each run.
     text_words = 4 + 2 * sum(len(nids) + gap for _name, nids in detached)
     text = alloc(struct.pack("<2I", 0x03E00008, 0) * (text_words // 2))
     expected: dict[int, tuple[str, int]] = {}
@@ -553,13 +560,14 @@ def build_import_layout_elf(
     layout_order = list(range(len(primary)))
     if reverse_primary_layout:
         layout_order.reverse()
-    stub_section = alloc(b"")
+    stub_section = alloc(b"\0" * (8 * stub_head_slots))
     stub_addrs = {}
     stub_sections = []
     for i in layout_order:
         name, nids = primary[i]
         stub_addrs[i] = alloc(b"\0" * (8 * len(nids)))
         stub_sections.append((f".sceStub.text.{name}".encode("ascii"), stub_addrs[i], 8 * len(nids)))
+    alloc(b"\0" * (8 * stub_tail_slots))
     stub_section_end = BASE_VADDR + len(seg)
 
     modinfo = alloc(b"\0" * 52)

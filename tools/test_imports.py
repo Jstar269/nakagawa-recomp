@@ -126,8 +126,8 @@ class RetailImportLayoutTests(unittest.TestCase):
         stubs, findings = self._model(blob)
         self.assertEqual(stubs, expected)
         self.assertEqual(findings, [
-            "named import sections contain an unreferenced head of 6 NID words "
-            "and a tail of 0 NID words; using the window-paired run (6 slots)"
+            ".rodata.sceNid has an unreferenced head of 6 NID words; "
+            "using the window-paired run (6 slots)"
         ])
 
     def test_nid_section_head_and_tail_use_the_window_run(self) -> None:
@@ -136,14 +136,35 @@ class RetailImportLayoutTests(unittest.TestCase):
         self.assertEqual(stubs, expected)
         self.assertIn("unreferenced head of 2 NID words and a tail of 3", findings[0])
 
-    def test_nid_section_tail_keeps_its_prefix_diagnostic(self) -> None:
-        blob, expected = build_import_layout_elf(PRIMARY, nid_tail_words=4)
+    def test_nid_section_tail_names_the_nid_section(self) -> None:
+        blob, expected = build_import_layout_elf(PRIMARY, nid_tail_words=1)
         stubs, findings = self._model(blob)
         self.assertEqual(stubs, expected)
         self.assertEqual(findings, [
-            "named import sections contain an unreferenced tail; using the "
-            "window-paired prefix (6 slots)"
+            ".rodata.sceNid has an unreferenced tail of 1 NID word; "
+            "using the window-paired run (6 slots)"
         ])
+
+    def test_unreferenced_stub_slots_without_nid_pairing_fail_closed(self) -> None:
+        # Stub slots are code: a slot no window claims has no NID when the
+        # sections do not pair 1:1, on either side of the window run.
+        for head, tail, words in ((0, 1, "0 stub slots before and 1 stub slot after"),
+                                  (2, 0, "2 stub slots before and 0 stub slots after")):
+            with self.subTest(head=head, tail=tail):
+                blob, _expected = build_import_layout_elf(
+                    PRIMARY, stub_head_slots=head, stub_tail_slots=tail)
+                exc = self._boundary(blob)
+                self.assertEqual(exc.code, "ANALYZER_IMPORT_REGIONS_MISMATCH")
+                self.assertIn(f".sceStub.text has {words} the import windows", str(exc))
+
+    def test_unclaimed_stub_slots_with_paired_nid_words_use_the_section_pairing(self) -> None:
+        # One extra stub slot and one extra NID word keep the sections 1:1:
+        # the psp-fixup-imports global pairing names the unclaimed slot.
+        blob, expected = build_import_layout_elf(PRIMARY, stub_tail_slots=1, nid_tail_words=1)
+        stubs, findings = self._model(blob)
+        extra = max(expected) + 8
+        self.assertEqual(stubs, {**expected, extra: (imports.UNATTRIBUTED_LIBRARY, 0)})
+        self.assertEqual(findings, ["stub slots not covered by any library window: 1 positions [6]"])
 
     def test_detached_windows_pair_by_their_own_runs(self) -> None:
         # Imports from a game-supplied module: stubs inside .text, NIDs after
