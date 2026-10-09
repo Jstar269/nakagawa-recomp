@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0bd92a34caa453d9b9e885eae8ea9854a4ec7d98ec7520c9ba9e48fd27c3649e"
+      "sha256": "2914050b8aff0cbbd8acbcf9dbb8ae9725e3c77dd6e41d90cb6bd36d93bb0aa2"
     },
     {
       "path": "NOTICE.md",
@@ -617,6 +617,18 @@
       "sha256": "1492352997535b8e029c4f259bfece094c3446d0b3d9a7ea9a7bdc78a20d40e2"
     },
     {
+      "path": "assets/input_profiles/standard-gamepad.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "standard-gamepad-input-profile",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "4234f891ec747700392fda29771940d977702603d81c8626ccdb966c596bf0a2"
+    },
+    {
       "path": "assets/issue_routing.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -667,7 +679,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "92c6c3e57ac388f3868cf436c61b61710f3f7dc6001f0b603e370e0ef347f6c4"
+      "sha256": "0962b46dca961257d9f0417b9c390fdb47a4e223a79dbf3a8b8bfc0ba52aae3a"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -730,7 +742,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7df1699cde5c658a565053cb974f6f5ebc340e126b374cf2f5e05c84805e4916"
+      "sha256": "e175bb2cf4ed2a37d9e6c5f00a77a39ea2d864d9108fe35dc8b619d359571b29"
     },
     {
       "path": "assets/titles/display-smoke.json",
@@ -1309,7 +1321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c6b1b77c5e357dd2d2a8a31d952110b98e746d3a44638090f377eddf5a679eb3"
+      "sha256": "9dd9d4cd7eff6e7858e8b9cc4257dc2a543429fe52e6f8258392265a1fd20029"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1382,6 +1394,18 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "2e2ae591f04a91d6a9781d5b2d6582057b58a5ff1074760653ff323ec0701d64"
+    },
+    {
+      "path": "docs/TITLE_TESTING.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-testing-doc",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "ae4d0d13b32574d3b9ec072c18cec7280c700e609d0ba5eab4a7a931ca120594"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -9604,6 +9628,18 @@
       "sha256": "2453594ddd1a4aef0980fb25f0a34082cf9408dee73979ad2e3f9dbbfda2c363"
     },
     {
+      "path": "tools/test_title_qualification.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-qualification-tool",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "48a4f545ae913fb898990a477c6c543c434c933198dcf89622c17905e55e5ed0"
+    },
+    {
       "path": "tools/test_title_runtime_config.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9950,6 +9986,18 @@
         "upstream_attribution": null
       },
       "sha256": "20aa736c8c6df815e5439537fd0d6aa2ce63c92f46315d79cdc2995adefdd1ce"
+    },
+    {
+      "path": "tools/title_qualification.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "title-qualification-tool",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "ea3945f473397e07571e9f2014c6e8111a6653b9e3864f980e12cb515ac6fd33"
     },
     {
       "path": "tools/title_runtime_config.py",
