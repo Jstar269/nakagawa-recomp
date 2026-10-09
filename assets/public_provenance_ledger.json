@@ -1453,7 +1453,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dd0e153aefdf753cabd9e11e161fa87bef9bab687f2081b6d6a7e6b6b6f0b23e"
+      "sha256": "a6c34405c84b34b0cf8262ea9d535d62aed7118ea754eadd5704a58eb1437914"
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
@@ -4842,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7b7e0fcabba42092e84f8e17f49618ffe4d0a741e223b18f73597e54cd842e22"
+      "sha256": "e9ddd1b9f692aba7742bd397ebc181c1dea07ec2c9ecf7a6a34c82ce16a87942"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -6955,7 +6955,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "81c12aa722dd2b61eb2898e5d3ea114ffc9889c5b0a745dd25d06bac801a3f1f"
+      "sha256": "e2487f61501da027dc502a52b75a64f953a2000905abc4fdb72a039a099c3c16"
     },
     {
       "path": "tools/pngcmp.py",
@@ -7534,7 +7534,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d07be02ab9ceec8824cd5a14dfe5f01d32fe08ed0e74678dcf45175536aa1fbe"
+      "sha256": "c3548c5a89cb83f58f6037a0e3f452634a11b131e4040027ced9c849ec18ab32"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
@@ -8784,7 +8784,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d1c5021ce284e7efd7e24fdf6a565910bad6db7e2bc05dea3ca03c70f209bd3e"
+      "sha256": "2bff2fb411d9dd385555ee139d305d9a8ec71be831e4b54c0323ea1085ce6bfe"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -9649,7 +9649,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09ec64ffdcca8d228205d1b01e5acc0191e0db52cde5d9b661c6f88ea9bb0a4e"
+      "sha256": "eb3f5bcea5748f93e198e0e0f0be573da18a38660722f0352fdb3b066112c6d7"
     },
     {
       "path": "tools/test_validate_assets.py",
@@ -9998,7 +9998,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "566881af61db21ab87860f89894628025fdbdf64213a72e65d5dd8178c6fc0b9"
+      "sha256": "2af8310fdd476f749080681b28bb04302b7226d08a863b4599703c7a9b5b89df"
     },
     {
       "path": "tools/validate_assets.py",
