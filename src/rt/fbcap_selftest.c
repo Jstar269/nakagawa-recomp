@@ -315,6 +315,36 @@ static void test_parent_directory(void) {
     CHECK(ppm_matches(path, PSP_W, PSP_H, s_frame_rgb), "parent: file exact in the new dir");
 }
 
+/* An absolute destination publishes too: on Windows its first prefix is a drive root such as
+ * "C:/", which mkdir reports as an error (EACCES) even though it exists. */
+static void test_absolute_path(void) {
+    char cwd[512] = "", base[1100], path[1200], sub[1200], top[1200];
+    int absolute = s_dir[0] == '/' || s_dir[0] == '\\' || (s_dir[0] && s_dir[1] == ':');
+    if (!absolute) {
+#ifdef _WIN32
+        CHECK(_getcwd(cwd, (int)sizeof cwd) != NULL, "absolute: current directory");
+#else
+        CHECK(getcwd(cwd, sizeof cwd) != NULL, "absolute: current directory");
+#endif
+    }
+    int n = absolute ? snprintf(base, sizeof base, "%s", s_dir)
+                     : snprintf(base, sizeof base, "%s/%s", cwd, s_dir);
+    CHECK(n > 0 && (size_t)n < sizeof base, "absolute: base path fits");
+    n = snprintf(top, sizeof top, "%s/abs", base);
+    CHECK(n > 0 && (size_t)n < sizeof top, "absolute: directory path fits");
+    n = snprintf(sub, sizeof sub, "%s/abs/sub", base);
+    CHECK(n > 0 && (size_t)n < sizeof sub, "absolute: subdirectory path fits");
+    n = snprintf(path, sizeof path, "%s/abs/sub/frame_v2.ppm", base);
+    CHECK(n > 0 && (size_t)n < sizeof path, "absolute: file path fits");
+    remove(path);
+    remove_dir(sub);
+    remove_dir(top);
+    CHECK(sr_capture_arm(path) == 1, "absolute: arm accepted");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "absolute: publish creates the missing directories under an absolute root");
+    CHECK(ppm_matches(path, PSP_W, PSP_H, s_frame_rgb), "absolute: file exact");
+}
+
 /* SR_FBSNAP_WINDOWS is self-sufficient: with SR_FBSNAP unset, configured windows select the
  * FBSNAP slot and capture every present inside them. An explicit SR_FBSNAP keeps its
  * meaning, and SR_FBDUMP keeps priority over windows. */
@@ -350,6 +380,7 @@ int main(int argc, char **argv) {
     test_failed_publication();
     test_explicit_failures();
     test_parent_directory();
+    test_absolute_path();
     test_windows_imply_every_present();
     if (s_failures) {
         fprintf(stderr, "fbcap_selftest: %d check(s) failed\n", s_failures);

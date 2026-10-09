@@ -23,18 +23,16 @@
 
 #include "fbcap.h"
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <direct.h>
 #include <windows.h>
-#else
-#include <sys/stat.h>
-#include <sys/types.h>
 #endif
 
 enum {
@@ -51,38 +49,52 @@ static char s_path[1024];
 static sr_cap_source s_src = SR_CAP_SRC_NONE;
 static uint32_t s_w, s_h;
 
+static int cap_is_sep(char c) { return c == '/' || c == '\\'; }
+
+/* 1 when `dir` is a directory after this call, created now or already there. A failed
+ * mkdir is judged by what is on disk, not by its errno: Windows reports an existing drive
+ * root ("C:/") as EACCES, and an existing directory must never fail a publish. An existing
+ * non-directory is not a directory, so the publish then fails cleanly. */
+static int cap_dir_ready(const char *dir) {
+#ifdef _WIN32
+    struct _stat st;
+    if (_mkdir(dir) == 0) return 1;
+    return _stat(dir, &st) == 0 && (st.st_mode & _S_IFDIR) != 0;
+#else
+    struct stat st;
+    if (mkdir(dir, 0777) == 0) return 1;
+    return stat(dir, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
 /* Create the parent directory of `path` (mkdir -p on the directory component only). FBSNAP
- * publishes under build/snapshots/, which no build step creates. An existing directory is
- * success; an existing non-directory leaves the later file open to fail cleanly. */
+ * publishes under build/snapshots/, which no build step creates. Every prefix is checked
+ * without a trailing separator; a root ("/", or a drive root such as "C:/") always exists
+ * and is never created. Relative and absolute paths, with either separator, behave alike. */
 static int cap_ensure_parent_dir(const char *path) {
     char dir[1024];
     size_t n = strlen(path);
     if (!n || n >= sizeof dir) return 0;
     memcpy(dir, path, n + 1);
-    while (n > 0 && (dir[n - 1] == '/' || dir[n - 1] == '\\')) dir[--n] = '\0';
     char *sep = NULL;
     for (char *q = dir; *q; q++)
-        if (*q == '/' || *q == '\\') sep = q;
-    if (!sep) return 1;               /* bare file name: current directory exists */
+        if (cap_is_sep(*q)) sep = q;
+    if (!sep) return 1;                          /* bare file name: the current directory */
+    while (sep > dir && cap_is_sep(sep[-1])) sep--;  /* "a//file" names directory "a" */
     *sep = '\0';
-    if (sep == dir) return 1;         /* "/file" or "\\file": the root exists */
-    for (char *q = dir; *q; q++) {
-        if (*q != '/' && *q != '\\') continue;
-        char save = q[1];
-        q[1] = '\0';
-#ifdef _WIN32
-        if (_mkdir(dir) != 0 && errno != EEXIST) { q[1] = save; return 0; }
-#else
-        if (mkdir(dir, 0777) != 0 && errno != EEXIST) { q[1] = save; return 0; }
-#endif
-        q[1] = save;
+    n = (size_t)(sep - dir);
+    if (n == 0 || (n == 2 && dir[1] == ':')) return 1;   /* "/file" or "C:/file" */
+    for (char *q = dir + 1; *q; q++) {
+        if (!cap_is_sep(*q) || cap_is_sep(q[-1])) continue;
+        size_t len = (size_t)(q - dir);
+        if (len == 2 && dir[1] == ':') continue;          /* drive root */
+        char save = *q;
+        *q = '\0';
+        int ready = cap_dir_ready(dir);
+        *q = save;
+        if (!ready) return 0;
     }
-#ifdef _WIN32
-    if (_mkdir(dir) != 0 && errno != EEXIST) return 0;
-#else
-    if (mkdir(dir, 0777) != 0 && errno != EEXIST) return 0;
-#endif
-    return 1;
+    return cap_dir_ready(dir);
 }
 
 /* The single terminal transition out of the armed/recorded states. Every failure funnels
