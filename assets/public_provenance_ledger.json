@@ -7534,7 +7534,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c962e43b3aca7f70ac0f4f0afd20d31d78781b2bb506aa9acdee047c88c1b248"
+      "sha256": "0c5acaf8900d4ee5c4dbc94d0b867ff1d657dabd72283904ca6768d23855ec93"
     },
     {
       "path": "tools/test_asset_index_c.py",
