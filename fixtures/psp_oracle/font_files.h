@@ -110,7 +110,7 @@ static uint32_t fontfiles_rotr(uint32_t value, unsigned int amount) {
 }
 
 static void fontfiles_sha_block(FontFilesSha256 *sha, const uint8_t *block) {
-    uint32_t w[64];
+    static uint32_t w[64]; /* static: the probe starts on a small stack */
     for (unsigned int i = 0; i < 16u; i++) {
         w[i] = ((uint32_t)block[4u * i] << 24) | ((uint32_t)block[4u * i + 1u] << 16) |
                ((uint32_t)block[4u * i + 2u] << 8) | (uint32_t)block[4u * i + 3u];
@@ -266,7 +266,7 @@ static int64_t fontfiles_pass(SceUID in, SceUID out, FontFilesSha256 *sha, int64
 
 /* Hash one file read-only (passes B and C). Returns the byte count or a negative result. */
 static int64_t fontfiles_hash_file(const char *path, int *open_result, uint8_t digest[32]) {
-    FontFilesSha256 sha;
+    static FontFilesSha256 sha;
     int64_t written = 0;
     int write_result = 0;
     fontfiles_sha_init(&sha);
@@ -281,8 +281,8 @@ static int64_t fontfiles_hash_file(const char *path, int *open_result, uint8_t d
 
 static void fontfiles_copy(FontFiles *f, uint32_t index) {
     const char *name = s_fontfiles_names[index];
-    char digest_a[65], digest_b[65], digest_c[65];
-    uint8_t sha_a[32], sha_b[32], sha_c[32];
+    static char digest_a[65], digest_b[65], digest_c[65];
+    static uint8_t sha_a[32], sha_b[32], sha_c[32];
     memset(sha_a, 0, sizeof(sha_a));
     memset(sha_b, 0, sizeof(sha_b));
     memset(sha_c, 0, sizeof(sha_c));
@@ -290,7 +290,7 @@ static void fontfiles_copy(FontFiles *f, uint32_t index) {
     snprintf(s_fontfiles_host, sizeof(s_fontfiles_host), "%s/%.63s", FONTFILES_HOST_DIR, name);
 
     /* Pass A: flash0 read-only -> host0, hashing what was read. */
-    FontFilesSha256 sha;
+    static FontFilesSha256 sha;
     fontfiles_sha_init(&sha);
     int64_t read_a = (int64_t)(int32_t)FONTFILES_ERROR;
     int64_t written = 0;
@@ -423,7 +423,7 @@ static void fontfiles_run(FontFiles *f) {
                     more = snprintf(s_fontfiles_line + used, FONTFILES_LINE_MAX - (size_t)used,
                                     "detail=%s", name);
                 } else {
-                    char hex[129];
+                    static char hex[129];
                     if (!fontfiles_hex(hex, sizeof(hex), (const uint8_t *)name, raw)) hex[0] = '\0';
                     more = snprintf(s_fontfiles_line + used, FONTFILES_LINE_MAX - (size_t)used,
                                     "name_hex=%s", raw == 0u ? "00" : hex);
