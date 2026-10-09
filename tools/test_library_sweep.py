@@ -1453,6 +1453,64 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertEqual((copied, status), (0, "NO_MATCH"))
 
 
+    def test_title_manifests_for_the_disc_are_staged_into_route_user_data(self) -> None:
+        """A user manifest naming the disc reaches bring-up's user-data root.
+
+        Failing-before: the sweep had no way to hand a title's own manifest to
+        bring-up, so a title known only from a user manifest (an archive disc)
+        ran as an unrecognized disc and its files were never staged.
+        """
+        from test_iso_parity import archive_title_manifest
+
+        manifests = self.root / "title-manifests"
+        manifests.mkdir()
+        wanted = archive_title_manifest("ULUS99995", "archive-ulus99995")
+        (manifests / "wanted.json").write_text(json.dumps(wanted), encoding="utf-8")
+        other = archive_title_manifest("ULUS99994", "archive-ulus99994")
+        (manifests / "other.json").write_text(json.dumps(other), encoding="utf-8")
+        (manifests / "broken.json").write_text("{not json", encoding="utf-8")
+        work_dir = self.private_dir / "work"
+
+        copied, status = library_sweep._stage_title_manifests(manifests, "ulus99995", work_dir)
+
+        self.assertEqual((copied, status), (1, "DIRECT_MATCH"))
+        staged = work_dir / "user-data" / "manifests"
+        self.assertEqual(sorted(path.name for path in staged.iterdir()), ["wanted.json"])
+        self.assertEqual(json.loads((staged / "wanted.json").read_text(encoding="utf-8")), wanted)
+        self.assertEqual(
+            library_sweep._stage_title_manifests(manifests, "ULUS99993", work_dir),
+            (0, "NO_MATCH"),
+        )
+        self.assertEqual(
+            library_sweep._stage_title_manifests(None, "ULUS99995", work_dir),
+            (0, "NOT_CONFIGURED"),
+        )
+
+    def test_sweep_stages_title_manifests_before_the_route_runs(self) -> None:
+        from test_iso_parity import archive_title_manifest
+
+        _write_iso(self.iso_dir, "one.iso", "UCUS99991", "Manifest Sentinel")
+        manifests = self.root / "title-manifests"
+        manifests.mkdir()
+        (manifests / "one.json").write_text(
+            json.dumps(archive_title_manifest("UCUS99991", "archive-ucus99991")),
+            encoding="utf-8",
+        )
+        seen: list[list[str]] = []
+
+        def route(_iso_path, work_dir, _report, _sidecar, _budget, _launch_timeout):
+            manifest_dir = work_dir / "user-data" / "manifests"
+            seen.append(sorted(path.name for path in manifest_dir.glob("*.json")))
+            return library_sweep.RouteOutcome(_bringup_report())
+
+        with mock.patch.object(library_sweep, "_run_bringup", side_effect=route):
+            library_sweep.run_sweep(
+                self.iso_dir, self.private_dir, self.public_output,
+                title_manifests=manifests, **self._run_kwargs(),
+            )
+        self.assertEqual(seen, [["one.json"]])
+
+
 class LibrarySweepExternalJsonTests(unittest.TestCase):
     """Drive hostile synthetic files through each external sweep JSON reader."""
 

@@ -2406,11 +2406,11 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
 
     bool add_focused = (app->focus_index == 0);
     if (draw_button_focused(ren, card_x + 32.0f, card_y + 300.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in, add_focused)) {
-        /* Do not mark the game prepared: no preparation has run. The entry
-         * keeps the status reported by the ISO inspection. */
-        if (player_app_add_game(app, &app->inspecting_game)) {
-            player_app_set_view(app, VIEW_LIBRARY);
-        } else {
+        /* A title that takes its data from the disc has its files set up
+         * first by the wizard's staging worker; any other title is saved
+         * directly. Neither marks the game prepared: that is the package's
+         * status. */
+        if (!player_app_add_inspected_game(app)) {
             /* The add was rejected or never persisted. Saying nothing would
                show the title in the library until the next restart dropped
                it. */
