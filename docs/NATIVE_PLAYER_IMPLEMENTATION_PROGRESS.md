@@ -42,10 +42,12 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
   `RETRY PACKAGE CHECK` action; background retries use bounded backoff.
 - `--iso=<path> --stage-only` is a headless path through the same native staging
   transaction, registration, and state transition. `--stage` starts the same
-  transaction from the interactive wizard, `--launch-now` runs it first when the
-  disc's files are not in place, and `nk_cli prepare` runs it through the player
-  for discs whose data ships in archives. A repeat run reuses a complete staged
-  tree, and an interrupted run is cleaned up and redone.
+  transaction from the interactive wizard, the supported-title card's ADD TO
+  LIBRARY starts the wizard's worker for a title that takes its data from the
+  disc (so PLAY never finds that data missing), `--launch-now` runs it first when
+  the disc's files are not in place, and `nk_cli prepare` and `nk_cli bringup` run
+  it through the player for discs whose data ships in archives. A repeat run
+  reuses a complete staged tree, and an interrupted run is cleaned up and redone.
 - `--user-data-root=<folder>` makes the player keep its library, title manifests,
   packages, and staged games in that folder, matching `nk_cli --user-data-root`.
   With `--headless-launch`, `--launch-now` waits for the game the same bounded way

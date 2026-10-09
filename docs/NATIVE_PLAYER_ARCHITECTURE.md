@@ -150,9 +150,10 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
 4. **Instant ISO Qualification**: The inspector reads the ISO9660 PVD and `PARAM.SFO` in memory, extracting `DISC_ID` (e.g. `UCUS98701`), Title, and Region.
 5. **Transactional Preparation**: one staging transaction (`player_stage_title`
    in `src/player/setup_staging.c`) serves every route that sets up a disc's files:
-   the wizard's worker, `--stage-only`, `--launch-now` when the files are not in
-   place yet, and `nk_cli prepare` for discs whose data ships in archives (it runs
-   the player's `--stage-only`).
+   the wizard's worker (also started by the supported-title card's ADD TO LIBRARY
+   when the title takes its data from the disc), `--stage-only`, `--launch-now`
+   when the files are not in place yet, and `nk_cli prepare` and `nk_cli bringup`
+   for discs whose data ships in archives (they run the player's `--stage-only`).
    - A per-title lock (`games/.staging_<disc_id>.lock`) refuses a second staging of
      the same title with `[STAGE_BUSY]`; the operating system releases it when its
      holder exits.
