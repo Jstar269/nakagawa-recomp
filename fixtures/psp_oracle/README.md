@@ -6,7 +6,16 @@ files, keys, and private traces.
 
 The fixture prints the versioned `NAKAGAWA_PSP_META` and
 `NAKAGAWA_PSP_TEST` records defined in
-[`tools/psp_oracle/protocol.py`](../../tools/psp_oracle/protocol.py). The
+[`tools/psp_oracle/protocol.py`](../../tools/psp_oracle/protocol.py). Before a
+call that could hang or fault the console, a probe also writes a
+`NAKAGAWA_PSP_STEP schema=1 case_id=<id> step=<name>` progress marker
+(`probe_step()`), appended to the host0 log and closed before the call runs,
+so a launch that never returns still names its last step. The parser collects
+step markers (`ParsedOutput.steps`, `last_step`) and never counts them as
+records. A probe never waits without a bound: GE waits poll the non-blocking
+sync peek against a deadline, kernel waits carry timeouts, and exhaustion loops
+stop at a documented cap; a bound that expires is recorded as a `TIMEOUT`
+outcome with the last observed state. The
 default `CASE=smoke` build emits `PSP-SMOKE-001`; kernel sessions build one
 case per launch with `CASE=callback-notify-check`, `CASE=wait-cancel`,
 `CASE=thread-lifecycle`, `CASE=thread-delete-lifecycle`,
@@ -477,12 +486,12 @@ ordering semantics are correct.
 
 | Case | Test id | Measurements |
 | --- | --- | --- |
-| `kernel-alarm` | `PSP-ALARM-001` | `SetAlarm` with a null handler and zero clock, alarm-table exhaustion count and error, cancellation after firing/cancel/unknown UID, handler-return re-arm timing, and a bounded semaphore wait from an alarm handler with interrupt state. |
-| `thread-scheduler` | `PSP-THREAD-003` | Suspend UID 0 and self, resume UID 0, out-of-range ready-queue rotation, ready order after rotation, and timeout of a waiting thread while suspended. |
+| `kernel-alarm` | `PSP-ALARM-001` | `SetAlarm` with a null handler and zero clock, alarm-table exhaustion count and error (capped at 1024 pending alarms; `out2` is the cap), cancellation after firing/cancel/unknown UID, handler-return re-arm timing, and a bounded semaphore wait from an alarm handler with interrupt state. |
+| `thread-scheduler` | `PSP-THREAD-003` | Suspend UID 0 and self, resume UID 0, out-of-range ready-queue rotation, ready order after rotation (bounded wait; `TIMEOUT` if the third thread never runs), and timeout of a waiting thread while suspended. |
 | `wait-outcomes` | `PSP-WAIT-001` | Semaphore and event-flag signal/cancel operations that occur before a deadline but are dispatched afterward. |
-| `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, and list/draw sync statuses for paused and cancelled work. |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, list/draw sync statuses for paused work, the continue result with a bounded drain (`ge-continue-drain`, `TIMEOUT` with the last states if the GE does not go idle), a queue reset when needed (`ge-quiesce-after-continue`), cancelled work, and a final quiesce (`ge-quiesce-after-cancel`). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | Semaphore, event-flag, and mailbox status structures with size words 0, 8, 40, and full size; records the changed bytes and returned size word. |
-| `registry-readonly` | `PSP-REGISTRY-001` | Read-only registry/category enumeration under `/CONFIG`, key names/types/sizes, modeled setting values only, and unknown-category/key, bad-handle, small-buffer, and handle-exhaustion results. |
+| `registry-readonly` | `PSP-REGISTRY-001` | Read-only registry/category enumeration under `/CONFIG`, key names/types/sizes, modeled setting values only, and unknown-category/key, small-buffer, and handle-exhaustion results (`registry-errors`; at most 256 opens, `out6` says whether an open failed first), then the forged-handle call last (`registry-bad-handle`). |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
 
 The registry case opens the registry and every category in read mode. It never

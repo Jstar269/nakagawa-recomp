@@ -280,6 +280,35 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
 #endif
 
+/* Durable progress marker.  Before a call that could hang or fault the
+   console, a probe writes
+       NAKAGAWA_PSP_STEP schema=1 case_id=<id> step=<name>
+   to its output and, on hardware, appends it to the host0 log and closes the
+   file before the call runs, the same open/append/close the record writer
+   uses.  A launch that never returns then still names its last step in the
+   host log.  Step lines are progress, not results: the host parser
+   (tools/psp_oracle/protocol.py) collects them and never counts them as
+   records.  Names use [A-Za-z0-9_.:/-] only. */
+__attribute__((unused))
+static void probe_step(int emulated, const char *case_id, const char *step) {
+    char line[224];
+    const int used = snprintf(line, sizeof(line),
+                              "NAKAGAWA_PSP_STEP schema=1 case_id=%s step=%s\n",
+                              case_id, step);
+    if (used <= 0 || (size_t)used >= sizeof(line)) return;
+    emit(emulated, line);
+#ifdef PROBE_HOST0_LOG
+    if (!emulated) {
+        SceUID fd = sceIoOpen(PROBE_HOST0_LOG,
+                              PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+        if (fd >= 0) {
+            (void)sceIoWrite(fd, line, (SceSize)used);
+            (void)sceIoClose(fd);
+        }
+    }
+#endif
+}
+
 #define PROBE_TEARDOWN_CAPACITY 64u
 #define PROBE_TEARDOWN_PATH_CAPACITY 16u
 #define PROBE_TEARDOWN_PATH_LENGTH 96u
@@ -2629,6 +2658,60 @@ static void run_display_mask_duty(int emulated) {
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+/* Bounded GE waits.  A probe never blocks on the GE without a bound: on a
+ * PSP-3000 a blocking sceGeListSync(qid, 0) after sceGeBreak/sceGeContinue
+ * never returned, and the rest of the case and its completion record were
+ * lost.  Every GE wait therefore polls the non-blocking peek (sync type 1)
+ * against a deadline on the system timer and returns the last observed
+ * states, so a GE that does not drain becomes a measured TIMEOUT outcome.
+ *
+ * Idle means sceGeDrawSync(1) reports PSP_GE_LIST_DONE: no display list is
+ * left to run.  The per-list state is recorded as observed but is not the
+ * completion test, because a finished list's queue ID need not stay valid.
+ * Each probe list is a few kilobytes of commands that the GE finishes in
+ * milliseconds, so half a second is a generous bound. */
+#define GE_IDLE_DEADLINE_US 500000u
+#define GE_IDLE_POLL_US 100u
+
+typedef struct {
+    int list_state;       /* last sceGeListSync(qid, 1); qid itself when qid < 0 */
+    int draw_state;       /* last sceGeDrawSync(1)                              */
+    uint32_t elapsed_us;  /* system time from the first peek to the last        */
+    int idle;             /* draw_state == PSP_GE_LIST_DONE                     */
+} GeIdleWait;
+
+/* Peek until the GE is idle or deadline_us has passed; deadline 0 peeks once. */
+static GeIdleWait ge_wait_idle(int qid, uint32_t deadline_us) {
+    GeIdleWait w;
+    const uint32_t start = sceKernelGetSystemTimeLow();
+    for (;;) {
+        w.list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+        w.draw_state = sceGeDrawSync(1);
+        w.elapsed_us = (uint32_t)(sceKernelGetSystemTimeLow() - start);
+        w.idle = w.draw_state == PSP_GE_LIST_DONE;
+        if (w.idle || w.elapsed_us >= deadline_us) {
+            return w;
+        }
+        sceKernelDelayThread(GE_IDLE_POLL_US);
+    }
+}
+
+/* Drop every queued list after a wait that did not reach idle, so the next
+ * step starts from an empty GE.  sceGeBreak(1, ...) resets all queues
+ * (PSPSDK pspge.h); *after receives a bounded wait that shows whether the
+ * reset left the GE idle.  Returns the sceGeBreak result. */
+static int ge_reset_queues(GeIdleWait *after) {
+    PspGeBreakParam param;
+    memset(&param, 0, sizeof(param));
+    const int rc = sceGeBreak(1, &param);
+    *after = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+    return rc;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 
 /* Does the PSP GE make forward progress while CPU interrupt delivery is masked?
@@ -2758,7 +2841,7 @@ static void ge_run_case(int emulated, int mode, const char *case_id) {
 
     for (uint32_t i = 0; i < GE_TILE_W * GE_TILE_H; i++) s_ge_src[i] = GE_PAYLOAD;
 
-    uint32_t out[24];
+    uint32_t out[25];
     memset(out, 0, sizeof(out));
     uint32_t trials = 0, prefill_ok = 0, pre_clean = 0;
     uint32_t masked_any = 0, masked_all = 0, masked_none = 0;
@@ -2769,6 +2852,7 @@ static void ge_run_case(int emulated, int mode, const char *case_id) {
     uint32_t release_rc_nonzero = 0, enq_bad = 0;
     uint32_t span_min = 0xffffffffu, span_max = 0;
     uint32_t after_resume_all = 0, after_sync_all = 0;
+    uint32_t drain_timeouts = 0;
 
     const uint32_t list_bytes = ge_build_list(src, dst_base);
 
@@ -2828,10 +2912,16 @@ static void ge_run_case(int emulated, int mode, const char *case_id) {
         if (s_ge_finish_calls) fin_after_resume++;
 
         /* Drain: CONTROL A never released the stall, so release it now with
-           interrupts enabled and sync, leaving the GE queue clean either way. */
+           interrupts enabled and wait (bounded) for the GE to go idle.  A
+           drain that times out is counted and the queues are reset, leaving
+           the GE clean for the next trial either way. */
         if (mode == 1) sceGeListUpdateStallAddr(qid, (void *)(list + list_bytes));
-        sceGeListSync(qid, 0);
-        sceGeDrawSync(0);
+        const GeIdleWait drain = ge_wait_idle(qid, GE_IDLE_DEADLINE_US);
+        if (!drain.idle) {
+            GeIdleWait after_reset;
+            drain_timeouts++;
+            (void)ge_reset_queues(&after_reset);
+        }
         if (s_ge_finish_calls) fin_after_sync++;
         if (ge_tiles_done(dst_base) >= GE_TILES) after_sync_all++;
 
@@ -2885,13 +2975,16 @@ static void ge_run_case(int emulated, int mode, const char *case_id) {
     out[21] = span_max;
     out[22] = (uint32_t)GE_TILES;
     out[23] = (uint32_t)scePowerGetCpuClockFrequencyInt();
+    out[24] = drain_timeouts;
 
     /* PASS means the trial machinery ran and the pre-release destination was
-       clean every time.  It asserts nothing about which semantic was observed. */
+       clean every time.  It asserts nothing about which semantic was observed.
+       TIMEOUT means at least one post-trial drain did not reach idle. */
     const int ok = (trials == (uint32_t)GE_TRIALS) &&
                    (prefill_ok == trials) && (pre_clean == trials) && (enq_bad == 0u);
     emit_record_extended(emulated, "PSP-DISPLAY-001", case_id,
-                         ok ? "PASS" : "FAIL", (uint32_t)trials, out, 24);
+                         drain_timeouts ? "TIMEOUT" : (ok ? "PASS" : "FAIL"),
+                         (uint32_t)trials, out, 25);
 }
 
 static void run_display_ge_mask(int emulated) {
@@ -3794,7 +3887,7 @@ static uint32_t ge_nan_hash_pixels(uint32_t *changed_pixels) {
     return hash;
 }
 
-static int ge_nan_render(uint32_t mode, uint32_t bits, uint32_t *hash,
+static int ge_nan_render(uint32_t mode, uint32_t bits, int *timed_out, uint32_t *hash,
                          uint32_t *changed) {
     static const uint32_t sane_pos[9] = {
         0xbf000000u, 0xbf000000u, 0x00000000u,
@@ -3882,7 +3975,17 @@ static int ge_nan_render(uint32_t mode, uint32_t bits, uint32_t *hash,
         }
     }
     finish_rc = sceGuFinish();
-    sync_rc = sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+    /* Bounded replacement for sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE),
+       which blocks in sceGeDrawSync(0).  On a timeout the result is the last
+       observed draw state and the queues are reset so the next cell starts
+       from an idle GE. */
+    const GeIdleWait drawn = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+    sync_rc = drawn.draw_state;
+    *timed_out = !drawn.idle;
+    if (!drawn.idle) {
+        GeIdleWait after_reset;
+        (void)ge_reset_queues(&after_reset);
+    }
     *hash = ge_nan_hash_pixels(changed);
     return finish_rc < 0 ? finish_rc : sync_rc;
 }
@@ -3910,8 +4013,9 @@ static void run_ge_nan(int emulated) {
             const char *const mode_names[] = {"screen2d", "clip3d", "litnormal"};
             uint32_t hash = 0u;
             uint32_t changed = 0u;
+            int timed_out = 0;
             const int render_rc = ready
-                ? ge_nan_render(mode, input->bits, &hash, &changed)
+                ? ge_nan_render(mode, input->bits, &timed_out, &hash, &changed)
                 : init_rc;
             out[0] = input->bits;
             out[1] = hash;
@@ -3919,7 +4023,10 @@ static void run_ge_nan(int emulated) {
             out[3] = ready ? (uint32_t)render_rc : (uint32_t)init_rc;
             snprintf(case_id, sizeof(case_id), "ge-nan-%s-%s",
                      mode_names[mode], input->name);
-            defer_record(case_id, ready ? (render_rc >= 0 ? "PASS" : "FAIL") : "SKIP",
+            defer_record(case_id,
+                         !ready ? "SKIP"
+                         : timed_out ? "TIMEOUT"
+                         : render_rc >= 0 ? "PASS" : "FAIL",
                          (uint32_t)render_rc, out, 4);
         }
     }
@@ -5408,6 +5515,11 @@ static void probe_teardown(int emulated) {
 }
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_ALARM
+/* Upper bound for the alarm-table exhaustion cell.  The previous revision set
+   alarms until the kernel refused one, with no bound.  1024 pending alarms is
+   far beyond what any game keeps at once. */
+#define ALARM_EXHAUSTION_CAP 1024u
+static SceUID s_alarm_table[ALARM_EXHAUSTION_CAP];
 static volatile uint32_t s_alarm_fired;
 static volatile uint32_t s_alarm_first_us;
 static volatile uint32_t s_alarm_second_us;
@@ -5482,43 +5594,30 @@ static void run_kernel_alarm(int emulated) {
     out[2] = (uint32_t)s_alarm_fired;
     emit_alarm_case(emulated, "alarm-zero-clock", (uint32_t)uid, out, 3);
 
-    SceUID *alarms = NULL;
-    size_t alarm_count = 0;
-    size_t alarm_capacity = 0;
-    uint32_t storage_failed = 0;
+    /* Bounded table exhaustion: set pending alarms until sceKernelSetAlarm
+       fails or ALARM_EXHAUSTION_CAP alarms are pending.  out0 counts the
+       alarms set, out1 is the first failure (0 when none failed), out2 is the
+       cap, so out0 == out2 with out1 == 0 is the measured outcome "no
+       exhaustion within the cap". */
+    uint32_t alarm_count = 0;
     int first_alarm_error = 0;
-    for (;;) {
+    probe_step(emulated, "kernel-alarm", "alarm-table-exhaustion");
+    while (alarm_count < ALARM_EXHAUSTION_CAP) {
         SceUID alarm = sceKernelSetAlarm(0x7fffffffu, alarm_count_handler,
                                          (void *)&s_alarm_fired);
         if (alarm < 0) {
             first_alarm_error = alarm;
             break;
         }
-        if (alarm_count == alarm_capacity) {
-            size_t next_capacity = alarm_capacity == 0 ? 32u : alarm_capacity * 2u;
-            if (next_capacity > (size_t)-1 / sizeof(*alarms)) {
-                storage_failed = 1;
-                (void)sceKernelCancelAlarm(alarm);
-                break;
-            }
-            SceUID *next = (SceUID *)realloc(alarms, next_capacity * sizeof(*alarms));
-            if (next == NULL) {
-                storage_failed = 1;
-                (void)sceKernelCancelAlarm(alarm);
-                break;
-            }
-            alarms = next;
-            alarm_capacity = next_capacity;
-        }
-        alarms[alarm_count++] = alarm;
+        s_alarm_table[alarm_count++] = alarm;
     }
-    for (size_t i = 0; i < alarm_count; i++) {
-        (void)sceKernelCancelAlarm(alarms[i]);
+    probe_step(emulated, "kernel-alarm", "alarm-table-release");
+    for (uint32_t i = 0; i < alarm_count; i++) {
+        (void)sceKernelCancelAlarm(s_alarm_table[i]);
     }
-    free(alarms);
-    out[0] = (uint32_t)alarm_count;
+    out[0] = alarm_count;
     out[1] = (uint32_t)first_alarm_error;
-    out[2] = storage_failed;
+    out[2] = ALARM_EXHAUSTION_CAP;
     emit_alarm_case(emulated, "alarm-table-exhaustion", (uint32_t)first_alarm_error,
                     out, 3);
 
@@ -5582,7 +5681,6 @@ static void run_kernel_alarm(int emulated) {
 static SceUID s_thread_control_sema;
 static SceUID s_thread_wait_sema;
 static SceUID s_thread_done_sema;
-static SceUID s_thread_main_uid;
 static SceUID s_thread_suspend_target;
 static volatile int s_thread_action_rc;
 static volatile int s_thread_wait_rc;
@@ -5600,11 +5698,13 @@ static int thread_self_suspend_entry(SceSize args, void *argp) {
     return 0;
 }
 
+static SceUID s_thread_order_sema;
+
 static int thread_order_entry(SceSize args, void *argp) {
     (void)args;
     uint32_t index = s_thread_ready_count++;
     if (index < 3u) s_thread_ready_order[index] = *(const uint32_t *)argp;
-    if (s_thread_ready_count == 3u) (void)sceKernelWakeupThread(s_thread_main_uid);
+    if (s_thread_ready_count == 3u) (void)sceKernelSignalSema(s_thread_order_sema, 1);
     return 0;
 }
 
@@ -5648,7 +5748,9 @@ static void run_suspend_target(int emulated, const char *case_id, SceUID target)
     SceUID thread = sceKernelCreateThread("oracle-suspend-target",
         thread_self_suspend_entry, 64, 0x1000, THREAD_ATTR_USER, NULL);
     int start_rc = thread >= 0 ? sceKernelStartThread(thread, 0, NULL) : thread;
-    if (start_rc >= 0) (void)sceKernelWaitSema(s_thread_control_sema, 1, NULL);
+    probe_step(emulated, "thread-scheduler", case_id);
+    SceUInt control_timeout = 1000000u;
+    if (start_rc >= 0) (void)sceKernelWaitSema(s_thread_control_sema, 1, &control_timeout);
     uint32_t observed = 0xffffffffu;
     uint32_t suspended = thread >= 0 ?
         (uint32_t)wait_for_thread_state(thread, PSP_THREAD_SUSPEND, 100000u,
@@ -5682,7 +5784,7 @@ static void run_thread_scheduler(int emulated) {
     out[0] = 0xffu;
     emit_thread_scheduler(emulated, "thread-rotate-range", (uint32_t)rc, out, 1);
 
-    s_thread_main_uid = sceKernelGetThreadId();
+    s_thread_order_sema = sceKernelCreateSema("oracle-ready-done", 0, 0, 1, NULL);
     s_thread_ready_count = 0;
     s_thread_ready_order[0] = 0xffffffffu;
     s_thread_ready_order[1] = 0xffffffffu;
@@ -5703,7 +5805,13 @@ static void run_thread_scheduler(int emulated) {
     int rotate_rc = sceKernelRotateThreadReadyQueue(64);
     int start_c = order_c >= 0 ? sceKernelStartThread(
         order_c, sizeof(s_thread_order_args[2]), &s_thread_order_args[2]) : order_c;
-    if (order_a >= 0 && order_b >= 0 && order_c >= 0) (void)sceKernelSleepThread();
+    /* Block (bounded) until the third ready thread has run.  The previous
+       revision slept with no bound; a lost wakeup would have hung the case.
+       A timeout is recorded as TIMEOUT with the order observed so far. */
+    probe_step(emulated, "thread-scheduler", "thread-ready-order-after-rotate");
+    SceUInt order_timeout = 1000000u;
+    const int order_rc = order_a >= 0 && order_b >= 0 && order_c >= 0 ?
+        sceKernelWaitSema(s_thread_order_sema, 1, &order_timeout) : -1;
     out[0] = (uint32_t)start_a;
     out[1] = (uint32_t)start_b;
     out[2] = (uint32_t)rotate_rc;
@@ -5711,8 +5819,9 @@ static void run_thread_scheduler(int emulated) {
     out[4] = s_thread_ready_order[0];
     out[5] = s_thread_ready_order[1];
     out[6] = s_thread_ready_order[2];
-    emit_thread_scheduler(emulated, "thread-ready-order-after-rotate",
-                          (uint32_t)rotate_rc, out, 7);
+    emit_record_extended(emulated, "PSP-THREAD-003", "thread-ready-order-after-rotate",
+                         order_rc == 0 ? "PASS" : "TIMEOUT", (uint32_t)rotate_rc,
+                         out, 7);
     if (order_a >= 0) {
         SceUInt timeout = 1000000u;
         (void)sceKernelWaitThreadEnd(order_a, &timeout);
@@ -5806,6 +5915,7 @@ static int wait_outcomes_entry(SceSize args, void *argp) {
 
 static void run_wait_outcome(int emulated, const char *case_id,
                              int mode, int cancel) {
+    probe_step(emulated, "wait-outcomes", case_id);
     s_wait_mode = mode;
     s_wait_result = (int)0xdeadbeefu;
     s_wait_entered = 0;
@@ -5888,6 +5998,7 @@ static void run_status_size_cell(int emulated, const char *case_id, SceUID uid,
     memset(bytes, 0xa5, sizeof(bytes));
     *(SceSize *)bytes = (SceSize)requested;
     memcpy(before, bytes, sizeof(bytes));
+    probe_step(emulated, "refer-status-size", case_id);
     int rc = refer(uid, bytes);
     uint32_t low_mask = 0;
     uint32_t high_mask = 0;
@@ -6111,6 +6222,7 @@ static int registry_probe_small_buffer(REGHANDLE category) {
 static void walk_registry_category(int emulated, REGHANDLE registry,
                                    const char *api_path, const char *display_path) {
     REGHANDLE category = 0;
+    probe_step(emulated, "registry-readonly", display_path);
     int open_rc = sceRegOpenCategory(registry, api_path, 1, &category);
     if (open_rc < 0) return;
     int key_count = -1;
@@ -6174,6 +6286,16 @@ static void walk_registry_category(int emulated, REGHANDLE registry,
     (void)sceRegCloseCategory(category);
 }
 
+/* Registry handle-exhaustion bound.  The previous revision opened handles
+   until sceRegOpenRegistry failed, with no bound; on a PSP-3000 the launch
+   went silent after registry-open.  256 open handles is far beyond what the
+   probe or a game needs at once; reaching the cap without a failure is
+   recorded as the measured outcome "no exhaustion within the cap". */
+#define REGISTRY_OPEN_CAP 256u
+static REGHANDLE s_registry_handles[REGISTRY_OPEN_CAP];
+
+#define REGISTRY_STEP(step) probe_step(emulated, "registry-readonly", (step))
+
 static void run_registry_readonly(int emulated) {
     struct RegParam param;
     memset(&param, 0, sizeof(param));
@@ -6183,6 +6305,7 @@ static void run_registry_readonly(int emulated) {
     param.unk2 = 1u;
     param.unk3 = 1u;
     REGHANDLE registry = 0;
+    REGISTRY_STEP("open-registry");
     const int open_rc = sceRegOpenRegistry(&param, 1, &registry);
     uint32_t open_out[2] = {1u, param.regtype};
     emit_registry_record(emulated, "registry-open", open_rc == 0 ? "PASS" : "FAIL",
@@ -6190,78 +6313,82 @@ static void run_registry_readonly(int emulated) {
 
     int unknown_category_rc = (int)0xffffffffu;
     int unknown_key_rc = (int)0xffffffffu;
-    int bad_handle_rc = (int)0xffffffffu;
     int small_buffer_rc = (int)0xffffffffu;
-    int handle_exhaustion_rc = (int)0xffffffffu;
-    uint32_t handle_storage_failed = 0;
+    int open_failure_rc = 0;
     uint32_t opened_handles = 0;
+    uint32_t exhausted = 0;
     REGHANDLE config = 0;
     int config_rc = (int)0xffffffffu;
     if (open_rc == 0) {
         REGHANDLE unknown = 0;
+        REGISTRY_STEP("unknown-category");
         unknown_category_rc = sceRegOpenCategory(registry,
             "/CONFIG/__NAKAGAWA_ORACLE_UNKNOWN_CATEGORY__", 1, &unknown);
         if (unknown_category_rc == 0) (void)sceRegCloseCategory(unknown);
-        int unknown_count = -1;
-        bad_handle_rc = sceRegGetKeysNum((REGHANDLE)0xffffffffu, &unknown_count);
+        REGISTRY_STEP("open-config");
         config_rc = sceRegOpenCategory(registry, "/CONFIG", 1, &config);
         if (config_rc == 0) {
             REGHANDLE key = 0;
             unsigned int type = 0;
             SceSize size = 0;
+            REGISTRY_STEP("unknown-key");
             unknown_key_rc = sceRegGetKeyInfo(config,
                 "__NAKAGAWA_ORACLE_UNKNOWN_KEY__", &key, &type, &size);
         }
 
-        REGHANDLE *handles = NULL;
-        size_t count = 0;
-        size_t capacity = 0;
-        for (;;) {
+        REGISTRY_STEP("handle-exhaustion");
+        while (opened_handles < REGISTRY_OPEN_CAP) {
             REGHANDLE handle = 0;
             int rc = sceRegOpenRegistry(&param, 1, &handle);
             if (rc < 0) {
-                handle_exhaustion_rc = rc;
+                open_failure_rc = rc;
+                exhausted = 1u;
                 break;
             }
-            if (count == capacity) {
-                size_t next_capacity = capacity == 0 ? 16u : capacity * 2u;
-                if (next_capacity > (size_t)-1 / sizeof(*handles)) {
-                    handle_exhaustion_rc = (int)0xffffffffu;
-                    handle_storage_failed = 1;
-                    (void)sceRegCloseRegistry(handle);
-                    break;
-                }
-                REGHANDLE *next = (REGHANDLE *)realloc(handles,
-                    next_capacity * sizeof(*handles));
-                if (next == NULL) {
-                    handle_exhaustion_rc = (int)0xffffffffu;
-                    handle_storage_failed = 1;
-                    (void)sceRegCloseRegistry(handle);
-                    break;
-                }
-                handles = next;
-                capacity = next_capacity;
-            }
-            handles[count++] = handle;
+            s_registry_handles[opened_handles++] = handle;
         }
-        opened_handles = count > 0xffffffffu ? 0xffffffffu : (uint32_t)count;
-        for (size_t i = 0; i < count; i++) (void)sceRegCloseRegistry(handles[i]);
-        free(handles);
-        if (config_rc == 0) small_buffer_rc = registry_probe_small_buffer(config);
+        REGISTRY_STEP("handle-release");
+        for (uint32_t i = 0; i < opened_handles; i++) {
+            (void)sceRegCloseRegistry(s_registry_handles[i]);
+        }
+        if (config_rc == 0) {
+            REGISTRY_STEP("small-buffer");
+            small_buffer_rc = registry_probe_small_buffer(config);
+        }
     }
+    /* out4 counts the opens that succeeded; out6 is 1 when an open failed
+       before the cap (out3 is then its result) and 0 when all
+       REGISTRY_OPEN_CAP opens succeeded (out3 is then 0). */
     uint32_t error_out[7] = {
         (uint32_t)unknown_category_rc,
         (uint32_t)unknown_key_rc,
-        (uint32_t)bad_handle_rc,
         (uint32_t)small_buffer_rc,
-        (uint32_t)handle_exhaustion_rc,
+        (uint32_t)open_failure_rc,
         opened_handles,
-        handle_storage_failed,
+        REGISTRY_OPEN_CAP,
+        exhausted,
     };
     emit_registry_record(emulated, "registry-errors", "PASS", (uint32_t)open_rc,
                          error_out, 7, NULL, NULL, 0);
-    if (config_rc == 0) walk_registry_category(emulated, registry, "/CONFIG", "CONFIG");
+    if (config_rc == 0) {
+        REGISTRY_STEP("walk-config");
+        walk_registry_category(emulated, registry, "/CONFIG", "CONFIG");
+    }
     if (config_rc == 0) (void)sceRegCloseCategory(config);
+
+    /* The bogus-handle call runs last, after every other measurement has
+       been recorded, under its own step marker: if the kernel faults or never
+       returns on a forged handle, nothing else is lost. */
+    int bad_handle_rc = (int)0xffffffffu;
+    int bad_handle_count = -1;
+    if (open_rc == 0) {
+        REGISTRY_STEP("bad-handle");
+        bad_handle_rc = sceRegGetKeysNum((REGHANDLE)0xffffffffu, &bad_handle_count);
+    }
+    uint32_t bad_out[2] = {(uint32_t)bad_handle_rc, (uint32_t)bad_handle_count};
+    emit_registry_record(emulated, "registry-bad-handle",
+                         open_rc == 0 ? "PASS" : "SKIP", (uint32_t)bad_handle_rc,
+                         bad_out, 2, NULL, NULL, 0);
     if (open_rc == 0) (void)sceRegCloseRegistry(registry);
     uint32_t done_out[3] = {
         s_registry_categories,
@@ -6278,6 +6405,26 @@ static void emit_ge_control(int emulated, const char *case_id, const char *statu
                             uint32_t result, const uint32_t *out, size_t count) {
     emit_record_extended(emulated, "PSP-GE-CONTROL-001", case_id, status,
                          result, out, count);
+}
+
+/* Record whether the GE is idle and, when it is not, reset every queue and
+   record whether that reset reached idle within the bound.  Emits four
+   outputs: reset issued, sceGeBreak(1) result, last draw state, elapsed us. */
+#define GE_QUIESCE_OUTS 4
+static void emit_ge_quiesce(int emulated, const char *case_id) {
+    probe_step(emulated, "ge-break-continue", case_id);
+    GeIdleWait w = ge_wait_idle(-1, 0u);
+    uint32_t reset_issued = 0u;
+    int reset_rc = 0;
+    if (!w.idle) {
+        reset_issued = 1u;
+        reset_rc = ge_reset_queues(&w);
+    }
+    uint32_t out[GE_QUIESCE_OUTS] = {
+        reset_issued, (uint32_t)reset_rc, (uint32_t)w.draw_state, w.elapsed_us,
+    };
+    emit_ge_control(emulated, case_id, w.idle ? "PASS" : "TIMEOUT",
+                    (uint32_t)reset_rc, out, GE_QUIESCE_OUTS);
 }
 
 static void run_ge_break_continue(int emulated) {
@@ -6306,9 +6453,16 @@ static void run_ge_break_continue(int emulated) {
     for (uint32_t i = 0; i < GE_TILE_W * GE_TILE_H; i++) {
         s_ge_src[i] = 0x5a5a5a5au;
     }
+    /* Build the list first, then write the data cache back: the GE fetches the
+       list and the transfer source from RAM, not from the CPU cache.  The
+       previous revision wrote the list after the writeback, so its words could
+       still sit in dirty cache lines while the GE read the zero-initialised
+       buffer (NOP words) and ran on past the list without meeting FINISH/END;
+       such a list never completes. */
+    (void)ge_build_list(src, dst);
     sceKernelDcacheWritebackAll();
-    const uint32_t list_bytes = ge_build_list(src, dst);
     const uint32_t list = (uint32_t)(uintptr_t)s_ge_list;
+    probe_step(emulated, "ge-break-continue", "break-active-list");
     int qid = sceGeListEnQueue((const void *)(uintptr_t)list, NULL, -1, NULL);
     int break_rc = qid >= 0 ? sceGeBreak(0, &param) : qid;
     int list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
@@ -6322,14 +6476,31 @@ static void run_ge_break_continue(int emulated) {
                     (uint32_t)list_state, list_out, 3);
     emit_ge_control(emulated, "ge-draw-sync-paused", paused_status,
                     (uint32_t)draw_state, draw_out, 3);
-    if (qid >= 0) {
-        (void)sceGeContinue();
-        (void)sceGeListUpdateStallAddr(qid,
-            (void *)(uintptr_t)(list + list_bytes));
-        (void)sceGeListSync(qid, 0);
-        (void)sceGeDrawSync(0);
-    }
+    /* Continue the broken list and wait for it, bounded.  The list ends in
+       FINISH then END (the terminator sceGuFinish emits) and was enqueued
+       with no stall address, so once the GE runs it again nothing in the list
+       can hold it; there is no stall to release, so the stall address is not
+       touched.  The previous revision ignored the continue result, moved a
+       stall the list never had, and blocked in sceGeListSync(qid, 0); on a
+       PSP-3000 that wait never returned after the break left the list in
+       state 4 with sceGeDrawSync(1) at 2.  A blocking list sync returns only
+       once the list reaches PSP_GE_LIST_DONE, which a list the GE read from
+       stale memory (see the writeback above) never reaches.  The continue
+       result, the drain states and the elapsed time recorded here show
+       whether the corrected list now completes after a break and continue. */
+    probe_step(emulated, "ge-break-continue", "continue-drain");
+    const int continue_rc = qid >= 0 ? sceGeContinue() : qid;
+    const GeIdleWait drain = ge_wait_idle(qid, qid >= 0 ? GE_IDLE_DEADLINE_US : 0u);
+    uint32_t drain_out[5] = {
+        (uint32_t)qid, (uint32_t)continue_rc, (uint32_t)drain.list_state,
+        (uint32_t)drain.draw_state, drain.elapsed_us,
+    };
+    emit_ge_control(emulated, "ge-continue-drain",
+                    qid < 0 ? "SKIP" : drain.idle ? "PASS" : "TIMEOUT",
+                    (uint32_t)continue_rc, drain_out, 5);
+    emit_ge_quiesce(emulated, "ge-quiesce-after-continue");
 
+    probe_step(emulated, "ge-break-continue", "cancel-stalled-list");
     qid = sceGeListEnQueue((const void *)(uintptr_t)list,
                            (void *)(uintptr_t)list, -1, NULL);
     const int cancel_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
@@ -6346,8 +6517,9 @@ static void run_ge_break_continue(int emulated) {
                     (uint32_t)list_state, list_out, 3);
     emit_ge_control(emulated, "ge-draw-sync-cancelled", cancel_status,
                     (uint32_t)draw_state, draw_out, 3);
+    emit_ge_quiesce(emulated, "ge-quiesce-after-cancel");
 
-    uint32_t done = 7;
+    uint32_t done = 10;
     emit_record_extended(emulated, "PSP-GE-CONTROL-001", "ge-break-continue-done",
                          "PASS", 0, &done, 1);
 }
@@ -6384,6 +6556,7 @@ static void run_kernel_misc(int emulated) {
     emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "global-profiler",
                          "PASS", (uint32_t)(uintptr_t)profiler, profiler_out, 2);
 
+    probe_step(emulated, "kernel-misc", "vtimer-basic");
     SceUID timer = sceKernelCreateVTimer("oracle-vtimer", NULL);
     SceKernelSysClock before = {0};
     SceKernelSysClock after = {0};
@@ -6404,12 +6577,14 @@ static void run_kernel_misc(int emulated) {
     emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "vtimer-basic",
                          "PASS", (uint32_t)timer, timer_out, 13);
 
+    probe_step(emulated, "kernel-misc", "display-basic");
     int hold_rc = sceDisplaySetHoldMode(0);
     int wait_rc = sceDisplayWaitVblankStartMultiCB(1u);
     uint32_t display_out[4] = {0u, (uint32_t)hold_rc, 1u, (uint32_t)wait_rc};
     emit_record_extended(emulated, "PSP-KERNEL-MISC-001", "display-basic",
                          "PASS", (uint32_t)wait_rc, display_out, 4);
 
+    probe_step(emulated, "kernel-misc", "impose-basic");
     int charging = (int)0x5a5a5a5a;
     int icon_status = (int)0x5a5a5a5a;
     int battery_rc = sceImposeBatteryIconStatus(&charging, &icon_status);
