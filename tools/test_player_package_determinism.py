@@ -42,6 +42,10 @@ build ran, and the toolchain copies them into its own output:
     A ``sha256`` the package's own JSON records for a file that differs only by
     the rules above. A recorded digest is a consequence, not a new difference.
 
+Two toolchain files, the link's response file and the runtime profile-entries file,
+also record the cache entry the objects are written into. Across two manifests they
+differ in that entry and nothing else, which ``PATH_ECHOES`` checks on its own.
+
 **Public-export exclusion.** The route writes nothing the public export or
 ``git status`` could pick up, and the public scope refuses the output root even
 when someone points it there by mistake.
@@ -143,12 +147,43 @@ GUEST_DERIVED_SUFFIXES = (".c", ".h", ".bin", ".toml")
 # The package files that record the manifest's own identity. Two routes that bind
 # the same guest to two different manifests must differ in exactly these.
 MANIFEST_IDENTIFIED = ("build-report.json", "package.json", "completion-manifest.json")
+# Toolchain files that record where the objects were written rather than what was
+# compiled: the response file the title link reads (#724) and the profile-entries file
+# the runtime stamp is hashed from (CFLAGS carries -DSR_BUILD_DIR). Each names the
+# content-addressed cache entry, so two manifests differ in them exactly where they
+# differ in the compiled artifacts, and two roots differ in them by the root alone.
+PATH_ECHOES = ("link-objects.rsp", ".runtime-profile-entries")
+# A cache entry directory, <AOT digest>/<native digest>, in its long spelling or in the
+# Windows 8.3 spelling the planner's workspace path is echoed with (for example
+# "7B48E1~1" for "7b48e18b9f...").
+#
+# The 8.3 suffix is ``~N`` with N counting collisions, so it reaches ``~10`` and beyond.
+#
+# Separators: only forward slashes are matched, on purpose. Both writers of these two
+# files normalize backslashes before they write, so the echo is never backslashed:
+# the Makefile's CFLAGS carry ``-DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"`` (the
+# runtime profile entries are hashed from CFLAGS), and the link response file is
+# written as ``$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))``. A backslash
+# echo would therefore not be rewritten here, and the two manifests' differing digests
+# would fail the equality check in the test, so the assumption fails closed.
+_CACHE_ENTRY_RE = re.compile(rb"/entries/(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/"
+                             rb"(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/")
 # The package files whose content names the title or the artifact stem. These are
 # left out of the byte comparison, because a route may legitimately name a
 # different title; the generated-manifest test then states which of them must still
 # agree, since the stem is a property of the guest.
 TITLE_IDENTIFIED = MANIFEST_IDENTIFIED + ("THIRD_PARTY_NOTICES.txt", "SOURCE.txt",
                                           "codegen_profile.json", "recomp_profile.json")
+
+
+def path_echo_content(rules: "PackageNormalizer", name: str, data: bytes) -> bytes:
+    """A path echo under the documented rules, with its cache entry read as one.
+
+    Only the cache-entry digests are added to the rules, and only for these files:
+    they are the one part of the path that the manifest, not the root, determines.
+    """
+    normalized, _ = rules.apply(name, data)
+    return _CACHE_ENTRY_RE.sub(b"/entries/<ENTRY>/", normalized)
 
 
 def names_the_title(relative: str) -> bool:
@@ -496,6 +531,12 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                 "is_experimental": True,
             }],
         }), encoding="utf-8")
+        # The launcher refuses a title whose declared data folder is absent. The route
+        # test stages the same empty folder beside the library, so the launch half
+        # reads the same runtime root on both routes.
+        data_root = manifest.get("filesystem", {}).get("data_root")
+        if data_root:
+            (user_root / data_root).mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def generated_manifest(fixture: Path, executable: bytes) -> dict:
@@ -553,7 +594,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
 
     # -- the launch half ------------------------------------------------------
 
-    def launch(self, name: str) -> tuple[subprocess.CompletedProcess, Path, Path]:
+    def launch(self, name: str) -> tuple[subprocess.CompletedProcess, Path]:
         """PLAY NOW, headless, through the player's own launch session."""
         local_appdata = self.roots[name].parent / "localappdata"
         library_dir = local_appdata / "Nakagawa" / "data"
@@ -561,11 +602,9 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
         (library_dir / "library.json").write_bytes(
             (self.roots[name] / "library.json").read_bytes())
         sandbox = self.roots[name].parent / "sandbox"
-        boot_log = sandbox / f"{name}-boot-events.log"
         perf_csv = sandbox / f"{name}-perf.csv"
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = str(local_appdata)
-        environment["SR_BOOT_EVENT_FILE"] = str(boot_log)
         environment["SR_PERF"] = "1"
         environment["SR_PERF_CSV"] = str(perf_csv)
         ucrt_bin = Path("C:/msys64/ucrt64/bin")
@@ -577,15 +616,22 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
             cwd=ROOT, env=environment, capture_output=True, text=True,
             timeout=LAUNCH_TIMEOUT_MS,
         )
-        return launched, boot_log, perf_csv
+        return launched, perf_csv
 
     def assert_launched(self, name: str) -> None:
-        launched, boot_log, perf_csv = self.launch(name)
+        launched, perf_csv = self.launch(name)
         self.assertEqual(launched.returncode, 0,
                          launched.stdout[-4000:] + launched.stderr[-4000:])
         self.assertIn("[PLAYER] Launch index 0: PLAY NOW available", launched.stdout)
         self.assertIn("[PLAYER] Headless launch child exited with code 0", launched.stdout)
-        events = boot_log.read_text(encoding="utf-8", errors="replace")
+        # The player owns the child's boot evidence: it writes one file under the per-user
+        # cache, and an inherited SR_BOOT_EVENT_FILE does not redirect it (the route test
+        # reads the same file the same way).
+        boot_logs = sorted((self.roots[name].parent / "localappdata" / "Nakagawa" / "cache")
+                           .glob("player-boot-*.events"))
+        self.assertEqual(len(boot_logs), 1,
+                         "the player did not retain the child's boot evidence")
+        events = boot_logs[0].read_text(encoding="utf-8", errors="replace")
         for milestone in ("BOOT_EVENT phase=image_loaded",
                           "BOOT_EVENT phase=runtime_registered",
                           "BOOT_EVENT phase=guest_start mode=scheduler"):
@@ -777,16 +823,28 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                         "reason two builds of identical inputs did not share: "
                         f"{sorted(pair.rules_for(EXECUTABLE))}")
 
-        # The only artifacts allowed to differ are the ones that record a manifest's
-        # own identity. Everything the toolchain derives from the *guest* must match
-        # byte for byte, with no rule applied.
+        # The only artifacts allowed to differ, by name, are the ones that record a
+        # manifest's own identity, the compiled artifacts, and the path echoes checked
+        # next. Everything the toolchain derives from the *guest* must match byte for
+        # byte, with no rule applied.
         self.assertEqual(
             sorted(name for name in pair.differing
                    if not name.endswith((".d", ".o", ".map"))
-                   and name not in (".game-inputs", "runtime_profile.json", EXECUTABLE)),
+                   and name not in (".game-inputs", "runtime_profile.json", EXECUTABLE)
+                   and name not in PATH_ECHOES),
             sorted(MANIFEST_IDENTIFIED),
             "these artifacts differ between the two manifest routes, and the difference "
             "is neither the manifest's own recorded identity nor a compiled artifact")
+        # A path echo may differ between the routes only where its cache entry does. With
+        # the workspace root, the scratch name and the cache-entry digests read as one,
+        # it must then be byte-identical: a difference in its content is not explained.
+        for name in PATH_ECHOES:
+            self.assertIn(name, pair.identity, f"the package no longer contains {name}")
+            self.assertEqual(
+                path_echo_content(pair.left_rules, name, pair.left_by_name[name]),
+                path_echo_content(pair.right_rules, name, pair.right_by_name[name]),
+                f"{name} differs between the two manifest routes by more than the "
+                "workspace root and its cache entry")
 
         # The compiled artifacts do differ, because the two manifests carry different
         # content-addressed cache keys, and every one of them is a file two builds of

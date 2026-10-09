@@ -18,6 +18,7 @@
 #
 # Usage: analyze.py <elf> [--toml out.toml] [--quiet]
 
+import bisect
 import hashlib
 import os
 import struct
@@ -518,7 +519,36 @@ def exec_ranges(elf, extra_spans=None):
 
 
 def in_ranges(addr, ranges):
+    if isinstance(ranges, _SpanIndex):
+        return addr in ranges
     return any(lo <= addr < hi for lo, hi in ranges)
+
+
+class _SpanIndex:
+    """Membership over half-open ``(lo, hi)`` spans, answering exactly as ``in_ranges``.
+
+    The spans are merged once into disjoint, sorted intervals, so a lookup is a
+    binary search instead of a scan of every span. Empty spans (``lo >= hi``)
+    can contain no address and are dropped; touching spans merge, which leaves
+    the covered set of integers unchanged.
+    """
+
+    __slots__ = ("starts", "ends")
+
+    def __init__(self, ranges):
+        self.starts = []
+        self.ends = []
+        for lo, hi in sorted((lo, hi) for lo, hi in ranges if lo < hi):
+            if self.ends and lo <= self.ends[-1]:
+                if hi > self.ends[-1]:
+                    self.ends[-1] = hi
+            else:
+                self.starts.append(lo)
+                self.ends.append(hi)
+
+    def __contains__(self, addr):
+        i = bisect.bisect_right(self.starts, addr) - 1
+        return i >= 0 and addr < self.ends[i]
 
 
 def _file_backed_exec_ranges(elf):
@@ -547,6 +577,10 @@ def trace_function(elf, start, ranges, covered, calls, hc):
     # rescanning all prior calls. Calls return, so execution continues after the delay slot;
     # jr and j and an unconditional b end a path (no fall-through). Conditional branches
     # fork: follow the target and continue past the delay slot.
+    # The range membership tests below run once per traced instruction, so they use an
+    # index built once per trace (same answers as in_ranges over the plain list).
+    if not isinstance(ranges, _SpanIndex):
+        ranges = _SpanIndex(ranges)
     stack = [start]
     local = set()
     new_calls = []

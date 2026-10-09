@@ -1249,7 +1249,7 @@ def _current_package_cache_key(
         compiler=package_cache.compiler_identity(
             environment.get("CC", "gcc"), repository_root=ROOT, environment=environment
         ),
-        target=package_cache.compiler_target(environment),
+        target=package_cache.compiler_target(environment, repository_root=ROOT),
         runtime_source_digest=package_cache.source_tree_digest(ROOT),
         compile_flags=package_cache.native_compile_flags(
             public_safe=public_safe, environment=environment

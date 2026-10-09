@@ -23160,6 +23160,162 @@ static void test_route_gates_on_a_guest_event_not_a_signature(void) {
     remove(RT_PATH);
 }
 
+/* WIDTHS and the READS / VBLANKS line modifier: a width may count guest reads (scripted_input.h).
+ * A refusal names the rule it broke, because a width read in the wrong unit presses for the
+ * wrong length with no other sign. Lines that never begin with either word parse as they did. */
+static void rt_expect_refusal(const char *body, const char *named, const char *what) {
+    char err[2048];
+    FILE *capture = NULL;
+    int saved = -1;
+    err[0] = '\0';
+    sr_route_reset();
+    rt_write(body);
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+    expect(capturing, "the route selftest can capture the parser's diagnostics");
+    int rc = sr_route_load(RT_PATH);
+    if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+    expect(rc == 0 && sr_route_status() == RT_FAILED, what);
+    expect(strstr(err, named) != NULL, "the refusal names the rule the line broke");
+}
+
+static void test_route_widths_units_parse_and_name_their_refusals(void) {
+    char hexA[1024], body[4096];
+    rt_hex(hexA, 0x20);
+
+    rt_expect_refusal("WIDTHS FRAMES\nPRESS START 4\nEND\n",
+                      "WIDTHS VBLANKS or WIDTHS READS", "an unknown WIDTHS unit is refused");
+    rt_expect_refusal("WIDTHS\nEND\n",
+                      "WIDTHS VBLANKS or WIDTHS READS", "a WIDTHS with no unit is refused");
+    rt_expect_refusal("WIDTHS READS\nWIDTHS VBLANKS\nEND\n",
+                      "WIDTHS may be given once", "a second WIDTHS is refused, not applied to earlier steps");
+    rt_expect_refusal("PRESS START 4\nWIDTHS READS\nEND\n",
+                      "WIDTHS must precede every step", "WIDTHS after a step is refused");
+    rt_expect_refusal("READS\nEND\n",
+                      "must be followed by PRESS", "a unit word with no step is refused");
+    rt_expect_refusal("VBLANKS # no step on this line\nEND\n",
+                      "must be followed by PRESS", "a unit word followed only by a comment is refused");
+    rt_expect_refusal("READS WAIT_NID sceIoOpen 60\nEND\n",
+                      "apply to PRESS, DELAY, PRESS_UNTIL and PRESS_WHILE", "a unit on a WAIT_NID is refused");
+    rt_expect_refusal("READS SIGGRID 4 4\nEND\n",
+                      "apply to PRESS, DELAY, PRESS_UNTIL and PRESS_WHILE", "a unit on SIGGRID is refused");
+    rt_expect_refusal("READS END\n",
+                      "apply to PRESS, DELAY, PRESS_UNTIL and PRESS_WHILE", "a unit on END is refused");
+    rt_expect_refusal("WIDTHS READS\nPRESS START 0\nEND\n",
+                      "PRESS width must be >= 1", "a zero-read press is refused");
+    rt_expect_refusal("READS PRESS CROSSS 4\nEND\n",
+                      "is not a hex mask or a button name", "a unit does not excuse a mask that means nothing");
+
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "READS PRESS_UNTIL MAIN_MENU START 8 8 1000\nEND\n", hexA);
+    rt_expect_refusal(body, "with READS needs width >= 1, period > width",
+                      "a read-width PRESS_UNTIL whose period does not exceed its width is refused");
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "READS PRESS_WHILE MAIN_MENU START 4 8 0\nEND\n", hexA);
+    rt_expect_refusal(body, "timeout >= 1 vblank",
+                      "a read-width PRESS_WHILE with no timeout is refused");
+
+    /* Accepted forms: a file-wide WIDTHS, a per-line override either way, and the other two
+     * repeating steps. Every one loads and runs, and the narration says which unit it counts. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "WIDTHS READS\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 3\n"
+             "VBLANKS PRESS START 4\n"
+             "READS DELAY 2\n"
+             "READS PRESS_UNTIL MAIN_MENU CROSS 2 5 100\n"
+             "VBLANKS PRESS_WHILE MAIN_MENU CROSS 2 5 100\n"
+             "END\n", hexA);
+    rt_write(body);
+    char err[4096] = "";
+    FILE *capture = NULL;
+    int saved = -1;
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+    int loaded = sr_route_load(RT_PATH);
+    if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+    expect(loaded == 1 && sr_route_status() == RT_RUNNING, "a program mixing both units loads");
+    expect(strstr(err, "step 1 (PRESS) presses CROSS (widths in guest reads)") != NULL,
+           "a PRESS under WIDTHS READS says its width is in guest reads");
+    expect(strstr(err, "step 2 (PRESS) presses START\n") != NULL,
+           "a VBLANKS line is narrated as before, with no unit suffix");
+    expect(strstr(err, "step 4 (PRESS_UNTIL) presses CROSS (widths in guest reads)") != NULL,
+           "a READS PRESS_UNTIL says its width is in guest reads");
+    remove(RT_PATH);
+
+    /* A file with no WIDTHS, and no READS or VBLANKS line, is an ordinary route program: its
+     * narration is unchanged and its widths are vblanks. */
+    sr_route_reset();
+    snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU %s\nWAIT MAIN_MENU 1000\nPRESS START 4\nEND\n", hexA);
+    rt_write(body);
+    err[0] = '\0';
+    capturing = hle_data_stderr_capture_begin(&capture, &saved);
+    loaded = sr_route_load(RT_PATH);
+    if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+    expect(loaded == 1, "a plain route program still loads");
+    expect(strstr(err, "(widths in guest reads)") == NULL, "a plain route program never says reads");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
+/* One guest that reads the pad every vblank counts a read width exactly as it counts a vblank
+ * width, so the same program written either way must press the same buttons on the same
+ * vblanks. The mixed program also pins the mask sequence of a READS PRESS, a READS DELAY and a
+ * VBLANKS PRESS in one file. */
+static void test_route_read_widths_match_vblanks_for_a_guest_that_polls_every_vblank(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+    static const uint32_t expected[10] = {
+        0x4000u, 0x4000u, 0x4000u,            /* PRESS CROSS 3: three reads, three vblanks */
+        0u, 0u,                               /* DELAY 2 in reads: two released reads */
+        0x0008u, 0x0008u, 0x0008u, 0x0008u,   /* VBLANKS PRESS START 4 */
+        0u                                    /* READS DELAY 1 */
+    };
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+    snprintf(body, sizeof body,
+             "WIDTHS READS\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 3\n"
+             "DELAY 2\n"
+             "VBLANKS PRESS START 4\n"
+             "DELAY 1\n"
+             "END\n", hexA);
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the mixed-unit program loads");
+    for (uint32_t v = 0; v < 10; v++) {
+        uint32_t keys = rt_frame(v, v == 0 ? sigA : NULL);
+        expect(keys == expected[v], "each vblank presses what the mixed program says it presses");
+    }
+    expect(rt_frame(10, NULL) == 0u, "the program finishes once its last read-width release is read");
+    expect(sr_route_status() == RT_DONE, "the mixed-unit program completes");
+    remove(RT_PATH);
+
+    /* The same presses written in vblanks: identical output on a guest that reads every frame. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 3\n"
+             "DELAY 2\n"
+             "VBLANKS PRESS START 4\n"
+             "DELAY 1\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the all-vblank program loads");
+    for (uint32_t v = 0; v < 10; v++) {
+        uint32_t keys = rt_frame(v, v == 0 ? sigA : NULL);
+        expect(keys == expected[v], "a vblank width presses the same as a read width on a per-frame guest");
+    }
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 
 /* A press mask that names the wrong button cannot fail: the guest receives a bit the
  * screen ignores and the run looks exactly like a game that has frozen, which is how a
@@ -23543,6 +23699,76 @@ static void test_scripted_input_reaches_a_starved_guest(void) {
     ctrl_env("1", "", "", "");
     sr_route_reset();
     ctrl_drain(&cpu);
+}
+
+/* A read width is a count of the guest's own reads, so a press lasts that many reads however
+ * many vblanks a starved host covers between them. The batches below are the schedule the
+ * route-program case above uses: one batch of one vblank, then batches of thirty, with the
+ * guest reading once after each. The control is the same script in vblank widths, whose
+ * four-vblank press is latched inside one batch and handed to a single read. */
+static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) {
+    static const uint32_t batches[6] = { 1u, 30u, 30u, 30u, 30u, 30u };
+    CpuState cpu;
+    uint32_t seen[6];
+
+    /* --- read widths: CROSS for three reads, released for two, CROSS for one ----------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    starve_reset();
+    rt_write("WIDTHS READS\nPRESS CROSS 3\nDELAY 2\nPRESS CROSS 1\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING,
+           "a read-width route program loads");
+    for (int i = 0; i < 6; i++) {
+        starve_batch(batches[i]);
+        seen[i] = starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT;
+    }
+    expect(seen[0] == NK_PSP_BTN_CROSS_BIT && seen[1] == NK_PSP_BTN_CROSS_BIT &&
+           seen[2] == NK_PSP_BTN_CROSS_BIT, "CROSS reaches the starved guest on exactly its three reads");
+    expect(seen[3] == 0u && seen[4] == 0u, "and the release is read on exactly its two reads");
+    expect(seen[5] == NK_PSP_BTN_CROSS_BIT, "the next press starts after those two reads");
+    starve_batch(1u);
+    expect(sr_route_status() == RT_DONE, "the route completes once the last press was read");
+    remove(RT_PATH);
+
+    /* --- the control: the same schedule in vblank widths ---------------------------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    starve_reset();
+    rt_write("PRESS CROSS 3\nDELAY 2\nPRESS CROSS 1\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING,
+           "the vblank-width control route loads");
+    for (int i = 0; i < 6; i++) {
+        starve_batch(batches[i]);
+        seen[i] = starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT;
+    }
+    expect(seen[0] == NK_PSP_BTN_CROSS_BIT && seen[1] == 0u,
+           "a three-vblank press on a starved host reaches the guest in one read and is released");
+    expect(seen[2] == NK_PSP_BTN_CROSS_BIT, "its second press still arrives as a press");
+    remove(RT_PATH);
+
+    /* --- a read width the guest stops reading part-way fails the run, naming its reads ----- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    starve_reset();
+    _putenv("SR_PADSCRIPT_READ_BUDGET=30");
+    rt_write("WIDTHS READS\nPRESS START 3\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a three-read press loads with a 30-vblank read budget");
+    starve_batch(1u);
+    (void)starve_guest_read(&cpu);             /* one of its three reads */
+    {
+        char err[2048] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        starve_batch(30u);                     /* the budget runs out at vblank 31 */
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(sr_route_status() == RT_FAILED, "a read width that is not completed fails the route");
+        expect(strstr(err, "the guest read the controller only 1 of the 3 reads START was held for") != NULL,
+               "the failure names how many of its reads the guest made");
+    }
+    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    remove(RT_PATH);
+    sr_route_reset();
 }
 
 /* sceKernelExitGame is `void sceKernelExitGame(void)`:
@@ -25690,9 +25916,12 @@ int main(int argc, char **argv) {
     test_route_legacy_pad_script_is_unchanged();
     test_route_names_the_buttons_it_presses();
     test_route_gates_on_a_guest_event_not_a_signature();
+    test_route_widths_units_parse_and_name_their_refusals();
+    test_route_read_widths_match_vblanks_for_a_guest_that_polls_every_vblank();
 
     test_route_samples_by_elapsed_vcount_cadence();
     test_scripted_input_reaches_a_starved_guest();
+    test_route_read_widths_hold_for_their_reads_on_a_starved_host();
 
     check_coroutine_lifecycle();
 
