@@ -590,18 +590,21 @@ _register_campaign_probe(
     "ge-break-continue", "PSP-GE-CONTROL-001",
     ("ge-break-no-active-list", "ge-continue-no-paused-list",
      "ge-break-invalid-mode", "ge-list-sync-paused", "ge-draw-sync-paused",
-     "ge-list-sync-cancelled", "ge-draw-sync-cancelled"),
+     "ge-continue-drain", "ge-quiesce-after-continue",
+     "ge-list-sync-cancelled", "ge-draw-sync-cancelled",
+     "ge-quiesce-after-cancel"),
     {"ge-break-no-active-list": 2, "ge-continue-no-paused-list": 1,
      "ge-break-invalid-mode": 2, "ge-list-sync-paused": 3,
-     "ge-draw-sync-paused": 3, "ge-list-sync-cancelled": 3,
-     "ge-draw-sync-cancelled": 3},
+     "ge-draw-sync-paused": 3, "ge-continue-drain": 5,
+     "ge-quiesce-after-continue": 4, "ge-list-sync-cancelled": 3,
+     "ge-draw-sync-cancelled": 3, "ge-quiesce-after-cancel": 4},
 )
 _register_campaign_probe(
     "kernel-misc", "PSP-KERNEL-MISC-001",
     ("sysclock-wide", "ctrl-sampling-mode", "thread-profiler",
      "global-profiler", "vtimer-basic", "display-basic", "impose-basic"),
-    {"sysclock-wide": 4, "ctrl-sampling-mode": 2, "thread-profiler": 3,
-     "global-profiler": 3, "vtimer-basic": 13, "display-basic": 4,
+    {"sysclock-wide": 4, "ctrl-sampling-mode": 2, "thread-profiler": 2,
+     "global-profiler": 2, "vtimer-basic": 13, "display-basic": 4,
      "impose-basic": 5},
 )
 
@@ -664,9 +667,18 @@ def parse_registry_readonly_output(
     categories: list[str] = []
     keys: list[str] = []
     terminal = records[-1].case_id == "registry-done"
-    for record in records[2: -1 if terminal else None]:
+    body = records[2: -1 if terminal else None]
+    for index, record in enumerate(body):
         values = dict(record.values)
-        if record.case_id.startswith("registry-category-"):
+        if record.case_id == "registry-bad-handle":
+            # The forged-handle call runs last so a fault there cannot hide
+            # the census; nothing but registry-done may follow it.
+            if index != len(body) - 1:
+                raise ProtocolError(
+                    f"{REGISTRY_TEST_ID}: registry-bad-handle must follow the census"
+                )
+            _validate_registry_fields(record, {"result", "out0", "out1"})
+        elif record.case_id.startswith("registry-category-"):
             if set(values) != {"result", "out0", "out1", "detail"}:
                 raise ProtocolError(f"{REGISTRY_TEST_ID}: {record.case_id} has invalid fields")
             _validate_registry_name(values["detail"], category=True)
@@ -694,6 +706,10 @@ def parse_registry_readonly_output(
             raise ProtocolError(f"{REGISTRY_TEST_ID}: unexpected record {record.case_id!r}")
 
     if terminal:
+        if len(records) < 2 or records[-2].case_id != "registry-bad-handle":
+            raise ProtocolError(
+                f"{REGISTRY_TEST_ID}: registry-bad-handle must precede registry-done"
+            )
         done = records[-1]
         _validate_registry_fields(done, {"result", "out0", "out1", "out2"})
         done_values = {key: int(value, 0) for key, value in done.values if key != "detail"}

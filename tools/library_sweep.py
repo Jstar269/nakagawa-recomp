@@ -31,6 +31,10 @@ import title_manifest
 ROOT = Path(__file__).resolve().parents[1]
 NK_CLI = ROOT / "tools" / "nk_cli.py"
 DEFAULT_TIME_BUDGET_SECONDS = 120
+# Each title's bring-up launch limit, validated against the range nk_cli.py bringup
+# --launch-timeout accepts (tools/test_library_sweep.py pins the two together).
+DEFAULT_LAUNCH_TIMEOUT_SECONDS = 20
+MAX_LAUNCH_TIMEOUT_SECONDS = 120
 MACHINE_POLL_SECONDS = 60
 MACHINE_MAX_WAIT_SECONDS = 20 * 60
 # External per-title reports carry variable-size import inventories. The
@@ -216,6 +220,7 @@ class RouteOutcome:
     stage_durations_ms: dict | None = None
     build_log_path: str | None = None
     build_diagnostic: str | None = None
+    module_layout_diagnostic: str | None = None
     analyzer_diagnostic: str | None = None
 
 
@@ -611,12 +616,25 @@ def _first_build_diagnostic(log_path: Path) -> str | None:
     return None
 
 
+def _first_module_layout_diagnostic(log_path: Path) -> str | None:
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as stream:
+            while raw := stream.readline(65536):
+                line = raw.strip()
+                if line:
+                    return line[:300]
+    except OSError:
+        return None
+    return None
+
+
 def _run_bringup(
     iso_path: Path,
     work_dir: Path,
     report_path: Path,
     private_import_report_path: Path,
     time_budget_seconds: int,
+    launch_timeout_seconds: int,
 ) -> RouteOutcome:
     report_path.unlink(missing_ok=True)
     private_import_report_path.unlink(missing_ok=True)
@@ -624,6 +642,8 @@ def _run_bringup(
     progress_path.unlink(missing_ok=True)
     build_log_path = work_dir / "bringup-build.log"
     build_log_path.unlink(missing_ok=True)
+    layout_log_path = work_dir / "bringup-module-layout.log"
+    layout_log_path.unlink(missing_ok=True)
     command = [
         sys.executable,
         str(NK_CLI),
@@ -636,7 +656,7 @@ def _run_bringup(
         "--sweep-progress-report",
         str(progress_path),
         "--launch-timeout",
-        str(max(1, min(20, time_budget_seconds))),
+        str(max(1, min(launch_timeout_seconds, time_budget_seconds))),
         "--private-sweep-import-report",
         str(private_import_report_path),
     ]
@@ -670,6 +690,7 @@ def _run_bringup(
             stage_durations_ms=durations,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     except OSError:
         return RouteOutcome(None)
@@ -685,6 +706,7 @@ def _run_bringup(
             stage_durations_ms=durations,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     try:
         report = package_cache.read_bounded_json(
@@ -701,6 +723,7 @@ def _run_bringup(
             return_code=process.returncode,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     if not isinstance(report, dict):
         return RouteOutcome(
@@ -708,6 +731,7 @@ def _run_bringup(
             return_code=process.returncode,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     progress = _read_bringup_progress(progress_path)
     _active_stage, _active_elapsed_ms, durations = _progress_stage_details(progress)
@@ -722,6 +746,7 @@ def _run_bringup(
         stage_durations_ms=durations,
         build_log_path=str(build_log_path),
         build_diagnostic=_first_build_diagnostic(build_log_path),
+        module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         analyzer_diagnostic=(
             _read_private_analyzer_diagnostic(private_import_report_path)
             if isinstance(analyze_stage, dict) and analyze_stage.get("status") == "FAIL"
@@ -1316,6 +1341,11 @@ def _validate_sweep_rows(rows: object) -> None:
             not isinstance(log_path, str) or not log_path or len(log_path) > 4096
         ):
             raise ValueError(f"sweep row {index} build_log_path is invalid")
+        layout_diag = row.get("module_layout_diagnostic")
+        if layout_diag is not None and (
+            not isinstance(layout_diag, str) or len(layout_diag) > 300
+        ):
+            raise ValueError(f"sweep row {index} module_layout_diagnostic is invalid")
 
 
 def _public_aggregate(
@@ -1530,6 +1560,7 @@ def run_sweep(
     public_output: Path,
     *,
     time_budget_seconds: int = DEFAULT_TIME_BUDGET_SECONDS,
+    launch_timeout_seconds: int = DEFAULT_LAUNCH_TIMEOUT_SECONDS,
     decrypted_titles: Path | None = None,
     title_manifests: Path | None = None,
     previous_public_output: Path | None = None,
@@ -1541,6 +1572,8 @@ def run_sweep(
 ) -> dict:
     if time_budget_seconds < 1:
         raise ValueError("time budget must be at least one second")
+    if not 1 <= launch_timeout_seconds <= MAX_LAUNCH_TIMEOUT_SECONDS:
+        raise ValueError(f"launch timeout must be 1..{MAX_LAUNCH_TIMEOUT_SECONDS} seconds")
     iso_root = iso_dir.resolve(strict=True)
     paths = _iso_files(iso_root)
     source_commit = source_commit or _source_commit()
@@ -1628,6 +1661,7 @@ def run_sweep(
             report_path,
             private_import_report_path,
             time_budget_seconds,
+            launch_timeout_seconds,
         )
         route_wall_time_ms = int((time.perf_counter() - started) * 1000)
         report = outcome.report
@@ -1693,6 +1727,12 @@ def run_sweep(
             ):
                 row["build_log_path"] = outcome.build_log_path
                 row["build_diagnostic"] = outcome.build_diagnostic
+            if (
+                isinstance(stages.get("prepare_import"), dict)
+                and stages["prepare_import"].get("status") == "FAIL"
+                and outcome.module_layout_diagnostic is not None
+            ):
+                row["module_layout_diagnostic"] = outcome.module_layout_diagnostic
             analyze_stage = stages.get("analyze")
             if (
                 isinstance(analyze_stage, dict)
@@ -1888,6 +1928,15 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _launch_timeout_seconds(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= MAX_LAUNCH_TIMEOUT_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"must be 1..{MAX_LAUNCH_TIMEOUT_SECONDS} seconds (the bring-up launch range)"
+        )
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iso_dir", nargs="?", type=Path,
@@ -1905,6 +1954,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Existing title-free aggregate used as a comparison baseline")
     parser.add_argument("--time-budget", type=_positive_int, default=DEFAULT_TIME_BUDGET_SECONDS,
                         help="Hard per-title route limit in seconds (default: 120)")
+    parser.add_argument("--launch-timeout", type=_launch_timeout_seconds,
+                        default=DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+                        help="Per-title bring-up launch limit in seconds "
+                             f"(1..{MAX_LAUNCH_TIMEOUT_SECONDS}; default "
+                             f"{DEFAULT_LAUNCH_TIMEOUT_SECONDS}), never more than --time-budget")
     parser.add_argument("--merge-private-reports", nargs="+", type=Path,
                         help="Merge private shard checkpoints and write one aggregate; "
                              "each argument is a shard's library-sweep.json file or the "
@@ -1928,6 +1982,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.private_dir,
                 args.public_output,
                 time_budget_seconds=args.time_budget,
+                launch_timeout_seconds=args.launch_timeout,
                 decrypted_titles=args.decrypted_titles,
                 title_manifests=args.title_manifests,
                 previous_public_output=args.previous_public_output,

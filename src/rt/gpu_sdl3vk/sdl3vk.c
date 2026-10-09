@@ -24,6 +24,7 @@
 #include "nk_platform.h"
 #include "../perf.h"
 #include "../fbcap_policy.h"
+#include "../fbcap.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -787,33 +788,19 @@ int sdl3vk_poll(void) {
     return quit ? 0 : 1;
 }
 
-/* ---- present-source capture (issue #57) --------------------------------------------- */
+/* ---- present-source capture (issue #57): the Vulkan readback ---------------------------
+ * The capture state machine and the P6 publisher live in fbcap.c, the one owner of capture
+ * state. This presenter owns only what is Vulkan-specific: recording a readback of the
+ * presentation source inside the presenting submit, and handing the completed readback to
+ * fbcap.c with its source label (CPU framebuffer image or GE render target) and byte order. */
 
-enum {
-    CAP_IDLE = 0,      /* nothing armed */
-    CAP_ARMED,         /* armed; the next presented frame will be recorded */
-    CAP_RECORDED,      /* recorded in a submitted present; waiting on the frame fence */
-    CAP_DONE,          /* file published */
-    CAP_FAILED         /* attempted and failed */
-};
-
-enum {
-    CAP_SRC_NONE = 0,
-    CAP_SRC_CPU,       /* sdl3vk_present_rgba: fbimg is B8G8R8A8_UNORM */
-    CAP_SRC_GPU        /* sdl3vk_present_image(_ex): GE target is R8G8B8A8_UNORM */
-};
-
-static int      s_cap_state = CAP_IDLE;
-static int      s_cap_result;             /* 1 written, 0 nothing attempted, -1 failed */
-static char     s_cap_path[1024];
-static int      s_cap_src_kind;
-static uint32_t s_cap_w, s_cap_h;
-static VkFormat s_cap_fmt;
 static VkBuffer s_cap_buf;
 static VkDeviceMemory s_cap_mem;
 static void    *s_cap_map;
 static uint64_t s_cap_alloc;              /* allocated byte capacity (grows on demand) */
 static int      s_cap_noncoherent;        /* memory type lacks HOST_COHERENT */
+static uint32_t s_cap_w, s_cap_h;         /* dimensions of the recorded readback */
+static sr_cap_order s_cap_order;          /* byte order of the recorded readback */
 
 static void cap_free_buffer(void) {
     if (s_cap_map) vkUnmapMemory(s_dev, s_cap_mem);
@@ -829,7 +816,7 @@ static void cap_free_buffer(void) {
 /* The readback buffer is allocated from THIS buffer's own VkBufferMemoryRequirements
  * (size/alignment/memory-type bits) -- never from another object's requirements -- and is
  * grown lazily. HOST_COHERENT is preferred; on a non-coherent type the host must
- * invalidate the mapped range after the copy fence completes (cap_write_file). */
+ * invalidate the mapped range after the copy fence completes (cap_invalidate_readback). */
 static int cap_ensure(uint32_t w, uint32_t h) {
     uint64_t need = (uint64_t)w * (uint64_t)h * 4u;
     if (need == 0 || need > UINT32_MAX) return 0;
@@ -891,153 +878,16 @@ static int cap_record(VkCommandBuffer cmd, VkImage src, int srcw, int srch) {
     return 1;
 }
 
-/* Create the parent directory of `path` (mkdir -p on the directory component only).
- * FBSNAP publishes under build/snapshots/, which no build step creates. An existing
- * directory is success; an existing non-directory leaves the later file open to fail
- * cleanly, so publication never invents a success. */
-static int cap_ensure_parent_dir(const char *path) {
-    char dir[1024];
-    size_t n = strlen(path);
-    if (!n || n >= sizeof dir) return 0;
-    memcpy(dir, path, n + 1);
-    while (n > 0 && (dir[n - 1] == '/' || dir[n - 1] == '\\')) dir[--n] = '\0';
-    char *sep = NULL;
-    for (char *q = dir; *q; q++)
-        if (*q == '/' || *q == '\\') sep = q;
-    if (!sep) return 1;               /* bare file name: current directory exists */
-    *sep = '\0';
-    if (sep == dir) return 1;         /* "/file" or "\\file": the root exists */
-    for (char *q = dir; *q; q++) {
-        if (*q != '/' && *q != '\\') continue;
-        char save = q[1];
-        q[1] = '\0';
-#ifdef _WIN32
-        if (_mkdir(dir) != 0 && errno != EEXIST) { q[1] = save; return 0; }
-#else
-        if (mkdir(dir, 0777) != 0 && errno != EEXIST) { q[1] = save; return 0; }
-#endif
-        q[1] = save;
-    }
-#ifdef _WIN32
-    if (_mkdir(dir) != 0 && errno != EEXIST) return 0;
-#else
-    if (mkdir(dir, 0777) != 0 && errno != EEXIST) return 0;
-#endif
-    return 1;
-}
-
-/* Publish the readback as a P6 PPM whose name ends in .ppm: the format matches the
- * extension. Rows are read at the copy's tight pitch (w*4 bytes), not at some
- * allocation-derived pitch, and exactly w*h*3 bytes are written. Publication is atomic:
- * a temp sibling file is renamed over the destination only after a complete write, so a
- * reader never observes a half-written file. */
-static int cap_write_file(void) {
-    if (!s_cap_buf || !s_cap_map || !s_cap_path[0]) return 0;
-    if (!cap_ensure_parent_dir(s_cap_path)) return 0;
-    if (s_cap_noncoherent) {
-        VkMappedMemoryRange rng = { .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
-        rng.memory = s_cap_mem;
-        rng.offset = 0;
-        rng.size = VK_WHOLE_SIZE;
-        if (vkInvalidateMappedMemoryRanges(s_dev, 1, &rng) != VK_SUCCESS) return 0;
-    }
-    static unsigned long s_cap_tmp_seq;
-    char tmp[1024 + 64];
-    if (snprintf(tmp, sizeof tmp, "%s.tmp%lu", s_cap_path,
-                 ++s_cap_tmp_seq) >= (int)sizeof tmp)
-        return 0;
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return 0;
-    int ok = 0;
-    if (fprintf(f, "P6\n%u %u\n255\n", s_cap_w, s_cap_h) > 0) {
-        const uint8_t *px = (const uint8_t *)s_cap_map;
-        uint32_t row = s_cap_w * 4u;             /* tight copy pitch */
-        ok = 1;
-        if (s_cap_fmt == VK_FORMAT_B8G8R8A8_UNORM) {
-            for (uint32_t y = 0; y < s_cap_h && ok; y++)
-                for (uint32_t x = 0; x < s_cap_w; x++) {
-                    const uint8_t *p = px + (size_t)y * row + x * 4u;
-                    if (fputc(p[2], f) == EOF || fputc(p[1], f) == EOF ||
-                        fputc(p[0], f) == EOF) { ok = 0; break; }
-                }
-        } else if (s_cap_fmt == VK_FORMAT_R8G8B8A8_UNORM) {
-            for (uint32_t y = 0; y < s_cap_h && ok; y++)
-                for (uint32_t x = 0; x < s_cap_w; x++) {
-                    const uint8_t *p = px + (size_t)y * row + x * 4u;
-                    if (fputc(p[0], f) == EOF || fputc(p[1], f) == EOF ||
-                        fputc(p[2], f) == EOF) { ok = 0; break; }
-                }
-        } else {
-            ok = 0;   /* unknown source format: refuse to guess the channel order */
-        }
-    }
-    if (ok && fflush(f) != 0) ok = 0;
-    if (fclose(f) != 0) ok = 0;
-    if (!ok) { remove(tmp); return 0; }
-#ifdef _WIN32
-    if (!MoveFileExA(tmp, s_cap_path, MOVEFILE_REPLACE_EXISTING)) {
-        remove(tmp);
-        fprintf(stderr, "sdl3vk: capture publish failed (MoveFileExA: %lu)\n",
-                (unsigned long)GetLastError());
-        return 0;
-    }
-#else
-    if (rename(tmp, s_cap_path) != 0) { remove(tmp); return 0; }
-#endif
-    return 1;
-}
-
-/* The single terminal transition out of the armed/recorded states. Every present-path
- * failure funnels through here so sdl3vk_capture_result() can never report a stale or
- * invented outcome. */
-static void cap_finish(int ok, const char *why) {
-    if (s_cap_state != CAP_ARMED && s_cap_state != CAP_RECORDED) return;
-    if (ok) {
-        s_cap_state = CAP_DONE;
-        s_cap_result = 1;
-    } else {
-        s_cap_state = CAP_FAILED;
-        s_cap_result = -1;
-        fprintf(stderr, "sdl3vk: present capture failed: %s\n",
-                why ? why : "unknown reason");
-    }
-}
-
-int sdl3vk_capture_arm(const char *path) {
-    /* A rejected request is a new capture attempt, not permission to reuse the last
-     * completed result. Preserve the in-flight state while clearing only the reportable
-     * outcome so callers cannot mistake a stale success/failure for this request. */
-    s_cap_result = 0;
-    if (s_renderer_terminal) return 0;
-    if (!s_dev || !s_swap) return 0;
-    if (s_cap_state != CAP_IDLE && s_cap_state != CAP_DONE && s_cap_state != CAP_FAILED)
-        return 0;
-    if (!path || !path[0] || strlen(path) >= sizeof s_cap_path) return 0;
-    strcpy(s_cap_path, path);
-    s_cap_result = 0;
-    s_cap_src_kind = CAP_SRC_NONE;
-    s_cap_w = s_cap_h = 0;
-    s_cap_fmt = VK_FORMAT_UNDEFINED;
-    s_cap_state = CAP_ARMED;
-    return 1;
-}
-
-int sdl3vk_capture_result(void) { return s_cap_result; }
-
-void sdl3vk_capture_cancel(void) {
-    if (s_cap_state != CAP_ARMED) return;
-    s_cap_state = CAP_IDLE;
-    s_cap_path[0] = '\0';
-    s_cap_result = 0;
-    cap_free_buffer();
-}
-
-const char *sdl3vk_capture_source_label(void) {
-    switch (s_cap_src_kind) {
-    case CAP_SRC_CPU: return "cpu-framebuffer";
-    case CAP_SRC_GPU: return "gpu-render-target";
-    default:          return "";
-    }
+/* Invalidate the mapped readback range after the copy fence completes, so the host reads
+ * the GPU's writes on non-coherent memory. The pixels are then handed to fbcap.c. */
+static int cap_invalidate_readback(void) {
+    if (!s_cap_buf || !s_cap_map) return 0;
+    if (!s_cap_noncoherent) return 1;
+    VkMappedMemoryRange rng = { .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+    rng.memory = s_cap_mem;
+    rng.offset = 0;
+    rng.size = VK_WHOLE_SIZE;
+    return vkInvalidateMappedMemoryRanges(s_dev, 1, &rng) == VK_SUCCESS;
 }
 
 typedef enum PresentDisposition {
@@ -1214,7 +1064,7 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
 }
 
 static int present_common(VkImage src, int srcw, int srch, const uint32_t *upload) {
-    if (s_renderer_terminal) return -1;
+    if (s_renderer_terminal) { sr_capture_fail("renderer is terminal"); return -1; }
     const char *why = NULL;
     int quit = 0;
     int presented = 0;
@@ -1306,14 +1156,16 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
-        if (s_cap_state == CAP_ARMED) {
+        int cap_in_submit = 0;
+        if (sr_capture_is_armed()) {
             if (!cap_ensure((uint32_t)srcw, (uint32_t)srch)) {
                 why = "capture buffer allocation failed"; goto fail;
             }
             s_cap_w = (uint32_t)srcw; s_cap_h = (uint32_t)srch;
-            s_cap_fmt = upload ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
-            s_cap_src_kind = upload ? CAP_SRC_CPU : CAP_SRC_GPU;
+            /* fbimg is B8G8R8A8_UNORM; a GE render target is R8G8B8A8_UNORM. */
+            s_cap_order = upload ? SR_CAP_ORDER_BGRX : SR_CAP_ORDER_RGBX;
             if (!cap_record(cmd, src, srcw, srch)) { why = "capture record failed"; goto fail; }
+            cap_in_submit = 1;
         }
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) { why = "vkEndCommandBuffer failed"; goto fail; }
 
@@ -1335,7 +1187,8 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         if (sr_perf_enabled) sr_perf_present_submit();
         f->submitted = 1;
         f->source = upload ? VK_NULL_HANDLE : src;
-        if (s_cap_state == CAP_ARMED) s_cap_state = CAP_RECORDED;
+        if (cap_in_submit)
+            sr_capture_mark_recorded(upload ? SR_CAP_SRC_CPU : SR_CAP_SRC_GPU, s_cap_w, s_cap_h);
 
         VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1;
@@ -1434,7 +1287,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
     /* Complete the armed capture only now that this frame is known to have reached the
      * presentation engine, so a published file always corresponds to a presented frame.
      * The fence covers this submission; presentation itself stays asynchronous. */
-    if (s_cap_state == CAP_RECORDED) {
+    if (sr_capture_is_recorded()) {
         if (f->submitted) {
             uint64_t perf_wait_started = sr_perf_now_ns();
             if (vkWaitForFences(s_dev, 1, &f->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
@@ -1447,22 +1300,22 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         /* The frame reached the presentation engine (vkQueuePresentKHR succeeded above):
          * a readback/publication failure must not make the frame itself look unpresented,
          * because gui.c would otherwise re-present it through the CPU fallback. The
-         * capture still resolves as attempted-and-failed (-1), never a fabricated success. */
-        if (!cap_write_file()) {
-            cap_finish(0, "capture readback or publication failed");
-            return 1;
-        }
-        cap_finish(1, NULL);
+         * capture resolves as attempted-and-failed (-1) inside fbcap.c, never as a
+         * fabricated success. */
+        if (!cap_invalidate_readback())
+            sr_capture_fail("capture readback invalidate failed");
+        else
+            sr_capture_publish_recorded(s_cap_map, s_cap_w * 4u, s_cap_order);
     }
     return 1;
 
 fail:
     /* One exit for every failure above: the armed capture resolves as failed, never as
      * an invented success. */
-    cap_finish(0, why);
+    sr_capture_fail(why);
     return -1;
 fail_quit:
-    cap_finish(0, why);
+    sr_capture_fail(why);
     return 0;
 }
 
@@ -2017,18 +1870,18 @@ int sdl3vk_capture_selftest(void) {
     /* ---- CPU framebuffer path (B8G8R8A8 fbimg) -------------------------------------- */
     static uint32_t px[PSP_W * PSP_H];
     cap_test_fill_cpu(px, PSP_W, PSP_H);
-    if (!sdl3vk_capture_arm("selftest_cpu.ppm")) {
+    if (!sr_capture_arm("selftest_cpu.ppm")) {
         fprintf(stderr, "cpu: capture arm refused\n"); ok = 0;
     }
     if (sdl3vk_present_rgba(px) != 1) {
         fprintf(stderr, "cpu: present failed\n"); ok = 0;
     }
-    if (sdl3vk_capture_result() != 1) {
-        fprintf(stderr, "cpu: capture result %d (expected 1)\n", sdl3vk_capture_result());
+    if (sr_capture_result() != 1) {
+        fprintf(stderr, "cpu: capture result %d (expected 1)\n", sr_capture_result());
         ok = 0;
     }
-    if (strcmp(sdl3vk_capture_source_label(), "cpu-framebuffer") != 0) {
-        fprintf(stderr, "cpu: source label '%s'\n", sdl3vk_capture_source_label());
+    if (strcmp(sr_capture_source_label(), "cpu-framebuffer") != 0) {
+        fprintf(stderr, "cpu: source label '%s'\n", sr_capture_source_label());
         ok = 0;
     }
     if (!cap_test_verify_ppm("selftest_cpu.ppm", PSP_W, PSP_H)) {
@@ -2038,12 +1891,12 @@ int sdl3vk_capture_selftest(void) {
     remove("selftest_cpu.ppm");
 
     /* ---- cancel: an armed capture never serviced reports "nothing attempted" --------- */
-    if (!sdl3vk_capture_arm("selftest_cancel.ppm")) {
+    if (!sr_capture_arm("selftest_cancel.ppm")) {
         fprintf(stderr, "cancel: arm refused\n"); ok = 0;
     }
-    sdl3vk_capture_cancel();
-    if (sdl3vk_capture_result() != 0) {
-        fprintf(stderr, "cancel: result %d (expected 0)\n", sdl3vk_capture_result());
+    sr_capture_cancel();
+    if (sr_capture_result() != 0) {
+        fprintf(stderr, "cancel: result %d (expected 0)\n", sr_capture_result());
         ok = 0;
     }
     {
@@ -2056,18 +1909,18 @@ int sdl3vk_capture_selftest(void) {
     if (!cap_test_image_create(&gpu, PSP_W, PSP_H) || !cap_test_image_upload(&gpu)) {
         fprintf(stderr, "gpu: image setup failed\n"); ok = 0;
     } else {
-        if (!sdl3vk_capture_arm("selftest_gpu.ppm")) {
+        if (!sr_capture_arm("selftest_gpu.ppm")) {
             fprintf(stderr, "gpu: capture arm refused\n"); ok = 0;
         }
         if (sdl3vk_present_image_ex((void *)gpu.img, PSP_W, PSP_H) != 1) {
             fprintf(stderr, "gpu: present failed\n"); ok = 0;
         }
-        if (sdl3vk_capture_result() != 1) {
-            fprintf(stderr, "gpu: capture result %d (expected 1)\n", sdl3vk_capture_result());
+        if (sr_capture_result() != 1) {
+            fprintf(stderr, "gpu: capture result %d (expected 1)\n", sr_capture_result());
             ok = 0;
         }
-        if (strcmp(sdl3vk_capture_source_label(), "gpu-render-target") != 0) {
-            fprintf(stderr, "gpu: source label '%s'\n", sdl3vk_capture_source_label());
+        if (strcmp(sr_capture_source_label(), "gpu-render-target") != 0) {
+            fprintf(stderr, "gpu: source label '%s'\n", sr_capture_source_label());
             ok = 0;
         }
         if (!cap_test_verify_ppm("selftest_gpu.ppm", PSP_W, PSP_H)) {
@@ -2083,14 +1936,14 @@ int sdl3vk_capture_selftest(void) {
     if (!cap_test_image_create(&big, 960, 544) || !cap_test_image_upload(&big)) {
         fprintf(stderr, "scaled: image setup failed\n"); ok = 0;
     } else {
-        if (!sdl3vk_capture_arm("selftest_scaled.ppm")) {
+        if (!sr_capture_arm("selftest_scaled.ppm")) {
             fprintf(stderr, "scaled: capture arm refused\n"); ok = 0;
         }
         if (sdl3vk_present_image_ex((void *)big.img, 960, 544) != 1) {
             fprintf(stderr, "scaled: present failed\n"); ok = 0;
         }
-        if (sdl3vk_capture_result() != 1) {
-            fprintf(stderr, "scaled: capture result %d (expected 1)\n", sdl3vk_capture_result());
+        if (sr_capture_result() != 1) {
+            fprintf(stderr, "scaled: capture result %d (expected 1)\n", sr_capture_result());
             ok = 0;
         }
         if (!cap_test_verify_ppm("selftest_scaled.ppm", 960, 544)) {
@@ -2107,15 +1960,15 @@ int sdl3vk_capture_selftest(void) {
         const char *p = "build/snapshots/selftest_frame.ppm";
         cap_test_rmdir("build/snapshots");
         cap_test_rmdir("build");
-        if (!sdl3vk_capture_arm(p)) {
+        if (!sr_capture_arm(p)) {
             fprintf(stderr, "pubdir: arm refused\n"); ok = 0;
         } else {
             if (sdl3vk_present_rgba(px) != 1) {
                 fprintf(stderr, "pubdir: present failed\n"); ok = 0;
             }
-            if (sdl3vk_capture_result() != 1) {
+            if (sr_capture_result() != 1) {
                 fprintf(stderr, "pubdir: result=%d (expected 1)\n",
-                        sdl3vk_capture_result()); ok = 0;
+                        sr_capture_result()); ok = 0;
             }
             if (!cap_test_verify_ppm(p, PSP_W, PSP_H)) {
                 fprintf(stderr, "pubdir: PPM bytes wrong\n"); ok = 0;
@@ -2138,15 +1991,15 @@ int sdl3vk_capture_selftest(void) {
         } else {
             fputc(0, f); fclose(f);
         }
-        if (!sdl3vk_capture_arm(p)) {
+        if (!sr_capture_arm(p)) {
             fprintf(stderr, "blocked: arm refused\n"); ok = 0;
         } else {
             if (sdl3vk_present_rgba(px) != 1) {
                 fprintf(stderr, "blocked: present must succeed despite publication failure\n"); ok = 0;
             }
-            if (sdl3vk_capture_result() != -1) {
+            if (sr_capture_result() != -1) {
                 fprintf(stderr, "blocked: result=%d (expected -1)\n",
-                        sdl3vk_capture_result()); ok = 0;
+                        sr_capture_result()); ok = 0;
             }
         }
         {
@@ -2156,11 +2009,11 @@ int sdl3vk_capture_selftest(void) {
         remove(p);
         remove("blocked");
 
-        if (!sdl3vk_capture_arm(p)) {
+        if (!sr_capture_arm(p)) {
             fprintf(stderr, "blocked-recover: arm refused\n"); ok = 0;
         } else if (sdl3vk_present_rgba(px) != 1) {
             fprintf(stderr, "blocked-recover: present failed\n"); ok = 0;
-        } else if (sdl3vk_capture_result() != 1 || !cap_test_verify_ppm(p, PSP_W, PSP_H)) {
+        } else if (sr_capture_result() != 1 || !cap_test_verify_ppm(p, PSP_W, PSP_H)) {
             fprintf(stderr, "blocked-recover: capture did not recover\n"); ok = 0;
         }
         remove(p);
@@ -2173,13 +2026,13 @@ int sdl3vk_capture_selftest(void) {
      * previous capture's result. */
     {
         const char *p = "selftest_stale.ppm";
-        if (!sdl3vk_capture_arm(p)) {
+        if (!sr_capture_arm(p)) {
             fprintf(stderr, "stale: arm refused\n"); ok = 0;
         }
-        sdl3vk_capture_cancel();
-        if (sdl3vk_capture_result() != 0) {
+        sr_capture_cancel();
+        if (sr_capture_result() != 0) {
             fprintf(stderr, "stale: cancelled result=%d\n",
-                    sdl3vk_capture_result()); ok = 0;
+                    sr_capture_result()); ok = 0;
         }
         if (sdl3vk_present_rgba(px) != 1) {
             fprintf(stderr, "stale: later present failed\n"); ok = 0;
@@ -2196,16 +2049,16 @@ int sdl3vk_capture_selftest(void) {
     {
         const char *p1 = "selftest_repeat_a.ppm";
         const char *p2 = "selftest_repeat_b.ppm";
-        if (!sdl3vk_capture_arm(p1)) {
+        if (!sr_capture_arm(p1)) {
             fprintf(stderr, "repeat: first arm refused\n"); ok = 0;
         }
-        if (sdl3vk_capture_arm(p2)) {
+        if (sr_capture_arm(p2)) {
             fprintf(stderr, "repeat: second arm while pending accepted\n"); ok = 0;
         }
-        if (sdl3vk_capture_result() != 0) {
-            fprintf(stderr, "repeat: refused arm left stale result=%d\n", sdl3vk_capture_result()); ok = 0;
+        if (sr_capture_result() != 0) {
+            fprintf(stderr, "repeat: refused arm left stale result=%d\n", sr_capture_result()); ok = 0;
         }
-        if (sdl3vk_present_rgba(px) != 1 || sdl3vk_capture_result() != 1) {
+        if (sdl3vk_present_rgba(px) != 1 || sr_capture_result() != 1) {
             fprintf(stderr, "repeat: first capture did not complete\n"); ok = 0;
         }
         if (!cap_test_verify_ppm(p1, PSP_W, PSP_H)) {
@@ -2234,14 +2087,14 @@ int sdl3vk_capture_selftest(void) {
         /* The enqueued present/rebuild path must still publish the capture recorded in
          * the same submission; rebuilding the swapchain cannot silently drop it. */
         sc0 = sdl3vk_swapchain_generation();
-        if (!sdl3vk_capture_arm("selftest_subopt.ppm")) {
+        if (!sr_capture_arm("selftest_subopt.ppm")) {
             fprintf(stderr, "present fault SUBOPTIMAL: capture arm failed\n"); ok = 0;
         }
         sdl3vk_present_fault_inject(VK_SUBOPTIMAL_KHR);
         if (sdl3vk_present_rgba(px) != 1) {
             fprintf(stderr, "present fault SUBOPTIMAL capture: present failed\n"); ok = 0;
         }
-        if (sdl3vk_swapchain_generation() <= sc0 || sdl3vk_capture_result() != 1) {
+        if (sdl3vk_swapchain_generation() <= sc0 || sr_capture_result() != 1) {
             fprintf(stderr, "present fault SUBOPTIMAL capture: rebuild/result invalid\n"); ok = 0;
         }
         if (!cap_test_verify_ppm("selftest_subopt.ppm", PSP_W, PSP_H)) {
@@ -2252,14 +2105,14 @@ int sdl3vk_capture_selftest(void) {
         /* Test 2: VK_ERROR_OUT_OF_DATE_KHR (enqueued present / stale swapchain) */
         sc0 = sdl3vk_swapchain_generation();
         uint64_t sem0 = sdl3vk_frame_semaphore_generation();
-        if (!sdl3vk_capture_arm("selftest_ood.ppm")) {
+        if (!sr_capture_arm("selftest_ood.ppm")) {
             fprintf(stderr, "present fault OOD: arm failed\n"); ok = 0;
         }
         sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);
         if (sdl3vk_present_rgba(px) != -1) {
             fprintf(stderr, "present fault OOD: expected present failure (-1)\n"); ok = 0;
         }
-        if (sdl3vk_capture_result() != -1) {
+        if (sr_capture_result() != -1) {
             fprintf(stderr, "present fault OOD: capture result must fail (-1)\n"); ok = 0;
         }
         if (sdl3vk_swapchain_generation() <= sc0) {
@@ -2271,14 +2124,14 @@ int sdl3vk_capture_selftest(void) {
 
         /* Test 3: VK_ERROR_OUT_OF_HOST_MEMORY (unenqueued hard error / semaphore recovery) */
         sem0 = sdl3vk_frame_semaphore_generation();
-        if (!sdl3vk_capture_arm("selftest_oom.ppm")) {
+        if (!sr_capture_arm("selftest_oom.ppm")) {
             fprintf(stderr, "present fault OOM: arm failed\n"); ok = 0;
         }
         sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_HOST_MEMORY);
         if (sdl3vk_present_rgba(px) != -1) {
             fprintf(stderr, "present fault OOM: expected present failure (-1)\n"); ok = 0;
         }
-        if (sdl3vk_capture_result() != -1) {
+        if (sr_capture_result() != -1) {
             fprintf(stderr, "present fault OOM: capture result must fail (-1)\n"); ok = 0;
         }
         if (sdl3vk_frame_semaphore_generation() <= sem0) {
@@ -2292,14 +2145,14 @@ int sdl3vk_capture_selftest(void) {
 
         /* Test 4: VK_ERROR_SURFACE_LOST_KHR (enqueued present / surface lost terminal state) */
         sem0 = sdl3vk_frame_semaphore_generation();
-        if (!sdl3vk_capture_arm("selftest_surflost.ppm")) {
+        if (!sr_capture_arm("selftest_surflost.ppm")) {
             fprintf(stderr, "present fault SURFLOST: arm failed\n"); ok = 0;
         }
         sdl3vk_present_fault_inject(VK_ERROR_SURFACE_LOST_KHR);
         if (sdl3vk_present_rgba(px) != -1) {
             fprintf(stderr, "present fault SURFLOST: expected present failure (-1)\n"); ok = 0;
         }
-        if (sdl3vk_capture_result() != -1) {
+        if (sr_capture_result() != -1) {
             fprintf(stderr, "present fault SURFLOST: capture result must fail (-1)\n"); ok = 0;
         }
         if (!sdl3vk_renderer_terminal()) {
@@ -2314,7 +2167,7 @@ int sdl3vk_capture_selftest(void) {
         /* Reset terminal state and recreate swapchain so next acquire succeeds */
         s_renderer_terminal = 0;
         create_swapchain();
-        if (!sdl3vk_capture_arm("selftest_devlost.ppm")) {
+        if (!sr_capture_arm("selftest_devlost.ppm")) {
             fprintf(stderr, "present fault DEVLOST: arm failed\n"); ok = 0;
         }
         sdl3vk_present_fault_inject(VK_ERROR_DEVICE_LOST);
@@ -2332,7 +2185,7 @@ int sdl3vk_capture_selftest(void) {
         sem0 = sdl3vk_frame_semaphore_generation();
         s_renderer_terminal = 0;
         create_swapchain();
-        if (!sdl3vk_capture_arm("selftest_unknown.ppm")) {
+        if (!sr_capture_arm("selftest_unknown.ppm")) {
             fprintf(stderr, "present fault UNKNOWN: arm failed\n"); ok = 0;
         }
         sdl3vk_present_fault_inject((VkResult)-9999);
@@ -2345,12 +2198,14 @@ int sdl3vk_capture_selftest(void) {
         if (sdl3vk_frame_semaphore_generation() != sem0) {
             fprintf(stderr, "present fault UNKNOWN: unclassified error must NOT recreate semaphore\n"); ok = 0;
         }
-        if (sdl3vk_capture_arm("selftest_terminal_refused.ppm")) {
-            fprintf(stderr, "terminal state: capture arm must be refused when terminal\n"); ok = 0;
-        }
-        if (sdl3vk_capture_result() != 0) {
-            fprintf(stderr, "terminal state: refused arm exposed stale result=%d\n",
-                    sdl3vk_capture_result()); ok = 0;
+        /* Arming is presenter-neutral and accepted; the terminal renderer then refuses the
+         * present, which must resolve the armed capture as failed rather than leave it
+         * pending for a later frame to publish. */
+        if (!sr_capture_arm("selftest_terminal_refused.ppm")) {
+            fprintf(stderr, "terminal state: capture arm must be accepted\n"); ok = 0;
+        } else if (sdl3vk_present_rgba(px) != -1 || sr_capture_result() != -1) {
+            fprintf(stderr, "terminal state: armed capture result %d (expected -1)\n",
+                    sr_capture_result()); ok = 0;
         }
     }
 
@@ -2413,9 +2268,6 @@ void sdl3vk_shutdown(void) {
     s_hud_fmt = VK_FORMAT_UNDEFINED;
     if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     cap_free_buffer();
-    s_cap_state = CAP_IDLE;
-    s_cap_path[0] = '\0';
-    s_cap_result = 0;
     if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
     if (s_dev)         vkDestroyDevice(s_dev, NULL);
     if (s_surf)        vkDestroySurfaceKHR(s_inst, s_surf, NULL);

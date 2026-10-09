@@ -20,6 +20,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import hle_manifest
+from import_fixtures import BASE_VADDR, SYSLIB_EXPORT, build_module_elf
+from nk_core import iso_inspect
 from nk_core.iso_inspect import (
     _classify_decrypted_elf_file,
     decrypt_needed_modules,
@@ -29,6 +32,10 @@ from nk_core.iso_inspect import (
     inspect_iso,
     list_disc_module_candidates,
     plan_provisional_module_bindings,
+    read_guest_module_interface,
+    runtime_registered_nids,
+    runtime_serves_module,
+    RuntimeRegistryUnavailableError,
     write_experimental_profile,
 )
 import nk_cli
@@ -452,6 +459,20 @@ def build_psp_container() -> bytes:
     container[0x27] = 1
     struct.pack_into("<I", container, 0x54, 0x1000)
     return bytes(container)
+
+
+def build_overlapping_mips_elf(
+    *, vaddr1: int = 0, memsz1: int = 0x2000, vaddr2: int = 0x1000, memsz2: int = 0x2000
+) -> bytes:
+    elf = bytearray(124)
+    elf[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", elf, 16, 0xFFA0, 8, 1)
+    struct.pack_into("<III", elf, 24, vaddr1, 52, 0)
+    struct.pack_into("<HHHHH", elf, 40, 52, 32, 2, 0, 0)
+    struct.pack_into("<8I", elf, 52, 1, 116, vaddr1, vaddr1, 4, memsz1, 5, 4)
+    struct.pack_into("<8I", elf, 84, 1, 120, vaddr2, vaddr2, 4, memsz2, 5, 4)
+    elf[116:124] = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+    return bytes(elf)
 
 
 def _both_endian32(value: int) -> bytes:
@@ -1940,12 +1961,294 @@ int main(int argc, char **argv) {{
         main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
         huge_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
         huge_b.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
-        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve"):
+        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve") as ctx:
             plan_provisional_module_bindings(
                 main_elf,
                 [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
                  ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
             )
+        self.assertEqual(
+            getattr(ctx.exception, "boundary_code", None),
+            "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
+        )
+
+    def test_provisional_guest_module_placement_fails_when_main_image_exhausts_safe_span(self) -> None:
+        main_elf = self.temp_dir / "placement-huge-main.elf"
+        module_a = self.temp_dir / "mod-a.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x016F0000))
+        module_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x1000))
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("a.prx", module_a, "disc0:/PSP_GAME/USRDIR/a.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertIn("leaves no safe guest-module address range", str(ctx.exception))
+
+    def test_provisional_guest_module_placement_encrypted_module_raises_decryption_required(self) -> None:
+        main_elf = self.temp_dir / "placement-main-enc.elf"
+        enc_module = self.temp_dir / "enc.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        enc_module.write_bytes(build_psp_container())
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("enc.prx", enc_module, "disc0:/PSP_GAME/USRDIR/enc.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_DECRYPTION_REQUIRED")
+
+    def test_provisional_guest_module_placement_overlapping_segments_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-ovl.elf"
+        ovl_module = self.temp_dir / "ovl.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        ovl_module.write_bytes(build_overlapping_mips_elf())
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("ovl.prx", ovl_module, "disc0:/PSP_GAME/USRDIR/ovl.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("overlapping loadable segments", str(ctx.exception))
+
+    def test_provisional_guest_module_placement_fixed_address_module_support_and_collision(self) -> None:
+        main_elf = self.temp_dir / "placement-main-fixed.elf"
+        fixed_ok = self.temp_dir / "fixed_ok.prx"
+        fixed_bad = self.temp_dir / "fixed_bad.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        fixed_ok.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x09000000))
+        placed = plan_provisional_module_bindings(
+            main_elf,
+            [("fixed_ok.prx", fixed_ok, "disc0:/PSP_GAME/USRDIR/fixed_ok.prx")],
+        )
+        self.assertEqual(len(placed), 1)
+        self.assertEqual(placed[0]["load_address"], 0x09000000)
+        self.assertEqual(placed[0]["load_address_evidence"], "fixed-address")
+
+        fixed_bad.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x08810000))
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("fixed_bad.prx", fixed_bad, "disc0:/PSP_GAME/USRDIR/fixed_bad.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_LOAD_BINDING_REQUIRED")
+
+    # Synthetic NIDs for the exact HLE-served rule. The registry is injected so
+    # these cases pin the rule itself, independent of what src/rt/hle.c serves.
+    SERVED_A, SERVED_B, SERVED_C = 0x5EED0001, 0x5EED0002, 0x5EED0003
+    UNSERVED_A, UNSERVED_B, UNSERVED_C = 0x0BAD0001, 0x0BAD0002, 0x0BAD0003
+
+    def _plan_with_registry(self, main_elf: Path, modules: dict[str, bytes], registered=None):
+        inputs = []
+        for name, blob in modules.items():
+            path = self.temp_dir / name
+            path.write_bytes(blob)
+            inputs.append((name, path, f"disc0:/PSP_GAME/USRDIR/{name}"))
+        registry = frozenset(
+            {self.SERVED_A, self.SERVED_B, self.SERVED_C} if registered is None else registered
+        )
+        with patch.object(iso_inspect, "runtime_registered_nids", return_value=registry):
+            return plan_provisional_module_bindings(main_elf, inputs)
+
+    def _main_importing(self, imports: list[tuple[str, list[int]]]) -> Path:
+        main_elf = self.temp_dir / "placement-main-imports.elf"
+        main_elf.write_bytes(
+            build_module_elf([SYSLIB_EXPORT], imports=imports, e_type=2, base_vaddr=BASE_VADDR)
+        )
+        return main_elf
+
+    def test_module_the_runtime_serves_completely_is_not_placed(self) -> None:
+        main_elf = self.temp_dir / "placement-main-served.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        placed = self._plan_with_registry(main_elf, {
+            # user-mode library: every exported function registered
+            "served_user.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthAudio", 0x0001, [self.SERVED_A, self.SERVED_B], [])]
+            ),
+            # kernel-mode driver: its syscall-exported library is fully registered;
+            # the kernel-only library is not callable from user mode
+            "served_driver.prx": build_module_elf(
+                [
+                    SYSLIB_EXPORT,
+                    ("SynthCodec", 0x4001, [self.SERVED_C], []),
+                    ("SynthCodec_driver", 0x0001, [self.UNSERVED_A], []),
+                ],
+                module_attributes=0x1006,
+            ),
+            # one callable function the runtime lacks keeps the module translated
+            "partial_user.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthVideo", 0x0001, [self.SERVED_A, self.UNSERVED_B], [])]
+            ),
+            # the runtime registers functions only, so an exported variable keeps it
+            "variable_user.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthData", 0x0001, [self.SERVED_B], [self.UNSERVED_C])]
+            ),
+            # an overlay that only runs from module_start exports nothing callable
+            "overlay.prx": build_module_elf([SYSLIB_EXPORT]),
+        })
+        self.assertEqual(
+            [module["name"] for module in placed],
+            ["overlay.prx", "partial_user.prx", "variable_user.prx"],
+        )
+
+    def test_firmware_kernel_module_the_main_executable_does_not_need_is_left_out(self) -> None:
+        """A kernel driver used only by a firmware library never blocks the title."""
+        main_elf = self._main_importing([("SynthVideo", [self.SERVED_A])])
+        placed = self._plan_with_registry(main_elf, {
+            "video_library.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthVideo", 0x0001, [self.SERVED_A, self.UNSERVED_B], [])],
+                imports=[("SynthVideoDriver", [self.UNSERVED_A])],
+            ),
+            "video_driver.prx": build_module_elf(
+                [
+                    SYSLIB_EXPORT,
+                    ("SynthVideoDriver", 0x4001, [self.UNSERVED_A, self.UNSERVED_C], []),
+                    ("SynthVideoDriver_driver", 0x0001, [0x0BAD0010], []),
+                ],
+                module_attributes=0x1006,
+            ),
+            "lifecycle_only_driver.prx": build_module_elf([SYSLIB_EXPORT], module_attributes=0x1006),
+        })
+        self.assertEqual([module["name"] for module in placed], ["video_library.prx"])
+
+    def test_kernel_module_the_main_executable_needs_raises_format_unsupported(self) -> None:
+        main_elf = self._main_importing(
+            [("SynthDriver", [self.UNSERVED_A]), ("SynthAudio", [self.SERVED_A])]
+        )
+        driver = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x4001, [self.UNSERVED_A, self.UNSERVED_B], [])],
+            module_attributes=0x1006,
+        )
+        with self.assertRaises(IsoInspectionError) as ctx:
+            self._plan_with_registry(main_elf, {"title_driver.prx": driver})
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("requires PSP kernel mode: title_driver.prx", str(ctx.exception))
+        self.assertIn(f"0x{self.UNSERVED_A:08x}", str(ctx.exception))
+        self.assertNotIn(f"0x{self.UNSERVED_B:08x}", str(ctx.exception))
+
+    def test_kernel_module_import_is_not_a_need_when_something_else_provides_it(self) -> None:
+        main_elf = self._main_importing([("SynthDriver", [self.UNSERVED_A])])
+        driver = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x4001, [self.UNSERVED_A], [])],
+            module_attributes=0x1006,
+        )
+        # the runtime registers the imported NID
+        placed = self._plan_with_registry(
+            main_elf, {"driver.prx": driver},
+            registered={self.SERVED_A, self.UNSERVED_A},
+        )
+        self.assertEqual(placed, [])
+        # a placed user-mode module exports the imported NID
+        placed = self._plan_with_registry(main_elf, {
+            "driver.prx": driver,
+            "user_impl.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthDriver", 0x0001, [self.UNSERVED_A], [])]
+            ),
+        })
+        self.assertEqual([module["name"] for module in placed], ["user_impl.prx"])
+        # the import names a kernel-only library, which user code cannot link to
+        kernel_only = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x0001, [self.UNSERVED_A], [])],
+            module_attributes=0x1006,
+        )
+        self.assertEqual(self._plan_with_registry(main_elf, {"driver.prx": kernel_only}), [])
+
+    def test_unreadable_main_import_table_names_the_analyzer_boundary(self) -> None:
+        blob = bytearray(
+            build_module_elf(
+                [SYSLIB_EXPORT], imports=[("SynthDriver", [self.UNSERVED_A])],
+                e_type=2, base_vaddr=BASE_VADDR,
+            )
+        )
+        data_off = 0x1000  # import_fixtures.DATA_FILE_OFF: the segment's file offset
+        stub_top = struct.unpack_from("<I", blob, data_off + 44)[0]
+        struct.pack_into("<I", blob, data_off + (stub_top - BASE_VADDR) + 12, 0)  # nidData = 0
+        main_elf = self.temp_dir / "placement-main-bad-imports.elf"
+        main_elf.write_bytes(bytes(blob))
+        driver = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x4001, [self.UNSERVED_A], [])],
+            module_attributes=0x1006,
+        )
+        with self.assertRaises(IsoInspectionError) as ctx:
+            self._plan_with_registry(main_elf, {"driver.prx": driver})
+        self.assertEqual(ctx.exception.boundary_code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_malformed_export_table_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-bad-exports.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        broken = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthAudio", 0x0001, [self.SERVED_A], [])], corrupt="entry_overrun"
+        )
+        with self.assertRaises(IsoInspectionError) as ctx:
+            self._plan_with_registry(main_elf, {"broken.prx": broken})
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("invalid module or export table: broken.prx", str(ctx.exception))
+
+    def test_runtime_registry_failure_stops_planning_with_a_named_boundary(self) -> None:
+        runtime_registered_nids.cache_clear()
+        self.addCleanup(runtime_registered_nids.cache_clear)
+        main_elf = self.temp_dir / "placement-main-registry.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        library = self.temp_dir / "library.prx"
+        library.write_bytes(
+            build_module_elf([SYSLIB_EXPORT, ("SynthAudio", 0x0001, [self.SERVED_A], [])])
+        )
+        overlay = self.temp_dir / "overlay.prx"
+        overlay.write_bytes(build_module_elf([SYSLIB_EXPORT]))
+        failures = (
+            hle_manifest.ManifestError("registration the extractor cannot account for"),
+            OSError("hle.c is missing"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                with patch.object(hle_manifest, "registered_nids", side_effect=failure):
+                    with self.assertRaises(RuntimeRegistryUnavailableError) as ctx:
+                        plan_provisional_module_bindings(
+                            main_elf, [("library.prx", library, "disc0:/library.prx")]
+                        )
+                    self.assertEqual(
+                        ctx.exception.boundary_code, "RUNTIME_HLE_REGISTRY_UNAVAILABLE"
+                    )
+                    self.assertIn(str(failure), str(ctx.exception))
+                    # A module with nothing to compare never consults the registry.
+                    placed = plan_provisional_module_bindings(
+                        main_elf, [("overlay.prx", overlay, "disc0:/overlay.prx")]
+                    )
+                    self.assertEqual([module["name"] for module in placed], ["overlay.prx"])
+
+    def test_live_runtime_registry_drives_the_served_decision(self) -> None:
+        live = runtime_registered_nids()
+        self.assertEqual(live, hle_manifest.registered_nids())
+        some_registered = sorted(live)[:3]
+        unregistered = next(nid for nid in range(0x0BAD0000, 0x0BAE0000) if nid not in live)
+        served = read_guest_module_interface(
+            "driver.prx",
+            build_module_elf(
+                [SYSLIB_EXPORT, ("SynthCodec", 0x4001, some_registered, [])],
+                module_attributes=0x1006,
+            ),
+        )
+        self.assertTrue(served.requires_kernel)
+        self.assertTrue(runtime_serves_module(served, live))
+        partial = read_guest_module_interface(
+            "driver.prx",
+            build_module_elf(
+                [SYSLIB_EXPORT, ("SynthCodec", 0x4001, [*some_registered, unregistered], [])],
+                module_attributes=0x1006,
+            ),
+        )
+        self.assertFalse(runtime_serves_module(partial, live))
+
+    def test_provisional_guest_module_placement_corrupt_elf_header_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-corrupt.elf"
+        corrupt_module = self.temp_dir / "corrupt.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        corrupt_module.write_bytes(b"\x7fELF\x01\x01\x01\x00" + b"\x00" * 30)
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_provisional_module_bindings(
+                main_elf,
+                [("corrupt.prx", corrupt_module, "disc0:/PSP_GAME/USRDIR/corrupt.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""

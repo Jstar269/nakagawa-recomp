@@ -25,11 +25,20 @@ from import_fixtures import (
     INTERLEAVED_NIDS,
     INTERLEAVED_SHAPE,
     MIXED_FIXTURE_LIBS,
+    SYSLIB_EXPORT,
+    SYSLIB_MODULE_INFO_NID,
+    SYSLIB_MODULE_START_NID,
     build_import_elf,
     build_interleaved_import_elf,
+    build_module_elf,
 )
 import psp_import_table
-from psp_import_table import ImportTableError, UNATTRIBUTED_LIBRARY, parse_import_table
+from psp_import_table import (
+    ImportTableError,
+    UNATTRIBUTED_LIBRARY,
+    parse_export_table,
+    parse_import_table,
+)
 
 SIMPLE_LIBS = [
     ("SynthAlpha", [0x11111111, 0x22222222]),
@@ -170,6 +179,80 @@ class ParserTests(unittest.TestCase):
         struct.pack_into("<H", blob, entry + 4, 0xFFFF)  # numFuncs
         with self.assertRaises(ImportTableError):
             parse_import_table(bytes(blob))
+
+
+class ExportTableTests(unittest.TestCase):
+    """SceLibraryEntryTable parsing for the guest-module planner (synthetic modules)."""
+
+    KERNEL_EXPORTS = [
+        SYSLIB_EXPORT,
+        ("SynthCodec", 0x4001, [0x51000001, 0x51000002], []),
+        ("SynthCodec_driver", 0x0001, [0x51000003], [0x51000004]),
+    ]
+
+    def test_entries_split_function_and_variable_nids(self) -> None:
+        table = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, module_attributes=0x1006))
+        self.assertIsNotNone(table)
+        self.assertEqual(table.module_attributes, 0x1006)
+        self.assertTrue(table.kernel_mode)
+        self.assertEqual(
+            [(lib.name, lib.attributes, lib.function_nids, lib.variable_nids) for lib in table.libraries],
+            [
+                (None, 0x8000, (SYSLIB_MODULE_START_NID,), (SYSLIB_MODULE_INFO_NID,)),
+                ("SynthCodec", 0x4001, (0x51000001, 0x51000002), ()),
+                ("SynthCodec_driver", 0x0001, (0x51000003,), (0x51000004,)),
+            ],
+        )
+
+    def test_user_callable_libraries_follow_the_module_mode(self) -> None:
+        kernel = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, module_attributes=0x1006))
+        self.assertEqual([lib.name for lib in kernel.user_callable_libraries()], ["SynthCodec"])
+        user = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, module_attributes=0x0006))
+        self.assertFalse(user.kernel_mode)
+        self.assertEqual(
+            [lib.name for lib in user.user_callable_libraries()],
+            ["SynthCodec", "SynthCodec_driver"],
+        )
+
+    def test_sectionless_prx_convention_parses_identically(self) -> None:
+        sectioned = parse_export_table(build_module_elf(self.KERNEL_EXPORTS))
+        sectionless = parse_export_table(build_module_elf(self.KERNEL_EXPORTS, sectionless=True))
+        self.assertEqual(sectioned, sectionless)
+
+    def test_image_without_module_info_declares_no_export_table(self) -> None:
+        blob = bytearray(build_module_elf(self.KERNEL_EXPORTS, sectionless=True))
+        struct.pack_into("<I", blob, 52 + 12, 0)  # phdr[0].p_paddr = 0
+        self.assertIsNone(parse_export_table(bytes(blob)))
+
+    def test_fixed_address_module_reads_absolute_pointers(self) -> None:
+        table = parse_export_table(
+            build_module_elf(self.KERNEL_EXPORTS, e_type=2, base_vaddr=BASE_VADDR)
+        )
+        self.assertEqual(table.libraries[1].function_nids, (0x51000001, 0x51000002))
+
+    def test_malformed_export_tables_fail_for_the_intended_reason(self) -> None:
+        cases = {
+            "entry_too_short": "entry size 3 words outside",
+            "entry_overrun": "runs past ent_end",
+            "entry_table_unmapped": "NID table",
+            "address_table_truncated": "address table",
+            "ent_range_reversed": "is above ent_end",
+            "bad_name_ptr": "library name",
+        }
+        for corrupt, fragment in cases.items():
+            with self.subTest(corrupt=corrupt):
+                with self.assertRaises(ImportTableError) as ctx:
+                    parse_export_table(build_module_elf(self.KERNEL_EXPORTS, corrupt=corrupt))
+                self.assertIn(fragment, str(ctx.exception))
+
+    def test_forged_export_count_is_capped(self) -> None:
+        blob = bytearray(build_module_elf(self.KERNEL_EXPORTS))
+        entry = blob.find(struct.pack("<HBB", 0x4001, 4, 0))
+        self.assertGreater(entry, 0)
+        struct.pack_into("<H", blob, entry + 4, 0xFFFF)  # function count
+        with self.assertRaises(ImportTableError) as ctx:
+            parse_export_table(bytes(blob))
+        self.assertIn("exceeds cap", str(ctx.exception))
 
 
 class InterleavedImportTests(unittest.TestCase):

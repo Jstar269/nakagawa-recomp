@@ -5,6 +5,7 @@
 //
 // Pure policy, no Vulkan/SDL dependencies: unit-testable without a GPU (exercised by
 // gpu_capture_selftest.c before any Vulkan object exists).
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,13 @@ int sr_fbcap_env_on(const char *name) {
     const char *v = getenv(name);
     if (!v) return 0;
     return strtol(v, NULL, 10) != 0;
+}
+
+int sr_fbcap_snap_every(const char *fbsnap_value, int windows_configured) {
+    if (!fbsnap_value || !fbsnap_value[0]) return windows_configured ? 1 : 0;
+    long long every = strtoll(fbsnap_value, NULL, 10);
+    if (every <= 0) return 0;
+    return every > INT_MAX ? INT_MAX : (int)every;
 }
 
 int sr_fbcap_owner(int fbdu, int fbsnap) {
