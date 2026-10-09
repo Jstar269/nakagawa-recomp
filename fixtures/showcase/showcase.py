@@ -482,31 +482,26 @@ def _padscript(*presses: tuple[int, int, int]) -> str:
 
 
 def scripted_press_note(output: str, press: tuple[int, int, int]) -> str:
-    """Name the host lateness that delayed or skipped a scripted press, or return "".
+    """Say whether the guest read a scripted press, for a failed check that depends on it.
 
-    A pad-script row holds its press while the VCOUNT seen at each serviced vblank is
-    inside [vblank, vblank + width). A host that falls behind services several elapsed
-    periods at once at the batch's final VCOUNT, so the press can be latched late, on
-    fewer samples, or not at all, and a guest that reads only the latest sample can then
-    miss it. That limit belongs to scripted input on a slow host, not to the guest or
-    the HLE, and the failure message says so.
+    The runtime delivers scripted input in guest time (src/rt/scripted_input.h): a press
+    is held until the guest has read it, however far the host falls behind, and a press
+    the guest never reads fails the run by name. So when an input, audio or savedata check
+    fails, the useful fact is whether the guest ever read the press, from SR_INLOG's
+    "guest read scripted" line. A press that was read points at the guest or the HLE, one
+    that was never read points at a guest that stopped polling the pad.
     """
-    vblank, mask, width = press
-    facts = []
-    latched = re.search(rf"ctrl_latch: vcount=(\d+) buttons 0x[0-9a-f]{{4}} -> 0x{mask:04x}\b",
-                        output)
-    if latched is None:
-        facts.append(f"no controller sample latched the scripted press due at vblanks "
-                     f"{vblank}-{vblank + width - 1}: the host stepped VCOUNT past it")
-    elif int(latched.group(1)) > vblank:
-        first = int(latched.group(1))
-        facts.append(f"the scripted press due at vblank {vblank} was first latched at vblank "
-                     f"{first}: the host fell {first - vblank} display periods behind")
-    flip = re.search(r"BOOT_EVENT phase=display_flip vcount=(\d+)", output)
-    if flip and int(flip.group(1)) >= vblank + width:
-        facts.append(f"the guest presented its first frame at vblank {flip.group(1)}, "
-                     f"after the press window")
-    return f" ({'; '.join(facts)})" if facts else ""
+    vblank, mask, _width = press
+    read = re.search(rf"ctrl_read: vcount=(\d+) guest read scripted 0x{mask:04x}\b", output)
+    if read:
+        return f" (the guest read the scripted press due at vblank {vblank} at vblank {read.group(1)})"
+    return f" (the guest never read the scripted press due at vblank {vblank})"
+
+
+def _named_failure(output: str) -> str:
+    """The runtime's own named failure (ROUTE_FAIL ...) in a log, as a message suffix."""
+    match = re.search(r"^ROUTE_FAIL: ([^\n]*)", output, re.MULTILINE)
+    return f" ({match.group(1).strip()})" if match else ""
 
 
 def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
@@ -533,7 +528,8 @@ def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
         ) from exc
     log_path.write_text(result.stdout, encoding="utf-8", errors="replace")
     if result.returncode != 0:
-        raise ShowcaseError(f"{label} exited {result.returncode}; see {log_path}")
+        raise ShowcaseError(
+            f"{label} exited {result.returncode}{_named_failure(result.stdout)}; see {log_path}")
     return result.stdout
 
 
@@ -582,7 +578,7 @@ def smoke_all() -> None:
                 _run_runtime(save_command, save_env, save_package_dir, save_log_path,
                              f"{disc_id} savedata smoke")
             except ShowcaseError as exc:
-                # The savedata run ends only when the guest sees its scripted Start.
+                # The savedata run ends only when the guest acts on its scripted Start.
                 save_log = save_log_path.read_text(encoding="utf-8", errors="replace")
                 raise ShowcaseError(f"{exc}{scripted_press_note(save_log, SAVE_START_PRESS)}") from exc
             save_root = Path(env["SR_MEMSTICK"])

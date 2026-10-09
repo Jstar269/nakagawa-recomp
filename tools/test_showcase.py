@@ -110,40 +110,41 @@ class ShowcaseFirstFrameCheckpointTests(unittest.TestCase):
 
 
 class ShowcaseScriptedPressTests(unittest.TestCase):
-    """Input failures caused by a host that fell behind say so instead of looking random."""
+    """A failed check that depends on a scripted press says whether the guest read it."""
 
     def test_pad_script_rows_match_the_runtime_format(self) -> None:
         self.assertEqual(showcase._padscript(showcase.CROSS_PRESS, showcase.START_PRESS),
                          "12 4000 4\n240 0008 4\n")
 
-    def test_on_time_press_adds_nothing(self) -> None:
-        log = "ctrl_latch: vcount=12 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
-        self.assertEqual(showcase.scripted_press_note(log, showcase.CROSS_PRESS), "")
-
-    def test_late_press_names_how_far_the_host_fell_behind(self) -> None:
+    def test_a_press_the_guest_read_is_named_with_its_read(self) -> None:
+        # Guest-time delivery holds the press until the guest reads it, so a late read is
+        # normal on a loaded host; what the message needs is that the read happened.
         log = ("ctrl_latch: vcount=15 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
-               "ctrl_latch: vcount=16 buttons 0x4000 -> 0x0000 lx=128 ly=128\n")
+               "ctrl_read: vcount=57 guest read scripted 0x4000 (latched 43 samples since vblank 15)\n")
         self.assertEqual(
             showcase.scripted_press_note(log, showcase.CROSS_PRESS),
-            " (the scripted press due at vblank 12 was first latched at vblank 15: "
-            "the host fell 3 display periods behind)")
+            " (the guest read the scripted press due at vblank 12 at vblank 57)")
 
-    def test_press_before_the_guest_presented_says_so(self) -> None:
-        # A starved host booted the guest so late that its first flip came after the
-        # press window: the press was latched on time but nothing was reading it yet.
-        log = ("ctrl_latch: vcount=14 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
-               "BOOT_EVENT phase=display_flip vcount=55 buffer=0x04088000 stride=512 format=3\n")
+    def test_a_press_the_guest_never_read_says_so(self) -> None:
+        log = "ctrl_latch: vcount=120 buttons 0x0000 -> 0x0008 lx=128 ly=128\n"
         self.assertEqual(
-            showcase.scripted_press_note(log, showcase.CROSS_PRESS),
-            " (the scripted press due at vblank 12 was first latched at vblank 14: the host fell "
-            "2 display periods behind; the guest presented its first frame at vblank 55, "
-            "after the press window)")
+            showcase.scripted_press_note(log, showcase.SAVE_START_PRESS),
+            " (the guest never read the scripted press due at vblank 120)")
 
-    def test_skipped_press_names_the_stepped_over_window(self) -> None:
-        self.assertEqual(
-            showcase.scripted_press_note("GESTAT f=60 tri3d=1\n", showcase.SAVE_START_PRESS),
-            " (no controller sample latched the scripted press due at vblanks 120-123: "
-            "the host stepped VCOUNT past it)")
+    def test_a_named_runtime_failure_reaches_the_smoke_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cwd = Path(temp)
+            log = ("ROUTE: pad script loaded\n"
+                   "ROUTE_FAIL: pad script segment 2 of 4: the guest did not read the controller "
+                   "while CROSS was held for 1800 vblanks\n")
+            failed = subprocess.CompletedProcess(["runtime"], 86, stdout=log)
+            with mock.patch.object(showcase.subprocess, "run", return_value=failed):
+                with self.assertRaisesRegex(
+                        showcase.ShowcaseError,
+                        r"TEST00007 runtime exited 86 \(pad script segment 2 of 4: the guest did not "
+                        r"read the controller while CROSS was held for 1800 vblanks\); see "):
+                    showcase._run_runtime(["runtime"], {}, cwd, cwd / "runtime.log",
+                                          "TEST00007 runtime")
 
 
 class ShowcaseRuntimeRunTests(unittest.TestCase):
