@@ -62,8 +62,158 @@ static int audio_stat_on(void) {
     return on;
 }
 
+/* ---- SR_AUDIODUMP: debug-only capture of the device mix (off by default) ----------------
+ *
+ * With SR_AUDIODUMP=<path.wav> in the environment, every buffer SDL is about to submit to the
+ * device -- the sum of all nine channel streams after the master gain -- is also written as
+ * 16-bit PCM WAV at the device's own rate and channel count. That is the sound the host plays,
+ * so it is the artefact an audit needs for silence, clipping, discontinuities and sample rate.
+ * It is observation only: the callback never writes back into the buffer. It runs on SDL's
+ * audio thread and does file I/O there, so a dump changes host pacing; never compare timing
+ * with it enabled. The WAV header is patched once a second and at close, so an abnormal exit
+ * still leaves a readable file up to its last patch. */
+typedef struct {
+    uint64_t frames;         /* sample frames written */
+    uint64_t silent_frames;  /* frames where every channel was exactly zero */
+    uint64_t clipped;        /* samples beyond full scale, before the 16-bit clamp */
+    uint32_t peak;           /* largest magnitude written, after the clamp */
+} SrAudioDumpStats;
+
+#define SR_AUDIO_DUMP_CHUNK 1024u
+#define SR_AUDIO_DUMP_MAX_DATA 0xFFFFFF00u   /* stop before the RIFF size field overflows */
+
+static FILE *s_dump_file = NULL;
+static char s_dump_path[512];
+static uint32_t s_dump_rate = 0, s_dump_channels = 0;
+static uint64_t s_dump_data_bytes = 0, s_dump_last_patch = 0;
+static SrAudioDumpStats s_dump_stats;
+
+static void sr_put_le16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void sr_put_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+/* Canonical 44-byte PCM WAV header for 16-bit samples. Pure, so the selftest checks it. */
+static void sr_audio_wav_header(uint8_t out[44], uint32_t rate, uint32_t channels, uint32_t data_bytes) {
+    memcpy(out + 0, "RIFF", 4);
+    sr_put_le32(out + 4, 36u + data_bytes);
+    memcpy(out + 8, "WAVE", 4);
+    memcpy(out + 12, "fmt ", 4);
+    sr_put_le32(out + 16, 16u);
+    sr_put_le16(out + 20, 1u);                              /* PCM */
+    sr_put_le16(out + 22, (uint16_t)channels);
+    sr_put_le32(out + 24, rate);
+    sr_put_le32(out + 28, rate * channels * 2u);            /* byte rate */
+    sr_put_le16(out + 32, (uint16_t)(channels * 2u));       /* block align */
+    sr_put_le16(out + 34, 16u);
+    memcpy(out + 36, "data", 4);
+    sr_put_le32(out + 40, data_bytes);
+}
+
+/* Float device mix (nominal full scale +-1.0) to 16-bit, rounding half away from zero. A sample
+ * beyond the 16-bit range is counted as clipped and clamped; NaN reads as silence. Pure. */
+static int16_t sr_audio_dump_sample(float x, uint64_t *clipped) {
+    float scaled = x * 32768.0f;
+    if (scaled != scaled) return 0;
+    if (scaled > 32767.0f) { (*clipped)++; return 32767; }
+    if (scaled < -32768.0f) { (*clipped)++; return -32768; }
+    return (int16_t)(int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+}
+
+static void sr_audio_dump_patch_header(void) {
+    uint8_t hdr[44];
+    sr_audio_wav_header(hdr, s_dump_rate, s_dump_channels, (uint32_t)s_dump_data_bytes);
+    if (fseek(s_dump_file, 0, SEEK_SET) == 0) fwrite(hdr, 1, sizeof(hdr), s_dump_file);
+    fseek(s_dump_file, 0, SEEK_END);
+    fflush(s_dump_file);
+    s_dump_last_patch = s_dump_data_bytes;
+}
+
+/* Convert and write `samples` interleaved float values (a whole number of frames). */
+static void sr_audio_dump_block(const float *in, size_t samples) {
+    int16_t out[SR_AUDIO_DUMP_CHUNK];
+    size_t chunk = SR_AUDIO_DUMP_CHUNK - (SR_AUDIO_DUMP_CHUNK % s_dump_channels);
+    for (size_t done = 0; done < samples;) {
+        size_t k = samples - done < chunk ? samples - done : chunk;
+        for (size_t i = 0; i < k; i++) {
+            int16_t v = sr_audio_dump_sample(in[done + i], &s_dump_stats.clipped);
+            out[i] = v;
+            uint32_t a = v < 0 ? (uint32_t)(-(int32_t)v) : (uint32_t)v;
+            if (a > s_dump_stats.peak) s_dump_stats.peak = a;
+        }
+        for (size_t f = 0; f < k; f += s_dump_channels) {
+            int any = 0;
+            for (uint32_t c = 0; c < s_dump_channels; c++) any |= out[f + c] != 0;
+            if (!any) s_dump_stats.silent_frames++;
+        }
+        s_dump_stats.frames += k / s_dump_channels;
+        fwrite(out, sizeof(int16_t), k, s_dump_file);
+        done += k;
+    }
+}
+
+static void sr_audio_dump_postmix(void *userdata, const SDL_AudioSpec *spec, float *buffer, int buflen) {
+    (void)userdata;
+    if (!s_dump_file || !buffer || !spec || buflen < (int)sizeof(float)) return;
+    /* A device whose format changed mid-run keeps the header it was opened with. */
+    if ((uint32_t)spec->channels != s_dump_channels || (uint32_t)spec->freq != s_dump_rate) return;
+    size_t samples = (size_t)buflen / sizeof(float);
+    samples -= samples % s_dump_channels;
+    if (!samples || s_dump_data_bytes + samples * 2u > SR_AUDIO_DUMP_MAX_DATA) return;
+    sr_audio_dump_block(buffer, samples);
+    s_dump_data_bytes += samples * 2u;
+    if (s_dump_data_bytes - s_dump_last_patch >= (uint64_t)s_dump_rate * s_dump_channels * 2u)
+        sr_audio_dump_patch_header();
+}
+
+static void sr_audio_dump_start(SDL_AudioDeviceID dev) {
+    const char *path = getenv("SR_AUDIODUMP");
+    if (!path || !*path || s_dump_file || !dev) return;
+    SDL_AudioSpec spec;
+    if (!SDL_GetAudioDeviceFormat(dev, &spec, NULL) || spec.channels <= 0 || spec.freq <= 0) {
+        fprintf(stderr, "AUDIODUMP: device format unavailable (%s); no dump written\n", SDL_GetError());
+        return;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "AUDIODUMP: cannot open %s; no dump written\n", path);
+        return;
+    }
+    snprintf(s_dump_path, sizeof(s_dump_path), "%s", path);
+    s_dump_file = f;
+    s_dump_rate = (uint32_t)spec.freq;
+    s_dump_channels = (uint32_t)spec.channels;
+    s_dump_data_bytes = s_dump_last_patch = 0;
+    memset(&s_dump_stats, 0, sizeof(s_dump_stats));
+    sr_audio_dump_patch_header();
+    if (!SDL_SetAudioPostmixCallback(dev, sr_audio_dump_postmix, NULL)) {
+        fprintf(stderr, "AUDIODUMP: postmix hook refused (%s); no dump written\n", SDL_GetError());
+        fclose(s_dump_file);
+        s_dump_file = NULL;
+        return;
+    }
+    fprintf(stderr, "AUDIODUMP: writing device mix to %s (%uHz, %u ch, s16le)\n",
+            s_dump_path, s_dump_rate, s_dump_channels);
+}
+
+static void sr_audio_dump_stop(SDL_AudioDeviceID dev) {
+    if (!s_dump_file) return;
+    if (dev) SDL_SetAudioPostmixCallback(dev, NULL, NULL);
+    sr_audio_dump_patch_header();
+    fclose(s_dump_file);
+    s_dump_file = NULL;
+    fprintf(stderr, "AUDIODUMP: %s rate=%u channels=%u frames=%llu seconds=%.3f silent_frames=%llu "
+                    "clipped_samples=%llu peak=%u\n",
+            s_dump_path, s_dump_rate, s_dump_channels, (unsigned long long)s_dump_stats.frames,
+            s_dump_rate ? (double)s_dump_stats.frames / (double)s_dump_rate : 0.0,
+            (unsigned long long)s_dump_stats.silent_frames, (unsigned long long)s_dump_stats.clipped,
+            (unsigned)s_dump_stats.peak);
+    fflush(stderr);
+}
+
 static void sr_audio_cleanup(void) {
     if (s_audio_state == AUDIO_STATE_ACTIVE) {
+        sr_audio_dump_stop(s_device_id);
         for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
             if (s_streams[i]) {
                 SDL_DestroyAudioStream(s_streams[i]);
@@ -170,6 +320,7 @@ int sr_audio_init(void) {
     }
 
     s_audio_state = AUDIO_STATE_ACTIVE;
+    sr_audio_dump_start(s_device_id);
     if (!s_reported_init) {
         const char *driver = SDL_GetCurrentAudioDriver();
         fprintf(stderr, "audio: initialized SDL3 audio output (driver: %s, %uHz stereo 16-bit)\n",
@@ -326,6 +477,9 @@ void sr_audio_dump_stats(void) {
             (unsigned long long)s_stats.backpressure_events,
             (unsigned)peak, worst, lead_ms);
     fflush(stderr);
+    /* The end-of-run capture point exits with _Exit, which skips atexit, so the dump is closed
+     * here: the WAV header is finalised and the stats line printed. A no-op without SR_AUDIODUMP. */
+    sr_audio_dump_stop(s_device_id);
 }
 
 int sr_audio_is_active(void) {
@@ -484,6 +638,130 @@ static void test_master_volume_gain(void) {
     assert(sr_audio_master_gain(80) > 0.7999f && sr_audio_master_gain(80) < 0.8001f);
 }
 
+static void set_test_env(const char *key, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+    char buf[600];
+    snprintf(buf, sizeof(buf), "%s=%s", key, value);
+    _putenv(buf);
+#else
+    if (value && *value) setenv(key, value, 1);
+    else unsetenv(key);
+#endif
+}
+
+static uint32_t test_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint32_t test_le16(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8); }
+
+/* SR_AUDIODUMP conversion: the 16-bit mapping, the clip count and NaN handling, pure. */
+static void test_dump_conversion(void) {
+    uint64_t clipped = 0;
+    assert(sr_audio_dump_sample(0.0f, &clipped) == 0);
+    assert(sr_audio_dump_sample(0.5f, &clipped) == 16384);
+    assert(sr_audio_dump_sample(-0.5f, &clipped) == -16384);
+    assert(sr_audio_dump_sample(0.25f / 32768.0f, &clipped) == 0);        /* rounds to nearest */
+    assert(sr_audio_dump_sample(0.75f / 32768.0f, &clipped) == 1);
+    assert(clipped == 0);
+    assert(sr_audio_dump_sample(1.0f, &clipped) == 32767);                /* 32768 is out of range */
+    assert(clipped == 1);
+    assert(sr_audio_dump_sample(-1.0f, &clipped) == -32768);              /* exactly representable */
+    assert(clipped == 1);
+    assert(sr_audio_dump_sample(1.5f, &clipped) == 32767);
+    assert(sr_audio_dump_sample(-2.0f, &clipped) == -32768);
+    assert(clipped == 3);
+    uint32_t nan_bits = 0x7fc00000u;
+    float nan_value;
+    memcpy(&nan_value, &nan_bits, sizeof(nan_value));
+    assert(sr_audio_dump_sample(nan_value, &clipped) == 0);
+    assert(clipped == 3);
+    printf("test_dump_conversion: PASS\n");
+}
+
+/* SR_AUDIODUMP header: the canonical 44-byte PCM layout the Python audit reads. */
+static void test_dump_wav_header(void) {
+    uint8_t h[44];
+    sr_audio_wav_header(h, 44100u, 2u, 1000u);
+    assert(memcmp(h + 0, "RIFF", 4) == 0);
+    assert(memcmp(h + 8, "WAVE", 4) == 0);
+    assert(memcmp(h + 12, "fmt ", 4) == 0);
+    assert(memcmp(h + 36, "data", 4) == 0);
+    assert(test_le32(h + 4) == 1036u);       /* 36 + data */
+    assert(test_le32(h + 16) == 16u);
+    assert(test_le16(h + 20) == 1u);         /* PCM */
+    assert(test_le16(h + 22) == 2u);
+    assert(test_le32(h + 24) == 44100u);
+    assert(test_le32(h + 28) == 176400u);    /* 44100 * 2 * 2 */
+    assert(test_le16(h + 32) == 4u);
+    assert(test_le16(h + 34) == 16u);
+    assert(test_le32(h + 40) == 1000u);
+    printf("test_dump_wav_header: PASS\n");
+}
+
+/* SR_AUDIODUMP is off by default: an unset variable writes nothing and opens no file. */
+static void test_dump_off_by_default(void) {
+    test_reset();
+    set_test_env("SR_AUDIODUMP", "");
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0);
+    assert(s_dump_file == NULL);
+    test_reset();
+    printf("test_dump_off_by_default: PASS\n");
+}
+
+/* With SR_AUDIODUMP set, the device mix is written as a valid WAV at the device rate, the
+ * header matches the data, and a pushed tone appears in it. */
+static void test_dump_writes_wav(void) {
+    const char *dir = getenv("TEMP");
+    if (!dir || !*dir) dir = getenv("TMPDIR");
+    if (!dir || !*dir) dir = ".";
+    char path[512];
+    snprintf(path, sizeof(path), "%s/sr_audio_dump_selftest.wav", dir);
+    remove(path);
+    set_test_env("SR_AUDIODUMP", path);
+    test_reset();
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0);
+    assert(s_dump_file != NULL);
+
+    int16_t tone[2048 * 2];
+    for (int i = 0; i < 2048; i++) {
+        int16_t sample = (int16_t)(sin(2.0 * 3.141592653589793 * 440.0 * i / 44100.0) * 8000.0);
+        tone[i * 2] = sample;
+        tone[i * 2 + 1] = sample;
+    }
+    sr_audio_push(0, tone, 2048, 0x8000, 0x8000);
+
+    Uint64 deadline = SDL_GetTicks() + 5000;
+    while ((sr_audio_queued(0) != 0 || s_dump_stats.frames < 4096) && SDL_GetTicks() < deadline)
+        SDL_Delay(5);
+    test_reset();   /* sr_audio_cleanup stops the dump and patches the header */
+
+    FILE *f = fopen(path, "rb");
+    assert(f != NULL);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t h[44];
+    assert(size >= 44 && fread(h, 1, sizeof(h), f) == sizeof(h));
+    assert(memcmp(h, "RIFF", 4) == 0 && memcmp(h + 36, "data", 4) == 0);
+    assert(test_le32(h + 4) == (uint32_t)size - 8u);
+    assert(test_le16(h + 22) == 2u);
+    assert(test_le32(h + 24) == 44100u);
+    uint32_t data_bytes = test_le32(h + 40);
+    assert(data_bytes == (uint32_t)size - 44u);
+    assert(data_bytes >= 4096u * 4u);
+    int nonzero = 0;
+    int16_t s;
+    while (fread(&s, sizeof(s), 1, f) == 1)
+        if (s != 0) nonzero++;
+    fclose(f);
+    assert(nonzero > 0);
+    remove(path);
+    set_test_env("SR_AUDIODUMP", "");
+    printf("test_dump_writes_wav: PASS\n");
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     (void)argc;
@@ -493,6 +771,10 @@ int main(int argc, char **argv) {
     test_dummy_mixer_handoff();
     test_no_device_path();
     test_null_backend_env();
+    test_dump_conversion();
+    test_dump_wav_header();
+    test_dump_off_by_default();
+    test_dump_writes_wav();
     test_reset();
     printf("ALL AUDIO HOST TESTS PASSED\n");
     return 0;

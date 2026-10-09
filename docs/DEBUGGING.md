@@ -969,6 +969,7 @@ committed.
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |
+| `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once a second and at exit, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak=`) is printed at close. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |
 | `SR_HEAP_BASE=HEX` | Override heap base address |
 | `SR_PARTITION_TOP=HEX` | Override partition top |
