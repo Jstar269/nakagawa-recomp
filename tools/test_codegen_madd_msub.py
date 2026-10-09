@@ -370,5 +370,36 @@ class TestAllegrexEncodingsDocumented(unittest.TestCase):
                 self.assertIn("s->hi", stmt)
 
 
+class TestSyncDecoding(unittest.TestCase):
+    """SPECIAL funct 0x0f is SYNC (stype 0): a barrier with no architectural effect on this
+    single-hart, sequentially consistent runtime. It must translate to a no-op, not make the
+    whole containing function an untranslatable stub. Other stype or reserved-field forms stay
+    fail-closed until measured."""
+
+    def test_sync_word_translates_to_noop(self):
+        # Canonical SYNC word: SPECIAL, all register fields and stype zero, funct 0x0f.
+        stmt, saddr, width = codegen.effect(0x08804000, 0x0000000F)
+        self.assertNotIn("Unsupported", stmt)
+        self.assertEqual(stmt, "(void)0;")
+        self.assertIsNone(saddr)
+        self.assertEqual(width, 0)
+
+    def test_sync_has_no_register_or_memory_effect(self):
+        stmt, _, _ = codegen.effect(0x08804000, 0x0000000F)
+        self.assertNotIn("s->r[", stmt)
+        self.assertNotIn("MEM_", stmt)
+        self.assertNotIn("s->hi", stmt)
+        self.assertNotIn("s->lo", stmt)
+
+    def test_sync_nonzero_stype_fails_closed(self):
+        # stype is bits 10:6; stype 1 is not the measured full-barrier form.
+        with self.assertRaises(codegen.Unsupported):
+            codegen.effect(0x08804000, encode_special(0, 0, 0, 0x0F) | (1 << 6))
+
+    def test_sync_reserved_register_fields_fail_closed(self):
+        with self.assertRaises(codegen.Unsupported):
+            codegen.effect(0x08804000, encode_special(4, 0, 0, 0x0F))
+
+
 if __name__ == "__main__":
     unittest.main()
