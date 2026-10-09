@@ -1941,6 +1941,52 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(timed_out["TEARDOWN_CHECK"]["recovery_status"], "NOT_RUN")
         self.assertNotIn("reset", [command for command, _timeout in transport.commands])
 
+    def test_timed_out_probe_envelope_names_its_last_step_marker(self):
+        class HungProbeTransport(SimulatedPsplinkTransport):
+            """A probe that durably wrote its progress, then never returned from its launch."""
+
+            def __init__(self, hung_case, host0_log, **options):
+                super().__init__(timeout_cases={hung_case}, **options)
+                self.hung_case = hung_case
+                self.host0_log = host0_log
+
+            def run(self, command, timeout):
+                if command == f"ldstart host0:/{self.hung_case}.prx":
+                    _campaign_host0_log_path(self.host0_root, self.hung_case).write_text(
+                        self.host0_log, encoding="utf-8"
+                    )
+                return super().run(command, timeout)
+
+        progress = (
+            "NAKAGAWA_PSP_STEP schema=1 case_id=hung-case step=open-registry\n"
+            "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=hung-case-open "
+            "status=PASS result=0x1\n"
+            "NAKAGAWA_PSP_STEP schema=1 case_id=hung-case step=bad-handle\n"
+        )
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-hung-step-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "hung-case"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(case_id.encode())
+                cases.append(CampaignCase(case_id, binary, 0.75))
+            transport = HungProbeTransport("hung-case", progress)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases)
+
+        hung = report["envelopes"][1]
+        self.assertEqual(hung["PROCESS_STATUS"], "TIMEOUT")
+        self.assertFalse(hung["ACCEPTANCE_ELIGIBLE"])
+        self.assertEqual(hung["LAST_PROBE_STEP"], {"case_id": "hung-case", "step": "bad-handle"})
+        self.assertIn("last step marker: hung-case/bad-handle",
+                      " ".join(hung["QUALIFICATION_BLOCKERS"]))
+
     def test_failed_l0_shell_check_escalates_to_one_l1_restart(self):
         class ShellReturnsAfterRestartTransport(SimulatedPsplinkTransport):
             def restart(self):

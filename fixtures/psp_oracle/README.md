@@ -350,7 +350,7 @@ changed before resume, and `out13`/`out14` separate a completion callback seen
 distinct facts: GE memory work and GE completion notification are not the same
 hardware domain.
 
-## Plain-mutex cases (issue #2)
+## Plain-mutex cases
 
 Four cases isolate the unresolved plain-Mutex cells left open by PR #52. The
 mutex syscalls are absent from the installed PSPSDK headers, so

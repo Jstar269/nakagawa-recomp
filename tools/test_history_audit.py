@@ -151,6 +151,29 @@ class TestHistoryAudit(unittest.TestCase):
             self.assertEqual(report["summary"]["reviewed_findings"], 1)
             self.assertEqual(report["reviewed_findings"][0]["reason"], "synthetic fixture")
 
+    def test_reviewed_blob_accepts_its_path_findings(self):
+        """A prohibited-extension finding names its blob like a content finding does, so the
+        exact-blob review entry accepts it; another blob at the same path stays a finding."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            blob = self._repo_with_removed_blob(root, "guest.prx", "synthetic fixture bytes\n")
+            findings = [f for f in history_audit.audit_history_tree_paths(root)
+                        if f.code == "HISTORICAL_PROHIBITED_EXTENSION"]
+            self.assertEqual([f.commit for f in findings], ["blob:" + blob[:12]])
+            reviewed = Path(tmp) / "reviewed.json"
+            self._write_reviewed(reviewed, [{
+                "blob": blob, "code": "HISTORICAL_PROHIBITED_EXTENSION",
+                "path": "guest.prx", "reason": "synthetic fixture"}])
+            report = history_audit.generate_full_history_audit_report(root, reviewed)
+            self.assertEqual(report["status"], "OK")
+            self.assertEqual(report["summary"]["reviewed_findings"], 1)
+            self._write_reviewed(reviewed, [{
+                "blob": "0" * 40, "code": "HISTORICAL_PROHIBITED_EXTENSION",
+                "path": "guest.prx", "reason": "different content"}])
+            report = history_audit.generate_full_history_audit_report(root, reviewed)
+            self.assertEqual(report["status"], "FAIL")
+
     def test_review_of_one_blob_never_excuses_other_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"

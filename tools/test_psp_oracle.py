@@ -36,6 +36,7 @@ from psp_oracle.protocol import (
     decode_psp_model_code,
     model_identity_fields,
     parse_output,
+    parse_progress,
     provenance_issues,
     validate_dmac_size_matrix,
     validate_dmac_size_matrix_size,
@@ -1340,6 +1341,39 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertFalse(hang["acceptance_eligible"])
         with self.assertRaises(ValueError):
             annotate_terminal_outcome(base, stream("psp").encode(), "HANG")
+
+    def test_hang_annotation_names_the_last_complete_step_of_a_cut_capture(self) -> None:
+        base = {"mode": "capture", "process_status": "TIMEOUT", "stdout_file": "capture.txt"}
+        capture = (
+            "Load/Start UID: 0x1\n"
+            "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly step=walk-config\n"
+            "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly step=bad-handle\n"
+            "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly step=bad-ha"
+        )
+        hang = annotate_terminal_outcome(base, capture.encode(), "HANG")
+        self.assertEqual(
+            hang["last_probe_step"], {"case_id": "registry-readonly", "step": "bad-handle"}
+        )
+        self.assertIsNone(
+            annotate_terminal_outcome(base, b"transport only\n", "HANG")["last_probe_step"]
+        )
+
+    def test_parse_progress_collects_complete_steps_from_a_cut_stream(self) -> None:
+        self.assertIsNone(parse_progress("").last_step)
+        self.assertIsNone(parse_progress("transport only\n").last_step)
+        progress = parse_progress(
+            "console noise\n"
+            "NAKAGAWA_PSP_STEP schema=1 case_id=x step=a\n"
+            "NAKAGAWA_PSP_TEST schema=1 test_id=T case_id=x status=PASS\n"
+            "NAKAGAWA_PSP_STEP schema=1 case_id=x step=b\n"
+            "NAKAGAWA_PSP_STEP schema=1 case_id=x step=c"
+        )
+        # The final line has no newline, so it may stop mid-marker and is not counted.
+        self.assertEqual(progress.last_step.step, "b")
+        self.assertEqual(progress.results, ())
+        self.assertEqual(progress.metadata, ())
+        with self.assertRaises(ProtocolError):
+            parse_progress("NAKAGAWA_PSP_STEP schema=1 case_id=x step=has space\n")
 
     def test_windows_pspsh_payload_quotes_are_removed_once(self) -> None:
         command = (

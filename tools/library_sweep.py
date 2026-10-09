@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -18,6 +17,7 @@ from pathlib import Path
 import re
 import shutil
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -36,7 +36,13 @@ DEFAULT_TIME_BUDGET_SECONDS = 120
 DEFAULT_LAUNCH_TIMEOUT_SECONDS = 20
 MAX_LAUNCH_TIMEOUT_SECONDS = 120
 MACHINE_POLL_SECONDS = 60
+MACHINE_INSPECTION_RETRY_SECONDS = 5
 MACHINE_MAX_WAIT_SECONDS = 20 * 60
+# Windows Toolhelp process snapshot (CreateToolhelp32Snapshot / Process32*W).
+_TH32CS_SNAPPROCESS = 0x00000002
+_INVALID_HANDLE_VALUE = (1 << (8 * struct.calcsize("P"))) - 1
+_ERROR_NO_MORE_FILES = 18
+_MAX_PROCESS_ENTRIES = 1 << 16
 # External per-title reports carry variable-size import inventories. The
 # project-artifact budgets accept the tested 20,000-entry reports while keeping
 # one route's parser work bounded independently of build-report.json.
@@ -339,32 +345,104 @@ def _read_existing_rows(
     return retained
 
 
-def _process_names() -> set[str]:
-    if os.name == "nt":
-        completed = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
+class ProcessInspectionError(RuntimeError):
+    """The running-process list could not be read this time; the caller may retry."""
+
+
+def _windows_process_names() -> set[str]:
+    """Read image names from a Toolhelp process snapshot, in process.
+
+    Starting a child (tasklist) per title needs a new process and console, and both
+    fail on a loaded machine; a snapshot needs neither.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if snapshot is None or snapshot == _INVALID_HANDLE_VALUE:
+        raise ProcessInspectionError(
+            f"process snapshot failed (Windows error {ctypes.get_last_error()})"
         )
-        if completed.returncode != 0:
-            raise RuntimeError("could not inspect running processes before the next title")
-        names = {row[0].casefold().removesuffix(".exe")
-                 for row in csv.reader(completed.stdout.splitlines()) if row}
-    else:
+    try:
+        entry = ProcessEntry32W()
+        entry.dwSize = ctypes.sizeof(ProcessEntry32W)
+        names: set[str] = set()
+        # Clear the thread's last error first: an end of walk is told apart from a
+        # failure only by ERROR_NO_MORE_FILES, and a stale value must not pass for it.
+        ctypes.set_last_error(0)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        for listed in range(_MAX_PROCESS_ENTRIES + 1):
+            if not more:
+                error = ctypes.get_last_error()
+                if error != _ERROR_NO_MORE_FILES:
+                    raise ProcessInspectionError(
+                        f"process snapshot walk failed (Windows error {error})"
+                    )
+                return names
+            if listed == _MAX_PROCESS_ENTRIES:
+                break
+            names.add(entry.szExeFile.casefold().removesuffix(".exe"))
+            ctypes.set_last_error(0)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        raise ProcessInspectionError(
+            f"process snapshot listed more than {_MAX_PROCESS_ENTRIES} processes"
+        )
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+
+def _posix_process_names() -> set[str]:
+    try:
         completed = subprocess.run(
             ["ps", "-A", "-o", "comm="],
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
             timeout=10,
         )
-        if completed.returncode != 0:
-            raise RuntimeError("could not inspect running processes before the next title")
-        names = {Path(line.strip()).name.casefold().removesuffix(".exe")
-                 for line in completed.stdout.splitlines() if line.strip()}
-    return names
+    except (FileNotFoundError, PermissionError) as exc:
+        # A missing or forbidden ps does not heal by waiting.
+        raise RuntimeError(
+            f"could not inspect running processes before the next title: ps is unavailable "
+            f"({type(exc).__name__})"
+        ) from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProcessInspectionError(f"ps could not run ({type(exc).__name__})") from exc
+    if completed.returncode != 0:
+        raise ProcessInspectionError(f"ps exited {completed.returncode}")
+    return {Path(line.strip()).name.casefold().removesuffix(".exe")
+            for line in completed.stdout.splitlines() if line.strip()}
+
+
+def _process_names() -> set[str]:
+    if os.name == "nt":
+        return _windows_process_names()
+    return _posix_process_names()
 
 
 def _blocking_processes(process_reader=_process_names) -> set[str]:
@@ -379,18 +457,39 @@ def _wait_for_machine_idle(
     *,
     process_reader=_process_names,
     sleeper=time.sleep,
+    clock=time.monotonic,
     poll_seconds: int = MACHINE_POLL_SECONDS,
+    retry_seconds: int = MACHINE_INSPECTION_RETRY_SECONDS,
     max_wait_seconds: int = MACHINE_MAX_WAIT_SECONDS,
 ) -> tuple[int, bool]:
-    """Wait at most 20 minutes for another verifier/player/emulator to exit."""
-    started = time.monotonic()
+    """Wait at most 20 minutes for another verifier/player/emulator to exit.
+
+    A failed process inspection is retried within the same deadline. A title never
+    starts unless an inspection succeeded, so if none succeeds before the deadline the
+    sweep stops instead of running blind. ``sleeper`` must advance ``clock``: tests that
+    inject one inject both.
+    """
+    if poll_seconds <= 0 or retry_seconds <= 0:
+        raise ValueError("machine poll and retry intervals must be positive")
+    started = clock()
     deadline = started + max_wait_seconds
     while True:
-        if not _blocking_processes(process_reader):
-            return int((time.monotonic() - started) * 1000), False
-        remaining = deadline - time.monotonic()
+        try:
+            blocking = _blocking_processes(process_reader)
+        except ProcessInspectionError as exc:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "could not inspect running processes before the next title"
+                ) from exc
+            print(f"process inspection failed ({exc}); retrying", file=sys.stderr)
+            sleeper(min(retry_seconds, remaining))
+            continue
+        if not blocking:
+            return int((clock() - started) * 1000), False
+        remaining = deadline - clock()
         if remaining <= 0:
-            return int((time.monotonic() - started) * 1000), True
+            return int((clock() - started) * 1000), True
         sleeper(min(poll_seconds, remaining))
 
 
@@ -1567,6 +1666,7 @@ def run_sweep(
     source_commit: str | None = None,
     process_reader=_process_names,
     sleeper=time.sleep,
+    clock=time.monotonic,
     poll_seconds: int = MACHINE_POLL_SECONDS,
     max_wait_seconds: int = MACHINE_MAX_WAIT_SECONDS,
 ) -> dict:
@@ -1620,6 +1720,7 @@ def run_sweep(
         load_wait_ms, load_remained_active = _wait_for_machine_idle(
             process_reader=process_reader,
             sleeper=sleeper,
+            clock=clock,
             poll_seconds=poll_seconds,
             max_wait_seconds=max_wait_seconds,
         )

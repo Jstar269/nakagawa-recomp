@@ -42,6 +42,7 @@ try:
         ge_corpus_report,
         model_identity_fields,
         parse_output,
+        parse_progress,
         provenance_issues,
         validate_dmac_size_matrix,
         validate_dmac_size_matrix_size,
@@ -56,6 +57,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         ge_corpus_report,
         model_identity_fields,
         parse_output,
+        parse_progress,
         provenance_issues,
         validate_dmac_size_matrix,
         validate_dmac_size_matrix_size,
@@ -2018,8 +2020,22 @@ class PsplinkCampaignRunner:
                 f"completion contract for {case.case_id} is unregistered "
                 "(in the works: issue #352)"
             )
+        # A probe that did not finish names where it stopped: its durable STEP
+        # markers in the captured host0 stream. Markers are progress, not results,
+        # so they are kept even though the partial stream is not a semantic result.
+        probe_stopped = result[3] != "PROCESS_EXITED" or host0_capture_problem is not None
+        last_step = None
+        if probe_stopped:
+            try:
+                last_step = parse_progress(host0_text).last_step
+            except ProtocolError:
+                disqualify("probe progress markers failed strict protocol validation")
         if result[3] == "TIMEOUT":
-            disqualify("per-case timeout; partial output is not a semantic result")
+            disqualify(
+                "per-case timeout; partial output is not a semantic result"
+                + ("" if last_step is None
+                   else f"; last step marker: {last_step.case_id}/{last_step.step}")
+            )
         elif result[0] != 0:
             disqualify("PSPLink command did not exit successfully")
         if host0_read_problem:
@@ -2175,6 +2191,10 @@ class PsplinkCampaignRunner:
             "TEARDOWN_CHECK": teardown_check,
             "PROCESS_STATUS": result[3],
             "RETURN_CODE": result[0],
+            "LAST_PROBE_STEP": (
+                None if last_step is None
+                else {"case_id": last_step.case_id, "step": last_step.step}
+            ),
         }
 
     def run(
@@ -3499,6 +3519,8 @@ def annotate_terminal_outcome(
     A host process exit cannot distinguish a device reset from a probe hang.
     The annotation is therefore explicit human evidence, never an inference,
     and it is rejected when the PSP already emitted any scalar test record.
+    It also records the capture's last complete STEP marker, which names where
+    the probe stopped.
     """
 
     if outcome not in TERMINAL_OUTCOMES:
@@ -3507,11 +3529,16 @@ def annotate_terminal_outcome(
     classification, record_count = _record_summary(text)
     if record_count:
         raise ValueError("terminal outcome annotation requires a capture with no test records")
+    last_step = parse_progress(text).last_step
     annotated = dict(report)
     annotated["record_classification"] = classification
     annotated["test_record_count"] = 0
     annotated["terminal_outcome"] = outcome
     annotated["terminal_outcome_source"] = "human-observed"
+    annotated["last_probe_step"] = (
+        None if last_step is None
+        else {"case_id": last_step.case_id, "step": last_step.step}
+    )
     annotated["capture_sha256"] = hashlib.sha256(capture).hexdigest()
     annotated["acceptance_eligible"] = False
     annotated["acceptance_blockers"] = [
