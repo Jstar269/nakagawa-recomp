@@ -503,7 +503,7 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 ## Pending PSP-3000 measurement campaign
 
-The following eight source-owned cases are built for a future PSP-3000 / 6.61
+The following nine source-owned cases are built for a future PSP-3000 / 6.61
 session. Every row remains `NOT_RUN` until a complete physical capture is
 validated. Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
@@ -516,6 +516,7 @@ they do not encode expected PSP return values.
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `NOT_RUN` | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
 | `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
+| `umd-io` | `PSP-UMDIO-001` | `NOT_RUN` | `sceIoOpen` (read-only flags) and `sceIoDopen` results for bare UMD devices (`umd0:`, `umd1:`, `umd:`), `disc0:` with and without a path, two raw `umd` opens with the extra `0x000f0000` bits, and `msstor0p1:/`, each descriptor closed, with `sceUmdCheckMedium` and `sceUmdGetDriveStat` before and after. No UMD activation. |
 | `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `NOT_RUN` | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 
@@ -537,8 +538,15 @@ records that result. It enters only `/DATA`, `/DATA/FONT`, `/SYSPROFILE` and
 `/SYSPROFILE/RESOLUTION` and what lies below the last two, and reads values only
 there. The build pins the probe's `sceReg` imports to the eight read calls.
 
+The `font-files` case (`PSP-FONTFILES-001`, `fixtures/psp_oracle/font_files.h`)
+is not in the campaign queue; it runs only when the maintainer asks for it. It
+lists `flash0:/font`, opens each regular file read-only, and copies it to
+`host0:/fonts/` for the maintainer's private use, verifying each copy with
+SHA-256 over the flash0 read, the host0 read-back and a second flash0 read. The
+copies and digests are private evidence and are never committed.
+
 The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
-with the host0 `transport-write` preflight, then the eight cases above, followed
+with the host0 `transport-write` preflight, then the nine cases above, followed
 by the remaining README `NOT_RUN` cases: smoke, thread exit/delete, teardown,
 I/O matrix, display mask duty, display waits, FPU, cache alias, audio, GE
 non-finite, DMA cells, five invalid-tail cases, and four mutex cases. The

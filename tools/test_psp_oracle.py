@@ -80,9 +80,13 @@ from psp_oracle.parse_golden import (
     parse_delay_zero_output,
     parse_dmac_cells_output,
     parse_dmac_invalid_tail_output,
+    parse_font_files_output,
     parse_ge_nan_output,
     parse_registry_font_output,
     parse_registry_readonly_output,
+    parse_umd_io_output,
+    UMDIO_DOPENS,
+    UMDIO_OPENS,
 )
 
 
@@ -2211,12 +2215,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 68)
+        self.assertEqual(len(routes), 70)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 69)))
+        self.assertEqual(set(ids), set(range(1, 71)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3851,3 +3855,327 @@ class RegistryFontSourceTests(unittest.TestCase):
                     ["--exact-library", exact, "--exact-library", exact]):
             status, _out, _err = self._gate([("sceReg", read)], *bad)
             self.assertEqual(status, user_mode_imports.EXIT_UNREADABLE, bad)
+
+
+def _gen_bytes(size: int, seed: int) -> bytes:
+    """The io_cases_host.c generated file content: byte[i] = (i * 31 + seed) ^ (i >> 7)."""
+    return bytes(((index * 31 + seed) ^ (index >> 7)) & 0xFF for index in range(size))
+
+
+_REGULAR = 0x21FF
+_DIRECTORY = 0x11FF
+
+
+def _entry(name: str | bytes, size: int = 0, seed: int = 0, *, mode: int = _REGULAR,
+           listed: int | None = None) -> str:
+    line = f"entry 0x{mode:x} 0x20 {_hex(name)} {size} {seed}"
+    return line + (f" {listed}" if listed is not None else "")
+
+
+@unittest.skipUnless(_HOST_CC, "no host C compiler on PATH")
+class IoCasesHostTests(unittest.TestCase):
+    """font_files.h (font-files) and umd_io.h (umd-io) run against a fake file system.
+
+    Every test replays the call log: flash0 is only listed and opened read-only, writes reach
+    only host0:/fonts/<listed safe name>, the device case opens only with its read flags, and
+    every descriptor is closed.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(__file__).resolve().parents[1]
+        cls.fixture = cls.root / "fixtures" / "psp_oracle"
+        cls.tmp = tempfile.mkdtemp(prefix="io_cases_host_")
+        cls.exe = str(Path(cls.tmp) / "io_cases_host.exe")
+        result = subprocess.run(
+            [_HOST_CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+             f"-I{cls.fixture}", "-o", cls.exe, str(cls.fixture / "io_cases_host.c")],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            raise AssertionError("io_cases_host.c did not compile:\n" + result.stderr)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _run(self, mode: str, lines: list[str]) -> SimpleNamespace:
+        result = subprocess.run([self.exe, mode], input="\n".join(lines) + "\n",
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout.splitlines()
+        self.assertTrue(out[-1].startswith("SUMMARY "), out[-1])
+        self.assertEqual(out[-1], "SUMMARY open_fds=0")
+        calls = []
+        for line in out:
+            if line.startswith("CALL "):
+                parts = line.split()
+                calls.append((parts[1], dict(item.split("=", 1) for item in parts[2:])))
+        host0 = {}
+        for line in out:
+            if line.startswith("HOST0 "):
+                fields = dict(item.split("=", 1) for item in line.split()[1:])
+                host0[fields["name"]] = (int(fields["bytes"]), fields["equal"] == "1")
+        emitted = "".join(line[5:] + "\n" for line in out if line.startswith("EMIT "))
+        stream = META.format(source="psp", model="PSP-3000", firmware="6.6.1",
+                             binary=MEASURED_SHA, commit=MEASURED_COMMIT) + emitted
+        return SimpleNamespace(lines=out, calls=calls, host0=host0, stream=stream)
+
+    def _assert_font_calls_safe(self, run: SimpleNamespace) -> None:
+        listed: set[str] = set()
+        for name, fields in run.calls:
+            path = fields.get("path", "")
+            if name == "sceIoDopen":
+                self.assertIn(path, ("flash0:/font", "flash0:/font/"))
+            elif name == "sceIoMkdir":
+                self.assertEqual(path, "host0:/fonts")
+            elif name == "sceIoOpen":
+                flags = int(fields["flags"], 16)
+                if path.startswith("flash0:"):
+                    self.assertEqual(flags, 0x1, path)
+                else:
+                    self.assertTrue(path.startswith("host0:/fonts/"), path)
+                    self.assertIn(flags, (0x1, 0x602), path)
+                    leaf = path[len("host0:/fonts/"):]
+                    self.assertRegex(leaf, r"^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$")
+                    if flags == 0x602:
+                        listed.add(leaf)
+            elif name == "sceIoWrite":
+                self.assertTrue(fields["target"].startswith("host0:/fonts/"), fields)
+            else:
+                self.assertIn(name, ("sceIoDread", "sceIoDclose", "sceIoRead", "sceIoClose"))
+        self.assertNotIn("DREAD-PRIVATE-NOT-NULL", run.lines)
+
+    def test_listing_is_copied_byte_for_byte_and_verified(self) -> None:
+        files = {"a.bin": (100, 7), "large.bin": (140_000, 9), "empty.bin": (0, 3),
+                 "chunk.bin": (65_536, 5)}
+        lines = [_entry(name, size, seed) for name, (size, seed) in files.items()]
+        lines += [
+            _entry(".", mode=_DIRECTORY), _entry("sub", mode=_DIRECTORY),
+            _entry("../escape", 10, 1), _entry("has space", 10, 1), _entry(".hidden", 10, 1),
+            _entry("x" * 64, 10, 1), _entry("huge.bin", 10, 1, listed=16 * 1024 * 1024 + 1),
+            _entry("neg.bin", 10, 1, listed=-1),
+        ]
+        run = self._run("fonts", lines)
+        self._assert_font_calls_safe(run)
+        report = parse_font_files_output(run.stream)
+        self.assertTrue(report.complete and report.listed)
+        self.assertEqual([entry.disposition for entry in report.entries],
+                         [0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3])
+        self.assertEqual({copy.name for copy in report.copies}, set(files))
+        for copy in report.copies:
+            size, seed = files[copy.name]
+            digest = hashlib.sha256(_gen_bytes(size, seed)).hexdigest()
+            self.assertEqual((copy.sha256, copy.readback_sha256, copy.reread_sha256),
+                             (digest, digest, digest), copy.name)
+            self.assertTrue(copy.verified)
+            self.assertEqual(run.host0[copy.name], (size, True))
+        self.assertEqual(set(run.host0), set(files))
+        opened_flash = [fields["path"] for name, fields in run.calls
+                        if name == "sceIoOpen" and fields["path"].startswith("flash0:")]
+        self.assertEqual(sorted(set(opened_flash)), sorted(f"flash0:/font/{name}" for name in files))
+
+    def test_a_listing_that_cannot_open_stops_the_case_cleanly(self) -> None:
+        run = self._run("fonts", ["fontdir 0x80010002 0x80010002", _entry("a.bin", 10, 1)])
+        self.assertEqual([name for name, _ in run.calls], ["sceIoDopen", "sceIoDopen"])
+        report = parse_font_files_output(run.stream)
+        self.assertFalse(report.listed)
+        self.assertEqual(report.entries, ())
+        first = dict(parse_output(run.stream).results[0].values)
+        self.assertEqual((first["out0"], first["out1"]), ("0x80010002", "0x80010002"))
+        run = self._run("fonts", ["fontdir 0x80010002 0", _entry("a.bin", 10, 1)])
+        self.assertTrue(parse_font_files_output(run.stream).copies[0].verified)
+
+    def test_failures_are_recorded_per_file_and_the_case_continues(self) -> None:
+        names = ["readfail", "corrupt", "unstable", "hostopen", "writefail", "short", "sized",
+                 "ok"]
+        lines = [_entry(name, 70_000, index + 1) for index, name in enumerate(names)]
+        lines[names.index("sized")] = _entry("sized", 70_000, 7, listed=70_001)
+        lines += [
+            "option read-fails readfail 65536 0x80010005",
+            "option host-corrupt corrupt",
+            "option unstable unstable",
+            "option host-open-fails hostopen 0x80010013",
+            "option write-fails writefail 0x8001001c",
+            "option short-writes short",
+        ]
+        run = self._run("fonts", lines)
+        self._assert_font_calls_safe(run)
+        report = parse_font_files_output(run.stream)
+        copies = {copy.name: copy for copy in report.copies}
+        self.assertEqual({name for name, copy in copies.items() if copy.verified}, {"short", "ok"})
+        self.assertEqual(copies["corrupt"].match, 6)
+        self.assertEqual(copies["unstable"].match, 5)
+        self.assertEqual(copies["sized"].match, 3)
+        records = {dict(record.values).get("detail"): record for record in
+                   parse_output(run.stream).results if record.case_id.startswith("font-copy-")}
+        self.assertEqual(dict(records["readfail"].values)["result"], "0x80010005")
+        self.assertEqual(dict(records["hostopen"].values)["result"], "0x80010013")
+        self.assertEqual(dict(records["writefail"].values)["result"], "0x8001001c")
+        self.assertEqual(int(dict(parse_output(run.stream).results[-1].values)["out2"], 16), 2)
+
+    def test_listing_errors_and_the_entry_bound_end_the_listing(self) -> None:
+        run = self._run("fonts", [_entry(f"f{i}.bin", 4, i) for i in range(5)]
+                        + ["option dread-fails 3 0x80010005"])
+        report = parse_font_files_output(run.stream)
+        self.assertEqual(len(report.entries), 3)
+        self.assertEqual(len(report.copies), 3)
+        close = next(record for record in parse_output(run.stream).results
+                     if record.case_id == "font-dir-close")
+        self.assertEqual(close.status, "FAIL")
+        self.assertEqual(dict(close.values)["out1"], "0x80010005")
+        run = self._run("fonts", [_entry(f"f{i}.bin", 1, i) for i in range(70)])
+        report = parse_font_files_output(run.stream)
+        self.assertEqual(len(report.entries), 64)
+        dreads = [name for name, _ in run.calls if name == "sceIoDread"]
+        self.assertEqual(len(dreads), 64)
+
+    def test_font_parser_rejects_inconsistent_streams(self) -> None:
+        run = self._run("fonts", [_entry("a.bin", 100, 7), _entry("b.bin", 100, 8)])
+        self.assertTrue(parse_font_files_output(run.stream).complete)
+        bad = (
+            run.stream.replace("out8=0x00000007 detail=a.bin", "out8=0x00000006 detail=a.bin", 1),
+            run.stream.replace("detail=b.bin sha256", "detail=c.bin sha256", 1),
+            run.stream.replace("out4=0x00000000 detail=a.bin", "out4=0x00000002 detail=a.bin", 1),
+            "".join(line + "\n" for line in run.stream.splitlines()
+                    if "case_id=font-copy-0001 " not in line),
+        )
+        for stream in bad:
+            self.assertNotEqual(stream, run.stream)
+            with self.assertRaises(ProtocolError):
+                parse_font_files_output(stream)
+        truncated = run.stream.rsplit("NAKAGAWA_PSP_TEST", 1)[0]
+        with self.assertRaises(ProtocolError):
+            parse_font_files_output(truncated)
+        self.assertFalse(parse_font_files_output(truncated, require_complete=False).complete)
+
+    def test_device_case_opens_read_only_and_closes_everything(self) -> None:
+        for umd_inserted in (False, True):
+            lines = ["umd 0x0 0x1"]
+            if umd_inserted:
+                lines = ["umd 0x1 0x12", f"open {_hex('umd0:')} 0x0",
+                         f"open {_hex('disc0:/UMD_DATA.BIN')} 0x0",
+                         f"dopen {_hex('disc0:/')} 0x0", f"dopen {_hex('umd0:')} 0x80010014"]
+            run = self._run("umd", lines)
+            names = [name for name, _ in run.calls]
+            self.assertLessEqual(set(names), {"sceIoOpen", "sceIoClose", "sceIoDopen",
+                                              "sceIoDclose", "sceUmdCheckMedium",
+                                              "sceUmdGetDriveStat"})
+            for name, fields in run.calls:
+                if name == "sceIoOpen":
+                    self.assertIn(int(fields["flags"], 16), (0x1, 0xF0001))
+            opens = [(fields["path"], int(fields["flags"], 16)) for name, fields in run.calls
+                     if name == "sceIoOpen"]
+            self.assertEqual(opens, list(UMDIO_OPENS))
+            dopens = [fields["path"] for name, fields in run.calls if name == "sceIoDopen"]
+            self.assertEqual(dopens, list(UMDIO_DOPENS))
+            report = parse_umd_io_output(run.stream)
+            self.assertTrue(report.complete)
+            succeeded = [item for item in report.opens if item[2] < 0x80000000]
+            self.assertEqual(len(succeeded), 3 if umd_inserted else 0)
+            self.assertTrue(all(item[3] == 0 for item in succeeded))
+            self.assertEqual(report.before, (1, 0x12) if umd_inserted else (0, 1))
+            self.assertEqual(names.count("sceIoClose"), len(succeeded))
+            self.assertEqual(names.count("sceIoDclose"), 1 if umd_inserted else 0)
+
+    def test_device_parser_rejects_a_stream_that_differs_from_the_source(self) -> None:
+        run = self._run("umd", ["umd 0x0 0x1"])
+        for bad in (
+            run.stream.replace("detail=umd1:\n", "detail=umd2:\n", 1),
+            run.stream.replace("out0=0x000f0001", "out0=0x00000001", 1),
+            run.stream.replace("result=0x80010002 out0=0x00000001 out1=0xffffffff",
+                               "result=0x80010002 out0=0x00000001 out1=0x00000000", 1),
+            "".join(line + "\n" for line in run.stream.splitlines()
+                    if "case_id=io-dopen-0002 " not in line),
+        ):
+            self.assertNotEqual(bad, run.stream)
+            with self.assertRaises(ProtocolError):
+                parse_umd_io_output(bad)
+
+    def test_sha256_matches_the_standard_vectors(self) -> None:
+        run = self._run("fonts", [_entry("abc", 0, 0)])
+        empty = hashlib.sha256(b"").hexdigest()
+        self.assertEqual(parse_font_files_output(run.stream).copies[0].sha256, empty)
+        for size in (55, 56, 63, 64, 65, 119, 120, 128, 1000):
+            run = self._run("fonts", [_entry("v", size, 11)])
+            self.assertEqual(parse_font_files_output(run.stream).copies[0].sha256,
+                             hashlib.sha256(_gen_bytes(size, 11)).hexdigest(), size)
+
+
+class IoCasesSourceTests(unittest.TestCase):
+    """Source-level rules for the font-files and umd-io cases."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.fonts = (self.fixture / "font_files.h").read_text(encoding="utf-8")
+        self.umd = (self.fixture / "umd_io.h").read_text(encoding="utf-8")
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _code(text: str) -> str:
+        return re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.DOTALL)
+
+    def test_flash0_is_only_listed_and_opened_read_only(self) -> None:
+        code = self._code(self.fonts)
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", code)),
+                         {"sceIoDopen", "sceIoDread", "sceIoDclose", "sceIoOpen", "sceIoRead",
+                          "sceIoWrite", "sceIoClose", "sceIoMkdir"})
+        opens = re.findall(r"sceIoOpen\(([^;]*?)\);", code, re.DOTALL)
+        self.assertEqual([" ".join(item.split()) for item in opens], [
+            "path, PSP_O_RDONLY, 0",
+            "s_fontfiles_path, PSP_O_RDONLY, 0",
+            "s_fontfiles_host, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0644",
+        ])
+        self.assertIn('#define FONTFILES_HOST_DIR "host0:/fonts"', self.fonts)
+        self.assertIn('snprintf(s_fontfiles_host, sizeof(s_fontfiles_host), "%s/%.63s", '
+                      'FONTFILES_HOST_DIR, name);', self.fonts)
+        self.assertEqual(re.findall(r"sceIoMkdir\(([^)]*)\)", code), ["FONTFILES_HOST_DIR, 0777"])
+        self.assertNotRegex(code, r"\bmalloc\s*\(|\bcalloc\s*\(|sceIoRemove|sceIoRename")
+
+    def test_device_case_reads_state_only_and_its_lists_match_the_parser(self) -> None:
+        code = self._code(self.umd)
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", code)),
+                         {"sceIoOpen", "sceIoClose", "sceIoDopen", "sceIoDclose",
+                          "sceUmdCheckMedium", "sceUmdGetDriveStat"})
+        flags = {"PSP_O_RDONLY": 0x1, "UMDIO_RAW_FLAGS": 0xF0001}
+        opens = [(path, flags[flag]) for path, flag in
+                 re.findall(r'\{"([^"]+)", (PSP_O_RDONLY|UMDIO_RAW_FLAGS)\}', code)]
+        self.assertEqual(tuple(opens), UMDIO_OPENS)
+        block = code[code.index("s_umdio_dopens[] = {"):]
+        block = block[:block.index("};")]
+        self.assertEqual(tuple(re.findall(r'"([^"]+)"', block)), UMDIO_DOPENS)
+        line = next(line for line in self.makefile.splitlines()
+                    if "--exact-library sceUmdUser=" in line)
+        self.assertEqual(line.split("sceUmdUser=", 1)[1], "0x46EBB729,0x6B4A146C")
+
+    def test_cases_are_wired_like_the_others(self) -> None:
+        for case, case_id, log in (("font-files", 69, "font_files_log.txt"),
+                                   ("umd-io", 70, "umd_io_log.txt")):
+            self.assertRegex(self.makefile,
+                             rf"(?m)^else ifeq \(\$\(CASE\),{case}\)\nCASE_ID = {case_id}$")
+            self.assertIn(f'#define PROBE_HOST0_LOG "host0:/{log}"', self.probe)
+            self.assertEqual(_campaign_host0_log_path(Path("host0"), case).name, log)
+            self.assertEqual(_campaign_completeness_contract(case), "strict-golden-sequence")
+        self.assertIn("umd-io", CAMPAIGN_QUEUE_CASES)
+        self.assertNotIn("font-files", CAMPAIGN_QUEUE_CASES)
+        self.assertIn("$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h",
+                      self.makefile)
+        for macro in ("FONT_FILES", "UMD_IO"):
+            block = self.probe[self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n"):]
+            block = block[:block.index("\n#endif")]
+            self.assertNotRegex(block, r"\bsce\w+\s*\(")
+
+    def test_umd_pin_refuses_an_activation_import(self) -> None:
+        pin = ["--exact-library", "sceUmdUser=0x46EBB729,0x6B4A146C"]
+        for nids, expected in (([0x46EBB729, 0x6B4A146C], user_mode_imports.EXIT_OK),
+                               ([0x46EBB729, 0x6B4A146C, 0xC6183D47],
+                                user_mode_imports.EXIT_KERNEL_IMPORT)):
+            data = build_import_elf([("sceUmdUser", nids)])
+            with tempfile.TemporaryDirectory() as tmp:
+                module = Path(tmp) / "probe.elf"
+                module.write_bytes(data)
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+                    status = user_mode_imports.main([*pin, str(module)])
+            self.assertEqual(status, expected, err.getvalue())

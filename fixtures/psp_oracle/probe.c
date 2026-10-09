@@ -46,6 +46,9 @@ _Static_assert(
 #if PSP_ORACLE_CASE == 66 || PSP_ORACLE_CASE == 68
 #include <pspreg.h>
 #endif
+#if PSP_ORACLE_CASE == 70
+#include <pspumd.h>
+#endif
 #if PSP_ORACLE_CASE == 67
 /* User-mode sceDisplay and sceImpose functions only: a user-mode PRX that
    imports the kernel libraries sceDisplay_driver or sceImpose_driver fails to
@@ -120,6 +123,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REGISTRY_READONLY 66
 #define PSP_ORACLE_CASE_KERNEL_MISC 67
 #define PSP_ORACLE_CASE_REGISTRY_FONT 68
+#define PSP_ORACLE_CASE_FONT_FILES 69
+#define PSP_ORACLE_CASE_UMD_IO 70
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -281,6 +286,10 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
 #define PROBE_HOST0_LOG "host0:/registry_font_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_FILES
+#define PROBE_HOST0_LOG "host0:/font_files_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
+#define PROBE_HOST0_LOG "host0:/umd_io_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
 #define PROBE_HOST0_LOG "host0:/smoke_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
@@ -6507,6 +6516,64 @@ static void run_registry_font(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_FILES
+/* Read-only copy of flash0:/font to host0:/fonts (PSP-FONTFILES-001). The listing, copy and
+ * verification live in font_files.h, which a host harness also runs against a fake file system
+ * (tools/test_psp_oracle.py). Records and step markers go through the durable host0 writer; the
+ * copies are opened with sceIoOpen directly so probe teardown never removes them. */
+#include "font_files.h"
+
+static int s_font_files_emulated;
+
+static void font_files_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_font_files_emulated, line, length);
+}
+
+static void font_files_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_font_files_emulated, "font-files", step);
+}
+
+static FontFiles s_font_files;
+
+static void run_font_files(int emulated) {
+    s_font_files_emulated = emulated;
+    memset(&s_font_files, 0, sizeof(s_font_files));
+    s_font_files.emit = font_files_emit;
+    s_font_files.step = font_files_step;
+    fontfiles_run(&s_font_files);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
+/* Bare-device and disc open results (PSP-UMDIO-001). The fixed path lists and the calls live in
+ * umd_io.h, which a host harness also runs (tools/test_psp_oracle.py). No UMD activation. */
+#include "umd_io.h"
+
+static int s_umd_io_emulated;
+
+static void umd_io_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_umd_io_emulated, line, length);
+}
+
+static void umd_io_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_umd_io_emulated, "umd-io", step);
+}
+
+static UmdIo s_umd_io;
+
+static void run_umd_io(int emulated) {
+    s_umd_io_emulated = emulated;
+    memset(&s_umd_io, 0, sizeof(s_umd_io));
+    s_umd_io.emit = umd_io_emit;
+    s_umd_io.step = umd_io_step;
+    umdio_run(&s_umd_io);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 static void emit_ge_control(int emulated, const char *case_id, const char *status,
                             uint32_t result, const uint32_t *out, size_t count) {
@@ -6898,6 +6965,10 @@ int main(int argc, char *argv[]) {
     run_kernel_misc(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
     run_registry_font(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_FILES
+    run_font_files(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
+    run_umd_io(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

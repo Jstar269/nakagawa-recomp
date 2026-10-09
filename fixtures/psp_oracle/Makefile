@@ -160,6 +160,10 @@ else ifeq ($(CASE),kernel-misc)
 CASE_ID = 67
 else ifeq ($(CASE),registry-font)
 CASE_ID = 68
+else ifeq ($(CASE),font-files)
+CASE_ID = 69
+else ifeq ($(CASE),umd-io)
+CASE_ID = 70
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -318,6 +322,12 @@ ifneq ($(filter $(REGISTRY_CASES),$(CASE)),)
 LIBS += -lpspreg
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceReg=0x92E41280,0xFA8A5739,0x1D8A762E,0x0CAE832B,0x2C0DB9DD,0x2D211135,0xD4475AA8,0x28A8E98A
 endif
+# The UMD case reads the drive state only: exactly sceUmdCheckMedium and sceUmdGetDriveStat,
+# so a build that imported sceUmdActivate (or any other UMD call) fails the gate.
+ifeq ($(CASE),umd-io)
+LIBS += -lpspumd
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
+endif
 ifeq ($(CASE),kernel-misc)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/display_user_imports.o
 LIBS += -lpspctrl
@@ -353,7 +363,7 @@ FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" &
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
-$(BUILD_DIR)/probe.o: probe.c registry_walk.h
+$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exports.exp: Makefile

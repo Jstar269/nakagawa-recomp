@@ -1092,6 +1092,291 @@ def parse_registry_font_output(
     )
 
 
+def _s32(value: int) -> int:
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+# ---------------------------------------------------------------------------
+# PSP-FONTFILES-001 read-only copy of flash0:/font (fixtures/psp_oracle/font_files.h)
+#
+# font-dir-open, then (when the listing opened) font-mkdir, font-entry-NNNN in
+# listing order, font-dir-close, one font-copy-NNNN per copy candidate, and
+# font-files-done. The parser checks the order, that only regular files with
+# safe names inside the size bound were copied, and that a copy passes only
+# when its three digests and byte counts agree. The copies and digests are
+# private evidence; this parser never decides what a console should hold.
+# ---------------------------------------------------------------------------
+
+FONT_FILES_TEST_ID = "PSP-FONTFILES-001"
+FONT_FILES_HOST0_LOG = "host0:/font_files_log.txt"
+FONT_FILES_ENTRIES_MAX = 64
+FONT_FILES_FILE_MAX = 16 * 1024 * 1024
+FONT_FILES_MATCH_ALL = 7
+_FONT_FILES_NAME_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}")
+_SHA256_TEXT_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class FontFileEntry:
+    name: str | None
+    name_hex: str | None
+    mode: int
+    attr: int
+    size: int
+    disposition: int
+
+
+@dataclass(frozen=True)
+class FontFileCopy:
+    name: str
+    size: int
+    sha256: str
+    readback_sha256: str
+    reread_sha256: str
+    match: int
+    verified: bool
+
+
+@dataclass(frozen=True)
+class FontFilesReport:
+    parsed: object
+    complete: bool
+    listed: bool
+    entries: tuple[FontFileEntry, ...]
+    copies: tuple[FontFileCopy, ...]
+
+
+def _io_fields(test_id: str, record, expected: set[str], text: set[str]) -> dict[str, object]:
+    values = dict(record.values)
+    if set(values) != expected:
+        raise ProtocolError(
+            f"{test_id}: {record.case_id} fields must be {sorted(expected)}, got {sorted(values)}"
+        )
+    out: dict[str, object] = {}
+    for field, value in values.items():
+        if field in text:
+            out[field] = value
+            continue
+        try:
+            out[field] = int(value, 0)
+        except ValueError as exc:
+            raise ProtocolError(f"{test_id}: {record.case_id} {field} is not an integer") from exc
+    return out
+
+
+def parse_font_files_output(text: str, *, require_complete: bool = True) -> FontFilesReport:
+    """Validate the flash0:/font listing-and-copy stream."""
+
+    tid = FONT_FILES_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in font-files stream")
+    if records[0].case_id != "font-dir-open":
+        raise ProtocolError(f"{tid}: stream must start with font-dir-open")
+    opening = _io_fields(tid, records[0], {"result", "out0", "out1"}, set())
+    listed = _s32(opening["result"]) >= 0
+    if (records[0].status == "PASS") != listed:
+        raise ProtocolError(f"{tid}: font-dir-open status disagrees")
+    terminal = len(records) > 1 and records[-1].case_id == "font-files-done"
+    body = records[1:-1] if terminal else records[1:]
+    entries: list[FontFileEntry] = []
+    copies: list[FontFileCopy] = []
+    candidates: list[FontFileEntry] = []
+    closed = False
+    if not listed and body:
+        raise ProtocolError(f"{tid}: records after a listing that did not open")
+    if body:
+        if body[0].case_id != "font-mkdir":
+            raise ProtocolError(f"{tid}: font-mkdir must follow an opened listing")
+        _io_fields(tid, body[0], {"result"}, set())
+    for record in body[1:]:
+        if record.case_id.startswith("font-entry-"):
+            if closed or record.case_id != f"font-entry-{len(entries):04d}":
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence")
+            raw = dict(record.values)
+            name_field = {"detail"} if "detail" in raw else {"name_hex"}
+            values = _io_fields(tid, record, {"result", "out0", "out1", "out2", "out3", "out4"}
+                                | name_field, {"detail", "name_hex"})
+            name = values.get("detail")
+            name_hex = values.get("name_hex")
+            if name is not None and not _FONT_FILES_NAME_RE.fullmatch(str(name)):
+                raise ProtocolError(f"{tid}: {record.case_id} prints an unsafe name")
+            if name_hex is not None and not re.fullmatch(r"(?:[0-9a-f]{2}){1,64}", str(name_hex)):
+                raise ProtocolError(f"{tid}: {record.case_id} name_hex is not byte encoded")
+            size = values["out2"] | (values["out3"] << 32)
+            if size & (1 << 63):
+                size -= 1 << 64
+            regular = (values["out0"] & 0xF000) == 0x2000
+            disposition = values["out4"]
+            consistent = {
+                0: regular and name is not None and 0 <= size <= FONT_FILES_FILE_MAX,
+                1: not regular,
+                2: regular and name is None,
+                3: regular and name is not None and not 0 <= size <= FONT_FILES_FILE_MAX,
+            }.get(disposition, False)
+            if not consistent or values["result"] <= 0 or record.status != "PASS":
+                raise ProtocolError(f"{tid}: {record.case_id} disposition {disposition} disagrees")
+            entry = FontFileEntry(None if name is None else str(name),
+                                  None if name_hex is None else str(name_hex),
+                                  values["out0"], values["out1"], size, disposition)
+            entries.append(entry)
+            if disposition == 0:
+                candidates.append(entry)
+        elif record.case_id == "font-dir-close":
+            if closed:
+                raise ProtocolError(f"{tid}: font-dir-close repeats")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            if values["out0"] != len(entries):
+                raise ProtocolError(f"{tid}: font-dir-close entry count disagrees")
+            if values["out1"] == 0xFFFFFFFF and len(entries) != FONT_FILES_ENTRIES_MAX:
+                raise ProtocolError(f"{tid}: font-dir-close end result disagrees")
+            if (record.status == "PASS") != (values["result"] == 0 and values["out1"] == 0):
+                raise ProtocolError(f"{tid}: font-dir-close status disagrees")
+            closed = True
+        elif record.case_id.startswith("font-copy-"):
+            index = len(copies)
+            if not closed or record.case_id != f"font-copy-{index:04d}" or index >= len(candidates):
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence")
+            values = _io_fields(
+                tid, record,
+                {"result", *(f"out{i}" for i in range(9)), "detail", "sha256",
+                 "readback_sha256", "reread_sha256"},
+                {"detail", "sha256", "readback_sha256", "reread_sha256"},
+            )
+            entry = candidates[index]
+            if values["detail"] != entry.name:
+                raise ProtocolError(f"{tid}: {record.case_id} copies a file it did not list")
+            digests = [str(values[field]) for field in ("sha256", "readback_sha256", "reread_sha256")]
+            if not all(_SHA256_TEXT_RE.fullmatch(digest) for digest in digests):
+                raise ProtocolError(f"{tid}: {record.case_id} digests are malformed")
+            match = values["out8"]
+            expected = 0
+            read_a = _s32(values["out1"])
+            if read_a >= 0 and values["out3"] == values["out1"] and values["out5"] == values["out1"] \
+                    and digests[0] == digests[1]:
+                expected |= 1
+            if read_a >= 0 and values["out7"] == values["out1"] and digests[0] == digests[2]:
+                expected |= 2
+            if read_a >= 0 and read_a == entry.size:
+                expected |= 4
+            # A failed write leaves fewer bytes written than read, so the counts decide bit 0 too.
+            if match != expected:
+                raise ProtocolError(f"{tid}: {record.case_id} match bits disagree with its counts")
+            verified = match == FONT_FILES_MATCH_ALL
+            if verified != (values["result"] == 0) or (record.status == "PASS") != verified:
+                raise ProtocolError(f"{tid}: {record.case_id} status disagrees with its checks")
+            copies.append(FontFileCopy(entry.name or "", entry.size, digests[0], digests[1],
+                                       digests[2], match, verified))
+        else:
+            raise ProtocolError(f"{tid}: unexpected record {record.case_id!r}")
+    if terminal:
+        if listed and (not closed or len(copies) != len(candidates)):
+            raise ProtocolError(f"{tid}: listing or copies incomplete before font-files-done")
+        done = _io_fields(tid, records[-1], {"result", "out0", "out1", "out2", "out3"}, set())
+        expected_done = {
+            "out0": len(entries), "out1": len(candidates),
+            "out2": sum(1 for copy in copies if copy.verified), "out3": len(records) - 1,
+        }
+        if any(done[field] != value for field, value in expected_done.items()):
+            raise ProtocolError(f"{tid}: font-files-done counts disagree")
+    elif require_complete:
+        raise ProtocolError(f"{tid}: stream is missing font-files-done")
+    return FontFilesReport(parsed, terminal, listed, tuple(entries), tuple(copies))
+
+
+# ---------------------------------------------------------------------------
+# PSP-UMDIO-001 bare-device and disc open results (fixtures/psp_oracle/umd_io.h)
+#
+# umd-state-before, io-open-NNNN for each fixed open, io-dopen-NNNN for each
+# fixed dopen, umd-state-after, umdio-done. The path lists below mirror the
+# probe source (a test keeps them equal); the parser records results and never
+# decides which answer is correct.
+# ---------------------------------------------------------------------------
+
+UMDIO_TEST_ID = "PSP-UMDIO-001"
+UMDIO_HOST0_LOG = "host0:/umd_io_log.txt"
+UMDIO_OPENS = (
+    ("umd0:", 0x1), ("umd1:", 0x1), ("umd:", 0x1), ("umd0:/", 0x1), ("umd1:/", 0x1),
+    ("disc0:", 0x1), ("disc0:/", 0x1), ("disc0:/PSP_GAME", 0x1),
+    ("disc0:/PSP_GAME/SYSDIR", 0x1), ("disc0:/UMD_DATA.BIN", 0x1),
+    ("umd0:", 0xF0001), ("umd1:", 0xF0001), ("msstor0p1:/", 0x1),
+)
+UMDIO_DOPENS = ("umd0:", "umd1:", "umd:", "disc0:", "disc0:/", "disc0:/PSP_GAME")
+
+
+@dataclass(frozen=True)
+class UmdIoReport:
+    parsed: object
+    complete: bool
+    before: tuple[int, int]
+    after: tuple[int, int] | None
+    opens: tuple[tuple[str, int, int, int], ...]
+    dopens: tuple[tuple[str, int, int], ...]
+
+
+def parse_umd_io_output(text: str, *, require_complete: bool = True) -> UmdIoReport:
+    """Validate the fixed bare-device open/dopen stream."""
+
+    tid = UMDIO_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in umd-io stream")
+    expected = (["umd-state-before"]
+                + [f"io-open-{i:04d}" for i in range(len(UMDIO_OPENS))]
+                + [f"io-dopen-{i:04d}" for i in range(len(UMDIO_DOPENS))]
+                + ["umd-state-after", "umdio-done"])
+    observed = [record.case_id for record in records]
+    if observed != expected[:len(observed)]:
+        raise ProtocolError(f"{tid}: records out of order: {observed}")
+    complete = len(observed) == len(expected)
+    if not complete and require_complete:
+        raise ProtocolError(f"{tid}: stream is missing umdio-done")
+    before = after = None
+    opens: list[tuple[str, int, int, int]] = []
+    dopens: list[tuple[str, int, int]] = []
+    for record in records:
+        if record.status != "PASS":
+            raise ProtocolError(f"{tid}: {record.case_id} must be PASS (results are recorded)")
+        if record.case_id.startswith("umd-state-"):
+            values = _io_fields(tid, record, {"result", "out0"}, set())
+            state = (values["result"], values["out0"])
+            if record.case_id == "umd-state-before":
+                before = state
+            else:
+                after = state
+        elif record.case_id.startswith("io-open-"):
+            values = _io_fields(tid, record, {"result", "out0", "out1", "detail"}, {"detail"})
+            path, flags = UMDIO_OPENS[len(opens)]
+            if values["detail"] != path or values["out0"] != flags:
+                raise ProtocolError(f"{tid}: {record.case_id} is not the source's open {path}")
+            if (_s32(values["result"]) < 0) != (values["out1"] == 0xFFFFFFFF):
+                raise ProtocolError(f"{tid}: {record.case_id} close result disagrees")
+            opens.append((path, flags, values["result"], values["out1"]))
+        elif record.case_id.startswith("io-dopen-"):
+            values = _io_fields(tid, record, {"result", "out0", "detail"}, {"detail"})
+            path = UMDIO_DOPENS[len(dopens)]
+            if values["detail"] != path:
+                raise ProtocolError(f"{tid}: {record.case_id} is not the source's dopen {path}")
+            if (_s32(values["result"]) < 0) != (values["out0"] == 0xFFFFFFFF):
+                raise ProtocolError(f"{tid}: {record.case_id} close result disagrees")
+            dopens.append((path, values["result"], values["out0"]))
+        elif record.case_id == "umdio-done":
+            values = _io_fields(tid, record, {"result", "out0", "out1", "out2", "out3", "out4"},
+                                set())
+            counts = {
+                "out0": len(UMDIO_OPENS),
+                "out1": sum(1 for item in opens if _s32(item[2]) >= 0),
+                "out2": len(UMDIO_DOPENS),
+                "out3": sum(1 for item in dopens if _s32(item[1]) >= 0),
+                "out4": len(records) - 1,
+            }
+            if any(values[field] != value for field, value in counts.items()):
+                raise ProtocolError(f"{tid}: umdio-done counts disagree")
+    return UmdIoReport(parsed, complete, before, after, tuple(opens), tuple(dopens))
+
+
 # ---------------------------------------------------------------------------
 # PSP-CACHE-001 dcache/uncached-alias probe
 #
