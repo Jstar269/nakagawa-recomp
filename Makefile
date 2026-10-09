@@ -286,10 +286,10 @@ FUNCS_PER_CHUNK ?= 2000
 CHUNK_TARGET_BYTES ?=
 ifeq ($(strip $(CHUNK_TARGET_BYTES)),)
 CHUNK_BYTES_ARG :=
-CHUNK_TARGET_ENTRY :=
+CHUNK_TARGET_PROFILE_LINE :=
 else
 CHUNK_BYTES_ARG := --target-chunk-bytes=$(CHUNK_TARGET_BYTES)
-CHUNK_TARGET_ENTRY := --entry "CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)"
+CHUNK_TARGET_PROFILE_LINE := $(NEWLINE)CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 endif
 
 # ---------------------------------------------------------------------------
@@ -1494,11 +1494,16 @@ profile-zero-e2e:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
-CODEGEN_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY))
+# The codegen profile's entries travel in the environment, like the runtime profile's:
+# EXTRA_ELF_ARGS names every guest module, and a title with a hundred modules under a
+# long private path overruns the command line a shell will accept. The entries and
+# their order are the ones the --entry form used, so the hash is unchanged.
+export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)
+CODEGEN_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)")
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" --entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" --entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" --entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" --entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" --entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" $(CHUNK_TARGET_ENTRY) --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.

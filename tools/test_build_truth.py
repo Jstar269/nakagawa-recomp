@@ -1060,6 +1060,73 @@ class OptimizationProfileContractTests(unittest.TestCase):
         self.assertFalse(stamp_o0.exists())
 
 
+class CodegenProfileTransportTests(unittest.TestCase):
+    """The codegen profile names every guest module (EXTRA_ELF_ARGS). A title with a
+    hundred modules under a long private path must still get a profile: the entries
+    travel in the environment, never on a command line a shell truncates."""
+
+    def setUp(self) -> None:
+        self.make = shutil.which("mingw32-make") or shutil.which("make")
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-codegen-profile-")
+        self.addCleanup(self.temp.cleanup)
+
+    def _profile_hash(self, modules: list[str], **extra: str) -> str:
+        assignments = [f"{key}={value}" for key, value in extra.items()]
+        completed = subprocess.run(
+            [self.make, "--no-print-directory", "GAME_NAME=probe",
+             f"BUILD_DIR={Path(self.temp.name).as_posix()}",
+             f"GAME_EXTRA_ELFS={' '.join(modules)}", *assignments,
+             "--eval", "nkprobe: ; @echo CODEGEN_PROFILE_HASH=$(CODEGEN_PROFILE_HASH)",
+             "nkprobe"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        line = next((text for text in completed.stdout.splitlines()
+                     if text.startswith("CODEGEN_PROFILE_HASH=")), "")
+        return line.partition("=")[2]
+
+    def test_many_long_module_paths_still_produce_a_profile(self) -> None:
+        modules = [
+            "C:/nk/private/a-rather-long-private-directory/work/0123456789abcdef/"
+            f"user-data/modules/module_{index:03d}.prx@runtime"
+            for index in range(200)
+        ]
+        self.assertGreater(len(" ".join(modules)), 16384)
+        self.assertRegex(self._profile_hash(modules), r"^[0-9a-f]{20}$")
+        self.assertNotEqual(self._profile_hash(modules), self._profile_hash(modules[:-1]))
+
+    def test_the_transport_keeps_the_argv_hash(self) -> None:
+        # The environment form must hash exactly as the former --entry form did, so
+        # existing builds keep their codegen profile. The former form is evaluated in
+        # the same Make environment (same compiler resolution) for the comparison.
+        former = (
+            '$(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(PYTHON)" '
+            '--entry "GAME_NAME=$(GAME_NAME)" --entry "GAME_BASE=$(GAME_BASE)" '
+            '--entry "CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)" '
+            '--entry "EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)" --entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)" '
+            '--entry "FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)" '
+            '--entry "CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)" '
+            '--entry "CODEGEN_TOOL=$(CODEGEN_TOOL)" --file "$(CPU_STATE_ABI_HEADER)" '
+            '--entry "CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)")'
+        )
+        completed = subprocess.run(
+            [self.make, "--no-print-directory", "GAME_NAME=probe",
+             f"BUILD_DIR={Path(self.temp.name).as_posix()}",
+             "GAME_EXTRA_ELFS=fixtures/a.prx@runtime fixtures/b.prx@0x08900000",
+             "CHUNK_TARGET_BYTES=65536",
+             "--eval", f"nkprobe: ; @echo NEW=$(CODEGEN_PROFILE_HASH) OLD={former}",
+             "nkprobe"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        line = next(text for text in completed.stdout.splitlines() if text.startswith("NEW="))
+        new_hash, _, old_part = line.partition(" OLD=")
+        self.assertRegex(old_part, r"^[0-9a-f]{20}$")
+        self.assertEqual(new_hash.removeprefix("NEW="), old_part)
+
+
 class GuestInputTransportTests(unittest.TestCase):
     """The guest-input pathname boundary: no shell interpretation, no lost freshness.
 
