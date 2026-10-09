@@ -13,6 +13,24 @@
       "code": "HISTORICAL_BLOB_LOCAL_PATH",
       "path": "tools/boot11_transport_qualify.sh",
       "reason": "A historical PSPLink host script that named a POSIX home directory and a /tmp scratch folder; the account name is the maintainer's public handle, and no private input or path content is exposed."
+    },
+    {
+      "commit": "7eeeb532a0319d2307527e894ed944445f4d3931",
+      "code": "COMMIT_LOG_LOCAL_PATH",
+      "path": "<commit_message>",
+      "reason": "One line of this commit's message body names a local Windows user-profile directory. The message names no key, token, or file content, and the commit is already published; history is not rewritten (AGENTS.md section 3)."
+    },
+    {
+      "commit": "6ebd65d951b4318189e81a57eca6b078126172b3",
+      "code": "COMMIT_LOG_LOCAL_PATH",
+      "path": "<commit_message>",
+      "reason": "One line of this commit's message body names a local POSIX home directory. The message names no key, token, or file content, and the commit is already published; history is not rewritten (AGENTS.md section 3)."
+    },
+    {
+      "commit": "f31d3346cbdf290f515346f1bac3fdef01894303",
+      "code": "COMMIT_LOG_PRIVATE_ROOT",
+      "path": "<commit_message>",
+      "reason": "One line of this commit's message body names a configured private-root name from the publication policy. The name is already in published history and cannot be removed without rewriting it (AGENTS.md section 3); the message names no key, token, or file content."
     }
   ]
 }
