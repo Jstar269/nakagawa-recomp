@@ -2014,6 +2014,26 @@ int main(void) {
         teardown_test = probe.split("static void run_teardown_test(", 1)[1].split("\n}", 1)[0]
         self.assertNotIn("sceKernelExitDeleteThread", teardown_test)
 
+    def test_registry_done_counts_every_record_before_it(self) -> None:
+        """registry-done out2 is the number of records before it (parser contract).
+
+        The 2026-10-08 probe counted only census records (categories + keys), so a
+        finished console stream failed its completion-count check by exactly the
+        fixed records. Both emission paths must now advance the counter.
+        """
+
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" /
+                 "probe.c").read_text(encoding="utf-8")
+        emit = probe.split("static void emit_registry_record(", 1)[1].split("\n}\n", 1)[0]
+        short_path = emit.split("size_t capacity = 512u;", 1)[0]
+        self.assertIn("emit_record_extended(", short_path)
+        self.assertLess(
+            short_path.index("emit_record_extended("), short_path.index("s_registry_records++;")
+        )
+        self.assertLess(short_path.index("s_registry_records++;"), short_path.index("return;"))
+        long_path = emit.split("size_t capacity = 512u;", 1)[1]
+        self.assertIn("s_registry_records++;", long_path)
+
     def test_probe_module_stop_ends_parked_main_through_the_crt_runtime_teardown(self) -> None:
         """The probe owns the stop half of the lifecycle crt0_prx starts.
 

@@ -2399,25 +2399,29 @@ class PsplinkCampaignRunner:
             )
         elif result[3] == "PROCESS_EXITED":
             try:
+                # The probe appends its completion marker after every record,
+                # so the marker ends the stream. The record contract is checked
+                # afterwards: a final stream that violates it is a named
+                # protocol failure, not a reason to keep waiting.
                 capture = _wait_for_host0_output(
                     case_host0_log,
                     case.timeout,
                     not_before_ns=run_started_ns - HOST0_MTIME_TOLERANCE_NS,
-                    ready=lambda text, case_id=case.case_id: (
-                        _campaign_stream_complete(text, case_id)
-                        and _has_probe_completion_sentinel(text)
-                    ),
+                    ready=_has_probe_completion_sentinel,
                     include_mtime=True,
                 )
                 if not isinstance(capture, tuple):
                     raise RuntimeError("host0 wait did not return captured metadata")
                 captured_host0_text, captured_host0_mtime_ns = capture
             except TimeoutError:
-                host0_capture_problem = (
-                    "per-case host0 stream did not become complete before probe unload"
-                )
                 partial, partial_mtime_ns, partial_problem = _snapshot_host0_output(
                     case_host0_log
+                )
+                host0_capture_problem = (
+                    "per-case host0 stream reached no completion marker within the "
+                    f"{case.timeout:g}s case timeout ("
+                    + _host0_progress_detail(partial, partial_mtime_ns, run_started_ns)
+                    + ")"
                 )
                 captured_host0_text = partial
                 captured_host0_mtime_ns = partial_mtime_ns
@@ -2440,12 +2444,14 @@ class PsplinkCampaignRunner:
             if partial_problem:
                 host0_capture_problem += f"; {partial_problem}"
 
+        # Stop only when the probe may not have finished. A finished probe whose
+        # records violate their contract is torn down normally; its envelope
+        # names the protocol failure.
         if stop_on_incomplete and (
             result[0] != 0
             or result[3] != "PROCESS_EXITED"
             or captured_host0_text is None
             or parse_probe_completion_sentinel(captured_host0_text) is None
-            or not _campaign_stream_complete(captured_host0_text, case.case_id)
         ):
             self._physical_intervention(
                 f"campaign stopped after incomplete or uncertain case {case.case_id}; "
@@ -3387,6 +3393,27 @@ def _wait_for_host0_output(
             pass
         time.sleep(0.1)
     raise TimeoutError(f"host0 output did not become complete: {path.name}")
+
+
+_STEP_LINE_RE = re.compile(
+    r"^NAKAGAWA_PSP_STEP schema=1 case_id=\S+ step=(\S+)\s*$", re.MULTILINE
+)
+
+
+def _host0_progress_detail(
+    text: str | None, mtime_ns: int | None, run_started_ns: int
+) -> str:
+    """Describe how far an unfinished host0 stream got, for the stop reason."""
+
+    if text is None or mtime_ns is None:
+        return "no host0 output was observed"
+    records = sum(line.startswith("NAKAGAWA_PSP_TEST ") for line in text.splitlines())
+    steps = _STEP_LINE_RE.findall(text)
+    detail = (
+        f"{records} result record(s); last host0 write "
+        f"{max(mtime_ns - run_started_ns, 0) / 1e9:.1f}s after launch"
+    )
+    return detail + (f"; last step marker: {steps[-1]}" if steps else "")
 
 
 def _snapshot_host0_output(path: Path) -> tuple[str | None, int | None, str | None]:

@@ -520,6 +520,17 @@ the `transport-write` preflight qualified host0; a campaign resumes past the
 preflight only when it did, and an interrupted preflight resumes at
 `transport-write`. Interrupted cases accumulate in `interrupted_cases`.
 
+The runner waits for each case's host0 log until the probe appends its
+completion marker, which every probe writes after its last record. A slow stream
+keeps the wait open up to the plan's `timeout_seconds` for that case; for example,
+the registry census writes hundreds of records and a durable step marker before
+each risky call. Once the marker arrives the stream is final, and the runner
+checks the records against their contract. A finished stream that violates its
+contract is torn down normally and its envelope names the protocol failure, so it
+is not mistaken for an unfinished probe. Only a stream without a marker at the
+timeout (or a failed launch) stops the queue. That stop reason gives the record
+count, the time of the last host0 write after launch, and the last step marker.
+
 A host-side exception never crashes the queue. The case ends as `HOST_ERROR`, and
 the report's `host_error` names the exception type, the raising function and the
 message. If the probe was launched, the runner still unloads it and compares S2

@@ -6023,6 +6023,8 @@ static void emit_registry_record(int emulated, const char *case_id,
     if (detail == NULL && value == NULL && value_bytes == 0u) {
         emit_record_extended(emulated, "PSP-REGISTRY-001", case_id, status,
                              result, out, out_count);
+        /* registry-done out2 counts every record before it, fixed or census. */
+        s_registry_records++;
         return;
     }
     size_t capacity = 512u;

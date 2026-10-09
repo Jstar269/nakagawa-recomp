@@ -40,6 +40,7 @@ import subprocess
 import struct
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -310,7 +311,9 @@ class SimulatedPsplinkTransport:
         start_error: str | None = None,
         lock_held_checks: int | None = None,
         lock_refusal_status: str = "HARDWARE_LOCK_NOT_HELD",
+        unfinished_cases: set[str] | None = None,
     ):
+        self.unfinished_cases = unfinished_cases or set()
         self.start_error = start_error
         self.lock_held_checks = lock_held_checks
         self.lock_refusal_status = lock_refusal_status
@@ -539,10 +542,9 @@ class SimulatedPsplinkTransport:
                     "NAKAGAWA_PSP_TEST schema=1 test_id=SYNTHETIC case_id=" + case_id
                     + " status=PASS result=0x1\n"
                 )
-            complete_host0_log = (
-                metadata_record
-                + result_record
-                + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
+            complete_host0_log = metadata_record + result_record + (
+                "" if case_id in self.unfinished_cases
+                else "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
             )
             stdout_record = result_record
             if case_id in self.stdout_result_overrides and case_id != "transport-write":
@@ -1253,7 +1255,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
         self.assertTrue(
             any(
-                "did not become complete before probe unload" in blocker
+                "reached no completion marker" in blocker
                 for blocker in envelope["QUALIFICATION_BLOCKERS"]
             )
         )
@@ -2184,7 +2186,9 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         envelope = report["envelopes"][0]
         self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "BLOCKED")
         self.assertEqual(envelope["TEARDOWN_CHECK"]["recovery_status"], "NOT_RUN")
-        self.assertIn("did not become complete", " ".join(envelope["TEARDOWN_CHECK"]["issues"]))
+        self.assertIn(
+            "reached no completion marker", " ".join(envelope["TEARDOWN_CHECK"]["issues"])
+        )
         self.assertNotIn("reset", [command for command, _timeout in transport.commands])
         self.assertEqual(transport.restarts, 0)
 
@@ -3634,8 +3638,10 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="campaign-checkpoint-", dir=fixture_dir) as scratch_name:
             plan_path = self._plan(Path(scratch_name))
 
-            # Run 1: the preflight passes; kernel-alarm's synthetic stream is incomplete.
-            first = SimulatedPsplinkTransport(transport_file_cases={"transport-write"})
+            # Run 1: the preflight passes; kernel-alarm's probe never finishes.
+            first = SimulatedPsplinkTransport(
+                transport_file_cases={"transport-write"}, unfinished_cases={"kernel-alarm"}
+            )
             code, report = self._run(plan_path, confirm=False, transport=first)
             self.assertEqual(code, 3)
             self.assertEqual(self._launched(first), ["transport-write", "kernel-alarm"])
@@ -3668,7 +3674,7 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
             self.assertEqual(self._checkpoint(plan_path), checkpoint)
 
             # Run 4: without a confirmation the queue resumes at the preserved case.
-            fourth = SimulatedPsplinkTransport()
+            fourth = SimulatedPsplinkTransport(unfinished_cases={"thread-scheduler"})
             code, report = self._run(plan_path, confirm=False, transport=fourth)
             self.assertEqual(code, 3)
             self.assertEqual(self._launched(fourth), ["thread-scheduler"])
@@ -4279,6 +4285,207 @@ class HostErrorContainmentTests(unittest.TestCase):
         self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
         self.assertEqual(checkpoint["next_case_index"], 0)
         self.assertTrue(transport.stopped)
+
+
+
+def _registry_census_stream(categories: int = 44, keys: int = 365) -> str:
+    """A registry-readonly stream with the 2026-10-08 console capture's shape.
+
+    It mirrors the probe build that ran that night: one durable STEP marker
+    per category, the fixed open/errors/bad-handle records, and a
+    registry-done whose out2 counted only census records (categories + keys).
+    The raw census itself (key names and modeled setting values) is console
+    configuration and stays in the private campaign directory.
+    """
+
+    rows = [CAMPAIGN_META.rstrip("\n"),
+            "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly step=open-registry",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 case_id=registry-open "
+            "status=PASS result=0x00000000 out0=0x00000001 out1=0x00000001",
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 case_id=registry-errors "
+            "status=PASS result=0x00000000 out0=0x00000000 out1=0x8008271d out2=0xffffffff "
+            "out3=0x00000000 out4=0x00000100 out5=0x00000100 out6=0x00000000"]
+    for index in range(categories):
+        rows.append(
+            "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly "
+            f"step=CONFIG/category{index:02d}"
+        )
+        rows.append(
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            f"case_id=registry-category-{index:04d} status=PASS result=0x00000000 "
+            f"out0=0x{(keys // categories):08x} out1=0x00000000 detail=CONFIG/category{index:02d}"
+        )
+    for index in range(keys):
+        rows.append(
+            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 "
+            f"case_id=registry-key-{index:04d} status=PASS result=0x00000000 "
+            "out0=0x00000003 out1=0x00000004 out2=0x00000000 out3=0x00000000 "
+            f"detail=CONFIG/category{index % categories:02d}/synthetic_key_{index:04d}"
+        )
+    rows += [
+        "NAKAGAWA_PSP_STEP schema=1 case_id=registry-readonly step=bad-handle",
+        "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 case_id=registry-bad-handle "
+        "status=PASS result=0x8008272e out0=0x8008272e out1=0xffffffff",
+        "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 case_id=registry-done "
+        f"status=PASS result=0x00000000 out0=0x{categories:08x} out1=0x{keys:08x} "
+        f"out2=0x{categories + keys:08x}",
+        "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS",
+    ]
+    return "\n".join(rows) + "\n"
+
+
+class _SlowHost0Transport(SimulatedPsplinkTransport):
+    """Writes one case's host0 log progressively after `ldstart`, like a slow probe."""
+
+    def __init__(self, slow_case: str, stream: str, *, chunk: int = 40,
+                 pause: float = 0.05, **options):
+        super().__init__(host0_log_contents={slow_case: ""}, **options)
+        self.slow_case = slow_case
+        self.stream = stream
+        self.chunk = chunk
+        self.pause = pause
+        self.writer: threading.Thread | None = None
+        self.last_write_ns: int | None = None
+
+    def run(self, command, timeout):
+        result = super().run(command, timeout)
+        if command == f"ldstart host0:/{self.slow_case}.prx":
+            path = _campaign_host0_log_path(self.host0_root, self.slow_case)
+            lines = self.stream.splitlines(keepends=True)
+
+            def write() -> None:
+                for start in range(0, len(lines), self.chunk):
+                    with path.open("a", encoding="utf-8", newline="\n") as stream:
+                        stream.write("".join(lines[start:start + self.chunk]))
+                    self.last_write_ns = time.time_ns()
+                    time.sleep(self.pause)
+
+            self.writer = threading.Thread(target=write, daemon=True)
+            self.writer.start()
+        return result
+
+
+class ProgressiveHost0StreamTests(unittest.TestCase):
+    """The host0 wait ends at the probe's completion marker, bounded by the case timeout."""
+
+    def test_wait_follows_a_growing_stream_until_its_completion_marker(self):
+        stream = _registry_census_stream()
+        lines = stream.splitlines(keepends=True)
+        with tempfile.TemporaryDirectory() as scratch_name:
+            path = Path(scratch_name) / "registry_readonly_log.txt"
+            path.write_text("", encoding="utf-8")
+            started_ns = time.time_ns()
+
+            def write() -> None:
+                for start in range(0, len(lines), 40):
+                    with path.open("a", encoding="utf-8", newline="\n") as handle:
+                        handle.write("".join(lines[start:start + 40]))
+                    time.sleep(0.05)
+
+            writer = threading.Thread(target=write, daemon=True)
+            writer.start()
+            text, _mtime = _wait_for_host0_output(
+                path, 20.0, not_before_ns=started_ns - 10**9,
+                ready=run_psplink_module._has_probe_completion_sentinel,
+                include_mtime=True,
+            )
+            writer.join(5.0)
+        self.assertEqual(text, stream)
+
+    def test_wait_without_a_completion_marker_stops_at_the_case_timeout(self):
+        with tempfile.TemporaryDirectory() as scratch_name:
+            path = Path(scratch_name) / "registry_readonly_log.txt"
+            path.write_text(_registry_census_stream().rsplit("NAKAGAWA_PSP_COMPLETE", 1)[0],
+                            encoding="utf-8")
+            started = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                _wait_for_host0_output(
+                    path, 0.5, ready=run_psplink_module._has_probe_completion_sentinel,
+                )
+            self.assertLess(time.monotonic() - started, 5.0)
+
+    def test_progress_detail_names_records_last_write_and_last_step(self):
+        partial = _registry_census_stream().split("step=bad-handle", 1)[0]
+        detail = run_psplink_module._host0_progress_detail(partial, 3_500_000_000, 1_000_000_000)
+        self.assertIn("411 result record(s)", detail)
+        self.assertIn("last host0 write 2.5s after launch", detail)
+        self.assertIn("last step marker: CONFIG/category43", detail)
+        self.assertEqual(
+            run_psplink_module._host0_progress_detail(None, None, 0),
+            "no host0 output was observed",
+        )
+
+    def _run_registry(self, scratch: Path, timeout: float, **transport_options):
+        cases = []
+        for case_id, case_timeout in (("transport-write", 1.0), ("registry-readonly", timeout),
+                                      ("smoke", 1.0)):
+            binary = scratch / f"{case_id}.prx"
+            binary.write_bytes(b"synthetic PRX")
+            cases.append(CampaignCase(case_id, binary, case_timeout))
+        transport = _SlowHost0Transport(
+            "registry-readonly", _registry_census_stream(),
+            transport_file_cases={"transport-write"},
+            stdout_record_cases={"registry-readonly", "smoke"}, **transport_options,
+        )
+        transport.host0_root = scratch
+        runner = PsplinkCampaignRunner(
+            transport, console_model="PSP-3000-04g", source_commit=SOURCE_COMMIT, model_code=3,
+        )
+        started = time.monotonic()
+        report = runner.run(cases, reset_between_cases=True, stop_on_incomplete=True)
+        return report, transport, time.monotonic() - started
+
+    def test_slow_finished_stream_is_captured_whole_and_never_unloaded_early(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="slow-registry-", dir=fixture_dir) as name:
+            report, transport, elapsed = self._run_registry(Path(name), 60.0)
+            transport.writer.join(5.0)
+
+        commands = [command for command, _timeout in transport.commands]
+        registry = report["envelopes"][1]
+        # Every record reached host0 before the probe was unloaded ...
+        self.assertEqual(transport.host0_record_counts_at_unload["registry-readonly"], 413)
+        self.assertIn("case_id=registry-done", registry["RAW_RESULT"])
+        # ... and the wait ended at the completion marker, far inside the 60 s budget.
+        self.assertLess(elapsed, 30.0)
+        # The finished stream violates its record contract (on 2026-10-08, the
+        # registry-done count), which is a named protocol failure with a normal
+        # teardown, not an incomplete case that demands a power cycle.
+        self.assertIsNone(report["terminal_reason"])
+        self.assertEqual(registry["TEARDOWN_CHECK"]["status"], "PASS")
+        self.assertEqual(registry["QUALIFICATION_STATUS"], "UNQUALIFIED")
+        self.assertTrue(any(
+            "strict protocol validation" in blocker
+            for blocker in registry["QUALIFICATION_BLOCKERS"]
+        ))
+        self.assertIn("ldstart host0:/smoke.prx", commands)
+
+    def test_unfinished_slow_stream_names_its_progress_and_stops(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        unfinished = _registry_census_stream().rsplit("NAKAGAWA_PSP_COMPLETE", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="slow-unfinished-", dir=fixture_dir) as name:
+            scratch = Path(name)
+            cases = []
+            for case_id, case_timeout in (("transport-write", 1.0), ("registry-readonly", 1.5)):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, case_timeout))
+            transport = _SlowHost0Transport(
+                "registry-readonly", unfinished, transport_file_cases={"transport-write"},
+            )
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport, console_model="PSP-3000-04g", source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run(cases, reset_between_cases=True, stop_on_incomplete=True)
+            transport.writer.join(5.0)
+
+        registry = report["envelopes"][1]
+        self.assertEqual(report["terminal_reason"], "PHYSICAL_INTERVENTION_REQUIRED")
+        self.assertEqual(report["intervention_case_id"], "registry-readonly")
+        problem = " ".join(registry["QUALIFICATION_BLOCKERS"])
+        self.assertIn("reached no completion marker within the 1.5s case timeout", problem)
+        self.assertIn("last step marker:", problem)
 
 
 class Host0RemotePathTests(unittest.TestCase):
