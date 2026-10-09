@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import struct
 import sys
 from dataclasses import dataclass
@@ -1479,7 +1480,7 @@ def _build_manifest(
             "max_height_px": max_height,
         },
         "input": {
-            "path": input_path,
+            "path": _leaf_name(input_path),
             "sha256": hashlib.sha256(data).hexdigest(),
             "size_bytes": len(data),
             "units_per_em": font.units_per_em,
@@ -1490,7 +1491,7 @@ def _build_manifest(
         "license": license_block,
         "metric_targets": metric_targets,
         "output": {
-            "path": output_path,
+            "path": _leaf_name(output_path),
             "sha256": hashlib.sha256(image).hexdigest(),
             "size_bytes": len(image),
             "font_name": font_name,
@@ -1507,6 +1508,15 @@ def _build_manifest(
             "advance_rounding": "26.6, half-up from font units",
         },
     }
+
+
+def _leaf_name(path: str) -> str:
+    """The final path component under either host separator.
+
+    The manifest records file names only, so a build run from another directory, or on another
+    host, writes the same bytes (plan 6.2).
+    """
+    return re.split(r"[\\/]", path)[-1]
 
 
 def manifest_bytes(manifest: dict) -> bytes:

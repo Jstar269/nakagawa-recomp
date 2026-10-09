@@ -290,6 +290,25 @@ class PgfWriterRefusalTests(unittest.TestCase):
         image = build_pgf(GLYPHS, font_name="Platonic Mono")
         self.assertEqual(image[0x35 : 0x35 + len("Platonic Mono")], b"Platonic Mono")
 
+    def test_vendor_and_trademark_font_names_are_refused(self):
+        # Vendor names are split across literals so this file never holds them whole.
+        names = (
+            "F" "TT-" "New" "Rodin Pro DB", "Asia" "KNHH-" "SO" "NY-uni", "Asia" "NHH(512Johab)",
+            "Font" "works Latin", "Noto Sans JP", "Lato Display", "Atkinson Hyperlegible Next",
+            "Nanum Gothic", "Sawarabi Gothic", "Gowun Dodum", "M PLUS 1p", "Ume Hy Gothic",
+            "Source Han Sans", "Gudea Display",
+        )
+        for name in names:
+            with self.subTest(name=name):
+                self.assert_refused("font-field-invalid", font_name=name)
+
+    def test_names_that_only_contain_a_short_mark_are_accepted(self):
+        # A whole-word mark does not refuse an ordinary word that happens to contain it.
+        glyphs = [Glyph(code=0x41, width=1, height=1, samples=(3,))]
+        for name in ("Platonic Serif", "Volume Mono"):
+            with self.subTest(name=name):
+                self.assertTrue(build_pgf(glyphs, font_name=name))
+
     def test_cli_refusal_names_the_reason_and_writes_nothing(self):
         with tempfile.TemporaryDirectory(prefix="pgf_writer_") as tmp:
             glyph_set = Path(tmp) / "glyphs.json"

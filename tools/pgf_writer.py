@@ -76,6 +76,9 @@ RESERVED_FONT_NAMES = frozenset({"jpn0", "kr0", *(f"ltn{index}" for index in ran
 DENIED_FONT_NAME_RULES = (
     ("camouflage-font-name", ("New" "Rodin", "Asia" "KNHH", "Asia" "NHH", "Font" "works"), False),
     ("camouflage-font-name", ("F" "TT", "SO" "NY"), True),
+    # "Gudea" is the reserved font name of the pinned fixture font (fixtures/fonts/gudea/PIN.json).
+    # This writer takes no source pin, so this row is its only guard for that name; the
+    # converter's pin check repeats it when a pin is loaded.
     ("reserved-font-name",
      ("Source", "Atkinson", "Hyperlegible", "Sawarabi", "Gowun", "Nanum", "Gudea"), False),
     ("reserved-font-name", ("Noto", "Lato", "Ume", "M PLUS"), True),

@@ -213,19 +213,28 @@ The container is written entirely by `tools/pgf_writer.py`: revision 2, the
 392-byte base header, direct character map only, no shadow records, no
 subcharmap tables - the subset `PGF_SPEC.md` documents for revision 2 and the
 writer's own contract (a code span with a sparse character map when the code
-set has gaps, at most 255 entries per metric table). Kerning beyond per-glyph advances does not exist in PGF and none is
-fabricated (`PGF_SPEC.md` section 3.10).
+set has gaps, at most 255 entries per metric table). Kerning beyond per-glyph
+advances does not exist in PGF and none is fabricated (`PGF_SPEC.md` section
+3.10).
 
 The default output name is `Nakagawa Open Latin` / `Regular`. Before anything
 is written the converter refuses:
 
 1. PSP firmware font names (`jpn0`, `kr0`, `ltn0`..`ltn15`, with or without
    `.pgf`) - enforced by the writer and re-raised unchanged.
-2. The recorded Fontworks/Sony camouflage markers `ftt-newrodin` and
-   `asiaknhh` (case-insensitive), per `FONT_ORIGINS.md` section 5.3.
-3. The Adobe OFL Reserved Font Name `source`, per `FONT_ORIGINS.md` route (2).
+2. The vendor camouflage markers recorded in `FONT_ORIGINS.md` section 5.3
+   (`camouflage-font-name`), case-insensitive. `FTT` and `SONY` match only as
+   separate words; the other markers match anywhere in the name.
+3. The Adobe OFL Reserved Font Name `source`, per `FONT_ORIGINS.md` route (2),
+   and the reserved or trademark names `Atkinson`, `Hyperlegible`, `Sawarabi`,
+   `Gowun`, `Nanum`, `Gudea`. These match anywhere in the name, as does
+   `source`. `Noto`, `Lato`, `Ume` and `M PLUS` match separate words only
+   (`reserved-font-name`).
 4. Any Reserved Font Name listed by the active source pin (for the pinned
    fixture: `Gudea`), per OFL section 3.
+
+The rules for items 2 and 3 are the single table `DENIED_FONT_NAME_RULES` in
+`tools/pgf_writer.py`, which the writer applies to every output name as well.
 
 Generated PGFs are fixtures, never an authenticity claim.
 
@@ -245,8 +254,8 @@ Generated PGFs are fixtures, never an authenticity claim.
 | Block | Contents |
 | --- | --- |
 | `converter` | Name, version, and this specification's path. |
-| `input` | Path, SHA-256, size, `unitsPerEm`, glyph count, outline format, tables used. |
-| `output` | Path, SHA-256, size, font name/type, revision, first/last glyph, the header size fields and extrema read back from the emitted bytes. |
+| `input` | File name (no directory), SHA-256, size, `unitsPerEm`, glyph count, outline format, tables used. |
+| `output` | File name (no directory), SHA-256, size, font name/type, revision, first/last glyph, the header size fields and extrema read back from the emitted bytes. |
 | `coverage` | First/last code, converted code count, code span, and `U+XXXX..U+YYYY` range. |
 | `code_points` | For `--codepoints`: the file's leaf name, count, and SHA-256; `null` for a range. |
 | `glyphs` | Count, zero-area codes, maximum pixel dimensions. |
