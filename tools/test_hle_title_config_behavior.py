@@ -387,6 +387,68 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
             self.assertIn("GUEST_MODULE_INPUT_MISSING", missing_output)
             self.assertIn("0 failures", missing_output)
 
+    def test_runtime_placed_modules_load_bind_and_unload(self):
+        """Guest-placed modules (#704) through the production loader: placement by the
+        user-partition allocator, relocation, translation binding, start/stop with the
+        module's own $gp, unload and reuse, LoadModuleByID, and every named refusal."""
+        make = shutil.which("mingw32-make")
+        if not make:
+            raise unittest.SkipTest("mingw32-make is not available")
+        with tempfile.TemporaryDirectory(prefix="nakagawa_hle_runtime_module_") as tmp:
+            tmp_path = Path(tmp)
+            module_root = tmp_path / "modules"
+            module_root.mkdir()
+            manifest = tmp_path / "synthetic-runtime-module.json"
+            configured = synthetic_manifest()
+
+            def runtime(name: str, guest_path: str, required: bool = True) -> dict:
+                return {"name": name, "required": required, "role": "guest-prx",
+                        "placement": "runtime", "guest_path": guest_path}
+
+            configured["modules"] = [
+                runtime("rt-alpha.prx", "ms0:/NKRT/RT_ALPHA.PRX"),
+                runtime("rt-beta.prx", "disc0:/PSP_GAME/USRDIR/rt-beta.prx", required=False),
+                runtime("rt-gamma.prx", "disc0:/PSP_GAME/USRDIR/rt-gamma.prx"),
+                runtime("rt-delta.prx", "disc0:/PSP_GAME/USRDIR/rt-delta.prx"),
+                *configured.get("modules", []),
+            ]
+            manifest.write_text(json.dumps(configured), encoding="utf-8")
+            header = tmp_path / "sr_title_config.h"
+            exe = tmp_path / "hle_title_production_selftest_runtime_module.exe"
+            command = [
+                make,
+                "--no-print-directory",
+                "hle-title-selftest-one",
+                "HLE_TITLE_CONFIG=synthetic-runtime-module",
+                f"HLE_TITLE_MANIFEST={manifest.as_posix()}",
+                f"BUILD_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
+                f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
+                f"HLE_TITLE_SELFTEST_EXE={exe.as_posix()}",
+            ]
+            env = os.environ.copy()
+            ucrt_bin = Path("C:/msys64/ucrt64/bin")
+            if ucrt_bin.is_dir():
+                env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
+            env["SR_MODULE_DIR"] = str(module_root)
+            env["SR_TEST_GUEST_MODULE_LOAD"] = "runtime-placement"
+            env.pop("SR_REAL_MODULE_START", None)
+            built = subprocess.run(
+                command, cwd=ROOT, capture_output=True, text=True, env=env, timeout=300
+            )
+            output = built.stdout + built.stderr
+            self.assertEqual(built.returncode, 0, output)
+            self.assertIn("0 failures", output)
+            self.assertNotIn("FAIL: runtime placement", output)
+            for marker in (
+                "GUEST_MODULE_PLACED: rt-alpha.prx uid=0x",
+                "GUEST_MODULE_UNLOADED: rt-alpha.prx uid=0x",
+                "GUEST_MODULE_BOUNDARY: guest-module-second-instance module=rt-alpha.prx",
+                "GUEST_MODULE_BOUNDARY: guest-module-untranslated module=rt-gamma.prx",
+                "GUEST_MODULE_LOAD_NO_MEMORY: rt-alpha.prx",
+            ):
+                self.assertIn(marker, output)
+
     def test_generic_profile_rejects_diagnostics_even_when_requested(self):
         make = shutil.which("mingw32-make")
         if not make:
