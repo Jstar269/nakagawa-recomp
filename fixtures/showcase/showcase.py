@@ -18,7 +18,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import struct
 import subprocess
@@ -27,6 +26,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
+from ge_stat_windows import WINDOW_VBLANKS, GeStatWindow, GeStatWindowError, first_window
 from prxload import Prx
 
 # Where the staged demos live. The defaults are inside the repository's ignored
@@ -39,6 +39,15 @@ DEMO_ROOT = Path(os.environ.get("NK_SHOWCASE_DEMO_ROOT") or ROOT / "build" / "de
 SCREENSHOT_ROOT = BUILD_ROOT / "screenshots"
 SECTOR = 2048
 PSP_PRX_ELF_TYPE = 0xFFA0
+
+# The smoke's budget is counted on the guest's display clock (VCOUNT) and bounded by
+# host time. The runtime closes one SR_GESTAT window each time VCOUNT crosses a
+# multiple of WINDOW_VBLANKS and exits cleanly once VCOUNT reaches SMOKE_EXIT_VBLANK
+# (SR_EXIT_AT_VBLANK), three windows in; the first window is the first-frame
+# checkpoint. SMOKE_TIMEOUT_SECONDS bounds the whole host process, so a guest that
+# stops making progress fails instead of hanging CI.
+SMOKE_EXIT_VBLANK = 3 * WINDOW_VBLANKS
+SMOKE_TIMEOUT_SECONDS = 15
 
 DEMOS = (
     {
@@ -397,7 +406,7 @@ def _runtime_command(demo: dict[str, object], padscript: Path) -> tuple[list[str
         "SR_FBSNAP": "1",
         "SR_INLOG": "1",
         "SR_NOINPUT": "1",
-        "SR_EXIT_AT_VBLANK": "180",
+        "SR_EXIT_AT_VBLANK": str(SMOKE_EXIT_VBLANK),
         "SR_PADSCRIPT": str(padscript),
         "SDL_VIDEODRIVER": "dummy",
         "SDL_AUDIODRIVER": "dummy",
@@ -423,6 +432,67 @@ def _ppm_metrics(path: Path, background: bytes) -> tuple[int, int]:
     return len(colors), foreground
 
 
+def first_frame_checkpoint(disc_id: str, output: str, package_dir: Path,
+                           log_path: Path) -> tuple[GeStatWindow, Path]:
+    """The first GE statistics window a smoke run closed, and that moment's capture.
+
+    The checkpoint is the first VCOUNT crossing of WINDOW_VBLANKS, labelled with the
+    vblank that closed it (61 when the host stepped over 60); the label is read from
+    the log, never assumed, so a loaded host cannot make a reached checkpoint look
+    missed. The 3D scene must have drawn visible geometry inside that window.
+    """
+    try:
+        checkpoint = first_window(output)
+    except GeStatWindowError as exc:
+        raise ShowcaseError(f"{disc_id} {exc}; see {log_path}") from exc
+    if checkpoint is None:
+        raise ShowcaseError(
+            f"{disc_id} did not reach its first frame checkpoint (no GE statistics "
+            f"window closed before vblank {SMOKE_EXIT_VBLANK}); see {log_path}"
+        )
+    if disc_id == "TEST00007" and (not checkpoint.counters.get("tri3d") or
+                                   not checkpoint.counters.get("px3d")):
+        raise ShowcaseError(
+            f"{disc_id} produced no visible 3D geometry by its first frame checkpoint "
+            f"(vblank {checkpoint.frame}); see {log_path}"
+        )
+    ppm = package_dir / checkpoint.snapshot_name
+    if not ppm.is_file():
+        raise ShowcaseError(
+            f"{disc_id} produced no GE framebuffer capture at its first frame checkpoint "
+            f"(vblank {checkpoint.frame}); see {log_path}"
+        )
+    return checkpoint, ppm
+
+
+def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
+                 log_path: Path, label: str) -> str:
+    """Run one bounded runtime smoke and keep its complete log, then return the output.
+
+    The log is written whether the runtime passes, fails, or overruns the host timeout,
+    so a failed gate always leaves the evidence that names its cause.
+    """
+    # Window captures are per-run evidence: never judge a frame an earlier run left behind.
+    for stale in cwd.glob("snap_f*.ppm"):
+        stale.unlink()
+    try:
+        result = subprocess.run(command, cwd=cwd, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=SMOKE_TIMEOUT_SECONDS, check=False)
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        log_path.write_text(partial + "\nSHOWCASE_SMOKE_TIMEOUT\n", encoding="utf-8", errors="replace")
+        raise ShowcaseError(
+            f"{label} exceeded the {SMOKE_TIMEOUT_SECONDS} second smoke window; see {log_path}"
+        ) from exc
+    log_path.write_text(result.stdout, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise ShowcaseError(f"{label} exited {result.returncode}; see {log_path}")
+    return result.stdout
+
+
 def smoke_all() -> None:
     SCREENSHOT_ROOT.mkdir(parents=True, exist_ok=True)
     padscript_root = BUILD_ROOT / "smoke"
@@ -434,34 +504,13 @@ def smoke_all() -> None:
         smoke_dir.mkdir(parents=True, exist_ok=True)
         (smoke_dir / "padscript.txt").write_text("12 4000 4\n240 0008 4\n", encoding="ascii")
         command, env, package_dir = _runtime_command(demo, smoke_dir / "padscript.txt")
-        try:
-            result = subprocess.run(command, cwd=package_dir, env=env, text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    timeout=15, check=False)
-            output = result.stdout
-        except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "") + "\nSHOWCASE_SMOKE_TIMEOUT\n"
-            raise ShowcaseError(f"{disc_id} exceeded the 15 second scripted smoke window") from exc
         log_path = smoke_dir / "runtime.log"
-        log_path.write_text(output, encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            raise ShowcaseError(f"{disc_id} runtime exited {result.returncode}; see {log_path}")
-        if "GESTAT f=60 " not in output:
-            raise ShowcaseError(f"{disc_id} did not reach its first frame checkpoint; see {log_path}")
+        output = _run_runtime(command, env, package_dir, log_path, f"{disc_id} runtime")
+        checkpoint, ppm = first_frame_checkpoint(disc_id, output, package_dir, log_path)
         if "-> 0x4000" not in output:
             raise ShowcaseError(f"{disc_id} missed the scripted Cross input sample; see {log_path}")
         if "AUDIOSTAT_HOST:" not in output or "pushed=0" in output:
             raise ShowcaseError(f"{disc_id} missed audio-submission telemetry; see {log_path}")
-        if disc_id == "TEST00007":
-            scene_frame = re.search(r"GESTAT f=60 .*?tri3d=(\d+).*?px3d=(\d+)", output)
-            if not scene_frame or not int(scene_frame.group(1)) or not int(scene_frame.group(2)):
-                raise ShowcaseError(f"{disc_id} produced no visible 3D geometry at frame 60; see {log_path}")
-        ppm = package_dir / "snap_f00060.ppm"
-        if not ppm.is_file():
-            snapshots = sorted(package_dir.glob("snap_f*.ppm"))
-            if not snapshots:
-                raise ShowcaseError(f"{disc_id} produced no GE framebuffer capture; see {log_path}")
-            ppm = snapshots[0]
         color_count, foreground_pixels = _ppm_metrics(ppm, bytes((16, 24, 32)))
         # A flat-colour 2D frame legitimately has only a handful of colours; this
         # catches an empty or single-colour frame, and the screenshots are reviewed.
@@ -480,20 +529,13 @@ def smoke_all() -> None:
             save_padscript.write_text("12 4000 4\n120 0008 4\n", encoding="ascii")
             save_command, save_env, save_package_dir = _runtime_command(demo, save_padscript)
             save_env.pop("SR_EXIT_AT_VBLANK", None)
-            try:
-                save_result = subprocess.run(save_command, cwd=save_package_dir, env=save_env,
-                                             text=True, stdout=subprocess.PIPE,
-                                             stderr=subprocess.STDOUT, timeout=15, check=False)
-            except subprocess.TimeoutExpired as exc:
-                raise ShowcaseError(f"{disc_id} savedata smoke exceeded the 15 second window") from exc
-            save_log_path = smoke_dir / "runtime-save.log"
-            save_log_path.write_text(save_result.stdout, encoding="utf-8", errors="replace")
-            if save_result.returncode != 0:
-                raise ShowcaseError(f"{disc_id} savedata smoke exited {save_result.returncode}; see {save_log_path}")
+            _run_runtime(save_command, save_env, save_package_dir,
+                         smoke_dir / "runtime-save.log", f"{disc_id} savedata smoke")
             save_root = Path(env["SR_MEMSTICK"])
             if not save_root.exists() or not any(path.is_file() for path in save_root.rglob("*")):
                 raise ShowcaseError(f"Breakout did not create savedata under {save_root}")
-        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio; screenshot={screenshot}")
+        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio; "
+              f"first frame checkpoint=vblank {checkpoint.frame}; screenshot={screenshot}")
 
 
 def main() -> int:
