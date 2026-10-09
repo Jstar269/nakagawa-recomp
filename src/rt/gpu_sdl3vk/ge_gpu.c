@@ -88,7 +88,7 @@ static int s_scale = 1;     /* integer render scale (SR_GPU_SCALE), 1..MAX_SCALE
 #define SCL_H ((uint32_t)(FB_H * s_scale))
 #define MAX_VERTS  131072
 #define MAX_BATCH  4096
-#define MAX_PIPES  192
+#define PIPE_CACHE_INITIAL 192   /* growable: the state key space is not bounded by a constant */
 #define MAX_TEX    1024
 #define MAX_TGT    8
 #define MAX_DEP    4
@@ -261,8 +261,8 @@ static VkDescriptorSet s_snap_n, s_snap_l;
 static Target *s_snap_src = NULL;          /* what the snapshot currently holds */
 static uint64_t s_snap_srcgen = 0;
 
-static PipeEnt s_pipes[MAX_PIPES];
-static int s_pipe_n = 0;
+static PipeEnt *s_pipes = NULL;
+static int s_pipe_n = 0, s_pipe_cap = 0;
 
 static Target   s_tgts[MAX_TGT];
 static DepthEnt s_deps[MAX_DEP];
@@ -958,7 +958,15 @@ static VkPipeline pipe_get(const PipeKey *k) {
         s_cpu_profile_stats.pipeline_misses++;
         cpu_profile_add(GEGPU_CPU_PIPELINE_LOOKUP, profile_started);
     }
-    if (s_pipe_n >= MAX_PIPES) return VK_NULL_HANDLE;
+    /* A full cache grows instead of refusing the state: a refused pipeline used to drop
+     * its whole batch silently once the cache held 192 distinct keys. */
+    if (s_pipe_n == s_pipe_cap) {
+        int cap = s_pipe_cap ? s_pipe_cap * 2 : PIPE_CACHE_INITIAL;
+        PipeEnt *grown = (PipeEnt *)realloc(s_pipes, (size_t)cap * sizeof(*grown));
+        if (!grown) return VK_NULL_HANDLE;
+        s_pipes = grown;
+        s_pipe_cap = cap;
+    }
     VkPipeline p = pipe_create(k);
     if (!p) return VK_NULL_HANDLE;
     s_pipes[s_pipe_n].key = *k; s_pipes[s_pipe_n].pipe = p; s_pipe_n++;
@@ -1054,7 +1062,15 @@ static int submit_pending(void) {
     for (uint32_t i = 0; i < s_nbatch; i++) {
         Batch *b = &s_batch[i];
         VkPipeline p = pipe_get(&b->key);
-        if (!p) continue;
+        if (!p) {
+            /* Not expected once the cache grows; say so rather than dropping silently. */
+            static int pipe_drop_reported = 0;
+            if (!pipe_drop_reported) {
+                pipe_drop_reported = 1;
+                fprintf(stderr, "gegpu: pipeline creation failed; a batch was dropped\n");
+            }
+            continue;
+        }
         if (p != cur) {
             uint64_t bind_started = cpu_profile_now();
             vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
@@ -2163,8 +2179,14 @@ static void build_state(int persp, int sprite, Batch *b) {
          * factors for them. */
         int dual_fix = sfp >= 10 && dfp >= 10 &&
                        ((g->blend_fixa ^ g->blend_fixb) & 0xFFFFFFu) != 0;
+        /*  - doubled/inverse-doubled SRC-alpha on the SRC side (6/7) premultiplies the
+         *    source colour in the shader, so a DST factor that reads the source colour
+         *    (SRC_COLOR, ONE_MINUS_SRC_COLOR: dfp 0/1) would see the premultiplied value
+         *    in fixed function; ge.c multiplies the destination by the raw source colour */
+        int premul_src_colour = (sfp == 6 || sfp == 7) && (dfp == 0 || dfp == 1);
         shblend = (g->fbfmt & 3) != 3 || (g->dither_enable != 0) || eq == 5 ||
-                  sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) || dual_fix;
+                  sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) || dual_fix ||
+                  premul_src_colour;
         if (shblend) {
             if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_STATE, 1);
             if ((g->fbfmt & 3) != 3) {
@@ -2198,6 +2220,10 @@ static void build_state(int persp, int sprite, Batch *b) {
             int nc_a = 0, nc_b = 0;
             int sf = map_factor(sfp, 1, g->blend_fixa, &nc_a, &premul);
             int df = map_factor(dfp, 0, g->blend_fixb, &nc_b, &premul);
+            /* min/max ignore the blend factors (fixed function and ge.c alike), so the
+             * source premultiply, which exists only to emulate a factor, must not scale
+             * the colour that min/max compare */
+            if (eq == 3 || eq == 4) premul = 0;
             uint32_t fixed = nc_a ? g->blend_fixa : g->blend_fixb;
             b->bconst[0] = (float)(fixed & 0xFF) / 255.0f;
             b->bconst[1] = (float)((fixed >> 8) & 0xFF) / 255.0f;
@@ -3664,6 +3690,412 @@ static int coherence_run_linear_sprite(void) {
     return 1;
 }
 
+/* ---- ring wrap and blend colour parity (issue #697) -----------------------------------
+ *
+ * The per-slot vertex arena (VERT_ARENA_VERTS) and per-slot transfer ring are the Vulkan
+ * rings a wrap could overrun while the GPU still reads them. A render that does not fit
+ * the open recording moves to the next submit slot, and that slot's fence must retire
+ * before its arena is written again. These fixtures drive the production hook and GE list
+ * paths on synthetic guest memory and check analytic final pixels: an overwrite of
+ * in-flight vertex data changes a pixel, and a stale slot cursor changes the last writer.
+ *
+ * The parity fixtures compare the Vulkan output with the software GE (ge.c, the arbiter)
+ * for every blend factor pair, and also report the distance to the project's R6 colour
+ * product (ge_raster_ref.c, SPEC_ASSUMPTION until the #343 oracle cells P8/P9 run). */
+#include "../ge_raster_ref.h"
+
+static uint32_t wrap_hash(uint32_t v) {
+    v ^= v >> 16; v *= 0x7feb352du; v ^= v >> 15; v *= 0x846ca68bu; v ^= v >> 16;
+    return v;
+}
+
+static uint32_t wrap_pixel_rgba(uint32_t pass, uint32_t idx) {
+    return 0xff000000u | (wrap_hash(idx * 2654435761u ^ pass * 0x9E3779B9u) & 0xFFFFFFu);
+}
+
+static void wrap_vtx(GeVtx *v, float x, float y, uint32_t c) {
+    *v = (GeVtx){ x, y, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                  (int)(c & 0xFFu), (int)((c >> 8) & 0xFFu), (int)((c >> 16) & 0xFFu), (int)(c >> 24) };
+}
+
+static void wrap_state(uint32_t base, uint32_t stride) {
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = stride;
+    s_ge->fbfmt = 3;
+    s_ge->zbp = 0x04080000u;
+    s_ge->zbw = stride;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535;
+}
+
+/* Many one-pixel sprites per pass over the whole frame. Each pass rewrites every pixel,
+ * so the final frame is the last pass, and every submit slot is reused many times. */
+static int coherence_run_ring_wrap(void) {
+    const uint32_t fba = 0x00100000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t stride = 512u;
+    const uint32_t pixels = (uint32_t)(FB_W * FB_H);
+    const uint32_t passes = 3u;
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    wrap_state(base, stride);
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeGpuReplayStats before, after;
+    gegpu_replay_stats_get(&before);
+    uint64_t spr_before = s_cnt_spr;
+    for (uint32_t pass = 0; pass < passes; pass++) {
+        for (uint32_t idx = 0; idx < pixels; idx++) {
+            GeVtx p0, p1;
+            uint32_t c = wrap_pixel_rgba(pass, idx);
+            wrap_vtx(&p0, (float)(idx % FB_W), (float)(idx / FB_W), c);
+            wrap_vtx(&p1, (float)(idx % FB_W) + 1.0f, (float)(idx / FB_W) + 1.0f, c);
+            if (!hook_sprite(&p0, &p1, 0)) {
+                fprintf(stderr, "gpu coherence selftest [ring-wrap]: hook_sprite refused pass=%u idx=%u\n",
+                        pass, idx);
+                coherence_reset_targets();
+                return 0;
+            }
+        }
+    }
+    Target *t = s_cur;
+    if (!t || !target_readback(t)) {
+        fprintf(stderr, "gpu coherence selftest [ring-wrap]: target readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    gegpu_replay_stats_get(&after);
+
+    for (uint32_t idx = 0; idx < pixels; idx++) {
+        uint32_t want = wrap_pixel_rgba(passes - 1u, idx);
+        /* Non-clear draws write RGB only: alpha is the PSP stencil plane (build_state
+         * cmask), so it must keep the initial zero from the cleared frame. */
+        if ((guest[idx] >> 24) != 0 || (guest[idx] & 0xFFFFFFu) != (want & 0xFFFFFFu)) {
+            fprintf(stderr, "gpu coherence selftest [ring-wrap]: idx=%u (x=%u,y=%u) rgb got=%06x want=%06x "
+                            "alpha=%02x\n", idx, idx % FB_W, idx / FB_W, guest[idx] & 0xFFFFFFu,
+                    want & 0xFFFFFFu, guest[idx] >> 24);
+            coherence_reset_targets();
+            return 0;
+        }
+    }
+    uint64_t sprites = s_cnt_spr - spr_before;
+    unsigned long long submits = after.render_submits - before.render_submits;
+    if (sprites != (uint64_t)pixels * passes) {
+        fprintf(stderr, "gpu coherence selftest [ring-wrap]: sprite count %llu\n",
+                (unsigned long long)sprites);
+        coherence_reset_targets();
+        return 0;
+    }
+    /* The vertex arena overflows once per VERT_ARENA_VERTS, so this fixture forces many
+     * arena flushes; more than one full slot cycle proves a recycled, fenced slot. */
+    if (submits <= SUBMIT_FRAMES) {
+        fprintf(stderr, "gpu coherence selftest [ring-wrap]: only %llu render submits, slot ring did not recycle\n",
+                submits);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s sprites=%llu verts=%llu render_submits=%llu\n",
+           "ring-wrap", (unsigned long long)sprites,
+           (unsigned long long)sprites * 6ull, submits);
+    coherence_reset_targets();
+    return 1;
+}
+
+/* Repeated uploads of different guest content into one target. Each upload is a batched
+ * transfer-ring operation; the final GPU image must equal the last content with the one
+ * sprite drawn on top, proving the staged copies were not overwritten before the copy ran. */
+static int coherence_run_upload_sequence(void) {
+    const uint32_t fba = 0x00120000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t stride = 512u;
+    const uint32_t bytes = stride * FB_H * 4u;
+    const uint32_t rounds = 12u;
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+
+    coherence_reset_targets();
+    for (uint32_t i = 0; i < (uint32_t)(FB_W * FB_H); i++) guest[i] = wrap_pixel_rgba(0u, i);
+    sr_gpu_vram_dirty(base, bytes);
+    Target *t = target_color_acquire(fba, stride, 3, 1);
+    if (!t || !t->gpu_valid) {
+        fprintf(stderr, "gpu coherence selftest [upload-sequence]: could not establish target\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    GeGpuReplayStats before, after;
+    gegpu_replay_stats_get(&before);
+    for (uint32_t k = 1; k <= rounds; k++) {
+        for (uint32_t i = 0; i < (uint32_t)(FB_W * FB_H); i++) guest[i] = wrap_pixel_rgba(k, i);
+        sr_gpu_vram_dirty(base, bytes);
+        if (!target_upload(t)) {
+            fprintf(stderr, "gpu coherence selftest [upload-sequence]: upload %u failed\n", k);
+            coherence_reset_targets();
+            return 0;
+        }
+    }
+    wrap_state(base, stride);
+    ge_set_gpu_hooks(&k_hooks);
+    GeVtx p0, p1;
+    const uint32_t c = 0xff102030u;
+    wrap_vtx(&p0, 0.0f, 0.0f, c);
+    wrap_vtx(&p1, 1.0f, 1.0f, c);
+    if (!hook_sprite(&p0, &p1, 0) || !s_cur || !target_readback(s_cur)) {
+        fprintf(stderr, "gpu coherence selftest [upload-sequence]: draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    gegpu_replay_stats_get(&after);
+    for (uint32_t i = 0; i < (uint32_t)(FB_W * FB_H); i++) {
+        uint32_t want = i == 0 ? c : wrap_pixel_rgba(rounds, i);
+        if (guest[i] != want) {
+            fprintf(stderr, "gpu coherence selftest [upload-sequence]: idx=%u got=%08x want=%08x\n",
+                    i, guest[i], want);
+            coherence_reset_targets();
+            return 0;
+        }
+    }
+    printf("gpu coherence selftest: PASS %-22s uploads=%u reservations=%llu fallbacks=%llu\n",
+           "upload-sequence", rounds,
+           after.upload_ring_reservations - before.upload_ring_reservations,
+           after.upload_ring_fallbacks - before.upload_ring_fallbacks);
+    coherence_reset_targets();
+    return 1;
+}
+
+/* ---- blend parity: Vulkan vs ge.c (arbiter) vs the R6 colour product --------------------- */
+
+#define PARITY_GRID 16u                  /* 16 x 16 sprites, 4x4 pixels each */
+#define PARITY_ORIGIN 64u
+#define PARITY_FF_BOUND 2                /* analytic bound for truncating vs rounding blends */
+
+static uint32_t parity_src(uint32_t sprite) { return wrap_hash(0x51u + sprite * 2654435761u); }
+static uint32_t parity_bg(uint32_t idx) { return wrap_hash(0xB6u + idx * 40503u); }
+
+static int parity_clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+/* ge.c factor_component(): the blend factor for one channel, integer 0..255. */
+static int parity_factor(int f, int src_side, int chan, const int s[3], int sa,
+                         const int d[3], int da, uint32_t fixa, uint32_t fixb) {
+    int sv = s[chan], dv = d[chan];
+    int fixed_a = (int)((fixa >> (8 * chan)) & 0xFFu), fixed_b = (int)((fixb >> (8 * chan)) & 0xFFu);
+    switch (f & 0xF) {
+        case 0: return src_side ? dv : sv;
+        case 1: return 255 - (src_side ? dv : sv);
+        case 2: return sa;
+        case 3: return 255 - sa;
+        case 4: return da;
+        case 5: return 255 - da;
+        case 6: return parity_clamp8(sa * 2);
+        case 7: return parity_clamp8(255 - sa * 2);
+        case 8: return parity_clamp8(da * 2);
+        case 9: return parity_clamp8(255 - da * 2);
+        default: return src_side ? fixed_a : fixed_b;
+    }
+}
+
+/* The same blend equation with the R6 colour product ((2x+1)(2s+1))>>10 for every
+ * multiply, from ge_raster_ref.c. Min, max and absdiff ignore the factors (as ge.c does). */
+static int parity_r6_chan(int s, int d, int sf, int df, int eq) {
+    int sv = (int)sr_ge_color_mul((uint32_t)s, (uint32_t)sf);
+    int dv = (int)sr_ge_color_mul((uint32_t)d, (uint32_t)df);
+    switch (eq & 7) {
+        case 1: return parity_clamp8(sv - dv);
+        case 2: return parity_clamp8(dv - sv);
+        case 3: return s < d ? s : d;
+        case 4: return s > d ? s : d;
+        case 5: return s > d ? s - d : d - s;
+        default: return parity_clamp8(sv + dv);
+    }
+}
+
+/* Mirrors the shader-blend routing in build_state(): the states fixed-function Vulkan
+ * cannot express exactly. Kept separate so the matrix classifies each state itself. */
+static int parity_shader_blend(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t fixa, uint32_t fixb) {
+    int dual_fix = sfp >= 10 && dfp >= 10 && ((fixa ^ fixb) & 0xFFFFFFu) != 0;
+    int premul_src_colour = (sfp == 6 || sfp == 7) && (dfp == 0 || dfp == 1);
+    return sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) || eq == 5 || dual_fix ||
+           premul_src_colour;
+}
+
+static uint32_t parity_list(uint32_t base, uint32_t vaddr, uint32_t blend_mode, uint32_t fixa,
+                            uint32_t fixb, uint32_t sprites) {
+    const uint32_t list_addr = 0x00100000u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    uint32_t stride = 512u;
+    int p = 0;
+    #define PARITY_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((val) & 0x00FFFFFFu)
+    PARITY_EMIT(0x10, 0);
+    PARITY_EMIT(0x4C, 0);
+    PARITY_EMIT(0x9C, base & 0x00FFFFFFu);
+    PARITY_EMIT(0x9D, stride | ((base & 0xFF000000u) >> 8));
+    PARITY_EMIT(0xD2, 3);
+    PARITY_EMIT(0xD3, 0);
+    PARITY_EMIT(0x1D, 0);
+    PARITY_EMIT(0x1E, 0);
+    PARITY_EMIT(0x1F, 0);
+    PARITY_EMIT(0x20, 0);
+    PARITY_EMIT(0x22, 0);
+    PARITY_EMIT(0x23, 0);
+    PARITY_EMIT(0xE7, 1);
+    PARITY_EMIT(0xE8, 0);
+    PARITY_EMIT(0xE9, 0);
+    PARITY_EMIT(0x15, 0);
+    PARITY_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    PARITY_EMIT(0xD4, 0);
+    PARITY_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    PARITY_EMIT(0x21, 1);
+    PARITY_EMIT(0xDF, blend_mode & 0xFFFu);
+    PARITY_EMIT(0xE0, fixa);
+    PARITY_EMIT(0xE1, fixb);
+    /* 8888 colour, float position, transform bypass (through) */
+    PARITY_EMIT(0x12, (7u << 2) | (3u << 7) | (1u << 23));
+    PARITY_EMIT(0x01, vaddr & 0x00FFFFFFu);
+    PARITY_EMIT(0x04, (6u << 16) | (sprites * 2u));
+    PARITY_EMIT(0x0F, 0);
+    PARITY_EMIT(0x0C, 0);
+    #undef PARITY_EMIT
+    return list_addr;
+}
+
+/* Guest vertex layout for VERTEXTYPE 8888 colour + float position: colour first. */
+typedef struct ParityGuestVtx { uint32_t rgba; float x, y, z; } ParityGuestVtx;
+
+static void parity_vertices(uint32_t vaddr, uint32_t sprites) {
+    ParityGuestVtx *v = (ParityGuestVtx *)SR_HOST(vaddr);
+    for (uint32_t i = 0; i < sprites; i++) {
+        uint32_t gx = i % PARITY_GRID, gy = i / PARITY_GRID;
+        float x0 = (float)(PARITY_ORIGIN + 4u * gx), y0 = (float)(PARITY_ORIGIN + 4u * gy);
+        uint32_t c = parity_src(i);
+        v[2 * i]     = (ParityGuestVtx){ c, x0, y0, 0.0f };
+        v[2 * i + 1] = (ParityGuestVtx){ c, x0 + 4.0f, y0 + 4.0f, 0.0f };
+    }
+}
+
+static void parity_fill_background(uint32_t base) {
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    for (uint32_t y = 0; y < FB_H; y++)
+        for (uint32_t x = 0; x < FB_W; x++) guest[y * FB_W + x] = parity_bg(y * FB_W + x);
+    sr_gpu_vram_dirty(base, FB_W * FB_H * 4u);
+}
+
+typedef struct ParityTally {
+    unsigned combos, pixels_nonzero;
+    unsigned max_gpu_vs_sw, max_gpu_vs_r6, max_sw_vs_r6;
+} ParityTally;
+
+static int coherence_run_blend_parity(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t vaddr = 0x00101000u;
+    const uint32_t stride = 512u;
+    const uint32_t sprites = PARITY_GRID * PARITY_GRID;
+    const uint32_t bytes = FB_W * FB_H * 4u;
+    uint32_t *gpu_out = (uint32_t *)malloc(bytes);
+    if (!gpu_out) return 0;
+    ParityTally shader = {0}, ff = {0};
+    int ok = 1;
+
+    parity_vertices(vaddr, sprites);
+    for (uint32_t eq = 0; eq < 6 && ok; eq++) {
+        for (uint32_t sfp = 0; sfp <= 10 && ok; sfp++) {
+            for (uint32_t dfp = 0; dfp <= 10 && ok; dfp++) {
+                const uint32_t fixa = 0x3F7F9Fu, fixb = 0x7F5F2Fu;
+                const uint32_t mode = sfp | (dfp << 4) | (eq << 8);
+                const uint32_t list = parity_list(base, vaddr, mode, fixa, fixb, sprites);
+                int shader_path = parity_shader_blend(sfp, dfp, eq, fixa, fixb);
+                ParityTally *tally = shader_path ? &shader : &ff;
+
+                /* Vulkan path */
+                coherence_reset_targets();
+                parity_fill_background(base);
+                ge_set_gpu_hooks(&k_hooks);
+                ge_run_list(list, 0);
+                GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                                           .width = 480, .height = FB_H };
+                if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) { ok = 0; break; }
+                memcpy(gpu_out, SR_HOST(base), bytes);
+
+                /* ge.c software path (the arbiter) */
+                coherence_reset_targets();
+                parity_fill_background(base);
+                ge_set_gpu_hooks(NULL);
+                ge_run_list(list, 0);
+                ge_set_gpu_hooks(&k_hooks);
+                const uint32_t *sw_out = (const uint32_t *)SR_HOST(base);
+
+                unsigned max_gs = 0, max_gr = 0, max_sr = 0;
+                for (uint32_t sprite = 0; sprite < sprites; sprite++) {
+                    uint32_t sc = parity_src(sprite);
+                    int s[3] = { (int)(sc & 0xFF), (int)((sc >> 8) & 0xFF), (int)((sc >> 16) & 0xFF) };
+                    int sa = (int)(sc >> 24);
+                    for (uint32_t py = 0; py < 4u; py++) {
+                        for (uint32_t px = 0; px < 4u; px++) {
+                            uint32_t idx = (PARITY_ORIGIN + 4u * (sprite / PARITY_GRID) + py) * FB_W +
+                                           PARITY_ORIGIN + 4u * (sprite % PARITY_GRID) + px;
+                            uint32_t dw = parity_bg(idx);
+                            int d[3] = { (int)(dw & 0xFF), (int)((dw >> 8) & 0xFF), (int)((dw >> 16) & 0xFF) };
+                            int da = (int)(dw >> 24);
+                            uint32_t g = gpu_out[idx], w = sw_out[idx];
+                            for (int ch = 0; ch < 4; ch++) {
+                                int gv = (int)((g >> (8 * ch)) & 0xFF), wv = (int)((w >> (8 * ch)) & 0xFF);
+                                if (abs(gv - wv) > (int)max_gs) max_gs = (unsigned)abs(gv - wv);
+                                if (gv != wv) tally->pixels_nonzero++;
+                            }
+                            for (int ch = 0; ch < 3; ch++) {
+                                int sf = parity_factor((int)sfp, 1, ch, s, sa, d, da, fixa, fixb);
+                                int df = parity_factor((int)dfp, 0, ch, s, sa, d, da, fixa, fixb);
+                                int ref = parity_r6_chan(s[ch], d[ch], sf, df, (int)eq);
+                                int gv = (int)((g >> (8 * ch)) & 0xFF), wv = (int)((w >> (8 * ch)) & 0xFF);
+                                if (abs(gv - ref) > (int)max_gr) max_gr = (unsigned)abs(gv - ref);
+                                if (abs(wv - ref) > (int)max_sr) max_sr = (unsigned)abs(wv - ref);
+                            }
+                        }
+                    }
+                }
+                tally->combos++;
+                if (max_gs > tally->max_gpu_vs_sw) tally->max_gpu_vs_sw = max_gs;
+                if (max_gr > tally->max_gpu_vs_r6) tally->max_gpu_vs_r6 = max_gr;
+                if (max_sr > tally->max_sw_vs_r6) tally->max_sw_vs_r6 = max_sr;
+
+                if ((shader_path && max_gs != 0) || (!shader_path && max_gs > PARITY_FF_BOUND)) {
+                    /* first deviating pixel, with its inputs, for the failure report */
+                    for (uint32_t i = 0; i < sprites * 16u; i++) {
+                        uint32_t sprite = i / 16u, px = i % 4u, py = (i / 4u) % 4u;
+                        uint32_t idx = (PARITY_ORIGIN + 4u * (sprite / PARITY_GRID) + py) * FB_W +
+                                       PARITY_ORIGIN + 4u * (sprite % PARITY_GRID) + px;
+                        if (gpu_out[idx] == sw_out[idx]) continue;
+                        fprintf(stderr, "gpu coherence selftest [blend-parity]: sfp=%u dfp=%u eq=%u "
+                                        "x=%u y=%u gpu=%08x ge_c=%08x src=%08x dst=%08x\n",
+                                sfp, dfp, eq, idx % FB_W, idx / FB_W, gpu_out[idx], sw_out[idx],
+                                parity_src(sprite), parity_bg(idx));
+                        break;
+                    }
+                    fprintf(stderr, "gpu coherence selftest [blend-parity]: %s blend deviates from ge.c "
+                                    "by %u (bound %u)\n", shader_path ? "shader" : "fixed-function",
+                            max_gs, shader_path ? 0u : (unsigned)PARITY_FF_BOUND);
+                    ok = 0;
+                }
+                coherence_reset_targets();
+            }
+        }
+    }
+    ge_set_gpu_hooks(&k_hooks);
+    free(gpu_out);
+    if (!ok) return 0;
+    printf("gpu coherence selftest: PASS %-22s combos=%u max_delta_vs_ge_c=0 (shader blend, exact)\n",
+           "blend-parity-shader", shader.combos);
+    printf("gpu coherence selftest: PASS %-22s combos=%u max_delta_vs_ge_c=%u (fixed-function, bound %d)\n",
+           "blend-parity-ff", ff.combos, ff.max_gpu_vs_sw, PARITY_FF_BOUND);
+    printf("gpu coherence selftest: INFO r6-reference shader gpu_vs_r6=%u sw_vs_r6=%u "
+           "ff gpu_vs_r6=%u sw_vs_r6=%u\n",
+           shader.max_gpu_vs_r6, shader.max_sw_vs_r6, ff.max_gpu_vs_r6, ff.max_sw_vs_r6);
+    return 1;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -3690,6 +4122,9 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_sprite_semantics()) ok = 0;
     if (!coherence_run_software_sprite_semantics()) ok = 0;
     if (!coherence_run_linear_sprite()) ok = 0;
+    if (!coherence_run_ring_wrap()) ok = 0;
+    if (!coherence_run_upload_sequence()) ok = 0;
+    if (!coherence_run_blend_parity()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
@@ -4058,6 +4493,9 @@ void gegpu_shutdown(void) {
     for (int i = 0; i < s_pipe_n; i++)
         if (s_pipes[i].pipe) vkDestroyPipeline(s_dev, s_pipes[i].pipe, NULL);
     s_pipe_n = 0;
+    free(s_pipes);
+    s_pipes = NULL;
+    s_pipe_cap = 0;
 
     if (s_white_set) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &s_white_set);
     if (s_snap_n) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &s_snap_n);
