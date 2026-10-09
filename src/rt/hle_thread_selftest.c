@@ -4537,6 +4537,8 @@ static void osk_person_reset(void) {
 #define NID_OSK_INIT     0xf6269b82u
 #define NID_OSK_STATUS  0xf3f76017u
 #define NID_OSK_SHUTDOWN 0x3dfaeba9u
+#define OSK_SAVEDATA_PARAM_ADDR 0x09031000u /* a zeroed 0x600-byte savedata parameter block */
+#define NID_SAVEDATA_DIALOG_INIT     0x50c4cd57u
 
 static void osk_guest_write_wstr(uint32_t addr, const wchar_t *text) {
     for (int i = 0; text[i]; i++) MEM_W16(addr + (uint32_t)i * 2u, (uint16_t)text[i]);
@@ -4846,6 +4848,29 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
+
+    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
+     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    osk_person_reset();
+    s_osk_person_typing = 1;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
+    memset(&cpu, 0, sizeof(cpu));
+    for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
+               !s_osk_request_open,
+           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
+           "the replaced keyboard reports WRONG_TYPE");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
+           "the dropped request writes nothing into the field");
     osk_person_reset();
 }
 

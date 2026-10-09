@@ -42,7 +42,8 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
 void sr_osk_text_entry_abandon(void);
 
 /* The native input box (src/rt/osk_win.c): blocks the calling thread until the person
- * confirms (1, text in out) or cancels (0). Only the text-entry worker may call it. */
+ * confirms (1, text in out) or cancels (0). On Windows only the text-entry worker may call
+ * it; hosts without a native box answer cancelled at once, so they call it directly. */
 int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap);
 
 #endif /* SR_OSK_TEXT_ENTRY_H */

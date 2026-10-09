@@ -9406,7 +9406,14 @@ static int s_osk_request_open = 0;    /* a person's answer to that field is pend
  * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
  * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
 static int s_osk_current = 0;
-static int s_osk_current_clear(void) { s_osk_current = 0; return 0; }
+static void osk_abandon_request(void);  /* fwd: defined with the keyboard's field collection */
+/* Another utility dialog takes the slot: the keyboard is no longer polled, so a person's
+ * pending answer is dropped and its box closed rather than left open with no poller. */
+static int s_osk_current_clear(void) {
+    osk_abandon_request();
+    s_osk_current = 0;
+    return 0;
+}
 
 /* ---- Scripted answers, for automation. SR_OSK_SCRIPT=<file> supplies one answer per
  * field in order: the line's UTF-8 text, or the keyword CANCEL to answer that field as

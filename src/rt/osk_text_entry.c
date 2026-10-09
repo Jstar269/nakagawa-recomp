@@ -69,6 +69,7 @@ enum { ENTRY_IDLE = 0, ENTRY_OPEN = 1, ENTRY_ANSWERED = 2, ENTRY_ABANDONED = 3 }
 
 static volatile LONG s_state = ENTRY_IDLE;
 static PVOID volatile s_box;          /* the request's top-level window once it is created */
+static volatile LONG s_close_sent;    /* the request's box has been told to close */
 static HANDLE s_worker;               /* scheduler thread only */
 /* The request, written by the scheduler thread before the worker starts. */
 static wchar_t s_desc[OSK_TEXT_UNITS];
@@ -82,9 +83,12 @@ static LONG entry_state(void) {
     return InterlockedCompareExchange(&s_state, 0, 0);
 }
 
-/* Cancel the box as the person would; harmless for a box that is already closing. */
+/* Cancel the box as the person would, once per request. s_box keeps the box until the
+ * worker returns (so the creation hook never records a second window), and every path that
+ * closes it (abandon, the creation hook, an abandoned poll) races to send this once. */
 static void entry_close_box(PVOID box) {
-    if (box) PostMessageW((HWND)box, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+    if (box && InterlockedCompareExchange(&s_close_sent, 1, 0) == 0)
+        PostMessageW((HWND)box, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
 }
 
 /* Thread-local CBT hook on the worker: records the box as it is created, and closes it at
@@ -151,6 +155,7 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
     osk_text_copy(s_desc, desc, OSK_TEXT_UNITS);
     osk_text_copy(s_initial, initial, OSK_TEXT_UNITS);
     s_cap = cap;
+    InterlockedExchange(&s_close_sent, 0);
     InterlockedExchange(&s_state, ENTRY_OPEN);
     s_worker = CreateThread(NULL, 0, entry_worker, NULL, 0, NULL);
     if (!s_worker) {
