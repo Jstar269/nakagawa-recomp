@@ -1989,6 +1989,95 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
                 self.assertIn(f"BUILD_DIR '{value}' is {reason}", proc.stderr)
                 self.assertNotIn("rmtree", proc.stdout)
 
+    def _build_dir_refusal(self, goal: str, build_dir: str) -> subprocess.CompletedProcess:
+        """A dry run of ``goal`` whose BUILD_DIR names the whole build root.
+
+        NK_INFO_ONLY=1 keeps the parse from writing anything: no parse-time mkdir and no
+        profile stamp. The spellings of the checkout's build/ tree would otherwise be
+        written into while the probe runs, were the guard ever lost. The refusal itself
+        happens at parse time and needs none of those writes.
+        """
+        return _run_scratch_make(
+            self.make, "-n", goal, "NK_INFO_ONLY=1", f"BUILD_DIR={build_dir}",
+            build_root=self.build_root, log_dir=self.log_dir,
+        )
+
+    def test_clean_refuses_every_spelling_of_the_checkout_build_root(self) -> None:
+        """`clean` and `clean-all` refuse a BUILD_DIR that is the checkout's whole build/ tree.
+
+        The default build root is the checkout's build/, and a scratch BUILD_ROOT leaves
+        it in place, so `make clean BUILD_DIR=build` would delete every title's build
+        whatever BUILD_ROOT names. Each spelling is compared as a normalized path, and the
+        refusal names BUILD_DIR as the variable to change.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        spellings = [
+            "build", "build/", "./build", "build\\", ".\\build",
+            (ROOT / "build").as_posix(), (ROOT / "build").as_posix() + "/", str(ROOT / "build"),
+        ]
+        if os.name == "nt":
+            spellings.append((ROOT / "build").as_posix().upper())
+        for goal in ("clean", "clean-all"):
+            for value in spellings:
+                with self.subTest(goal=goal, build_dir=value):
+                    proc = self._build_dir_refusal(goal, value)
+                    self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn(f"BUILD_DIR '{value}' is the whole build root", proc.stderr)
+                    self.assertNotIn("rmtree", proc.stdout)
+
+    def test_clean_refuses_every_spelling_of_the_build_root_it_names(self) -> None:
+        """A BUILD_DIR equal to an overridden BUILD_ROOT is the whole root, so it is refused.
+
+        `make clean BUILD_DIR=$(BUILD_ROOT)` deletes the root and every title beneath it,
+        whichever way the caller spells the path.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        root = self.build_root.as_posix()
+        spellings = [root, root + "/", root + "/.", root + "/sub/..", str(self.build_root)]
+        if os.name == "nt":
+            spellings.append(root.upper())
+        for goal in ("clean", "clean-all"):
+            for value in spellings:
+                with self.subTest(goal=goal, build_dir=value):
+                    proc = self._build_dir_refusal(goal, value)
+                    self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn(f"BUILD_DIR '{value}' is the whole build root", proc.stderr)
+                    self.assertNotIn("rmtree", proc.stdout)
+
+    def test_clean_still_cleans_a_per_title_build_dir_beneath_the_root(self) -> None:
+        """A per-title BUILD_DIR beneath BUILD_ROOT is not the root and still cleans."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        title = self.build_root / "title"
+        self._plant(title / "title.o", "object")
+        sibling = self._plant(self.build_root / "other-title" / "keep.o")
+
+        proc = self._lifecycle_make("clean", f"BUILD_DIR={self.build_root.as_posix()}/./title/")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(title.exists(), "clean did not remove the per-title build directory")
+        self.assertTrue(sibling.is_file(), "clean removed another title's build tree")
+        self.assertTrue(self.build_root.is_dir(), "clean removed the build root itself")
+
+    def test_clean_still_cleans_a_scratch_build_root_and_its_own_title_dir(self) -> None:
+        """A scratch BUILD_ROOT is accepted as the root, and its default title directory cleans."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        other = self.scratch / "other-root"
+        title = other / "scratchgame"
+        self._plant(title / "title.o", "object")
+        sibling = self._plant(other / "other-title" / "keep.o")
+
+        proc = _run_scratch_make(
+            self.make, "clean", "GAME_NAME=scratchgame",
+            build_root=other, log_dir=self.log_dir,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(title.exists(), "clean did not remove the scratch root's title directory")
+        self.assertTrue(sibling.is_file(), "clean removed another title's build tree")
+        self.assertTrue(other.is_dir(), "clean removed the scratch build root itself")
+
     def test_build_dir_outside_the_checkout_is_accepted(self) -> None:
         """A BUILD_DIR outside the checkout passes the scope check and is the one named.
 

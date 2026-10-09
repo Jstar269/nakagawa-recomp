@@ -299,9 +299,24 @@ BUILD_DIR  ?= $(BUILD_ROOT)/$(GAME_NAME)
 # BUILD_ROOT checked above, so it needs no second interpreter. Like BUILD_ROOT, a
 # directory outside the checkout is the caller's explicit choice.
 ifneq ($(origin BUILD_DIR),file)
-_BUILD_DIR_SCOPE := $(strip $(shell "$(PYTHON)" -c "$(_CHECKOUT_SCOPE_PY)" "$(BUILD_DIR)"))
+_BUILD_DIR_SCOPE := $(strip $(shell "$(PYTHON)" -c "$(_CHECKOUT_SCOPE_PY)" "$(subst \,/,$(BUILD_DIR))"))
 ifneq ($(_BUILD_DIR_SCOPE),ok)
 $(error BUILD_DIR '$(BUILD_DIR)' is $(or $(_BUILD_DIR_SCOPE),uncheckable (the scope check printed nothing)); clean deletes it and every build writes its outputs into it, so it must be a directory beneath the checkout's build/ tree or a directory outside the checkout)
+endif
+endif
+# clean and clean-all delete $(BUILD_DIR) wholesale (clean-all runs clean first), so a
+# BUILD_DIR that is the whole build root would delete every title's build beneath it:
+# `make clean BUILD_DIR=build` did exactly that. The root is BUILD_ROOT, and also the
+# checkout's own build/ tree, which a scratch BUILD_ROOT leaves in place. The two paths
+# are compared normalized (the value reaches Python with / for \, and _BUILD_DIR_ROOT_PY
+# resolves it and folds case on Windows), so `build`, `build/`, `./build`, an absolute path
+# and backslash spellings are all refused. Parse-time, like the scope check above. A
+# per-title directory beneath the root still cleans, and clean-all still empties BUILD_ROOT.
+_BUILD_DIR_ROOT_PY := import os, sys; from pathlib import Path; norm = lambda p: os.path.normcase(str(Path(p).resolve())); repo = Path.cwd().resolve(); print('root' if norm(sys.argv[1]) in (norm(sys.argv[2]), norm(str(repo / 'build'))) else 'ok')
+ifneq ($(strip $(filter clean clean-all,$(MAKECMDGOALS))),)
+_BUILD_DIR_ROOT := $(strip $(shell "$(PYTHON)" -c "$(_BUILD_DIR_ROOT_PY)" "$(subst \,/,$(BUILD_DIR))" "$(subst \,/,$(BUILD_ROOT))"))
+ifneq ($(_BUILD_DIR_ROOT),ok)
+$(error BUILD_DIR '$(BUILD_DIR)' is $(if $(filter root,$(_BUILD_DIR_ROOT)),the whole build root (BUILD_ROOT '$(BUILD_ROOT)' or the checkout's build/ tree),uncheckable (the root check printed nothing)); clean deletes BUILD_DIR wholesale, which would remove every title's build beneath it. Set BUILD_DIR to one title's directory beneath the root (the default is BUILD_ROOT/<game>), or leave BUILD_DIR unset. To empty the whole BUILD_ROOT on purpose, run clean-all without BUILD_DIR)
 endif
 endif
 # Refuse a BUILD_DIR GNU Make cannot represent, before any target name is derived
