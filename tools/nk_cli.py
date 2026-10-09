@@ -2523,6 +2523,9 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (the runtime exited zero before PSP display framebuffer setup)"
     elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
         detail = " (runtime telemetry did not verify a PSP kernel import)"
+    elif report["failure_class"] == "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP":
+        detail = (" (the run budget ended while the guest was still running, before PSP display "
+                  "framebuffer setup; the runtime did not exit on its own)")
     elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
     elif report["failure_class"] == "DISC_FILES_STAGE_FAILED":
@@ -2794,6 +2797,19 @@ def _set_bringup_presentation(report: dict, output: str) -> bool:
         "backend": backend,
     }
     return evidence_ok
+
+
+# The runtime's own record of the SR_EXIT_AT_VBLANK run budget (src/rt/hle.c). The budget
+# exit is a clean process exit with status 0 in the middle of a live guest.
+_RUNTIME_RUN_BUDGET_END = re.compile(
+    r"^BOOT_EVENT phase=exit_at_vblank vblanks=\d+ \(SR_EXIT_AT_VBLANK=\d+\)\s*$",
+    re.MULTILINE,
+)
+
+
+def _runtime_run_budget_ended(launch_output: str | None) -> bool:
+    """True when the runtime stopped at its vblank run budget, not at a guest exit."""
+    return bool(_RUNTIME_RUN_BUDGET_END.search(launch_output or ""))
 
 
 def _flight_has_hle_import(path: Path | None) -> bool | None:
@@ -3486,12 +3502,21 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 launch_output, report["runtime_imports"]
             )
             report["process_exit_code"] = process.returncode
-            report["exit_classification"] = "EXITED_ZERO" if process.returncode == 0 else "EXITED_NONZERO"
+            budget_ended = _runtime_run_budget_ended(launch_output)
+            if process.returncode != 0:
+                report["exit_classification"] = "EXITED_NONZERO"
+            elif budget_ended:
+                report["exit_classification"] = "RUN_BUDGET_ENDED"
+            else:
+                report["exit_classification"] = "EXITED_ZERO"
             if process.returncode == 0:
                 hle_observed = _flight_has_hle_import(flight_output)
                 if hle_observed is False:
+                    # A run the budget ended is a live guest, not an exit: name the budget.
+                    failure = ("RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP" if budget_ended
+                               else "EXITED_ZERO_BEFORE_HLE")
                     fail_stage(
-                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [308],
+                        report, "launch", failure, [308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 elif hle_observed is None:
@@ -3504,6 +3529,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     if framebuffer_observed is False:
                         if _flight_has_module_self_unload(flight_output) is True:
                             failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 308]
+                        elif budget_ended:
+                            failure, issues = "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP", [308]
                         else:
                             failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [308]
                         fail_stage(report, "launch", failure, issues,

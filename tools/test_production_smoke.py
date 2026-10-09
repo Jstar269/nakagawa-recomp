@@ -1697,6 +1697,45 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
+    def test_run_budget_detection_needs_the_runtime_budget_event(self):
+        self.assertTrue(nk_cli._runtime_run_budget_ended(
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(
+            "note: BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(""))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(None))
+
+    def test_budget_ended_live_guest_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x446D8DE6}],
+            launch_output=(
+                "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"
+            ),
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertEqual(report["issue_numbers"], [308])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("run budget ended", summary)
+        self.assertNotIn("exited zero", summary.casefold())
+        nk_cli.validate_bringup_report(report)
+
+    def test_budget_ended_before_any_hle_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[],
+            launch_output="BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        nk_cli.validate_bringup_report(report)
+
     def test_zero_exit_with_dropped_flight_events_is_unverified(self):
         status, report = self._run_case(flight_events=[], flight_dropped=1)
 
