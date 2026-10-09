@@ -61,6 +61,7 @@ from psp_oracle.run_psplink import (
     _snapshot_host0_output,
     _wait_for_host0_output,
     _verify_psplink_shell,
+    HardwareLockError,
     PsplinkProcessTransport,
     TransportStartError,
     UnsafeHost0OutputError,
@@ -305,8 +306,13 @@ class SimulatedPsplinkTransport:
         transport_file_cases: set[str] | None = None,
         fail_snapshot_call: dict[str, int] | None = None,
         start_error: str | None = None,
+        lock_held_checks: int | None = None,
+        lock_refusal_status: str = "HARDWARE_LOCK_NOT_HELD",
     ):
         self.start_error = start_error
+        self.lock_held_checks = lock_held_checks
+        self.lock_refusal_status = lock_refusal_status
+        self.lock_checks = 0
         self.timeout_cases = timeout_cases or set()
         self.fail_modstun = fail_modstun
         self.fail_modstun_cases = fail_modstun_cases or set()
@@ -404,7 +410,13 @@ class SimulatedPsplinkTransport:
             f"UID: {self._probe_thread[0]} - Name: {self._probe_thread[1]}\n"
         )
 
+    def check_hardware_lock(self) -> None:
+        self.lock_checks += 1
+        if self.lock_held_checks is not None and self.lock_checks > self.lock_held_checks:
+            raise HardwareLockError(self.lock_refusal_status)
+
     def start(self) -> None:
+        self.check_hardware_lock()
         if self.start_error is not None:
             raise TransportStartError(self.start_error)
         self.started = True
@@ -835,6 +847,10 @@ class Orchestrator:
             self._escalate("L4", "recovery budget exhausted")
             self.terminal_reason = "PHYSICAL_INTERVENTION_REQUIRED"
             self.state = "SESSION_WEDGED"
+
+
+def _lock_held(_session_id):
+    return True, "HELD_AND_CONFIRMED"
 
 
 class HardwareRunnerProtocolTests(unittest.TestCase):
@@ -1988,6 +2004,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
             ["ldstart host0:/transport-write.prx", "ldstart host0:/model-profile.prx"],
         )
 
+    @patch.object(run_psplink_module, "_read_hardware_lock", _lock_held)
     def test_20_process_transport_uses_argv_templates_timeout_and_owned_server_lifecycle(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="runner-process-", dir=fixture_dir) as scratch_name:
@@ -2010,6 +2027,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 return 0, "ok", "", "PROCESS_EXITED"
 
             adapter = PsplinkProcessTransport(
+                session_id="synthetic-session",
                 pspsh_argv=["fake-pspsh", "-e", "{remote_command}"],
                 usbhostfs_argv=["fake-usbhostfs", "{host0_root}", "{host0_root_wsl}"],
                 host0_root=scratch,
@@ -2842,6 +2860,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
 
         self.assertEqual(_parse_usbipd_psplink_devices(output), [("9-7.2", "Shared")])
 
+    @patch.object(run_psplink_module, "_read_hardware_lock", _lock_held)
     def test_27_shared_psplink_device_is_attached_and_verified(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="usbipd-reattach-", dir=fixture_dir) as scratch_name:
@@ -2879,6 +2898,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 raise AssertionError(f"unexpected command: {command}")
 
             adapter = PsplinkProcessTransport(
+                session_id="synthetic-session",
                 pspsh_argv=["fake-pspsh", "-e", "{remote_command}"],
                 usbhostfs_argv=["fake-usbhostfs", "{host0_root}"],
                 host0_root=scratch,
@@ -2924,6 +2944,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 return 1, "attach failed", "", "PROCESS_EXITED"
 
             adapter = PsplinkProcessTransport(
+                session_id="synthetic-session",
                 pspsh_argv=["fake-pspsh"],
                 usbhostfs_argv=["fake-usbhostfs"],
                 host0_root=Path(scratch_name),
@@ -2951,6 +2972,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 return 0, "1-1 1234:5678 Other USB device Shared\n", "", "PROCESS_EXITED"
 
             adapter = PsplinkProcessTransport(
+                session_id="synthetic-session",
                 pspsh_argv=["fake-pspsh"],
                 usbhostfs_argv=["fake-usbhostfs"],
                 host0_root=Path(scratch_name),
@@ -2974,6 +2996,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 return 0, "4-2 054c:01c9 PSP Type B Not shared\n", "", "PROCESS_EXITED"
 
             adapter = PsplinkProcessTransport(
+                session_id="synthetic-session",
                 pspsh_argv=["fake-pspsh"],
                 usbhostfs_argv=["fake-usbhostfs"],
                 host0_root=Path(scratch_name),
@@ -3124,11 +3147,13 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertNotIn("modstun 0x04280001", commands[second_launch + 1:])
 
 
+@patch.object(run_psplink_module, "_read_hardware_lock", _lock_held)
 class TransportStartReadinessTests(unittest.TestCase):
     """PSPLink start-up waits for a positive USB link signal (no fixed sleeps)."""
 
     def _adapter(self, scratch: Path, process, command_runner, *, start_timeout=5.0):
         return PsplinkProcessTransport(
+            session_id="synthetic-session",
             pspsh_argv=["fake-pspsh", "-e", "{remote_command}"],
             usbhostfs_argv=["fake-usbhostfs", "{host0_root}"],
             host0_root=scratch,
@@ -3674,6 +3699,218 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
         self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
         self.assertEqual(checkpoint["next_case_index"], 0)
         self.assertFalse(checkpoint["host0_qualified"])
+
+
+
+class HardwareLockGateTests(unittest.TestCase):
+    """Every PSP-touching mode passes the one hardware-lock gate, re-read each time."""
+
+    def test_gate_requires_a_valid_session_and_a_held_lock(self):
+        for session in (None, "", "bad session", "x" * 65, 7):
+            with self.assertRaises(HardwareLockError) as raised:
+                run_psplink_module.require_hardware_lock(session)
+            self.assertEqual(raised.exception.status, "HARDWARE_LOCK_SESSION_REQUIRED")
+        with patch.object(run_psplink_module, "_read_hardware_lock",
+                          return_value=(False, "HARDWARE_LOCK_SESSION_MISMATCH")):
+            with self.assertRaises(HardwareLockError) as raised:
+                run_psplink_module.require_hardware_lock("synthetic-session")
+        self.assertEqual(raised.exception.status, "HARDWARE_LOCK_SESSION_MISMATCH")
+        with patch.object(run_psplink_module, "_read_hardware_lock", _lock_held):
+            run_psplink_module.require_hardware_lock("synthetic-session")
+
+    def test_lock_file_contract(self):
+        with tempfile.TemporaryDirectory() as scratch_name:
+            lock_path = Path(scratch_name) / "HARDWARE_LOCK.json"
+            cases = (
+                (None, "HARDWARE_LOCK_UNAVAILABLE:FileNotFoundError"),
+                ({"state": "FREE"}, "HARDWARE_LOCK_NOT_HELD"),
+                ({"state": "HELD", "holder_session": "s"}, "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED"),
+                ({"state": "HELD", "power_cycle_confirmed": True, "holder_session": "other"},
+                 "HARDWARE_LOCK_SESSION_MISMATCH"),
+                ({"state": "HELD", "power_cycle_confirmed": True, "holder_session": "s"},
+                 "HELD_AND_CONFIRMED"),
+            )
+            with patch.object(run_psplink_module, "HARDWARE_LOCK_PATH", lock_path):
+                for content, expected in cases:
+                    if content is None:
+                        lock_path.unlink(missing_ok=True)
+                    else:
+                        lock_path.write_text(json.dumps(content), encoding="utf-8")
+                    held, status = run_psplink_module._read_hardware_lock("s")
+                    self.assertEqual(status, expected)
+                    self.assertEqual(held, expected == "HELD_AND_CONFIRMED")
+
+    def test_process_transport_checks_the_lock_before_spawning_usbhostfs(self):
+        spawned = []
+        with tempfile.TemporaryDirectory() as scratch_name, \
+                patch.object(run_psplink_module, "_read_hardware_lock",
+                             return_value=(False, "HARDWARE_LOCK_NOT_HELD")):
+            adapter = PsplinkProcessTransport(
+                session_id="synthetic-session",
+                pspsh_argv=["fake-pspsh"],
+                usbhostfs_argv=["fake-usbhostfs"],
+                host0_root=Path(scratch_name),
+                command_runner=lambda command, timeout: self.fail(f"ran {command}"),
+                popen_factory=lambda *args, **kwargs: spawned.append(args),
+            )
+            with self.assertRaises(HardwareLockError) as raised:
+                adapter.start()
+        self.assertEqual(raised.exception.status, "HARDWARE_LOCK_NOT_HELD")
+        self.assertEqual(spawned, [])
+
+    def _transport_write(self, scratch: Path) -> CampaignCase:
+        binary = scratch / "transport-write.prx"
+        binary.write_bytes(b"synthetic PRX")
+        return CampaignCase("transport-write", binary, 1.0)
+
+    def test_runner_refuses_at_start_without_any_psplink_command(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="lock-start-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            transport = SimulatedPsplinkTransport(lock_held_checks=0)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport, console_model="PSP-3000-04g", source_commit=SOURCE_COMMIT,
+            ).run([self._transport_write(scratch)])
+
+        self.assertEqual(report["terminal_reason"], "HARDWARE_LOCK_REFUSED")
+        self.assertEqual(report["hardware_lock_status"], "HARDWARE_LOCK_NOT_HELD")
+        self.assertEqual(transport.commands, [])
+        self.assertFalse(transport.started)
+        self.assertTrue(transport.stopped)
+
+    def test_runner_rechecks_the_lock_before_each_reset_and_launch(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for held_checks, expected_launches, expected_resets in (
+            # start, case-1 entry, case-1 launch pass; case-2 entry refuses before its reset
+            (3, ["transport-write"], 0),
+            # ... case-2 entry passes; L2 reset gate refuses before `reset`
+            (4, ["transport-write"], 0),
+            # ... reset passes; the pre-launch check refuses before `ldstart`
+            (5, ["transport-write"], 1),
+        ):
+            with self.subTest(held_checks=held_checks), tempfile.TemporaryDirectory(
+                prefix="lock-recheck-", dir=fixture_dir
+            ) as scratch_name:
+                scratch = Path(scratch_name)
+                cases = [self._transport_write(scratch)]
+                binary = scratch / "model-profile.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase("model-profile", binary, 1.0))
+                transport = SimulatedPsplinkTransport(
+                    transport_file_cases={"transport-write"}, lock_held_checks=held_checks,
+                )
+                transport.host0_root = scratch
+                report = PsplinkCampaignRunner(
+                    transport, console_model="PSP-3000-04g", source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run(cases, reset_between_cases=True, stop_on_incomplete=True)
+                commands = [command for command, _timeout in transport.commands]
+                launches = [
+                    Path(command).name.removesuffix(".prx")
+                    for command in commands if command.startswith("ldstart ")
+                ]
+                self.assertEqual(report["terminal_reason"], "HARDWARE_LOCK_REFUSED")
+                self.assertIsNone(report["intervention_case_id"])
+                self.assertEqual(launches, expected_launches)
+                self.assertEqual(commands.count("reset"), expected_resets)
+                self.assertEqual(len(report["envelopes"]), 1)
+
+    def test_campaign_plan_refuses_without_writing_a_checkpoint(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="lock-plan-", dir=fixture_dir) as scratch_name:
+            plan_path = CampaignPlanCheckpointTests()._plan(Path(scratch_name))
+            factory_calls = []
+            with patch.object(run_psplink_module, "_read_hardware_lock",
+                              return_value=(False, "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED")):
+                code, report = run_campaign_plan(
+                    plan_path, dry_run=False, confirm_power_cycle=False,
+                    pspsh_argv=["pspsh"], usbhostfs_argv=["usbhostfs_pc"],
+                    transport_factory=lambda **kwargs: factory_calls.append(kwargs),
+                )
+            checkpoint_written = (plan_path.parent / "checkpoint.json").exists()
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["reason"], "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED")
+        self.assertEqual(factory_calls, [])
+        self.assertFalse(checkpoint_written)
+
+    def test_campaign_plan_revoked_lock_stops_before_the_next_case_without_power_cycle(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="lock-plan-revoke-", dir=fixture_dir) as scratch_name:
+            helper = CampaignPlanCheckpointTests()
+            plan_path = helper._plan(Path(scratch_name))
+            transport = SimulatedPsplinkTransport(
+                transport_file_cases={"transport-write"}, lock_held_checks=3,
+            )
+            code, report = helper._run(plan_path, confirm=False, transport=transport)
+            checkpoint = helper._checkpoint(plan_path)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "HARDWARE_LOCK_REFUSED")
+        self.assertEqual(checkpoint["state"], "IN_PROGRESS")
+        self.assertEqual(checkpoint["next_case_index"], 1)
+        self.assertEqual(checkpoint["completed_cases"], ["transport-write"])
+
+    def test_campaign_plan_rejects_a_separate_session_flag(self):
+        with self.assertRaises(SystemExit):
+            run_psplink_module.main([
+                "--campaign-plan", "plan.json", "--session-id", "synthetic-session",
+            ])
+
+    def _campaign_case_argv(self, scratch: Path, *extra: str) -> list[str]:
+        binary = scratch / "transport-write.prx"
+        binary.write_bytes(b"synthetic PRX")
+        return [
+            "--campaign-case", f"transport-write={binary}",
+            "--host0-root", str(scratch),
+            "--model", "PSP-3000",
+            "--source-commit", SOURCE_COMMIT,
+            "--usbhostfs-argv-json", json.dumps(["nakagawa-missing-usbhostfs-binary"]),
+            "--out", str(scratch / "report.json"),
+            *extra,
+        ]
+
+    def test_campaign_case_mode_requires_a_session_id(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="lock-case-", dir=fixture_dir) as scratch_name:
+            with self.assertRaises(SystemExit) as raised:
+                run_psplink_module.main(self._campaign_case_argv(Path(scratch_name)))
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_campaign_case_mode_refuses_before_spawning_the_transport(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="lock-case-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            argv = self._campaign_case_argv(scratch, "--session-id", "synthetic-session")
+            with patch.object(run_psplink_module, "_read_hardware_lock",
+                              return_value=(False, "HARDWARE_LOCK_SESSION_MISMATCH")):
+                code = run_psplink_module.main(argv)
+            report = json.loads((scratch / "report.json").read_text(encoding="utf-8"))
+
+        # A missing usbhostfs binary would have ended TRANSPORT_START_FAILED; the lock
+        # refusal proves the gate ran first.
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "HARDWARE_LOCK_REFUSED")
+        self.assertEqual(report["hardware_lock_status"], "HARDWARE_LOCK_SESSION_MISMATCH")
+        self.assertEqual(report["envelopes"], [])
+
+    def test_command_mode_requires_a_session_and_a_held_lock(self):
+        with tempfile.TemporaryDirectory() as scratch_name:
+            out = Path(scratch_name) / "capture-report.json"
+            command = ["--command", "pspsh -e ver", "--out", str(out)]
+            with patch.object(run_psplink_module, "_run_command") as run_command:
+                with self.assertRaises(SystemExit):
+                    run_psplink_module.main(command)
+                with patch.object(run_psplink_module, "_read_hardware_lock",
+                                  return_value=(False, "HARDWARE_LOCK_NOT_HELD")):
+                    code = run_psplink_module.main(command + ["--session-id", "synthetic-session"])
+                run_command.assert_not_called()
+            report = json.loads(out.read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["status"], "REFUSED")
+        self.assertEqual(report["reason"], "HARDWARE_LOCK_NOT_HELD")
 
 
 class Host0RemotePathTests(unittest.TestCase):

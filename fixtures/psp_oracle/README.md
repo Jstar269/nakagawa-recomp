@@ -207,7 +207,8 @@ python tools/psp_oracle/run_psplink.py `
   --host0-root fixtures/psp_oracle/build/w6-size-bfff `
   --campaign-case transport-write=fixtures/psp_oracle/build/w6-size-bfff/transport_write.prx `
   --campaign-case dmac-size-matrix-size-0x0000bfff=fixtures/psp_oracle/build/w6-size-bfff/dmac_size_matrix_cell.prx `
-  --source-commit <exact-clean-commit> --model <operator-recorded-model> --firmware <operator-recorded-firmware>
+  --source-commit <exact-clean-commit> --model <operator-recorded-model> --firmware <operator-recorded-firmware> `
+  --session-id <hardware-lock-holder-session>
 ```
 
 The runner reads `dmac_size_matrix_cell_log.txt` from the host0 scratch root
@@ -490,7 +491,13 @@ python tools/psp_oracle/run_psplink.py --campaign-plan <private-campaign-plan.js
 ```
 
 The actual campaign refuses to start unless the hardware lock is `HELD`,
-confirms a power cycle, and names the same session as the private plan.
+confirms a power cycle, and names the same session as the private plan. Every
+mode that touches the PSP goes through the same lock gate. `--campaign-case` and
+`--command` require `--session-id`, which names the lock holder. The gate is
+checked before the USBHostFS transport starts, and it is read again before each
+case's soft reset, before each launch, and before every PSPLink `reset`. A
+refusal stops with `HARDWARE_LOCK_REFUSED` before the next PSP action. In plan
+mode it keeps the checkpoint at the unlaunched case.
 After an interrupted case, the maintainer power-cycles the PSP and resumes with
 `--confirm-power-cycle`; the failed case is retained as incomplete and the next
 case starts on the new boot. No automatic retry or semantic result is inferred

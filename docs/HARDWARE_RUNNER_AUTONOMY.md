@@ -258,7 +258,9 @@ physical power intervention. The system says so plainly instead of looping.
    existing `run_psplink.py` path; the resident framed protocol is still absent.
    Campaigns use repeated `--campaign-case CASE_ID=PRX_PATH` arguments, put
    `transport-write` first, and set one bounded `--timeout` shared by each case.
-   An optional `--out` must be inside the host0 scratch directory.
+   An optional `--out` must be inside the host0 scratch directory. Like
+   `--command`, this mode requires `--session-id` and passes the hardware-lock
+   gate before the transport starts and again before every reset and launch.
 3. REQ_002 prerequisite: an import/startup fixture that resolves ThreadManForUser
    mutex NIDs, starts clean, emits one marker, asserts nothing — validated on
    host/toolchain first so PSP sessions debug semantics, not linker plumbing.

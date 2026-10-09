@@ -1325,11 +1325,15 @@ class PspOracleRunnerTests(unittest.TestCase):
                     "",
                     "PROCESS_EXITED",
                 ),
+            ), patch(
+                "psp_oracle.run_psplink._read_hardware_lock",
+                return_value=(True, "HELD_AND_CONFIRMED"),
             ):
                 self.assertEqual(
                     run_psplink_main(
                         [
                             "--command", "fake-pspsh",
+                            "--session-id", "synthetic-session",
                             "--results-directory", str(results),
                             "--out", str(report),
                         ]

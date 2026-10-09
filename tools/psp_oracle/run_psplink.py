@@ -1005,6 +1005,7 @@ class PsplinkProcessTransport:
         pspsh_argv: list[str],
         usbhostfs_argv: list[str],
         host0_root: Path,
+        session_id: str,
         usbipd_argv: list[str] | None = None,
         command_runner: Callable[[list[str], float], tuple[int | None, str, str, str]] = _run_command,
         popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
@@ -1012,6 +1013,7 @@ class PsplinkProcessTransport:
     ) -> None:
         if not math.isfinite(start_timeout) or start_timeout <= 0:
             raise ValueError("transport start timeout must be finite and positive")
+        self.session_id = session_id
         self.pspsh_argv = list(pspsh_argv)
         self.usbhostfs_argv = list(usbhostfs_argv)
         self.usbipd_argv = list(usbipd_argv or ["usbipd"])
@@ -1051,9 +1053,15 @@ class PsplinkProcessTransport:
             self._unknown_command_events = 0
             return self._server_generation
 
+    def check_hardware_lock(self) -> None:
+        """Raise HardwareLockError unless this session holds the hardware lock."""
+
+        require_hardware_lock(self.session_id)
+
     def start(self) -> None:
         """Start USBHostFS and return only once the PSPLink USB link is up."""
 
+        self.check_hardware_lock()
         if not self.host0_root.is_dir():
             raise FileNotFoundError("host0 root must be an existing directory")
         deadline = time.monotonic() + self.start_timeout
@@ -1379,6 +1387,7 @@ class PsplinkCampaignRunner:
         self.intervention_case_id: str | None = None
         self.resume_case_index: int | None = None
         self.transport_start_problem: str | None = None
+        self.hardware_lock_status: str | None = None
         self._l0_cleanup_attempted = False
         self._l1_attempted = False
         self._l1_active = False
@@ -1656,6 +1665,21 @@ class PsplinkCampaignRunner:
         self.state = "SESSION_WEDGED"
         self.terminal_reason = "PHYSICAL_INTERVENTION_REQUIRED"
 
+    def _hardware_lock_held(self, stage: str) -> bool:
+        """Re-read the hardware lock; stop before touching the PSP when it is not held."""
+
+        try:
+            self.transport.check_hardware_lock()
+        except HardwareLockError as exc:
+            self.recovery_events.append(
+                f"HARDWARE_LOCK: {stage}: {exc.status}; stopped before touching the PSP"
+            )
+            self.hardware_lock_status = exc.status
+            self.state = "STOPPED"
+            self.terminal_reason = "HARDWARE_LOCK_REFUSED"
+            return False
+        return True
+
     def _transport_start_failed(self, detail: str) -> None:
         """Stop before any launch: the PSP ran nothing, so no power cycle is needed."""
 
@@ -1687,6 +1711,8 @@ class PsplinkCampaignRunner:
                     "L2: reset not attempted because PSPLink shell qualification failed"
                 )
                 self._physical_intervention("PSPLink did not qualify before L2 reset")
+            return False
+        if not self._hardware_lock_held("before PSPLink reset"):
             return False
         self._l2_reset_attempted = True
         self.recovery_events.append(f"L2: {detail}")
@@ -2078,6 +2104,16 @@ class PsplinkCampaignRunner:
             return self._report()
         try:
             self.transport.start()
+        except HardwareLockError as exc:
+            self.transport.stop()
+            self.recovery_events.append(
+                f"HARDWARE_LOCK: before transport start: {exc.status}; "
+                "stopped before touching the PSP"
+            )
+            self.hardware_lock_status = exc.status
+            self.state = "STOPPED"
+            self.terminal_reason = "HARDWARE_LOCK_REFUSED"
+            return self._report()
         except (OSError, RuntimeError) as exc:
             self.transport.stop()
             self._transport_start_failed(
@@ -2099,6 +2135,8 @@ class PsplinkCampaignRunner:
                 return self._report()
             for local_index, case in enumerate(cases):
                 case_index = case_index_offset + local_index
+                if not self._hardware_lock_held(f"before case {case.case_id}"):
+                    break
                 if reset_between_cases and local_index > 0:
                     if on_case_start is not None:
                         try:
@@ -2112,8 +2150,9 @@ class PsplinkCampaignRunner:
                     if not self._reset_once(
                         f"campaign soft reset before {case.case_id}"
                     ):
-                        self.intervention_case_id = cases[local_index - 1].case_id
-                        self.resume_case_index = case_index
+                        if self.terminal_reason == "PHYSICAL_INTERVENTION_REQUIRED":
+                            self.intervention_case_id = cases[local_index - 1].case_id
+                            self.resume_case_index = case_index
                         break
                 case_host0_log = (
                     _campaign_host0_log_path(host0_path, case.case_id)
@@ -2202,6 +2241,8 @@ class PsplinkCampaignRunner:
                             },
                         )
                     )
+                    break
+                if not self._hardware_lock_held(f"before launching {case.case_id}"):
                     break
                 run_started_ns = time.time_ns()
                 if on_case_start is not None:
@@ -2441,6 +2482,7 @@ class PsplinkCampaignRunner:
             "intervention_case_id": self.intervention_case_id,
             "resume_case_index": self.resume_case_index,
             "transport_start_problem": self.transport_start_problem,
+            "hardware_lock_status": self.hardware_lock_status,
             "firmware": self.firmware,
             "recovery_events": list(self.recovery_events),
             "envelopes": list(self.envelopes),
@@ -2576,6 +2618,33 @@ def _read_hardware_lock(session_id: str) -> tuple[bool, str]:
     if lock.get("holder_session") != session_id:
         return False, "HARDWARE_LOCK_SESSION_MISMATCH"
     return True, "HELD_AND_CONFIRMED"
+
+
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+class HardwareLockError(RuntimeError):
+    """The maintainer's hardware lock does not authorise this session to touch the PSP."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
+def require_hardware_lock(session_id: object) -> None:
+    """The one gate every PSP-touching path passes, re-read from disk on each call.
+
+    Callers: transport start (and so every L1 restart), each case before its
+    soft reset and again before its launch, every PSPLink ``reset``, a raw
+    ``--command`` capture, and the campaign plan before it writes a checkpoint.
+    The lock must be HELD with a confirmed power cycle by exactly this session.
+    """
+
+    if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
+        raise HardwareLockError("HARDWARE_LOCK_SESSION_REQUIRED")
+    held, status = _read_hardware_lock(session_id)
+    if not held:
+        raise HardwareLockError(status)
 
 
 def _checkpoint_waiting(
@@ -2816,9 +2885,10 @@ def run_campaign_plan(
             **summary,
         }
 
-    held, lock_status = _read_hardware_lock(str(plan["session_id"]))
-    if not held:
-        return 2, {"status": "REFUSED", "reason": lock_status, **summary}
+    try:
+        require_hardware_lock(plan["session_id"])
+    except HardwareLockError as exc:
+        return 2, {"status": "REFUSED", "reason": exc.status, **summary}
 
     checkpoint_path = paths["checkpoint_path"]
     checkpoint: dict[str, object] | None = None
@@ -2870,6 +2940,7 @@ def run_campaign_plan(
         pspsh_argv=pspsh_argv,
         usbhostfs_argv=usbhostfs_argv,
         host0_root=paths["host0_root"],
+        session_id=str(plan["session_id"]),
     )
     runner = PsplinkCampaignRunner(
         transport,
@@ -3413,6 +3484,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--host0-root", type=Path, help="scratch directory shared by usbhostfs_pc")
     parser.add_argument(
+        "--session-id",
+        help=(
+            "hardware lock holder session; required by --campaign-case and --command, "
+            "which touch the PSP (a campaign plan names its own session_id)"
+        ),
+    )
+    parser.add_argument(
         "--pspsh-argv-json",
         default='["pspsh", "-e", "{remote_command}"]',
         help="JSON argv template for pspsh; {remote_command} receives one shell command",
@@ -3492,7 +3570,7 @@ def main(argv: list[str] | None = None) -> int:
             args.nakagawa_output, args.host0_output, args.validate_dmac_size_matrix,
             args.binary, args.source_commit, args.model, args.model_code is not None,
             args.firmware, args.campaign_case, args.host0_root, args.out,
-            args.annotate_report, args.observed_terminal_outcome,
+            args.annotate_report, args.observed_terminal_outcome, args.session_id,
         )):
             parser.error("campaign-plan mode cannot be combined with single-run or manual campaign options")
         if args.confirm_power_cycle and args.dry_run:
@@ -3530,6 +3608,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("campaign mode cannot be combined with single-capture or annotation options")
         if not args.host0_root or not args.model or not args.source_commit:
             parser.error("campaign mode requires --host0-root, operator-declared --model, and --source-commit")
+        if not args.session_id or not _SESSION_ID_RE.fullmatch(args.session_id):
+            parser.error("campaign mode touches the PSP and requires --session-id naming the hardware lock holder")
         if not _FULL_COMMIT_RE.fullmatch(args.source_commit):
             parser.error("--source-commit must be a full 40- or 64-digit object id")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,48}", args.model):
@@ -3588,6 +3668,7 @@ def main(argv: list[str] | None = None) -> int:
             pspsh_argv=pspsh_argv,
             usbhostfs_argv=usbhostfs_argv,
             host0_root=host0_root,
+            session_id=args.session_id,
         )
         runner = PsplinkCampaignRunner(
             transport,
@@ -3672,6 +3753,20 @@ def main(argv: list[str] | None = None) -> int:
     command = _split_command(args.command)
     if not command:
         parser.error("--command must contain an executable")
+    if not args.session_id or not _SESSION_ID_RE.fullmatch(args.session_id):
+        parser.error("--command touches the PSP and requires --session-id naming the hardware lock holder")
+    try:
+        require_hardware_lock(args.session_id)
+    except HardwareLockError as exc:
+        refusal = dump_json({
+            "schema": 1, "mode": "capture", "status": "REFUSED", "reason": exc.status,
+        })
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(refusal, encoding="utf-8")
+        else:
+            sys.stdout.write(refusal)
+        return 2
     capture_started_ns = time.time_ns()
     returncode, stdout, stderr, process_status = _run_command(command, args.timeout)
     args.results_directory.mkdir(parents=True, exist_ok=True)
