@@ -34,11 +34,17 @@ retail title and from fixtures/production_smoke:
     ladder-title2 T2  production-path callback/thread/event/file/interpreter
                       fixture with a nine-word result block and a separate
                       unsupported-NID fatal negative control.
+    ladder-overlay    guest-placed modules (#704): three source-owned 9 MiB
+                      overlays, translated without a load address, that never
+                      fit together are loaded, started, stopped and unloaded
+                      in sequence through ModuleMgrForUser, each wherever the
+                      user-partition allocator puts it.
 
 Every workload differs from every other tracked workload in base address,
 entry placement, segment/BSS layout, import identity, or data placement.  None
-requires a title manifest, SR_DATAROOT, an exact hook, or any compatibility
-override.
+requires SR_DATAROOT, an exact hook, or any compatibility override, and only
+ladder-overlay carries a title manifest -- its own generated title.json, which
+declares its overlays runtime-placed.
 """
 
 from __future__ import annotations
@@ -1547,7 +1553,6 @@ OVERLAY_GP_OFF = 0x7FF0
 OVERLAY_LIBRARY = "LadderOverlay"
 OVERLAY_IMPORT_LIBRARY = "UtilsForUser"
 OVERLAY_IMPORT_NID = 0x79D1C3FA      # sceKernelDcacheWritebackAll
-OVERLAY_START_STATUS = 0x5100
 
 
 class OverlaySpec:
@@ -1566,14 +1571,11 @@ class OverlaySpec:
         x = (2 * self.seed) & 0xFFFFFFFF
         return (((x << 3) + 0x111 * self.ident) & 0xFFFFFFFF) ^ x
 
-    def start_status(self) -> int:
-        return OVERLAY_START_STATUS + self.ident
-
     def start_result(self) -> int:
         mix = self.mix()
         return (mix + mix + 0x77) & 0xFFFFFFFF
 
-    def stop_status(self) -> int:
+    def stop_value(self) -> int:
         return (self.mix() ^ (self.ident << 24)) & 0xFFFFFFFF
 
     def query(self, argument: int) -> int:
@@ -1625,7 +1627,7 @@ def build_overlay_asm(spec: OverlaySpec) -> Asm:
     _overlay_hi_lo(a, 0x09, 14, OVERLAY_TAIL_OFF)                    # t6 = &tail
     a.i(0x09, 0, 15, spec.ident)           # t7 = ident
     a.i(0x2B, 14, 15, 0)                   # sw t7, 0(t6)
-    a.i(0x09, 0, 2, spec.start_status())   # v0 = start status
+    a.i(0x09, 0, 2, 0)                     # v0 = 0: stay resident
     a.i(0x23, 29, 17, 20)
     a.i(0x23, 29, 16, 24)
     a.i(0x23, 29, 31, 28)
@@ -1638,8 +1640,12 @@ def build_overlay_asm(spec: OverlaySpec) -> Asm:
     _overlay_hi_lo(a, 0x23, 14, OVERLAY_TAIL_OFF, dest=15)           # t7 = tail
     a.rr(0, 15, 15, 24, 0x00)              # sll t7, t7, 24
     a.rr(2, 15, 2, 0, 0x26)                # xor v0, v0, t7
-    a.rr(31, 0, 0, 0, 0x08)
+    a.beq(5, 0, "stop_return")             # no argument block: nothing to report
     a.nop()
+    a.i(0x2B, 5, 2, 0)                     # sw v0, 0(a1)
+    a.label("stop_return")
+    a.rr(31, 0, 0, 0, 0x08)                # jr ra
+    a.rr(0, 0, 2, 0, 0x21)                 # (delay) v0 = 0: stopped
     a.pad_to(OVERLAY_QUERY_OFF)
     a.label("query")
     _overlay_hi_lo(a, 0x23, 11, OVERLAY_SLOT_OFF, dest=8)            # t0 = slot
@@ -1774,6 +1780,255 @@ def build_overlay_prx(spec: OverlaySpec) -> bytes:
     packed = b"".join(sections)
     blob[section_table_offset:section_table_offset + len(packed)] = packed
     return bytes(blob)
+
+
+# The ladder-overlay main guest. It loads, starts, queries, stops and unloads the
+# three overlays through the real ModuleMgrForUser imports, in an order whose
+# placements are forced by the guest allocator alone:
+#
+#   A loads; B loads beside it; C cannot fit while both are resident (three 9 MiB
+#   images exceed the user partition), so its load must fail; A unloads and C loads
+#   into the range A released; B and C unload; a 0x8100-byte partition block is
+#   taken first, so A reloads 0x8100 bytes above its first base -- a base whose low
+#   half differs, which every relocated LO16/HI16 pair must follow.
+#
+# Every step stores what the guest observed into a result word -- sixteen, the
+# driver's --expect-u32 capacity. Each start/stop cycle records three: the value
+# module_start left in its argument block, the named export's answer, and the value
+# module_stop reported through its own. Both statuses of every cycle are read from a
+# word preset to a sentinel and OR-ed together; the final word is the completion
+# marker XOR that accumulator, so it reads OVERLAY_COMPLETE only when every start
+# and stop reported status 0.
+OVERLAY_MAIN_BASE = 0x08804000
+OVERLAY_MAIN_ENTRY_OFF = 0x10
+OVERLAY_PATHS_OFF = 0x400            # three 0x30-byte path strings
+OVERLAY_PAD_NAME_OFF = 0x490
+OVERLAY_ARG_A1_OFF = 0x500           # each argument block is two words
+OVERLAY_ARG_B_OFF = 0x508
+OVERLAY_ARG_C_OFF = 0x510
+OVERLAY_ARG_A2_OFF = 0x518
+OVERLAY_STATUS_OFF = 0x540
+OVERLAY_STOP_ARG_OFF = 0x560
+OVERLAY_RESULTS_OFF = 0x600
+OVERLAY_RESULT_COUNT = 16
+OVERLAY_STATUS_SENTINEL = 0xFFFFFFFF
+OVERLAY_MAIN_DATA_SIZE = 0x700
+OVERLAY_PAD_SIZE = 0x8100
+OVERLAY_COMPLETE = 0x0E4E0D0E
+OVERLAY_FAIL = 0xBAD00000
+SCE_KERNEL_ERROR_NO_MEMORY = 0x80020190
+LIB_MODULEMGR = "ModuleMgrForUser"
+LIB_SYSMEM = "SysMemUserForUser"
+NID_LOAD_MODULE = 0x977DE386
+NID_START_MODULE = 0x50F0C1EC
+NID_STOP_MODULE = 0xD1FF982A
+NID_UNLOAD_MODULE = 0x2E0911AA
+NID_ALLOC_PARTITION_MEMORY = 0x237DBD4F
+NID_FREE_PARTITION_MEMORY = 0xB6D61D02
+(STUB_LOAD, STUB_START, STUB_STOP, STUB_UNLOAD, STUB_ALLOC, STUB_FREE,
+ STUB_QUERY_A, STUB_QUERY_B, STUB_QUERY_C) = range(9)
+
+
+def overlay_path_offset(spec: OverlaySpec) -> int:
+    return OVERLAY_PATHS_OFF + 0x30 * (spec.ident - 1)
+
+
+def overlay_main_strings() -> dict[int, bytes]:
+    strings = {overlay_path_offset(spec): spec.guest_path.encode("ascii") + b"\0"
+               for spec in OVERLAYS}
+    strings[OVERLAY_PAD_NAME_OFF] = b"ladder_overlay_pad\0"
+    for raw in strings.values():
+        if len(raw) > 0x30:
+            raise RuntimeError("overlay path does not fit its slot")
+    return strings
+
+
+def overlay_cycle_results(spec: OverlaySpec, argument: int) -> tuple[int, ...]:
+    """The three words one start/query/stop cycle of `spec` records."""
+    return (spec.start_result(), spec.query(argument), spec.stop_value())
+
+
+def overlay_result_expectations(plan: Plan) -> tuple[tuple[int, int], ...]:
+    a, b, c = OVERLAYS
+    values = (
+        *overlay_cycle_results(a, 0x1000),
+        *overlay_cycle_results(b, 0x2000),
+        SCE_KERNEL_ERROR_NO_MEMORY,          # C cannot fit beside A and B
+        *overlay_cycle_results(c, 0x3000),
+        1,                                   # C reused the range A released
+        OVERLAY_PAD_SIZE,                    # A reloaded exactly one pad block higher
+        *overlay_cycle_results(a, 0x1000),
+        OVERLAY_COMPLETE,                    # XOR the OR of all eight statuses (0)
+    )
+    assert len(values) == OVERLAY_RESULT_COUNT
+    results = plan.base + plan.data_seg_vaddr + OVERLAY_RESULTS_OFF
+    return tuple((results + 4 * index, value & 0xFFFFFFFF) for index, value in enumerate(values))
+
+
+def build_overlay_main(plan: Plan) -> Asm:
+    a = Asm()
+    results = 20                             # s4: &results, callee-saved across imports
+    statuses = 21                            # s5: OR of every start/stop status word
+    saved = (16, 17, 18, 19, 20, 21)
+
+    def ref(reg: int, off: int) -> None:
+        plan.addr_ref(a, reg, off)
+
+    def call(stub: int) -> None:
+        a.call_literal(plan.stub_address(stub))
+
+    def store_result(index: int, reg: int) -> None:
+        a.i(0x2B, results, reg, 4 * index)
+
+    def load_word(reg: int, off: int) -> None:
+        ref(reg, off)
+        a.i(0x23, reg, reg, 0)
+
+    def load_module(spec: OverlaySpec, uid_reg: int, failure: str) -> None:
+        ref(4, overlay_path_offset(spec))
+        a.i(0x09, 0, 5, 0)
+        a.i(0x09, 0, 6, 0)
+        call(STUB_LOAD)
+        a.rr(2, 0, uid_reg, 0, 0x25)         # uid_reg = v0
+        a.bltz(uid_reg, failure)
+        a.nop()
+
+    def preset_status() -> None:
+        ref(9, OVERLAY_STATUS_OFF)
+        a.li(10, OVERLAY_STATUS_SENTINEL)
+        a.i(0x2B, 9, 10, 0)
+
+    def start_query_stop(uid_reg: int, arg_off: int, query_stub: int, argument: int,
+                         result_index: int) -> None:
+        preset_status()
+        a.rr(uid_reg, 0, 4, 0, 0x25)         # a0 = uid
+        a.i(0x09, 0, 5, 8)                   # a1 = argsize
+        ref(6, arg_off)                      # a2 = argp
+        ref(7, OVERLAY_STATUS_OFF)           # a3 = &status
+        a.i(0x09, 0, 8, 0)                   # t0 = option (none)
+        call(STUB_START)
+        load_word(9, OVERLAY_STATUS_OFF)
+        a.rr(statuses, 9, statuses, 0, 0x25)  # statuses |= start status
+        load_word(9, arg_off)
+        store_result(result_index, 9)
+        a.li(4, argument)
+        call(query_stub)
+        store_result(result_index + 1, 2)
+        preset_status()
+        a.rr(uid_reg, 0, 4, 0, 0x25)         # a0 = uid
+        a.i(0x09, 0, 5, 4)                   # a1 = argsize
+        ref(6, OVERLAY_STOP_ARG_OFF)         # a2 = argp: module_stop reports here
+        ref(7, OVERLAY_STATUS_OFF)           # a3 = &status
+        a.i(0x09, 0, 8, 0)
+        call(STUB_STOP)
+        load_word(9, OVERLAY_STATUS_OFF)
+        a.rr(statuses, 9, statuses, 0, 0x25)  # statuses |= stop status
+        load_word(9, OVERLAY_STOP_ARG_OFF)
+        store_result(result_index + 2, 9)
+
+    def unload(uid_reg: int) -> None:
+        a.rr(uid_reg, 0, 4, 0, 0x25)
+        call(STUB_UNLOAD)
+
+    a.pad_to(OVERLAY_MAIN_ENTRY_OFF)
+    a.label("entry")
+    a.i(0x09, 29, 29, -48)
+    a.i(0x2B, 29, 31, 44)
+    for slot, reg in enumerate(saved):
+        a.i(0x2B, 29, reg, 40 - 4 * slot)
+    ref(results, OVERLAY_RESULTS_OFF)
+    a.rr(0, 0, statuses, 0, 0x25)            # statuses = 0
+    spec_a, spec_b, spec_c = OVERLAYS
+    load_module(spec_a, 16, "fail_load_a")
+    start_query_stop(16, OVERLAY_ARG_A1_OFF, STUB_QUERY_A, 0x1000, 0)
+    load_module(spec_b, 17, "fail_load_b")
+    start_query_stop(17, OVERLAY_ARG_B_OFF, STUB_QUERY_B, 0x2000, 3)
+    ref(4, overlay_path_offset(spec_c))      # C cannot fit beside A and B
+    a.i(0x09, 0, 5, 0)
+    a.i(0x09, 0, 6, 0)
+    call(STUB_LOAD)
+    store_result(6, 2)
+    unload(16)
+    load_module(spec_c, 18, "fail_load_c")
+    start_query_stop(18, OVERLAY_ARG_C_OFF, STUB_QUERY_C, 0x3000, 7)
+    load_word(9, OVERLAY_ARG_C_OFF + 4)      # where C's slot landed
+    load_word(10, OVERLAY_ARG_A1_OFF + 4)    # where A's slot landed first
+    a.rr(9, 10, 9, 0, 0x26)                  # xor
+    a.i(0x0B, 9, 9, 1)                       # sltiu t1, t1, 1
+    store_result(10, 9)
+    unload(17)
+    unload(18)
+    a.i(0x09, 0, 4, 2)                       # user partition
+    ref(5, OVERLAY_PAD_NAME_OFF)
+    a.i(0x09, 0, 6, 0)                       # low
+    a.li(7, OVERLAY_PAD_SIZE)
+    a.i(0x09, 0, 8, 0)
+    call(STUB_ALLOC)
+    a.rr(2, 0, 19, 0, 0x25)
+    a.bltz(19, "fail_pad")
+    a.nop()
+    load_module(spec_a, 16, "fail_reload_a")
+    start_query_stop(16, OVERLAY_ARG_A2_OFF, STUB_QUERY_A, 0x1000, 12)
+    load_word(9, OVERLAY_ARG_A2_OFF + 4)
+    load_word(10, OVERLAY_ARG_A1_OFF + 4)
+    a.rr(9, 10, 9, 0, 0x23)                  # subu t1, t1, t2
+    store_result(11, 9)
+    unload(16)
+    a.rr(19, 0, 4, 0, 0x25)
+    call(STUB_FREE)
+    a.li(9, OVERLAY_COMPLETE)
+    a.rr(9, statuses, 9, 0, 0x26)            # complete ^= statuses
+    store_result(OVERLAY_RESULT_COUNT - 1, 9)
+    a.beq(0, 0, "epilogue")
+    a.nop()
+    for step, label in enumerate(("fail_load_a", "fail_load_b", "fail_load_c", "fail_pad",
+                                  "fail_reload_a"), start=1):
+        a.label(label)
+        a.li(9, OVERLAY_FAIL | step)
+        store_result(OVERLAY_RESULT_COUNT - 1, 9)
+        a.beq(0, 0, "epilogue")
+        a.nop()
+    a.label("epilogue")
+    for slot, reg in enumerate(saved):
+        a.i(0x23, 29, reg, 40 - 4 * slot)
+    a.i(0x23, 29, 31, 44)
+    a.i(0x09, 29, 29, 48)
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+    return a
+
+
+def overlay_title_manifest(plan: Plan) -> bytes:
+    """The title manifest that maps each overlay's guest path to a runtime-placed
+    module: the runtime half of where the game's sceKernelLoadModule paths lead."""
+    manifest = {
+        "schema_version": 1,
+        "id": "platform-ladder-overlay",
+        "display_name": "Platform ladder overlay modules",
+        "kind": "synthetic",
+        "game_name": plan.game_name,
+        "executable": {
+            "base": plan.base,
+            "entry": plan.entry,
+            "bss_metadata_source": "elf",
+            "extra_executable_spans": [],
+        },
+        "modules": [
+            {"name": spec.file_name, "required": True, "role": "guest-prx",
+             "placement": "runtime", "guest_path": spec.guest_path}
+            for spec in OVERLAYS
+        ],
+        "filesystem": {
+            "data_root": "",
+            "memory_stick_root": "build/platform-ladder/ladder-overlay/memstick",
+            "device_prefixes": ["host0:", "ms0:"],
+        },
+        "hle_profile": "generic",
+        "feature_requirements": ["allegrex-core"],
+        "verification_profile": "platform-ladder",
+        "notes": "Source-owned ladder-overlay fixture; no retail bytes.",
+    }
+    return (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("ascii")
 
 
 # --- plans ------------------------------------------------------------------
@@ -1979,6 +2234,29 @@ def _register_plans() -> None:
         expected_value_fn=lambda p: 0,
         label_contract={"entry": TITLE2_NEGATIVE_ENTRY_OFF},
         data_seg_vaddr=0x3000,
+    )
+    PLANS["ladder-overlay"] = Plan(
+        name="ladder-overlay",
+        game_name="pl_overlay",
+        base=OVERLAY_MAIN_BASE,
+        entry_offset=OVERLAY_MAIN_ENTRY_OFF,
+        build_asm=build_overlay_main,
+        imports=[
+            (LIB_MODULEMGR, [NID_LOAD_MODULE, NID_START_MODULE, NID_STOP_MODULE,
+                             NID_UNLOAD_MODULE]),
+            (LIB_SYSMEM, [NID_ALLOC_PARTITION_MEMORY, NID_FREE_PARTITION_MEMORY]),
+            (OVERLAY_LIBRARY, [spec.export_nid for spec in OVERLAYS]),
+        ],
+        data_words={},
+        data_strings=overlay_main_strings(),
+        data_file_size=OVERLAY_MAIN_DATA_SIZE,
+        data_mem_size=OVERLAY_MAIN_DATA_SIZE,
+        relocate_calls=False,
+        relocate_data=False,
+        result_addr_fn=lambda p: (p.base + p.data_seg_vaddr + OVERLAY_RESULTS_OFF
+                                  + 4 * (OVERLAY_RESULT_COUNT - 1)),
+        expected_value_fn=lambda p: OVERLAY_COMPLETE,
+        label_contract={"entry": OVERLAY_MAIN_ENTRY_OFF},
     )
 
 
@@ -2321,6 +2599,12 @@ def generate(out_dir: Path, workload: str) -> int:
         out_dir / "guest.psp": psp_header,
         out_dir / "manifest.json": manifest_bytes(plan, prx, psp_header, workload),
     }
+    if plan.name == "ladder-overlay":
+        # The overlays are the runtime-placed modules; title.json maps their guest
+        # paths for the runtime (TITLE_MANIFEST) and they are staged as SR_MODULE_DIR.
+        for spec in OVERLAYS:
+            outputs[out_dir / spec.file_name] = build_overlay_prx(spec)
+        outputs[out_dir / "title.json"] = overlay_title_manifest(plan)
     changed = [str(path) for path, data in outputs.items() if write_if_changed(path, data)]
     state = "updated" if changed else "unchanged"
     print(
@@ -2355,6 +2639,27 @@ def required_symbols(workload: str) -> tuple[int, ...]:
             plan.base + TITLE2_WORKER_OFF,
         ]
     return tuple(symbols)
+
+
+def _verify_overlay_translation(fixture_dir: Path, main_c: str, chunks: str) -> None:
+    """Each overlay is a runtime-placed descriptor, never a fixed registration."""
+    if (fixture_dir / "title.json").read_bytes() != overlay_title_manifest(PLANS["ladder-overlay"]):
+        raise RuntimeError("overlay title manifest does not match the recipe")
+    for index, spec in enumerate(OVERLAYS):
+        data = (fixture_dir / spec.file_name).read_bytes()
+        if data != build_overlay_prx(spec):
+            raise RuntimeError(f"{spec.file_name} does not match the recipe")
+        if f"    sr_module_code_register(&sr_m{index}_code);" not in main_c:
+            raise RuntimeError(f"{spec.file_name} is not registered as a runtime-placed module")
+        if f'"{spec.file_name}", 0x{len(data):08x}u' not in main_c:
+            raise RuntimeError(f"{spec.file_name} descriptor does not carry the file identity")
+        for offset in (OVERLAY_START_OFF, OVERLAY_STOP_OFF, OVERLAY_QUERY_OFF):
+            if f"void m{index}_{offset:08x}(CpuState *s)" not in chunks:
+                raise RuntimeError(f"{spec.file_name}: entry 0x{offset:x} was not translated")
+        if f"MEM_R16((sr_m{index}_base + " not in chunks:
+            raise RuntimeError(f"{spec.file_name}: relocated immediates do not read the image")
+    if re.search(r"sr_register\(0x[0-9a-f]{8}u, m\d+_", chunks):
+        raise RuntimeError("a runtime-placed module function was registered at a fixed address")
 
 
 def verify(build_dir: Path, workload: str) -> int:
@@ -2451,6 +2756,10 @@ def verify(build_dir: Path, workload: str) -> int:
                 f"for crossing(s): {', '.join(missing)}"
             )
 
+    if plan.name == "ladder-overlay":
+        _verify_overlay_translation(fixture_dir, main_c.read_text(encoding="ascii"),
+                                    generated_text)
+
     image = image_path.read_bytes()
     result_offset = plan.result_addr() - plan.base
     if len(image) <= result_offset:
@@ -2467,6 +2776,33 @@ def verify(build_dir: Path, workload: str) -> int:
 
 
 # --- runtime -----------------------------------------------------------------
+
+
+def multi_word_expectations(workload: str) -> tuple[tuple[int, int], ...] | None:
+    """Every (address, value) a multi-word workload's driver run must observe."""
+    if workload == "ladder-title2":
+        return title2_result_expectations(PLANS[workload])
+    if workload == "ladder-overlay":
+        return overlay_result_expectations(PLANS[workload])
+    return None
+
+
+def overlay_runtime_evidence_gaps(combined: str) -> list[str]:
+    """The loader's own account of the run: four placements (A, B, C, A again), one
+    load refused for lack of memory, and four unloads, each naming its module."""
+    gaps = []
+    placed = re.findall(r"GUEST_MODULE_PLACED: (\S+) uid=0x[0-9a-f]+ image=\[(0x[0-9a-f]{8}),", combined)
+    expected_order = [OVERLAYS[0].file_name, OVERLAYS[1].file_name, OVERLAYS[2].file_name,
+                      OVERLAYS[0].file_name]
+    if [name for name, _start in placed] != expected_order:
+        gaps.append(f"GUEST_MODULE_PLACED order {expected_order} (saw {[n for n, _ in placed]})")
+    elif placed[2][1] != placed[0][1] or placed[3][1] == placed[0][1]:
+        gaps.append("GUEST_MODULE_PLACED addresses: C at A's first base, A reloaded elsewhere")
+    if combined.count(f"GUEST_MODULE_LOAD_NO_MEMORY: {OVERLAYS[2].file_name}") != 1:
+        gaps.append("one GUEST_MODULE_LOAD_NO_MEMORY for the overlay that cannot fit")
+    if len(re.findall(r"GUEST_MODULE_UNLOADED: \S+ uid=", combined)) != 4:
+        gaps.append("four GUEST_MODULE_UNLOADED records")
+    return gaps
 
 
 def validate_title2_negative_output(completed) -> None:
@@ -2566,6 +2902,10 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
         environment.update(root_environment)
         for key, value in plan.env.items():
             environment[key] = value
+        if workload == "ladder-overlay":
+            # The staged module directory: where the runtime finds the overlay files
+            # the title manifest names (the source-owned fixture, never a title tree).
+            environment["SR_MODULE_DIR"] = str((build_dir / "fixture").resolve())
 
         command = [
             str(executable),
@@ -2579,10 +2919,10 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
         ]
         if workload == "ladder-title2-negative":
             pass
-        elif workload == "ladder-title2":
+        elif multi_word_expectations(workload) is not None:
             command.extend(
                 f"--expect-u32=0x{address:08x}:0x{value:08x}"
-                for address, value in title2_result_expectations(plan)
+                for address, value in multi_word_expectations(workload)
             )
         else:
             command.append(f"--expect-u32=0x{plan.result_addr():08x}:0x{expected:08x}")
@@ -2610,15 +2950,17 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
         tuple(
             f"DRIVER_EXPECT_U32 addr=0x{address:08x} got=0x{value:08x} "
             f"expected=0x{value:08x} status=PASS"
-            for address, value in title2_result_expectations(plan)
+            for address, value in multi_word_expectations(workload)
         )
-        if workload == "ladder-title2"
+        if multi_word_expectations(workload) is not None
         else (
             f"DRIVER_EXPECT_U32 addr=0x{plan.result_addr():08x} got=0x{expected:08x} "
             f"expected=0x{expected:08x} status=PASS",
         )
     )
     missing = [marker for marker in (*markers, *expectation_markers) if marker not in combined]
+    if workload == "ladder-overlay":
+        missing += overlay_runtime_evidence_gaps(combined)
     if missing:
         sys.stderr.write(combined)
         raise RuntimeError("runtime evidence omits: " + ", ".join(missing))
@@ -2635,10 +2977,10 @@ def run(build_dir: Path, workload: str, negative: bool = False) -> int:
     if present:
         sys.stderr.write(combined)
         raise RuntimeError("runtime evidence contains: " + ", ".join(present))
-    if workload == "ladder-title2":
+    if multi_word_expectations(workload) is not None:
         print(
             f"PLATFORM_LADDER_RUN workload={workload} status=PASS "
-            f"result_words={len(title2_result_expectations(plan))}"
+            f"result_words={len(multi_word_expectations(workload))}"
         )
     else:
         print(

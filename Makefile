@@ -826,6 +826,7 @@ PUBLIC_TARGETS := \
 	platform-ladder-fs-negative \
 	platform-ladder-title2 \
 	platform-ladder-title2-negative \
+	platform-ladder-overlay \
 	platform-ladder-clean \
 	profile-zero-e2e \
 	cosim-selftest \
@@ -940,6 +941,7 @@ HELP_DESCRIPTION_platform-ladder-fs := run the filesystem platform fixture
 HELP_DESCRIPTION_platform-ladder-fs-negative := run the negative filesystem fixture
 HELP_DESCRIPTION_platform-ladder-title2 := run the second-title platform fixture
 HELP_DESCRIPTION_platform-ladder-title2-negative := run the negative second-title fixture
+HELP_DESCRIPTION_platform-ladder-overlay := run the guest-placed overlay module fixture
 HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
 HELP_DESCRIPTION_profile-zero-e2e := run the manifest-driven profile-zero production route
 HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
@@ -1332,8 +1334,10 @@ PL_FPU_BASE    := 0x08980000
 PL_FS_BASE     := 0x089C0000
 PL_TITLE2_BASE := 0x08A40000
 PL_TITLE2_NEGATIVE_BASE := 0x08A80000
+PL_OVERLAY_BASE := 0x08804000
+PL_OVERLAY_FIXTURE := $(PLATFORM_LADDER_DIR)/ladder-overlay/fixture
 
-platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative
+platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative platform-ladder-overlay
 
 platform-ladder-zero:
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-zero --out-dir $(PLATFORM_LADDER_DIR)/ladder-zero/fixture
@@ -1457,6 +1461,25 @@ platform-ladder-title2-negative:
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative
 	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative --negative
+
+# Guest-placed modules (#704): three source-owned overlays are translated without a
+# load address (@runtime) and declared runtime-placed by the fixture's title manifest.
+# Together they exceed the user partition; the guest loads, starts, stops and unloads
+# them in sequence, and each lands wherever the partition allocator puts it.
+platform-ladder-overlay:
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-overlay --out-dir $(PL_OVERLAY_FIXTURE)
+	$(MAKE) all \
+		GAME_NAME=pl_overlay \
+		GAME_ELF=$(PL_OVERLAY_FIXTURE)/guest.prx \
+		GAME_PSP_HEADER=$(PL_OVERLAY_FIXTURE)/guest.psp \
+		GAME_BASE=$(PL_OVERLAY_BASE) \
+		GAME_ENTRY=0x08804010 \
+		GAME_EXTRA_ELFS="$(foreach overlay,a b c,$(PL_OVERLAY_FIXTURE)/overlay_$(overlay).prx@runtime)" \
+		TITLE_MANIFEST=$(PL_OVERLAY_FIXTURE)/title.json \
+		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-overlay \
+		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-overlay --build-dir $(PLATFORM_LADDER_DIR)/ladder-overlay
+	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-overlay --build-dir $(PLATFORM_LADDER_DIR)/ladder-overlay
 
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean

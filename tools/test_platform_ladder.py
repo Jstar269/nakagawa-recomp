@@ -50,6 +50,14 @@ EXPECTED_PRX_SHA256 = {
     "ladder-fs": "08c03b1b17693e943554be1e3d3a611ce139d87f07bfa734783de1ef95d1e76e",
     "ladder-title2": "5b993d88991246de5b814469cceb61d83bd5175b16fbafea5916919e3301447e",
     "ladder-title2-negative": "a35dffbda426acf3e2faa0a366be98bb181cca57c94521d9512ebec73054b219",
+    "ladder-overlay": "556434c3a909bd9eda4a286eb4c1c63b82133c78dad371ee94489fb61af78641",
+}
+
+# The three runtime-placed overlay modules ladder-overlay loads (#704).
+EXPECTED_OVERLAY_SHA256 = {
+    "overlay_a.prx": "f8169034c774d12ef6312675809d996da61b39b6035ce9cd170318cf2f88938c",
+    "overlay_b.prx": "329b6bb4f8b2e574580ce68bdad20ef9ab874009f73befc9ba15d1410be10164",
+    "overlay_c.prx": "419187a3475d7a1c28f08f3f4045487722b176cf45ffb07a30438bf25970effe",
 }
 
 # Cross-platform differential: prxload output for ladder-zero is byte-identical
@@ -731,6 +739,94 @@ class Title2ContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "expected exit 7"):
             generator.validate_title2_negative_output(completed)
+
+
+class LadderOverlayTests(unittest.TestCase):
+    """ladder-overlay: guest-placed modules loaded, run and unloaded in sequence (#704)."""
+
+    def test_overlay_modules_are_pinned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            self.assertEqual(generator.generate(out_dir, "ladder-overlay"), 0)
+            for name, expected in EXPECTED_OVERLAY_SHA256.items():
+                with self.subTest(module=name):
+                    data = (out_dir / name).read_bytes()
+                    self.assertEqual(generator.hashlib.sha256(data).hexdigest(), expected)
+            title = json.loads((out_dir / "title.json").read_text(encoding="ascii"))
+        import title_manifest
+        manifest = title_manifest.validate_manifest(title)
+        self.assertEqual(manifest["modules"], [
+            {"name": name, "required": True, "role": "guest-prx", "placement": "runtime",
+             "guest_path": f"disc0:/PSP_GAME/USRDIR/{name}"}
+            for name in EXPECTED_OVERLAY_SHA256
+        ])
+        self.assertEqual(manifest["executable"]["base"], generator.OVERLAY_MAIN_BASE)
+
+    def test_overlays_never_fit_together_but_two_do(self):
+        # The workload is meaningful only if the user partition holds two overlay
+        # images (plus the pad block) and never three.
+        plan = generator.PLANS["ladder-overlay"]
+        main_end = plan.base + plan.data_seg_vaddr + generator.OVERLAY_MAIN_DATA_SIZE
+        heap_base = (main_end + 0xFFF) & ~0xFFF
+        free = 0x0A000000 - heap_base
+        image = generator.OVERLAY_DATA_VADDR + generator.OVERLAY_DATA_MEM_SIZE
+        self.assertLess(3 * image, free + image)    # the third load must fail ...
+        self.assertGreater(3 * image, free)
+        self.assertLessEqual(2 * image + generator.OVERLAY_PAD_SIZE, free)  # ... two fit
+
+    def test_sixteen_word_result_block_is_address_pinned(self):
+        plan = generator.PLANS["ladder-overlay"]
+        expectations = generator.overlay_result_expectations(plan)
+        self.assertEqual(len(expectations), 16)
+        self.assertEqual([address for address, _ in expectations],
+                         [0x08806600 + 4 * index for index in range(16)])
+        self.assertEqual([value for _, value in expectations], [
+            0x0020E84D, 0x001083EB, 0x011073EB,          # A: start, query, stop
+            0x004E5ED3, 0x00274F2E, 0x02272F2E,          # B
+            0x80020190,                                  # C beside A and B: NO_MEMORY
+            0x0065A751, 0x0033036D, 0x0332D36D,          # C, in the range A released
+            0x00000001,                                  # C's slot landed where A's did
+            0x00008100,                                  # A reloaded one pad block higher
+            0x0020E84D, 0x001083EB, 0x011073EB,          # A again
+            0x0E4E0D0E,                                  # complete, every status 0
+        ])
+        self.assertEqual(plan.result_addr(), expectations[-1][0])
+
+    def test_runtime_evidence_names_every_placement_and_unload(self):
+        def placed(name, address, uid):
+            return (f"GUEST_MODULE_PLACED: {name} uid=0x{uid:x} image=[0x{address:08x},"
+                    f"0x{address + 0x901000:08x}) gp=0x0 start=0x0 stop=0x0\n")
+
+        a, b, c = (spec.file_name for spec in generator.OVERLAYS)
+        unload = "".join(f"GUEST_MODULE_UNLOADED: {name} uid=0x1 image=[0x0,0x1)\n"
+                         for name in (a, b, c, a))
+        no_memory = f"GUEST_MODULE_LOAD_NO_MEMORY: {c} needs 0x901000 bytes\n"
+        good = (placed(a, 0x08807000, 1) + placed(b, 0x09108000, 2) + no_memory
+                + placed(c, 0x08807000, 3) + placed(a, 0x0880F100, 4) + unload)
+        self.assertEqual(generator.overlay_runtime_evidence_gaps(good), [])
+        cases = {
+            "C placed elsewhere": good.replace(placed(c, 0x08807000, 3), placed(c, 0x09A09000, 3)),
+            "A reloaded at its first base": good.replace(placed(a, 0x0880F100, 4),
+                                                         placed(a, 0x08807000, 4)),
+            "no NO_MEMORY refusal": good.replace(no_memory, ""),
+            "a missing unload": good.replace(f"GUEST_MODULE_UNLOADED: {b} uid=0x1 image=[0x0,0x1)\n", ""),
+            "out-of-order placements": good.replace(placed(b, 0x09108000, 2), "")
+            + placed(b, 0x09108000, 2),
+        }
+        for label, log in cases.items():
+            with self.subTest(case=label):
+                self.assertNotEqual(generator.overlay_runtime_evidence_gaps(log), [])
+
+    def test_overlay_start_and_stop_report_status_zero(self):
+        # module_start ends "addiu v0, zero, 0; ... jr ra" and module_stop's return
+        # path is "jr ra; addu v0, zero, zero": the fixture never depends on what
+        # firmware does with another start or stop status.
+        words = generator.build_overlay_asm(generator.OVERLAYS[0]).resolve()
+        stop = generator.OVERLAY_STOP_OFF // 4
+        stop_words = words[stop:generator.OVERLAY_QUERY_OFF // 4]
+        self.assertIn(0x24020000, words[:stop])                 # addiu v0, zero, 0
+        self.assertIn(0x00001021, stop_words)                   # addu v0, zero, zero
+        self.assertIn(0xACA20000, stop_words)                   # sw v0, 0(a1)
 
 
 if __name__ == "__main__":
