@@ -26,8 +26,8 @@ The CLI writes no file until every stage has succeeded.
 Scope boundaries (see the specification): TrueType ``glyf`` outlines only (no
 CFF, no variable fonts), no hint execution, no kerning pairs (PGF carries
 per-glyph advances only), and honest project-owned output names -- firmware
-font names, the recorded Fontworks/Sony camouflage names, and reserved font
-names are refused rather than reproduced.
+font names, vendor camouflage names, and reserved or trademark font names are
+refused rather than reproduced (the denylist lives in ``pgf_writer``).
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import struct
 import sys
 from dataclasses import dataclass
@@ -81,11 +82,6 @@ SUPPORTED_CMAP_FORMATS = (0, 4, 6, 12)
 #: Deterministic subtable preference: Unicode platforms first, then Microsoft
 #: full-repertoire, Microsoft BMP, Microsoft symbol, then legacy records.
 CMAP_PRIORITY = ((0, 3), (0, 4), (0, 2), (0, 1), (0, 0), (3, 10), (3, 1), (3, 6), (3, 0), (1, 0))
-
-#: Fontworks/Sony camouflage markers recorded in docs/provenance/FONT_ORIGINS.md.
-CAMOUFLAGE_SUBSTRINGS = ("ftt-newrodin", "asiaknhh")
-#: Adobe's OFL Reserved Font Name "Source" plus any names a source pin lists.
-RFN_SUBSTRINGS = ("source",)
 
 MAX_TABLE_COUNT = 512
 MAX_CODE = 0xFFFF
@@ -235,21 +231,16 @@ def load_pin(pin_path: Path, input_bytes: bytes) -> SourcePin:
 
 
 def validate_output_name(name: str, pin: SourcePin | None) -> None:
-    """Refuse firmware, camouflage, and reserved names before anything is written."""
+    """Refuse firmware, camouflage, vendor, and reserved names before anything is written."""
+    reason = pgf_writer.denied_font_name(name)
+    if reason is not None:
+        detail = (
+            "reproduces a vendor camouflage marker"
+            if reason == "camouflage-font-name"
+            else "contains a reserved or trademark font name"
+        )
+        raise _refuse(reason, f"{name!r} {detail} (see docs/provenance/FONT_ORIGINS.md)")
     lowered = name.casefold()
-    for needle in CAMOUFLAGE_SUBSTRINGS:
-        if needle in lowered:
-            raise _refuse(
-                "camouflage-font-name",
-                f"{name!r} reproduces the recorded Fontworks/Sony camouflage marker {needle!r}",
-            )
-    for needle in RFN_SUBSTRINGS:
-        if needle in lowered:
-            raise _refuse(
-                "reserved-font-name",
-                f"{name!r} contains {needle!r}, the Adobe OFL Reserved Font Name recorded in "
-                "docs/provenance/FONT_ORIGINS.md",
-            )
     if pin is not None:
         for reserved in pin.reserved_font_names:
             if reserved.casefold() in lowered:
@@ -1404,7 +1395,7 @@ def _build_manifest(
             "max_height_px": max_height,
         },
         "input": {
-            "path": input_path,
+            "path": _leaf_name(input_path),
             "sha256": hashlib.sha256(data).hexdigest(),
             "size_bytes": len(data),
             "units_per_em": font.units_per_em,
@@ -1415,7 +1406,7 @@ def _build_manifest(
         "license": license_block,
         "metric_targets": metric_targets,
         "output": {
-            "path": output_path,
+            "path": _leaf_name(output_path),
             "sha256": hashlib.sha256(image).hexdigest(),
             "size_bytes": len(image),
             "font_name": font_name,
@@ -1431,6 +1422,15 @@ def _build_manifest(
             "advance_rounding": "26.6, half-up from font units",
         },
     }
+
+
+def _leaf_name(path: str) -> str:
+    """The final path component under either host separator.
+
+    The manifest records file names only, so a build run from another directory, or on another
+    host, writes the same bytes (plan 6.2).
+    """
+    return re.split(r"[\\/]", path)[-1]
 
 
 def manifest_bytes(manifest: dict) -> bytes:

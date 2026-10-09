@@ -68,6 +68,7 @@
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 #include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
+#include "osk_text_entry.h" /* keyboard text collected without stopping guest time */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7477,9 +7478,9 @@ typedef struct {
  * 17 (kr0). Keep the registry explicit so an absent indexed asset is an honest error rather
  * than silently returning ltn0 metrics with the wrong size/style. */
 static const SrFontSpec s_font_specs[18] = {
-    [0]  = {"jpn0.pgf", "FTT-NewRodin Pro DB", 0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f},
-    [9]  = {"ltn8.pgf", "FTT-NewRodin Pro Latin", 0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f},
-    [17] = {"kr0.pgf", "AsiaNHH(512Johab)", 0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f},
+    [0]  = {"nkjpn.pgf", "Nakagawa Open Japanese", 0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f},
+    [9]  = {"nkltn.pgf", "Nakagawa Open Latin", 0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f},
+    [17] = {"nkkr.pgf", "Nakagawa Open Korean", 0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f},
 };
 
 typedef struct {
@@ -9381,19 +9382,38 @@ UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
  * parameter block's own state field, not the GetStatus return value.
  *
  * GetStatus reports the state it was in and advances at most one step, so every step is
- * observable however often the title polls: INIT -> VISIBLE, VISIBLE -> QUIT (the text is
- * collected on that poll, the point the native box has always opened), QUIT stands until
- * ShutdownStart, then FINISHED -> NONE. sceUtilityOskUpdate keeps its named no-dialog
- * compatibility result (#281), so the runtime owns the progression. */
-int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap);
+ * observable however often the title polls: INIT -> VISIBLE, VISIBLE -> QUIT once every
+ * field has its answer, QUIT stands until ShutdownStart, then FINISHED -> NONE.
+ * sceUtilityOskUpdate keeps its named no-dialog compatibility result (#281), so the runtime
+ * owns the progression.
+ *
+ * The keyboard never stops guest time. On the PSP it is a system overlay drawn while the
+ * title keeps running: the title polls GetStatus and calls Update once per frame, keeps
+ * drawing its own screen and waiting for vblank, and its other threads keep running. Every
+ * guest thread here is a coroutine on the one scheduler thread, so a host text box waited on
+ * from inside GetStatus would freeze all of them -- no vblank, no frame, no audio -- for as
+ * long as the box is open, and forever under the offscreen presenter, where nobody can
+ * answer it. The person's answer is therefore collected without waiting
+ * (osk_text_entry.h): GetStatus keeps reporting VISIBLE while it is pending and writes the
+ * field on the poll that finds it answered. The blocking native box itself is only ever
+ * shown by the text-entry worker. */
 enum { OSK_NONE = 0, OSK_INIT = 1, OSK_VISIBLE = 2, OSK_QUIT = 3, OSK_FINISHED = 4 };
 static int s_osk_status = OSK_NONE;
 static uint32_t s_osk_param = 0;
+static int s_osk_field = 0;           /* the next field to answer */
+static int s_osk_request_open = 0;    /* a person's answer to that field is pending */
 /* A keyboard keeps the dialog slot after it shuts down, so GetStatus reports NONE(0)
  * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
  * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
 static int s_osk_current = 0;
-static int s_osk_current_clear(void) { s_osk_current = 0; return 0; }
+static void osk_abandon_request(void);  /* fwd: defined with the keyboard's field collection */
+/* Another utility dialog takes the slot: the keyboard is no longer polled, so a person's
+ * pending answer is dropped and its box closed rather than left open with no poller. */
+static int s_osk_current_clear(void) {
+    osk_abandon_request();
+    s_osk_current = 0;
+    return 0;
+}
 
 /* ---- Scripted answers, for automation. SR_OSK_SCRIPT=<file> supplies one answer per
  * field in order: the line's UTF-8 text, or the keyword CANCEL to answer that field as
@@ -9483,14 +9503,25 @@ static void osk_read_utf16(uint32_t addr, wchar_t *out, int max) {
     out[i] = 0;
 }
 
-static void osk_run(void) {
+/* Close a person's request the keyboard no longer wants (the title shut the keyboard down,
+ * or started a new one, before it was answered); a late answer is discarded. */
+static void osk_abandon_request(void) {
+    if (s_osk_request_open) sr_osk_text_entry_abandon();
+    s_osk_request_open = 0;
+}
+
+/* Answer the keyboard's fields in order, from the script or from a person. Returns 1 once
+ * every field holds its answer, 0 while a person's answer to the current field is pending
+ * (that field and the ones after it are left untouched until it arrives). */
+static int osk_collect(void) {
     uint32_t p = s_osk_param;
-    if (!p) return;
+    if (!p) return 1;
     int nf = (int)MEM_R32(p + 0x30);                       /* datacount */
     uint32_t fields = MEM_R32(p + 0x34);                   /* SceUtilityOskData[] */
-    if (nf < 1 || nf > 8 || !fields) return;
+    if (nf < 1 || nf > 8 || !fields) return 1;
     int scripted = osk_script_configured();
-    for (int i = 0; i < nf; i++) {
+    for (; s_osk_field < nf; s_osk_field++) {
+        int i = s_osk_field;
         uint32_t f = fields + (uint32_t)i * 0x34;
         uint32_t descA = MEM_R32(f + 0x1c), inA = MEM_R32(f + 0x20);
         uint32_t outLen = MEM_R32(f + 0x24), outA = MEM_R32(f + 0x28);
@@ -9504,7 +9535,13 @@ static void osk_run(void) {
         wcscpy(out, intext);
         int ok;
         if (!scripted) {
-            ok = sr_osk_input(desc, intext, out, cap);
+            int answer = sr_osk_text_entry_poll(desc, intext, out, cap);
+            if (answer == SR_OSK_TEXT_PENDING) {
+                s_osk_request_open = 1;
+                return 0;
+            }
+            s_osk_request_open = 0;
+            ok = answer == 1;
         } else {
             const char *ans = i < s_osk_answer_count ? s_osk_answers[i] : s_osk_repeat;
             if (ans) osk_decode_utf8(ans, out, cap - 1);
@@ -9525,12 +9562,15 @@ static void osk_run(void) {
                     i, desc, intext, ok ? "ok" : "cancel", ok ? out : intext);
     }
     MEM_W32(p + 0x1c, 0);                                  /* common result */
+    return 1;
 }
 
 static uint32_t h_OskInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
+    osk_abandon_request();                                 /* a new keyboard replaces the old one */
     s_osk_param = A0;
     s_osk_status = OSK_INIT;
+    s_osk_field = 0;
     s_osk_current = 1;                                     /* the OSK owns the dialog slot */
     s_osk_script_read = 0;                                 /* a new keyboard re-reads its answers */
     return 0;
@@ -9542,12 +9582,13 @@ static uint32_t h_OskGetStatus(CpuState *s) {
     if (!s_osk_current) return 0x80110005u;
     int ret = s_osk_status;
     if (s_osk_status == OSK_INIT) s_osk_status = OSK_VISIBLE;
-    else if (s_osk_status == OSK_VISIBLE) { osk_run(); s_osk_status = OSK_QUIT; }
+    else if (s_osk_status == OSK_VISIBLE) { if (osk_collect()) s_osk_status = OSK_QUIT; }
     else if (s_osk_status == OSK_FINISHED) { s_osk_status = OSK_NONE; s_osk_param = 0; }
     return (uint32_t)ret;                                  /* QUIT stands until ShutdownStart */
 }
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
+    osk_abandon_request();                                 /* shut down before it was answered */
     if (s_osk_status) s_osk_status = OSK_FINISHED;         /* then NONE on the next poll */
     return 0;
 }

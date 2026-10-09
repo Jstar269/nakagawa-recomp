@@ -706,6 +706,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/h264_null.c \
               src/rt/savedata.c \
               src/rt/osk_win.c \
+              src/rt/osk_text_entry.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
@@ -908,6 +909,7 @@ PUBLIC_TARGETS := \
 	atrac3p-bridge-selftest \
 	ge-texture-ref-selftest \
 	fbcap-selftest \
+	osk-text-entry-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
@@ -1024,6 +1026,7 @@ HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
 HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selftest
+HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
@@ -1999,6 +2002,18 @@ fbcap-selftest:
 		-o $(BUILD_DIR)/fbcap_selftest.exe \
 		src/rt/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
 	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
+
+# osk-text-entry-selftest - the on-screen keyboard's text entry (src/rt/osk_text_entry.c)
+# with a fake native input box: a poll never waits for the person, the box runs off the
+# polling thread, answers are handed over once, an abandoned box is closed whether or not it
+# exists yet, and the offscreen presenter opens no box. Windows uses a real, never-shown
+# window for the abandon cases; other hosts check the no-box path. No game data.
+native-core-tests: osk-text-entry-selftest
+osk-text-entry-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT) \
+		src/rt/osk_text_entry_selftest.c src/rt/osk_text_entry.c
+	$(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT)
 
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
 # src/rt/atrac3p/). Public checks are source-owned (create validation, NULL/
