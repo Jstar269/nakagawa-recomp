@@ -260,12 +260,50 @@ class StrippedModuleInfoTests(unittest.TestCase):
 
     def test_p_paddr_repeating_p_vaddr_falls_back_to_the_scan(self) -> None:
         # A toolchain ELF whose p_paddr is just its load address names no file
-        # offset; the scan still finds a record with a non-zero gp.
+        # offset; the scan still finds the record, including one with gp == 0.
+        for gp in (0, 0x00008000):
+            with self.subTest(gp=hex(gp)):
+                blob, expected, modinfo = build_stripped_module_elf(
+                    PRIMARY, gp=gp, paddr=BASE_VADDR)
+                elf = Elf(blob, base=0)
+                self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
+                self.assertEqual(imports.parse_imports(elf), expected)
+
+    def test_scan_skips_an_inconsistent_record_before_a_real_gp_zero_one(self) -> None:
+        # The earlier false record has a non-zero gp and a long name, but its
+        # import span does not split into whole stub-table records.
         blob, expected, modinfo = build_stripped_module_elf(
-            PRIMARY, gp=0x00008000, paddr=BASE_VADDR)
+            PRIMARY, early_decoy=True, paddr=BASE_VADDR)
         elf = Elf(blob, base=0)
         self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
         self.assertEqual(imports.parse_imports(elf), expected)
+
+    def test_scan_accepts_a_short_module_name(self) -> None:
+        blob, expected, modinfo = build_stripped_module_elf(
+            PRIMARY, name=b"abc", paddr=BASE_VADDR)
+        elf = Elf(blob, base=0)
+        self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
+        self.assertEqual(imports.parse_imports(elf), expected)
+
+    def test_scan_refuses_records_that_are_not_internally_consistent(self) -> None:
+        # A non-zero gp: only the consistency proof, not gp, can refuse these.
+        blob, _expected, modinfo = build_stripped_module_elf(
+            PRIMARY, gp=0x00008000, paddr=BASE_VADDR)
+        record = DATA_FILE_OFF + (modinfo - BASE_VADDR)
+        cases = {
+            # Bytes after the name's terminator: not a NUL-padded name field.
+            "unpadded name": (record + 4 + 20, b"X"),
+            # An attribute bit PspModuleInfoAttr does not define.
+            "undocumented attribute": (record, struct.pack("<H", 0x0100)),
+            # No export table and no import table at all.
+            "no tables": (record + 44, struct.pack("<II", 0, 0)),
+        }
+        for label, (offset, patch) in cases.items():
+            with self.subTest(label):
+                image = bytearray(blob)
+                image[offset:offset + len(patch)] = patch
+                elf = Elf(bytes(image), base=0)
+                self.assertIsNone(elf.sec(".rodata.sceModuleInfo"))
 
     def test_p_paddr_naming_code_is_not_a_module_info(self) -> None:
         # p_paddr points at instruction words, which do not decode as a

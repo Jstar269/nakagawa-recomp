@@ -628,7 +628,9 @@ def build_stripped_module_elf(
     libs: list[tuple[str, list[int]]],
     *,
     gp: int = 0,
+    name: bytes = b"SynthMain",
     decoy: bool = False,
+    early_decoy: bool = False,
     kernel_bit: bool = False,
     paddr: int | None = None,
 ) -> tuple[bytes, dict[int, tuple[str, int]], int]:
@@ -636,10 +638,12 @@ def build_stripped_module_elf(
 
     The segment follows the retail order: code, import stubs, the
     PspLibStubEntry table, SceModuleInfo, library names, NIDs. The record
-    carries gp (zero for a module built without $gp-relative data, which the
-    heuristic scan refuses). decoy=True places a later plausible but false
-    SceModuleInfo (non-zero gp, printable name, file-backed spans) whose import
-    table has a function window with a null NID pointer. kernel_bit sets the
+    carries gp (zero for a module built without $gp-relative data) and name.
+    decoy=True places a later plausible but false SceModuleInfo (non-zero gp,
+    printable name, file-backed spans) whose import table has a function window
+    with a null NID pointer. early_decoy=True places, before the real record, a
+    false one with a non-zero gp and a long name whose import span does not
+    split into whole SceLibraryStubTable records. kernel_bit sets the
     kernel-mode bit of p_paddr; paddr overrides p_paddr outright.
 
     Returns (ELF bytes, expected {stub address: (library, NID)}, module-info
@@ -657,8 +661,16 @@ def build_stripped_module_elf(
     alloc(struct.pack("<2I", 0x03E00008, 0) * 2)
     stub_addrs = [alloc(struct.pack("<2I", 0x03E00008, 0) * len(nids)) for _name, nids in libs]
     libstub = alloc(b"\0" * (20 * len(libs)))
+    if early_decoy:
+        early = alloc(b"\0" * 52)
+        seg[early - BASE_VADDR + 4:early - BASE_VADDR + 15] = b"SynthEarly\0"
+        # A 12-byte import span: the first record's length (5 words) overruns it.
+        struct.pack_into("<5I", seg, early - BASE_VADDR + 32,
+                         0x00004000, 0, 0, libstub, libstub + 12)
     modinfo = alloc(b"\0" * 52)
-    seg[modinfo - BASE_VADDR + 4:modinfo - BASE_VADDR + 14] = b"SynthMain\0"
+    if not 0 < len(name) < 28:
+        raise ValueError("module name must fit the 28-byte field with its terminator")
+    seg[modinfo - BASE_VADDR + 4:modinfo - BASE_VADDR + 5 + len(name)] = name + b"\0"
     name_addrs = [alloc(name.encode("ascii") + b"\0") for name, _nids in libs]
     nid_addrs = [alloc(b"".join(struct.pack("<I", n) for n in nids)) for _name, nids in libs]
     expected: dict[int, tuple[str, int]] = {}

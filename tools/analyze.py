@@ -51,6 +51,14 @@ MODULE_INFO_NAME_BYTES = 28
 # Bit 31 of the first loadable segment's p_paddr marks a kernel-mode module;
 # the remaining bits are the SceModuleInfo file offset.
 PSP_MODULE_INFO_KERNEL_BIT = 0x80000000
+# PspModuleInfoAttr bits PSPSDK pspmoduleinfo.h documents: NO_STOP (0x0001),
+# SINGLE_LOAD (0x0002), SINGLE_START (0x0004) and KERNEL (0x1000).
+PSP_MODULE_INFO_ATTRIBUTES = 0x1007
+# Shortest library records, in 32-bit words: a SceLibraryEntryTable carries a
+# name, version/attribute, length/counts and its entry-table pointer; a
+# SceLibraryStubTable adds the NID-table and stub-table pointers.
+LIBRARY_ENTRY_MIN_WORDS = 4
+LIBRARY_STUB_MIN_WORDS = 5
 
 
 def _file_backed_guest_span(segments, start, end):
@@ -81,14 +89,65 @@ def _decode_module_info(segments, seg_data, o):
     name_len = name_bytes.find(b"\x00")
     if name_len <= 0 or not all(32 <= c < 127 for c in name_bytes[:name_len]):
         return None
+    attribute = struct.unpack_from("<H", seg_data, o)[0]
     gp, ent, entend, stub, stubend = struct.unpack("<5I", seg_data[o + 32:o + 52])
     if ent % 4 or stub % 4:
         return None
     if not (_file_backed_guest_span(segments, ent, entend)
             and _file_backed_guest_span(segments, stub, stubend)):
         return None
-    return dict(name=name_bytes[:name_len].decode("ascii"), gp=gp,
+    return dict(name=name_bytes[:name_len].decode("ascii"),
+                name_padded=not any(name_bytes[name_len:]), attribute=attribute, gp=gp,
                 ent=ent, entend=entend, stub=stub, stubend=stubend)
+
+
+def _file_bytes(segments, data, start, end):
+    """File bytes backing guest span [start, end) inside one PT_LOAD, or None."""
+    for segment in segments:
+        if (segment["type"] == 1 and segment["vaddr"] <= start
+                and end <= segment["vaddr"] + segment["filesz"]):
+            off = segment["off"] + (start - segment["vaddr"])
+            return data[off:off + (end - start)]
+    return None
+
+
+def _library_table_walks(segments, data, top, end, min_words):
+    """True when [top, end) splits exactly into library records.
+
+    Each record's length byte (offset 8, in words) must be at least
+    ``min_words`` and the last record must end exactly at ``end``. An empty
+    span is a table without records.
+    """
+    if top == end:
+        return True
+    blob = _file_bytes(segments, data, top, end)
+    if blob is None:
+        return False
+    pos = 0
+    while pos < len(blob):
+        if pos + 12 > len(blob) or blob[pos + 8] < min_words:
+            return False
+        pos += blob[pos + 8] * 4
+    return pos == len(blob)
+
+
+def _module_info_is_consistent(segments, data, record):
+    """True when a decoded SceModuleInfo proves its own internal consistency.
+
+    The name is NUL-padded to the end of its field, the attribute uses only
+    documented PspModuleInfoAttr bits, and the export and import spans split
+    exactly into whole library records, at least one of them non-empty. gp is
+    deliberately not a criterion: a module built without $gp-relative data
+    carries gp == 0, and short module names are legal too.
+    """
+    if not record["name_padded"] or record["attribute"] & ~PSP_MODULE_INFO_ATTRIBUTES:
+        return False
+    ent, entend = record["ent"], record["entend"]
+    stub, stubend = record["stub"], record["stubend"]
+    if ent == entend and stub == stubend:
+        return False
+    return (_library_table_walks(segments, data, ent, entend, LIBRARY_ENTRY_MIN_WORDS)
+            and _library_table_walks(segments, data, stub, stubend, LIBRARY_STUB_MIN_WORDS))
 
 
 def _module_info_from_load_paddr(segments, code_seg, seg_data, load_paddr):
@@ -100,7 +159,8 @@ def _module_info_from_load_paddr(segments, code_seg, seg_data, load_paddr):
     ``(offset in code_seg, ent, entend, stub, stubend)`` when that offset lies
     inside the code segment's file bytes and decodes to a structurally valid
     record; otherwise None (for example a toolchain ELF whose p_paddr simply
-    repeats p_vaddr).
+    repeats p_vaddr). This is the loader's own designation, so the record only
+    has to decode; the internal-consistency proof is for the fallback scan.
     """
     if not load_paddr:
         return None
@@ -112,17 +172,17 @@ def _module_info_from_load_paddr(segments, code_seg, seg_data, load_paddr):
     return o, record["ent"], record["entend"], record["stub"], record["stubend"]
 
 
-def _scan_module_info(segments, seg_data):
-    """Heuristic fallback: the first plausible SceModuleInfo in the code segment.
+def _scan_module_info(segments, data, seg_data):
+    """Fallback: the first internally consistent SceModuleInfo in the code segment.
 
-    Used only when p_paddr does not name a valid record. The extra
-    gp/name-length requirements keep the scan from accepting arbitrary data.
+    Used only when p_paddr does not name a valid record. Without the loader's
+    designation a candidate must prove itself (_module_info_is_consistent), so
+    a printable string followed by plausible pointers is not taken for the
+    record, while real records with gp == 0 or short names are still found.
     """
     for o in range(0, len(seg_data) - MODULE_INFO_SIZE, 4):
         record = _decode_module_info(segments, seg_data, o)
-        if record is None:
-            continue
-        if len(record["name"]) < 4 or record["gp"] == 0:
+        if record is None or not _module_info_is_consistent(segments, data, record):
             continue
         return o, record["ent"], record["entend"], record["stub"], record["stubend"]
     return None
@@ -205,7 +265,7 @@ class Elf:
                     (p["paddr"] for p in envelope["phdrs"] if p["type"] == 1), None)
                 record = _module_info_from_load_paddr(self.segments, code_seg, seg_data, load_paddr)
                 if record is None:
-                    record = _scan_module_info(self.segments, seg_data)
+                    record = _scan_module_info(self.segments, d, seg_data)
                 if record is not None:
                     self._add_module_metadata_sections(code_seg, *record)
 
