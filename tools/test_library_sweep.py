@@ -97,7 +97,7 @@ class LibrarySweepTests(unittest.TestCase):
         _write_iso(self.iso_dir, "two.iso", "UCUS99992", "Resume Sentinel Two")
         first_calls: list[str] = []
 
-        def interrupt_after_first(iso_path, _work, _report, _sidecar, _budget):
+        def interrupt_after_first(iso_path, _work, _report, _sidecar, _budget, _launch):
             first_calls.append(iso_path.name)
             if len(first_calls) == 2:
                 raise KeyboardInterrupt
@@ -122,7 +122,7 @@ class LibrarySweepTests(unittest.TestCase):
 
         resumed_calls: list[str] = []
 
-        def complete(iso_path, _work, _report, _sidecar, _budget):
+        def complete(iso_path, _work, _report, _sidecar, _budget, _launch):
             resumed_calls.append(iso_path.name)
             return library_sweep.RouteOutcome(_bringup_report())
 
@@ -169,10 +169,94 @@ class LibrarySweepTests(unittest.TestCase):
                     work_dir / "bringup.json",
                     work_dir / "sweep-imports.json",
                     7,
+                    7,
                 )
         self.assertTrue(outcome.timed_out)
         self.assertEqual(observed_timeouts, [7])
         terminate.assert_called_once_with(process)
+
+    def _bringup_launch_argument(self, time_budget: int, launch_timeout: int) -> str:
+        """The --launch-timeout value one title's bring-up command line carries."""
+        work_dir = self.private_dir / "work"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        iso = _write_iso(self.iso_dir, "launch.iso", "UCUS99995", "Launch Sentinel")
+        commands: list[list[str]] = []
+
+        class CompletedProcess:
+            pid = 9002
+            returncode = 0
+
+            def __init__(self, command, **_kwargs):
+                commands.append(command)
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        with mock.patch.object(library_sweep.subprocess, "Popen", CompletedProcess):
+            library_sweep._run_bringup(
+                iso,
+                work_dir,
+                work_dir / "bringup.json",
+                work_dir / "sweep-imports.json",
+                time_budget,
+                launch_timeout,
+            )
+        self.assertEqual(len(commands), 1)
+        command = commands[0]
+        self.assertEqual(command.count("--launch-timeout"), 1)
+        return command[command.index("--launch-timeout") + 1]
+
+    def test_launch_timeout_reaches_bringup_bounded_by_the_time_budget(self) -> None:
+        # The default reproduces the earlier fixed min(20, --time-budget) launch.
+        self.assertEqual(self._bringup_launch_argument(120, 20), "20")
+        self.assertEqual(self._bringup_launch_argument(15, 20), "15")
+        # A longer launch reaches bring-up when the budget allows it ...
+        self.assertEqual(self._bringup_launch_argument(120, 60), "60")
+        self.assertEqual(self._bringup_launch_argument(120, 110), "110")
+        # ... and never outlives the route budget.
+        self.assertEqual(self._bringup_launch_argument(30, 60), "30")
+
+    def test_launch_timeout_range_is_bring_ups_range(self) -> None:
+        self.assertEqual(
+            library_sweep.DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+            nk_cli.BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS,
+        )
+        self.assertEqual(
+            library_sweep.MAX_LAUNCH_TIMEOUT_SECONDS, nk_cli.BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS
+        )
+
+    def test_cli_launch_timeout_default_bounds_and_forwarding(self) -> None:
+        summary = {"iso_count": 0, "ran_this_invocation": 0, "resumed_this_invocation": 0}
+        base = [
+            str(self.iso_dir),
+            "--private-dir", str(self.private_dir),
+            "--public-output", str(self.public_output),
+        ]
+        for extra, expected in (([], 20), (["--launch-timeout", "1"], 1),
+                                (["--launch-timeout", "110"], 110),
+                                (["--launch-timeout", "120"], 120)):
+            with self.subTest(extra=extra):
+                with mock.patch.object(library_sweep, "run_sweep", return_value=summary) as run:
+                    self.assertEqual(library_sweep.main(base + extra), 0)
+                self.assertEqual(run.call_args.kwargs["launch_timeout_seconds"], expected)
+        for value in ("0", "121", "-5", "twenty"):
+            with self.subTest(value=value):
+                with (
+                    mock.patch.object(library_sweep, "run_sweep") as run,
+                    mock.patch("sys.stderr", new_callable=io.StringIO),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    library_sweep.main(base + ["--launch-timeout", value])
+                self.assertEqual(raised.exception.code, 2)
+                run.assert_not_called()
+
+    def test_run_sweep_rejects_an_out_of_range_launch_timeout(self) -> None:
+        for value in (0, 121):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                library_sweep.run_sweep(
+                    self.iso_dir, self.private_dir, self.public_output,
+                    launch_timeout_seconds=value,
+                )
 
     def test_timeout_during_analyze_preserves_the_active_stage_elapsed_time(self) -> None:
         work_dir = self.private_dir / "work"
@@ -217,7 +301,7 @@ class LibrarySweepTests(unittest.TestCase):
             mock.patch.object(library_sweep, "_terminate_process_tree") as terminate,
         ):
             outcome = library_sweep._run_bringup(
-                iso, work_dir, work_dir / "bringup.json", work_dir / "sweep-imports.json", 7
+                iso, work_dir, work_dir / "bringup.json", work_dir / "sweep-imports.json", 7, 7
             )
 
         self.assertTrue(outcome.timed_out)
@@ -263,6 +347,7 @@ class LibrarySweepTests(unittest.TestCase):
                 work_dir,
                 work_dir / "bringup.json",
                 work_dir / "sweep-imports.json",
+                7,
                 7,
             )
 
@@ -407,6 +492,7 @@ class LibrarySweepTests(unittest.TestCase):
                     work_dir,
                     work_dir / "bringup.json",
                     work_dir / "sweep-imports.json",
+                    7,
                     7,
                 )
 
@@ -729,7 +815,7 @@ class LibrarySweepTests(unittest.TestCase):
             "PRIVATE_TITLE_SENTINEL",
         )
 
-        def run_with_private_nid(_iso, _work, _report, sidecar, _budget):
+        def run_with_private_nid(_iso, _work, _report, sidecar, _budget, _launch):
             sidecar.parent.mkdir(parents=True, exist_ok=True)
             sidecar.write_text(json.dumps({
                 "schema_version": 1,
@@ -1405,7 +1491,7 @@ class LibrarySweepExternalJsonTests(unittest.TestCase):
             ),
         ):
             return library_sweep._run_bringup(
-                iso_path, work_dir, report_path, sidecar_path, 1
+                iso_path, work_dir, report_path, sidecar_path, 1, 1
             )
 
     def test_duplicate_schema_field_is_rejected_in_previous_aggregate(self) -> None:

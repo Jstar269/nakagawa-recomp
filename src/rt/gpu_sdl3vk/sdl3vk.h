@@ -64,37 +64,17 @@ int  sdl3vk_present_image_ex(void *vk_image, int srcw, int srch);
  * destruction uses this instead of draining the entire Vulkan device. */
 int  sdl3vk_wait_image(void *vk_image);
 
-/* Visual-evidence capture (issue #57): arm before the present you want, then read the
- * result after that present returns. The armed capture is recorded inside the same
- * command buffer that presents the frame -- copied from the presentation source while it
- * is still in TRANSFER_SRC_OPTIMAL -- and is published only after the frame is known to
- * have reached the presentation engine. There is no extra swapchain acquire and no
- * content-destroying layout transition, so the file describes exactly what the runtime
- * presented.
- *
- * sdl3vk_capture_arm(path)  arm a capture of the next presented frame. Returns 1 when
- *                           armed, 0 when the renderer is unavailable (no Vulkan device)
- *                           or a capture is already pending.
- * sdl3vk_capture_result()   1 = written, 0 = nothing attempted, -1 = attempted and failed.
- * sdl3vk_capture_cancel()   resolve an armed-but-unserviced capture as "nothing attempted"
- *                           (the present never ran, e.g. the frame slot was skipped).
- * sdl3vk_capture_source_label()  "cpu-framebuffer" or "gpu-render-target" describing the
- *                           presentation source of the most recent capture, or "" when
- *                           no capture has been recorded. Lets diagnostics distinguish
- *                           a capture of the CPU (BGRA) framebuffer from one of the GE
- *                           (RGBA) render target.
- *
- * The written file is a P6 PPM named with a .ppm extension: the format matches the name.
- * Publication creates the parent directory on demand. A publication failure resolves the
- * capture as attempted-and-failed (-1) but does not fail the already-presented frame. */
-int  sdl3vk_capture_arm(const char *path);
-int  sdl3vk_capture_result(void);
-void sdl3vk_capture_cancel(void);
-const char *sdl3vk_capture_source_label(void);
+/* Visual-evidence capture (issue #57) is presenter-neutral: it is armed, published and
+ * reported through fbcap.h, which owns all capture state. When a capture is armed, this
+ * presenter records a readback of its presentation source (the CPU framebuffer image or the
+ * GE render target) inside the same command buffer that presents the frame -- no extra
+ * swapchain acquire, no content-destroying layout transition -- and hands the readback to
+ * fbcap.c only after the frame is known to have reached the presentation engine. A present
+ * that fails resolves the armed capture as failed. */
 
 /* 1 once the renderer has latched a terminal state: the device was lost, or a presentation
- * recovery sequence itself failed. Presentation and capture arming are refused from then
- * on, and any capture outstanding at that moment resolves as failed. */
+ * recovery sequence itself failed. Presentation is refused from then on, and a capture
+ * armed for a refused present resolves as failed. */
 int  sdl3vk_renderer_terminal(void);
 
 /* Test-only present fault injection seam for selftests. Takes an int so this header
