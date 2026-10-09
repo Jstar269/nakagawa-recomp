@@ -9,6 +9,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -39,6 +40,17 @@ from nk_core.iso_inspect import (
     write_experimental_profile,
 )
 import nk_cli
+
+# The package key asks the C compiler for its target (gcc -dumpmachine) before the planner
+# runs. The fakes below stand in for the planner only, so that host query is passed to
+# the real subprocess.run, captured here before any test patches it.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _is_compiler_target_query(command) -> bool:
+    # Match the flag anywhere in the argv, not only as the last element, so the helper
+    # keeps working if the query ever gains trailing arguments.
+    return bool(command) and "-dumpmachine" in command
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
@@ -1570,6 +1582,8 @@ int main(int argc, char **argv) {{
         captured_command: list[str] = []
 
         def fake_package_build(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             captured_command.extend(command)
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -1706,6 +1720,8 @@ int main(int argc, char **argv) {{
         captured_commands: list[list[str]] = []
 
         def fake_run(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             captured_commands.append(list(command))
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -2740,6 +2756,26 @@ int main(int argc, char **argv) {{
         self.assertIn("READER:OPEN_FAILED", res.stdout)
 
 
+class PbpBoundaryCodeParityTests(unittest.TestCase):
+    """The PBP identify codes are one set in the Python emitter and the C emitter.
+
+    This runs without gcc: it reads the C emitter's source rather than
+    executing it, so a new code added only on the C side fails here even on a
+    machine that cannot build the native harness.
+    """
+
+    C_EMITTER = ROOT / "src" / "core" / "nk_iso.c"
+    # A C string literal naming a PBP boundary code. Only quoted literals match,
+    # so identifiers such as PBP_MAGIC or PBP_HEADER_SIZE are not counted.
+    C_CODE_LITERAL = re.compile(r'"(PBP_[A-Z0-9_]+)"')
+
+    def test_c_emitter_emits_exactly_the_python_boundary_codes(self) -> None:
+        source = self.C_EMITTER.read_text(encoding="utf-8")
+        emitted = set(self.C_CODE_LITERAL.findall(source))
+        self.assertTrue(emitted, "no PBP boundary code literal found in nk_iso.c")
+        self.assertEqual(emitted, set(iso_inspect.PBP_BOUNDARY_CODES))
+
+
 class PackageBuildFailureMessageTests(unittest.TestCase):
     """The generic compile/link failure branch names the first real diagnostic line."""
 
@@ -2784,6 +2820,8 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
         })()
 
         def fake_compile(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             return subprocess.CompletedProcess(list(command), returncode, stdout=stdout, stderr=stderr)
 
         with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \

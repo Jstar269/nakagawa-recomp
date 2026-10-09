@@ -1066,7 +1066,7 @@ def _cache_key_for_build(
         analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
         codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
         compiler=package_cache.compiler_identity(compiler_name, repository_root=ROOT),
-        target=package_cache.compiler_target(),
+        target=package_cache.compiler_target(repository_root=ROOT),
         runtime_source_digest=package_cache.source_tree_digest(ROOT),
         compile_flags=package_cache.native_compile_flags(public_safe=public_safe),
         link_flags=os.environ.get("LDFLAGS", ""),

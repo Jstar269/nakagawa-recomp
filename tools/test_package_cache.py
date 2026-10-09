@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -477,6 +478,111 @@ class PackageCacheTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("unreadable", reason)
 
+    def test_completion_validation_reads_each_artifact_once_and_keeps_the_set_check(self) -> None:
+        # Fast path: the artifact-set check enumerates paths and reads no bytes.
+        # Slow path: the digest-bearing writer enumeration must describe the same
+        # path set on every layout, and validation must still accept or refuse
+        # the package exactly as the set check always did.
+        package_dir = self.root / "reads-once"
+        package_dir.mkdir()
+        executable = package_dir / "synthetic.exe"
+        image = package_dir / "synthetic_image.bin"
+        generated = package_dir / "synthetic_recomp.o"
+        executable.write_bytes(b"native")
+        image.write_bytes(b"image" * 4096)
+        generated.write_bytes(b"object")
+        (package_dir / "assets").mkdir()
+        (package_dir / "assets" / "nested.bin").write_bytes(b"nested")
+        key = self.key()
+        cache = package_cache.cache_metadata(
+            key, {"profile": "none", "funcs_per_chunk": 2000}
+        )
+        package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
+            "cache": cache,
+            "inputs": self.inputs,
+            "executable": {
+                "path": executable.name,
+                "sha256": package_cache.sha256_file(executable),
+            },
+            "generated_objects": [{
+                "path": generated.name,
+                "sha256": package_cache.sha256_file(generated),
+            }],
+        }
+        (package_dir / "package.json").write_text(
+            package_cache.canonical_json(package), encoding="utf-8"
+        )
+        (package_dir / "build-report.json").write_text(
+            package_cache.canonical_json({"cache": cache}), encoding="utf-8"
+        )
+        package_cache.write_completion_manifest(package_dir, key)
+
+        real_sha256 = package_cache.sha256_file
+        hashed: list[str] = []
+
+        def recording(path):
+            hashed.append(Path(path).name)
+            return real_sha256(path)
+
+        with mock.patch.object(package_cache, "sha256_file", side_effect=recording):
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertTrue(valid, reason)
+        # Listed artifacts are read once each, by the completion check's own loop.
+        # The set check no longer reads them a second time.
+        self.assertEqual(hashed.count("synthetic_image.bin"), 1)
+        self.assertEqual(hashed.count("nested.bin"), 1)
+        self.assertEqual(hashed.count("package.json"), 1)
+
+        extra = package_dir / "late_extra.bin"
+        extra.write_bytes(b"unlisted" * 1024)
+        hashed.clear()
+        with mock.patch.object(package_cache, "sha256_file", side_effect=recording):
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertIn("artifact set does not match", reason)
+        # An unlisted file is refused by its path alone; its bytes are never read.
+        self.assertNotIn("late_extra.bin", hashed)
+        extra.unlink()
+
+        def paths_fast(directory: Path) -> set[str]:
+            return {
+                package_cache._safe_relative(relative)
+                for relative, _ in package_cache._artifact_candidates(directory)
+            }
+
+        def paths_slow(directory: Path) -> set[str]:
+            return {record["path"] for record in package_cache._artifact_records(directory)}
+
+        nested_dir = package_dir / "deep" / "er"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "leaf.bin").write_bytes(b"leaf")
+        (package_dir / "empty_dir").mkdir()
+        self.assertIn("deep/er/leaf.bin", paths_fast(package_dir))
+        self.assertEqual(paths_fast(package_dir), paths_slow(package_dir), "with-deep-leaf")
+        (nested_dir / "leaf.bin").unlink()
+        self.assertNotIn("deep/er/leaf.bin", paths_fast(package_dir))
+        self.assertEqual(paths_fast(package_dir), paths_slow(package_dir), "after-leaf-removed")
+
+        link = package_dir / "linked.bin"
+        try:
+            os.symlink(image, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are unavailable on this host")
+        for enumerate_paths in (paths_fast, paths_slow):
+            with self.assertRaisesRegex(package_cache.PackageCacheError, "symlink artifact"):
+                enumerate_paths(package_dir)
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertIn("symlink artifact", reason)
+        link.unlink()
+
     def test_flagship_sized_build_report_is_accepted(self) -> None:
         # A flagship build report is about 1.3 MB, past the shared 1 MiB byte
         # ceiling, so the package route rejected it with PACKAGE_BUILD_INCOMPLETE
@@ -553,6 +659,30 @@ class PackageCacheTests(unittest.TestCase):
             title_codegen_plan._build_report_text(report)
         self.assertEqual(caught.exception.code, "PACKAGE_REPORT_TOO_LARGE")
         self.assertIn("rejected by the package reader", str(caught.exception))
+
+    def test_artifact_order_ignores_the_profile_stamp_hash(self) -> None:
+        # A profile stamp is named by a hash over its entries, and the entries carry CFLAGS,
+        # which carry the build directory. Two output roots that build the same inputs
+        # therefore name the stamp differently: a hash starting with "f" sorts the stamp
+        # after the entries file, any other hash sorts it before. The manifest records must
+        # come out in the same order either way. Both orders are forced here by name.
+        with tempfile.TemporaryDirectory() as tmp:
+            for stamp_hash in ("0123456789abcdef0123", "fedcba9876543210fedc"):
+                package = Path(tmp) / stamp_hash
+                package.mkdir()
+                (package / ".runtime-profile-entries").write_text(
+                    "CFLAGS=fixture\n", encoding="utf-8")
+                (package / f".runtime-profile-{stamp_hash}").write_bytes(b"")
+                (package / "build-report.json").write_text("{}", encoding="utf-8")
+                paths = [record["path"] for record in package_cache._artifact_records(package)]
+                self.assertEqual(
+                    paths,
+                    [f".runtime-profile-{stamp_hash}",
+                     ".runtime-profile-entries",
+                     "build-report.json"],
+                    "the record order follows the stamp's hash, so two output roots "
+                    "building the same inputs write different completion manifests",
+                )
 
     def test_completion_manifest_accepts_gcc_runtime_dll_artifact_names(self) -> None:
         # Host runtime closure DLLs ship inside packages and GCC/MSYS2 library
@@ -681,6 +811,79 @@ class PackageCacheTests(unittest.TestCase):
                 compiler_name=environment.get("CC", "gcc"),
             )
             self.assertEqual(cli_key, planner_key)
+
+    def test_compiler_target_is_the_c_compiler_not_the_planning_interpreter(self) -> None:
+        # The native objects are built by CC, so the key must name that compiler's
+        # target. The planner and the CLI can run under different interpreters (the
+        # player's MSYS2 python and the Python on PATH report different sysconfig
+        # platforms for the same gcc), so an interpreter-derived target made the native
+        # key change between two builds of the same inputs.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("NK_TARGET_TRIPLE", "CC_TARGET")}
+        gcc = shutil.which("gcc", path=environment.get("PATH"))
+        if gcc is None:
+            self.skipTest("gcc is not on PATH, so there is no compiler target to read")
+        expected = subprocess.run(
+            [gcc, "-dumpmachine"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertTrue(expected)
+        # The interpreter's platform is varied on purpose and must not reach the key: the
+        # mocks are asserted to be unconsulted, so a future regression that reads them
+        # fails here instead of silently passing with the value unchanged.
+        targets = set()
+        for machine, interpreter_platform in (("AMD64", "win-amd64"),
+                                              ("AMD64", "mingw_x86_64_ucrt_gnu"),
+                                              ("x86_64", "linux-x86_64")):
+            with mock.patch("platform.machine", return_value=machine) as machine_probe, \
+                    mock.patch("sysconfig.get_platform",
+                               return_value=interpreter_platform) as platform_probe:
+                targets.add(package_cache.compiler_target(environment))
+            machine_probe.assert_not_called()
+            platform_probe.assert_not_called()
+        self.assertEqual(targets, {expected})
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "CC": "no-such-compiler-nk"}),
+            "no-such-compiler-nk:unavailable",
+        )
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "NK_TARGET_TRIPLE": "fixture-target"}),
+            "fixture-target",
+        )
+
+    def test_relative_cc_resolves_identity_and_target_to_the_same_compiler(self) -> None:
+        # A relative CC that PATH does not provide names a file under the repository root.
+        # The identity and the target must resolve that one file: otherwise the key could
+        # fingerprint one compiler while naming the target of another.
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp).resolve()
+            compiler = repository / "nk-fixture-cc"
+            compiler.write_bytes(b"fixture compiler bytes")
+            environment = {"CC": "nk-fixture-cc", "PATH": ""}
+            completed = subprocess.CompletedProcess(
+                [str(compiler), "-dumpmachine"], 0, stdout="fixture-target\n", stderr="",
+            )
+            with mock.patch.object(package_cache.subprocess, "run",
+                                   return_value=completed) as run:
+                target = package_cache.compiler_target(
+                    environment, repository_root=repository,
+                )
+            self.assertEqual(target, "fixture-target")
+            self.assertEqual(run.call_args.args[0], [str(compiler), "-dumpmachine"])
+            self.assertEqual(
+                package_cache.compiler_identity(
+                    environment=environment, repository_root=repository,
+                ),
+                f"nk-fixture-cc:{package_cache.sha256_file(compiler)}",
+            )
+            # Without the repository root neither can find the compiler, and both say so.
+            self.assertEqual(
+                package_cache.compiler_target(environment),
+                "nk-fixture-cc:unavailable",
+            )
+            self.assertEqual(
+                package_cache.compiler_identity(environment=environment),
+                "nk-fixture-cc:unavailable",
+            )
 
     def test_promotion_refuses_a_copy_that_fails_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
