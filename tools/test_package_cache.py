@@ -715,6 +715,41 @@ class PackageCacheTests(unittest.TestCase):
             "fixture-target",
         )
 
+    def test_relative_cc_resolves_identity_and_target_to_the_same_compiler(self) -> None:
+        # A relative CC that PATH does not provide names a file under the repository root.
+        # The identity and the target must resolve that one file: otherwise the key could
+        # fingerprint one compiler while naming the target of another.
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp).resolve()
+            compiler = repository / "nk-fixture-cc"
+            compiler.write_bytes(b"fixture compiler bytes")
+            environment = {"CC": "nk-fixture-cc", "PATH": ""}
+            completed = subprocess.CompletedProcess(
+                [str(compiler), "-dumpmachine"], 0, stdout="fixture-target\n", stderr="",
+            )
+            with mock.patch.object(package_cache.subprocess, "run",
+                                   return_value=completed) as run:
+                target = package_cache.compiler_target(
+                    environment, repository_root=repository,
+                )
+            self.assertEqual(target, "fixture-target")
+            self.assertEqual(run.call_args.args[0], [str(compiler), "-dumpmachine"])
+            self.assertEqual(
+                package_cache.compiler_identity(
+                    environment=environment, repository_root=repository,
+                ),
+                f"nk-fixture-cc:{package_cache.sha256_file(compiler)}",
+            )
+            # Without the repository root neither can find the compiler, and both say so.
+            self.assertEqual(
+                package_cache.compiler_target(environment),
+                "nk-fixture-cc:unavailable",
+            )
+            self.assertEqual(
+                package_cache.compiler_identity(environment=environment),
+                "nk-fixture-cc:unavailable",
+            )
+
     def test_promotion_refuses_a_copy_that_fails_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             user_root = Path(tmp).resolve()

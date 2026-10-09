@@ -817,6 +817,24 @@ def source_tree_digest(
     return digest.hexdigest()
 
 
+def _compiler_executable(
+    selected: str,
+    env: Mapping[str, str],
+    repository_root: Path | str | None,
+) -> str | None:
+    """The file a compiler name resolves to: PATH first, then a repository-relative path.
+
+    The identity and the target of the native objects must name the same compiler, so
+    both resolve ``CC`` through this one helper.
+    """
+    executable = shutil.which(selected, path=env.get("PATH"))
+    if executable is None and repository_root is not None:
+        candidate = Path(repository_root) / selected
+        if candidate.is_file():
+            executable = str(candidate)
+    return executable
+
+
 def compiler_identity(
     command: str | None = None,
     *,
@@ -825,11 +843,7 @@ def compiler_identity(
 ) -> str:
     env = os.environ if environment is None else environment
     selected = command or env.get("CC") or "gcc"
-    executable = shutil.which(selected, path=env.get("PATH"))
-    if executable is None and repository_root is not None:
-        candidate = Path(repository_root) / selected
-        if candidate.is_file():
-            executable = str(candidate)
+    executable = _compiler_executable(selected, env, repository_root)
     if executable is None:
         return f"{selected}:unavailable"
     path = Path(executable)
@@ -838,7 +852,11 @@ def compiler_identity(
     return f"{path.name}:{sha256_file(path)}"
 
 
-def compiler_target(environment: Mapping[str, str] | None = None) -> str:
+def compiler_target(
+    environment: Mapping[str, str] | None = None,
+    *,
+    repository_root: Path | str | None = None,
+) -> str:
     """The machine triple the C compiler builds the native objects for.
 
     The key names the target of the objects ``CC`` produces, so it is read from that
@@ -846,14 +864,15 @@ def compiler_target(environment: Mapping[str, str] | None = None) -> str:
     build. Two interpreters on one machine report different platforms for the same
     gcc (python.org: ``win-amd64``; MSYS2: ``mingw_x86_64_ucrt_gnu``), so an
     interpreter-derived target changed the key between two builds of the same inputs.
-    ``NK_TARGET_TRIPLE`` or ``CC_TARGET`` still overrides it.
+    ``NK_TARGET_TRIPLE`` or ``CC_TARGET`` still overrides it. ``repository_root`` lets a
+    relative ``CC`` resolve exactly as :func:`compiler_identity` resolves it.
     """
     env = os.environ if environment is None else environment
     explicit = env.get("NK_TARGET_TRIPLE") or env.get("CC_TARGET")
     if explicit:
         return explicit
     selected = env.get("CC") or "gcc"
-    executable = shutil.which(selected, path=env.get("PATH"))
+    executable = _compiler_executable(selected, env, repository_root)
     if executable is None:
         return f"{selected}:unavailable"
     try:
