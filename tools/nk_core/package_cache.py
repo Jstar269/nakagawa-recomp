@@ -11,10 +11,9 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
-import platform
 import re
 import shutil
-import sysconfig
+import subprocess
 import tempfile
 from typing import Any, Mapping
 
@@ -818,6 +817,24 @@ def source_tree_digest(
     return digest.hexdigest()
 
 
+def _compiler_executable(
+    selected: str,
+    env: Mapping[str, str],
+    repository_root: Path | str | None,
+) -> str | None:
+    """The file a compiler name resolves to: PATH first, then a repository-relative path.
+
+    The identity and the target of the native objects must name the same compiler, so
+    both resolve ``CC`` through this one helper.
+    """
+    executable = shutil.which(selected, path=env.get("PATH"))
+    if executable is None and repository_root is not None:
+        candidate = Path(repository_root) / selected
+        if candidate.is_file():
+            executable = str(candidate)
+    return executable
+
+
 def compiler_identity(
     command: str | None = None,
     *,
@@ -826,11 +843,7 @@ def compiler_identity(
 ) -> str:
     env = os.environ if environment is None else environment
     selected = command or env.get("CC") or "gcc"
-    executable = shutil.which(selected, path=env.get("PATH"))
-    if executable is None and repository_root is not None:
-        candidate = Path(repository_root) / selected
-        if candidate.is_file():
-            executable = str(candidate)
+    executable = _compiler_executable(selected, env, repository_root)
     if executable is None:
         return f"{selected}:unavailable"
     path = Path(executable)
@@ -839,12 +852,44 @@ def compiler_identity(
     return f"{path.name}:{sha256_file(path)}"
 
 
-def compiler_target(environment: Mapping[str, str] | None = None) -> str:
+def compiler_target(
+    environment: Mapping[str, str] | None = None,
+    *,
+    repository_root: Path | str | None = None,
+) -> str:
+    """The machine triple the C compiler builds the native objects for.
+
+    The key names the target of the objects ``CC`` produces, so it is read from that
+    compiler (``-dumpmachine``) and never from the Python interpreter that plans the
+    build. Two interpreters on one machine report different platforms for the same
+    gcc (python.org: ``win-amd64``; MSYS2: ``mingw_x86_64_ucrt_gnu``), so an
+    interpreter-derived target changed the key between two builds of the same inputs.
+    ``NK_TARGET_TRIPLE`` or ``CC_TARGET`` still overrides it. ``repository_root`` lets a
+    relative ``CC`` resolve exactly as :func:`compiler_identity` resolves it.
+    """
     env = os.environ if environment is None else environment
     explicit = env.get("NK_TARGET_TRIPLE") or env.get("CC_TARGET")
     if explicit:
         return explicit
-    return f"{platform.machine()}-{sysconfig.get_platform()}"
+    selected = env.get("CC") or "gcc"
+    executable = _compiler_executable(selected, env, repository_root)
+    if executable is None:
+        return f"{selected}:unavailable"
+    try:
+        completed = subprocess.run(
+            [executable, "-dumpmachine"],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return f"{selected}:unavailable"
+    machine = completed.stdout.strip()
+    if completed.returncode != 0 or not machine:
+        return f"{selected}:unavailable"
+    return machine
 
 
 def native_compile_flags(
@@ -1087,9 +1132,26 @@ def compare_cache_keys(
     return CacheDecision("native-recompile", True, False, tuple(reasons))
 
 
+# A profile stamp is named by a hash over its entries, and the entries carry CFLAGS, which
+# carry the build directory (-DSR_BUILD_DIR). Two output roots that build the same inputs
+# therefore name the stamp differently, and a raw name sort would move the stamp relative
+# to its siblings with each root. Records are ordered by the name with that hash removed,
+# and by the full name only to break a tie between two stamps of one kind.
+_PROFILE_STAMP_HASH_RE = re.compile(
+    r"(\.(?:runtime-profile|codegen-profile|recomp-profile|title-config))-[0-9a-f]{4,}"
+)
+
+
+def _record_order(relative: str) -> tuple[str, str]:
+    return (_PROFILE_STAMP_HASH_RE.sub(r"\1", relative), relative)
+
+
 def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
-    for path in sorted(package_dir.rglob("*")):
+    for path in sorted(
+        package_dir.rglob("*"),
+        key=lambda item: _record_order(item.relative_to(package_dir).as_posix()),
+    ):
         if path.is_symlink():
             raise PackageCacheError("package contains a symlink artifact")
         if not path.is_file():
