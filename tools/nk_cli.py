@@ -3293,6 +3293,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         env = os.environ.copy()
         env.pop("SR_DATAROOT", None)
         env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+        # The package ships the guest modules it was compiled against in
+        # <package>/modules; the runtime loads them from SR_MODULE_DIR, as a
+        # player launch of the same package does. Without it the runtime falls
+        # back to its development path and every module load fails.
+        env.pop("SR_MODULE_DIR", None)
+        if (package_dir / "modules").is_dir():
+            env["SR_MODULE_DIR"] = str(package_dir / "modules")
         data_root = (ROOT / manifest["filesystem"]["data_root"]).resolve(strict=False)
         try:
             loose_roots = title_manifest.encode_loose_content_roots(manifest, data_root)

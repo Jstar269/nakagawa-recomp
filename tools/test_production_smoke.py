@@ -1752,6 +1752,8 @@ class TestSanitizedBringup(unittest.TestCase):
         user_decrypted_modules: dict[str, bytes] | None = None,
         catalog_manifest: dict | None = None,
         forbid_iso_executable: bool = False,
+        package_modules: bool = False,
+        launch_envs: list | None = None,
     ):
         work_dir = work_root / "work"
         report_path = work_root / "bringup.json"
@@ -1790,6 +1792,8 @@ class TestSanitizedBringup(unittest.TestCase):
             package_dir = build_args.user_data_root / "packages" / "ULUS99998"
             package_dir.mkdir(parents=True, exist_ok=True)
             (package_dir / "runtime.exe").write_bytes(b"synthetic runtime")
+            if package_modules:
+                (package_dir / "modules").mkdir(exist_ok=True)
             (package_dir / "runtime_image.bin").write_bytes(b"synthetic runtime image")
             (package_dir / "package.json").write_text(
                 json.dumps({
@@ -1803,6 +1807,8 @@ class TestSanitizedBringup(unittest.TestCase):
             return 0
 
         def fake_popen(_command, **kwargs):
+            if launch_envs is not None:
+                launch_envs.append(dict(kwargs["env"]))
             Path(kwargs["env"]["SR_FLIGHT_OUTPUT"]).write_text(json.dumps({
                 "recorder": {"dropped": 0},
                 "events": [{"class": "hle", "kind": 1, "arg0": 0x289D82FE}],
@@ -2064,6 +2070,39 @@ class TestSanitizedBringup(unittest.TestCase):
         executable = profile["manifest"]["executable"]
         self.assertEqual(executable["base"], 0x08804000)
         self.assertEqual(executable["entry"], 0x08804000)
+
+    def test_launch_points_the_runtime_at_the_packaged_modules(self):
+        # The package ships its guest modules in <package>/modules; the bring-up
+        # launch must hand the runtime that directory (as a player launch does),
+        # never an inherited or development path.
+        work_root = self.root / "packaged-modules-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "packaged-modules.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            bytes(build_synthetic_iso_elf()),
+            sysdir_modules={"alpha.prx": build_synthetic_decrypted_prx()},
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Packaged Modules",
+        )
+        launch_envs: list = []
+        with mock.patch.dict(os.environ, {"SR_MODULE_DIR": str(work_root / "inherited")}):
+            status, report = self._run_module_fixture(
+                iso_path, work_root, package_modules=True, launch_envs=launch_envs)
+        self.assertEqual(status, 0, report)
+        self.assertEqual(len(launch_envs), 1)
+        package_dir = work_root / "work" / "user-data" / "packages" / "ULUS99998"
+        self.assertEqual(launch_envs[0]["SR_MODULE_DIR"], str(package_dir / "modules"))
+
+        launch_envs.clear()
+        other_root = self.root / "unpackaged-modules-case"
+        other_root.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"SR_MODULE_DIR": str(other_root / "inherited")}):
+            status, report = self._run_module_fixture(
+                iso_path, other_root, launch_envs=launch_envs)
+        self.assertEqual(status, 0, report)
+        self.assertNotIn("SR_MODULE_DIR", launch_envs[0])
 
     def test_main_image_leaving_little_memory_still_plans_its_modules(self):
         # Nothing is reserved at build time: a main image that leaves little user
