@@ -104,6 +104,10 @@ class ImportTable:
     funcs: list[ImportedFunc] = field(default_factory=list)
     libraries: list[str] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
+    # SceModuleInfo.attribute (the first u16 of the module info record). The
+    # PSP_MODULE_KERNEL bit (0x1000) marks a kernel-mode module; every other
+    # module runs in user mode and may import only user (syscall) libraries.
+    module_attributes: int = 0
 
 
 @dataclass(frozen=True)
@@ -387,7 +391,7 @@ def parse_import_table(data: bytes) -> ImportTable:
             f"libstub table spans {libstubend - libstub:#x} bytes; exceeds defensive cap"
         )
 
-    table = ImportTable()
+    table = ImportTable(module_attributes=struct.unpack_from("<H", mi, 0)[0])
     seen_libs: set[str] = set()
     windows = []  # (library name, numFuncs, nidData, firstSymAddr)
     pos = libstub

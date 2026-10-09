@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
-/* Complete ThreadManForUser import block for the PSP-B1/B2 kernel-object probes
-   and the standalone kernel-misc oracle case.
+/* Complete ThreadManForUser import block for the PSP-B1/B2/B3 kernel-object
+   probes and the wait-outcomes and kernel-misc oracle cases.
+
+   This file holds ThreadManForUser only. Every PRX that links it gets every
+   stub below, so a library that only one case needs (kernel-misc's sceDisplay
+   and sceImpose calls, see kernel_misc_imports.S) must not live here.
 
    PSPSDK ships heavyweight-mutex stubs only for ThreadManForKernel, so these
    user-mode probes declare their own ThreadManForUser block. IMPORT_START emits
@@ -111,14 +115,3 @@
     IMPORT_FUNC "ThreadManForUser", 0x8218B4DD, sceKernelReferGlobalProfiler
     IMPORT_FUNC "ThreadManForUser", 0x912354A7, sceKernelRotateThreadReadyQueue
     IMPORT_FUNC "ThreadManForUser", 0xE1619D7C, sceKernelSysClock2USecWide
-
-    IMPORT_START "sceDisplay", 0x00010000
-    IMPORT_FUNC  "sceDisplay", 0x77ED8B3A, sceDisplayWaitVblankStartMultiCB
-
-    IMPORT_START "sceDisplay_driver", 0x00010000
-    IMPORT_FUNC  "sceDisplay_driver", 0x7ED59BC4, sceDisplaySetHoldMode
-
-    IMPORT_START "sceImpose_driver", 0x00010000
-    IMPORT_FUNC  "sceImpose_driver", 0x72189C48, sceImposeSetUMDPopup
-    IMPORT_FUNC  "sceImpose_driver", 0x8C943191, sceImposeGetBatteryIconStatus
-    IMPORT_FUNC  "sceImpose_driver", 0xE0887BC8, sceImposeGetUMDPopup
