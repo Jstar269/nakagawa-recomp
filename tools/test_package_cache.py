@@ -698,13 +698,19 @@ class PackageCacheTests(unittest.TestCase):
             [gcc, "-dumpmachine"], capture_output=True, text=True, check=True,
         ).stdout.strip()
         self.assertTrue(expected)
+        # The interpreter's platform is varied on purpose and must not reach the key: the
+        # mocks are asserted to be unconsulted, so a future regression that reads them
+        # fails here instead of silently passing with the value unchanged.
         targets = set()
         for machine, interpreter_platform in (("AMD64", "win-amd64"),
                                               ("AMD64", "mingw_x86_64_ucrt_gnu"),
                                               ("x86_64", "linux-x86_64")):
-            with mock.patch("platform.machine", return_value=machine), \
-                    mock.patch("sysconfig.get_platform", return_value=interpreter_platform):
+            with mock.patch("platform.machine", return_value=machine) as machine_probe, \
+                    mock.patch("sysconfig.get_platform",
+                               return_value=interpreter_platform) as platform_probe:
                 targets.add(package_cache.compiler_target(environment))
+            machine_probe.assert_not_called()
+            platform_probe.assert_not_called()
         self.assertEqual(targets, {expected})
         self.assertEqual(
             package_cache.compiler_target({**environment, "CC": "no-such-compiler-nk"}),
