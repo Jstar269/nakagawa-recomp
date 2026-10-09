@@ -410,6 +410,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                 runtime("rt-beta.prx", "disc0:/PSP_GAME/USRDIR/rt-beta.prx", required=False),
                 runtime("rt-gamma.prx", "disc0:/PSP_GAME/USRDIR/rt-gamma.prx"),
                 runtime("rt-delta.prx", "disc0:/PSP_GAME/USRDIR/rt-delta.prx"),
+                runtime("rt-fixed.prx", "disc0:/PSP_GAME/USRDIR/rt-fixed.prx"),
                 *configured.get("modules", []),
             ]
             manifest.write_text(json.dumps(configured), encoding="utf-8")

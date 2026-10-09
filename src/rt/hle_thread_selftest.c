@@ -1409,6 +1409,98 @@ static SrModuleCode s_rt_delta_code = {
     NULL, 0u, NULL, 0u,
 };
 
+/* A fixed-address module (ELF type 2) links at absolute addresses and carries no
+ * relocations; its translation binds only at base 0, and the loader must take exactly
+ * its link range from the partition. Bodies and descriptor are filled at run time,
+ * once the test has chosen a free link address. */
+static uint32_t s_rt_fixed_base;
+static uint32_t s_rt_fixed_link;
+static unsigned s_rt_fixed_start_calls;
+
+static void rt_fixed_start(CpuState *s) {
+    s_rt_fixed_start_calls++;
+    s->r[2] = 0u;
+}
+
+static void rt_fixed_stop(CpuState *s) {
+    s->r[2] = 0u;
+}
+
+static void rt_fixed_query(CpuState *s) {
+    s->r[2] = s->r[4] + 7u;
+}
+
+static SrModuleFunc s_rt_fixed_funcs[3];
+static SrModuleSpan s_rt_fixed_spans[1];
+static SrModuleCode s_rt_fixed_code = {
+    "rt-fixed.prx", 0u, 0u, 0u, 0u, 0x40u, 0u, NULL, &s_rt_fixed_base,
+    s_rt_fixed_funcs, 3u, s_rt_fixed_spans, 1u,
+};
+
+static int write_fixed_module_prx(const char *path, uint32_t link) {
+    enum { PHOFF = 0x34u, SIZE = RT_SEG_OFFSET + RT_FILE_SPAN };
+    uint8_t image[SIZE];
+    uint8_t *seg = image + RT_SEG_OFFSET;
+    memset(image, 0, sizeof(image));
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 16, 2);                       /* ET_EXEC: fixed address */
+    fixture_wr16(image + 18, 8);
+    fixture_wr32(image + 20, 1);
+    fixture_wr32(image + 24, link + RT_START);
+    fixture_wr32(image + 28, PHOFF);
+    fixture_wr16(image + 40, 52);
+    fixture_wr16(image + 42, 32);
+    fixture_wr16(image + 44, 1);
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);
+    fixture_wr32(ph + 4, RT_SEG_OFFSET);
+    fixture_wr32(ph + 8, link);
+    fixture_wr32(ph + 12, RT_SEG_OFFSET + RT_MODINFO);
+    fixture_wr32(ph + 16, RT_FILE_SPAN);
+    fixture_wr32(ph + 20, RT_MEM_SPAN);
+    fixture_wr32(ph + 24, 7);
+    fixture_wr32(ph + 28, 0x40);
+    for (uint32_t word = RT_START; word < RT_TEXT_END; word += 0x40u) {
+        fixture_wr32(seg + word, 0x03E00008u);
+        fixture_wr32(seg + word + 4u, 0x24020000u | word);
+    }
+    seg[RT_MODINFO + 2] = 1;
+    seg[RT_MODINFO + 3] = 1;
+    memcpy(seg + RT_MODINFO + 4, "rtfixed", 8);
+    fixture_wr32(seg + RT_MODINFO + 32, link + RT_GP_LINK);
+    fixture_wr32(seg + RT_MODINFO + 36, link + RT_LIBENT);
+    fixture_wr32(seg + RT_MODINFO + 40, link + RT_LIBENT_END);
+    fixture_wr32(seg + RT_MODINFO + 44, link + RT_LIBENT_END);
+    fixture_wr32(seg + RT_MODINFO + 48, link + RT_LIBENT_END);
+    fixture_wr16(seg + RT_LIBENT + 6, 0x8000);
+    seg[RT_LIBENT + 8] = 4;
+    fixture_wr16(seg + RT_LIBENT + 10, 2);
+    fixture_wr32(seg + RT_LIBENT + 12, link + RT_SYSLIB_TABLE);
+    fixture_wr32(seg + RT_LIBENT + 16, link + RT_LIBNAME);
+    fixture_wr16(seg + RT_LIBENT + 20, 0x0011);
+    fixture_wr16(seg + RT_LIBENT + 22, 0x0001);
+    seg[RT_LIBENT + 24] = 4;
+    fixture_wr16(seg + RT_LIBENT + 26, 1);
+    fixture_wr32(seg + RT_LIBENT + 28, link + RT_LIB_TABLE);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xD632ACDBu);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 4, 0xCEE05613u);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 8, link + RT_START);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 12, link + RT_STOP);
+    fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID + 1u);
+    fixture_wr32(seg + RT_LIB_TABLE + 4, link + RT_QUERY);
+    memcpy(seg + RT_LIBNAME, "RtFixedLib", 11);
+    fixture_wr32(seg + RT_DATA_PTR, link + RT_QUERY);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
 static int write_runtime_module_prx(const char *path, uint8_t flavour) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
@@ -1757,6 +1849,10 @@ static void test_runtime_placed_modules(void) {
     {
         extern uint32_t sr_hle_test_load_module_by_id(CpuState *s);
         char host[512];
+        const char *old_memstick = getenv("SR_MEMSTICK");
+        char saved_memstick[512] = "";
+        int had_memstick = old_memstick != NULL;
+        if (old_memstick) snprintf(saved_memstick, sizeof(saved_memstick), "%s", old_memstick);
         CreateDirectoryA("build", NULL);
         CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
         CreateDirectoryA("build/hle_fd_namespace_ms/NKRT", NULL);
@@ -1787,6 +1883,74 @@ static void test_runtime_placed_modules(void) {
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
         remove(host);
+        SetEnvironmentVariableA("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
+        _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
+    }
+
+    /* A fixed-address module: exactly its link range, bound at base 0. */
+    {
+        static const char fixed_guest[] = "disc0:/PSP_GAME/USRDIR/rt-fixed.prx";
+        char fixed_path[1024];
+        runtime_module_path(fixed_path, sizeof(fixed_path), "rt-fixed.prx");
+        s_rt_fixed_link = ((sr_hle_test_partition_heap_ptr() + 0xFFFFu) & ~0xFFFFu) + 0x10000u;
+        const uint32_t link = s_rt_fixed_link;
+        s_rt_fixed_funcs[0] = (SrModuleFunc){link + RT_START, 2u, rt_fixed_start};
+        s_rt_fixed_funcs[1] = (SrModuleFunc){link + RT_STOP, 2u, rt_fixed_stop};
+        s_rt_fixed_funcs[2] = (SrModuleFunc){link + RT_QUERY, 2u, rt_fixed_query};
+        s_rt_fixed_spans[0] = (SrModuleSpan){link + RT_START, link + RT_TEXT_END};
+        s_rt_fixed_code.link_low = link;
+        s_rt_fixed_code.link_high = link + RT_MEM_SPAN;
+        expect(write_fixed_module_prx(fixed_path, link) &&
+                   runtime_module_identity(fixed_path, &s_rt_fixed_code),
+               "runtime placement: the fixed-address module fixture is written");
+        sr_module_code_register(&s_rt_fixed_code);
+        s_rt_fixed_start_calls = 0;
+
+        uint32_t blocker = sr_alloc_block_at(link + 0x100u, 0x100u, "blocker");
+        expect(blocker != 0xFFFFFFFFu, "runtime placement: part of the fixed link range is taken");
+        rt_capture_begin();
+        refused = rt_load(fixed_guest, 0u);
+        out = rt_capture_end();
+        expect(refused == 0x80020190u &&
+                   strstr(out, "GUEST_MODULE_LOAD_NO_MEMORY: rt-fixed.prx needs 0x300 bytes at "
+                               "its fixed link address") != NULL &&
+                   !sr_module_code_is_bound(&s_rt_fixed_code, NULL),
+               "runtime placement: a fixed-address module never moves off its occupied range");
+        {
+            CpuState cpu;
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = blocker;
+            expect(sr_syscall(&cpu, 0xb6d61d02u) == 0u,   /* sceKernelFreePartitionMemory */
+                   "runtime placement: the blocking block is released");
+        }
+
+        uid = rt_load(fixed_guest, 0u);
+        uint32_t fixed_base = 0xFFFFFFFFu;
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_fixed_code, &fixed_base) && fixed_base == 0u,
+               "runtime placement: a fixed-address module binds at base 0");
+        expect(MEM_R32(link + RT_DATA_PTR) == link + RT_QUERY && MEM_R32(link + RT_BSS_MARK) == 0u &&
+                   sr_lookup(link + RT_QUERY) == rt_fixed_query &&
+                   sr_hle_resolve_late_import(RT_EXPORT_NID + 1u) == link + RT_QUERY,
+               "runtime placement: a fixed-address module is laid out at its link address");
+        expect(sr_alloc_block_at(link, 0x100u, "overlap") == 0xFFFFFFFFu,
+               "runtime placement: the fixed module owns its link range in the partition");
+        expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_fixed_start_calls == 1u &&
+                   rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   !sr_module_code_is_bound(&s_rt_fixed_code, NULL),
+               "runtime placement: a fixed-address module runs its lifecycle and unbinds");
+        uint32_t reclaimed = sr_alloc_block_at(link, RT_MEM_SPAN, "reclaimed");
+        expect(reclaimed != 0xFFFFFFFFu,
+               "runtime placement: unloading a fixed-address module frees its link range");
+        if (reclaimed != 0xFFFFFFFFu) {
+            CpuState cpu;
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = reclaimed;
+            (void)sr_syscall(&cpu, 0xb6d61d02u);           /* sceKernelFreePartitionMemory */
+        }
+        remove(fixed_path);
     }
 
     /* A partition that cannot hold the image: SCE_KERNEL_ERROR_NO_MEMORY, nothing bound. */
