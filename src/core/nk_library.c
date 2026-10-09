@@ -160,8 +160,15 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
 
     fprintf(f, "{\n  \"schema_version\": 1,\n  \"games\": [\n");
 
+    /* Bundled samples are in memory only and are never written. */
+    int persisted_total = 0;
+    for (int i = 0; i < lib->count; i++) {
+        if (!lib->entries[i].is_sample) persisted_total++;
+    }
+    int persisted_index = 0;
     for (int i = 0; i < lib->count; i++) {
         const NkGameEntry *g = &lib->entries[i];
+        if (g->is_sample) continue;
         char esc_title[NK_MAX_TITLE_LEN * 2];
         char esc_iso[NK_MAX_PATH * 2];
         char esc_prep[NK_MAX_PATH * 2];
@@ -199,7 +206,8 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"extracted_visual_count\": %u,\n", (unsigned)g->extracted_visual_count);
         fprintf(f, "      \"extracted_layout_count\": %u,\n", (unsigned)g->extracted_layout_count);
         fprintf(f, "      \"last_played\": \"%s\"\n", g->last_played);
-        fprintf(f, "    }%s\n", (i < lib->count - 1) ? "," : "");
+        fprintf(f, "    }%s\n", (persisted_index + 1 < persisted_total) ? "," : "");
+        persisted_index++;
     }
 
     fprintf(f, "  ]\n}\n");

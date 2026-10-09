@@ -1637,6 +1637,48 @@ static void test_library_card_status_text(void) {
     printf("[PLAYER_STATE_TEST] library card status text PASS\n");
 }
 
+/* The bundled sample entries (the UI fixtures from player_app_populate_sample_games)
+ * live in memory only. Every library save writes library.json, so a save made for
+ * a real title (an add, or the last-played record after a launch) must leave the
+ * samples out of the file. The file is redirected to a disposable path. */
+static void test_sample_entries_never_reach_library_json(void) {
+    printf("[PLAYER_STATE_TEST] Subtest: sample entries never reach library.json\n");
+    char cache[512];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache, sizeof(cache)));
+    char path[1024];
+    snprintf(path, sizeof(path), "%s%csample_isolation.json", cache,
+             nk_platform_path_separator());
+    remove(path);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    assert(strlen(path) < sizeof(app->library.library_path));
+    strcpy(app->library.library_path, path);
+
+    /* The samples enter the in-memory library, as they do for --demo runs. */
+    player_app_populate_sample_games(app);
+    assert(app->library.count >= 2);
+
+    /* A real title is added, which saves the library. */
+    GameRecord user;
+    memset(&user, 0, sizeof(user));
+    seed_entry(&user, "TEST00041", "Synthetic User Title");
+    assert(player_app_add_game(app, &user));
+
+    NkLibrary loaded;
+    nk_library_init(&loaded);
+    assert(nk_library_load(&loaded, path) == NK_OK);
+    assert(nk_library_count(&loaded) == 1);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00041") != NULL);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00005") == NULL);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00006") == NULL);
+
+    remove(path);
+    free(app);
+    printf("[PLAYER_STATE_TEST] sample entries stay out of library.json PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -1644,6 +1686,7 @@ int main(int argc, char **argv) {
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
     test_library_card_status_text();
+    test_sample_entries_never_reach_library_json();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);

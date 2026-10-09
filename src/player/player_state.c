@@ -629,6 +629,7 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
             !title->primary_disc_id || !title->display_name) continue;
         GameRecord game;
         memset(&game, 0, sizeof(game));
+        game.is_sample = true;
         snprintf(game.disc_id, sizeof(game.disc_id), "%s", title->primary_disc_id);
         snprintf(game.title_name, sizeof(game.title_name), "%s", title->display_name);
         snprintf(game.title_id, sizeof(game.title_id), "%s", title->id);
@@ -800,6 +801,8 @@ size_t player_text_for_bitmap_font(const char *in, char *out, size_t out_size) {
 
 bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
     if (!app || !game || game->disc_id[0] == '\0') return false;
+    /* A sample is shown, never added to the user's library. */
+    if (game->is_sample) return false;
 
     GameRecord merged = *game;
     for (int i = 0; i < app->library.count; i++) {
@@ -1604,6 +1607,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
      * the status must not claim otherwise. */
     GameRecord p5;
     memset(&p5, 0, sizeof(p5));
+    p5.is_sample = true;
     snprintf(p5.disc_id, sizeof(p5.disc_id), "TEST00005");
     snprintf(p5.title_name, sizeof(p5.title_name), "PSPDEV Phase 5 Source-Owned Fixture");
     snprintf(p5.disc_version, sizeof(p5.disc_version), "1.00");
@@ -1629,6 +1633,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
        truthful until the fixture has a source ISO and matching private identity. */
     GameRecord disp;
     memset(&disp, 0, sizeof(disp));
+    disp.is_sample = true;
     snprintf(disp.disc_id, sizeof(disp.disc_id), "TEST00006");
     snprintf(disp.title_name, sizeof(disp.title_name), "Nakagawa Display Smoke Fixture");
     snprintf(disp.disc_version, sizeof(disp.disc_version), "1.00");
@@ -1858,7 +1863,9 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (tm_info) {
         strftime(app->games[game_index].last_played, sizeof(app->games[game_index].last_played),
                  "%Y-%m-%d %H:%M", tm_info);
-        if (app->library.library_path[0]) {
+        /* A bundled demo or sample that ran is not a library title: its last-played
+         * time stays in memory and the library file is left as the user made it. */
+        if (app->library.library_path[0] && !app->games[game_index].is_sample) {
             nk_library_add_or_update(&app->library, &app->games[game_index]);
             nk_library_save(&app->library, app->library.library_path);
         }
