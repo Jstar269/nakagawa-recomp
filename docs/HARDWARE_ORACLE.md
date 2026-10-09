@@ -768,7 +768,9 @@ must show that the probe's only remaining thread is its main thread. After the
 module UID/name pairs, with the probe UID absent. The verdict lists the threads S2
 gained or lost relative to S0. When the only extra threads are the module's own S1
 threads, it also names the boundary: the probe main thread survived the module stop
-and unload. Per-partition free-memory changes
+and unload. The verdict also keeps PSPLink's `modstun` reply in `modstun_reply`.
+Its `Status` field is the probe's `module_stop` return value: 0 only after main
+ended and was deleted. Per-partition free-memory changes
 are retained as diagnostics; allocator equality is not a teardown gate. The runner
 also requires a qualified shell and the host0 round-trip. `exprint` output remains
 diagnostic because its interpretation is not qualified, so its status is `NOT_RUN`.

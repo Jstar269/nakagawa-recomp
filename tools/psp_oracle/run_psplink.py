@@ -1406,6 +1406,7 @@ class PsplinkCampaignRunner:
         self.resume_case_index: int | None = None
         self.transport_start_problem: str | None = None
         self.hardware_lock_status: str | None = None
+        self.last_modstun_reply: str | None = None
         self._l0_cleanup_attempted = False
         self._l1_attempted = False
         self._l1_active = False
@@ -1643,6 +1644,14 @@ class PsplinkCampaignRunner:
     def _unload_status(self, module_uid: str) -> str:
         stopped = self._request(f"modstun {module_uid}", self.cleanup_timeout)
         stop_text = stopped[1] + stopped[2]
+        # Keep PSPLink's own reply ("Module Stop/Unload <stop>/<unload> Status
+        # <module_stop return>") as teardown evidence; the probe's module_stop
+        # returns 0 only after it ended and deleted main.
+        self.last_modstun_reply = next(
+            (line.strip()[:200] for line in stop_text.splitlines()
+             if line.strip().startswith("Module Stop/Unload")),
+            None,
+        )
         if stopped[3] != "PROCESS_EXITED":
             return "BLOCKED"
         if stopped[0] != 0 or "Module Stop/Unload 0x00000000/" not in stop_text:
@@ -2377,6 +2386,7 @@ class PsplinkCampaignRunner:
                 else:
                     module_thread_problem = "ldstart did not return a module UID"
 
+                self.last_modstun_reply = None
                 unload_status = (
                     self._unload_status(module_uid) if module_uid else "BLOCKED"
                 )
@@ -2422,6 +2432,7 @@ class PsplinkCampaignRunner:
                     module_threads_available=module_thread_problem is None,
                     exprint_command_status=exprint[3],
                 )
+                teardown_report["modstun_reply"] = self.last_modstun_reply
                 for stage, problem in (("S1", s1_problem), ("S2", s2_problem)):
                     if problem:
                         teardown_report["issues"].append(

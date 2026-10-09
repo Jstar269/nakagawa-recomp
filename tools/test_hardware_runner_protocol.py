@@ -1043,6 +1043,10 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(commands.count("modstun 0x04280001"), 2)
         self.assertEqual(commands.count("modinfo 0x04280001"), 2)
         self.assertEqual(
+            [envelope["TEARDOWN_CHECK"]["modstun_reply"] for envelope in report["envelopes"]],
+            ["Module Stop/Unload 0x00000000/0x04280001 Status 0xDEADBEEF"] * 2,
+        )
+        self.assertEqual(
             [timeout for command, timeout in transport.commands if command.startswith("ldstart")],
             [1.25, 1.25],
         )
