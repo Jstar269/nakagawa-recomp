@@ -1207,7 +1207,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ead02084f2ca3e48d25138a322dc423704cf334ebaacd84ee7c47338a30f846b"
+      "sha256": "2ca84d0be21df0a625981cb69c79b64b463bd48bf821855c193e4c3f748d2177"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
