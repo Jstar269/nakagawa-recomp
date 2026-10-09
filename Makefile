@@ -707,6 +707,8 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/savedata.c \
               src/rt/osk_win.c \
               src/rt/osk_text_entry.c \
+              src/rt/osk_overlay.c \
+              src/rt/osk_overlay_paint.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
@@ -1666,7 +1668,7 @@ $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h
 
 $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/osk_overlay.h src/rt/osk_text_entry.h src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
@@ -2012,8 +2014,19 @@ native-core-tests: osk-text-entry-selftest
 osk-text-entry-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT) \
-		src/rt/osk_text_entry_selftest.c src/rt/osk_text_entry.c
+		src/rt/osk_text_entry_selftest.c src/rt/osk_text_entry.c src/rt/osk_overlay.c
 	$(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT)
+
+# osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
+# navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
+# the UTF-16 answer, the inputtype rules, edge-based pad input and the session the HLE keyboard
+# polls. Pure C with no window, no SDL and no game data, so it runs on every host.
+native-core-tests: osk-overlay-selftest
+osk-overlay-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/osk_overlay_selftest$(EXE_EXT) \
+		src/rt/osk_overlay_selftest.c src/rt/osk_overlay.c
+	$(BUILD_DIR)/osk_overlay_selftest$(EXE_EXT)
 
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
 # src/rt/atrac3p/). Public checks are source-owned (create validation, NULL/
@@ -2207,7 +2220,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nest
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2235,13 +2248,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2267,12 +2280,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
@@ -2627,9 +2640,19 @@ package-builder-test-bin:
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
 		tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o build/test_package_builder$(EXE_EXT)
 
+# osk-overlay-paint-selftest - the in-window on-screen keyboard drawn over a synthetic frame
+# (src/rt/osk_overlay_paint.c): the highlight, a dimmed key, the text field, and an unchanged
+# frame while closed. SDL3 software renderer, no window. Writes the frame as a BMP into build/
+# for the visual check. Needs SDL3, so it runs with the player UI tests.
+osk-overlay-paint-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Isrc/rt $(SDL3_INC_FLAGS) \
+		-o $(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) \
+		src/rt/osk_overlay_paint_selftest.c src/rt/osk_overlay.c src/rt/osk_overlay_paint.c $(LDFLAGS) $(LIBS)
+	$(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) $(BUILD_DIR)/osk_overlay_paint_selftest.bmp
+
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
 # player itself builds rather than in the SDL-free native-core-tests set.
-player-ui-tests:
+player-ui-tests: osk-overlay-paint-selftest
 	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o build/test_ui_clip$(EXE_EXT)

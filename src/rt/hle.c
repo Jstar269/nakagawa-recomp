@@ -69,6 +69,7 @@
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 #include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
 #include "osk_text_entry.h" /* keyboard text collected without stopping guest time */
+#include "osk_overlay.h"    /* the in-window keyboard the presenter draws and the pad drives */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9535,7 +9536,9 @@ static int osk_collect(void) {
         wcscpy(out, intext);
         int ok;
         if (!scripted) {
-            int answer = sr_osk_text_entry_poll(desc, intext, out, cap);
+            /* SceUtilityOskData.inputtype sits at +0x10 in the public PSPSDK layout. */
+            uint32_t input_type = (uint32_t)MEM_R32(f + 0x10);
+            int answer = sr_osk_text_entry_poll(desc, intext, out, cap, input_type);
             if (answer == SR_OSK_TEXT_PENDING) {
                 s_osk_request_open = 1;
                 return 0;
@@ -16280,6 +16283,14 @@ void sr_ctrl_sample(void) {
     uint8_t lx = 128, ly = 128;
     if (gui_on()) gui_analog(&lx, &ly);
     uint32_t buttons = h_CtrlButtons();
+    /* The on-screen keyboard is a system dialog: while it is open the title's pad reads
+     * nothing, and the keyboard takes the pad instead. The scripted route reaches it as the
+     * held mask; a live gamepad as its press events (gui.c). The auto-START pulse never does,
+     * so a headless run cannot confirm a name it did not type. The held state is tracked
+     * whether or not the keyboard is open, so a button already down does not act on it. */
+    uint32_t pulses = gui_pad_pulses_take();
+    sr_osk_overlay_pad(s_route_state != ROUTE_OFF ? s_route_keys : 0u, pulses);
+    if (sr_osk_overlay_active()) buttons = 0u;
     if (getenv("SR_INLOG")) {
         static uint32_t previous;
         if (buttons != previous) {
@@ -16288,8 +16299,13 @@ void sr_ctrl_sample(void) {
             previous = buttons;
         }
     }
+    uint32_t input_id = sr_input_latch(&s_input);
+    /* The on-screen keyboard reads every sample while it is open, as the system keyboard
+     * polls the pad on a PSP, so a scripted press it took counts as read and the route moves
+     * on; without this the route would wait for a guest read that the keyboard now holds back. */
+    if (sr_osk_overlay_active()) (void)sr_input_read(&s_input, input_id);
     s_ctrl_ring[s_ctrl_w].btn = buttons;
-    s_ctrl_ring[s_ctrl_w].input_id = sr_input_latch(&s_input);
+    s_ctrl_ring[s_ctrl_w].input_id = input_id;
     s_ctrl_ring[s_ctrl_w].ts = (uint32_t)sched_vtime_us();   /* low 32 bits of guest microsecond clock at latch */
     s_ctrl_ring[s_ctrl_w].lx = lx;
     s_ctrl_ring[s_ctrl_w].ly = ly;
