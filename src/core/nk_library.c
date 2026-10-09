@@ -3,6 +3,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "nk_json.h"
 #include "nk_library.h"
 #include "nk_platform.h"
 #include <ctype.h>
@@ -96,25 +97,35 @@ NkResult nk_library_remove(NkLibrary *lib, const char *disc_id) {
     return NK_ERROR_FILE_NOT_FOUND;
 }
 
-/* Escape string for JSON */
+/* Escape string for JSON. Every control character is escaped, so the reader
+ * (which refuses raw control characters) reads back what was written. */
 static void escape_json_string(char *dest, size_t dest_size, const char *src) {
     if (!dest || dest_size == 0) return;
     size_t d = 0;
-    for (size_t s = 0; src && src[s] && d + 2 < dest_size; s++) {
-        if (src[s] == '\"' || src[s] == '\\') {
+    for (size_t s = 0; src && src[s] && d + 6 < dest_size; s++) {
+        unsigned char c = (unsigned char)src[s];
+        if (c == '\"' || c == '\\') {
             dest[d++] = '\\';
-            dest[d++] = src[s];
-        } else if (src[s] == '\n') {
+            dest[d++] = (char)c;
+        } else if (c == '\n') {
             dest[d++] = '\\';
             dest[d++] = 'n';
-        } else if (src[s] == '\r') {
+        } else if (c == '\r') {
             dest[d++] = '\\';
             dest[d++] = 'r';
-        } else if (src[s] == '\t') {
+        } else if (c == '\t') {
             dest[d++] = '\\';
             dest[d++] = 't';
+        } else if (c < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            dest[d++] = '\\';
+            dest[d++] = 'u';
+            dest[d++] = '0';
+            dest[d++] = '0';
+            dest[d++] = hex[c >> 4];
+            dest[d++] = hex[c & 0x0F];
         } else {
-            dest[d++] = src[s];
+            dest[d++] = (char)c;
         }
     }
     dest[d] = '\0';
@@ -305,7 +316,12 @@ static const char *skip_whitespace(const char *p) {
     return p;
 }
 
-/* Bounded string value parser with overflow draining and unterminated string check */
+/* Bounded JSON string reader. Escapes are decoded by the same reader the
+ * manifest and profile parsers use (nk_json_decode_escape), so \uXXXX, surrogate
+ * pairs and the short escapes all produce their UTF-8 bytes. A malformed escape,
+ * a raw control character, malformed UTF-8 or an unterminated string fails the
+ * parse. A code point that does not fit the field is dropped whole, so a value
+ * is never cut inside a UTF-8 sequence. */
 static const char *parse_string_val(const char *p, char *out_val, size_t max_len) {
     if (!out_val || max_len == 0) return NULL;
     out_val[0] = '\0';
@@ -314,24 +330,40 @@ static const char *parse_string_val(const char *p, char *out_val, size_t max_len
     p++;
     size_t idx = 0;
     while (*p && *p != '\"') {
-        if (*p == '\n' || *p == '\r') {
-            /* Raw unescaped control character in JSON string is invalid per RFC 8259 */
+        unsigned char c = (unsigned char)*p;
+        char encoded[4];
+        size_t length = 0;
+        if (c < 0x20) {
+            /* Raw control characters are invalid in a JSON string (RFC 8259). */
             return NULL;
-        }
-        char c = *p;
-        if (c == '\\' && *(p + 1)) {
+        } else if (c == '\\') {
+            /* An escape reads at most 11 bytes after the backslash (a surrogate pair). */
+            size_t avail = 0;
+            while (avail < 11 && p[1 + avail] != '\0') avail++;
+            uint32_t cp = 0;
+            size_t used = 0;
+            if (nk_json_decode_escape(p + 1, avail, &cp, &used) != NULL) return NULL;
+            length = nk_json_utf8_encode(cp, encoded);
+            p += 1 + used;
+        } else if (c < 0x80) {
+            encoded[0] = (char)c;
+            length = 1;
             p++;
-            if (*p == 'n') c = '\n';
-            else if (*p == 'r') c = '\r';
-            else if (*p == 't') c = '\t';
-            else if (*p == '\\') c = '\\';
-            else if (*p == '\"') c = '\"';
-            else c = *p;
+        } else {
+            /* Raw non-ASCII: copy one complete, validated UTF-8 sequence. */
+            size_t seq = (c >= 0xC2 && c <= 0xDF) ? 2u
+                       : (c >= 0xE0 && c <= 0xEF) ? 3u
+                       : (c >= 0xF0 && c <= 0xF4) ? 4u
+                       : 0u;
+            if (seq == 0 || !nk_json_validate_utf8((const uint8_t *)p, seq)) return NULL;
+            memcpy(encoded, p, seq);
+            length = seq;
+            p += seq;
         }
-        if (idx + 1 < max_len) {
-            out_val[idx++] = c;
+        if (idx + length < max_len) {
+            memcpy(out_val + idx, encoded, length);
+            idx += length;
         }
-        p++;
     }
     out_val[idx] = '\0';
     if (*p != '\"') {
