@@ -6448,7 +6448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8a07310165ab91cb1d7754fdcd84d1d05bab86d1f752202b1e5cbf9a4511967"
+      "sha256": "dc82a2bb2583c73256449a9978c53b1fc485397b2cd155d21fbffbd5749ecc38"
     },
     {
       "path": "tools/hle_manifest.py",
@@ -6799,7 +6799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5cd5ace7070807a00143cacfbda77106a15ede8748baeca5f577f5912df5b1f8"
+      "sha256": "40a0c645b117eb28c989e3e5b57424e4f3c7a3e41a4bfee1a4736bd6031ffb52"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -6823,7 +6823,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bbb5c3fd8b0dd92a4a99027e005ea7f2b922dac77f700ad56603c5e8b74a7ea8"
+      "sha256": "a460c4d79c64c6335616d5b153edcce91773955830423af918df77f66020e17f"
     },
     {
       "path": "tools/nk_core/synthetic_disc_ids.py",
@@ -8315,7 +8315,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd295a215e66e1b7454c6416e0c0917fe217c60a26cd2d09a691eeeb9b25b091"
+      "sha256": "a4eee94eba9fbfd671a3b32e65313c092bce3b2a9be8343bf22d8494fae8c433"
     },
     {
       "path": "tools/test_hle_manifest.py",
@@ -8724,7 +8724,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7cbd30cb2f8ee1002566152ce0eeed01f5e2ff82ce9460027c8013a76f61eb80"
+      "sha256": "72e5bc248a9b27d63ecb5ee0870bafd089ae0b47e249fe73e321701a59a2f267"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -8868,7 +8868,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44a15b45ac9f4f5c87be2e0a1ac654b2a6123be073ecc335c8cb42807b5d2319"
+      "sha256": "4a96424c068490ccdfe9fbf12f23a0fc0c8a972027520f9e0050484c4ee31a95"
     },
     {
       "path": "tools/test_production_smoke.py",
