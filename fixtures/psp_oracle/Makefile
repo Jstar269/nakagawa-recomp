@@ -324,6 +324,14 @@ ifeq ($(CASE),wait-outcomes)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o
 endif
 
+# The main probe exports module_stop (see "Module lifecycle" in probe.c), so it
+# replaces the SDK default syslib export table, which names only module_start
+# and module_info. The table is generated into the ignored build directory and
+# compiled by the SDK's %.c: %.exp and %.o: %.c rules.
+ifneq ($(filter $(BUILD_DIR)/probe.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
+
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
 $(error PSPDEV/PSPSDK is not available: psp-config --pspsdk-path failed)
@@ -338,6 +346,11 @@ FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" &
 # objects under the ignored build directory.
 $(BUILD_DIR)/probe.o: probe.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_exports.exp: Makefile
+	printf '%s\n' 'PSP_BEGIN_EXPORTS' 'PSP_EXPORT_START(syslib, 0, 0x8000)' \
+		'PSP_EXPORT_FUNC_HASH(module_start)' 'PSP_EXPORT_FUNC_HASH(module_stop)' \
+		'PSP_EXPORT_VAR_HASH(module_info)' 'PSP_EXPORT_END' 'PSP_END_EXPORTS' > $@
 
 $(BUILD_DIR)/mutex_imports.o: mutex_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@

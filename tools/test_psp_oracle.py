@@ -1325,11 +1325,15 @@ class PspOracleRunnerTests(unittest.TestCase):
                     "",
                     "PROCESS_EXITED",
                 ),
+            ), patch(
+                "psp_oracle.run_psplink._read_hardware_lock",
+                return_value=(True, "HELD_AND_CONFIRMED"),
             ):
                 self.assertEqual(
                     run_psplink_main(
                         [
                             "--command", "fake-pspsh",
+                            "--session-id", "synthetic-session",
                             "--results-directory", str(results),
                             "--out", str(report),
                         ]
@@ -1623,6 +1627,41 @@ class PspLinkTeardownSnapshotTests(unittest.TestCase):
         self.assertNotIn(
             "post-unload per-partition free memory differs from S0", report["issues"]
         )
+
+    def test_post_unload_survival_of_the_probe_main_thread_is_named(self) -> None:
+        before, after_probe, _after_unload, module_main = self.clean_triplet()
+        after_unload = self.snapshot(threads=set(before.threads) | {module_main})
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "FAIL")
+        self.assertTrue(report["recovery_eligible"])
+        self.assertIn("post-unload thread set differs from S0", report["issues"])
+        self.assertIn(
+            "probe main thread survived module stop/unload; "
+            "the probe's module_stop did not end and delete it",
+            report["issues"],
+        )
+        self.assertEqual(report["s2_leftover_threads"], [list(module_main)])
+        self.assertEqual(report["s2_missing_threads"], [])
+
+    def test_unrelated_post_unload_thread_is_not_blamed_on_module_stop(self) -> None:
+        before, after_probe, _after_unload, module_main = self.clean_triplet()
+        stranger = ("0x0000007f", "SceUnrelatedThread")
+        after_unload = self.snapshot(threads=set(before.threads) | {stranger})
+        report = evaluate_teardown_snapshots(
+            before, after_probe, after_unload, "0x00000008", {module_main},
+            unload_confirmed=True, sentinel_status="PASS",
+            shell_qualified=True,
+            host0_roundtrip=True,
+        )
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("post-unload thread set differs from S0", report["issues"])
+        self.assertFalse(any("module_stop" in issue for issue in report["issues"]))
+        self.assertEqual(report["s2_leftover_threads"], [list(stranger)])
 
     def test_three_snapshot_check_fails_when_modstun_handshake_is_unconfirmed(self) -> None:
         before, after_probe, after_unload, module_main = self.clean_triplet()
@@ -1966,7 +2005,7 @@ int main(void) {
             "probe_teardown_objects()", "probe_teardown_io_audio()",
             "probe_teardown_memory()", "probe_teardown_state()",
             "probe_teardown_host0(emulated)", "NAKAGAWA_PSP_COMPLETE",
-            "sceKernelSleepThread()",
+            "probe_park_until_stop()",
         )
         positions = [teardown.index(call) for call in ordered_calls]
         self.assertEqual(positions, sorted(positions))
@@ -1974,6 +2013,91 @@ int main(void) {
         self.assertNotIn("sceKernelExitDeleteThread", main)
         teardown_test = probe.split("static void run_teardown_test(", 1)[1].split("\n}", 1)[0]
         self.assertNotIn("sceKernelExitDeleteThread", teardown_test)
+
+    def test_registry_done_counts_every_record_before_it(self) -> None:
+        """registry-done out2 is the number of records before it (parser contract).
+
+        The 2026-10-08 probe counted only census records (categories + keys), so a
+        finished console stream failed its completion-count check by exactly the
+        fixed records. Both emission paths must now advance the counter.
+        """
+
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" /
+                 "probe.c").read_text(encoding="utf-8")
+        emit = probe.split("static void emit_registry_record(", 1)[1].split("\n}\n", 1)[0]
+        short_path = emit.split("size_t capacity = 512u;", 1)[0]
+        self.assertIn("emit_record_extended(", short_path)
+        self.assertLess(
+            short_path.index("emit_record_extended("), short_path.index("s_registry_records++;")
+        )
+        self.assertLess(short_path.index("s_registry_records++;"), short_path.index("return;"))
+        long_path = emit.split("size_t capacity = 512u;", 1)[1]
+        self.assertIn("s_registry_records++;", long_path)
+
+    def test_probe_module_stop_ends_parked_main_through_the_crt_runtime_teardown(self) -> None:
+        """The probe owns the stop half of the lifecycle crt0_prx starts.
+
+        PSPSDK's PRX CRT creates main in module_start and exports no
+        module_stop; its exit path ends in sceKernelExitGame, which PSPLink
+        hooks (reset or a non-deleting thread exit). module_stop must therefore
+        end and delete main itself, and main must leave through the CRT's
+        runtime de-initialisation without deleting itself.
+        """
+
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        probe = (fixture / "probe.c").read_text(encoding="utf-8")
+
+        def body(signature: str) -> str:
+            return probe.split(signature, 1)[1].split("\n}\n", 1)[0]
+
+        main = body("int main(int argc, char *argv[]) {")
+        self.assertTrue(
+            main.lstrip().startswith("(void)argc;\n    (void)argv;\n    "
+                                     "s_probe_main_thread = sceKernelGetThreadId();")
+        )
+        park = body("static void probe_park_until_stop(void) {")
+        park_calls = (
+            "while (!s_probe_stop_requested) sceKernelSleepThread();",
+            "_fini();", "__libcglue_deinit();", "sceKernelExitThread(0);",
+        )
+        positions = [park.index(call) for call in park_calls]
+        self.assertEqual(positions, sorted(positions))
+        stop = body("int module_stop(SceSize args, void *argp) {")
+        stop_calls = (
+            "if (main_thread < 0) return 1;",
+            "s_probe_stop_requested = 1;",
+            "sceKernelWakeupThread(main_thread)",
+            "SceUInt timeout = PROBE_MAIN_STOP_TIMEOUT_US;",
+            "if (sceKernelWaitThreadEnd(main_thread, &timeout) < 0) return 1;",
+            "if (sceKernelDeleteThread(main_thread) < 0) return 1;",
+            "return 0;",
+        )
+        positions = [stop.index(call) for call in stop_calls]
+        self.assertEqual(positions, sorted(positions))
+        for section in (park, stop):
+            self.assertNotIn("sceKernelExitDeleteThread", section)
+            self.assertNotIn("sceKernelTerminate", section)
+            self.assertNotIn("sceKernelExitGame", section)
+        self.assertRegex(probe, r"(?m)^#define PROBE_MAIN_STOP_TIMEOUT_US 1000000u$")
+
+        makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        self.assertIn(
+            "ifneq ($(filter $(BUILD_DIR)/probe.o,$(OBJS)),)\n"
+            "PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp\nendif\n",
+            makefile,
+        )
+        export_rule = makefile.split("$(BUILD_DIR)/probe_exports.exp: Makefile\n", 1)[1]
+        export_rule = export_rule.split("\n\n", 1)[0]
+        exported = (
+            "'PSP_EXPORT_START(syslib, 0, 0x8000)'", "'PSP_EXPORT_FUNC_HASH(module_start)'",
+            "'PSP_EXPORT_FUNC_HASH(module_stop)'", "'PSP_EXPORT_VAR_HASH(module_info)'",
+        )
+        for entry in exported:
+            self.assertIn(entry, export_rule)
+        self.assertLess(
+            makefile.index("PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp"),
+            makefile.index("include $(PSPSDK)/lib/build.mak"),
+        )
 
 
 class PspOracleBuildRouteTests(unittest.TestCase):

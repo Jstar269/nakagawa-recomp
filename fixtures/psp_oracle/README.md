@@ -207,7 +207,8 @@ python tools/psp_oracle/run_psplink.py `
   --host0-root fixtures/psp_oracle/build/w6-size-bfff `
   --campaign-case transport-write=fixtures/psp_oracle/build/w6-size-bfff/transport_write.prx `
   --campaign-case dmac-size-matrix-size-0x0000bfff=fixtures/psp_oracle/build/w6-size-bfff/dmac_size_matrix_cell.prx `
-  --source-commit <exact-clean-commit> --model <operator-recorded-model> --firmware <operator-recorded-firmware>
+  --source-commit <exact-clean-commit> --model <operator-recorded-model> --firmware <operator-recorded-firmware> `
+  --session-id <hardware-lock-holder-session>
 ```
 
 The runner reads `dmac_size_matrix_cell_log.txt` from the host0 scratch root
@@ -483,6 +484,14 @@ order, then every remaining README `NOT_RUN` probe: `smoke`,
 `dma-invalid-tail-*` launches, and the four `mutex-*` launches. `delay-zero` is
 not queued because it is already measured.
 
+The private plan is a schema 1 JSON object with these fields: `campaign_id`,
+`session_id` (the hardware lock holder), `source_commit`, `console_model`,
+`host0_root`, `report_path`, `checkpoint_path`, and the ordered `cases` (each with
+`case_id`, `prx`, and `timeout_seconds`). The optional `expected_firmware` is
+compared exactly with PSPLink's `pspver` version, so it must use that form:
+`6.6.1` for firmware 6.61. Validation refuses `6.61` and any other form. The
+optional `model_code` is the raw non-negative PspModel integer.
+
 Validate the private queue offline before a hardware session:
 
 ```powershell
@@ -490,11 +499,46 @@ python tools/psp_oracle/run_psplink.py --campaign-plan <private-campaign-plan.js
 ```
 
 The actual campaign refuses to start unless the hardware lock is `HELD`,
-confirms a power cycle, and names the same session as the private plan.
+confirms a power cycle, and names the same session as the private plan. Every
+mode that touches the PSP goes through the same lock gate. `--campaign-case` and
+`--command` require `--session-id`, which names the lock holder. The gate is
+checked before the USBHostFS transport starts, and it is read again before each
+case's soft reset, before each launch, and before every PSPLink `reset`. A
+refusal stops with `HARDWARE_LOCK_REFUSED` before the next PSP action. In plan
+mode it keeps the checkpoint at the unlaunched case.
 After an interrupted case, the maintainer power-cycles the PSP and resumes with
 `--confirm-power-cycle`; the failed case is retained as incomplete and the next
 case starts on the new boot. No automatic retry or semantic result is inferred
 from a host timeout.
+
+The checkpoint never loses its resume position. A stop before the next case is
+launched, such as `TRANSPORT_START_FAILED` or a failed baseline snapshot, leaves
+the checkpoint `IN_PROGRESS` at that case and owes no power cycle; rerun without
+`--confirm-power-cycle`. Only a launched case without a clean completion, or a
+failed soft reset, waits for a power cycle. The checkpoint also records whether
+the `transport-write` preflight qualified host0; a campaign resumes past the
+preflight only when it did, and an interrupted preflight resumes at
+`transport-write`. Interrupted cases accumulate in `interrupted_cases`.
+
+The runner waits for each case's host0 log until the probe appends its
+completion marker, which every probe writes after its last record. A slow stream
+keeps the wait open up to the plan's `timeout_seconds` for that case; for example,
+the registry census writes hundreds of records and a durable step marker before
+each risky call. Once the marker arrives the stream is final, and the runner
+checks the records against their contract. A finished stream that violates its
+contract is torn down normally and its envelope names the protocol failure, so it
+is not mistaken for an unfinished probe. Only a stream without a marker at the
+timeout (or a failed launch) stops the queue. That stop reason gives the record
+count, the time of the last host0 write after launch, and the last step marker.
+
+A host-side exception never crashes the queue. The case ends as `HOST_ERROR`, and
+the report's `host_error` names the exception type, the raising function and the
+message. If the probe was launched, the runner still unloads it and compares S2
+with S0. A verified-clean teardown records the case as interrupted and keeps the
+checkpoint `IN_PROGRESS` at the next case. Any other outcome waits for a power
+cycle, as an incomplete case does. Verbatim console captures from the
+2026-10-08 session under `fixtures/psp_oracle_captures/` pin the parsers and
+runner stages against real probe output.
 
 ## Build and hardware handoff
 
