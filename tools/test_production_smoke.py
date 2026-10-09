@@ -1201,7 +1201,14 @@ class TestPresenterContract(unittest.TestCase):
         """The headless suite cannot open GDI, so pin its acceptance contract in source."""
         source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
         presenter = source[source.index("int gui_present"):]
-        gdi = presenter[:presenter.index("#else")]
+        accepted = presenter[:presenter.index("#else")]
+        # The present accepts a GDI frame only when the blit drew it; a failed blit
+        # resolves an armed capture as failed and reports the frame as not presented.
+        self.assertRegex(
+            accepted,
+            r"if \(!gdi_blit\(\)\)\s*\{\s*sr_capture_fail\([^;]*\);\s*return 0;\s*\}",
+        )
+        gdi = source[source.index("static int gdi_blit(void)"):source.index("int gui_present")]
         self.assertIn("if (!s_hwnd) return 0;", gdi)
         self.assertIn("HDC dc = GetDC(s_hwnd);", gdi)
         self.assertIn("if (!dc) return 0;", gdi)
@@ -1215,7 +1222,7 @@ class TestPresenterContract(unittest.TestCase):
             gdi.index("int scanlines = StretchDIBits"),
         )
         self.assertIn("int scanlines = StretchDIBits", gdi)
-        self.assertIn("if (scanlines <= 0) return 0;", gdi)
+        self.assertIn("return scanlines > 0;", gdi)
 
     def test_offscreen_frame_event_is_quiet_without_present_trace(self):
         source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
