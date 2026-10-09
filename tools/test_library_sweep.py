@@ -92,6 +92,19 @@ class LibrarySweepTests(unittest.TestCase):
             "max_wait_seconds": 0,
         }
 
+    def test_identify_refusals_are_source_backed_sweep_blocker_codes(self) -> None:
+        # A PlayStation Store package is refused at identify by name. The sweep
+        # only records blocker codes its public vocabulary accepts, so the named
+        # refusal must be in that vocabulary or the row is rejected.
+        for code in (
+            "PBP_PACKAGE_UNSUPPORTED",
+            "PBP_HEADER_TRUNCATED",
+            "PBP_OFFSETS_INVALID",
+            "PBP_SFO_INVALID",
+        ):
+            with self.subTest(code=code):
+                self.assertIn(code, library_sweep._PUBLIC_BLOCKER_CODES)
+
     def test_interrupted_run_resumes_only_unrecorded_titles(self) -> None:
         first = _write_iso(self.iso_dir, "one.iso", "UCUS99991", "Resume Sentinel One")
         _write_iso(self.iso_dir, "two.iso", "UCUS99992", "Resume Sentinel Two")
