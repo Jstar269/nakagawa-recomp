@@ -1157,14 +1157,6 @@ def _stage_runtime_assets(package_dir: Path) -> None:
                   "The player will use its bitmap fallback font.", file=sys.stderr)
 
 
-def __getattr__(name: str) -> object:
-    """Resolve the runtime DLL stager on first access, for code that names ``nk_cli._runtime_dlls``."""
-    if name == "_runtime_dlls":
-        import stage_runtime_dlls
-        return stage_runtime_dlls
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def _prune_package_cache(cache_dir: Path, protected_entry: Path | None = None) -> None:
     removed, remaining = package_cache.prune_cache(
         cache_dir,

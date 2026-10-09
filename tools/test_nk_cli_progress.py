@@ -42,21 +42,6 @@ class NkCliProgressTests(unittest.TestCase):
         for name in ("stage_runtime_dlls", "package_notices", "title_codegen_plan"):
             self.assertNotIn(name, loaded)
 
-        # Naming the attribute still resolves the same module object the build path uses.
-        probe = (
-            "import sys\n"
-            "sys.path.insert(0, sys.argv[1])\n"
-            "import nk_cli\n"
-            "stager = nk_cli._runtime_dlls\n"
-            "print(stager is sys.modules['stage_runtime_dlls'], hasattr(stager, 'StageError'))\n"
-        )
-        proc = subprocess.run(
-            [sys.executable, "-I", "-c", probe, str(ROOT / "tools")],
-            cwd=ROOT, capture_output=True, text=True,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "True True")
-
     def test_sweep_progress_writer_persists_stage_start_and_finish(self) -> None:
         import nk_cli
 
