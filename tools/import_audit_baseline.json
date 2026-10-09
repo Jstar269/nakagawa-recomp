@@ -104,6 +104,12 @@
     "name": "scePowerIsBatteryExist",
     "status": "unreviewed"
   },
+  "0x0b588501": {
+    "classification": "dedicated",
+    "handler": "h_CtrlReadLatch",
+    "name": "sceCtrlReadLatch",
+    "status": "unreviewed"
+  },
   "0x0bf0a3ae": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
