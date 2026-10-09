@@ -282,7 +282,7 @@ class PgfWriterRefusalTests(unittest.TestCase):
             "F" "TT-" "New" "Rodin Pro DB", "Asia" "KNHH-" "SO" "NY-uni", "Asia" "NHH(512Johab)",
             "Font" "works Latin", "Noto Sans JP", "Lato Display", "Atkinson Hyperlegible Next",
             "Nanum Gothic", "Sawarabi Gothic", "Gowun Dodum", "M PLUS 1p", "Ume Hy Gothic",
-            "Source Han Sans",
+            "Source Han Sans", "Gudea Display",
         )
         for name in names:
             with self.subTest(name=name):
