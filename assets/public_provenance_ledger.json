@@ -6955,7 +6955,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "316f14620a0bfdf17d6a0377238c78113786899929ff8adcac387e343f6eb9c4"
+      "sha256": "a114d476d1a948af6a21c7728696c3202d80e883dac83a77791652b4804f4b68"
     },
     {
       "path": "tools/pngcmp.py",
@@ -10010,7 +10010,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2dc82e19be33eb5deab3fcea571a69cf17ee29646645f84627e07a6464612b5c"
+      "sha256": "c4da984469b158b14b3342ea63972141264f4a1387f310825999676fb125740c"
     },
     {
       "path": "tools/validate_assets.py",
