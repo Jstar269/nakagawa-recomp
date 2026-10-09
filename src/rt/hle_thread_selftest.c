@@ -11168,6 +11168,12 @@ static void test_td24b_cheap_hle_batch(void) {
                td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
            "the power reset restores the 333 PLL / 333 CPU / 166 bus defaults for later fixtures");
 
+    /* sceHprmIsRemoteExist (0x208db1bd): PSPSDK psphprm.h returns 1 when the infrared remote is
+     * plugged in. The runtime models no remote accessory, so the call answers 0 and the title
+     * is not stopped at it. */
+    expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsRemoteExist reports no remote (the runtime models no remote accessory)");
+
     /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
     reset_fixture();
     sr_hle_init();

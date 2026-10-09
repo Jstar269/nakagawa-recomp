@@ -2500,6 +2500,13 @@ static uint32_t s_ctrl_sampling_mode = 0u;
 static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
 static uint32_t s_ctrl_idle_back = 0xFFFFFFFFu;
+/* sceHprmIsRemoteExist(void): 1 when the infrared remote is plugged in, else 0 (PSPSDK
+ * psphprm.h). The runtime models no remote accessory, so no remote is ever reported. */
+static uint32_t h_HprmIsRemoteExist(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
 /* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): report the
  * stored thresholds (power-on default: both "disabled", -1). */
 static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
@@ -21833,6 +21840,7 @@ static void hle_register_power_clock_handlers(void) {
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
 static void hle_register_ctrl_sampling_handlers(void) {
+    sr_hle_register(0x208db1bd, "sceHprmIsRemoteExist", h_HprmIsRemoteExist);
     sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
