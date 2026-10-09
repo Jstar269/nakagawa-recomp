@@ -37,8 +37,8 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **500** (dedicated **457**, fake_success **5**, controlled_unsupported **38**).
-Semantic handler census: **422** handlers across **22** API families, covering **463** handler-associated NID registrations.
+Registered NIDs: **508** (dedicated **462**, fake_success **5**, controlled_unsupported **41**).
+Semantic handler census: **427** handlers across **23** API families, covering **468** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -46,7 +46,7 @@ Semantic handler census: **422** handlers across **22** API families, covering *
 | `partial` | 77 | 77 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 332 | 361 |
+| `unreviewed` | 337 | 366 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -58,21 +58,22 @@ Semantic handler census: **422** handlers across **22** API families, covering *
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 4 | 0 | 0 | 8 | 12 | 12 |
+| `sceGe` | 0 | 4 | 0 | 0 | 9 | 13 | 13 |
+| `sceHprm` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 20 | 0 | 0 | 134 | 156 | 180 |
+| `sceKernel` | 2 | 20 | 0 | 0 | 135 | 157 | 181 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
+| `scePower` | 0 | 0 | 0 | 0 | 10 | 10 | 10 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
-| `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
+| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **77** | **1** | **2** | **332** | **422** | **463** |
+| **Total** | **10** | **77** | **1** | **2** | **337** | **427** | **468** |
 
 #### Complete Handlers (Evidence-Backed)
 
