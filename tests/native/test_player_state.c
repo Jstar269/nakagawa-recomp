@@ -4527,6 +4527,101 @@ int main(int argc, char **argv) {
         free(cache_state);
     }
 
+    {
+        printf("[PLAYER_STATE_TEST] Subtest: ADD TO LIBRARY stages a title that takes its data from the disc\n");
+        char sep = nk_platform_path_separator();
+        char manifest_dir[1024];
+        char manifest_path[1200];
+        snprintf(manifest_dir, sizeof(manifest_dir), "%s%cdisc-data-manifests",
+                 native_test_get_root(), sep);
+        assert(nk_platform_mkdir_p(manifest_dir));
+        /* The archive layout: the whole USRDIR is a loose-content root and
+           the data root lies under it, so the data can only come from the disc. */
+        snprintf(manifest_path, sizeof(manifest_path), "%s%carchive.json", manifest_dir, sep);
+        write_text_file(manifest_path,
+            "{\"schema_version\":1,\"id\":\"disc-data-test90021-v1\","
+            "\"display_name\":\"Disc Data Fixture\",\"kind\":\"retail\","
+            "\"disc\":{\"id\":\"TEST90021\",\"region\":\"NA\","
+            "\"revision_policy\":\"exact-disc-id\"},"
+            "\"executable\":{\"base\":0,\"entry\":0,\"bss_metadata_source\":\"none\","
+            "\"extra_executable_spans\":[]},\"modules\":[],"
+            "\"filesystem\":{\"data_root\":\"xbdata\",\"memory_stick_root\":\"memstick\","
+            "\"device_prefixes\":[\"host0:\",\"ms0:\"],"
+            "\"loose_content_roots\":[{\"root\":\".\",\"mount\":\"\",\"precedence\":0,"
+            "\"skip_primary_root\":true}]},"
+            "\"hle_profile\":\"generic\",\"feature_requirements\":[],"
+            "\"verification_profile\":\"experimental-unverified\"}");
+        /* A data root resolved outside the disc: nothing to stage but EBOOT. */
+        snprintf(manifest_path, sizeof(manifest_path), "%s%cplain.json", manifest_dir, sep);
+        write_text_file(manifest_path,
+            "{\"schema_version\":1,\"id\":\"plain-data-test90022-v1\","
+            "\"display_name\":\"Plain Data Fixture\",\"kind\":\"retail\","
+            "\"disc\":{\"id\":\"TEST90022\",\"region\":\"NA\","
+            "\"revision_policy\":\"exact-disc-id\"},"
+            "\"executable\":{\"base\":0,\"entry\":0,\"bss_metadata_source\":\"none\","
+            "\"extra_executable_spans\":[]},\"modules\":[],"
+            "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"memstick\","
+            "\"device_prefixes\":[\"host0:\",\"ms0:\"]},"
+            "\"hle_profile\":\"generic\",\"feature_requirements\":[],"
+            "\"verification_profile\":\"experimental-unverified\"}");
+        char overlay_report[2048];
+        assert(nk_title_manifest_load_overlay_dir(manifest_dir, overlay_report,
+                                                  sizeof(overlay_report)) == 2);
+
+        PlayerApp *probe = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(probe != NULL);
+        nk_library_init(&probe->library);
+        GameRecord *inspected = &probe->inspecting_game;
+        snprintf(inspected->disc_id, sizeof(inspected->disc_id), "TEST90021");
+        snprintf(inspected->title_id, sizeof(inspected->title_id), "disc-data-test90021-v1");
+        snprintf(inspected->disc_version, sizeof(inspected->disc_version), "1.00");
+        snprintf(inspected->iso_path, sizeof(inspected->iso_path), "%s%cabsent%cdisc.iso",
+                 native_test_get_root(), sep, sep);
+        inspected->status = NK_STATUS_VERIFIED;
+
+        PlayerStagePlan *plan = (PlayerStagePlan *)calloc(1, sizeof(PlayerStagePlan));
+        assert(plan != NULL);
+        assert(player_app_build_stage_plan(inspected, plan));
+        assert(plan->request.loose_content_root_count == 1);
+        assert(strcmp(plan->request.loose_content_roots[0], ".") == 0);
+        assert(strcmp(plan->request.data_root, "xbdata") == 0);
+        assert(player_stage_title_takes_data_from_disc(&plan->request));
+        free(plan);
+        assert(player_app_inspected_game_needs_staging(probe));
+
+        /* ADD TO LIBRARY hands the disc to the wizard's staging worker; the
+           game is saved only when its files are in place. */
+        assert(player_app_add_inspected_game(probe));
+        assert(probe->active_view == VIEW_SETUP_WIZARD);
+        assert(probe->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
+        assert(probe->wizard.is_extracting && probe->wizard.extraction_requested);
+        assert(player_app_find_game_by_disc_id(probe, "TEST90021") < 0);
+
+        /* Files already staged for this disc: nothing to set up again. */
+        char staged_root[400];
+        char staged_data[480];
+        snprintf(staged_root, sizeof(staged_root), "%s%cstaged-test90021",
+                 native_test_get_root(), sep);
+        snprintf(staged_data, sizeof(staged_data), "%s%cxbdata", staged_root, sep);
+        assert(nk_platform_mkdir_p(staged_data));
+        inspected->assets_staged = true;
+        snprintf(inspected->prepared_root, sizeof(inspected->prepared_root), "%s", staged_root);
+        assert(!player_app_inspected_game_needs_staging(probe));
+        inspected->assets_staged = false;
+        inspected->prepared_root[0] = '\0';
+
+        /* A title whose data does not come from the disc is saved directly. */
+        snprintf(inspected->disc_id, sizeof(inspected->disc_id), "TEST90022");
+        snprintf(inspected->title_id, sizeof(inspected->title_id), "plain-data-test90022-v1");
+        assert(!player_app_inspected_game_needs_staging(probe));
+        probe->active_view = VIEW_SUPPORTED_TITLE;
+        assert(player_app_add_inspected_game(probe));
+        assert(probe->active_view == VIEW_LIBRARY);
+        assert(player_app_find_game_by_disc_id(probe, "TEST90022") >= 0);
+        free(probe);
+        printf("[PLAYER_STATE_TEST] ADD TO LIBRARY staging decision PASSED\n");
+    }
+
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");
     native_test_assert_real_config_untouched();

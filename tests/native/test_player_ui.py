@@ -1901,6 +1901,53 @@ class FirstRunRouteTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             self.assertEqual(library_disc_ids(scratch), ["TEST00002"])
 
+    def test_add_to_library_sets_up_an_archive_disc_before_saving_it(self) -> None:
+        """ADD TO LIBRARY on an archive disc runs the wizard's staging worker.
+
+        Failing-before: the card saved the disc without its files, so PLAY then
+        found the game's data missing. Now the card hands the disc to the same
+        staging transaction (progress, cancel, retry, calm messages) and the
+        game reaches the library only with its files in place.
+        """
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import (
+            archive_title_manifest,
+            build_plain_mips_elf,
+            create_archive_title_iso,
+        )
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-card-archive-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "archive.iso"
+            create_archive_title_iso(iso, disc_id="ULUS99996", title="Synthetic Archive",
+                                     executable=build_plain_mips_elf())
+            user_root = scratch / "user-data"
+            (user_root / "manifests").mkdir(parents=True)
+            (user_root / "manifests" / "archive.json").write_text(
+                json.dumps(archive_title_manifest("ULUS99996", "archive-ulus99996")),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [str(PLAYER_EXE), f"--user-data-root={user_root}", f"--iso={iso}",
+                 "--ui-test-events=WAIT_VIEW=supported,10000;KEY_RETURN;"
+                 "WAIT_VIEW=ready_library,30000;QUIT",
+                 f"--ui-test-screenshot={scratch / 'last-frame.bmp'}"],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+                timeout=120, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            views = [frame["view"] for frame in parse_frames(completed.stdout)]
+            self.assertIn("supported", views, completed.stdout)
+            self.assertEqual(views[-1], "ready_library", completed.stdout)
+            library = json.loads((user_root / "library.json").read_text(encoding="utf-8"))
+            self.assertEqual([game["disc_id"] for game in library["games"]], ["ULUS99996"])
+            game = library["games"][0]
+            self.assertTrue(game["assets_staged"])
+            prepared = Path(game["prepared_root"])
+            self.assertEqual(prepared.resolve(), (user_root / "games" / "ULUS99996").resolve())
+            member = prepared / "xbdata" / "menu" / "assets.xb.d" / "data" / "raw.bin"
+            self.assertEqual(member.read_bytes(), b"synthetic archive member")
+
     def test_launch_now_on_experimental_iso_reports_the_unavailable_boundary(self) -> None:
         sys.path.insert(0, str(ROOT / "tools"))
         from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
@@ -1927,6 +1974,98 @@ class FirstRunRouteTests(unittest.TestCase):
         self.assertIn("in the works.", completed.stderr)
         self.assertNotIn("(#308)", completed.stderr)
         self.assertEqual(library_disc_ids(scratch), [])
+
+    def test_stage_route_runs_the_wizard_worker_for_an_archive_disc(self) -> None:
+        """--stage drives the setup wizard's own staging worker.
+
+        The disc's data ships in an XB archive below USRDIR/xbdata. The worker
+        runs the shared staging transaction, the game lands in the library with
+        its files promoted into the per-user data root, and the wizard ends on
+        the ready library card.
+        """
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import (
+            archive_title_manifest,
+            build_plain_mips_elf,
+            create_archive_title_iso,
+        )
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-archive-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "archive.iso"
+            create_archive_title_iso(iso, disc_id="ULUS99996", title="Synthetic Archive",
+                                     executable=build_plain_mips_elf())
+            user_root = scratch / "user-data"
+            (user_root / "manifests").mkdir(parents=True)
+            (user_root / "manifests" / "archive.json").write_text(
+                json.dumps(archive_title_manifest("ULUS99996", "archive-ulus99996")),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [str(PLAYER_EXE), f"--user-data-root={user_root}", f"--iso={iso}", "--stage",
+                 "--ui-test-events=WAIT_VIEW=ready_library,30000;QUIT",
+                 f"--ui-test-screenshot={scratch / 'last-frame.bmp'}"],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+                timeout=120, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            frames = parse_frames(completed.stdout)
+            self.assertTrue(frames, completed.stdout)
+            self.assertEqual(frames[-1]["view"], "ready_library", completed.stdout)
+            self.assertEqual(frames[-1]["selected_staged"], "1")
+            library = json.loads((user_root / "library.json").read_text(encoding="utf-8"))
+            self.assertEqual([game["disc_id"] for game in library["games"]], ["ULUS99996"])
+            game = library["games"][0]
+            self.assertTrue(game["assets_staged"])
+            prepared = Path(game["prepared_root"])
+            self.assertEqual(prepared.resolve(), (user_root / "games" / "ULUS99996").resolve())
+            member = prepared / "xbdata" / "menu" / "assets.xb.d" / "data" / "raw.bin"
+            self.assertEqual(member.read_bytes(), b"synthetic archive member")
+            self.assertFalse((user_root / "games" / ".staging_ULUS99996").exists())
+            self.assertEqual(library_disc_ids(scratch / "localappdata"), [],
+                             "--user-data-root keeps the library out of the default data folder")
+
+    def test_headless_launch_now_sets_up_archive_files_before_play(self) -> None:
+        """--launch-now stands in for PLAY NOW on a disc whose files are not set up.
+
+        The same staging transaction runs first, the game is recorded with its
+        files in place, and the launch then reaches PLAY's own next boundary
+        (no package has been built here) instead of a missing data folder.
+        """
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import (
+            archive_title_manifest,
+            build_plain_mips_elf,
+            create_archive_title_iso,
+        )
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-launch-now-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "archive.iso"
+            create_archive_title_iso(iso, disc_id="ULUS99996", title="Synthetic Archive",
+                                     executable=build_plain_mips_elf())
+            user_root = scratch / "user-data"
+            (user_root / "manifests").mkdir(parents=True)
+            (user_root / "manifests" / "archive.json").write_text(
+                json.dumps(archive_title_manifest("ULUS99996", "archive-ulus99996")),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [str(PLAYER_EXE), f"--user-data-root={user_root}", f"--iso={iso}",
+                 "--launch-now", "--headless-launch"],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+                timeout=120, check=False,
+            )
+            output = completed.stdout + completed.stderr
+            self.assertIn("STAGING_RESULT status=PASS", completed.stdout, output)
+            self.assertEqual(completed.returncode, 4, output)
+            self.assertIn("--launch-now failed: Runtime package is missing", completed.stderr)
+            self.assertNotIn("data folder", completed.stderr)
+            library = json.loads((user_root / "library.json").read_text(encoding="utf-8"))
+            self.assertEqual([game["disc_id"] for game in library["games"]], ["ULUS99996"])
+            self.assertTrue(library["games"][0]["assets_staged"])
+            self.assertTrue((user_root / "games" / "ULUS99996" / "xbdata" / "menu" /
+                             "assets.xb.d" / "data" / "raw.bin").is_file())
 
     def test_launch_index_on_an_empty_library_fails_with_a_clear_message(self) -> None:
         with tempfile.TemporaryDirectory(prefix=".first-run-empty-", dir=ROOT) as tmp:

@@ -100,6 +100,7 @@ add_test(NAME pgf_public_test COMMAND test_pgf_public)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
+    tests/native/native_test_isolation.c
     src/player/setup_staging.c
     src/rt/archive_vfs.c
 )
@@ -120,6 +121,7 @@ add_executable(test_player_state
     src/player/input_settings.c
     src/player/iso_reader.c
     src/player/package_builder.c
+    src/player/setup_staging.c
 )
 target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core

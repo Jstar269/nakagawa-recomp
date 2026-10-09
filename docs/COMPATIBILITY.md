@@ -45,6 +45,13 @@ over-limit or malformed report, or a report with an unsupported schema fails clo
 a message that names the path and the reason in plain words; file contents are never
 echoed.
 
+`--title-manifests DIR` hands each title's route the user's own title manifests that name
+its disc ID (copied into the route's `user-data/manifests`), the same title list the player
+reads. A title whose data ships in archives on the disc is then set up by bring-up through
+the player's staging transaction in that route's user-data root before it launches, so the
+player executable must be built. Staging and package building for a large disc can take
+several minutes; raise `--time-budget` for such titles.
+
 The sweep reads externally supplied JSON through the bounded parser. Per-title bring-up
 reports and import sidecars allow 32 MiB, 32 levels, 262,144 object members and
 comma-separated items, and 1,048,576 structural nodes because their import inventories
