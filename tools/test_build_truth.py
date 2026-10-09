@@ -1193,7 +1193,7 @@ class CodegenProfileTransportTests(unittest.TestCase):
 
     def test_many_long_module_paths_still_produce_a_profile(self) -> None:
         modules = [
-            "C:/nk/private/a-rather-long-private-directory/work/0123456789abcdef/"
+            "C:/path/to/a-rather-long-user-data-directory/work/0123456789abcdef/"
             f"user-data/modules/module_{index:03d}.prx@runtime"
             for index in range(200)
         ]
