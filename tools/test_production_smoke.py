@@ -1736,6 +1736,38 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
         nk_cli.validate_bringup_report(report)
 
+    def test_bounded_launch_output_keeps_both_ends_and_names_the_elision(self):
+        text = "HEAD" + ("x" * 1000) + "TAIL"
+        bounded = nk_cli._bounded_launch_output(text, 300)
+
+        self.assertLessEqual(len(bounded), 300)
+        self.assertTrue(bounded.startswith(b"HEAD"))
+        self.assertTrue(bounded.endswith(b"TAIL"))
+        self.assertIn(b"bytes elided", bounded)
+        short = nk_cli._bounded_launch_output("small\n", 300)
+        self.assertEqual(short, b"small\n")
+
+    def test_bringup_keeps_the_launch_log_in_the_work_dir(self):
+        self._run_case(launch_output="LAUNCH-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"LAUNCH-LOG-MARKER", log.read_bytes())
+
+    def test_bringup_launch_log_is_bounded(self):
+        with mock.patch.object(nk_cli, "BRINGUP_LAUNCH_LOG_MAX_BYTES", 512):
+            self._run_case(launch_output="y" * 4000 + "LAUNCH-LOG-END\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        data = log.read_bytes()
+        self.assertLessEqual(len(data), 512)
+        self.assertIn(b"LAUNCH-LOG-END", data)
+
+    def test_timed_out_launch_still_keeps_its_output(self):
+        self._run_case(timeout=True, launch_output="TIMEOUT-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"TIMEOUT-LOG-MARKER", log.read_bytes())
+
     def test_zero_exit_with_dropped_flight_events_is_unverified(self):
         status, report = self._run_case(flight_events=[], flight_dropped=1)
 

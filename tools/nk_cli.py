@@ -2812,6 +2812,41 @@ def _runtime_run_budget_ended(launch_output: str | None) -> bool:
     return bool(_RUNTIME_RUN_BUDGET_END.search(launch_output or ""))
 
 
+BRINGUP_LAUNCH_LOG_NAME = "bringup-launch.log"
+BRINGUP_LAUNCH_LOG_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _bounded_launch_output(text: str | None, limit: int) -> bytes:
+    """Return the launch output within `limit` bytes: its head and tail, with the middle elided.
+
+    The start of a run (how it came up) and its last events (where it stopped) are what
+    triage reads, so both ends are kept and the elided span is named in the middle.
+    """
+    data = (text or "").encode("utf-8", errors="replace")
+    if len(data) <= limit:
+        return data
+    reserve = 128  # room for the elision marker, which is always shorter
+    keep = limit - reserve
+    head = keep // 4
+    tail = keep - head
+    dropped = len(data) - head - tail
+    marker = b"\n[... %d bytes elided to keep the launch log bounded ...]\n" % dropped
+    return data[:head] + marker + data[len(data) - tail:]
+
+
+def _write_bringup_launch_log(work_dir: Path, launch_output: str | None) -> None:
+    """Keep the launched runtime's stdout and stderr in the work dir, bounded.
+
+    A failure to write the log is reported and does not change the launch result.
+    """
+    try:
+        (work_dir / BRINGUP_LAUNCH_LOG_NAME).write_bytes(
+            _bounded_launch_output(launch_output, BRINGUP_LAUNCH_LOG_MAX_BYTES)
+        )
+    except OSError as exc:
+        print(f"bring-up: could not keep the launch log: {exc}", file=sys.stderr)
+
+
 def _flight_has_hle_import(path: Path | None) -> bool | None:
     """Return whether the private flight bundle proves an HLE import occurred.
 
@@ -3496,6 +3531,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
+            _write_bringup_launch_log(work_dir, launch_output)
             presentation_evidence_ok = _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
             report["runtime_output_kind"] = _runtime_output_kind(
@@ -3581,6 +3617,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         except subprocess.TimeoutExpired:
             process.kill()
             launch_output, _ = process.communicate()
+            _write_bringup_launch_log(work_dir, launch_output)
             _set_bringup_presentation(report, launch_output)
             report["exit_classification"] = "TIMED_OUT"
             fail_stage(report, "launch", "LAUNCH_TIMEOUT", [308],
