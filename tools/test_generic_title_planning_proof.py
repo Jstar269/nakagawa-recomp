@@ -58,6 +58,21 @@ PSPDEV = TITLES / "pspdev-phase5.json"
 PLANNER = ROOT / "tools" / "title_codegen_plan.py"
 HELPER = ROOT / "tools" / "title_manager_plan.ps1"
 
+
+def _scratch_build_root(test: unittest.TestCase) -> pathlib.Path:
+    """A scratch BUILD_ROOT for a Make probe, removed when ``test`` finishes.
+
+    A variable probe still parses the whole Makefile, which creates the title's
+    BUILD_DIR and rewrites its profile stamps there; a changed profile stamp
+    deletes the objects it no longer matches. Run against the checkout, a
+    GAME_NAME=hst probe would therefore invalidate a developer's private title
+    build under build/hst. The probes run against a scratch root instead.
+    """
+    scratch = tempfile.TemporaryDirectory(prefix="nakagawa-make-probe-")
+    test.addCleanup(scratch.cleanup)
+    return pathlib.Path(scratch.name) / "build"
+
+
 # HST constants that must never appear in a generic plan or be inherited silently.
 HST_SPAN = (3158420, 3173924)  # 0x00303194, 0x00306e24
 HST_MODULES = [
@@ -548,7 +563,8 @@ class MakeSpanPrecedenceTests(unittest.TestCase):
     def _effective(self, game_name, title_val=None, title_origin="cmd"):
         env = os.environ.copy()
         env.pop("TITLE_EXTRA_SPANS", None)
-        args = [self.MAKE, "-f", str(ROOT / "Makefile"), f"GAME_NAME={game_name}"]
+        args = [self.MAKE, "-f", str(ROOT / "Makefile"), f"GAME_NAME={game_name}",
+                f"BUILD_ROOT={_scratch_build_root(self).as_posix()}"]
         if title_val is not None:
             if title_origin == "cmd":
                 args.append(f"TITLE_EXTRA_SPANS={title_val}" if title_val else "TITLE_EXTRA_SPANS=")
@@ -579,6 +595,7 @@ class MakeSpanPrecedenceTests(unittest.TestCase):
             "-f",
             str(ROOT / "Makefile"),
             "GAME_NAME=synthetic2",
+            f"BUILD_ROOT={_scratch_build_root(self).as_posix()}",
             "TITLE_EXTRA_SPANS=cmd-generic",
             "--eval",
             "print_effective: ; @echo EFFECTIVE=$(EFFECTIVE_EXTRA_SPANS)",
@@ -633,7 +650,9 @@ class RetiredHstIsolationTests(unittest.TestCase):
         env = os.environ.copy()
         env["HST_EXTRA_SPANS"] = "stale-hst-value"
         env.pop("TITLE_EXTRA_SPANS", None)
-        args = [make, "-f", str(ROOT / "Makefile"), "GAME_NAME=synthetic2", "--eval", "print_effective: ; @echo EFFECTIVE=$(EFFECTIVE_EXTRA_SPANS)", "print_effective"]
+        args = [make, "-f", str(ROOT / "Makefile"), "GAME_NAME=synthetic2",
+                f"BUILD_ROOT={_scratch_build_root(self).as_posix()}", "--eval",
+                "print_effective: ; @echo EFFECTIVE=$(EFFECTIVE_EXTRA_SPANS)", "print_effective"]
         proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0)
         eff = ""
@@ -786,13 +805,16 @@ class DirectMakeRetirementTests(unittest.TestCase):
     MAKE = shutil.which("mingw32-make") or shutil.which("make") or "make"
 
     def _get(self, var, game_name="hst", *extra_args):
+        """The value of ``var``, with the scratch BUILD_ROOT spelled `$(BUILD_ROOT)`."""
         env = os.environ.copy()
         env.pop("TITLE_EXTRA_SPANS", None)
+        build_root = _scratch_build_root(self).as_posix()
         args = [
             self.MAKE,
             "-f",
             str(ROOT / "Makefile"),
             f"GAME_NAME={game_name}",
+            f"BUILD_ROOT={build_root}",
             *extra_args,
             "--eval",
             f"print_var: ; @echo {var}=$({var})",
@@ -803,14 +825,16 @@ class DirectMakeRetirementTests(unittest.TestCase):
         for line in proc.stdout.splitlines():
             stripped = line.strip()
             if stripped.startswith(f"{var}="):
-                return stripped.split(f"{var}=", 1)[1].strip()
+                value = stripped.split(f"{var}=", 1)[1].strip()
+                return value.replace(build_root, "$(BUILD_ROOT)")
         return ""
 
     def test_hst_name_has_no_direct_make_title_defaults(self) -> None:
         self.assertEqual(self._get("CODEGEN_PROFILE_ARG", "hst"), "")
         self.assertEqual(self._get("EFFECTIVE_EXTRA_SPANS", "hst"), "")
         self.assertEqual(self._get("TITLE_EXTRA_SPANS", "hst"), "")
-        self.assertEqual(self._get("BUILD_DIR", "hst"), "build/hst")
+        # The generic derivation (build/hst by default), not an HST-specific tree.
+        self.assertEqual(self._get("BUILD_DIR", "hst"), "$(BUILD_ROOT)/hst")
 
     def test_source_owned_second_title_does_not_inherit_hst_values(self) -> None:
         extra = ("TITLE_MANIFEST=assets/titles/synthetic-title2.json",)
@@ -828,6 +852,7 @@ class DirectMakeRetirementTests(unittest.TestCase):
                     str(ROOT / "Makefile"),
                     "GAME_NAME=hst",
                     f"BUILD_DIR={build_dir.as_posix()}",
+                    f"BUILD_ROOT={build_dir.as_posix()}",
                     target.as_posix(),
                 ],
                 cwd=ROOT,

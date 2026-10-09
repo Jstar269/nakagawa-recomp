@@ -903,7 +903,8 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
 
             # 1. Clean serial build for atrac3p-objects
             proc = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}",
+                 f"BUILD_ROOT={Path(temp_dir).as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -925,7 +926,8 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
 
             # 2. Idempotent second build
             proc_idem = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}",
+                 f"BUILD_ROOT={Path(temp_dir).as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -940,7 +942,8 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
             # 3. Clean parallel build (-j4)
             shutil.rmtree(build_dir)
             proc_par = subprocess.run(
-                [self.make, "-j4", "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
+                [self.make, "-j4", "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}",
+                 f"BUILD_ROOT={Path(temp_dir).as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -973,6 +976,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
             self.make,
             "--no-print-directory",
             f"BUILD_DIR={self.build_dir.as_posix()}",
+            f"BUILD_ROOT={self.build_dir.as_posix()}",
             "compiler-info",
             *extra_args,
         ]
@@ -1035,6 +1039,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
                 self.make,
                 "--no-print-directory",
                 f"BUILD_DIR={hst_dir.as_posix()}",
+                f"BUILD_ROOT={self.build_dir.as_posix()}",
                 "GAME_NAME=hst",
                 "RUNTIME_OPT=-O2",
                 "RECOMP_OPT=-O1",
@@ -1054,7 +1059,8 @@ class OptimizationProfileContractTests(unittest.TestCase):
 
         generic_dir = self.build_dir / "generic_default"
         subprocess.run(
-            [self.make, "--no-print-directory", f"BUILD_DIR={generic_dir.as_posix()}", "GAME_NAME=mygame", "compiler-info"],
+            [self.make, "--no-print-directory", f"BUILD_DIR={generic_dir.as_posix()}",
+             f"BUILD_ROOT={self.build_dir.as_posix()}", "GAME_NAME=mygame", "compiler-info"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1071,6 +1077,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
                 self.make,
                 "--no-print-directory",
                 f"BUILD_DIR={override_dir.as_posix()}",
+                f"BUILD_ROOT={self.build_dir.as_posix()}",
                 "GAME_NAME=hst",
                 "RUNTIME_OPT=-O0",
                 "RECOMP_OPT=-O0",
@@ -1163,11 +1170,11 @@ class GuestInputTransportTests(unittest.TestCase):
             self.skipTest("GNU Make is required")
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-guest-input-")
         self.root = Path(self.temp.name)
-        self.builds: list[Path] = []
+        # The scratch BUILD_ROOT every build here lands under. Nothing is written to
+        # the checkout's own build/, so a developer's title builds are never touched.
+        self.build_root = self.root / "build"
 
     def tearDown(self) -> None:
-        for b in self.builds:
-            shutil.rmtree(b, ignore_errors=True)
         self.temp.cleanup()
 
     # -- helpers ---------------------------------------------------------
@@ -1190,19 +1197,16 @@ class GuestInputTransportTests(unittest.TestCase):
         path.write_bytes(blob)
 
     def _build_dir(self, name: str) -> Path:
-        d = ROOT / "build" / name
-        self.builds.append(d)
-        shutil.rmtree(d, ignore_errors=True)
-        return d
+        return self.build_root / name
 
-    def _make(self, game_name: str, elf_rel: str, *, makefile: Path | None = None,
+    def _make(self, game_name: str, elf: str, *, makefile: Path | None = None,
               target: str | None = None, extra: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
-        tgt = target or f"build/{game_name}/{game_name}_image.bin"
+        tgt = target or f"{self._build_dir(game_name).as_posix()}/{game_name}_image.bin"
         cmd = [self.make, "--no-print-directory"]
         if makefile is not None:
             cmd += ["-f", str(makefile)]
-        cmd += [tgt, f"GAME_NAME={game_name}", f"GAME_ELF={elf_rel}",
-                "GAME_BASE=0x08804000", "GAME_ENTRY=0x08804000", *extra]
+        cmd += [tgt, f"BUILD_ROOT={self.build_root.as_posix()}", f"GAME_NAME={game_name}",
+                f"GAME_ELF={elf}", "GAME_BASE=0x08804000", "GAME_ENTRY=0x08804000", *extra]
         return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", check=False)
 
@@ -1229,10 +1233,10 @@ class GuestInputTransportTests(unittest.TestCase):
     def test_metacharacter_pathname_reaches_no_command_interpreter(self) -> None:
         """A legal pathname containing `&` must not be dispatched as a command."""
         build = self._build_dir("test_gi_split")
-        elf_rel = f"build/test_gi_split/{self.SPLIT_NAME}"
-        self._write_minimal_elf(ROOT / elf_rel)
+        elf = build / self.SPLIT_NAME
+        self._write_minimal_elf(elf)
 
-        proc = self._make("test_gi_split", elf_rel)
+        proc = self._make("test_gi_split", elf.as_posix())
         blob = self._blob(proc)
         self.assertEqual(
             self._injection_evidence(blob), [],
@@ -1244,9 +1248,8 @@ class GuestInputTransportTests(unittest.TestCase):
         """M1: restoring raw $(GAME_ELF) in the recipe must make the above test fail."""
         if sys.platform != "win32":
             self.skipTest("cmd.exe command splitting is the Windows failure mode")
-        self._build_dir("test_gi_m1")
-        elf_rel = f"build/test_gi_m1/{self.SPLIT_NAME}"
-        self._write_minimal_elf(ROOT / elf_rel)
+        elf = self._build_dir("test_gi_m1") / self.SPLIT_NAME
+        self._write_minimal_elf(elf)
 
         mutant = self._mutate_makefile(
             ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py\n"
@@ -1254,7 +1257,7 @@ class GuestInputTransportTests(unittest.TestCase):
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
              "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
         )
-        blob = self._blob(self._make("test_gi_m1", elf_rel, makefile=mutant))
+        blob = self._blob(self._make("test_gi_m1", elf.as_posix(), makefile=mutant))
         self.assertTrue(
             self._injection_evidence(blob),
             "mutation did not reproduce the pre-fix command execution; this "
@@ -1263,13 +1266,14 @@ class GuestInputTransportTests(unittest.TestCase):
 
     def test_M1b_sibling_inputs_are_transported_too(self) -> None:
         """GAME_PSP_HEADER shares the recipe, and so must share the transport."""
-        self._build_dir("test_gi_hdr")
-        elf_rel = "build/test_gi_hdr/plain.elf"
-        self._write_minimal_elf(ROOT / elf_rel)
-        hdr_rel = "build/test_gi_hdr/hdr&ver&tail.BIN"
-        (ROOT / hdr_rel).write_bytes(b"\x00" * 64)
+        build = self._build_dir("test_gi_hdr")
+        elf = build / "plain.elf"
+        self._write_minimal_elf(elf)
+        hdr = build / "hdr&ver&tail.BIN"
+        hdr.write_bytes(b"\x00" * 64)
 
-        proc = self._make("test_gi_hdr", elf_rel, extra=(f"GAME_PSP_HEADER={hdr_rel}",))
+        proc = self._make("test_gi_hdr", elf.as_posix(),
+                          extra=(f"GAME_PSP_HEADER={hdr.as_posix()}",))
         blob = self._blob(proc)
         self.assertEqual(
             self._injection_evidence(blob), [],
@@ -1277,10 +1281,9 @@ class GuestInputTransportTests(unittest.TestCase):
 
     # -- D: freshness is preserved, not dropped --------------------------
 
-    def _first_build(self, game: str, elf_rel: str) -> Path:
-        elf = ROOT / elf_rel
+    def _first_build(self, game: str, elf: Path) -> Path:
         self._write_minimal_elf(elf)
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         self.assertEqual(proc.returncode, 0, self._blob(proc))
         return elf
 
@@ -1303,8 +1306,7 @@ class GuestInputTransportTests(unittest.TestCase):
             with self.subTest(shape=key):
                 game = f"test_gi_d_{key}"
                 build = self._build_dir(game)
-                elf_rel = f"build/{game}/{base}"
-                elf = self._first_build(game, elf_rel)
+                elf = self._first_build(game, build / base)
                 image = build / f"{game}_image.bin"
                 self.assertTrue(image.is_file())
 
@@ -1315,7 +1317,7 @@ class GuestInputTransportTests(unittest.TestCase):
                 # keeps the assertion about the dependency edge deterministic.
                 _set_mtime_before(image)
                 _set_mtime_after(elf, image)
-                proc = self._make(game, elf_rel)
+                proc = self._make(game, elf.as_posix())
                 self.assertEqual(proc.returncode, 0, self._blob(proc))
                 self.assertGreater(
                     image.stat().st_mtime_ns, before,
@@ -1327,20 +1329,19 @@ class GuestInputTransportTests(unittest.TestCase):
         """M2: removing the stamp prerequisite must make the freshness test fail."""
         game = "test_gi_m2"
         build = self._build_dir(game)
-        elf_rel = f"build/{game}/plain.elf"
+        elf = build / "plain.elf"
         mutant = self._mutate_makefile(
             ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py",
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py"),
         )
-        elf = ROOT / elf_rel
         self._write_minimal_elf(elf)
-        proc = self._make(game, elf_rel, makefile=mutant)
+        proc = self._make(game, elf.as_posix(), makefile=mutant)
         self.assertEqual(proc.returncode, 0, self._blob(proc))
         image = build / f"{game}_image.bin"
         before = image.stat().st_mtime_ns
 
         _set_mtime_after(elf, image)
-        self._make(game, elf_rel, makefile=mutant)
+        self._make(game, elf.as_posix(), makefile=mutant)
         self.assertEqual(
             image.stat().st_mtime_ns, before,
             "mutation did not drop the dependency edge; the freshness regression "
@@ -1358,17 +1359,16 @@ class GuestInputTransportTests(unittest.TestCase):
         """
         game = "test_gi_e"
         build = self._build_dir(game)
-        elf_rel = f"build/{game}/plain.elf"
-        elf = self._first_build(game, elf_rel)
+        elf = self._first_build(game, build / "plain.elf")
         image = build / f"{game}_image.bin"
         self.assertTrue(image.is_file())
 
         # Confirm the target really is considered up to date before deleting.
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         self.assertEqual(proc.returncode, 0, self._blob(proc))
 
         elf.unlink()
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         self.assertNotEqual(
             proc.returncode, 0,
             "build succeeded with its guest input deleted, reusing stale output:\n"
@@ -1380,15 +1380,14 @@ class GuestInputTransportTests(unittest.TestCase):
     def test_invalid_values_fail_closed(self) -> None:
         """Empty, whitespace-only, and directory values must not build."""
         game = "test_gi_invalid"
-        self._build_dir(game)
-        elf_rel = f"build/{game}/plain.elf"
-        self._first_build(game, elf_rel)
+        build = self._build_dir(game)
+        self._first_build(game, build / "plain.elf")
 
         for label, value, expect in (
             ("empty", "", "empty or whitespace-only"),
             ("whitespace", "   ", "empty or whitespace-only"),
-            ("missing", "build/does/not/exist.elf", "does not exist"),
-            ("directory", f"build/{game}", "is a directory"),
+            ("missing", (self.build_root / "does" / "not" / "exist.elf").as_posix(), "does not exist"),
+            ("directory", build.as_posix(), "is a directory"),
         ):
             with self.subTest(value=label):
                 proc = self._make(game, value)
@@ -1407,7 +1406,8 @@ class GuestInputTransportTests(unittest.TestCase):
         game = "test_gi_public"
         build = self._build_dir(game)
         build.mkdir(parents=True, exist_ok=True)
-        base = [self.make, "--no-print-directory", f"GAME_NAME={game}", f"BUILD_DIR=build/{game}"]
+        base = [self.make, "--no-print-directory", f"GAME_NAME={game}",
+                f"BUILD_ROOT={self.build_root.as_posix()}", f"BUILD_DIR={build.as_posix()}"]
 
         # Settle the profile stamps first. CI creates them in earlier steps, so by the
         # time it hand-writes <game>_recomp.c that file is the newest prerequisite and
@@ -1424,7 +1424,7 @@ class GuestInputTransportTests(unittest.TestCase):
         _set_mtime_after(build / f"{game}_recomp.c", *generated_inputs)
         _set_mtime_after(build / f"{game}_recomp_funcs.h", build / f"{game}_recomp.c")
 
-        proc = subprocess.run(base + [f"build/{game}/{game}_recomp.c"], cwd=ROOT,
+        proc = subprocess.run(base + [f"{build.as_posix()}/{game}_recomp.c"], cwd=ROOT,
                               capture_output=True, text=True,
                               encoding="utf-8", errors="replace", check=False)
         blob = (proc.stdout or "") + (proc.stderr or "")
@@ -1451,7 +1451,8 @@ class GuestInputTransportTests(unittest.TestCase):
         probe = ("--eval=probe-guest-env: ; @$(PYTHON) -c "
                  "\"import os; print('GAME_ELF_IN_ENV=' + str(os.environ.get('GAME_ELF')))\"")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", probe, "probe-guest-env"],
+            [self.make, "--no-print-directory", f"BUILD_ROOT={self.build_root.as_posix()}",
+             probe, "probe-guest-env"],
             cwd=ROOT, capture_output=True, text=True,
             encoding="utf-8", errors="replace", check=False)
         blob = self._blob(proc)
@@ -1483,17 +1484,16 @@ class GuestInputTransportTests(unittest.TestCase):
         """
         game = "test_gi_m5"
         build = self._build_dir(game)
-        base = "dol$lar.elf"
-        elf_rel = f"build/{game}/{base}"
-        self._write_minimal_elf(ROOT / elf_rel)
+        elf = build / "dol$lar.elf"
+        self._write_minimal_elf(elf)
 
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         blob = self._blob(proc)
         self.assertNotEqual(proc.returncode, 0, "Make no longer eats `$`; re-derive this case")
-        self.assertIn("does not exist: build/test_gi_m5/dolar.elf", blob,
+        self.assertIn(f"does not exist: {build.as_posix()}/dolar.elf", blob,
                       "Make's `$` expansion changed shape:\n" + blob)
 
-        escaped = self._make(game, elf_rel.replace("$", "$$"))
+        escaped = self._make(game, elf.as_posix().replace("$", "$$"))
         self.assertEqual(escaped.returncode, 0,
                          "the documented `$$` escape no longer works:\n" + self._blob(escaped))
         self.assertTrue((build / f"{game}_image.bin").is_file())
@@ -1676,6 +1676,7 @@ class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
                         "--no-print-directory",
                         target,
                         f"{override_var}=nonexistent_manifest_fixture.json",
+                        f"BUILD_ROOT={_scratch_build_root(self, 'matrix').as_posix()}",
                     ],
                     cwd=ROOT,
                     capture_output=True,
@@ -1949,7 +1950,8 @@ class MachinePortabilityTests(unittest.TestCase):
         if not self.make:
             self.skipTest("GNU Make is required")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", "compiler-info"],
+            [self.make, "--no-print-directory", "compiler-info",
+             f"BUILD_ROOT={_scratch_build_root(self, 'vulkan-info').as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1981,7 +1983,8 @@ class MachinePortabilityTests(unittest.TestCase):
         if not self.make:
             self.skipTest("GNU Make is required")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", "compiler-info"],
+            [self.make, "--no-print-directory", "compiler-info",
+             f"BUILD_ROOT={_scratch_build_root(self, 'sdl3-info').as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -2045,7 +2048,8 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertRegex(makefile_text, r"(?m)^compile:.*\| sdl3-check$")
         self.assertRegex(makefile_text, r"(?m)^\$\(PLAYER_EXE\): \| player-vulkan-check sdl3-check$")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", "sdl3-check", "SDL3_DIR=C:/nonexistent_sdl3_repro_test"],
+            [self.make, "--no-print-directory", "sdl3-check", "SDL3_DIR=C:/nonexistent_sdl3_repro_test",
+             f"BUILD_ROOT={_scratch_build_root(self, 'sdl3-absent').as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -2198,7 +2202,8 @@ class MachinePortabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_build = Path(tmpdir) / "build_test"
             proc = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={tmp_build.as_posix()}", "compiler-info"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={tmp_build.as_posix()}",
+                 f"BUILD_ROOT={Path(tmpdir).as_posix()}", "compiler-info"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
