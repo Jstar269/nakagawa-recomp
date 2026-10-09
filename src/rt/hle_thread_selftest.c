@@ -13341,6 +13341,73 @@ static void test_ctrl_read_buffer_contract(void) {
     ctrl_drain(&cpu);
 }
 
+/* sceCtrlReadLatch (0x0b588501): PSPSDK pspctrl.h. uiMake and uiBreak are the transitions to
+ * pressed and to released across the sampling cycles since the previous latch read; uiPress is the
+ * pressed state and uiRelease its complement; the return is the cycles since that read. The test
+ * drives the sample ring directly (a test push, not the scripted input) and covers no new samples,
+ * a press, a held button, a release, two transitions inside one read, the return count, and a null
+ * latch pointer. */
+#define NID_CTRL_READ_LATCH 0x0b588501u
+#define CTRL_LATCH_OUT      0x00241d00u
+#define PSP_CTRL_CROSS_BIT  0x00004000u
+#define PSP_CTRL_CIRCLE_BIT 0x00002000u
+#define SCE_KERNEL_ILLEGAL_ADDR_ERR 0x80000103u
+extern void sr_hle_test_ctrl_push_sample(uint32_t buttons);
+extern void sr_hle_test_ctrl_latch_reset(void);
+
+static uint32_t ctrl_read_latch(uint32_t out) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = out;
+    return sr_syscall(&cpu, NID_CTRL_READ_LATCH);
+}
+
+static void test_ctrl_read_latch(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_latch_reset();
+
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(CTRL_LATCH_OUT + i, 0xa5u);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlReadLatch with no new sampling cycle returns 0");
+    expect(MEM_R32(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT + 4u) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 8u) == 0u && MEM_R32(CTRL_LATCH_OUT + 12u) == 0xffffffffu,
+           "with nothing pressed the latch reports no transitions and all buttons released");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CROSS_BIT);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u,
+           "one sampling cycle since the last read returns 1");
+    expect(MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT && MEM_R32(CTRL_LATCH_OUT + 4u) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 8u) == PSP_CTRL_CROSS_BIT &&
+               MEM_R32(CTRL_LATCH_OUT + 12u) == ~PSP_CTRL_CROSS_BIT,
+           "a press reports uiMake and uiPress for CROSS, and uiRelease is its complement");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CROSS_BIT);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == 0u && MEM_R32(CTRL_LATCH_OUT + 8u) == PSP_CTRL_CROSS_BIT,
+           "a held button is pressed but reports no new transition");
+
+    sr_hle_test_ctrl_push_sample(0u);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == PSP_CTRL_CROSS_BIT && MEM_R32(CTRL_LATCH_OUT + 8u) == 0u,
+           "a release reports uiBreak for CROSS and no pressed buttons");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CIRCLE_BIT);
+    sr_hle_test_ctrl_push_sample(0u);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 2u &&
+               MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CIRCLE_BIT &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == PSP_CTRL_CIRCLE_BIT && MEM_R32(CTRL_LATCH_OUT + 8u) == 0u,
+           "two cycles between reads report both CIRCLE transitions and return 2");
+
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == 0u,
+           "the next read after the latch was drained reports nothing new");
+
+    expect(ctrl_read_latch(0u) == SCE_KERNEL_ILLEGAL_ADDR_ERR,
+           "a null latch pointer returns ILLEGAL_ADDR");
+    sr_hle_test_ctrl_latch_reset();
+}
+
 static void test_ctrl_sample_timestamp_microsecond_contract(void) {
     CpuState cpu;
 
@@ -25599,6 +25666,7 @@ int main(int argc, char **argv) {
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
     test_named_refusals();
+    test_ctrl_read_latch();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();

@@ -15100,6 +15100,12 @@ static void sr_dump_calls(void) {
 typedef struct { uint32_t btn; uint32_t ts; uint8_t lx, ly; uint32_t input_id; } CtrlSample;
 static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 0, 128, 128, 0 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
+/* The latch cursor is independent of the ReadBuffer cursor s_ctrl_r: sceCtrlReadLatch reports the
+ * transitions between the sampling cycles since its previous read, so it keeps the button state it
+ * last saw and the sample count at that read. s_ctrl_sample_count counts every sampling cycle. */
+static uint32_t s_ctrl_sample_count = 0u;
+static uint32_t s_latch_prev_btn = 0u;
+static uint32_t s_latch_seen_count = 0u;
 
 /* ---- state-qualified acceptance routes (issue #64) --------------------------------
  *
@@ -16258,6 +16264,7 @@ void sr_ctrl_sample(void) {
     if (gui_on()) gui_consume_button_pulses();
     s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
     if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;  /* drop oldest on overflow */
+    s_ctrl_sample_count++;
     sched_wake(CTRL_WAIT_OBJ);
 }
 
@@ -16335,6 +16342,59 @@ static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
 static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
     return ctrl_fill_n(A0, A1, 0, 1);
 }
+
+/* sceCtrlReadLatch(SceCtrlLatch *latch) (PSPSDK pspctrl.h, 16 bytes: uiMake, uiBreak, uiPress,
+ * uiRelease): uiMake = buttons that transitioned to pressed, uiBreak = buttons that transitioned to
+ * released, uiPress = buttons in the pressed state, uiRelease = buttons in the released state, all
+ * across the sampling cycles since the previous latch read. The return is the number of sampling
+ * cycles since that read (PSPSDK). The complement of the button field is the released state, the
+ * same 32-bit convention the negative buffer read uses. Samples overwritten before a latch read are
+ * not reported one by one: the ring keeps the latest CTRL_RING - 1 samples, and a transition inside
+ * an overwritten span is lost. */
+static uint32_t h_CtrlReadLatch(CpuState *s) {
+    uint32_t out = A0;
+    uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
+    uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
+    uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
+    if (!out || !sr_guest_span_writable(out, 16u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (retained) {
+        int start = (s_ctrl_w - (int)retained + CTRL_RING) % CTRL_RING;
+        for (uint32_t i = 0; i < retained; i++) {
+            cur = s_ctrl_ring[(start + (int)i) % CTRL_RING].btn;
+            make |= cur & ~prev;
+            brk |= prev & ~cur;
+            prev = cur;
+        }
+    }
+    s_latch_prev_btn = cur;
+    s_latch_seen_count = s_ctrl_sample_count;
+    MEM_W32(out + 0, make);
+    MEM_W32(out + 4, brk);
+    MEM_W32(out + 8, cur);
+    MEM_W32(out + 12, ~cur);
+    return produced;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
+ * it, without scripted input, the guest-time stamp or the wake. */
+void sr_hle_test_ctrl_push_sample(uint32_t buttons) {
+    s_ctrl_ring[s_ctrl_w].btn = buttons;
+    s_ctrl_ring[s_ctrl_w].input_id = 0u;
+    s_ctrl_ring[s_ctrl_w].ts = 0u;
+    s_ctrl_ring[s_ctrl_w].lx = 128u;
+    s_ctrl_ring[s_ctrl_w].ly = 128u;
+    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
+    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;
+    s_ctrl_sample_count++;
+}
+
+/* Test-build-only: start the latch from the current sample count and an all-released state. */
+void sr_hle_test_ctrl_latch_reset(void) {
+    s_latch_prev_btn = 0u;
+    s_latch_seen_count = s_ctrl_sample_count;
+}
+#endif
 
 /* sceDisplay: remember the framebuffer; vblank waits block until the next delivered vblank. */
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride);
@@ -21634,6 +21694,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
+    sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
