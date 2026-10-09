@@ -531,8 +531,9 @@ opens no category by a literal path. On PSP-3000 6.6.1 opening a missing
 category creates it, so the probe lists the root through the registry handle
 itself and opens a category only after its open parent listed it as a
 directory with a name shorter than the 26-byte stored-name limit. If the
-registry handle does not list the root, the probe opens nothing and records
-that result. It enters only `/DATA`, `/DATA/FONT`, `/SYSPROFILE` and
+registry handle does not list the root, or its listing does not show the
+measured `CONFIG` category as a directory, the probe opens nothing below it and
+records that result. It enters only `/DATA`, `/DATA/FONT`, `/SYSPROFILE` and
 `/SYSPROFILE/RESOLUTION` and what lies below the last two, and reads values only
 there. The build pins the probe's `sceReg` imports to the eight read calls.
 

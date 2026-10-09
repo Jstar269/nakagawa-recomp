@@ -769,8 +769,10 @@ def _validate_registry_name(value: str, *, category: bool) -> None:
 # walk's safety contract on the evidence itself: a category appears only right
 # after the key record that listed it as an on-route directory with a name
 # that round-trips, the root is never opened (it is listed through the registry
-# handle), values appear only inside /DATA/FONT and /SYSPROFILE/RESOLUTION, and
-# every listed key is accounted for in order. It does not decide PSP values.
+# handle, and its children are opened only when that listing showed /CONFIG as
+# a directory), values appear only inside /DATA/FONT and
+# /SYSPROFILE/RESOLUTION, and every listed key is accounted for in order. It
+# does not decide PSP values.
 # ---------------------------------------------------------------------------
 
 REGISTRY_FONT_TEST_ID = "PSP-REGISTRY-002"
@@ -792,8 +794,11 @@ REGISTRY_FONT_KEY_OPEN_LIMIT = 6
 REGISTRY_FONT_KEY_VALUE_SIZE = 7
 REGISTRY_FONT_KEY_INFO_FAILED = 8
 REGISTRY_FONT_KEY_NAME_UNSAFE = 9
+REGISTRY_FONT_KEY_ROOT_UNVERIFIED = 10
+REGISTRY_FONT_ROOT_ANCHOR = "/CONFIG"
 _REGISTRY_FONT_REFUSALS = frozenset({
     REGISTRY_FONT_KEY_NAME_REFUSED, REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT,
+    REGISTRY_FONT_KEY_ROOT_UNVERIFIED,
 })
 _REGISTRY_FONT_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,26}")
 
@@ -814,6 +819,7 @@ class RegistryFontReport:
     complete: bool
     registry_opened: bool
     root_enumerated: bool
+    root_verified: bool
     categories: tuple[str, ...]
     opened: tuple[str, ...]
     keys: tuple[RegistryFontKey, ...]
@@ -1021,6 +1027,8 @@ def parse_registry_font_output(
             consistent = is_dir and _font_on_route(parts) and not _font_reopenable(parts[-1])
         elif disposition in (REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT):
             consistent = is_dir and _font_on_route(parts)
+        elif disposition == REGISTRY_FONT_KEY_ROOT_UNVERIFIED:
+            consistent = is_dir and _font_on_route(parts) and len(parts) == 1
         else:
             consistent = False
         if not consistent:
@@ -1035,10 +1043,26 @@ def parse_registry_font_output(
         raise ProtocolError(
             f"{REGISTRY_FONT_TEST_ID}: {pending_open} was listed as opened but has no category"
         )
+    anchor_listed = any(key.path == REGISTRY_FONT_ROOT_ANCHOR
+                        and key.type == REGISTRY_FONT_TYPE_DIR for key in keys)
+    root_opened = any(key.disposition == REGISTRY_FONT_KEY_OPENED
+                      and key.path.count("/") == 1 for key in keys)
+    root_refused = any(key.disposition == REGISTRY_FONT_KEY_ROOT_UNVERIFIED for key in keys)
+    if root_opened and not anchor_listed:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: a root category was opened although the listing did not "
+            f"show {REGISTRY_FONT_ROOT_ANCHOR} as a directory"
+        )
+    root_verified = False
     if terminal:
         done = _font_fields(records[-1], {
-            "result", "out0", "out1", "out2", "out3", "out4", "out5",
+            "result", "out0", "out1", "out2", "out3", "out4", "out5", "out6",
         })
+        root_verified = done["out6"] == 1
+        if (done["out6"] not in (0, 1)
+                or (root_verified and (root_refused or not anchor_listed))
+                or (not root_verified and root_opened)):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-done root check disagrees")
         while stack and stack[-1][2] >= stack[-1][1]:
             stack.pop()
         if stack:
@@ -1061,6 +1085,7 @@ def parse_registry_font_output(
         complete=terminal,
         registry_opened=registry_opened,
         root_enumerated=root_enumerated,
+        root_verified=root_verified,
         categories=tuple(categories),
         opened=tuple(opened),
         keys=tuple(keys),

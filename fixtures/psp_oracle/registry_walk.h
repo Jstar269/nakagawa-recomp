@@ -22,6 +22,9 @@
  *    sceRegGetKeyValue. No call sets, creates, removes or flushes anything.
  *  - No category is opened by a literal path. The root is never opened: it is enumerated through
  *    the registry handle itself. If the registry handle does not enumerate, nothing is opened.
+ *  - The registry handle's listing is taken as the root only when it lists CONFIG and
+ *    sceRegGetKeyInfo reports CONFIG as a directory: /CONFIG is the one root category measured
+ *    to exist (PSP-REGISTRY-001). Otherwise no category below the listing is opened.
  *  - A category is opened only after it was listed by sceRegGetKeys of its already-open parent,
  *    sceRegGetKeyInfo on that parent reported it as a directory, and its name is 1 to 25 bytes
  *    of [A-Za-z0-9_.-] (so it round-trips through the 26-byte stored-name limit and cannot be
@@ -78,7 +81,12 @@ enum {
     REGWALK_KEY_VALUE_SIZE = 7,   /* leaf in a value subtree, size 0 or above REGWALK_VALUE_MAX */
     REGWALK_KEY_INFO_FAILED = 8,  /* sceRegGetKeyInfo failed: type unknown, nothing opened */
     REGWALK_KEY_NAME_UNSAFE = 9,  /* listed slot not a safe NUL-terminated name: never queried */
+    REGWALK_KEY_ROOT_UNVERIFIED = 10, /* root directory on a route, but the listing did not show
+                                       * CONFIG as a directory: not known to be the root */
 };
+
+/* The root category measured to exist; its presence identifies the registry handle's listing. */
+#define REGWALK_ROOT_ANCHOR "CONFIG"
 
 typedef struct RegWalk {
     void (*emit)(void *ctx, const char *line, size_t length);
@@ -89,8 +97,9 @@ typedef struct RegWalk {
     uint32_t records;         /* every record emitted */
     uint32_t open_attempts;   /* sceRegOpenCategory calls */
     uint32_t opened;          /* sceRegOpenCategory calls that succeeded */
-    uint32_t refused;         /* directories refused by the name, depth or open limit */
-    uint32_t root_enumerated; /* 1 when the registry handle listed the root */
+    uint32_t refused;         /* directories refused by the name, depth, open or root rule */
+    uint32_t root_enumerated; /* 1 when the registry handle listed something */
+    uint32_t root_verified;   /* 1 when that listing showed REGWALK_ROOT_ANCHOR as a directory */
 } RegWalk;
 
 typedef struct RegWalkLevel {
@@ -286,6 +295,19 @@ static void regwalk_walk(RegWalk *w, REGHANDLE registry) {
     root->path[0] = '/';
     root->path[1] = '\0';
     w->root_enumerated = (uint32_t)regwalk_enumerate(w, root, 0u, 0u);
+    w->root_verified = 0u;
+    for (uint32_t i = 0; i < root->count; i++) {
+        const char *slot = root->names + (size_t)i * REG_KEYNAME_SIZE;
+        if (regwalk_safe_name_length(slot) == 0u || strcmp(slot, REGWALK_ROOT_ANCHOR) != 0) continue;
+        REGHANDLE anchor = 0;
+        unsigned int anchor_type = 0;
+        SceSize anchor_size = 0;
+        w->step(w->ctx, "root-verify");
+        w->root_verified = sceRegGetKeyInfo(registry, slot, &anchor, &anchor_type,
+                                            &anchor_size) == 0 &&
+                           anchor_type == (unsigned int)REG_TYPE_DIR;
+        break;
+    }
     uint32_t depth = 0u;
     char detail[REGWALK_PATH_MAX];
     for (uint32_t iteration = 0; iteration < REGWALK_ITERATIONS_MAX; iteration++) {
@@ -337,6 +359,8 @@ static void regwalk_walk(RegWalk *w, REGHANDLE registry) {
         uint32_t disposition = REGWALK_KEY_OPENED;
         if (!regwalk_route_for(level, depth, slot, &child_route, &child_subtree)) {
             disposition = REGWALK_KEY_OFF_ROUTE;
+        } else if (depth == 0u && !w->root_verified) {
+            disposition = REGWALK_KEY_ROOT_UNVERIFIED;
         } else if (!regwalk_name_reopenable(slot, name_length)) {
             disposition = REGWALK_KEY_NAME_REFUSED;
         } else if (depth + 1u > REGWALK_DEPTH_MAX) {
@@ -384,7 +408,8 @@ static void regwalk_walk(RegWalk *w, REGHANDLE registry) {
 /* Open the system registry read-only, walk it, close it. Records: font-registry-open, the
  * walk's font-category/font-key records in enumeration order, then font-registry-done
  * (result = sceRegCloseRegistry result, out0 categories, out1 keys, out2 records before it,
- * out3 categories opened, out4 directories refused, out5 1 when the root was enumerated). */
+ * out3 categories opened, out4 directories refused, out5 1 when the registry handle listed
+ * something, out6 1 when that listing showed CONFIG as a directory). */
 static void regwalk_run(RegWalk *w) {
     static struct RegParam param;
     memset(&param, 0, sizeof(param));
@@ -411,10 +436,10 @@ static void regwalk_run(RegWalk *w) {
     used = snprintf(s_regwalk_line, REGWALK_LINE_MAX,
         "NAKAGAWA_PSP_TEST schema=1 test_id=" REGWALK_TEST_ID " case_id=font-registry-done "
         "status=PASS result=0x%08x out0=0x%08x out1=0x%08x out2=0x%08x out3=0x%08x "
-        "out4=0x%08x out5=0x%08x",
+        "out4=0x%08x out5=0x%08x out6=0x%08x",
         (unsigned int)close_rc, (unsigned int)w->categories, (unsigned int)w->keys,
         (unsigned int)w->records, (unsigned int)w->opened, (unsigned int)w->refused,
-        (unsigned int)w->root_enumerated);
+        (unsigned int)w->root_enumerated, (unsigned int)w->root_verified);
     regwalk_emit(w, used);
 }
 

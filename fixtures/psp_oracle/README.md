@@ -515,7 +515,9 @@ a category by a literal path:
 
 - The root is listed through the registry handle (`sceRegGetKeysNum` and
   `sceRegGetKeys` take no name, so they cannot create anything). If the handle
-  does not list the root, nothing is opened.
+  does not list the root, nothing is opened. The listing counts as the root only
+  if it shows `CONFIG`, the one root category already measured, as a directory
+  (`font-registry-done` `out6`); otherwise no root child is opened.
 - A category is opened only after its already-open parent listed it,
   `sceRegGetKeyInfo` on that parent reported a directory, and its name is 1 to
   25 bytes of `[A-Za-z0-9_.-]`. Its path is the parent's path plus that name.

@@ -3516,6 +3516,7 @@ class RegistryFontWalkHostTests(unittest.TestCase):
         listed: set[tuple[str, str]] = set()
         directories: set[str] = set()
         open_paths: list[str] = ["/"]
+        anchor_checked = False
         for line in run.lines:
             fields = dict(item.split("=", 1) for item in line.split()[1:] if "=" in item)
             if line.startswith("LISTED "):
@@ -3523,6 +3524,7 @@ class RegistryFontWalkHostTests(unittest.TestCase):
             elif line.startswith("INFO "):
                 if fields["type"] == "1":
                     directories.add(fields["path"])
+                    anchor_checked = anchor_checked or fields["path"] == "/CONFIG"
             elif line.startswith("CALL sceRegGetKeyInfo "):
                 # A lookup only ever names something its handle just listed.
                 self.assertIn((fields["category"], fields["name"]), listed, line)
@@ -3534,6 +3536,9 @@ class RegistryFontWalkHostTests(unittest.TestCase):
                 self.assertIn(parent, open_paths, line)
                 self.assertIn((parent, name), listed, line)
                 self.assertIn(path, directories, line)
+                if parent == "/":
+                    # The listing is the root only if it showed /CONFIG as a directory first.
+                    self.assertTrue(anchor_checked, line)
                 self.assertRegex(name, r"^[A-Za-z0-9_.-]{1,25}$", line)
                 parts = path[1:].split("/")
                 self.assertTrue(
@@ -3555,6 +3560,7 @@ class RegistryFontWalkHostTests(unittest.TestCase):
         ])
         report = parse_registry_font_output(run.stream)
         self.assertTrue(report.complete and report.registry_opened and report.root_enumerated)
+        self.assertTrue(report.root_verified)
         self.assertEqual(report.opened, tuple(run.opens))
         values = {key.path: key.value for key in report.keys if key.value is not None}
         self.assertEqual(values["/DATA/FONT/path_name"], b"synthetic:/f/\x00")
@@ -3575,7 +3581,8 @@ class RegistryFontWalkHostTests(unittest.TestCase):
         self.assertEqual(dispositions["/SYSPROFILE/SOUND"], 3)
         self.assertEqual(dispositions["/DATA/data_version"], 0)
         steps = [line for line in run.lines if line.startswith("STEP ")]
-        self.assertEqual(steps[:3], ["STEP open-registry", "STEP root-count", "STEP root-keys"])
+        self.assertEqual(steps[:4], ["STEP open-registry", "STEP root-count", "STEP root-keys",
+                                     "STEP root-verify"])
         self.assertIn("STEP open:/DATA/FONT/PROPERTY/INFO1", steps)
         self.assertEqual(steps[-1], "STEP close-registry")
 
@@ -3586,12 +3593,30 @@ class RegistryFontWalkHostTests(unittest.TestCase):
         self.assertFalse([line for line in run.lines if line.startswith("CALL sceRegGetKeys ")])
         report = parse_registry_font_output(run.stream)
         self.assertFalse(report.root_enumerated)
+        self.assertFalse(report.root_verified)
         self.assertEqual(report.categories, ("/",))
         root = self._records(run)[1]
         self.assertEqual(root.status, "FAIL")
         self.assertEqual(dict(root.values)["out0"], "0x8008272e")
         done = dict(self._records(run)[-1].values)
         self.assertEqual(done["out5"], "0x00000000")
+
+    def test_a_listing_without_config_as_a_directory_is_not_taken_as_the_root(self) -> None:
+        tree = [node for node in _font_tree()
+                if not node.startswith(("node 1 / " + _hex("CONFIG"),
+                                        "node 2 /CONFIG ", "node 1 /CONFIG "))]
+        for extra in ([], [_node(2, "/", "CONFIG", bytes(4))]):
+            run = self._run(tree + extra)
+            self.assertEqual(run.opens, [])
+            report = parse_registry_font_output(run.stream)
+            self.assertTrue(report.root_enumerated)
+            self.assertFalse(report.root_verified)
+            dispositions = {key.path: key.disposition for key in report.keys}
+            self.assertEqual(dispositions["/DATA"], 10)
+            self.assertEqual(dispositions["/SYSPROFILE"], 10)
+            done = dict(self._records(run)[-1].values)
+            self.assertEqual(done["out6"], "0x00000000")
+            self.assertEqual(int(done["out4"], 16), 2)
 
     def test_absent_or_non_directory_routes_are_never_opened(self) -> None:
         nodes = [
@@ -3712,6 +3737,10 @@ class RegistryFontWalkHostTests(unittest.TestCase):
             mutate("detail=/DATA\n", "detail=/CONFIG\n"),
             mutate("out3=0x00000003 out4=0xffffffff detail=/CONFIG",
                    "out3=0x00000003 out4=0xffffffff detail=/CONFIG value_hex=00"),
+            # Root children were opened, but the listing never showed /CONFIG as a directory.
+            mutate("out3=0x00000003 out4=0xffffffff detail=/CONFIG\n",
+                   "out3=0x00000003 out4=0xffffffff detail=/CONFIX\n"),
+            mutate("out5=0x00000001 out6=0x00000001", "out5=0x00000001 out6=0x00000000"),
             mutate("out3=0x00000000 out4=0xffffffff detail=/DATA/data_version",
                    "out3=0x00000001 out4=0x00000000 detail=/DATA/data_version value_hex=01000000"),
             mutate("test_id=PSP-REGISTRY-002 case_id=font-key-0003",
