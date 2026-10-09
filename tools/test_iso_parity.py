@@ -40,6 +40,17 @@ from nk_core.iso_inspect import (
 )
 import nk_cli
 
+# The package key asks the C compiler for its target (gcc -dumpmachine) before the planner
+# runs. The fakes below stand in for the planner only, so that host query is passed to
+# the real subprocess.run, captured here before any test patches it.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _is_compiler_target_query(command) -> bool:
+    # Match the flag anywhere in the argv, not only as the last element, so the helper
+    # keeps working if the query ever gains trailing arguments.
+    return bool(command) and "-dumpmachine" in command
+
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
     """Construct a binary PSP PARAM.SFO buffer with given keys."""
@@ -1570,6 +1581,8 @@ int main(int argc, char **argv) {{
         captured_command: list[str] = []
 
         def fake_package_build(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             captured_command.extend(command)
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -1706,6 +1719,8 @@ int main(int argc, char **argv) {{
         captured_commands: list[list[str]] = []
 
         def fake_run(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             captured_commands.append(list(command))
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -2784,6 +2799,8 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
         })()
 
         def fake_compile(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             return subprocess.CompletedProcess(list(command), returncode, stdout=stdout, stderr=stderr)
 
         with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \

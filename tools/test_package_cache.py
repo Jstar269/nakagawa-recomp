@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -659,6 +660,30 @@ class PackageCacheTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "PACKAGE_REPORT_TOO_LARGE")
         self.assertIn("rejected by the package reader", str(caught.exception))
 
+    def test_artifact_order_ignores_the_profile_stamp_hash(self) -> None:
+        # A profile stamp is named by a hash over its entries, and the entries carry CFLAGS,
+        # which carry the build directory. Two output roots that build the same inputs
+        # therefore name the stamp differently: a hash starting with "f" sorts the stamp
+        # after the entries file, any other hash sorts it before. The manifest records must
+        # come out in the same order either way. Both orders are forced here by name.
+        with tempfile.TemporaryDirectory() as tmp:
+            for stamp_hash in ("0123456789abcdef0123", "fedcba9876543210fedc"):
+                package = Path(tmp) / stamp_hash
+                package.mkdir()
+                (package / ".runtime-profile-entries").write_text(
+                    "CFLAGS=fixture\n", encoding="utf-8")
+                (package / f".runtime-profile-{stamp_hash}").write_bytes(b"")
+                (package / "build-report.json").write_text("{}", encoding="utf-8")
+                paths = [record["path"] for record in package_cache._artifact_records(package)]
+                self.assertEqual(
+                    paths,
+                    [f".runtime-profile-{stamp_hash}",
+                     ".runtime-profile-entries",
+                     "build-report.json"],
+                    "the record order follows the stamp's hash, so two output roots "
+                    "building the same inputs write different completion manifests",
+                )
+
     def test_completion_manifest_accepts_gcc_runtime_dll_artifact_names(self) -> None:
         # Host runtime closure DLLs ship inside packages and GCC/MSYS2 library
         # names contain '+' (libstdc++-6.dll). The artifact rule must mirror
@@ -786,6 +811,79 @@ class PackageCacheTests(unittest.TestCase):
                 compiler_name=environment.get("CC", "gcc"),
             )
             self.assertEqual(cli_key, planner_key)
+
+    def test_compiler_target_is_the_c_compiler_not_the_planning_interpreter(self) -> None:
+        # The native objects are built by CC, so the key must name that compiler's
+        # target. The planner and the CLI can run under different interpreters (the
+        # player's MSYS2 python and the Python on PATH report different sysconfig
+        # platforms for the same gcc), so an interpreter-derived target made the native
+        # key change between two builds of the same inputs.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("NK_TARGET_TRIPLE", "CC_TARGET")}
+        gcc = shutil.which("gcc", path=environment.get("PATH"))
+        if gcc is None:
+            self.skipTest("gcc is not on PATH, so there is no compiler target to read")
+        expected = subprocess.run(
+            [gcc, "-dumpmachine"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertTrue(expected)
+        # The interpreter's platform is varied on purpose and must not reach the key: the
+        # mocks are asserted to be unconsulted, so a future regression that reads them
+        # fails here instead of silently passing with the value unchanged.
+        targets = set()
+        for machine, interpreter_platform in (("AMD64", "win-amd64"),
+                                              ("AMD64", "mingw_x86_64_ucrt_gnu"),
+                                              ("x86_64", "linux-x86_64")):
+            with mock.patch("platform.machine", return_value=machine) as machine_probe, \
+                    mock.patch("sysconfig.get_platform",
+                               return_value=interpreter_platform) as platform_probe:
+                targets.add(package_cache.compiler_target(environment))
+            machine_probe.assert_not_called()
+            platform_probe.assert_not_called()
+        self.assertEqual(targets, {expected})
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "CC": "no-such-compiler-nk"}),
+            "no-such-compiler-nk:unavailable",
+        )
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "NK_TARGET_TRIPLE": "fixture-target"}),
+            "fixture-target",
+        )
+
+    def test_relative_cc_resolves_identity_and_target_to_the_same_compiler(self) -> None:
+        # A relative CC that PATH does not provide names a file under the repository root.
+        # The identity and the target must resolve that one file: otherwise the key could
+        # fingerprint one compiler while naming the target of another.
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp).resolve()
+            compiler = repository / "nk-fixture-cc"
+            compiler.write_bytes(b"fixture compiler bytes")
+            environment = {"CC": "nk-fixture-cc", "PATH": ""}
+            completed = subprocess.CompletedProcess(
+                [str(compiler), "-dumpmachine"], 0, stdout="fixture-target\n", stderr="",
+            )
+            with mock.patch.object(package_cache.subprocess, "run",
+                                   return_value=completed) as run:
+                target = package_cache.compiler_target(
+                    environment, repository_root=repository,
+                )
+            self.assertEqual(target, "fixture-target")
+            self.assertEqual(run.call_args.args[0], [str(compiler), "-dumpmachine"])
+            self.assertEqual(
+                package_cache.compiler_identity(
+                    environment=environment, repository_root=repository,
+                ),
+                f"nk-fixture-cc:{package_cache.sha256_file(compiler)}",
+            )
+            # Without the repository root neither can find the compiler, and both say so.
+            self.assertEqual(
+                package_cache.compiler_target(environment),
+                "nk-fixture-cc:unavailable",
+            )
+            self.assertEqual(
+                package_cache.compiler_identity(environment=environment),
+                "nk-fixture-cc:unavailable",
+            )
 
     def test_promotion_refuses_a_copy_that_fails_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
