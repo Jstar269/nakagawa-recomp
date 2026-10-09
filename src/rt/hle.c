@@ -21981,6 +21981,8 @@ static void hle_register_power_clock_handlers(void) {
     sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+    /* Battery state query, in the shared helper so the executable harness registers it too. */
+    sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
 }
 
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()

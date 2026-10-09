@@ -17,6 +17,16 @@ uint32_t h_PowerIsBatteryCharging(CpuState *s) { (void)s; return 1; }
 uint32_t h_PowerIsBatteryExist(CpuState *s) { (void)s; return 1; }
 uint32_t h_PowerIsPowerOnline(CpuState *s) { (void)s; return 1; }
 
+/* scePowerIsLowBattery(void): check whether the battery is low (PSPSDK psppower.h). That header gives
+ * no return value, so the encoding is UNMEASURED; this model reports 0 (not low) while the modeled
+ * battery is full, which h_PowerGetBatteryLifePercent reports as 100. The flag is a model. */
+static int s_power_battery_low = 0;
+uint32_t h_PowerIsLowBattery(CpuState *s) { (void)s; return s_power_battery_low ? 1u : 0u; }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_power_set_low_battery(int low) { s_power_battery_low = low != 0; }
+#endif
+
 /* Retained clock request in MHz. Public behaviour reference: PSPSDK
  * src/power/psppower.h (scePowerSetClockFrequency) and PPSSPP
  * Core/HLE/scePower.cpp, where the Set calls update the frequencies the Get

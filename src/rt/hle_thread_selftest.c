@@ -222,6 +222,7 @@ extern void sr_hle_test_power_reset(void);
 extern void sr_hle_test_hprm_set_remote(int attached);
 extern void sr_hle_test_hprm_set_headphone(int attached);
 extern void sr_hle_test_hprm_set_microphone(int attached);
+extern void sr_hle_test_power_set_low_battery(int low);
 extern uint32_t sr_vblank_handler(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
@@ -11333,6 +11334,15 @@ static void test_td24b_cheap_hle_batch(void) {
     sr_hle_test_hprm_set_microphone(0);
     expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 0u,
            "sceHprmIsMicrophoneExist returns to no microphone when the model detaches it");
+
+    /* scePowerIsLowBattery (0xd3075926): the modeled battery is full, so the default is not low (0);
+     * the answer follows the battery model. The PSPSDK header leaves the return encoding undocumented. */
+    expect(td24b_dispatch4(0xd3075926u, 0u, 0u, 0u, 0u) == 0u,
+           "scePowerIsLowBattery reports not low while the modeled battery is full");
+    sr_hle_test_power_set_low_battery(1);
+    expect(td24b_dispatch4(0xd3075926u, 0u, 0u, 0u, 0u) == 1u,
+           "scePowerIsLowBattery follows a modeled low battery");
+    sr_hle_test_power_set_low_battery(0);
 
     /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
     reset_fixture();

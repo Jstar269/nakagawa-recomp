@@ -14,6 +14,7 @@ uint32_t h_PowerGetBatteryLifePercent(CpuState *s);
 uint32_t h_PowerIsBatteryCharging(CpuState *s);
 uint32_t h_PowerIsBatteryExist(CpuState *s);
 uint32_t h_PowerIsPowerOnline(CpuState *s);
+uint32_t h_PowerIsLowBattery(CpuState *s);
 uint32_t h_PowerGetPllClockFrequencyInt(CpuState *s);
 uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s);
 uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s);
