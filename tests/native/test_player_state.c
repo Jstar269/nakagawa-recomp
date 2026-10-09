@@ -1540,48 +1540,63 @@ static void test_bitmap_font_text_fallback(void) {
  * path components only, so a profile name that is a prefix of another folder
  * name is left alone. */
 static void test_display_path_hides_profile_folder(void) {
+    /* Each platform's own path spelling: the profile folder and its separator. */
+#if defined(_WIN32) || defined(_WIN64)
+#define TP_HOME "C:\\path\\synthetic-user"
+#define TP_OTHER "D:"
+#define TP_SEP "\\"
+#else
+#define TP_HOME "/srv/synthetic-user"
+#define TP_OTHER "/media"
+#define TP_SEP "/"
+#endif
     char out[160];
-    const char *home = "C:\\Users\\synthetic-user";
+    const char *home = TP_HOME;
 
     /* The saves root from the Settings screen. */
     size_t n = player_display_text_with_home(
-        "C:\\Users\\synthetic-user\\AppData\\Local\\Nakagawa\\saves", home, out, sizeof(out));
-    assert(strcmp(out, "~\\AppData\\Local\\Nakagawa\\saves") == 0);
+        TP_HOME TP_SEP "AppData" TP_SEP "Local" TP_SEP "Nakagawa" TP_SEP "saves", home,
+        out, sizeof(out));
+    assert(strcmp(out, "~" TP_SEP "AppData" TP_SEP "Local" TP_SEP "Nakagawa" TP_SEP "saves") == 0);
     assert(n == strlen(out));
 
     /* Exactly the profile folder, a trailing separator on the profile, and a
      * path embedded in a sentence. */
-    player_display_text_with_home("C:\\Users\\synthetic-user", home, out, sizeof(out));
+    player_display_text_with_home(TP_HOME, home, out, sizeof(out));
     assert(strcmp(out, "~") == 0);
-    player_display_text_with_home("C:\\Users\\synthetic-user\\Games\\disc.iso",
-                                  "C:\\Users\\synthetic-user\\", out, sizeof(out));
-    assert(strcmp(out, "~\\Games\\disc.iso") == 0);
-    player_display_text_with_home("Promoted to C:\\Users\\synthetic-user\\AppData, done.",
+    player_display_text_with_home(TP_HOME TP_SEP "Games" TP_SEP "disc.iso",
+                                  TP_HOME TP_SEP, out, sizeof(out));
+    assert(strcmp(out, "~" TP_SEP "Games" TP_SEP "disc.iso") == 0);
+    player_display_text_with_home("Promoted to " TP_HOME TP_SEP "AppData, done.",
                                   home, out, sizeof(out));
-    assert(strcmp(out, "Promoted to ~\\AppData, done.") == 0);
+    assert(strcmp(out, "Promoted to ~" TP_SEP "AppData, done.") == 0);
 
     /* A sibling folder whose name only starts with the profile name is untouched,
      * and so is a path outside the profile. */
-    player_display_text_with_home("C:\\Users\\synthetic-user2\\Games", home, out, sizeof(out));
-    assert(strcmp(out, "C:\\Users\\synthetic-user2\\Games") == 0);
-    player_display_text_with_home("D:\\Games\\disc.iso", home, out, sizeof(out));
-    assert(strcmp(out, "D:\\Games\\disc.iso") == 0);
+    player_display_text_with_home(TP_HOME "2" TP_SEP "Games", home, out, sizeof(out));
+    assert(strcmp(out, TP_HOME "2" TP_SEP "Games") == 0);
+    player_display_text_with_home(TP_OTHER TP_SEP "Games" TP_SEP "disc.iso", home,
+                                  out, sizeof(out));
+    assert(strcmp(out, TP_OTHER TP_SEP "Games" TP_SEP "disc.iso") == 0);
 
     /* No profile known: nothing is rewritten. */
-    player_display_text_with_home("C:\\Users\\synthetic-user\\x", "", out, sizeof(out));
-    assert(strcmp(out, "C:\\Users\\synthetic-user\\x") == 0);
-    player_display_text_with_home("C:\\Users\\synthetic-user\\x", NULL, out, sizeof(out));
-    assert(strcmp(out, "C:\\Users\\synthetic-user\\x") == 0);
+    player_display_text_with_home(TP_HOME TP_SEP "x", "", out, sizeof(out));
+    assert(strcmp(out, TP_HOME TP_SEP "x") == 0);
+    player_display_text_with_home(TP_HOME TP_SEP "x", NULL, out, sizeof(out));
+    assert(strcmp(out, TP_HOME TP_SEP "x") == 0);
 
     /* The buffer bound holds: the cut is never past the end. */
     char tiny[6];
-    player_display_text_with_home("C:\\Users\\synthetic-user\\AppData", home, tiny, sizeof(tiny));
+    player_display_text_with_home(TP_HOME TP_SEP "AppData", home, tiny, sizeof(tiny));
     assert(strlen(tiny) < sizeof(tiny));
-    assert(strcmp(tiny, "~\\App") == 0);
+    assert(strcmp(tiny, "~" TP_SEP "App") == 0);
+#undef TP_HOME
+#undef TP_OTHER
+#undef TP_SEP
 
 #if defined(_WIN32) || defined(_WIN64)
     /* Windows paths compare case-insensitively and accept either separator. */
-    player_display_text_with_home("c:/users/SYNTHETIC-USER/Games/disc.iso", home,
+    player_display_text_with_home("c:/PATH/SYNTHETIC-USER/Games/disc.iso", home,
                                   out, sizeof(out));
     assert(strcmp(out, "~/Games/disc.iso") == 0);
 #endif

@@ -97,38 +97,30 @@ NkResult nk_library_remove(NkLibrary *lib, const char *disc_id) {
     return NK_ERROR_FILE_NOT_FOUND;
 }
 
-/* Escape string for JSON. Every control character is escaped, so the reader
- * (which refuses raw control characters) reads back what was written. */
-static void escape_json_string(char *dest, size_t dest_size, const char *src) {
-    if (!dest || dest_size == 0) return;
-    size_t d = 0;
-    for (size_t s = 0; src && src[s] && d + 6 < dest_size; s++) {
+/* Writes `"key": "value",` with the value escaped for JSON. Every control
+ * character is escaped, so the reader (which refuses raw control characters)
+ * reads back what was written. The value is streamed, so no escape ever cuts it
+ * to fit a buffer: a field of quotes or control characters is written whole. */
+static void write_json_string_field(FILE *f, const char *key, const char *src) {
+    fprintf(f, "      \"%s\": \"", key);
+    for (size_t s = 0; src && src[s]; s++) {
         unsigned char c = (unsigned char)src[s];
         if (c == '\"' || c == '\\') {
-            dest[d++] = '\\';
-            dest[d++] = (char)c;
+            fputc('\\', f);
+            fputc((int)c, f);
         } else if (c == '\n') {
-            dest[d++] = '\\';
-            dest[d++] = 'n';
+            fputs("\\n", f);
         } else if (c == '\r') {
-            dest[d++] = '\\';
-            dest[d++] = 'r';
+            fputs("\\r", f);
         } else if (c == '\t') {
-            dest[d++] = '\\';
-            dest[d++] = 't';
+            fputs("\\t", f);
         } else if (c < 0x20) {
-            static const char hex[] = "0123456789abcdef";
-            dest[d++] = '\\';
-            dest[d++] = 'u';
-            dest[d++] = '0';
-            dest[d++] = '0';
-            dest[d++] = hex[c >> 4];
-            dest[d++] = hex[c & 0x0F];
+            fprintf(f, "\\u%04x", (unsigned)c);
         } else {
-            dest[d++] = (char)c;
+            fputc((int)c, f);
         }
     }
-    dest[d] = '\0';
+    fputs("\",\n", f);
 }
 
 NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
@@ -169,26 +161,13 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
     for (int i = 0; i < lib->count; i++) {
         const NkGameEntry *g = &lib->entries[i];
         if (g->is_sample) continue;
-        char esc_title[NK_MAX_TITLE_LEN * 2];
-        char esc_iso[NK_MAX_PATH * 2];
-        char esc_prep[NK_MAX_PATH * 2];
-        char esc_boot_executable[NK_MAX_EXECUTABLE_PATH * 2];
-        char esc_executable[NK_MAX_SELECTED_EXECUTABLE_PATH * 2];
-
-        escape_json_string(esc_title, sizeof(esc_title), g->title_name);
-        escape_json_string(esc_iso, sizeof(esc_iso), g->iso_path);
-        escape_json_string(esc_prep, sizeof(esc_prep), g->prepared_root);
-        escape_json_string(esc_boot_executable, sizeof(esc_boot_executable),
-                           g->boot_executable);
-        escape_json_string(esc_executable, sizeof(esc_executable), g->selected_executable);
-
         fprintf(f, "    {\n");
-        fprintf(f, "      \"disc_id\": \"%s\",\n", g->disc_id);
-        fprintf(f, "      \"title_name\": \"%s\",\n", esc_title);
-        fprintf(f, "      \"disc_version\": \"%s\",\n", g->disc_version);
-        fprintf(f, "      \"iso_path\": \"%s\",\n", esc_iso);
-        fprintf(f, "      \"prepared_root\": \"%s\",\n", esc_prep);
-        fprintf(f, "      \"title_id\": \"%s\",\n", g->title_id);
+        write_json_string_field(f, "disc_id", g->disc_id);
+        write_json_string_field(f, "title_name", g->title_name);
+        write_json_string_field(f, "disc_version", g->disc_version);
+        write_json_string_field(f, "iso_path", g->iso_path);
+        write_json_string_field(f, "prepared_root", g->prepared_root);
+        write_json_string_field(f, "title_id", g->title_id);
         fprintf(f, "      \"iso_size_bytes\": %llu,\n", (unsigned long long)g->iso_size_bytes);
         fprintf(f, "      \"status\": %d,\n", (int)g->status);
         fprintf(f, "      \"is_experimental\": %s,\n", g->is_experimental ? "true" : "false");
@@ -197,8 +176,8 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"executable_selection\": %u,\n", (unsigned)g->executable_selection);
         fprintf(f, "      \"executable_boot_fallback\": %s,\n",
                 g->executable_boot_fallback ? "true" : "false");
-        fprintf(f, "      \"boot_executable\": \"%s\",\n", esc_boot_executable);
-        fprintf(f, "      \"selected_executable\": \"%s\",\n", esc_executable);
+        write_json_string_field(f, "boot_executable", g->boot_executable);
+        write_json_string_field(f, "selected_executable", g->selected_executable);
         fprintf(f, "      \"is_prepared\": %s,\n", g->is_prepared ? "true" : "false");
         fprintf(f, "      \"assets_staged\": %s,\n", g->assets_staged ? "true" : "false");
         fprintf(f, "      \"extracted_asset_count\": %u,\n", (unsigned)g->extracted_asset_count);
