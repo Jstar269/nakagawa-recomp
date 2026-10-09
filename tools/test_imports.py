@@ -7,11 +7,14 @@ The security/audit parser in :mod:`psp_import_table` remains strict about the
 full named sections.  ``tools/imports.py`` also has to consume legacy retail
 ET_EXEC inputs whose named NID section contains unreferenced trailing words;
 these tests keep that compatibility bounded to a consistent window-paired
-prefix and ensure the condition is visible in diagnostics.
+prefix and ensure the condition is visible in diagnostics. Section-less inputs
+locate SceModuleInfo through the first loadable segment's p_paddr.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 from pathlib import Path
 import sys
 import struct
@@ -20,6 +23,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import analyze
 from analyze import Elf
 import imports
 from import_fixtures import (
@@ -28,7 +32,14 @@ from import_fixtures import (
     INTERLEAVED_NIDS,
     INTERLEAVED_SHAPE,
     build_interleaved_import_elf,
+    build_stripped_module_elf,
 )
+
+PRIMARY = [
+    ("SynthAlpha", [0x22000001, 0x22000002, 0x22000003]),
+    ("SynthBeta", [0x22000004]),
+    ("SynthGamma", [0x22000005, 0x22000006]),
+]
 
 
 class CodegenImportCompatibilityTests(unittest.TestCase):
@@ -76,6 +87,55 @@ class CodegenImportCompatibilityTests(unittest.TestCase):
         stubs, _findings = self._parse(bytes(blob))
 
         self.assertEqual(list(stubs.values()), [("SynthAlpha", nid)])
+
+
+class StrippedModuleInfoTests(unittest.TestCase):
+    """SceModuleInfo of section-less inputs comes from the first loadable p_paddr."""
+
+    def test_module_info_with_zero_gp_is_located_through_p_paddr(self) -> None:
+        blob, expected, modinfo = build_stripped_module_elf(PRIMARY)
+        elf = Elf(blob, base=0)
+        self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
+        self.assertEqual(imports.parse_imports(elf), expected)
+        # Code (with the import stubs) ends where the module metadata starts.
+        text = elf.sec(".text")
+        self.assertTrue(all(text["addr"] <= a < text["addr"] + text["size"] for a in expected))
+        self.assertLessEqual(text["addr"] + text["size"], modinfo)
+
+    def test_p_paddr_wins_over_a_later_false_module_info(self) -> None:
+        # The heuristic scan skips the real record (gp == 0) and would accept
+        # the later decoy, whose import window has no NID table.
+        blob, expected, modinfo = build_stripped_module_elf(PRIMARY, decoy=True)
+        elf = Elf(blob, base=0)
+        self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
+        with contextlib.redirect_stderr(io.StringIO()):
+            starts, _ranges = analyze.analyze(elf)
+        self.assertTrue(set(expected) <= starts)
+        self.assertEqual(imports.parse_imports(elf), expected)
+
+    def test_kernel_mode_bit_of_p_paddr_is_masked(self) -> None:
+        blob, expected, modinfo = build_stripped_module_elf(PRIMARY, kernel_bit=True)
+        elf = Elf(blob, base=0)
+        self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
+        self.assertEqual(imports.parse_imports(elf), expected)
+
+    def test_p_paddr_repeating_p_vaddr_falls_back_to_the_scan(self) -> None:
+        # A toolchain ELF whose p_paddr is just its load address names no file
+        # offset; the scan still finds a record with a non-zero gp.
+        blob, expected, modinfo = build_stripped_module_elf(
+            PRIMARY, gp=0x00008000, paddr=BASE_VADDR)
+        elf = Elf(blob, base=0)
+        self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
+        self.assertEqual(imports.parse_imports(elf), expected)
+
+    def test_p_paddr_naming_code_is_not_a_module_info(self) -> None:
+        # p_paddr points at instruction words, which do not decode as a
+        # record; the scan then finds the real one (non-zero gp here).
+        blob, expected, modinfo = build_stripped_module_elf(
+            PRIMARY, gp=0x00008000, paddr=DATA_FILE_OFF)
+        elf = Elf(blob, base=0)
+        self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
+        self.assertEqual(imports.parse_imports(elf), expected)
 
 
 if __name__ == "__main__":
