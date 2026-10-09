@@ -156,8 +156,18 @@ PATH_ECHOES = ("link-objects.rsp", ".runtime-profile-entries")
 # A cache entry directory, <AOT digest>/<native digest>, in its long spelling or in the
 # Windows 8.3 spelling the planner's workspace path is echoed with (for example
 # "7B48E1~1" for "7b48e18b9f...").
-_CACHE_ENTRY_RE = re.compile(rb"/entries/(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9])/"
-                             rb"(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9])/")
+#
+# The 8.3 suffix is ``~N`` with N counting collisions, so it reaches ``~10`` and beyond.
+#
+# Separators: only forward slashes are matched, on purpose. Both writers of these two
+# files normalize backslashes before they write, so the echo is never backslashed:
+# the Makefile's CFLAGS carry ``-DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"`` (the
+# runtime profile entries are hashed from CFLAGS), and the link response file is
+# written as ``$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))``. A backslash
+# echo would therefore not be rewritten here, and the two manifests' differing digests
+# would fail the equality check in the test, so the assumption fails closed.
+_CACHE_ENTRY_RE = re.compile(rb"/entries/(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/"
+                             rb"(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/")
 # The package files whose content names the title or the artifact stem. These are
 # left out of the byte comparison, because a route may legitimately name a
 # different title; the generated-manifest test then states which of them must still
