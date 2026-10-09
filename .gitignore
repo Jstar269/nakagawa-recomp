@@ -10,8 +10,9 @@
 *_recomp_*.c
 *_recomp_funcs.h
 *_imports.toml
-*_image.bin
 *.spv
+# Generated *_image.bin guest images, extracted game data, and raw dumps.
+*.bin
 
 # User-supplied PSP/game data and external verification inputs
 *.[eE][lL][fF]
@@ -66,8 +67,7 @@ tools/vfpu_game_*.txt
 /docs/opengrip_ref/
 /opengrip_ref/
 /OpenGrip_For_Inspiration/
-**/EBOOT.BIN.dec
-**/EBOOT.BIN.dec.*
+EBOOT.BIN.dec*
 
 # Local third-party checkouts and redistributable runtime binaries
 /third_party/*
@@ -107,7 +107,6 @@ nidseq_mine.txt
 # they are ever staged, but that is the last line of defence, not the first.
 /docs/ui-baseline/*.png
 /docs/ui-baseline/*.bmp
-*.bin
 *.psess
 *.ngef
 /progress.json
@@ -127,7 +126,6 @@ nidseq_mine.txt
 
 # Python caches and local environments
 __pycache__/
-*.py[cod]
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
@@ -137,11 +135,18 @@ htmlcov/
 .venv/
 venv/
 
-
-# IDE/editor and OS metadata
+# Editor, IDE, debugger, and OS metadata
 /.vs/
 /.vscode/
 /.idea/
+*.user
+*.sw[op]
+*.bak
+*.dmp
+*.stackdump
+.DS_Store
+Thumbs.db
+Desktop.ini
 
 # Generated, machine-specific Clang compilation database (absolute paths; refreshed by nk_manager.ps1)
 /compile_commands.json
@@ -166,18 +171,6 @@ opencode.json
 .openignore
 /.cache/
 /.github/github-app.yml
-
-# Editor, debugger, and OS metadata
-*.suo
-*.user
-*.sln.docstates
-*.sw[op]
-*.bak
-*.dmp
-*.stackdump
-.DS_Store
-Thumbs.db
-Desktop.ini
 
 # Local secrets and credentials
 .env
