@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -681,6 +682,38 @@ class PackageCacheTests(unittest.TestCase):
                 compiler_name=environment.get("CC", "gcc"),
             )
             self.assertEqual(cli_key, planner_key)
+
+    def test_compiler_target_is_the_c_compiler_not_the_planning_interpreter(self) -> None:
+        # The native objects are built by CC, so the key must name that compiler's
+        # target. The planner and the CLI can run under different interpreters (the
+        # player's MSYS2 python and the Python on PATH report different sysconfig
+        # platforms for the same gcc), so an interpreter-derived target made the native
+        # key change between two builds of the same inputs.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("NK_TARGET_TRIPLE", "CC_TARGET")}
+        gcc = shutil.which("gcc", path=environment.get("PATH"))
+        if gcc is None:
+            self.skipTest("gcc is not on PATH, so there is no compiler target to read")
+        expected = subprocess.run(
+            [gcc, "-dumpmachine"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertTrue(expected)
+        targets = set()
+        for machine, interpreter_platform in (("AMD64", "win-amd64"),
+                                              ("AMD64", "mingw_x86_64_ucrt_gnu"),
+                                              ("x86_64", "linux-x86_64")):
+            with mock.patch("platform.machine", return_value=machine), \
+                    mock.patch("sysconfig.get_platform", return_value=interpreter_platform):
+                targets.add(package_cache.compiler_target(environment))
+        self.assertEqual(targets, {expected})
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "CC": "no-such-compiler-nk"}),
+            "no-such-compiler-nk:unavailable",
+        )
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "NK_TARGET_TRIPLE": "fixture-target"}),
+            "fixture-target",
+        )
 
     def test_promotion_refuses_a_copy_that_fails_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

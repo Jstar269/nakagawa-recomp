@@ -11,10 +11,9 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
-import platform
 import re
 import shutil
-import sysconfig
+import subprocess
 import tempfile
 from typing import Any, Mapping
 
@@ -840,11 +839,38 @@ def compiler_identity(
 
 
 def compiler_target(environment: Mapping[str, str] | None = None) -> str:
+    """The machine triple the C compiler builds the native objects for.
+
+    The key names the target of the objects ``CC`` produces, so it is read from that
+    compiler (``-dumpmachine``) and never from the Python interpreter that plans the
+    build. Two interpreters on one machine report different platforms for the same
+    gcc (python.org: ``win-amd64``; MSYS2: ``mingw_x86_64_ucrt_gnu``), so an
+    interpreter-derived target changed the key between two builds of the same inputs.
+    ``NK_TARGET_TRIPLE`` or ``CC_TARGET`` still overrides it.
+    """
     env = os.environ if environment is None else environment
     explicit = env.get("NK_TARGET_TRIPLE") or env.get("CC_TARGET")
     if explicit:
         return explicit
-    return f"{platform.machine()}-{sysconfig.get_platform()}"
+    selected = env.get("CC") or "gcc"
+    executable = shutil.which(selected, path=env.get("PATH"))
+    if executable is None:
+        return f"{selected}:unavailable"
+    try:
+        completed = subprocess.run(
+            [executable, "-dumpmachine"],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return f"{selected}:unavailable"
+    machine = completed.stdout.strip()
+    if completed.returncode != 0 or not machine:
+        return f"{selected}:unavailable"
+    return machine
 
 
 def native_compile_flags(
