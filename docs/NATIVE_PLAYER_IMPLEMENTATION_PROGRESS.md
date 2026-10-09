@@ -40,9 +40,16 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
   a `RUNTIME REQUIRED` status for a staged entry with no runnable runtime.
   A failed package-status worker shows `PACKAGE CHECK FAILED` with the
   `RETRY PACKAGE CHECK` action; background retries use bounded backoff.
-- `--iso=<path> --stage-only` is a headless path through the same native staging,
-  atomic promotion, registration, and state transition. `--stage` starts the
-  same transaction from the interactive wizard.
+- `--iso=<path> --stage-only` is a headless path through the same native staging
+  transaction, registration, and state transition. `--stage` starts the same
+  transaction from the interactive wizard, `--launch-now` runs it first when the
+  disc's files are not in place, and `nk_cli prepare` runs it through the player
+  for discs whose data ships in archives. A repeat run reuses a complete staged
+  tree, and an interrupted run is cleaned up and redone.
+- `--user-data-root=<folder>` makes the player keep its library, title manifests,
+  packages, and staged games in that folder, matching `nk_cli --user-data-root`.
+  With `--headless-launch`, `--launch-now` waits for the game the same bounded way
+  `--launch-index` does.
 - `nk_launch.c` resolves staged `EBOOT.BIN`, prefers the promoted `xbdata`
   root (whose archives unpack as `<archive>.xb.d/` for the runtime asset index),
   creates a per-title `memstick` root, and validates

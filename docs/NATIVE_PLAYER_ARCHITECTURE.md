@@ -148,9 +148,27 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
 2. **Game Library View**: Displays supported games. If no game is configured, the prominent hero card invites the player: *"Select a PSP ISO you own"*.
 3. **Native File Selection**: Clicking *"Add Game"* invokes SDL3's native file-dialog API; the platform backend supplies the operating-system picker behavior.
 4. **Instant ISO Qualification**: The inspector reads the ISO9660 PVD and `PARAM.SFO` in memory, extracting `DISC_ID` (e.g. `UCUS98701`), Title, and Region.
-5. **Transactional Preparation**:
-   - Staging directory created under `.staging_<disc_id>/` in local application data.
-   - `EBOOT.BIN` and `PSP_GAME/USRDIR/xbdata` are copied by the native ISO reader.
+5. **Transactional Preparation**: one staging transaction (`player_stage_title`
+   in `src/player/setup_staging.c`) serves every route that sets up a disc's files:
+   the wizard's worker, `--stage-only`, `--launch-now` when the files are not in
+   place yet, and `nk_cli prepare` for discs whose data ships in archives (it runs
+   the player's `--stage-only`).
+   - A per-title lock (`games/.staging_<disc_id>.lock`) refuses a second staging of
+     the same title with `[STAGE_BUSY]`; the operating system releases it when its
+     holder exits.
+   - Whatever an interrupted run left behind (an unpromoted `.staging_<disc_id>/`
+     tree, or a replaced tree not yet removed) is cleared and never promoted.
+   - An existing `games/<disc_id>/` tree is reused when its staging record
+     (`EXTRACTED/staging-record.txt`: disc ID, disc version, image size, data root,
+     loose-content roots, asset counts) matches and every required folder is
+     present; an older or incomplete tree is replaced only after its replacement
+     is complete.
+   - Staging directory created under `.staging_<disc_id>/` in the per-user data
+     root (`--user-data-root` overrides it for the whole player process).
+   - `EBOOT.BIN` and the title's configured loose-content roots below
+     `PSP_GAME/USRDIR` are copied by the native ISO reader. A data root that lies
+     under those roots (for example `xbdata`) must be present, or the disc is
+     refused with `[STAGE_DATA_FOLDER_MISSING]` before anything is promoted.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
    - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the player's separate compatibility preflight can decrypt supported executable and selected PRX containers with the user's local key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
