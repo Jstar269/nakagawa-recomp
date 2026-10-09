@@ -1618,10 +1618,14 @@ endif
 export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
 RUNTIME_PROFILE_HASH := $(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,$(CC),$(BUILD_DIR)/.runtime-profile-entries)
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
-RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
+# The objects the runtime profile invalidates go in a list file that make writes (see the record
+# below): one --invalidate per object repeats the whole BUILD_DIR prefix, and under a long
+# scratch BUILD_ROOT that line overran the shell's limit and was cut without an error.
+RUNTIME_INVALIDATE_LIST := $(BUILD_DIR)/.runtime-invalidate.lst
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(file >$(RUNTIME_INVALIDATE_LIST),$(RT_GE_O) $(RT_OBJS))
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" --invalidate-file "$(RUNTIME_INVALIDATE_LIST)"
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -1978,7 +1982,7 @@ gui-present-selftest:
 # initialization and concurrent first use. No game inputs required; the success
 # path validates against the committed assets/vfpu/ tables.
 vfpu-tables-selftest:
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_tables_selftest.exe \
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_tables_selftest.exe -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		src/rt/vfpu_tables_selftest.c src/rt/vfpu_tables.c $(LIBS)
 	$(BUILD_DIR)/vfpu_tables_selftest.exe
 
@@ -2016,7 +2020,7 @@ native-core-tests: ge-texture-ref-selftest fbcap-selftest
 # either way), skipped-present cancel, refused re-arm, failed publication resolving as
 # failed, and the parent-directory contract. Strict C99; no GPU, window or game input.
 fbcap-selftest:
-	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-o $(BUILD_DIR)/fbcap_selftest.exe \
 		src/rt/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
 	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
@@ -2176,13 +2180,17 @@ PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/driver.o $(BUILD_DIR)/hle.o
 # so the canonical filter-out tail stays byte-identical for tools/test_build_truth.py.
 PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/iso_public.o $(BUILD_DIR)/iso_unavailable.o,$(PSMF_MEDIA_RUNTIME_OBJS))
 
+# The link's object list goes through a response file. The shell silently drops the tail of a
+# command longer than about 8191 bytes, and an absolute BUILD_ROOT puts 55 object paths on the
+# link line (about 10.6 KB under a long scratch root, cut inside the last object name). make
+# writes the list itself, so the link command carries one @file argument whatever the root length.
 psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
 	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
+	$(file >$(BUILD_DIR)/psmf_media_selftest.rsp,$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest.exe \
-		$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o \
-		src/rt/hle.c $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o \
+		src/rt/hle.c @$(BUILD_DIR)/psmf_media_selftest.rsp \
 		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
@@ -2328,7 +2336,7 @@ $(CPU_LLE_AOT_FIXTURE_C): tools/test_cpu_lle.py tools/codegen.py tools/analyze.p
 	$(PYTHON) tools/test_cpu_lle.py --generate-lle-aot-flow-fixture $@
 
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(CPU_LLE_AOT_FIXTURE_C)
-	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		src/rt/cpu_lle_selftest.c $(CPU_LLE_AOT_FIXTURE_C) src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
@@ -2400,7 +2408,7 @@ asset-index-selftest:
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
-	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_COHERENCE_BIN) \
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
@@ -2412,7 +2420,7 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
 # target-scoped synchronization closes the generation gap and rejects unsafe geometry.
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
-	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST \
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
 		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
@@ -2426,7 +2434,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 GPU_CAPTURE_BIN := $(BUILD_DIR)/gpu_capture_selftest.exe
 
 $(GPU_CAPTURE_BIN): shader-verify
-	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections \
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_CAPTURE_BIN) \
 		src/rt/gpu_capture_selftest.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(LIBS)
@@ -2619,19 +2627,19 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 player-state-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/player \
+	$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c src/player/setup_staging.c \
 		tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
 		tests/native/native_test_isolation.c tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_settings$(EXE_EXT)
 
 package-builder-test-bin:
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
 		tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_package_builder$(EXE_EXT)
 
@@ -2644,22 +2652,22 @@ player-ui-tests:
 	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
-	$(CC) -std=c99 -Wall -Wextra -Isrc/rt src/rt/pgf_public.c \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/rt src/rt/pgf_public.c -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/native_test_isolation.c tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_core_catalog$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_core_catalog$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/native_test_isolation.c tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_parsers_hostile$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_parsers_hostile$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_manifest_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_manifest_parser$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_manifest_parser$(EXE_EXT) --check
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/native_test_isolation.c tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_launch_resolution$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_launch_resolution$(EXE_EXT)
@@ -2669,27 +2677,27 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(BUILD_ROOT_RUN)/test_input_settings$(EXE_EXT)
 	$(MAKE) --no-print-directory package-builder-test-bin
 	$(BUILD_ROOT_RUN)/test_package_builder$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
 		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_xb_parser$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_xb_parser$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters 100
 	$(MAKE) --no-print-directory psmf-producer-selftest PSMF_FUZZ_ITERS=100
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_profile$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_input_profile$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o $(BUILD_ROOT)/argv_echo_helper$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_win32_process.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_win32_process$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_win32_process$(EXE_EXT)
 else
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
 		tests/native/test_posix_process.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_posix_process$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_posix_process$(EXE_EXT)
@@ -2704,7 +2712,7 @@ endif
 
 fuzz-parsers:
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt \
+	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)

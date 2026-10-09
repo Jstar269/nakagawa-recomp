@@ -2172,7 +2172,7 @@ static void test_guest_module_load_binding(void) {
 }
 
 static void test_prx_export_relocation_behavior(void) {
-    const char *path = "hle_prx_export_fixture.bin";
+    const char *path = HLE_BUILD_ROOT "/hle_prx_export_fixture.bin";
     const uint32_t base = 0x30000000u;
     const uint32_t nid_zero = 0x11111111u;
     const uint32_t nid_nonzero = 0x22222222u;
@@ -6856,11 +6856,25 @@ static int hle_make_directory(const char *path) {
     return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
+/* The absolute form of HLE_BUILD_ROOT, for the fixtures below that build a path from it.
+ * GetFullPathNameA resolves a relative root (the default "build") against the working
+ * directory and leaves an absolute one alone, so a BUILD_ROOT=<scratch> run stays in its
+ * scratch tree. Separators are normalised and trailing ones stripped. Returns 0 when the
+ * root cannot be resolved or does not fit in the buffer. */
+static int hle_scratch_root(char *out, size_t capacity) {
+    DWORD length = GetFullPathNameA(HLE_BUILD_ROOT, (DWORD)capacity, out, NULL);
+    if (length == 0 || length >= capacity) return 0;
+    while (length > 3u && (out[length - 1u] == '\\' || out[length - 1u] == '/')) {
+        out[--length] = '\0';
+    }
+    return 1;
+}
+
 static int hle_archive_fixture_make(char *root, size_t root_capacity) {
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, root_capacity, "%s\\build\\archive_vfs_%lu", cwd,
+    _snprintf(root, root_capacity, "%s\\archive_vfs_%lu", scratch,
               (unsigned long)GetCurrentProcessId());
     if (!hle_make_directory(root)) return 0;
     char dir[3][MAX_PATH];
@@ -6992,12 +7006,12 @@ static void test_direct_xb_read_precedence_and_listing(void) {
 
 static void test_direct_xb_malformed_archive_fails_closed(void) {
     char root[MAX_PATH];
-    char cwd[MAX_PATH];
+    char scratch[MAX_PATH];
     reset_fixture();
     sr_hle_init();
-    expect(GetCurrentDirectoryA(MAX_PATH, cwd) != 0, "the malformed XB fixture has a working directory");
+    expect(hle_scratch_root(scratch, sizeof(scratch)), "the malformed XB fixture has a scratch root");
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, sizeof(root), "%s\\build\\archive_vfs_bad_%lu", cwd,
+    _snprintf(root, sizeof(root), "%s\\archive_vfs_bad_%lu", scratch,
               (unsigned long)GetCurrentProcessId());
     expect(hle_make_directory(root), "the malformed XB fixture root was created");
     char archive_path[MAX_PATH];
@@ -7021,12 +7035,12 @@ static void test_direct_xb_malformed_archive_fails_closed(void) {
 static void test_direct_xb_many_members_skip_loose_walk(void) {
     const size_t count = 2048u;
     char root[MAX_PATH];
-    char cwd[MAX_PATH];
+    char scratch[MAX_PATH];
     reset_fixture();
     sr_hle_init();
-    expect(GetCurrentDirectoryA(MAX_PATH, cwd) != 0, "the large XB fixture has a working directory");
+    expect(hle_scratch_root(scratch, sizeof(scratch)), "the large XB fixture has a scratch root");
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(root, sizeof(root), "%s\\build\\archive_vfs_many_%lu", cwd,
+    _snprintf(root, sizeof(root), "%s\\archive_vfs_many_%lu", scratch,
               (unsigned long)GetCurrentProcessId());
     expect(hle_make_directory(root), "the large XB fixture root was created");
     HleXbEntry *entries = (HleXbEntry *)calloc(count, sizeof(*entries));
@@ -7235,8 +7249,8 @@ static void test_host_data_scan_scaling(void) {
     unsigned long long probes[sizeof(counts) / sizeof(counts[0])] = { 0 };
     unsigned long dirs[sizeof(counts) / sizeof(counts[0])] = { 0 };
     unsigned long skeleton[sizeof(counts) / sizeof(counts[0])] = { 0 };
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) {
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) {
         expect(0, "the synthetic host-data benchmark has a working directory");
         return;
     }
@@ -7249,8 +7263,8 @@ static void test_host_data_scan_scaling(void) {
         char dataroot[MAX_PATH];
         size_t dirs_created = 0;
         root[0] = '\0';
-        int n = snprintf(root, sizeof(root), "%s\\build\\host_data_scan_%lu_%llu",
-                         cwd, (unsigned long)GetCurrentProcessId(),
+        int n = snprintf(root, sizeof(root), "%s\\host_data_scan_%lu_%llu",
+                         scratch, (unsigned long)GetCurrentProcessId(),
                          (unsigned long long)GetTickCount64());
         int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
         int tree_ok = root_path_ok &&
@@ -7332,11 +7346,11 @@ typedef struct {
 } HleArchiveRouteFixture;
 
 static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
-    char cwd[MAX_PATH];
-    if (!fixture || !GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    char scratch[MAX_PATH];
+    if (!fixture || !hle_scratch_root(scratch, sizeof(scratch))) return 0;
     hle_make_directory(HLE_BUILD_ROOT);
-    _snprintf(fixture->root, sizeof(fixture->root), "%s\\build\\archive_route_%lu_%llu",
-              cwd, (unsigned long)GetCurrentProcessId(),
+    _snprintf(fixture->root, sizeof(fixture->root), "%s\\archive_route_%lu_%llu",
+              scratch, (unsigned long)GetCurrentProcessId(),
               (unsigned long long)GetTickCount64());
     _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
              fixture->root);
@@ -7771,11 +7785,11 @@ static void test_archive_mode_preserves_loose_routes(void) {
 }
 
 static int prewarm_make_fixture(int with_asset) {
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
     CreateDirectoryA(HLE_BUILD_ROOT, NULL);
-    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\build\\data_prewarm_%lu",
-             cwd, (unsigned long)GetCurrentProcessId());
+    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\data_prewarm_%lu",
+             scratch, (unsigned long)GetCurrentProcessId());
     /* A stale fixture from an earlier run must not inflate the counts. */
     char clean_root[MAX_PATH];
     snprintf(clean_root, sizeof clean_root, "\\\\?\\%s", s_prewarm_root);
@@ -7942,11 +7956,11 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
 static char s_disc_route_root[MAX_PATH];
 
 static int disc_route_make_fixture(void) {
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
     CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     snprintf(s_disc_route_root, sizeof s_disc_route_root,
-             "%s\\build\\disc_route_%lu", cwd, (unsigned long)GetCurrentProcessId());
+             "%s\\disc_route_%lu", scratch, (unsigned long)GetCurrentProcessId());
 
     /* CreateDirectoryA makes ONE directory; every intermediate is listed so the
      * fixture cannot depend on an earlier test having left a parent behind. */
@@ -8100,11 +8114,11 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
     reset_fixture();
     sr_hle_init();
     int root_ok = hle_make_directory(HLE_BUILD_ROOT);
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) root_ok = 0;
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) root_ok = 0;
     if (root_ok) {
-        int length = snprintf(root, sizeof(root), "%s\\build\\primary_archive_dupes_%lu_%llu",
-                              cwd, (unsigned long)GetCurrentProcessId(),
+        int length = snprintf(root, sizeof(root), "%s\\primary_archive_dupes_%lu_%llu",
+                              scratch, (unsigned long)GetCurrentProcessId(),
                               (unsigned long long)GetTickCount64());
         root_ok = length >= 0 && (size_t)length < sizeof(root);
     }
@@ -8243,7 +8257,7 @@ static void test_missing_root_fails_once_and_stays_failed(void) {
     reset_fixture();
     sr_hle_init();
     char missing[MAX_PATH];
-    snprintf(missing, sizeof missing, "%s\\build\\data_prewarm_missing_%lu",
+    snprintf(missing, sizeof missing, "%s\\absent\\data_prewarm_missing_%lu",
              s_prewarm_root, (unsigned long)GetCurrentProcessId());
     SetEnvironmentVariableA("SR_DATAROOT", missing);
     sr_hle_test_data_reset(0);
@@ -22421,7 +22435,8 @@ static uint32_t rt_frame(uint32_t v, const uint8_t *sig) {
     return keys;
 }
 
-#define RT_PATH "route_selftest_tmp.pad"
+/* Beneath the scratch root, not the working directory (the checkout root in a default run). */
+#define RT_PATH HLE_BUILD_ROOT "/route_selftest_tmp.pad"
 
 static void rt_write(const char *body) {
     FILE *fp = fopen(RT_PATH, "wb");
@@ -23988,8 +24003,8 @@ static int write_lifecycle_prx(const char *path, uint32_t payload) {
 }
 
 static void test_late_prx_unload_reload_lifecycle(void) {
-    const char *path_a = "hle_lifecycle_a.prx";
-    const char *path_b = "hle_lifecycle_b.prx";
+    const char *path_a = HLE_BUILD_ROOT "/hle_lifecycle_a.prx";
+    const char *path_b = HLE_BUILD_ROOT "/hle_lifecycle_b.prx";
     const uint32_t marker_1 = 0x1111aaaa;
     const uint32_t marker_2 = 0x2222bbbb;
     CpuState cpu;
@@ -24274,7 +24289,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 }
 
 static void test_host_skipped_start_stop_unload_reload(void) {
-    const char *path = "hle_lifecycle_host_skipped.prx";
+    const char *path = HLE_BUILD_ROOT "/hle_lifecycle_host_skipped.prx";
     CpuState cpu;
     uint32_t uid;
 
@@ -24350,7 +24365,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
  * not free that range out from under the survivor. Retiring on the last reference
  * instead is what keeps the survivor's module_start/module_stop valid. */
 static void test_late_prx_duplicate_base_last_reference(void) {
-    const char *path = "hle_lifecycle_dup.prx";
+    const char *path = HLE_BUILD_ROOT "/hle_lifecycle_dup.prx";
     CpuState cpu;
     uint32_t owner, survivor;
 
@@ -24449,7 +24464,7 @@ static int stderr_capture_begin(void) {
     fflush(stderr);
     s_stderr_saved_fd = _dup(_fileno(stderr));
     if (s_stderr_saved_fd < 0) return 0;
-    return freopen("psmf_boundary_capture.txt", "w+", stderr) != NULL;
+    return freopen(HLE_BUILD_ROOT "/psmf_boundary_capture.txt", "w+", stderr) != NULL;
 }
 static size_t stderr_capture_end(char *out, size_t capacity) {
     fflush(stderr);
@@ -24462,7 +24477,7 @@ static size_t stderr_capture_end(char *out, size_t capacity) {
         _close(s_stderr_saved_fd);
         s_stderr_saved_fd = -1;
     }
-    remove("psmf_boundary_capture.txt");
+    remove(HLE_BUILD_ROOT "/psmf_boundary_capture.txt");
     return n;
 }
 static int count_occurrences(const char *haystack, const char *needle) {
@@ -25291,7 +25306,49 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
+static int hle_selftest_main(int argc, char **argv);
+
+/* The selftest runs from a scratch working directory beneath HLE_BUILD_ROOT. The production
+ * capture publisher names its snapshots relative to the working directory (snap_<n>.ppm, the
+ * FBSNAP build/snapshots tree, the framebuffer dumps), so a checkout-root working directory
+ * would receive them, and the original is restored on every return. The modes that take path
+ * arguments (--psp-oracle, --exit-game-poisoned) keep the caller's working directory. */
 int main(int argc, char **argv) {
+    if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
+                     strcmp(argv[1], "--exit-game-poisoned") == 0))
+        return hle_selftest_main(argc, argv);
+    static const char scratch_rel[] = HLE_BUILD_ROOT "/hle_selftest_cwd";
+    char original[MAX_PATH];
+    if (!GetCurrentDirectoryA((DWORD)sizeof(original), original)) {
+        fprintf(stderr, "hle_thread_selftest: cannot read the working directory\n");
+        return 2;
+    }
+    /* argv[0] names this binary for the exit-game respawn, and a relative spelling
+     * (build/mygame/hle_thread_selftest.exe, as the Makefile starts it) resolves against the
+     * working directory. Resolve it while that is still the caller's directory. */
+    static char s_abs_argv0[MAX_PATH];
+    if (argc > 0 && argv[0]) {
+        DWORD n = GetFullPathNameA(argv[0], (DWORD)sizeof(s_abs_argv0), s_abs_argv0, NULL);
+        if (n == 0 || n >= sizeof(s_abs_argv0)) {
+            fprintf(stderr, "hle_thread_selftest: cannot resolve argv[0] '%s'\n", argv[0]);
+            return 2;
+        }
+        argv[0] = s_abs_argv0;
+    }
+    hle_make_directory(HLE_BUILD_ROOT);
+    if (!hle_make_directory(scratch_rel) || !SetCurrentDirectoryA(scratch_rel)) {
+        fprintf(stderr, "hle_thread_selftest: cannot enter scratch directory '%s'\n", scratch_rel);
+        return 2;
+    }
+    int rc = hle_selftest_main(argc, argv);
+    if (!SetCurrentDirectoryA(original)) {
+        fprintf(stderr, "hle_thread_selftest: cannot restore the working directory\n");
+        return 2;
+    }
+    return rc;
+}
+
+static int hle_selftest_main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
     if (argc > 1 && strcmp(argv[1], "--exit-game-poisoned") == 0)

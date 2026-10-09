@@ -11,6 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Scratch root for the file this test writes: the checkout's build/ by default, or the
+ * BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never touches
+ * the checkout. The product stores only the basename, so the name checks stay bare. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #define TEST_HEADER_SIZE 392u
 #define TEST_REV3_HEADER_SIZE 412u
 #define TEST_FONT_INFO_SIZE 0x108u
@@ -1091,6 +1098,7 @@ static void test_font_information_and_lifetime(void) {
     uint8_t expected[TEST_FONT_INFO_SIZE] = {0};
     FILE *stream;
     const char *file_name = "pgf_public_synthetic.tmp";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/pgf_public_synthetic.tmp";
 
     test_default_config(&config);
     config.first_glyph = 0x3042u;
@@ -1184,12 +1192,12 @@ static void test_font_information_and_lifetime(void) {
 
     test_default_config(&config);
     CHECK(test_build_font(&font, &config));
-    stream = fopen(file_name, "wb");
+    stream = fopen(file_path, "wb");
     CHECK(stream != NULL);
     if (stream) {
         CHECK(fwrite(font.bytes, 1u, font.size, stream) == font.size);
         CHECK(fclose(stream) == 0);
-        pgf = pgf_open("./pgf_public_synthetic.tmp");
+        pgf = pgf_open(file_path);
         CHECK(pgf != NULL);
         if (pgf) {
             memset(info, 0, TEST_FONT_INFO_SIZE);
@@ -1199,7 +1207,9 @@ static void test_font_information_and_lifetime(void) {
             pgf_close(pgf);
         }
 #ifdef _WIN32
-        pgf = pgf_open_w(L"./pgf_public_synthetic.tmp");
+        wchar_t wide_path[512];
+        CHECK(mbstowcs(wide_path, file_path, sizeof(wide_path) / sizeof(wide_path[0])) != (size_t)-1);
+        pgf = pgf_open_w(wide_path);
         CHECK(pgf != NULL);
         if (pgf) {
             memset(info, 0, TEST_FONT_INFO_SIZE);
@@ -1208,7 +1218,7 @@ static void test_font_information_and_lifetime(void) {
             pgf_close(pgf);
         }
 #endif
-        CHECK(remove(file_name) == 0);
+        CHECK(remove(file_path) == 0);
     }
     pgf_get_font_info(NULL, TEST_INFO_ADDR);
     memset(info, 0xa5, TEST_FONT_INFO_SIZE);
@@ -1637,12 +1647,12 @@ static void test_production_file_path_metrics_and_render(void) {
     static const uint8_t rle_bytes[6] = {0x11u, 0x21u, 0x30u, 0x02u, 0xf2u, 0x50u};
     static const uint8_t expected_row_major[12] = {1u, 1u, 2u, 2u, 3u, 0u,
                                                   0u, 0u, 15u, 15u, 15u, 5u};
-    static const char *const good_path = "synthetic-converter-output.pgf";
-    static const char *const bad_magic_path = "synthetic-converter-output-badmagic.pgf";
-    static const char *const short_path = "synthetic-converter-output-short.pgf";
-    static const char *const composite_path = "synthetic-composite-output.pgf";
+    static const char *const good_path = SR_SELFTEST_BUILD_ROOT "/synthetic-converter-output.pgf";
+    static const char *const bad_magic_path = SR_SELFTEST_BUILD_ROOT "/synthetic-converter-output-badmagic.pgf";
+    static const char *const short_path = SR_SELFTEST_BUILD_ROOT "/synthetic-converter-output-short.pgf";
+    static const char *const composite_path = SR_SELFTEST_BUILD_ROOT "/synthetic-composite-output.pgf";
     static const char *const bad_composite_path =
-        "synthetic-composite-output-absent.pgf";
+        SR_SELFTEST_BUILD_ROOT "/synthetic-composite-output-absent.pgf";
     TestConfig config;
     TestFont font;
     TestFont repeat;
