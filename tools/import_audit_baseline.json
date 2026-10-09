@@ -1215,6 +1215,13 @@
     "name": "sceMpegUnRegistStream",
     "status": "unreviewed"
   },
+  "0x5963991b": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceNetApctlDelHandler",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
+  },
   "0x5b37eb1d": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -2571,6 +2578,12 @@
     "classification": "dedicated",
     "handler": "h_StopModule_Trace",
     "name": "sceKernelStopModule",
+    "status": "unreviewed"
+  },
+  "0xd3075926": {
+    "classification": "dedicated",
+    "handler": "h_PowerIsLowBattery",
+    "name": "scePowerIsLowBattery",
     "status": "unreviewed"
   },
   "0xd4475aa8": {
