@@ -15070,6 +15070,14 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
  *   PRESS <hexmask> <width>      hold mask for width vblanks
  *   DELAY <n>                    advance n vblanks (input cadence within one screen)
  *   END                          route complete
+ *   WIDTHS VBLANKS|READS         the unit the widths of PRESS, DELAY, PRESS_UNTIL and
+ *                                PRESS_WHILE count in (default VBLANKS); before every step
+ *   READS | VBLANKS <step>       the unit of that one PRESS, DELAY, PRESS_UNTIL or PRESS_WHILE
+ *
+ * A width in READS is a number of guest controller reads that observe the press, not of
+ * vblanks: the press is held until the guest has read it that many times, however many
+ * vblanks a starved host covered meanwhile (scripted_input.h). The timeouts of WAIT, EXPECT,
+ * WAIT_NID and PRESS_UNTIL / PRESS_WHILE stay in vblanks, and so does every legacy row.
  *
  * "Observed" means a coarse signature of the presented framebuffer: the frame is divided
  * into cols x rows cells and each cell contributes its mean R, G and B. A screen matches
@@ -15127,6 +15135,8 @@ typedef struct {
     uint32_t a, b, c, d;             /* PRESS: mask,width   DELAY/WAIT: vblanks
                                       * PRESS_UNTIL: mask,width,period,timeout */
     int      line;                   /* source line, for diagnostics */
+    int      reads;                  /* the widths above count guest reads, not vblanks
+                                      * (WIDTHS READS, or a READS line); the timeouts never do */
 } RouteStep;
 
 static RouteCheckpoint s_route_cp[ROUTE_MAX_CP];
@@ -15151,6 +15161,11 @@ static int      s_route_have_attempt;
 static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
 static int      s_route_nlegacy;
 static int      s_route_loaded;
+/* WIDTHS VBLANKS|READS: the unit the widths of a route program's PRESS, DELAY, PRESS_UNTIL and
+ * PRESS_WHILE steps count in when the step does not say otherwise. Vblanks until a file says
+ * WIDTHS READS, so a route written before the keyword existed is exactly the route it was. */
+static int      s_route_widths_reads;
+static int      s_route_widths_set;
 
 /* Every scripted input source -- the legacy table below, the route program's press steps and
  * the auto-START pulse -- delivers through this one player in guest time (scripted_input.h):
@@ -15524,6 +15539,47 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         return -1;
     }
 
+    /* WIDTHS names the unit for the whole file, so it must come before any step it would apply
+     * to, and only once: a second setting would silently change what the earlier steps meant. */
+    if (strcmp(tok, "WIDTHS") == 0) {
+        char *unit = strtok(NULL, " \t\r\n");
+        if (!unit || (strcmp(unit, "VBLANKS") != 0 && strcmp(unit, "READS") != 0)) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: WIDTHS VBLANKS or WIDTHS READS\n", path, lineno);
+            return -1;
+        }
+        if (s_route_widths_set) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: WIDTHS may be given once\n", path, lineno);
+            return -1;
+        }
+        if (s_route_nsteps > 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: WIDTHS must precede every step\n", path, lineno);
+            return -1;
+        }
+        s_route_widths_set = 1;
+        s_route_widths_reads = unit[0] == 'R';
+        return 0;
+    }
+
+    /* READS and VBLANKS come first on a line and state the unit of that one step. Existing
+     * lines never begin with either word, so they parse exactly as before. Only the four
+     * steps whose widths can differ accept one; anything else would ignore the unit silently. */
+    int line_reads = s_route_widths_reads;
+    if (strcmp(tok, "READS") == 0 || strcmp(tok, "VBLANKS") == 0) {
+        line_reads = tok[0] == 'R';
+        tok = strtok(NULL, " \t\r\n");
+        if (!tok || tok[0] == '#') {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: READS and VBLANKS must be followed by PRESS, DELAY, "
+                            "PRESS_UNTIL or PRESS_WHILE\n", path, lineno);
+            return -1;
+        }
+        if (strcmp(tok, "PRESS") != 0 && strcmp(tok, "DELAY") != 0 &&
+            strcmp(tok, "PRESS_UNTIL") != 0 && strcmp(tok, "PRESS_WHILE") != 0) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: READS and VBLANKS apply to PRESS, DELAY, PRESS_UNTIL "
+                            "and PRESS_WHILE, not '%s'\n", path, lineno, tok);
+            return -1;
+        }
+    }
+
     if (strcmp(tok, "SIGGRID") == 0) {
         char *c = strtok(NULL, " \t\r\n"), *r = strtok(NULL, " \t\r\n");
         if (!c || !r) { fprintf(stderr, "ROUTE_PARSE: %s:%d: SIGGRID <cols> <rows>\n", path, lineno); return -1; }
@@ -15591,6 +15647,7 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         RouteStep st;
         memset(&st, 0, sizeof st);
         st.line = lineno;
+        st.reads = line_reads;
         if (strcmp(tok, "WAIT") == 0 || strcmp(tok, "EXPECT") == 0) {
             st.op = tok[0] == 'W' ? ROUTE_OP_WAIT : ROUTE_OP_EXPECT;
             char *name = strtok(NULL, " \t\r\n");
@@ -15633,7 +15690,15 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             st.b = (uint32_t)strtoul(w, NULL, 10);
             st.c = (uint32_t)strtoul(p, NULL, 10);
             st.d = (uint32_t)strtoul(t, NULL, 10);
-            if (st.b < 1 || st.c <= st.b || st.d < st.c) {
+            if (st.reads) {
+                /* The width and the period are reads; the timeout is still vblanks, so the
+                 * one comparison that would mix the two units is not made. */
+                if (st.b < 1 || st.c <= st.b || st.d < 1) {
+                    fprintf(stderr, "ROUTE_PARSE: %s:%d: %s with READS needs width >= 1, period > width "
+                                    "(both in reads), timeout >= 1 vblank\n", path, lineno, tok);
+                    return -1;
+                }
+            } else if (st.b < 1 || st.c <= st.b || st.d < st.c) {
                 fprintf(stderr, "ROUTE_PARSE: %s:%d: %s needs width >= 1, period > width, timeout >= period\n", path, lineno, tok);
                 return -1;
             }
@@ -15696,6 +15761,8 @@ void sr_route_reset(void) {
     s_route_cols = 12; s_route_rows = 8;
     s_route_tol = 12;
     s_route_sample_every = 20;
+    s_route_widths_reads = 0;
+    s_route_widths_set = 0;
     s_route_keys = 0;
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
@@ -15721,6 +15788,8 @@ int sr_route_load(const char *path) {
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
+    s_route_widths_reads = 0;
+    s_route_widths_set = 0;
     s_route_state = ROUTE_OFF;
     s_route_loaded = 1;
     sr_input_reset(&s_input);
@@ -15772,9 +15841,10 @@ int sr_route_load(const char *path) {
                 continue;
             char what[64];
             route_describe_mask(st->a, what, sizeof what);
-            fprintf(stderr, "ROUTE: step %d (%s) presses %s\n", i,
+            fprintf(stderr, "ROUTE: step %d (%s) presses %s%s\n", i,
                     st->op == ROUTE_OP_PRESS ? "PRESS" :
-                    st->op == ROUTE_OP_UNTIL ? "PRESS_UNTIL" : "PRESS_WHILE", what);
+                    st->op == ROUTE_OP_UNTIL ? "PRESS_UNTIL" : "PRESS_WHILE", what,
+                    st->reads ? " (widths in guest reads)" : "");
         }
         /* And say what each WAIT_NID is waiting for, the same way: a route that stalls on an
          * event names the event in the log instead of leaving a reader to guess. */
@@ -15824,11 +15894,33 @@ int sr_route_load(const char *path) {
 static void route_input_overdue(const char *what_step, uint32_t v) {
     char what[64];
     route_describe_mask(s_input.seg.mask, what, sizeof what);
-    route_fail("%s: the guest did not read the controller while %s was held for %u vblanks "
-               "(from vblank %u to %u); a scripted press is held until the guest reads it, for "
-               "at most SR_PADSCRIPT_READ_BUDGET=%u vblanks",
-               what_step, what, v - s_input.since, s_input.since, v, s_input.seg.budget);
+    if (s_input.seg.reads) {
+        route_fail("%s: the guest read the controller only %u of the %u reads %s was held for, "
+                   "within its budget (from vblank %u to %u); a read-width press is held until the "
+                   "guest has read it that many times, for at most SR_PADSCRIPT_READ_BUDGET=%u vblanks",
+                   what_step, s_input.reads, s_input.seg.reads, what, s_input.since, v,
+                   s_input.seg.budget);
+    } else {
+        route_fail("%s: the guest did not read the controller while %s was held for %u vblanks "
+                   "(from vblank %u to %u); a scripted press is held until the guest reads it, for "
+                   "at most SR_PADSCRIPT_READ_BUDGET=%u vblanks",
+                   what_step, what, v - s_input.since, s_input.since, v, s_input.seg.budget);
+    }
     sr_input_idle(&s_input);
+}
+
+/* The segment a step starts: `mask` held (or released, when mask is 0) for `width` of the
+ * step's unit. A vblank width is controller samples. A read width is guest reads, and the
+ * sample count is left at its minimum, because a read-width segment is delivered by its reads. */
+static SrInputSegment route_segment(uint32_t mask, uint32_t width, int reads, uint32_t not_before,
+                                    uint32_t budget) {
+    SrInputSegment s;
+    s.mask = mask;
+    s.samples = reads ? 1u : width;
+    s.not_before = not_before;
+    s.budget = budget;
+    s.reads = reads ? width : 0u;
+    return s;
 }
 
 /* One vblank of a legacy pad script: advance its segment list in guest time and return the
@@ -15869,8 +15961,8 @@ static void route_advance(void) { s_route_pc++; s_route_step_started = 0; }
 static uint32_t route_pulse(const RouteStep *st, uint32_t v) {
     if (sr_input_delivered(&s_input)) {
         SrInputSegment next = s_input.seg.mask
-            ? (SrInputSegment){ 0u, st->c - st->b, v, 0u }
-            : (SrInputSegment){ st->a, st->b, v, 0u };
+            ? route_segment(0u, st->c - st->b, st->reads, v, 0u)
+            : route_segment(st->a, st->b, st->reads, v, 0u);
         sr_input_start(&s_input, &next, v);
     }
     return sr_input_mask(&s_input);
@@ -15907,11 +15999,11 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             /* Input belongs to the step that makes it: a pressing step starts its first
              * segment here, every other step leaves the pad released. */
             if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE) {
-                SrInputSegment press = { st->a, st->b, v,
-                                         st->op == ROUTE_OP_PRESS ? s_input_budget : 0u };
+                SrInputSegment press = route_segment(st->a, st->b, st->reads, v,
+                                                     st->op == ROUTE_OP_PRESS ? s_input_budget : 0u);
                 sr_input_start(&s_input, &press, v);
             } else if (st->op == ROUTE_OP_DELAY && st->a > 0u) {
-                SrInputSegment gap = { 0u, st->a, v, 0u };
+                SrInputSegment gap = route_segment(0u, st->a, st->reads, v, 0u);
                 sr_input_start(&s_input, &gap, v);
             } else {
                 sr_input_idle(&s_input);
@@ -16118,13 +16210,13 @@ static uint32_t auto_pulse_keys(uint32_t mask, uint32_t period, uint32_t width, 
     if (s_input.current) {
         if (!sr_input_delivered(&s_input)) return sr_input_mask(&s_input);
         if (s_input.seg.mask) {               /* the press was read: release it */
-            SrInputSegment gap = { 0u, 1u, v, 0u };
+            SrInputSegment gap = { 0u, 1u, v, 0u, 0u };
             sr_input_start(&s_input, &gap, v);
             return 0u;
         }
     }
     if (v < s_pulse.next || v < start) return 0u;
-    SrInputSegment press = { mask, width, v, 0u };
+    SrInputSegment press = { mask, width, v, 0u, 0u };
     sr_input_start(&s_input, &press, v);
     s_pulse.next = (v / period + 1u) * period;  /* the boundary after this press */
     return mask;

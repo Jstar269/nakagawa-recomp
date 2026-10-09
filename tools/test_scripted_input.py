@@ -19,6 +19,11 @@ reads only between batches. Every press must still reach a guest read, every rel
 read before the next press, no press may start before its row, and a press nobody reads
 must become a named overdue failure instead of vanishing. hle_thread_selftest drives the
 same mechanism end to end through the production scheduler and sceCtrlReadBufferPositive.
+
+A segment may also state its width in guest reads (SrInputSegment.reads, the route grammar's
+WIDTHS READS / READS PRESS). Those cases hand-build the segment list, mix the two kinds of
+width, and check that a read-width press lasts exactly its reads on the same starved schedule
+that a vblank width does not survive.
 """
 
 from __future__ import annotations
@@ -48,6 +53,14 @@ static uint32_t latest_mask, latest_id, v;
 static void load(const uint32_t *f, const uint32_t *m, const uint32_t *w, int rows, uint32_t budget) {
     sr_input_reset(&P);
     n = sr_input_from_rows(f, m, w, rows, budget, L, 64);
+    pos = 0;
+}
+
+/* A segment list written by hand, with widths in vblanks or in guest reads. */
+static void load_list(const SrInputSegment *segs, int count) {
+    sr_input_reset(&P);
+    for (int i = 0; i < count; i++) L[i] = segs[i];
+    n = count;
     pos = 0;
 }
 
@@ -105,6 +118,54 @@ int main(int argc, char **argv) {
         load(cf, cm, cw, 2, 77u);
         for (int i = 0; i < n; i++)
             printf("SEG %x %u %u %u\n", L[i].mask, L[i].samples, L[i].not_before, L[i].budget);
+    } else if (strcmp(mode, "reads_starved") == 0) {  /* widths in guest reads, starved host */
+        const SrInputSegment s[] = {
+            { 0x4000u, 1u, 0u, 1800u, 3u },           /* CROSS until three guest reads saw it */
+            { 0x0000u, 1u, 0u, 0u,    2u },           /* released until two guest reads saw it */
+            { 0x4000u, 1u, 0u, 1800u, 1u },           /* CROSS until one guest read saw it */
+        };
+        const uint32_t batches[] = { 1u, 30u, 30u, 30u, 30u, 30u };
+        load_list(s, 3);
+        for (size_t i = 0; i < sizeof batches / sizeof batches[0]; i++) { batch(batches[i]); guest_read(); }
+    } else if (strcmp(mode, "vblank_starved") == 0) { /* the same schedule with vblank widths */
+        const SrInputSegment s[] = {
+            { 0x4000u, 4u, 0u, 1800u, 0u },
+            { 0x0000u, 2u, 0u, 0u,    0u },
+            { 0x4000u, 4u, 0u, 1800u, 0u },
+        };
+        const uint32_t batches[] = { 1u, 30u, 30u, 30u, 30u, 30u };
+        load_list(s, 3);
+        for (size_t i = 0; i < sizeof batches / sizeof batches[0]; i++) { batch(batches[i]); guest_read(); }
+    } else if (strcmp(mode, "reads_mixed") == 0) {    /* vblank and read widths in one script */
+        const SrInputSegment s[] = {
+            { 0x4000u, 2u, 0u, 1800u, 0u },           /* CROSS for two samples */
+            { 0x0000u, 1u, 0u, 0u,    1u },           /* released for one guest read */
+            { 0x4000u, 1u, 0u, 1800u, 2u },           /* CROSS for two guest reads */
+            { 0x0000u, 3u, 0u, 0u,    0u },           /* released for three samples */
+        };
+        const uint32_t batches[] = { 1u, 30u, 30u, 30u, 30u, 30u };
+        load_list(s, 4);
+        for (size_t i = 0; i < sizeof batches / sizeof batches[0]; i++) { batch(batches[i]); guest_read(); }
+    } else if (strcmp(mode, "reads_overdue") == 0) {  /* one read of three, then the guest stops */
+        const SrInputSegment s[] = { { 0x4000u, 1u, 0u, 30u, 3u } };
+        load_list(s, 1);
+        batch(1); guest_read();
+        for (int i = 0; i < 60; i++) batch(1);
+        printf("READS_SEEN %u\n", P.reads);
+    } else if (strcmp(mode, "reads_stale") == 0) {   /* which reads count toward a read width */
+        const SrInputSegment s[] = { { 0x4000u, 1u, 0u, 1800u, 1u } };
+        load_list(s, 1);
+        batch(1);
+        uint32_t stale = latest_id;
+        load_list(s, 1);                             /* a new segment, with a newer delivery id */
+        batch(1);
+        sr_input_read(&P, 0u);                       /* a read that hands over no sample */
+        printf("NO_SAMPLE_READS %u DELIVERED %d\n", P.reads, sr_input_delivered(&P));
+        sr_input_read(&P, stale);                    /* a sample from the previous segment */
+        printf("STALE_READS %u DELIVERED %d\n", P.reads, sr_input_delivered(&P));
+        batch(3);                                    /* three samples of this segment ... */
+        sr_input_read(&P, latest_id);                /* ... handed over by one read */
+        printf("MULTI_READS %u DELIVERED %d\n", P.reads, sr_input_delivered(&P));
     } else {
         return 2;
     }
@@ -231,6 +292,38 @@ class ScriptedInputDeliveryTests(unittest.TestCase):
             (0x4010, 4, 20, 77),       # [20, 24): the overlap holds both buttons
             (0x0010, 36, 24, 77),      # [24, 60)
         ])
+
+    def test_a_guest_read_width_holds_for_exactly_that_many_reads_on_a_starved_host(self) -> None:
+        # Each guest read follows a batch of several vblanks. CROSS is read three times, then
+        # released for two reads, then CROSS once: the reads count, not the vblanks.
+        reads = self.records(self.run_mode("reads_starved"), "READ")
+        self.assertEqual([pad for _, pad in reads], [0x4000, 0x4000, 0x4000, 0, 0, 0x4000], reads)
+
+    def test_the_same_starved_schedule_in_vblank_widths_falls_short(self) -> None:
+        # The control for the test above: a four-vblank press is latched inside one batch and
+        # handed to a single read, so the guest sees one CROSS read where a read width gives three.
+        reads = self.records(self.run_mode("vblank_starved"), "READ")
+        self.assertEqual([pad for _, pad in reads], [0x4000, 0, 0x4000, 0, 0, 0], reads)
+
+    def test_vblank_and_read_widths_mix_in_one_script(self) -> None:
+        reads = self.records(self.run_mode("reads_mixed"), "READ")
+        self.assertEqual([pad for _, pad in reads], [0x4000, 0, 0x4000, 0x4000, 0, 0], reads)
+
+    def test_a_read_width_the_guest_never_completes_is_a_named_overdue_failure(self) -> None:
+        output = self.run_mode("reads_overdue")
+        overdue = re.findall(r"^OVERDUE (\d+) mask=([0-9a-f]+) since=(\d+)$", output, re.M)
+        self.assertEqual(len(overdue), 1, output)
+        vblank, mask, since = int(overdue[0][0]), int(overdue[0][1], 16), int(overdue[0][2])
+        self.assertEqual(mask, 0x4000)
+        self.assertEqual(since, 1)
+        self.assertEqual(vblank - since, 30, "one read of three, then the budget runs out")
+        self.assertIn("READS_SEEN 1", output.splitlines())
+
+    def test_only_a_read_that_hands_over_the_segment_counts_toward_its_width(self) -> None:
+        output = self.run_mode("reads_stale")
+        self.assertIn("NO_SAMPLE_READS 0 DELIVERED 0", output, "a read with no sample of its own")
+        self.assertIn("STALE_READS 0 DELIVERED 0", output, "a sample from the previous segment")
+        self.assertIn("MULTI_READS 1 DELIVERED 1", output, "three samples handed over by one read")
 
 
 if __name__ == "__main__":
