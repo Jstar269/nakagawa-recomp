@@ -238,7 +238,7 @@ class TestParseFuzz(unittest.TestCase):
 
     def test_param_sfo_fuzz(self) -> None:
         rng = random.Random(0x5F0)
-        seed = build_param_sfo("ULES00123", "Test Title", "1.00")
+        seed = build_param_sfo("TEST80002", "Test Title", "1.00")
         accepted = 0
         for _ in range(500):
             if rng.random() < 0.5:
