@@ -4157,6 +4157,8 @@ static void test_named_refusals(void) {
            "sceRtcGetAccumulativeTime is a named refusal (0x80020002): not in the PSPSDK RTC header");
     expect(refuse_call(0x191cdeffu) == REFUSE_NET_CODE,
            "sceSslEnd refuses with the offline network code 0x80010086 (no SSL or network stack)");
+    expect(refuse_call(0x5963991bu) == REFUSE_NET_CODE,
+           "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
 }
 
 /* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Width 0 leaves the width unset and

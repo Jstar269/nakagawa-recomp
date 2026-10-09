@@ -673,6 +673,7 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x328f9e52": ("sceKernelDeleteVTimer", "0x80020002"),
                 "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
                 "0x191cdeff": ("sceSslEnd", "0x80010086"),
+                "0x5963991b": ("sceNetApctlDelHandler", "0x80010086"),
                 "0x39af39a6": ("sceNetInit", "0x80010086"),
                 "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
