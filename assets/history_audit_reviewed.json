@@ -31,6 +31,78 @@
       "code": "COMMIT_LOG_PRIVATE_ROOT",
       "path": "<commit_message>",
       "reason": "One line of this commit's message body names a configured private-root name from the publication policy. The name is already in published history and cannot be removed without rewriting it (AGENTS.md section 3); the message names no key, token, or file content."
+    },
+    {
+      "blob": "307ca3bf888ee8a2727f32e7c4f26ad056eb8ff9",
+      "code": "HISTORICAL_PROHIBITED_EXTENSION",
+      "path": "fixtures/profile_zero/prebuilt/EBOOT.PBP",
+      "reason": "The .pbp extension belongs to a project-built homebrew test fixture: the PSPDEV build output of fixtures/profile_zero/main.c, committed with SHA256SUMS so the profile-zero route runs without PSPSDK (see fixtures/profile_zero/README.md); a rebuild must match the committed digests. It contains no retail or Sony-authored code or data."
+    },
+    {
+      "blob": "307ca3bf888ee8a2727f32e7c4f26ad056eb8ff9",
+      "code": "HISTORICAL_BLOB_MAGIC",
+      "path": "fixtures/profile_zero/prebuilt/EBOOT.PBP",
+      "reason": "The PBP signature belongs to a project-built homebrew test fixture: the PSPDEV build output of fixtures/profile_zero/main.c, committed with SHA256SUMS so the profile-zero route runs without PSPSDK (see fixtures/profile_zero/README.md); a rebuild must match the committed digests. It contains no retail or Sony-authored code or data."
+    },
+    {
+      "blob": "24c2a2efa2d7b3721394dd44454e249cf0e523fd",
+      "code": "HISTORICAL_PROHIBITED_EXTENSION",
+      "path": "fixtures/profile_zero/prebuilt/profile_zero_guest.prx",
+      "reason": "The .prx extension belongs to a project-built homebrew test fixture: the PSPDEV build output of fixtures/profile_zero/main.c, committed with SHA256SUMS so the profile-zero route runs without PSPSDK (see fixtures/profile_zero/README.md); a rebuild must match the committed digests. It contains no retail or Sony-authored code or data."
+    },
+    {
+      "blob": "24c2a2efa2d7b3721394dd44454e249cf0e523fd",
+      "code": "HISTORICAL_BLOB_MAGIC",
+      "path": "fixtures/profile_zero/prebuilt/profile_zero_guest.prx",
+      "reason": "The ELF signature belongs to a project-built homebrew test fixture: the PSPDEV build output of fixtures/profile_zero/main.c, committed with SHA256SUMS so the profile-zero route runs without PSPSDK (see fixtures/profile_zero/README.md); a rebuild must match the committed digests. It contains no retail or Sony-authored code or data."
+    },
+    {
+      "blob": "21e465f1a5792f4fb6af9f6810a7005e7346a462",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "tools/test_history_audit.py",
+      "reason": "A generic /tmp scratch file name used as test data; it names no user, machine or private input."
+    },
+    {
+      "blob": "52d40fb34cd96759cc995235c0d98bd6e327d229",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "docs/LINUX_DEVELOPMENT.md",
+      "reason": "Generic /tmp scratch directories in example commands; they name no user, machine or private input."
+    },
+    {
+      "blob": "a04441edd3c5d1e488573fbdbbe67ea95c025e58",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "src/rt/hle_thread_selftest.c",
+      "reason": "Not a local path: a synthetic PSP disc path written with escaped backslashes in a C string literal (PSP_GAME then USRDIR) matches the UNC-path pattern. It names no user, machine or private input."
+    },
+    {
+      "blob": "ce5d7ff8c619fc48f4c049ef26089b0256733cfd",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "src/rt/hle_thread_selftest.c",
+      "reason": "Not a local path: a synthetic PSP disc path written with escaped backslashes in a C string literal (PSP_GAME then USRDIR) matches the UNC-path pattern. It names no user, machine or private input."
+    },
+    {
+      "blob": "335342ec42bce664a23a6e1934f8862e95e3e658",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "src/rt/hle_thread_selftest.c",
+      "reason": "Not a local path: a synthetic PSP disc path written with escaped backslashes in a C string literal (PSP_GAME then USRDIR) matches the UNC-path pattern. It names no user, machine or private input."
+    },
+    {
+      "blob": "5fa48572def5ada5b335ef1fa9f5c80320ce43e5",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "src/rt/hle_thread_selftest.c",
+      "reason": "Not a local path: a synthetic PSP disc path written with escaped backslashes in a C string literal (PSP_GAME then USRDIR) matches the UNC-path pattern. It names no user, machine or private input."
+    },
+    {
+      "blob": "47f8c4adc28a9aa7bdb4abbcae99f4718f3651c3",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "src/rt/hle_thread_selftest.c",
+      "reason": "Not a local path: a synthetic PSP disc path written with escaped backslashes in a C string literal (PSP_GAME then USRDIR) matches the UNC-path pattern. It names no user, machine or private input."
+    },
+    {
+      "blob": "6f9742d866912d2cb55fa06098571c69b45d0bbf",
+      "code": "HISTORICAL_BLOB_LOCAL_PATH",
+      "path": "src/rt/hle_thread_selftest.c",
+      "reason": "Not a local path: a synthetic PSP disc path written with escaped backslashes in a C string literal (PSP_GAME then USRDIR) matches the UNC-path pattern. It names no user, machine or private input."
     }
   ]
 }

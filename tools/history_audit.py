@@ -151,6 +151,20 @@ def get_repository_baseline(repo_root: Path = ROOT) -> dict:
     }
 
 
+def _path_finding_id(obj_sha: str, repo_root: Path) -> str:
+    """The identity a path finding reports for its object.
+
+    A blob carries the same identity as the content findings ("blob:" plus 12 hex), so one
+    reviewed blob entry (exact bytes, code and path) can accept every finding on those
+    bytes. A tree keeps its short object id.
+    """
+    try:
+        kind = _git(["cat-file", "-t", obj_sha], repo_root=repo_root).strip()
+    except Exception:
+        return obj_sha[:8]
+    return "blob:" + obj_sha[:12] if kind == "blob" else obj_sha[:8]
+
+
 def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
     """Pass 1: Audit all historical tree entry paths across every reachable commit."""
     findings: list[HistoryFinding] = []
@@ -172,7 +186,7 @@ def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
                 findings.append(HistoryFinding(
                     category="PROPRIETARY_ARTIFACT",
                     code="HISTORICAL_PATH_PREFIX",
-                    commit=obj_sha[:8],
+                    commit=_path_finding_id(obj_sha, repo_root),
                     path=rel_path_clean,
                     detail=f"Reachable historical object under private/proprietary prefix '{prefix}'",
                 ))
@@ -184,7 +198,7 @@ def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
             findings.append(HistoryFinding(
                 category="PROPRIETARY_ARTIFACT",
                 code="HISTORICAL_GAME_ARTIFACT",
-                commit=obj_sha[:8],
+                commit=_path_finding_id(obj_sha, repo_root),
                 path=rel_path_clean,
                 detail=f"Reachable historical game-derived file '{name}'",
             ))
@@ -195,7 +209,7 @@ def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
             findings.append(HistoryFinding(
                 category="PROPRIETARY_ARTIFACT",
                 code="HISTORICAL_PROHIBITED_EXTENSION",
-                commit=obj_sha[:8],
+                commit=_path_finding_id(obj_sha, repo_root),
                 path=rel_path_clean,
                 detail=f"Reachable historical blob with prohibited binary extension '{ext}'",
             ))
