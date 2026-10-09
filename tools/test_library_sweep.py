@@ -413,6 +413,7 @@ class LibrarySweepTests(unittest.TestCase):
                 work_dir / "bringup.json",
                 work_dir / "sweep-imports.json",
                 7,
+                7,
             )
 
         self.assertEqual(outcome.report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
