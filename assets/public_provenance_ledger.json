@@ -4153,7 +4153,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "913c6a45a76697b2a7ec56e4f18347d69f4607aa89a69e436c944acc6dd07317"
+      "sha256": "e2ea37de84a00af4785305c382a7bf256111ab7a8e3894e8d7e5185431112306"
     },
     {
       "path": "src/rt/fbcap.h",
@@ -9625,7 +9625,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4774a41004ce3432c671c0c024aed3076a8d44236872036845dd2127b47ba27a"
+      "sha256": "bc776135dd5acb55b1174c21c903b0be6034e41c45840234ec718111771f732c"
     },
     {
       "path": "tools/test_xb_probe.py",
