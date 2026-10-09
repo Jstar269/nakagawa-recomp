@@ -965,6 +965,25 @@ int main(int argc, char **argv) {{
         self.assertEqual(native_status, 0)
         self.assertEqual(set(native_paths), set(paths))
 
+    def test_unusable_module_candidate_names_the_failing_rule(self) -> None:
+        # The only PT_LOAD has p_align 0x10 while p_offset (84) and p_vaddr (0) differ modulo
+        # 16: the discovery rule refuses it, and the candidate's reason names the segment rule
+        # so the refusal can say which module and which condition.
+        misaligned = bytearray(build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF))
+        struct.pack_into("<I", misaligned, 52 + 28, 0x10)
+        iso_file = self.temp_dir / "misaligned-module.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/module/misaligned.prx": bytes(misaligned)}
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([candidate["name"] for candidate in candidates], ["misaligned.prx"])
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+        self.assertIn("not congruent", candidates[0]["reason"])
+        self.assertEqual(
+            nk_cli._unready_module_lines(candidates),
+            ["MODULE misaligned.prx: not ready (" + candidates[0]["reason"] + ")"],
+        )
+
     def test_usrdir_prx_discovery_checklist_and_extraction_share_module_rule(self) -> None:
         iso_file = self.temp_dir / "usrdir-plain-prx.iso"
         member = "PSP_GAME/USRDIR/module/libfont.prx"

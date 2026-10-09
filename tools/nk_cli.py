@@ -493,6 +493,30 @@ def _source_media_identity(iso_path: Path, selected: str,
     }
 
 
+def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
+    """Name the rule an ELF32/MIPS module candidate fails, for the refusal detail only.
+
+    The relaxed check differs from the guest-module check only by the segment
+    congruence rule, so a candidate that passes it fails on congruence alone.
+    """
+    if _elf32_mips_usable(
+        stream, file_size, entry.lba, entry.size, module=True,
+        require_segment_alignment=False,
+    ):
+        return ("its PT_LOAD segments are not congruent: the file offset and "
+                "the virtual address differ modulo p_align")
+    return "its ELF32/MIPS program headers do not describe a usable guest module"
+
+
+def _unready_module_lines(candidates: list[dict]) -> list[str]:
+    """One named line per candidate that prevents the import from starting."""
+    return [
+        f"MODULE {candidate['name']}: not ready "
+        f"({candidate.get('reason') or candidate['kind']})"
+        for candidate in candidates
+    ]
+
+
 def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
     """Find bounded ELF/PRX candidates below the title's module roots."""
     file_size = iso_path.stat().st_size
@@ -503,12 +527,15 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
+        reason: str | None = None
         if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
                 entry.name.endswith(".") or \
                 entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
             kind = "unsupported"
+            reason = "its file name is not a supported module name"
         elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
             kind = "unsupported"
+            reason = "it is multi-extent, empty, or larger than the module size limit"
         else:
             header_size = min(entry.size, 0x64)
             with iso_path.open("rb") as stream:
@@ -520,12 +547,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                         stream, file_size, entry.lba, entry.size, module=True
                     ):
                         kind = "unsupported"
+                        reason = _unusable_elf_module_reason(stream, file_size, entry)
                     else:
                         module_bytes = _read_iso_extent(
                             stream, file_size, entry.lba, entry.size, 0, entry.size
                         )
                         if len(module_bytes) != entry.size:
                             kind = "unsupported"
+                            reason = "its image could not be read in full"
                         elif _has_cfw_or_kernel_only_imports(module_bytes):
                             continue
                         else:
@@ -536,13 +565,17 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     kind = "encrypted-prx" if _encrypted_prx_header_supported(
                         header
                     ) else "unsupported"
+                    if kind == "unsupported":
+                        reason = "its encrypted-container header is not one the boundary supports"
                 else:
                     kind = "unsupported"
+                    reason = "its header is neither ELF32/MIPS, ~SCE nor ~PSP"
         candidates.append({
             "name": entry.name,
             "directory": directory,
             "entry": entry,
             "kind": kind,
+            "reason": reason,
         })
         if len(candidates) > MAX_GUEST_MODULES:
             raise PackageBuildError(
@@ -3132,6 +3165,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 print(_bringup_human_summary(report))
                 return 1
             if unready:
+                unready_lines = _unready_module_lines(unready)
+                for line in unready_lines:
+                    print(line)
+                _write_private_file(
+                    work_dir / "bringup-module-layout.log",
+                    ("\n".join(unready_lines) + "\n").encode("utf-8"),
+                )
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
                     [308], int((time.perf_counter() - started) * 1000),
