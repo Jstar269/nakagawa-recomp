@@ -1,7 +1,13 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 the Nakagawa Recomp authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025-2026 the psp-recomp authors
+// Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
+// Modified by Nakagawa Recomp contributors, 2026-10-08.
+// See NOTICE.md for upstream lineage and modification provenance.
 //
 // fbcap.h - presenter-neutral frame capture service (issue #57)
+//
+// The capture API contract was moved here from src/rt/gpu_sdl3vk/sdl3vk.h, so this file
+// keeps that file's notices.
 //
 // One module owns all capture state and the P6 PPM publisher; every presenter publishes
 // through it, so a capture means the same thing whichever presenter showed the frame.

@@ -1,7 +1,13 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 the Nakagawa Recomp authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025-2026 the psp-recomp authors
+// Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
+// Modified by Nakagawa Recomp contributors, 2026-10-08.
+// See NOTICE.md for upstream lineage and modification provenance.
 //
 // fbcap.c - presenter-neutral frame capture service (issue #57)
+//
+// The capture state machine, the parent-directory helper and the atomic P6 publisher were
+// moved here from src/rt/gpu_sdl3vk/sdl3vk.c, so this file keeps that file's notices.
 //
 // The single owner of capture state and of the P6 PPM publisher. Presenters only supply
 // the pixels they presented (see fbcap.h for the arm/service/resolve protocol); they never
