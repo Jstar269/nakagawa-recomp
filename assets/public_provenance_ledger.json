@@ -6955,7 +6955,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a036cf8041762f8582dc204fb1d3d826db950eee0ecae34b415a8c951e992e4a"
+      "sha256": "e2487f61501da027dc502a52b75a64f953a2000905abc4fdb72a039a099c3c16"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8784,7 +8784,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "19c91ef7247229a83b32600138025c63500a1609c03f4325781b39d4d4bb1e00"
+      "sha256": "2bff2fb411d9dd385555ee139d305d9a8ec71be831e4b54c0323ea1085ce6bfe"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -9649,7 +9649,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84d8710978ac3f85a2edc41a7b844d827835a197a82be51b2f44da5847c44e6e"
+      "sha256": "eb3f5bcea5748f93e198e0e0f0be573da18a38660722f0352fdb3b066112c6d7"
     },
     {
       "path": "tools/test_validate_assets.py",
