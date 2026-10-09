@@ -30,6 +30,10 @@ from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
 ROOT = Path(__file__).resolve().parents[1]
 NK_CLI = ROOT / "tools" / "nk_cli.py"
 DEFAULT_TIME_BUDGET_SECONDS = 120
+# Each title's bring-up launch limit, validated against the range nk_cli.py bringup
+# --launch-timeout accepts (tools/test_library_sweep.py pins the two together).
+DEFAULT_LAUNCH_TIMEOUT_SECONDS = 20
+MAX_LAUNCH_TIMEOUT_SECONDS = 120
 MACHINE_POLL_SECONDS = 60
 MACHINE_MAX_WAIT_SECONDS = 20 * 60
 # External per-title reports carry variable-size import inventories. The
@@ -578,6 +582,7 @@ def _run_bringup(
     report_path: Path,
     private_import_report_path: Path,
     time_budget_seconds: int,
+    launch_timeout_seconds: int,
 ) -> RouteOutcome:
     report_path.unlink(missing_ok=True)
     private_import_report_path.unlink(missing_ok=True)
@@ -597,7 +602,7 @@ def _run_bringup(
         "--sweep-progress-report",
         str(progress_path),
         "--launch-timeout",
-        str(max(1, min(20, time_budget_seconds))),
+        str(max(1, min(launch_timeout_seconds, time_budget_seconds))),
         "--private-sweep-import-report",
         str(private_import_report_path),
     ]
@@ -1491,6 +1496,7 @@ def run_sweep(
     public_output: Path,
     *,
     time_budget_seconds: int = DEFAULT_TIME_BUDGET_SECONDS,
+    launch_timeout_seconds: int = DEFAULT_LAUNCH_TIMEOUT_SECONDS,
     decrypted_titles: Path | None = None,
     previous_public_output: Path | None = None,
     source_commit: str | None = None,
@@ -1501,6 +1507,8 @@ def run_sweep(
 ) -> dict:
     if time_budget_seconds < 1:
         raise ValueError("time budget must be at least one second")
+    if not 1 <= launch_timeout_seconds <= MAX_LAUNCH_TIMEOUT_SECONDS:
+        raise ValueError(f"launch timeout must be 1..{MAX_LAUNCH_TIMEOUT_SECONDS} seconds")
     iso_root = iso_dir.resolve(strict=True)
     paths = _iso_files(iso_root)
     source_commit = source_commit or _source_commit()
@@ -1579,6 +1587,7 @@ def run_sweep(
             report_path,
             private_import_report_path,
             time_budget_seconds,
+            launch_timeout_seconds,
         )
         route_wall_time_ms = int((time.perf_counter() - started) * 1000)
         report = outcome.report
@@ -1839,6 +1848,15 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _launch_timeout_seconds(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= MAX_LAUNCH_TIMEOUT_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"must be 1..{MAX_LAUNCH_TIMEOUT_SECONDS} seconds (the bring-up launch range)"
+        )
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iso_dir", nargs="?", type=Path,
@@ -1853,6 +1871,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Existing title-free aggregate used as a comparison baseline")
     parser.add_argument("--time-budget", type=_positive_int, default=DEFAULT_TIME_BUDGET_SECONDS,
                         help="Hard per-title route limit in seconds (default: 120)")
+    parser.add_argument("--launch-timeout", type=_launch_timeout_seconds,
+                        default=DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+                        help="Per-title bring-up launch limit in seconds "
+                             f"(1..{MAX_LAUNCH_TIMEOUT_SECONDS}; default "
+                             f"{DEFAULT_LAUNCH_TIMEOUT_SECONDS}), never more than --time-budget")
     parser.add_argument("--merge-private-reports", nargs="+", type=Path,
                         help="Merge private shard checkpoints and write one aggregate; "
                              "each argument is a shard's library-sweep.json file or the "
@@ -1876,6 +1899,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.private_dir,
                 args.public_output,
                 time_budget_seconds=args.time_budget,
+                launch_timeout_seconds=args.launch_timeout,
                 decrypted_titles=args.decrypted_titles,
                 previous_public_output=args.previous_public_output,
             )

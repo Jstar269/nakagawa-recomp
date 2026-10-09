@@ -2039,6 +2039,10 @@ BRINGUP_STAGES = (
     "build_package", "launch",
 )
 BRINGUP_SCHEMA_PATH = ROOT / "assets" / "bringup_report.schema.json"
+# Hard launch limit of one bring-up run, in seconds; tools/library_sweep.py validates its
+# --launch-timeout against the same range.
+BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS = 20
+BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS = 120
 
 
 def _schema_at_pointer(schema: dict, pointer: str) -> dict:
@@ -3351,7 +3355,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             "--gui",
         ]
         env["SR_PRESENT_TRACE"] = "1"
-        timeout = max(1, min(int(args.launch_timeout), 120))
+        timeout = max(1, min(int(args.launch_timeout), BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS))
         process = subprocess.Popen(
             launch_command, cwd=package_dir, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -3529,8 +3533,11 @@ def main() -> int:
                            help="Private work directory outside the repository")
     p_bringup.add_argument("--report", required=True,
                            help="Destination for the public-safe JSON report")
-    p_bringup.add_argument("--launch-timeout", type=int, default=20,
-                           help="Hard launch limit in seconds (1..120; default 20)")
+    p_bringup.add_argument("--launch-timeout", type=int,
+                           default=BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS,
+                           help="Hard launch limit in seconds "
+                                f"(1..{BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS}; "
+                                f"default {BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS})")
     p_bringup.add_argument("--instruction-trace", action="store_true",
                            help="Write guest instruction trace under --work-dir")
     p_bringup.add_argument("--private-sweep-import-report", type=Path, default=None,

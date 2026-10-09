@@ -25,6 +25,16 @@ numbers, other unrecognized or title-specific fields before comparing it. Issue 
 come from the checked-in schema allowlist also used by the public `nk_cli.py` report
 generator; no network lookup is involved.
 
+Each title's bring-up launch (the recompiled title actually running) is limited by
+`--launch-timeout SECONDS`: 1..120, the range `nk_cli.py bringup --launch-timeout` accepts,
+default 20. An out-of-range value is rejected before any title runs. `--time-budget` still
+bounds the whole per-title route (inspect, import, analyze, codegen, compile, package and
+launch), so the launch limit passed to bring-up is `min(--launch-timeout, --time-budget)`
+and the default reproduces the earlier fixed `min(20, --time-budget)`. To let titles run for
+60 s or 110 s, raise `--launch-timeout` and give `--time-budget` enough room for the build
+stages as well. The aggregate records `time_budget_seconds` but not the launch limit, so
+compare aggregates produced with the same `--launch-timeout`.
+
 Parallel shard runs are combined with `--merge-private-reports PATH [PATH ...]`. Each
 argument may be either the shard's `library-sweep.json` file or the shard's private
 directory (the `--private-dir` the shard was run with), and the two forms may be mixed in
