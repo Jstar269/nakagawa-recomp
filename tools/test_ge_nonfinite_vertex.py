@@ -57,7 +57,9 @@ RT = ROOT / "src" / "rt"
 DOCS = ROOT / "docs"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
-HARNESS_C = r"""
+# What ge.c needs to link on its own: the runtime globals and hooks it references, as
+# inert stubs. tools/test_ge_stat_windows.py builds its harness on the same prelude.
+GE_HARNESS_PRELUDE_C = r"""
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,7 +114,9 @@ uint64_t SDL_GetTicksNS(void) { static uint64_t t = 0; return (t += 1000); }
 
 extern void ge_set_frame(uint32_t frame);
 extern uint32_t ge_run_list(uint32_t addr, int resume);
+"""
 
+HARNESS_C = GE_HARNESS_PRELUDE_C + r"""
 /* Recording stand-in for the Vulkan rasterizer, registered through the real capture seam
  * (GeGpuHooks is what src/rt/gpu_sdl3vk/ge_gpu.c fills in). It counts every primitive the
  * GE offers to the GPU path and takes it, so the software rasterizer never runs: after one
@@ -372,11 +376,12 @@ int main(int argc, char **argv) {
 """
 
 
-def _compile(tmp: Path) -> Path:
+def compile_ge_harness(tmp: Path, source: str, stem: str) -> Path:
+    """Link `source` (built on GE_HARNESS_PRELUDE_C) against the production ge.c."""
     assert CC is not None
-    harness_c = tmp / "ge_nonfinite_harness.c"
-    harness_c.write_text(HARNESS_C, encoding="utf-8")
-    exe = tmp / "ge_nonfinite_harness.exe"
+    harness_c = tmp / f"{stem}.c"
+    harness_c.write_text(source, encoding="utf-8")
+    exe = tmp / f"{stem}.exe"
     result = subprocess.run(
         [CC, "-std=c11", "-O1", "-Isrc/rt", "-DSR_SDL3VK", "-o", os.fspath(exe),
          os.fspath(harness_c), os.fspath(RT / "ge.c"), os.fspath(RT / "ge_capture.c"),
@@ -384,8 +389,12 @@ def _compile(tmp: Path) -> Path:
         capture_output=True, text=True, cwd=ROOT,
     )
     if result.returncode != 0:
-        raise AssertionError("non-finite GE harness did not compile:\n" + result.stderr)
+        raise AssertionError(f"{stem} did not compile:\n" + result.stderr)
     return exe
+
+
+def _compile(tmp: Path) -> Path:
+    return compile_ge_harness(tmp, HARNESS_C, "ge_nonfinite_harness")
 
 
 def _run(exe: Path, mode: str, gpu: bool = False) -> subprocess.CompletedProcess:

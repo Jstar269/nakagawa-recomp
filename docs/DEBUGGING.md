@@ -221,7 +221,7 @@ should ignore the trailing uid/vblank columns.
 | `SR_GEDUMP=1` | Per-primitive `GE PRIM` lines (through and transform), bounded to the first ~40 |
 | `SR_GE_ENQUEUE_TRACE=1` | Trace GE enqueue/stall-update provenance without enabling the broader GE dump |
 | `SR_GE_ENQUEUE_TRACE_WINDOWS=a-b[,c-d]` | Restrict enqueue trace output to up to eight inclusive vblank ranges; malformed ranges fail closed |
-| `SR_GESTAT=1` | 60-frame stat windows: `GESTAT` totals, `GE3D` distinct 3D draw signatures, `ASHADE`/`ACLUT` alpha-test-failure decode |
+| `SR_GESTAT=1` | 60-vblank stat windows: `GESTAT` totals, `GE3D` distinct 3D draw signatures, `ASHADE`/`ACLUT` alpha-test-failure decode. A window closes on the first delivered vblank at or past each multiple of 60 and `f=` names that vblank, which is later than the multiple (61, not 60) when VCOUNT stepped over it on a busy host; read the label with `tools/ge_stat_windows.py` instead of matching `f=60` |
 | `SR_RTRACE=1` | Exhaustive render trace: one `TRIDRW` line per 3D draw with the complete GE state (render target `fbp`/`zbp`, texture address/format/`bufw`/swizzle, texture function, blend, alpha test, cull, scissor, viewport), plus per-triangle `TRIDEC` lines |
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |

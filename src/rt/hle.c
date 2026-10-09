@@ -15502,7 +15502,10 @@ void sr_vblank_tick(void) {
         vramdump_try_present(s_vcount, &s_display_active);
         display_present_active();
     }
-    if (ge_log_on() && (s_vcount & 0x3f) == 0)
+    /* Periodic VCOUNT cadences are boundary crossings, not an exact modulus: a serviced
+     * tick can step over a multiple or repeat one (see sr_vcount_window_crossed). */
+    static uint32_t tick_log_window = 0;
+    if (ge_log_on() && sr_vcount_window_crossed(s_vcount, 64u, &tick_log_window))
         fprintf(stderr, "VBLANK tick %u\n", s_vcount);
     vramdump_note_vblank(s_vcount);
     /* Full guest-PC dumps contain thousands of rows and synchronous five-second cadence
@@ -15515,7 +15518,9 @@ void sr_vblank_tick(void) {
         unsigned long parsed = period && period[0] ? strtoul(period, NULL, 10) : 0;
         profile_dump_period = parsed > UINT32_MAX ? UINT32_MAX - 1u : (uint32_t)parsed;
     }
-    if (profile_dump_period > 0 && (s_vcount % profile_dump_period) == 0) {
+    static uint32_t profile_dump_window = 0;
+    if (profile_dump_period > 0 &&
+        sr_vcount_window_crossed(s_vcount, profile_dump_period, &profile_dump_window)) {
         extern void sr_profile_dump(void);
         sr_profile_dump();
     }
