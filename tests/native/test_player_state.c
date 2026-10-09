@@ -1589,12 +1589,61 @@ static void test_display_path_hides_profile_folder(void) {
     printf("[PLAYER_STATE_TEST] display path hides the profile folder PASS\n");
 }
 
+/* A library card says what is true of the title's package now. A title whose
+ * package has not been checked yet is "checking", never "Not prepared"; a
+ * package that cannot be used says why, with the validator's first sentence. */
+static void test_library_card_status_text(void) {
+    char out[256];
+    size_t n = player_library_status_text(true, false, false, false, 0, NULL,
+                                          out, sizeof(out));
+    assert(strcmp(out, "Status: Prepared") == 0);
+    assert(n == strlen(out));
+
+    player_library_status_text(false, true, false, false, 0, NULL, out, sizeof(out));
+    assert(strcmp(out, "Status: Checking package...") == 0);
+
+    /* The reason from a copied library: the identity record is missing. */
+    const char *reason =
+        "Title input identity record is missing or unreadable; source media cannot be qualified. "
+        "Cache component/epoch mismatch or incomplete entry; build it from the library.";
+    player_library_status_text(false, false, false, false, 0, reason, out, sizeof(out));
+    assert(strcmp(out, "Not prepared: Title input identity record is missing or unreadable; "
+                       "source media cannot be qualified") == 0);
+
+    player_library_status_text(false, false, false, false, 0,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Not prepared: Runtime package is missing") == 0);
+
+    player_library_status_text(false, false, true, false, 0,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Check failed: Runtime package is missing") == 0);
+
+    player_library_status_text(false, false, false, false, 0, NULL, out, sizeof(out));
+    assert(strcmp(out, "Status: Not prepared") == 0);
+
+    /* Staged assets keep their count, and say why the runtime is still missing. */
+    player_library_status_text(false, false, false, true, 12, NULL, out, sizeof(out));
+    assert(strcmp(out, "Assets staged: 12") == 0);
+    player_library_status_text(false, false, false, true, 12,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Assets staged: 12. Runtime package is missing") == 0);
+
+    /* A small buffer is never overrun. */
+    char tiny[8];
+    n = player_library_status_text(true, false, false, false, 0, NULL, tiny, sizeof(tiny));
+    assert(strcmp(tiny, "Status:") == 0);
+    assert(n == strlen(tiny));
+
+    printf("[PLAYER_STATE_TEST] library card status text PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
     }
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
+    test_library_card_status_text();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);

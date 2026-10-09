@@ -2320,17 +2320,23 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                              app->games[i].title_name, 1.1f, title_avail,
                              COLOR_TEXT_WHITE);
         if (ch >= 110.0f) {
-            char status_line[96];
-            if (app->games[i].is_prepared) {
-                snprintf(status_line, sizeof(status_line), "Status: Prepared");
-            } else if (app->games[i].assets_staged) {
-                snprintf(status_line, sizeof(status_line), "Assets staged: %u",
-                         (unsigned)app->games[i].extracted_asset_count);
-            } else {
-                snprintf(status_line, sizeof(status_line), "Status: Not prepared");
-            }
-            draw_text(ren, card_x + 12.0f, card_y + 104.0f,
-                      status_line, 0.9f, COLOR_TEXT_MUTED);
+            /* What the card says comes from the same validated package state the
+             * hero and the action buttons use, not from the stored prepared flag.
+             * A title not checked yet is checking, and an unusable package says why. */
+            const GameRecord *card_game = &app->games[i];
+            bool card_failed = player_app_runtime_package_check_failed(app, card_game);
+            bool card_checking = !card_failed &&
+                (player_app_runtime_package_check_pending(app, card_game) ||
+                 !player_app_runtime_package_status_known(app, card_game));
+            char status_line[256];
+            player_library_status_text(
+                player_app_cached_game_has_runtime(app, card_game),
+                card_checking, card_failed,
+                card_game->assets_staged, card_game->extracted_asset_count,
+                player_app_runtime_package_reason(app, card_game),
+                status_line, sizeof(status_line));
+            draw_text_ellipsized(ren, card_x + 12.0f, card_y + 104.0f,
+                                 status_line, 0.9f, cw - 24.0f, COLOR_TEXT_MUTED);
         }
 
         if (in && in->mouse_clicked && is_point_in_rect((float)in->mouse_x, (float)in->mouse_y, card_x, card_y, cw, ch)) {

@@ -102,6 +102,8 @@ typedef struct {
     char package_identity[65];
     NkRuntimePackageStatus status;
     uint64_t last_checked_ms;
+    /* Why the package is not usable, as the validator said it (may be empty). */
+    char reason[256];
 } PlayerRuntimePackageCacheEntry;
 
 /* A worker-create failure has no validator result to keep in the cache. Keep
@@ -449,6 +451,24 @@ void player_app_runtime_package_cache_store(
     bool identity_valid, const char *package_identity,
     NkRuntimePackageStatus status, bool runtime_available,
     uint64_t checked_ms);
+/* Records the validator's reason for the entry stored at game_index. An empty
+ * reason leaves the stored one in place: a warm cache hit does not re-validate,
+ * so it has no new reason to give. */
+void player_app_runtime_package_cache_set_reason(PlayerApp *app, int game_index,
+                                                 const char *reason);
+/* The title's validated status is known (a check has finished and is not
+ * pending). Until then a card must say it is checking, not "Not prepared". */
+bool player_app_runtime_package_status_known(const PlayerApp *app,
+                                             const GameRecord *game);
+/* The validator's reason for the title's current package state, or NULL. */
+const char *player_app_runtime_package_reason(const PlayerApp *app,
+                                              const GameRecord *game);
+/* Library card status line. The card shows what is true of the package right
+ * now and, when the package cannot be used, the validator's first sentence as
+ * the reason. Returns the text length. */
+size_t player_library_status_text(bool has_runtime, bool checking, bool check_failed,
+                                  bool assets_staged, uint32_t staged_asset_count,
+                                  const char *reason, char *out, size_t out_size);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 uint64_t player_app_ui_test_validation_calls(void);
 #endif

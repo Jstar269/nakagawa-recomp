@@ -1577,6 +1577,7 @@ static void player_package_status_finish(PlayerApp *app,
             app, current_index, &job->game, job->identity_valid,
             job->package_identity, job->status, job->runtime_available,
             SDL_GetTicks());
+        player_app_runtime_package_cache_set_reason(app, current_index, job->reason);
         if (job->identity_changed_during_validation) {
             player_package_status_queue_game(app, current_index, true,
                                              requested, force_requested);
@@ -1628,6 +1629,8 @@ static void player_package_status_finish(PlayerApp *app,
                     app, current_index, &job->game, job->identity_valid,
                     job->package_identity, job->status,
                     job->runtime_available, SDL_GetTicks());
+                player_app_runtime_package_cache_set_reason(app, current_index,
+                                                            job->reason);
             }
             player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST

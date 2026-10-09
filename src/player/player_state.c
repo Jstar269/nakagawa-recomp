@@ -339,8 +339,17 @@ void player_app_runtime_package_cache_store(
     if (!app || !game || game_index < 0 || game_index >= app->game_count) return;
     PlayerRuntimePackageCacheEntry *entry =
         &app->runtime_package_cache[game_index];
+    /* A stored reason survives a store for the same title; a warm cache hit
+     * stores no new reason, and the earlier one still describes the package. */
+    char prior_reason[sizeof(entry->reason)] = "";
+    if (strcmp(entry->disc_id, game->disc_id) == 0 &&
+        strcmp(entry->title_id, game->title_id) == 0 &&
+        strcmp(entry->selected_executable, game->selected_executable) == 0) {
+        snprintf(prior_reason, sizeof(prior_reason), "%s", entry->reason);
+    }
     memset(entry, 0, sizeof(*entry));
     player_runtime_cache_set_game_key(entry, game);
+    snprintf(entry->reason, sizeof(entry->reason), "%s", prior_reason);
     entry->status_valid = true;
     entry->identity_valid = identity_valid;
     entry->runtime_available = runtime_available;
@@ -350,6 +359,70 @@ void player_app_runtime_package_cache_store(
         snprintf(entry->package_identity, sizeof(entry->package_identity), "%s",
                  package_identity);
     }
+}
+
+static const PlayerRuntimePackageCacheEntry *player_runtime_cache_for_game(
+    const PlayerApp *app, const GameRecord *game);
+
+void player_app_runtime_package_cache_set_reason(PlayerApp *app, int game_index,
+                                                 const char *reason) {
+    if (!app || !reason || !reason[0] || game_index < 0 ||
+        game_index >= app->game_count) return;
+    snprintf(app->runtime_package_cache[game_index].reason,
+             sizeof(app->runtime_package_cache[game_index].reason), "%s", reason);
+}
+
+bool player_app_runtime_package_status_known(const PlayerApp *app,
+                                             const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->status_valid && !entry->validation_pending;
+}
+
+const char *player_app_runtime_package_reason(const PlayerApp *app,
+                                              const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->reason[0] ? entry->reason : NULL;
+}
+
+size_t player_library_status_text(bool has_runtime, bool checking, bool check_failed,
+                                  bool assets_staged, uint32_t staged_asset_count,
+                                  const char *reason, char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    /* The validator's first sentence is the reason a card can afford: the rest
+     * is detail for the logs. */
+    char first[256] = "";
+    if (reason) {
+        size_t n = 0;
+        while (reason[n] && reason[n] != '.' && n + 1 < sizeof(first)) {
+            first[n] = reason[n];
+            n++;
+        }
+        first[n] = '\0';
+    }
+    int written = 0;
+    if (has_runtime) {
+        written = snprintf(out, out_size, "Status: Prepared");
+    } else if (checking) {
+        written = snprintf(out, out_size, "Status: Checking package...");
+    } else if (check_failed) {
+        written = snprintf(out, out_size, "Check failed: %s",
+                           first[0] ? first : "the package could not be checked");
+    } else if (assets_staged) {
+        written = first[0]
+            ? snprintf(out, out_size, "Assets staged: %u. %s",
+                       (unsigned)staged_asset_count, first)
+            : snprintf(out, out_size, "Assets staged: %u",
+                       (unsigned)staged_asset_count);
+    } else if (first[0]) {
+        written = snprintf(out, out_size, "Not prepared: %s", first);
+    } else {
+        written = snprintf(out, out_size, "Status: Not prepared");
+    }
+    if (written < 0) return 0;
+    return (size_t)written < out_size ? (size_t)written : out_size - 1;
 }
 
 NkRuntimePackageStatus player_app_validate_runtime_package(
