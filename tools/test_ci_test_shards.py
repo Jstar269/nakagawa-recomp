@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -42,6 +43,45 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def _git_for_windows_roots() -> list[Path]:
+    """Candidate Git for Windows installation roots, most specific first."""
+    roots: list[Path] = []
+    git = shutil.which("git")
+    if git:
+        # The install that owns the git on PATH: its root holds git-bash.exe.
+        owner = next((parent for parent in Path(git).resolve().parents
+                      if (parent / "git-bash.exe").is_file()), None)
+        if owner is not None:
+            roots.append(owner)
+    for variable in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        if os.environ.get(variable):
+            roots.append(Path(os.environ[variable]) / "Git")
+    if os.environ.get("LOCALAPPDATA"):
+        roots.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Git")
+    return roots
+
+
+def _step_bash() -> tuple[str | None, str]:
+    """The bash that runs the workflow step, or None with the reason there is none.
+
+    The hosted runner executes the step with a POSIX bash. On Windows the bash named
+    on PATH may be the WSL launcher (C:\\Windows\\System32\\bash.exe), which runs in
+    Linux and cannot see the test's Windows scratch paths, so the Git for Windows bash
+    is located explicitly instead.
+    """
+    if os.name != "nt":
+        found = shutil.which("bash")
+        return found, "" if found else "the workflow step is a bash script and no bash is on PATH"
+    checked = []
+    for root in _git_for_windows_roots():
+        candidate = root / "bin" / "bash.exe"
+        if candidate.is_file():
+            return str(candidate), ""
+        checked.append(str(candidate))
+    return None, ("no Git for Windows bash found for the workflow step (checked "
+                  + (", ".join(checked) if checked else "no Git install location known") + ")")
 
 
 class LiveRepositoryPlanTests(unittest.TestCase):
@@ -132,10 +172,12 @@ class LiveRepositoryPlanTests(unittest.TestCase):
         for output in ("python_scope", "python_num_shards", "python_shards"):
             self.assertIn(f"{output}: ${{{{ steps.paths.outputs.{output} }}}}", classify_outputs)
 
-    @unittest.skipIf(shutil.which("bash") is None, "the workflow step is a bash script")
     def test_workflow_step_stops_on_a_failing_or_empty_planner(self) -> None:
         """Execute the step's own script with stand-in planners: a planner that fails
         or prints nothing must fail the step before unittest runs."""
+        bash, reason = _step_bash()
+        if bash is None:
+            self.skipTest(reason)
         lines = self.python_job.splitlines()
         start = next(i for i, line in enumerate(lines) if line.strip() == "run: |"
                      and any("ci_test_shards.py" in later for later in lines[i:i + 4]))
@@ -163,7 +205,7 @@ class LiveRepositoryPlanTests(unittest.TestCase):
                 stub.chmod(0o755)
                 env = {"PATH": f"{scratch}:/usr/bin:/bin", "SHARD": "0", "NUM_SHARDS": "4",
                        "PYTHON_SCOPE": "all"}
-                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True,
+                result = subprocess.run([bash, "-c", script], env=env, capture_output=True,
                                         text=True, check=False)
                 self.assertEqual(result.returncode == 0, expect_rc, result.stdout + result.stderr)
                 if expect_modules is None:
