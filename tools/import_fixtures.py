@@ -349,6 +349,122 @@ def build_interleaved_import_elf(
     )
 
 
+def build_import_layout_elf(
+    primary: list[tuple[str, list[int]]],
+    *,
+    detached: list[tuple[str, list[int]]] | None = None,
+    nid_head_words: int = 0,
+    nid_tail_words: int = 0,
+    per_library_stub_sections: bool = False,
+    reverse_primary_layout: bool = False,
+    detached_gap_slots: int | None = None,
+) -> tuple[bytes, dict[int, tuple[str, int]]]:
+    """Build a sectioned ELF for the retail import-table layouts.
+
+    primary lists (library, [NIDs]) windows whose stubs live in the stub
+    section(s) and whose NIDs live in .rodata.sceNid. Options model the real
+    linker layouts the code-generation import map has to accept:
+
+      nid_head_words / nid_tail_words -- zero words before / after the
+          window-referenced run inside .rodata.sceNid;
+      per_library_stub_sections -- one .sceStub.text.<library> section per
+          window instead of a single .sceStub.text;
+      reverse_primary_layout -- the linker placed the libraries' stub and NID
+          runs in reverse table order;
+      detached -- (library, [NIDs]) windows whose stubs sit inside .text and
+          whose NIDs follow their library name outside .rodata.sceNid;
+      detached_gap_slots -- instead, emit the detached NIDs as one array and
+          leave this many unused stub slots (and zero NID words) between
+          consecutive detached windows, so they share one pairing offset.
+
+    Returns (ELF bytes, expected {stub address: (library, NID)}).
+    """
+    detached = detached or []
+    seg = bytearray()
+
+    def alloc(b: bytes, align: int = 4) -> int:
+        while len(seg) % align:
+            seg.append(0)
+        off = len(seg)
+        seg.extend(b)
+        return BASE_VADDR + off
+
+    gap = detached_gap_slots or 0
+    text_words = 4 + 2 * sum(len(nids) + gap for _name, nids in detached)
+    text = alloc(struct.pack("<2I", 0x03E00008, 0) * (text_words // 2))
+    expected: dict[int, tuple[str, int]] = {}
+    detached_runs = []
+    cursor = text + 8
+    for name, nids in detached:
+        detached_runs.append((name, nids, cursor))
+        cursor += 8 * (len(nids) + gap)
+
+    layout_order = list(range(len(primary)))
+    if reverse_primary_layout:
+        layout_order.reverse()
+    stub_section = alloc(b"")
+    stub_addrs = {}
+    stub_sections = []
+    for i in layout_order:
+        name, nids = primary[i]
+        stub_addrs[i] = alloc(b"\0" * (8 * len(nids)))
+        stub_sections.append((f".sceStub.text.{name}".encode("ascii"), stub_addrs[i], 8 * len(nids)))
+    stub_section_end = BASE_VADDR + len(seg)
+
+    modinfo = alloc(b"\0" * 52)
+    name_addrs = [alloc(name.encode("ascii") + b"\0") for name, _nids in primary]
+    if detached_gap_slots is None:
+        detached_name_addrs = []
+        detached_nid_addrs = []
+        for name, nids, _stub in detached_runs:
+            detached_name_addrs.append(alloc(name.encode("ascii") + b"\0"))
+            detached_nid_addrs.append(alloc(b"".join(struct.pack("<I", n) for n in nids)))
+    else:
+        detached_name_addrs = [alloc(name.encode("ascii") + b"\0") for name, _n, _s in detached_runs]
+        detached_nid_addrs = [
+            alloc(b"".join(struct.pack("<I", n) for n in nids) + b"\0" * (4 * gap))
+            for _name, nids, _stub in detached_runs
+        ]
+    detached_meta = []
+    for (name, nids, stub), name_addr, nid_addr in zip(
+            detached_runs, detached_name_addrs, detached_nid_addrs, strict=True):
+        detached_meta.append((name_addr, nids, nid_addr, stub))
+        for k, nid in enumerate(nids):
+            expected[stub + 8 * k] = (name, nid)
+
+    nid_section = alloc(b"\0" * (4 * nid_head_words))
+    nid_addrs = {}
+    for i in layout_order:
+        _name, nids = primary[i]
+        nid_addrs[i] = alloc(b"".join(struct.pack("<I", n) for n in nids))
+    alloc(b"\0" * (4 * nid_tail_words))
+    nid_section_end = BASE_VADDR + len(seg)
+    for i, (name, nids) in enumerate(primary):
+        for k, nid in enumerate(nids):
+            expected[stub_addrs[i] + 8 * k] = (name, nid)
+
+    entries = bytearray()
+    for i, (_name, nids) in enumerate(primary):
+        entries += struct.pack(
+            "<IHHBBHII", name_addrs[i], 0x0011, 0x4001, 5, 0, len(nids),
+            nid_addrs[i], stub_addrs[i],
+        )
+    for name_addr, nids, nid_addr, stub in detached_meta:
+        entries += struct.pack(
+            "<IHHBBHII", name_addr, 0x0000, 0x0009, 5, 0, len(nids), nid_addr, stub,
+        )
+    libstub = alloc(bytes(entries))
+    struct.pack_into("<II", seg, (modinfo - BASE_VADDR) + 44, libstub, libstub + len(entries))
+
+    extra_sections = [(b".text", text, text_words * 4)]
+    if per_library_stub_sections:
+        extra_sections += stub_sections
+    else:
+        extra_sections.append((b".sceStub.text", stub_section, stub_section_end - stub_section))
+    extra_sections.append((b".rodata.sceNid", nid_section, nid_section_end - nid_section))
+    return _elf(bytes(seg), modinfo, extra_sections=extra_sections), expected
+
+
 def build_stripped_module_elf(
     libs: list[tuple[str, list[int]]],
     *,
