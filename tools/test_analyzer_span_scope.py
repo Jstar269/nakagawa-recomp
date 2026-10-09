@@ -1537,5 +1537,40 @@ class MakefileSpanBindingTests(unittest.TestCase):
         self.assertIn("--entries-env NK_CODEGEN_PROFILE_ENTRIES", record_line)
 
 
+class SpanIndexMembershipTests(unittest.TestCase):
+    """The trace's indexed membership answers exactly as the linear in_ranges scan."""
+
+    CASES = (
+        [],
+        [(0, 0)],
+        [(16, 16), (20, 12)],
+        [(0x100, 0x110)],
+        [(0x100, 0x110), (0x110, 0x120)],
+        [(0x100, 0x140), (0x120, 0x130), (0x200, 0x204)],
+        [(0x200, 0x204), (0x100, 0x110), (0x108, 0x104)],
+        [(0x100, 0x110), (0x100, 0x110)],
+        [(0x0, 0x8), (0x8, 0x10), (0x18, 0x20)],
+    )
+
+    def test_membership_matches_in_ranges_at_every_boundary(self) -> None:
+        for ranges in self.CASES:
+            index = analyze._SpanIndex(ranges)
+            probes = {-1, 0, 0xFFFFFFFF + 1}
+            for lo, hi in ranges:
+                probes.update({lo - 1, lo, lo + 1, hi - 1, hi, hi + 1})
+            for addr in sorted(probes):
+                with self.subTest(ranges=ranges, addr=addr):
+                    self.assertEqual(
+                        addr in index,
+                        analyze.in_ranges(addr, ranges),
+                    )
+
+    def test_in_ranges_accepts_an_index_as_its_range_set(self) -> None:
+        ranges = [(0x100, 0x110), (0x200, 0x204)]
+        index = analyze._SpanIndex(ranges)
+        for addr in (0xFF, 0x100, 0x10F, 0x110, 0x200, 0x204):
+            self.assertEqual(analyze.in_ranges(addr, index), analyze.in_ranges(addr, ranges))
+
+
 if __name__ == "__main__":
     unittest.main()

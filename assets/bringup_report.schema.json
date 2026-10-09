@@ -46,6 +46,10 @@
       "enum": [
         "NONE",
         "INVALID_ISO",
+        "PBP_PACKAGE_UNSUPPORTED",
+        "PBP_HEADER_TRUNCATED",
+        "PBP_OFFSETS_INVALID",
+        "PBP_SFO_INVALID",
         "EXECUTABLE_UNSUPPORTED",
         "MODIFIED_DUMP_CFW_LOADER",
         "EXPERIMENTAL_IMPORT_FAILED",

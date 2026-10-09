@@ -45,7 +45,7 @@ from test_iso_parity import (  # noqa: E402
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
 from import_fixtures import SYSLIB_EXPORT, build_module_elf  # noqa: E402
 from nk_core import package_cache  # noqa: E402
-from nk_core.iso_inspect import runtime_registered_nids  # noqa: E402
+from nk_core.iso_inspect import PBP_BOUNDARY_CODES, runtime_registered_nids  # noqa: E402
 from nk_core.types import TitleProfile  # noqa: E402
 
 
@@ -1792,6 +1792,48 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
                 self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
                 self.assertEqual(report["issue_numbers"], [308])
+
+    def test_pbp_package_keeps_its_named_boundary_in_the_report(self):
+        from test_iso_parity import build_pbp_package
+
+        case_root = self.root / "pbp-package"
+        package = case_root / "store-package.iso"
+        case_root.mkdir(parents=True)
+        build_pbp_package(package, disc_id="ULUS99997", title="Store Package")
+        report_path = case_root / "bringup.json"
+        args = argparse.Namespace(
+            iso=str(package),
+            work_dir=str(case_root / "work"),
+            report=str(report_path),
+            launch_timeout=1,
+            instruction_trace=False,
+        )
+        with mock.patch("builtins.print"):
+            status = nk_cli.cmd_bringup(args)
+
+        self.assertEqual(status, 1)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        nk_cli.validate_bringup_report(report)
+        self.assertEqual(report["reached_stage"], "inspect")
+        self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
+        self.assertEqual(report["failure_class"], "PBP_PACKAGE_UNSUPPORTED")
+
+    def test_every_identify_boundary_code_is_a_schema_failure_class(self):
+        # The sweep and the bring-up report only carry failure classes the schema
+        # enumerates; an unlisted identify boundary is silently replaced by
+        # INVALID_ISO, which hides the named refusal from every downstream reader.
+        schema = json.loads(nk_cli.BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
+        enumerated = set(schema["properties"]["failure_class"]["enum"])
+        # The expected set is the emitter's own registry, never a copy of it here.
+        self.assertTrue(PBP_BOUNDARY_CODES)
+        self.assertEqual(set(PBP_BOUNDARY_CODES) - enumerated, set())
+        for code in PBP_BOUNDARY_CODES:
+            with self.subTest(code=code):
+                report = nk_cli._new_bringup_report()
+                report["reached_stage"] = "inspect"
+                report["stages"]["inspect"] = {"status": "FAIL", "duration_ms": 0}
+                report["failure_class"] = code
+                nk_cli.validate_bringup_report(report)
 
     def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
         output = (
