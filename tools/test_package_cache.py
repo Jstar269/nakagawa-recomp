@@ -478,12 +478,9 @@ class PackageCacheTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("unreadable", reason)
 
-    def test_completion_validation_reads_each_artifact_once_and_keeps_the_set_check(self) -> None:
-        # Fast path: the artifact-set check enumerates paths and reads no bytes.
-        # Slow path: the digest-bearing writer enumeration must describe the same
-        # path set on every layout, and validation must still accept or refuse
-        # the package exactly as the set check always did.
-        package_dir = self.root / "reads-once"
+    def _completed_package(self, name: str) -> tuple[Path, dict]:
+        """A complete synthetic AOT package: executable, runtime image, one generated object, one nested asset."""
+        package_dir = self.root / name
         package_dir.mkdir()
         executable = package_dir / "synthetic.exe"
         image = package_dir / "synthetic_image.bin"
@@ -523,6 +520,15 @@ class PackageCacheTests(unittest.TestCase):
             package_cache.canonical_json({"cache": cache}), encoding="utf-8"
         )
         package_cache.write_completion_manifest(package_dir, key)
+        return package_dir, key
+
+    def test_completion_validation_reads_each_artifact_once_and_keeps_the_set_check(self) -> None:
+        # Fast path: the artifact-set check enumerates paths and reads no bytes.
+        # Slow path: the digest-bearing writer enumeration must describe the same
+        # path set on every layout, and validation must still accept or refuse
+        # the package exactly as the set check always did.
+        package_dir, key = self._completed_package("reads-once")
+        image = package_dir / "synthetic_image.bin"
 
         real_sha256 = package_cache.sha256_file
         hashed: list[str] = []
@@ -539,6 +545,10 @@ class PackageCacheTests(unittest.TestCase):
         self.assertEqual(hashed.count("synthetic_image.bin"), 1)
         self.assertEqual(hashed.count("nested.bin"), 1)
         self.assertEqual(hashed.count("package.json"), 1)
+        # The executable and the generated object are digested once per validation:
+        # the package-level check computes the digest and the completion check reuses it.
+        self.assertEqual(hashed.count("synthetic.exe"), 1)
+        self.assertEqual(hashed.count("synthetic_recomp.o"), 1)
 
         extra = package_dir / "late_extra.bin"
         extra.write_bytes(b"unlisted" * 1024)
@@ -582,6 +592,50 @@ class PackageCacheTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("symlink artifact", reason)
         link.unlink()
+
+    def test_shared_digests_still_refuse_each_disagreeing_record(self) -> None:
+        # The package-level check digests the executable and each generated object
+        # once, and the completion check reuses that digest. Each disagreeing record
+        # must still be refused with its own named reason, and each record that
+        # agrees must still be accepted.
+        package_dir, key = self._completed_package("shared-digest")
+        manifest_path = package_dir / package_cache.COMPLETION_MANIFEST
+        package_path = package_dir / "package.json"
+        manifest_bytes = manifest_path.read_bytes()
+        package_bytes = package_path.read_bytes()
+
+        def completion_record_disagrees(name: str) -> None:
+            document = json.loads(manifest_bytes.decode("utf-8"))
+            for record in document["artifacts"]:
+                if record["path"] == name:
+                    record["sha256"] = "0" * 64
+            manifest_path.write_text(package_cache.canonical_json(document), encoding="utf-8")
+
+        for name in ("synthetic.exe", "synthetic_recomp.o"):
+            completion_record_disagrees(name)
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+            self.assertFalse(valid, name)
+            self.assertEqual(reason, f"completion artifact digest mismatch: {name}")
+            manifest_path.write_bytes(manifest_bytes)
+
+        document = json.loads(package_bytes.decode("utf-8"))
+        document["executable"]["sha256"] = "0" * 64
+        package_path.write_text(package_cache.canonical_json(document), encoding="utf-8")
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "package executable digest is stale")
+        package_path.write_bytes(package_bytes)
+
+        document = json.loads(package_bytes.decode("utf-8"))
+        document["generated_objects"][0]["sha256"] = "0" * 64
+        package_path.write_text(package_cache.canonical_json(document), encoding="utf-8")
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "package generated object digest is stale: synthetic_recomp.o")
+        package_path.write_bytes(package_bytes)
+
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertTrue(valid, reason)
 
     def test_flagship_sized_build_report_is_accepted(self) -> None:
         # A flagship build report is about 1.3 MB, past the shared 1 MiB byte
