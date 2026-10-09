@@ -6775,7 +6775,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5601d47432d90f6d0874de8bd4cfa0a30275fb32d74e0d29562a5adcbc54651d"
+      "sha256": "d451a96346264d6a35f67f2ebe93c37971f3e01df48ddcb5489e59ac67849778"
     },
     {
       "path": "tools/nk_core/title_registry.py",
