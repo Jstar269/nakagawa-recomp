@@ -6533,7 +6533,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "386b58fe170110cc90d768baad0f7d84b5b9de28cbf652735da61463d4369c09"
+      "sha256": "c85dfb0e204d0f01e887fc94c346147ca46f7dbecf724ac77bd4605c4c7d8074"
     },
     {
       "path": "tools/lint_docs.py",
@@ -8472,7 +8472,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "094c933ff5b14b31afb1501eb40ea059a47b1a563cb5ccffb8d6125f257b8163"
+      "sha256": "b536ac9ce299c480834c19945906c38a538d3152907c540cdd195c165985b2c5"
     },
     {
       "path": "tools/test_lint_docs.py",
