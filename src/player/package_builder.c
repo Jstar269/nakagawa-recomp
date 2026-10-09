@@ -1879,6 +1879,15 @@ void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms
                              "Build child process failed with exit code %d.", session->exit_code);
                 }
             }
+        } else if (!session->is_complete && !session->is_failed) {
+            /* A clean exit is a result only when the child reported the package
+             * PASS. Without it nothing was verified, so the session ends here
+             * as a failure instead of waiting in the building state forever. */
+            session->is_failed = true;
+            session->current_stage = PACKAGE_BUILD_STAGE_FAILED;
+            safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
+                          "The build process ended without confirming a package. "
+                          "Check the build log.");
         }
     }
 }
