@@ -484,6 +484,14 @@ order, then every remaining README `NOT_RUN` probe: `smoke`,
 `dma-invalid-tail-*` launches, and the four `mutex-*` launches. `delay-zero` is
 not queued because it is already measured.
 
+The private plan is a schema 1 JSON object with these fields: `campaign_id`,
+`session_id` (the hardware lock holder), `source_commit`, `console_model`,
+`host0_root`, `report_path`, `checkpoint_path`, and the ordered `cases` (each with
+`case_id`, `prx`, and `timeout_seconds`). The optional `expected_firmware` is
+compared exactly with PSPLink's `pspver` version, so it must use that form:
+`6.6.1` for firmware 6.61. Validation refuses `6.61` and any other form. The
+optional `model_code` is the raw non-negative PspModel integer.
+
 Validate the private queue offline before a hardware session:
 
 ```powershell

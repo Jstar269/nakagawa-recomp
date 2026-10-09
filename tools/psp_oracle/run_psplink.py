@@ -105,6 +105,21 @@ SHELL_VERIFICATION_ATTEMPT_TIMEOUT = 15.0
 DEFAULT_SHELL_VERIFICATION_TIMEOUT = 45.0
 HOST0_MTIME_TOLERANCE_NS = 1_000_000_000
 _FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+# PSPLink `pspver` prints the firmware as dot-separated decimal fields, for
+# example `Version: 6.6.1 (0x06060110)` for firmware 6.61. An expected firmware
+# is compared with that string exactly, so it must use the same form.
+_PSPVER_FIRMWARE_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def _expected_firmware_problem(value: object) -> str | None:
+    """Explain why an expected firmware cannot match `pspver`, or return None."""
+
+    if value is None or (isinstance(value, str) and _PSPVER_FIRMWARE_RE.fullmatch(value)):
+        return None
+    return (
+        "expected firmware must use the PSPLink `pspver` form <major>.<minor>.<patch> "
+        f"(for example 6.6.1 for firmware 6.61), got {value!r}"
+    )
 _FULL_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _ALL_ZERO_RE = re.compile(r"0+")
 
@@ -1369,6 +1384,9 @@ class PsplinkCampaignRunner:
     ) -> None:
         if not math.isfinite(shell_verification_timeout) or shell_verification_timeout <= 0:
             raise ValueError("shell verification timeout must be finite and positive")
+        firmware_problem = _expected_firmware_problem(expected_firmware)
+        if firmware_problem:
+            raise ValueError(firmware_problem)
         self.transport = transport
         self.console_model = console_model
         self.source_commit = source_commit
@@ -2523,6 +2541,14 @@ def _read_campaign_plan(path: Path) -> dict[str, object]:
         r"[A-Za-z0-9._-]{1,48}", plan["console_model"]
     ):
         raise ValueError("console_model must be a non-identifying model label")
+    firmware_problem = _expected_firmware_problem(plan.get("expected_firmware"))
+    if firmware_problem:
+        raise ValueError(f"expected_firmware: {firmware_problem}")
+    model_code = plan.get("model_code")
+    if model_code is not None and (
+        not isinstance(model_code, int) or isinstance(model_code, bool) or model_code < 0
+    ):
+        raise ValueError("model_code must be a non-negative integer raw PspModel value")
     return plan
 
 
@@ -2946,11 +2972,8 @@ def run_campaign_plan(
         transport,
         console_model=str(plan["console_model"]),
         source_commit=str(plan["source_commit"]),
-        model_code=plan.get("model_code") if isinstance(plan.get("model_code"), int) else None,
-        expected_firmware=(
-            plan.get("expected_firmware")
-            if isinstance(plan.get("expected_firmware"), str) else None
-        ),
+        model_code=plan.get("model_code"),
+        expected_firmware=plan.get("expected_firmware"),
     )
     runner.host0_qualified = start_index > 0 and carried["host0_qualified"] is True
     remaining = cases[start_index:]
@@ -3464,7 +3487,13 @@ def main(argv: list[str] | None = None) -> int:
             "separately from --model (do not use for sceKernelGetModel's original/slim return)"
         ),
     )
-    parser.add_argument("--firmware", help="human-recorded PSP firmware identifier")
+    parser.add_argument(
+        "--firmware",
+        help=(
+            "human-recorded PSP firmware identifier; with --campaign-case it is the "
+            "expected PSPLink `pspver` version, for example 6.6.1 for firmware 6.61"
+        ),
+    )
     parser.add_argument(
         "--campaign-case",
         action="append",
@@ -3610,6 +3639,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("campaign mode requires --host0-root, operator-declared --model, and --source-commit")
         if not args.session_id or not _SESSION_ID_RE.fullmatch(args.session_id):
             parser.error("campaign mode touches the PSP and requires --session-id naming the hardware lock holder")
+        firmware_problem = _expected_firmware_problem(args.firmware)
+        if firmware_problem:
+            parser.error(f"--firmware: {firmware_problem}")
         if not _FULL_COMMIT_RE.fullmatch(args.source_commit):
             parser.error("--source-commit must be a full 40- or 64-digit object id")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,48}", args.model):

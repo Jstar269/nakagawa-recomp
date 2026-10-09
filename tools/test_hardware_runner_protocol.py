@@ -3913,6 +3913,83 @@ class HardwareLockGateTests(unittest.TestCase):
         self.assertEqual(report["reason"], "HARDWARE_LOCK_NOT_HELD")
 
 
+
+class ExpectedFirmwareFormTests(unittest.TestCase):
+    """An expected firmware must use the exact `pspver` form it is compared with."""
+
+    def _plan_with(self, scratch: Path, **fields) -> Path:
+        plan_path = CampaignPlanCheckpointTests()._plan(scratch)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan.update(fields)
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        return plan_path
+
+    def _dry_run(self, plan_path: Path):
+        with patch.object(run_psplink_module, "_check_source_tree", return_value=None):
+            return run_campaign_plan(
+                plan_path, dry_run=True, confirm_power_cycle=False,
+                pspsh_argv=["pspsh"], usbhostfs_argv=["usbhostfs_pc"],
+            )
+
+    def test_plan_rejects_firmware_that_cannot_match_pspver(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for value in ("6.61", "6.61-ARK", "6.6.1 ", "v6.6.1", "", 661, ["6.6.1"]):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(
+                prefix="fw-plan-", dir=fixture_dir
+            ) as scratch_name:
+                code, report = self._dry_run(
+                    self._plan_with(Path(scratch_name), expected_firmware=value)
+                )
+                self.assertEqual(code, 2)
+                self.assertEqual(report["status"], "REFUSED")
+                self.assertIn("expected_firmware", report["reason"])
+                self.assertIn("for example 6.6.1 for firmware 6.61", report["reason"])
+
+    def test_plan_accepts_the_pspver_form_and_an_absent_field(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for fields in ({"expected_firmware": "6.6.1"}, {}):
+            with self.subTest(fields=fields), tempfile.TemporaryDirectory(
+                prefix="fw-plan-ok-", dir=fixture_dir
+            ) as scratch_name:
+                code, report = self._dry_run(self._plan_with(Path(scratch_name), **fields))
+                self.assertEqual((code, report["status"]), (0, "VALIDATED_OFFLINE"))
+
+    def test_plan_rejects_a_model_code_that_would_be_silently_ignored(self):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        for value in ("3", True, -1, 3.0):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(
+                prefix="model-plan-", dir=fixture_dir
+            ) as scratch_name:
+                code, report = self._dry_run(self._plan_with(Path(scratch_name), model_code=value))
+                self.assertEqual(code, 2)
+                self.assertIn("model_code", report["reason"])
+
+    def test_runner_and_campaign_case_cli_reject_the_firmware_marketing_name(self):
+        with self.assertRaises(ValueError) as raised:
+            PsplinkCampaignRunner(
+                SimulatedPsplinkTransport(), console_model="PSP-3000",
+                source_commit=SOURCE_COMMIT, expected_firmware="6.61",
+            )
+        self.assertIn("6.6.1", str(raised.exception))
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="fw-cli-", dir=fixture_dir) as scratch_name:
+            argv = HardwareLockGateTests()._campaign_case_argv(
+                Path(scratch_name), "--session-id", "synthetic-session", "--firmware", "6.61"
+            )
+            with self.assertRaises(SystemExit) as exited:
+                run_psplink_module.main(argv)
+        self.assertEqual(exited.exception.code, 2)
+
+    def test_pspver_form_matches_what_the_runner_parses(self):
+        transport = SimulatedPsplinkTransport()
+        runner = PsplinkCampaignRunner(
+            transport, console_model="PSP-3000", source_commit=SOURCE_COMMIT,
+            expected_firmware="6.6.1",
+        )
+        self.assertTrue(runner._qualify())
+        self.assertEqual(runner.firmware, "6.6.1")
+
+
 class Host0RemotePathTests(unittest.TestCase):
     """A campaign PRX staged in a subdirectory is loaded by its host0-relative path."""
 
