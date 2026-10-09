@@ -170,7 +170,7 @@ def _point_variable_table_at_modinfo(blob):
 def build_split_nid_windows_elf():
     """A sectionless image whose two windows pair at different offsets.
 
-    This is the shape of a retail PRX (openpsid) whose stub run and NID arrays do not
+    This is the shape of a retail PRX whose stub run and NID arrays do not
     match the psp-fixup-imports sections: each window pairs with its own NID array, but
     the arrays sit apart, so no single pairing region covers both. The layout model
     refuses such a table fail-closed; the census must still name all four slots.
