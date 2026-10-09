@@ -1888,7 +1888,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1e1e42535e7030d563cfbb8c8830c9890dc5b6abd39c5590e17f8f759e6db67"
+      "sha256": "a587bcc9750878a6c944da7a3fa4336cb6e4d295aab619b0b4e11663c3f559a1"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -7606,7 +7606,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "60ae861fef54151e53a68fa3ea2eb2ef26b654351def089d64e97fd5d8db566d"
+      "sha256": "cd1f1d70a3fcb44bdf89d1fb45b34f980dfab9bcd31883a612bc6365fa65ce73"
     },
     {
       "path": "tools/test_codegen_continuations.py",
