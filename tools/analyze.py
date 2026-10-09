@@ -2481,9 +2481,12 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True):
+def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
+    # `report`, when a dict, receives the discovery state the import-stub census reads:
+    # covered (every traced instruction address), calls (every direct-call target seen),
+    # and hc (the high-confidence seeds). The return value is unchanged.
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
 
@@ -2790,6 +2793,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True):
             elf, entry, entry_ranges, covered, calls, hc, walked=walked,
         )
 
+    def callable_target(addr):
+        # The worklist's rule for a direct-call or jump target, shared by the late passes:
+        # named code, or file-backed executable bytes outside the named sections. The late
+        # passes tested the named ranges alone, so a callee in those bytes that only a late
+        # pass reached was dropped and got no body (the follow-up to the import-stub seed).
+        return in_ranges(addr, ranges) or in_ranges(addr, file_exec_ranges)
+
     functions = set(hc)
     work = list(hc)
     while work:
@@ -2816,7 +2826,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True):
     # entry and emits a continuation call, so both owners stay correct.
     pending_tail_calls = []
     for t in sorted(jtails):
-        if t in functions or not in_ranges(t, ranges):
+        if t in functions or not callable_target(t):
             continue
         wb = elf.read_at_vaddr(t - 8, 4)
         if wb is None or len(wb) < 4:
@@ -2824,13 +2834,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True):
         if not _is_hard_terminator(int.from_bytes(wb, 'little')):
             continue
         functions.add(t)
-        pending_tail_calls.extend(trace(t, ranges))
+        pending_tail_calls.extend(trace(t, trace_ranges_for_entry(t)))
         tail_call_batch = pending_tail_calls
         pending_tail_calls = []
         for c in tail_call_batch:
-            if c not in functions and in_ranges(c, ranges):
+            if c not in functions and callable_target(c):
                 functions.add(c)
-                pending_tail_calls.extend(trace(c, ranges))
+                pending_tail_calls.extend(trace(c, trace_ranges_for_entry(c)))
 
     # Gap fill: a weak-signal address that no known function covers is an indirect-only
     # function (reached through a register the call graph could not resolve). Add it and trace
@@ -2867,9 +2877,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True):
                 gap_call_batch = pending_gap_calls + new_calls
                 pending_gap_calls = []
                 for t in gap_call_batch:
-                    if t not in functions and in_ranges(t, ranges):
+                    if t not in functions and callable_target(t):
                         functions.add(t)
-                        pending_gap_calls.extend(trace(t, ranges))
+                        pending_gap_calls.extend(trace(t, trace_ranges_for_entry(t)))
                 changed = True
 
     # A direct call can prove that code exists outside named .text sections. Grant the
@@ -2899,6 +2909,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True):
             merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], hi))
         else:
             merged_ranges.append((lo, hi))
+    if report is not None:
+        report.update(covered=covered, calls=calls, hc=hc)
     return functions, merged_ranges
 
 
