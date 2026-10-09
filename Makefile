@@ -2544,7 +2544,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest
 	./build/test_package_builder$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
-		tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_xb_parser$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_xb_parser$(EXE_EXT)
 	./build/test_xb_parser$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \

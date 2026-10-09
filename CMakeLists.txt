@@ -100,6 +100,7 @@ add_test(NAME pgf_public_test COMMAND test_pgf_public)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
+    tests/native/native_test_isolation.c
     src/player/setup_staging.c
     src/rt/archive_vfs.c
 )
