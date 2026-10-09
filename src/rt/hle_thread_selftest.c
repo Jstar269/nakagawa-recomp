@@ -418,6 +418,7 @@ static int s_audio_queue_seq_len;
  * contents. See test_display_capture_arms_on_latched_flip(). */
 static unsigned long s_cap_arm_calls;
 static char s_cap_arm_path[128];
+static int s_cap_pending;      /* armed and not yet resolved by the present path */
 
 void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     (void)ch; (void)volL; (void)volR;
@@ -499,17 +500,20 @@ int g_prof_enabled;
 void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 #endif
 uint64_t SDL_GetTicksNS(void) { return 0; }
-int sdl3vk_capture_arm(const char *path) {
+int sr_capture_arm(const char *path) {
     s_cap_arm_calls++;
     if (path) {
         strncpy(s_cap_arm_path, path, sizeof(s_cap_arm_path) - 1);
         s_cap_arm_path[sizeof(s_cap_arm_path) - 1] = '\0';
     }
+    s_cap_pending = 1;
     return 1;   /* an armed capture is never published by this harness */
 }
-int sdl3vk_capture_result(void) { return 0; }
+/* The stub presenter never services an arm, so the present path must resolve it. */
+void sr_capture_cancel(void) { s_cap_pending = 0; }
+int sr_capture_result(void) { return 0; }
 int sdl3vk_renderer_terminal(void) { return 0; }
-const char *sdl3vk_capture_source_label(void) { return ""; }
+const char *sr_capture_source_label(void) { return ""; }
 int sdl3vk_validation_error_count(void) { return 0; }
 unsigned long g_mpeg_put;
 unsigned long g_mpeg_getavc;
@@ -7024,6 +7028,8 @@ static void test_display_capture_arms_on_latched_flip(void) {
            "the VBLANK that publishes a latched flip arms the capture slot first");
     expect(strstr(s_cap_arm_path, "frame_") != NULL,
            "the armed path is the FBSNAP capture slot, not the FBDUMP one-shot");
+    expect(!s_cap_pending,
+           "an arm no presenter serviced is resolved before the VBLANK present returns");
 
     /* The immediate path must still arm exactly once, through its own route. */
     s_cap_arm_calls = 0;
@@ -7033,6 +7039,8 @@ static void test_display_capture_arms_on_latched_flip(void) {
            "capture fixture requests a second immediate flip");
     expect(s_cap_arm_calls == 1u,
            "an immediate flip still arms the capture slot exactly once");
+    expect(!s_cap_pending,
+           "an arm no presenter serviced is resolved before the immediate flip returns");
 
     _putenv_s("SR_FBSNAP", "");
 }

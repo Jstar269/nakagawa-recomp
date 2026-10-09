@@ -449,7 +449,7 @@ class TestProductionSmoke(unittest.TestCase):
             "production_smoke_recomp_3.o",
             "production_smoke_recomp_4.o",
             "ge.o", "flight_recorder.o", "recomp.o", "guest_interp.o", "title_config.o", "vfpu_tables.o", "debug.o",
-            "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o",
+            "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o", "fbcap.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
             "iso_public.o", "pgd_unavailable.o", "mpeg.o", "pgf_public.o",
             "gui.o", "audio_unavailable.o", "h264_mf.o", "h264_null.o", "savedata.o",

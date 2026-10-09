@@ -651,6 +651,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/guest_printf.c \
               src/rt/perf.c \
               src/rt/fbcap_policy.c \
+              src/rt/fbcap.c \
               src/rt/ge_capture.c \
               src/rt/vfpu_interp.c \
               src/rt/hle.c \
@@ -696,8 +697,10 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # Same lesson as HLE_INCLUDES above -- when #57 added the policy it updated
 # RT_SRCS and gpu-capture-selftest but not the other recipes that compile
 # sdl3vk.c directly, silently breaking gpu-coherence-selftest and ge-replay.
-# tools/test_build_truth.py enforces that every user of sdl3vk.c supplies it.
-SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c \
+# The presenter also publishes its captures through the presenter-neutral
+# capture service (sr_capture_*, src/rt/fbcap.c), the same hard dependency.
+# tools/test_build_truth.py enforces that every user of sdl3vk.c supplies both.
+SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c src/rt/fbcap.c \
                src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
 
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
@@ -868,6 +871,7 @@ PUBLIC_TARGETS := \
 	atrac3p-selftest \
 	atrac3p-bridge-selftest \
 	ge-texture-ref-selftest \
+	fbcap-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
@@ -982,6 +986,7 @@ HELP_DESCRIPTION_vfpu-interp-selftest := run the VFPU interpreter selftest
 HELP_DESCRIPTION_atrac3p-selftest := run the ATRAC3+ decoder selftest
 HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
+HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
@@ -1894,7 +1899,18 @@ ge-texture-ref-selftest:
 		-o $(BUILD_DIR)/ge_texture_ref_selftest.exe src/rt/ge_texture_ref_selftest.c src/rt/ge_texture_ref.c -lm
 	$(BUILD_DIR)/ge_texture_ref_selftest.exe
 
-native-core-tests: ge-texture-ref-selftest
+native-core-tests: ge-texture-ref-selftest fbcap-selftest
+
+# fbcap-selftest — the presenter-neutral frame capture service (src/rt/fbcap.c, issue #57)
+# driven through its public API with synthetic frames: exact P6 header, size, channel order
+# and pixels for host-served and read-back captures (one frame publishes identical bytes
+# either way), skipped-present cancel, refused re-arm, failed publication resolving as
+# failed, and the parent-directory contract. Strict C99; no GPU, window or game input.
+fbcap-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/fbcap_selftest.exe \
+		src/rt/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
+	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
 
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
 # src/rt/atrac3p/). Public checks are source-owned (create validation, NULL/

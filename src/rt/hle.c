@@ -53,6 +53,7 @@
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
 #include "atrac3p_bridge.h" /* PR-B: real ATRAC3+ decode in sceAtracDecodeData */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
+#include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
@@ -14746,7 +14747,7 @@ static int display_host_span_valid(const DisplayFrameState *fb) {
     return sr_guest_span_readable(fb->addr, bytes);
 }
 
-static void display_present_active(void) {
+static void display_present_frame(void) {
     if (!gui_on() || !s_display_active.addr) return;
     if (!display_host_span_valid(&s_display_active)) {
         fprintf(stderr, "DISPLAY_PRESENT: refusing invalid span addr=0x%08x stride=%d fmt=%d\n",
@@ -14764,6 +14765,15 @@ static void display_present_active(void) {
                     s_vcount, s_display_active.addr, s_display_active.fmt,
                     s_display_active.stride);
     }
+}
+
+/* Present the active framebuffer, then close this frame's capture (fbcap.h): the presenter
+ * that showed the frame has already serviced an armed capture, and an arm nobody serviced
+ * (no presenter, a refused span, a skipped output slot) resolves here as "nothing
+ * attempted", so a later present can never publish this frame's path with newer pixels. */
+static void display_present_active(void) {
+    display_present_frame();
+    sr_capture_cancel();
 }
 
 /* ---- route observation (issue #64) ------------------------------------------------
@@ -14937,7 +14947,7 @@ int sr_route_test_cadence_state(uint32_t *last_attempt) {
 }
 #endif
 
-/* ---- swapchain-truthful present capture (issue #57) -------------------------------
+/* ---- present-truthful frame capture (issue #57) -----------------------------------
  *
  * The capture-slot policy (fbcap_policy.h) decides who owns the next present:
  *   - SR_FBDUMP owns the first present whose vblank reaches the SR_FBDUMP threshold and
@@ -14949,8 +14959,10 @@ int sr_route_test_cadence_state(uint32_t *last_attempt) {
  *     exact historical naming, so existing routes and tooling are unaffected.
  *
  * The arm MUST run before the present call so the recorded frame is exactly the one
- * being presented; the file is published inside the presenting submit, so a published
- * capture always corresponds to a presented frame. */
+ * being presented. Whichever presenter shows the frame (Vulkan window, GDI window or the
+ * headless offscreen sink) publishes it through the presenter-neutral capture service
+ * (fbcap.h), and display_present_active() resolves an arm no presenter serviced, so a
+ * published capture always corresponds to a presented frame. */
 #define SR_FBSNAP_MAX_WINDOWS 8
 static uint32_t s_fbsnap_win_lo[SR_FBSNAP_MAX_WINDOWS], s_fbsnap_win_hi[SR_FBSNAP_MAX_WINDOWS];
 static int s_fbsnap_win_n = 0;
@@ -15069,7 +15081,6 @@ static void fbcap_parse_windows_once(void) {
  * and the frames that do get captured are byte-identical to an ungated run. */
 static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameState *fb,
                                          uint32_t sync, int framebuf_set) {
-    extern int sdl3vk_capture_arm(const char *path);
     s_fbcap_armed[0] = '\0';
     s_fbcap_legacy[0] = '\0';
     if (sync != 0u) return NULL;
@@ -15082,7 +15093,7 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         if (!fd || vcount < (uint32_t)atoi(fd)) return NULL;
         if (!sr_fbcap_path(SR_FBCAP_FBDUMP, 0, s_fbcap_armed, sizeof s_fbcap_armed))
             return NULL;
-        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+        if (!sr_capture_arm(s_fbcap_armed)) {
             /* A refused arm must not leave a path behind: the report below would
              * otherwise print a stale result from an earlier capture. */
             s_fbcap_armed[0] = '\0';
@@ -15121,7 +15132,7 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
         else
             snprintf(s_fbcap_legacy, sizeof s_fbcap_legacy, "snap_%u.ppm",
                      (vcount / (uint32_t)fs) % 8u);
-        if (!sdl3vk_capture_arm(s_fbcap_armed)) {
+        if (!sr_capture_arm(s_fbcap_armed)) {
             s_fbcap_armed[0] = '\0';
             s_fbcap_legacy[0] = '\0';
             return NULL;
@@ -15220,8 +15231,8 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     /* The active state was presented above. A sync=1 request is intentionally
      * deferred until sr_vblank_tick applies the pending scanout state. */
     /* SR_FBSNAP report (issue #57): fbcap_arm_for_present() above already armed the
-     * swapchain-truthful capture for this frame (path in s_fbcap_armed); the capture is
-     * recorded inside the presenting submit and completes before this code runs. The
+     * present-truthful capture for this frame (path in s_fbcap_armed); the presenter
+     * resolved it before display_present_active() returned. The
      * legacy VRAM-side oracle keeps its exact historical naming: rotating snap_%u.ppm
      * (8 most recent kept) without windows, snap_v<vcount>.ppm when windows are set, so
      * existing routes and tooling are unaffected. Host-side gate only: no guest work is
@@ -15241,14 +15252,14 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 fprintf(stderr, "FBSNAP f=%u -> SKIPPED (synchronisation failed)\n", s_vcount);
             }
         }
-        extern int sdl3vk_capture_result(void);
-        int cres = sdl3vk_capture_result();
+        int cres = sr_capture_result();
         if (cres != 0) {
             fprintf(stderr, "FBSNAP f=%u swapchain capture -> %s (result=%d)\n",
                     s_vcount, s_fbcap_armed, cres);
         } else {
-            /* The output cap dropped this frame's present: the arm was cancelled and
-             * must not be serviced by a later frame, nor reported with a stale result. */
+            /* No presenter serviced this frame's arm (the output cap dropped the present,
+             * or no presenter ran): display_present_active() cancelled it, so it can
+             * neither be serviced by a later frame nor reported with a stale result. */
             fprintf(stderr, "FBSNAP f=%u swapchain capture -> SKIPPED (no present serviced this frame)\n",
                     s_vcount);
         }
@@ -15258,7 +15269,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     /* The buffer handed to SetFrameBuf is a freshly-completed frame. With SR_FBDUMP=<N>, once N
      * frames have elapsed, the pre-present arm above recorded exactly this presented buffer in
      * present_source.ppm and the process exits with a policy verdict (issue #57): success(0)
-     * only if the swapchain-truthful capture really was published, failure(1) otherwise. */
+     * only if the present-truthful capture really was published, failure(1) otherwise. */
     {
         static int fbdu = -1; static int fbdu_n = 0;
         if (fbdu < 0) {
@@ -15271,8 +15282,6 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             display_host_span_valid(&s_display_active)) {
             extern unsigned long g_ge_pixels;
             extern unsigned long g_tex_samples, g_tex_nonzero;
-            extern int sdl3vk_capture_result(void);
-            extern const char *sdl3vk_capture_source_label(void);
             int snap_ok = snapshot_sync_ok(s_display_active.addr,
                                             (uint32_t)s_display_active.fmt,
                                             (uint32_t)s_display_active.stride, "SR_FBDUMP");
@@ -15294,9 +15303,9 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             extern void sched_dump_threads(void); sched_dump_threads();
             /* Only a capture serviced by this frame's present may affect the exit
              * verdict. An unserviced arm is a failed attempt, never a stale success. */
-            int cres = sdl3vk_capture_result();
+            int cres = sr_capture_result();
             fprintf(stderr, "present capture result=%d (source=%s)%s\n", cres,
-                    sdl3vk_capture_source_label(),
+                    sr_capture_source_label(),
                     cres == 0 ? " (not serviced: no present this frame)" : "");
             if (!snap_ok) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
