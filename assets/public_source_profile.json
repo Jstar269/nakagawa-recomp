@@ -773,6 +773,7 @@
     "tools/test_codegen_no_shadow_stubs.py",
     "tools/test_codegen_profile_isolation.py",
     "tools/test_codegen_retail_allocator.py",
+    "tools/test_codegen_runtime_modules.py",
     "tools/test_codegen_static_verify.py",
     "tools/test_codegen_transfer_target_timing.py",
     "tools/test_codegen_vfpu_fallback.py",

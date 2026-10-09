@@ -1504,6 +1504,278 @@ def build_lg(plan: Plan, *, end_scratch_offset: int | None = None) -> Asm:
     return a
 
 
+# --- runtime-placed overlay modules (ladder-overlay) -------------------------
+#
+# An overlay is a genuine relocatable PSP module (ELF type 0xFFA0) of the shape the
+# PSP module loader consumes: module information, a system export library naming
+# module_start/module_stop/module_info, one named export library, one import stub,
+# HI16/LO16, R_MIPS_26 and R_MIPS_32 relocations, a nonzero module gp, and a large
+# BSS. Nothing in it is placed at a build-time address: the runtime lays it out
+# wherever the guest allocator puts it, and the main guest proves it ran there.
+#
+#   module_start(argsize, argp)  seed via gp and via HI16/LO16, internal jal (R26),
+#                                store into BSS at an offset whose low half has the
+#                                sign bit set, call through an R32 function pointer,
+#                                call its import stub, report into argp[0..1]
+#   module_stop()                read both BSS words back (state persisted)
+#   query(a0)                    the named export: a0 + the BSS word
+
+OVERLAY_TEXT_FILE_OFFSET = 0x100
+OVERLAY_DATA_VADDR = 0x1000
+OVERLAY_START_OFF = 0x000
+OVERLAY_STOP_OFF = 0x0C0
+OVERLAY_QUERY_OFF = 0x100
+OVERLAY_MIX_OFF = 0x140
+OVERLAY_TABLE_TARGET_OFF = 0x180
+OVERLAY_STUB_OFF = 0x200
+OVERLAY_MODINFO_OFF = 0x280
+OVERLAY_LIBENT_OFF = 0x2C0
+OVERLAY_SYSLIB_TABLE_OFF = 0x2E0
+OVERLAY_LIB_TABLE_OFF = 0x300
+OVERLAY_LIBSTUB_OFF = 0x310
+OVERLAY_STUB_NID_OFF = 0x330
+OVERLAY_LIBNAME_OFF = 0x340
+OVERLAY_IMPORT_LIBNAME_OFF = 0x360
+OVERLAY_TEXT_SIZE = 0x380
+OVERLAY_SEED_OFF = 0x0
+OVERLAY_FNPTR_OFF = 0x4
+OVERLAY_DATA_FILE_SIZE = 0x20
+OVERLAY_SLOT_OFF = 0x8040            # low half 0x8040: a negative LO16 immediate
+OVERLAY_DATA_MEM_SIZE = 0x900000     # 9 MiB: two overlays fit beside the main guest, three do not
+OVERLAY_TAIL_OFF = OVERLAY_DATA_MEM_SIZE - 0x10
+OVERLAY_GP_OFF = 0x7FF0
+OVERLAY_LIBRARY = "LadderOverlay"
+OVERLAY_IMPORT_LIBRARY = "UtilsForUser"
+OVERLAY_IMPORT_NID = 0x79D1C3FA      # sceKernelDcacheWritebackAll
+OVERLAY_START_STATUS = 0x5100
+
+
+class OverlaySpec:
+    """One source-owned overlay module identity."""
+
+    def __init__(self, ident: int, export_nid: int, seed: int) -> None:
+        self.ident = ident
+        self.letter = "abc"[ident - 1]
+        self.file_name = f"overlay_{self.letter}.prx"
+        self.module_name = f"ladder_overlay_{self.letter}"
+        self.guest_path = f"disc0:/PSP_GAME/USRDIR/{self.file_name}"
+        self.export_nid = export_nid
+        self.seed = seed
+
+    def mix(self) -> int:
+        x = (2 * self.seed) & 0xFFFFFFFF
+        return (((x << 3) + 0x111 * self.ident) & 0xFFFFFFFF) ^ x
+
+    def start_status(self) -> int:
+        return OVERLAY_START_STATUS + self.ident
+
+    def start_result(self) -> int:
+        mix = self.mix()
+        return (mix + mix + 0x77) & 0xFFFFFFFF
+
+    def stop_status(self) -> int:
+        return (self.mix() ^ (self.ident << 24)) & 0xFFFFFFFF
+
+    def query(self, argument: int) -> int:
+        return (argument + self.mix()) & 0xFFFFFFFF
+
+
+OVERLAYS = (
+    OverlaySpec(1, 0x0E4E0A01, 0x00012345),
+    OverlaySpec(2, 0x0E4E0B02, 0x00023456),
+    OverlaySpec(3, 0x0E4E0C03, 0x00034567),
+)
+
+
+def _overlay_hi_lo(asm: Asm, op_lo: int, reg: int, data_offset: int, dest: int | None = None) -> None:
+    """lui reg, %hi(data+off) ; <op_lo> dest, %lo(data+off)(reg) -- HI16/LO16 pair
+    against the data segment, with the low half on an addiu or a load."""
+    hi = ((data_offset >> 16) + ((data_offset >> 15) & 1)) & 0xFFFF
+    lo = (data_offset - (hi << 16)) & 0xFFFF
+    asm.reloc_sites.append((asm.here(), R_MIPS_HI16, 1))
+    asm.i(0x0F, 0, reg, hi)
+    asm.reloc_sites.append((asm.here(), R_MIPS_LO16, 1))
+    asm.i(op_lo, reg, reg if dest is None else dest, lo)
+
+
+def build_overlay_asm(spec: OverlaySpec) -> Asm:
+    a = Asm()
+    a.label("module_start")
+    a.i(0x09, 29, 29, -32)                 # addiu sp, sp, -32
+    a.i(0x2B, 29, 31, 28)                  # sw ra, 28(sp)
+    a.i(0x2B, 29, 16, 24)                  # sw s0, 24(sp)
+    a.i(0x2B, 29, 17, 20)                  # sw s1, 20(sp)
+    a.rr(5, 0, 16, 0, 0x25)                # s0 = a1 (argp)
+    a.i(0x23, 28, 8, (OVERLAY_SEED_OFF - OVERLAY_GP_OFF) & 0xFFFF)  # lw t0, seed(gp)
+    _overlay_hi_lo(a, 0x09, 9, OVERLAY_SEED_OFF)                     # t1 = &seed
+    a.i(0x23, 9, 10, 0)                    # lw t2, 0(t1)
+    a.rr(8, 10, 4, 0, 0x21)                # a0 = t0 + t2
+    a.call_relocated(OVERLAY_MIX_OFF)      # jal mix (R_MIPS_26)
+    a.rr(2, 0, 17, 0, 0x25)                # s1 = v0
+    _overlay_hi_lo(a, 0x09, 11, OVERLAY_SLOT_OFF)                    # t3 = &slot
+    a.i(0x2B, 11, 17, 0)                   # sw s1, 0(t3)
+    _overlay_hi_lo(a, 0x23, 12, OVERLAY_FNPTR_OFF, dest=13)          # t5 = *fnptr
+    a.rr(13, 0, 31, 0, 0x09)               # jalr t5
+    a.rr(17, 0, 4, 0, 0x25)                # (delay) a0 = s1
+    a.rr(17, 2, 17, 0, 0x21)               # s1 += v0
+    a.call_relocated(OVERLAY_STUB_OFF)     # jal import stub (R_MIPS_26)
+    a.i(0x2B, 16, 17, 0)                   # sw s1, 0(s0)
+    _overlay_hi_lo(a, 0x09, 11, OVERLAY_SLOT_OFF)
+    a.i(0x2B, 16, 11, 4)                   # sw t3, 4(s0): where the slot landed
+    _overlay_hi_lo(a, 0x09, 14, OVERLAY_TAIL_OFF)                    # t6 = &tail
+    a.i(0x09, 0, 15, spec.ident)           # t7 = ident
+    a.i(0x2B, 14, 15, 0)                   # sw t7, 0(t6)
+    a.i(0x09, 0, 2, spec.start_status())   # v0 = start status
+    a.i(0x23, 29, 17, 20)
+    a.i(0x23, 29, 16, 24)
+    a.i(0x23, 29, 31, 28)
+    a.i(0x09, 29, 29, 32)
+    a.rr(31, 0, 0, 0, 0x08)                # jr ra
+    a.nop()
+    a.pad_to(OVERLAY_STOP_OFF)
+    a.label("module_stop")
+    _overlay_hi_lo(a, 0x23, 11, OVERLAY_SLOT_OFF, dest=2)            # v0 = slot
+    _overlay_hi_lo(a, 0x23, 14, OVERLAY_TAIL_OFF, dest=15)           # t7 = tail
+    a.rr(0, 15, 15, 24, 0x00)              # sll t7, t7, 24
+    a.rr(2, 15, 2, 0, 0x26)                # xor v0, v0, t7
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+    a.pad_to(OVERLAY_QUERY_OFF)
+    a.label("query")
+    _overlay_hi_lo(a, 0x23, 11, OVERLAY_SLOT_OFF, dest=8)            # t0 = slot
+    a.rr(4, 8, 2, 0, 0x21)                 # v0 = a0 + t0
+    a.rr(31, 0, 0, 0, 0x08)
+    a.nop()
+    a.pad_to(OVERLAY_MIX_OFF)
+    a.label("mix")
+    a.rr(0, 4, 2, 3, 0x00)                 # sll v0, a0, 3
+    a.i(0x09, 2, 2, 0x111 * spec.ident)    # addiu v0, v0, 0x111*ident
+    a.rr(31, 0, 0, 0, 0x08)
+    a.rr(2, 4, 2, 0, 0x26)                 # (delay) xor v0, v0, a0
+    a.pad_to(OVERLAY_TABLE_TARGET_OFF)
+    a.label("table_target")
+    a.rr(31, 0, 0, 0, 0x08)
+    a.i(0x09, 4, 2, 0x77)                  # (delay) addiu v0, a0, 0x77
+    a.pad_to(OVERLAY_STUB_OFF)
+    a.raw(0x03E00008)                      # import stub: jr ra
+    a.nop()
+    return a
+
+
+def build_overlay_prx(spec: OverlaySpec) -> bytes:
+    asm = build_overlay_asm(spec)
+    words = asm.resolve()
+    labels = {name: index * 4 for name, index in asm._labels.items()}
+    for name, offset in (("module_start", OVERLAY_START_OFF), ("module_stop", OVERLAY_STOP_OFF),
+                         ("query", OVERLAY_QUERY_OFF), ("mix", OVERLAY_MIX_OFF),
+                         ("table_target", OVERLAY_TABLE_TARGET_OFF)):
+        if labels.get(name) != offset:
+            raise RuntimeError(f"{spec.file_name}: {name} assembled at {labels.get(name)!r}")
+    text = bytearray(OVERLAY_TEXT_SIZE)
+    for index, word in enumerate(words):
+        struct.pack_into("<I", text, 4 * index, word)
+    module_name = spec.module_name.encode("ascii")
+    struct.pack_into(
+        "<HBB28s5I", text, OVERLAY_MODINFO_OFF, 0x0000, 1, 1,
+        module_name + b"\0" * (28 - len(module_name)),
+        OVERLAY_DATA_VADDR + OVERLAY_GP_OFF,
+        OVERLAY_LIBENT_OFF, OVERLAY_LIBENT_OFF + 32,
+        OVERLAY_LIBSTUB_OFF, OVERLAY_LIBSTUB_OFF + 20,
+    )
+    struct.pack_into("<IHHBBHI", text, OVERLAY_LIBENT_OFF, 0, 0x0000, 0x8000, 4, 1, 2,
+                     OVERLAY_SYSLIB_TABLE_OFF)
+    struct.pack_into("<IHHBBHI", text, OVERLAY_LIBENT_OFF + 16, OVERLAY_LIBNAME_OFF, 0x0011,
+                     0x0001, 4, 0, 1, OVERLAY_LIB_TABLE_OFF)
+    struct.pack_into("<6I", text, OVERLAY_SYSLIB_TABLE_OFF,
+                     NID_MODULE_START, NID_MODULE_STOP, NID_MODULE_INFO,
+                     OVERLAY_START_OFF, OVERLAY_STOP_OFF, OVERLAY_MODINFO_OFF)
+    struct.pack_into("<2I", text, OVERLAY_LIB_TABLE_OFF, spec.export_nid, OVERLAY_QUERY_OFF)
+    struct.pack_into("<IHHBBHII", text, OVERLAY_LIBSTUB_OFF, OVERLAY_IMPORT_LIBNAME_OFF, 0x4001,
+                     0x0009, 5, 0, 1, OVERLAY_STUB_NID_OFF, OVERLAY_STUB_OFF)
+    struct.pack_into("<I", text, OVERLAY_STUB_NID_OFF, OVERLAY_IMPORT_NID)
+    for offset, name in ((OVERLAY_LIBNAME_OFF, OVERLAY_LIBRARY),
+                         (OVERLAY_IMPORT_LIBNAME_OFF, OVERLAY_IMPORT_LIBRARY)):
+        raw = name.encode("ascii") + b"\0"
+        text[offset:offset + len(raw)] = raw
+    data = bytearray(OVERLAY_DATA_FILE_SIZE)
+    struct.pack_into("<2I", data, 0, spec.seed, OVERLAY_TABLE_TARGET_OFF)
+
+    records = [(index * 4, relocation_info(rtype, 0, segment))
+               for index, rtype, segment in asm.reloc_sites]
+    records.append((OVERLAY_MODINFO_OFF + 32, relocation_info(R_MIPS_32, 0, 0)))  # gp (absolute link value)
+    for field in (36, 40, 44, 48):
+        records.append((OVERLAY_MODINFO_OFF + field, relocation_info(R_MIPS_32, 0, 0)))
+    records.append((OVERLAY_LIBENT_OFF + 12, relocation_info(R_MIPS_32, 0, 0)))
+    records.append((OVERLAY_LIBENT_OFF + 16, relocation_info(R_MIPS_32, 0, 0)))
+    records.append((OVERLAY_LIBENT_OFF + 28, relocation_info(R_MIPS_32, 0, 0)))
+    for slot in range(3):
+        records.append((OVERLAY_SYSLIB_TABLE_OFF + 12 + 4 * slot, relocation_info(R_MIPS_32, 0, 0)))
+    records.append((OVERLAY_LIB_TABLE_OFF + 4, relocation_info(R_MIPS_32, 0, 0)))
+    for field in (0, 12, 16):
+        records.append((OVERLAY_LIBSTUB_OFF + field, relocation_info(R_MIPS_32, 0, 0)))
+    records.append((OVERLAY_FNPTR_OFF, relocation_info(R_MIPS_32, 1, 0)))
+    relocation_bytes = b"".join(struct.pack("<II", *record) for record in records)
+
+    tokens = ["", ".text", ".sceStub.text", ".rodata.sceModuleInfo", ".lib.ent",
+              ".lib.stub", ".rodata.sceNid", ".data", ".bss", ".rel.sceModule", ".shstrtab"]
+    name_offsets: dict[str, int] = {}
+    cursor = 0
+    for token in tokens:
+        name_offsets[token] = cursor
+        cursor += len(token) + 1
+    section_names = b"".join(token.encode("ascii") + b"\0" for token in tokens)
+    data_file_offset = OVERLAY_TEXT_FILE_OFFSET + OVERLAY_TEXT_SIZE
+    reloc_offset = data_file_offset + len(data)
+    shstr_offset = reloc_offset + len(relocation_bytes)
+    section_table_offset = (shstr_offset + len(section_names) + 3) & ~3
+
+    def section(token, sec_type, flags, address, offset, size, alignment=4, entry_size=0):
+        return struct.pack("<10I", name_offsets[token], sec_type, flags, address, offset,
+                           size, 0, 0, alignment, entry_size)
+
+    sections = [
+        bytes(40),
+        section(".text", 1, 6, 0, OVERLAY_TEXT_FILE_OFFSET, OVERLAY_STUB_OFF),
+        section(".sceStub.text", 1, 6, OVERLAY_STUB_OFF,
+                OVERLAY_TEXT_FILE_OFFSET + OVERLAY_STUB_OFF, 8),
+        section(".rodata.sceModuleInfo", 1, 2, OVERLAY_MODINFO_OFF,
+                OVERLAY_TEXT_FILE_OFFSET + OVERLAY_MODINFO_OFF, 52),
+        section(".lib.ent", 1, 2, OVERLAY_LIBENT_OFF,
+                OVERLAY_TEXT_FILE_OFFSET + OVERLAY_LIBENT_OFF, 32),
+        section(".lib.stub", 1, 2, OVERLAY_LIBSTUB_OFF,
+                OVERLAY_TEXT_FILE_OFFSET + OVERLAY_LIBSTUB_OFF, 20),
+        section(".rodata.sceNid", 1, 2, OVERLAY_STUB_NID_OFF,
+                OVERLAY_TEXT_FILE_OFFSET + OVERLAY_STUB_NID_OFF, 4),
+        section(".data", 1, 3, OVERLAY_DATA_VADDR, data_file_offset, len(data)),
+        section(".bss", 8, 3, OVERLAY_DATA_VADDR + len(data), data_file_offset + len(data),
+                OVERLAY_DATA_MEM_SIZE - len(data), 16),
+        section(".rel.sceModule", SHT_PRX_RELOC, 0, 0, reloc_offset, len(relocation_bytes), 4, 8),
+        section(".shstrtab", 3, 0, 0, shstr_offset, len(section_names), 1),
+    ]
+    program_headers = b"".join([
+        struct.pack("<8I", 1, OVERLAY_TEXT_FILE_OFFSET, 0,
+                    OVERLAY_TEXT_FILE_OFFSET + OVERLAY_MODINFO_OFF,
+                    OVERLAY_TEXT_SIZE, OVERLAY_TEXT_SIZE, 5, 0x40),
+        struct.pack("<8I", 1, data_file_offset, OVERLAY_DATA_VADDR, 0,
+                    len(data), OVERLAY_DATA_MEM_SIZE, 6, 0x40),
+    ])
+    ident = b"\x7fELF" + bytes([1, 1, 1, 0]) + b"\0" * 8
+    elf_header = ident + struct.pack(
+        "<HHIIIIIHHHHHH", 0xFFA0, 8, 1, OVERLAY_START_OFF, 52, section_table_offset, 0x10,
+        52, 32, 2, 40, len(sections), len(sections) - 1,
+    )
+    blob = bytearray(section_table_offset + 40 * len(sections))
+    blob[0:len(elf_header)] = elf_header
+    blob[52:52 + len(program_headers)] = program_headers
+    blob[OVERLAY_TEXT_FILE_OFFSET:OVERLAY_TEXT_FILE_OFFSET + len(text)] = text
+    blob[data_file_offset:data_file_offset + len(data)] = data
+    blob[reloc_offset:reloc_offset + len(relocation_bytes)] = relocation_bytes
+    blob[shstr_offset:shstr_offset + len(section_names)] = section_names
+    packed = b"".join(sections)
+    blob[section_table_offset:section_table_offset + len(packed)] = packed
+    return bytes(blob)
+
+
 # --- plans ------------------------------------------------------------------
 
 PLANS: dict[str, Plan] = {}
