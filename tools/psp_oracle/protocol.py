@@ -306,18 +306,7 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
             metadata.update(fields)
             continue
         if prefix == STEP_PREFIX:
-            fields = _fields(tokens, line_number=line_number)
-            if set(fields) != {"schema", "case_id", "step"}:
-                raise ProtocolError(
-                    f"line {line_number}: step marker fields must be schema, case_id, step"
-                )
-            if fields["schema"] != str(SCHEMA):
-                raise ProtocolError(f"line {line_number}: unsupported step schema")
-            if not _ID_RE.fullmatch(fields["case_id"]):
-                raise ProtocolError(f"line {line_number}: invalid step case_id")
-            if not _STEP_RE.fullmatch(fields["step"]):
-                raise ProtocolError(f"line {line_number}: invalid step name")
-            steps.append(ProbeStep(fields["case_id"], fields["step"]))
+            steps.append(_probe_step(tokens, line_number=line_number))
             continue
         if prefix != TEST_PREFIX:
             raise ProtocolError(f"line {line_number}: unknown record prefix {prefix!r}")
@@ -361,6 +350,43 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
     if not results:
         raise ProtocolError("result stream contains no test records")
     return ParsedOutput(tuple(sorted(metadata.items())), tuple(results), tuple(steps))
+
+
+def _probe_step(tokens: Iterable[str], *, line_number: int) -> ProbeStep:
+    """Validate the fields of one STEP marker (the tokens after its prefix)."""
+
+    fields = _fields(tokens, line_number=line_number)
+    if set(fields) != {"schema", "case_id", "step"}:
+        raise ProtocolError(
+            f"line {line_number}: step marker fields must be schema, case_id, step"
+        )
+    if fields["schema"] != str(SCHEMA):
+        raise ProtocolError(f"line {line_number}: unsupported step schema")
+    if not _ID_RE.fullmatch(fields["case_id"]):
+        raise ProtocolError(f"line {line_number}: invalid step case_id")
+    if not _STEP_RE.fullmatch(fields["step"]):
+        raise ProtocolError(f"line {line_number}: invalid step name")
+    return ProbeStep(fields["case_id"], fields["step"])
+
+
+def parse_progress(text: str) -> ParsedOutput:
+    """Collect the progress of a stream that may be cut off or carry console noise.
+
+    A hang or timeout can stop a probe before any result record, so its stream
+    need not parse as a result stream. Only complete ``NAKAGAWA_PSP_STEP``
+    markers are collected, in order, with the same field checks as
+    :func:`parse_output`. Every other line is ignored, and a final line without
+    its newline may stop mid-marker, so it is not counted. The result carries no
+    metadata and no results: a cut stream is never a semantic result.
+    """
+
+    steps: list[ProbeStep] = []
+    *complete, _unterminated = text.split("\n")
+    for line_number, raw in enumerate(complete, 1):
+        tokens = raw.split()
+        if tokens[:1] == [STEP_PREFIX]:
+            steps.append(_probe_step(tokens[1:], line_number=line_number))
+    return ParsedOutput((), (), tuple(steps))
 
 
 @dataclass(frozen=True)
