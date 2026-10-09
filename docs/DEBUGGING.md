@@ -407,10 +407,20 @@ first reads each scripted state.
 ### Scripted keyboard answers
 
 `SR_PADSCRIPT` decides what a person *presses*; `SR_OSK_SCRIPT` decides what they *type*. The
-on-screen keyboard a title opens for a name is otherwise answered by a modal Windows input box,
-which an automated route cannot reach: it has to find that window and type into it, and the
-attempt races the game's own dialog timing. Both variables are off unless set, and neither
-changes how a person plays.
+on-screen keyboard a title opens for a name is otherwise answered by a person in a native
+Windows input box, which an automated route cannot reach: it has to find that window and type
+into it, and the attempt races the game's own dialog timing. Both variables are off unless set,
+and neither changes how a person plays.
+
+The keyboard never stops guest time, scripted or not. On the PSP it is a system overlay: the
+title keeps running underneath it, polling `sceUtilityOskGetStatus` once per frame. Every guest
+thread here runs on the one scheduler thread, so the input box is shown on a worker thread
+(`src/rt/osk_text_entry.c`) and each poll returns at once with `VISIBLE` until the person
+presses OK or Cancel; vblanks, frames, audio and the title's other threads carry on meanwhile.
+Under the offscreen presenter (`SR_VIDEO=offscreen`, headless bring-up) nobody can answer, so
+no window is opened at all: the keyboard stays open while the title keeps running, which is
+what a PSP nobody is typing at does, and stderr says so once. A headless route that has to get
+past a name entry answers it with one of the variables below.
 
 `SR_OSK_SCRIPT=FILE` holds one answer per keyboard field, in the order the keyboard presents
 them. Each line is the text to enter, or the keyword `CANCEL` to answer that field as
@@ -430,14 +440,16 @@ vanishing.
 
 While either variable is set **no native input box is ever opened**. A field the script does
 not cover is answered `CANCELLED` and the shortfall is named on stderr, because an automated
-run that reached an unanswered keyboard would otherwise block on a window nothing is going to
-dismiss. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
+run that reached an unanswered keyboard would otherwise wait at it for a person who is not
+there. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
 played one are read the same way.
 
 A scripted answer follows the same status sequence as a person's. `sceUtilityOskGetStatus`
-returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE`, then `QUIT`
-(whether the text was confirmed or cancelled; each field's result tells them apart) until the
-title calls `sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`.
+returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
+frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
+confirmed or cancelled; each field's result tells them apart) until the title calls
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
+or replaces with a new one, before the person answered closes its input box and writes nothing.
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.

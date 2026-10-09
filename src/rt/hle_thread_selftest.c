@@ -50,6 +50,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "title_config.h"
 #include "nid_names.h"
 #include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
+#include "osk_text_entry.h"     /* the keyboard's text-entry seam, stubbed below */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -4470,24 +4471,61 @@ static void test_volatile_mem_output_preflight(void) {
 
 }
 
-/* ---- sceUtilityOsk. The keyboard is answered by a person through a native Win32 box
- * (src/rt/osk_win.c), which this host test cannot open, and by SR_OSK_SCRIPT / SR_OSK_TEXT
- * for automation. The stub below stands in for the native box and counts how often it was
- * asked, which is what makes "a scripted run never opens it" an observable claim.
+/* ---- sceUtilityOsk. A person answers the keyboard in the native Win32 box
+ * (src/rt/osk_win.c), which blocks its caller until OK or Cancel, and automation answers it
+ * with SR_OSK_SCRIPT / SR_OSK_TEXT. The HLE keyboard must never wait on that box: every guest
+ * thread is a coroutine on the one scheduler thread, so a wait would stop all of them (no
+ * vblank, no frame, no audio) until a person answered, and forever under the offscreen
+ * presenter. It polls the non-blocking text entry (src/rt/osk_text_entry.c) instead. Both are
+ * stubbed below: the blocking box only counts calls (any call from the guest path is the
+ * defect), and the text entry is a person who may still be typing. The counters are what make
+ * "a scripted run never asks a person" and "the keyboard never stops guest time" observable.
  *
  * The status machine under test is the public PSPSDK one: sceUtilityOskGetStatus returns
  * pspUtilityDialogState (psputility.h) NONE=0, INIT=1, VISIBLE=2, QUIT=3, FINISHED=4, and the
  * SDK's OSK sample calls ShutdownStart on QUIT and stops on NONE. QUIT is reported whether
  * the person confirmed or cancelled; the per-field result tells them apart. */
-static int s_osk_native_calls;
-static int s_osk_native_answer = 1;                        /* what the stub "person" pressed */
+static int s_osk_blocking_calls;      /* the guest path waited on the blocking native box */
+static int s_osk_requests;            /* person requests opened, one per field */
+static int s_osk_abandons;            /* open requests the keyboard dropped */
+static int s_osk_request_open;        /* the stub person has an open request */
+static int s_osk_person_typing;       /* 1: the person has not answered the open request yet */
+static int s_osk_native_answer = 1;   /* what the stub person presses: 1 OK, 0 Cancel */
 
 int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
     (void)desc;
     (void)initial;
-    s_osk_native_calls++;
+    s_osk_blocking_calls++;
     if (s_osk_native_answer && out && cap > 1) { out[0] = (wchar_t)L'N'; out[1] = 0; }
     return s_osk_native_answer;
+}
+
+int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
+    (void)desc;
+    (void)initial;
+    if (!s_osk_request_open) {              /* the box opens; nobody has answered it yet */
+        s_osk_request_open = 1;
+        s_osk_requests++;
+        return SR_OSK_TEXT_PENDING;
+    }
+    if (s_osk_person_typing) return SR_OSK_TEXT_PENDING;
+    s_osk_request_open = 0;
+    if (s_osk_native_answer && out && cap > 1) { out[0] = (wchar_t)L'N'; out[1] = 0; }
+    return s_osk_native_answer;
+}
+
+void sr_osk_text_entry_abandon(void) {
+    if (s_osk_request_open) s_osk_abandons++;
+    s_osk_request_open = 0;
+}
+
+static void osk_person_reset(void) {
+    s_osk_blocking_calls = 0;
+    s_osk_requests = 0;
+    s_osk_abandons = 0;
+    s_osk_request_open = 0;
+    s_osk_person_typing = 0;
+    s_osk_native_answer = 1;
 }
 
 #define OSK_PARAM_ADDR  0x09030000u
@@ -4499,6 +4537,8 @@ int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int 
 #define NID_OSK_INIT     0xf6269b82u
 #define NID_OSK_STATUS  0xf3f76017u
 #define NID_OSK_SHUTDOWN 0x3dfaeba9u
+#define OSK_SAVEDATA_PARAM_ADDR 0x09031000u /* a zeroed 0x600-byte savedata parameter block */
+#define NID_SAVEDATA_DIALOG_INIT     0x50c4cd57u
 
 static void osk_guest_write_wstr(uint32_t addr, const wchar_t *text) {
     for (int i = 0; text[i]; i++) MEM_W16(addr + (uint32_t)i * 2u, (uint16_t)text[i]);
@@ -4542,6 +4582,13 @@ static uint32_t osk_poll(CpuState *cpu) {
     return sr_syscall(cpu, NID_OSK_STATUS);
 }
 
+/* Poll as a title does once per frame until the keyboard leaves VISIBLE (bounded). */
+static uint32_t osk_poll_past_visible(CpuState *cpu) {
+    uint32_t status = 2u;
+    for (int frame = 0; frame < 64 && status == 2u; frame++) status = osk_poll(cpu);
+    return status;
+}
+
 static void osk_env(const char *name, const char *value) {
     SetEnvironmentVariableA(name, value);
     _putenv_s(name, value ? value : "");      /* an empty value removes it from the CRT env */
@@ -4570,24 +4617,24 @@ static void test_osk_scripted_answer(void) {
     const char *const cancel_lines[] = { "PLAY", "# a comment", "", "CANCEL" };
     const char *const short_lines[] = { "ACE" };
     sr_hle_init();
-    s_osk_native_calls = 0;
-    s_osk_native_answer = 1;
+    osk_person_reset();
     osk_env("SR_OSK_SCRIPT", NULL);
     osk_env("SR_OSK_TEXT", NULL);
 
-    /* Unconfigured: the keyboard is answered by a person, through the native box, once per
-     * field, and the status machine reports the public sequence and then NONE after
-     * ShutdownStart. Nothing about this path changes when the script variables exist. */
+    /* Unconfigured: the keyboard is answered by a person, once per field, and the status
+     * machine reports the public sequence and then NONE after ShutdownStart. Nothing about
+     * this path changes when the script variables exist. */
     osk_guest_build(2, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
     expect(sr_syscall(&cpu, k_init) == 0u, "sceUtilityOskInitStart accepts an OSK parameter block");
     expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u,
            "GetStatus reports INIT then VISIBLE, one step per poll");
-    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
-           "GetStatus reports QUIT once the text has been collected, and QUIT stands until the "
+    expect(osk_poll_past_visible(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "GetStatus reports QUIT once every field has its answer, and QUIT stands until the "
            "game calls ShutdownStart, as the SDK's OSK sample expects");
-    expect(s_osk_native_calls == 2, "an unconfigured keyboard opens the native box once per field");
+    expect(s_osk_requests == 2, "an unconfigured keyboard asks a person once per field");
+    expect(s_osk_blocking_calls == 0, "the keyboard never waits on the blocking native box");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, n, 1),
            "the answered field is written as UTF-16 and reported CHANGED");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 2u && osk_guest_out_is(1, n, 1),
@@ -4599,7 +4646,7 @@ static void test_osk_scripted_answer(void) {
            "spinning on a non-zero status can leave");
 
     /* A cancelled keyboard also reports QUIT; only the field result differs. */
-    s_osk_native_calls = 0;
+    osk_person_reset();
     s_osk_native_answer = 0;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
@@ -4607,7 +4654,7 @@ static void test_osk_scripted_answer(void) {
     expect(sr_syscall(&cpu, k_init) == 0u, "a second keyboard starts for the cancelled path");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+    expect(osk_poll_past_visible(&cpu) == 3u && osk_poll(&cpu) == 3u,
            "a cancelled keyboard reports QUIT and keeps reporting it until ShutdownStart");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u && osk_guest_out_is(0, old, 3),
            "a cancelled field keeps the initial text and reports CANCELLED");
@@ -4620,7 +4667,7 @@ static void test_osk_scripted_answer(void) {
      * lands as UTF-16, and a CANCEL answer reports CANCELLED. */
     expect(osk_write_script(cancel_lines, 4), "the OSK answer script fixture is written");
     osk_env("SR_OSK_SCRIPT", OSK_SCRIPT_PATH);
-    s_osk_native_calls = 0;
+    osk_person_reset();
     osk_guest_build(2, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
@@ -4629,7 +4676,8 @@ static void test_osk_scripted_answer(void) {
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
            "a scripted keyboard follows the same status sequence as a person's");
-    expect(s_osk_native_calls == 0, "a scripted answer never opens the native input box");
+    expect(s_osk_requests == 0 && s_osk_blocking_calls == 0,
+           "a scripted answer never asks a person");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, play, 4),
            "the first scripted answer is written as UTF-16 and reported CHANGED");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 1u &&
@@ -4662,7 +4710,8 @@ static void test_osk_scripted_answer(void) {
     expect(sr_syscall(&cpu, k_init) == 0u, "a short scripted keyboard starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(s_osk_native_calls == 0, "a short script still never opens the native input box");
+    expect(s_osk_requests == 0 && s_osk_blocking_calls == 0,
+           "a short script still never asks a person");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 1u,
            "a field with no scripted answer is answered CANCELLED rather than left to a person");
     expect(osk_poll(&cpu) == 3u,
@@ -4674,14 +4723,14 @@ static void test_osk_scripted_answer(void) {
     /* SR_OSK_TEXT answers every field with one text. */
     osk_env("SR_OSK_SCRIPT", NULL);
     osk_env("SR_OSK_TEXT", "ACE");
-    s_osk_native_calls = 0;
+    osk_person_reset();
     osk_guest_build(2, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
     expect(sr_syscall(&cpu, k_init) == 0u, "a keyboard with SR_OSK_TEXT starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(s_osk_native_calls == 0 && MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u &&
+    expect(s_osk_requests == 0 && MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u &&
                osk_guest_out_is(0, ace, 3),
            "SR_OSK_TEXT answers every field with the same text");
     memset(&cpu, 0, sizeof(cpu));
@@ -4713,6 +4762,116 @@ static void test_osk_scripted_answer(void) {
     osk_env("SR_OSK_SCRIPT", NULL);
     osk_env("SR_OSK_TEXT", NULL);
     remove(OSK_SCRIPT_PATH);
+}
+
+/* The keyboard is a system overlay on the PSP: the title keeps running underneath it and
+ * polls GetStatus once per frame until the person is done. Here every guest thread is a
+ * coroutine on the one scheduler thread, so the keyboard must answer every poll at once while
+ * the person is still typing; waiting for the person inside GetStatus stopped every guest
+ * thread, vblank and frame until the box was answered (and forever under the offscreen
+ * presenter, where nobody can answer it). */
+static void test_osk_keyboard_keeps_guest_time_running(void) {
+    CpuState cpu;
+    static const uint16_t n[] = { 'N' };
+    int visible_frames = 0;
+    sr_hle_init();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+    osk_person_reset();
+    s_osk_person_typing = 1;
+
+    osk_guest_build(2, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard for a person starts");
+    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u, "the keyboard reports INIT then VISIBLE");
+    for (int frame = 0; frame < 600; frame++)
+        if (osk_poll(&cpu) == 2u) visible_frames++;
+    expect(visible_frames == 600,
+           "while the person is still typing, ten seconds of per-frame GetStatus polls each "
+           "return VISIBLE at once, so the title and its other threads keep running");
+    expect(s_osk_blocking_calls == 0,
+           "the keyboard never waits on the blocking native box from a guest thread");
+    expect(s_osk_requests == 1, "one request is open for the first field, not one per poll");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
+           "an unanswered field is left untouched");
+
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u,
+           "once the person has answered every field the keyboard reports QUIT");
+    expect(s_osk_requests == 2 && s_osk_blocking_calls == 0,
+           "the person is asked for each field in turn, never through the blocking box");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, n, 1) &&
+               MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 2u && osk_guest_out_is(1, n, 1),
+           "every answered field is written as UTF-16 and reported CHANGED");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "the answered keyboard winds down through FINISHED to NONE");
+
+    /* The title shuts the keyboard down before the person answered. */
+    osk_person_reset();
+    s_osk_person_typing = 1;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard the title will close starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && s_osk_abandons == 1 && !s_osk_request_open,
+           "ShutdownStart drops the person's unanswered request");
+    expect(osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "a keyboard closed before it was answered still winds down through FINISHED to NONE");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
+           "a dropped request writes nothing into the field");
+
+    /* A new keyboard replaces one whose request is still open. */
+    osk_person_reset();
+    s_osk_person_typing = 1;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a first keyboard starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && s_osk_abandons == 1,
+           "starting a new keyboard drops the old keyboard's unanswered request");
+    s_osk_person_typing = 0;
+    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u && osk_poll_past_visible(&cpu) == 3u &&
+               s_osk_requests == 2 && osk_guest_out_is(0, n, 1),
+           "the new keyboard asks the person afresh and is answered");
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+
+    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
+     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    osk_person_reset();
+    s_osk_person_typing = 1;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
+    memset(&cpu, 0, sizeof(cpu));
+    for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
+               !s_osk_request_open,
+           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
+           "the replaced keyboard reports WRONG_TYPE");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
+           "the dropped request writes nothing into the field");
+    osk_person_reset();
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -25359,6 +25518,7 @@ int main(int argc, char **argv) {
     test_ge_break_continue();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
+    test_osk_keyboard_keeps_guest_time_running();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
