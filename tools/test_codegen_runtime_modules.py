@@ -27,15 +27,18 @@ import io
 import os
 import re
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import prx_reloc_model
 from analyze import Elf, analyze, exec_ranges, in_ranges
 
-ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
     "platform_ladder_generator_runtime_modules",
     ROOT / "fixtures" / "platform_ladder" / "generate.py",

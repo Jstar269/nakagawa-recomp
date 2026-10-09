@@ -6,7 +6,7 @@
 Position-independent module translation is only correct if the value the model
 predicts for every relocation site at a base is the value the runtime loader
 (src/rt/prx_loader.c) writes there.  These tests build synthetic modules with
-the clean-room loader suite's fixture builder, load each one through the real C
+the loader suite's fixture builder (test_prx_loader_cleanroom), load each one through the real C
 loader at several bases, and compare every loaded segment byte for byte with
 ``RelocationModel.segment_image``.  The refusal cases pin the forms the model
 deliberately declines to express.
@@ -14,7 +14,11 @@ deliberately declines to express.
 
 import random
 import struct
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prx_reloc_model as model
 from test_prx_loader_cleanroom import (
