@@ -2802,9 +2802,9 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0) {
             player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
             const char *disc = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
-                ? app.games[app.selected_game_index].disc_id : "ULUS10041";
+                ? app.games[app.selected_game_index].disc_id : "TEST80001";
             const char *title = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
-                ? app.games[app.selected_game_index].title_name : "Street Supremacy";
+                ? app.games[app.selected_game_index].title_name : "Synthetic Package Fixture";
             package_builder_init_session(&app.build_session, disc, title);
             app.build_session.is_building = true;
             app.build_session.current_stage = PACKAGE_BUILD_STAGE_COMPILE;

@@ -648,9 +648,13 @@ baseline Ruff correctness, large files, secret detection, and the publication au
 ```powershell
 python -m pip install pre-commit
 python -m pre_commit install
-python -m pre_commit install --hook-type pre-push
 python -m pre_commit run --all-files
 ```
+
+`install` sets up both the commit and the push hook (`default_install_hook_types` in
+`.pre-commit-config.yaml`). The publication audit runs at both stages on purpose: the push stage
+audits the index, not each pushed commit, and a pushed branch is public, so only the commit stage
+checks every commit before it can leave the machine.
 
 Invoked as `python -m pre_commit` rather than the bare `pre-commit` console script: pip
 installs that script into a user `Scripts/` directory that is frequently absent from `PATH` on

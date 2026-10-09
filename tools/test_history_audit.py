@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -163,6 +164,77 @@ class TestHistoryAudit(unittest.TestCase):
             report = history_audit.generate_full_history_audit_report(root, reviewed)
             self.assertEqual(report["status"], "FAIL")
             self.assertEqual(report["summary"]["reviewed_findings"], 0)
+
+    def _repo_with_message(self, root, subject, body):
+        run_git(("init", "-q"), cwd=root, check=True, capture_output=True)
+        (root / "safe.txt").write_text("safe\n", encoding="utf-8")
+        run_git(["add", "safe.txt"], cwd=root, check=True)
+        run_git(["commit", "-q", "-m", subject, "-m", body], cwd=root, check=True)
+        return run_git(["rev-parse", "HEAD"], cwd=root, check=True,
+                       capture_output=True, text=True).stdout.strip()
+
+    def test_commit_body_is_scanned_not_only_the_subject(self):
+        """A squash merge copies the PR body into the message; the body reaches history too."""
+        root_literal = "Q:/" + "synthetic-private-root"
+        user_path = "C:" + chr(92) + "Us" + "ers" + chr(92) + "alice" + chr(92) + "notes"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sha = self._repo_with_message(
+                root, "clean subject",
+                f"Landed from {root_literal}/landings/landing.json and {user_path}.")
+            findings = history_audit.audit_history_commit_metadata(
+                root, private_roots=(root_literal.upper(),))
+        codes = sorted((f.code, f.commit, f.path) for f in findings)
+        self.assertEqual(codes, [
+            ("COMMIT_LOG_LOCAL_PATH", sha[:12], "<commit_message>"),
+            ("COMMIT_LOG_PRIVATE_ROOT", sha[:12], "<commit_message>"),
+        ])
+
+    def test_clean_commit_message_has_no_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repo_with_message(root, "clean subject", "A body that names build/ and docs/ only.")
+            self.assertEqual(
+                history_audit.audit_history_commit_metadata(root, private_roots=("Q:/nowhere",)), [])
+
+    def test_canonical_policy_supplies_private_roots(self):
+        roots = history_audit.policy_private_roots(history_audit.ROOT)
+        self.assertTrue(roots, "assets/public_source_profile.json must declare private_roots")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(history_audit.policy_private_roots(Path(tmp)), ())
+
+    def test_reviewed_commit_message_is_reported_but_not_a_finding(self):
+        root_literal = "Q:/" + "synthetic-private-root"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            sha = self._repo_with_message(root, "clean subject", f"see {root_literal}/x")
+            reviewed = Path(tmp) / "reviewed.json"
+            self._write_reviewed(reviewed, [{
+                "commit": sha, "code": "COMMIT_LOG_PRIVATE_ROOT",
+                "path": "<commit_message>", "reason": "synthetic fixture"}])
+            with mock.patch.object(history_audit, "policy_private_roots", return_value=(root_literal,)):
+                report = history_audit.generate_full_history_audit_report(root, reviewed)
+                self.assertEqual(report["status"], "OK", report["findings"])
+                self.assertEqual(report["summary"]["reviewed_findings"], 1)
+                self._write_reviewed(reviewed, [{
+                    "commit": "0" * 40, "code": "COMMIT_LOG_PRIVATE_ROOT",
+                    "path": "<commit_message>", "reason": "a different commit"}])
+                report = history_audit.generate_full_history_audit_report(root, reviewed)
+                self.assertEqual(report["status"], "FAIL")
+
+    def test_reviewed_entry_names_exactly_one_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reviewed = Path(tmp) / "reviewed.json"
+            for entry in (
+                {"code": "X", "path": "p", "reason": "r"},
+                {"blob": "a" * 40, "commit": "b" * 40, "code": "X", "path": "p", "reason": "r"},
+                {"commit": "abc", "code": "X", "path": "p", "reason": "r"},
+            ):
+                with self.subTest(entry=entry):
+                    self._write_reviewed(reviewed, [entry])
+                    with self.assertRaises(ValueError):
+                        history_audit.load_reviewed_findings(reviewed)
 
     def test_malformed_reviewed_file_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

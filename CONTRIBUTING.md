@@ -173,9 +173,13 @@ The repository also provides shared pre-commit hooks:
 ```powershell
 python -m pip install pre-commit
 python -m pre_commit install
-python -m pre_commit install --hook-type pre-push
 python -m pre_commit run --all-files
 ```
+
+`install` sets up both the commit and the push hook (`default_install_hook_types` in
+`.pre-commit-config.yaml`). The publication audit runs at both stages on purpose: the push stage
+audits the index, not each pushed commit, and a pushed branch is public, so only the commit stage
+checks every commit before it can leave the machine.
 
 The external-oracle `make verify` path requires inputs that are intentionally not in the repository.
 When those inputs are unavailable, report the gate as blocked/unavailable rather than treating it as

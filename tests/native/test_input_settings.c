@@ -655,7 +655,7 @@ static void test_per_title_scope_and_atomic_save(void) {
     assert(resolved != NULL);
     assert(resolved->psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_LEFT_STICK);
     assert(resolved->axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner == 5000);
-    resolved = input_settings_resolve_for_disc(&reloaded, "ULUS10041", diag, sizeof(diag));
+    resolved = input_settings_resolve_for_disc(&reloaded, "TEST80001", diag, sizeof(diag));
     assert(resolved == &reloaded.file.global);
 
     /* An interrupted write leaves the previous file intact: the temporary file
