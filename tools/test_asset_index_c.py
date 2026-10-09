@@ -5,6 +5,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -220,6 +221,27 @@ class TestAssetIndexSelftestC(unittest.TestCase):
         self.assertIn("lookup refused before preparation reached a",
                       hle,
                       "a non-terminal observation fails closed with one bounded diagnostic")
+
+
+class TestHleFontSpecTable(unittest.TestCase):
+    """The HLE font table reports project-owned names; its numeric fields are unchanged."""
+
+    ROW = re.compile(r'\[(\d+)\]\s*=\s*\{"([^"]*)",\s*"([^"]*)",\s*([^}]*)\}')
+
+    def test_font_specs_report_project_names_and_unchanged_numbers(self):
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        start = hle.index("static const SrFontSpec s_font_specs[18] = {")
+        table = hle[start:hle.index("};", start)]
+        rows = {int(index): (file_name, font_name, numbers)
+                for index, file_name, font_name, numbers in self.ROW.findall(table)}
+        self.assertEqual(rows, {
+            0: ("nkjpn.pgf", "Nakagawa Open Japanese",
+                "0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f"),
+            9: ("nkltn.pgf", "Nakagawa Open Latin",
+                "0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f"),
+            17: ("nkkr.pgf", "Nakagawa Open Korean",
+                 "0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f"),
+        })
 
 
 if __name__ == "__main__":

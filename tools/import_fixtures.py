@@ -116,6 +116,20 @@ def _elf(
     return out
 
 
+def _module_info_record(module_attributes: int, name: bytes) -> bytes:
+    """A 52-byte SceModuleInfo with a NUL-terminated name and empty tables.
+
+    The name is required: a sectionless input locates its record through
+    phdr[0].p_paddr, and both parsers refuse a record without a printable name.
+    """
+    if not 0 < len(name) < 28:
+        raise ValueError("module name must fit the 28-byte field with its terminator")
+    return (
+        struct.pack("<H", module_attributes) + b"\0\0"
+        + name.ljust(28, b"\0") + b"\0" * 20
+    )
+
+
 def build_import_elf(
     libs: list[tuple[str, list[int]]],
     *,
@@ -163,7 +177,7 @@ def build_import_elf(
         seg.extend(b)
         return BASE_VADDR + off
 
-    modinfo_vaddr = alloc(struct.pack("<H", module_attributes) + b"\0" * 50)
+    modinfo_vaddr = alloc(_module_info_record(module_attributes, b"SynthImports"))
 
     name_vaddrs = []
     for name, _nids in libs:
@@ -305,7 +319,7 @@ def build_interleaved_import_elf(
         seg.extend(b)
         return BASE_VADDR + off
 
-    modinfo_vaddr = alloc(b"\0" * 52)
+    modinfo_vaddr = alloc(_module_info_record(0, b"SynthInterleaved"))
     name_vaddrs = [alloc(name.encode("ascii") + b"\0", 1) for name, _first, _count in windows]
     nid_array = alloc(b"".join(struct.pack("<I", n) for n in nids))
     nid_sec_size = 4 * total
@@ -511,6 +525,8 @@ def build_import_layout_elf(
     detached_gap_slots: int | None = None,
     stub_head_slots: int = 0,
     stub_tail_slots: int = 0,
+    padding_sections: int = 0,
+    duplicate_nid_section: bool = False,
 ) -> tuple[bytes, dict[int, tuple[str, int]]]:
     """Build a sectioned ELF for the retail import-table layouts.
 
@@ -530,7 +546,12 @@ def build_import_layout_elf(
           leave this many unused stub slots (and zero NID words) between
           consecutive detached windows, so they share one pairing offset;
       stub_head_slots / stub_tail_slots -- zero stub slots that no window
-          claims before / after the windows inside a single .sceStub.text.
+          claims before / after the windows inside a single .sceStub.text;
+      padding_sections -- empty named sections appended to the section table,
+          so the header count can exceed 512 (the table is file-bounded);
+      duplicate_nid_section -- a second, empty .rodata.sceNid header after
+          the real one: the first header of a name is the section (as in
+          tools/analyze.py Elf.sec), so the second must be ignored.
 
     Returns (ELF bytes, expected {stub address: (library, NID)}).
     """
@@ -622,6 +643,9 @@ def build_import_layout_elf(
     else:
         extra_sections.append((b".sceStub.text", stub_section, stub_section_end - stub_section))
     extra_sections.append((b".rodata.sceNid", nid_section, nid_section_end - nid_section))
+    if duplicate_nid_section:
+        extra_sections.append((b".rodata.sceNid", BASE_VADDR, 0))
+    extra_sections += [(b".padding", BASE_VADDR, 0)] * padding_sections
     return _elf(bytes(seg), modinfo, extra_sections=extra_sections), expected
 
 

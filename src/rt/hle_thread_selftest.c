@@ -50,6 +50,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "title_config.h"
 #include "nid_names.h"
 #include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
+#include "osk_text_entry.h"     /* the keyboard's text-entry seam, stubbed below */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -4607,24 +4608,61 @@ static void test_volatile_mem_output_preflight(void) {
 
 }
 
-/* ---- sceUtilityOsk. The keyboard is answered by a person through a native Win32 box
- * (src/rt/osk_win.c), which this host test cannot open, and by SR_OSK_SCRIPT / SR_OSK_TEXT
- * for automation. The stub below stands in for the native box and counts how often it was
- * asked, which is what makes "a scripted run never opens it" an observable claim.
+/* ---- sceUtilityOsk. A person answers the keyboard in the native Win32 box
+ * (src/rt/osk_win.c), which blocks its caller until OK or Cancel, and automation answers it
+ * with SR_OSK_SCRIPT / SR_OSK_TEXT. The HLE keyboard must never wait on that box: every guest
+ * thread is a coroutine on the one scheduler thread, so a wait would stop all of them (no
+ * vblank, no frame, no audio) until a person answered, and forever under the offscreen
+ * presenter. It polls the non-blocking text entry (src/rt/osk_text_entry.c) instead. Both are
+ * stubbed below: the blocking box only counts calls (any call from the guest path is the
+ * defect), and the text entry is a person who may still be typing. The counters are what make
+ * "a scripted run never asks a person" and "the keyboard never stops guest time" observable.
  *
  * The status machine under test is the public PSPSDK one: sceUtilityOskGetStatus returns
  * pspUtilityDialogState (psputility.h) NONE=0, INIT=1, VISIBLE=2, QUIT=3, FINISHED=4, and the
  * SDK's OSK sample calls ShutdownStart on QUIT and stops on NONE. QUIT is reported whether
  * the person confirmed or cancelled; the per-field result tells them apart. */
-static int s_osk_native_calls;
-static int s_osk_native_answer = 1;                        /* what the stub "person" pressed */
+static int s_osk_blocking_calls;      /* the guest path waited on the blocking native box */
+static int s_osk_requests;            /* person requests opened, one per field */
+static int s_osk_abandons;            /* open requests the keyboard dropped */
+static int s_osk_request_open;        /* the stub person has an open request */
+static int s_osk_person_typing;       /* 1: the person has not answered the open request yet */
+static int s_osk_native_answer = 1;   /* what the stub person presses: 1 OK, 0 Cancel */
 
 int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
     (void)desc;
     (void)initial;
-    s_osk_native_calls++;
+    s_osk_blocking_calls++;
     if (s_osk_native_answer && out && cap > 1) { out[0] = (wchar_t)L'N'; out[1] = 0; }
     return s_osk_native_answer;
+}
+
+int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
+    (void)desc;
+    (void)initial;
+    if (!s_osk_request_open) {              /* the box opens; nobody has answered it yet */
+        s_osk_request_open = 1;
+        s_osk_requests++;
+        return SR_OSK_TEXT_PENDING;
+    }
+    if (s_osk_person_typing) return SR_OSK_TEXT_PENDING;
+    s_osk_request_open = 0;
+    if (s_osk_native_answer && out && cap > 1) { out[0] = (wchar_t)L'N'; out[1] = 0; }
+    return s_osk_native_answer;
+}
+
+void sr_osk_text_entry_abandon(void) {
+    if (s_osk_request_open) s_osk_abandons++;
+    s_osk_request_open = 0;
+}
+
+static void osk_person_reset(void) {
+    s_osk_blocking_calls = 0;
+    s_osk_requests = 0;
+    s_osk_abandons = 0;
+    s_osk_request_open = 0;
+    s_osk_person_typing = 0;
+    s_osk_native_answer = 1;
 }
 
 #define OSK_PARAM_ADDR  0x09030000u
@@ -4636,6 +4674,8 @@ int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int 
 #define NID_OSK_INIT     0xf6269b82u
 #define NID_OSK_STATUS  0xf3f76017u
 #define NID_OSK_SHUTDOWN 0x3dfaeba9u
+#define OSK_SAVEDATA_PARAM_ADDR 0x09031000u /* a zeroed 0x600-byte savedata parameter block */
+#define NID_SAVEDATA_DIALOG_INIT     0x50c4cd57u
 
 static void osk_guest_write_wstr(uint32_t addr, const wchar_t *text) {
     for (int i = 0; text[i]; i++) MEM_W16(addr + (uint32_t)i * 2u, (uint16_t)text[i]);
@@ -4679,6 +4719,13 @@ static uint32_t osk_poll(CpuState *cpu) {
     return sr_syscall(cpu, NID_OSK_STATUS);
 }
 
+/* Poll as a title does once per frame until the keyboard leaves VISIBLE (bounded). */
+static uint32_t osk_poll_past_visible(CpuState *cpu) {
+    uint32_t status = 2u;
+    for (int frame = 0; frame < 64 && status == 2u; frame++) status = osk_poll(cpu);
+    return status;
+}
+
 static void osk_env(const char *name, const char *value) {
     SetEnvironmentVariableA(name, value);
     _putenv_s(name, value ? value : "");      /* an empty value removes it from the CRT env */
@@ -4707,24 +4754,24 @@ static void test_osk_scripted_answer(void) {
     const char *const cancel_lines[] = { "PLAY", "# a comment", "", "CANCEL" };
     const char *const short_lines[] = { "ACE" };
     sr_hle_init();
-    s_osk_native_calls = 0;
-    s_osk_native_answer = 1;
+    osk_person_reset();
     osk_env("SR_OSK_SCRIPT", NULL);
     osk_env("SR_OSK_TEXT", NULL);
 
-    /* Unconfigured: the keyboard is answered by a person, through the native box, once per
-     * field, and the status machine reports the public sequence and then NONE after
-     * ShutdownStart. Nothing about this path changes when the script variables exist. */
+    /* Unconfigured: the keyboard is answered by a person, once per field, and the status
+     * machine reports the public sequence and then NONE after ShutdownStart. Nothing about
+     * this path changes when the script variables exist. */
     osk_guest_build(2, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
     expect(sr_syscall(&cpu, k_init) == 0u, "sceUtilityOskInitStart accepts an OSK parameter block");
     expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u,
            "GetStatus reports INIT then VISIBLE, one step per poll");
-    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
-           "GetStatus reports QUIT once the text has been collected, and QUIT stands until the "
+    expect(osk_poll_past_visible(&cpu) == 3u && osk_poll(&cpu) == 3u,
+           "GetStatus reports QUIT once every field has its answer, and QUIT stands until the "
            "game calls ShutdownStart, as the SDK's OSK sample expects");
-    expect(s_osk_native_calls == 2, "an unconfigured keyboard opens the native box once per field");
+    expect(s_osk_requests == 2, "an unconfigured keyboard asks a person once per field");
+    expect(s_osk_blocking_calls == 0, "the keyboard never waits on the blocking native box");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, n, 1),
            "the answered field is written as UTF-16 and reported CHANGED");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 2u && osk_guest_out_is(1, n, 1),
@@ -4736,7 +4783,7 @@ static void test_osk_scripted_answer(void) {
            "spinning on a non-zero status can leave");
 
     /* A cancelled keyboard also reports QUIT; only the field result differs. */
-    s_osk_native_calls = 0;
+    osk_person_reset();
     s_osk_native_answer = 0;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
@@ -4744,7 +4791,7 @@ static void test_osk_scripted_answer(void) {
     expect(sr_syscall(&cpu, k_init) == 0u, "a second keyboard starts for the cancelled path");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
+    expect(osk_poll_past_visible(&cpu) == 3u && osk_poll(&cpu) == 3u,
            "a cancelled keyboard reports QUIT and keeps reporting it until ShutdownStart");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u && osk_guest_out_is(0, old, 3),
            "a cancelled field keeps the initial text and reports CANCELLED");
@@ -4757,7 +4804,7 @@ static void test_osk_scripted_answer(void) {
      * lands as UTF-16, and a CANCEL answer reports CANCELLED. */
     expect(osk_write_script(cancel_lines, 4), "the OSK answer script fixture is written");
     osk_env("SR_OSK_SCRIPT", OSK_SCRIPT_PATH);
-    s_osk_native_calls = 0;
+    osk_person_reset();
     osk_guest_build(2, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
@@ -4766,7 +4813,8 @@ static void test_osk_scripted_answer(void) {
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 3u && osk_poll(&cpu) == 3u,
            "a scripted keyboard follows the same status sequence as a person's");
-    expect(s_osk_native_calls == 0, "a scripted answer never opens the native input box");
+    expect(s_osk_requests == 0 && s_osk_blocking_calls == 0,
+           "a scripted answer never asks a person");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, play, 4),
            "the first scripted answer is written as UTF-16 and reported CHANGED");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 1u &&
@@ -4799,7 +4847,8 @@ static void test_osk_scripted_answer(void) {
     expect(sr_syscall(&cpu, k_init) == 0u, "a short scripted keyboard starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(s_osk_native_calls == 0, "a short script still never opens the native input box");
+    expect(s_osk_requests == 0 && s_osk_blocking_calls == 0,
+           "a short script still never asks a person");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 1u,
            "a field with no scripted answer is answered CANCELLED rather than left to a person");
     expect(osk_poll(&cpu) == 3u,
@@ -4811,14 +4860,14 @@ static void test_osk_scripted_answer(void) {
     /* SR_OSK_TEXT answers every field with one text. */
     osk_env("SR_OSK_SCRIPT", NULL);
     osk_env("SR_OSK_TEXT", "ACE");
-    s_osk_native_calls = 0;
+    osk_person_reset();
     osk_guest_build(2, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
     expect(sr_syscall(&cpu, k_init) == 0u, "a keyboard with SR_OSK_TEXT starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
-    expect(s_osk_native_calls == 0 && MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u &&
+    expect(s_osk_requests == 0 && MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u &&
                osk_guest_out_is(0, ace, 3),
            "SR_OSK_TEXT answers every field with the same text");
     memset(&cpu, 0, sizeof(cpu));
@@ -4850,6 +4899,116 @@ static void test_osk_scripted_answer(void) {
     osk_env("SR_OSK_SCRIPT", NULL);
     osk_env("SR_OSK_TEXT", NULL);
     remove(OSK_SCRIPT_PATH);
+}
+
+/* The keyboard is a system overlay on the PSP: the title keeps running underneath it and
+ * polls GetStatus once per frame until the person is done. Here every guest thread is a
+ * coroutine on the one scheduler thread, so the keyboard must answer every poll at once while
+ * the person is still typing; waiting for the person inside GetStatus stopped every guest
+ * thread, vblank and frame until the box was answered (and forever under the offscreen
+ * presenter, where nobody can answer it). */
+static void test_osk_keyboard_keeps_guest_time_running(void) {
+    CpuState cpu;
+    static const uint16_t n[] = { 'N' };
+    int visible_frames = 0;
+    sr_hle_init();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+    osk_person_reset();
+    s_osk_person_typing = 1;
+
+    osk_guest_build(2, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard for a person starts");
+    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u, "the keyboard reports INIT then VISIBLE");
+    for (int frame = 0; frame < 600; frame++)
+        if (osk_poll(&cpu) == 2u) visible_frames++;
+    expect(visible_frames == 600,
+           "while the person is still typing, ten seconds of per-frame GetStatus polls each "
+           "return VISIBLE at once, so the title and its other threads keep running");
+    expect(s_osk_blocking_calls == 0,
+           "the keyboard never waits on the blocking native box from a guest thread");
+    expect(s_osk_requests == 1, "one request is open for the first field, not one per poll");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
+           "an unanswered field is left untouched");
+
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u,
+           "once the person has answered every field the keyboard reports QUIT");
+    expect(s_osk_requests == 2 && s_osk_blocking_calls == 0,
+           "the person is asked for each field in turn, never through the blocking box");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, n, 1) &&
+               MEM_R32(OSK_FIELDS_ADDR + 0x34u + 0x2cu) == 2u && osk_guest_out_is(1, n, 1),
+           "every answered field is written as UTF-16 and reported CHANGED");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "the answered keyboard winds down through FINISHED to NONE");
+
+    /* The title shuts the keyboard down before the person answered. */
+    osk_person_reset();
+    s_osk_person_typing = 1;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard the title will close starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && s_osk_abandons == 1 && !s_osk_request_open,
+           "ShutdownStart drops the person's unanswered request");
+    expect(osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "a keyboard closed before it was answered still winds down through FINISHED to NONE");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
+           "a dropped request writes nothing into the field");
+
+    /* A new keyboard replaces one whose request is still open. */
+    osk_person_reset();
+    s_osk_person_typing = 1;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a first keyboard starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && s_osk_abandons == 1,
+           "starting a new keyboard drops the old keyboard's unanswered request");
+    s_osk_person_typing = 0;
+    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u && osk_poll_past_visible(&cpu) == 3u &&
+               s_osk_requests == 2 && osk_guest_out_is(0, n, 1),
+           "the new keyboard asks the person afresh and is answered");
+    memset(&cpu, 0, sizeof(cpu));
+    (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+
+    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
+     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    osk_person_reset();
+    s_osk_person_typing = 1;
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    (void)osk_poll(&cpu);
+    (void)osk_poll(&cpu);
+    expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
+    memset(&cpu, 0, sizeof(cpu));
+    for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
+               !s_osk_request_open,
+           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
+           "the replaced keyboard reports WRONG_TYPE");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
+           "the dropped request writes nothing into the field");
+    osk_person_reset();
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -23355,6 +23514,162 @@ static void test_route_gates_on_a_guest_event_not_a_signature(void) {
     remove(RT_PATH);
 }
 
+/* WIDTHS and the READS / VBLANKS line modifier: a width may count guest reads (scripted_input.h).
+ * A refusal names the rule it broke, because a width read in the wrong unit presses for the
+ * wrong length with no other sign. Lines that never begin with either word parse as they did. */
+static void rt_expect_refusal(const char *body, const char *named, const char *what) {
+    char err[2048];
+    FILE *capture = NULL;
+    int saved = -1;
+    err[0] = '\0';
+    sr_route_reset();
+    rt_write(body);
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+    expect(capturing, "the route selftest can capture the parser's diagnostics");
+    int rc = sr_route_load(RT_PATH);
+    if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+    expect(rc == 0 && sr_route_status() == RT_FAILED, what);
+    expect(strstr(err, named) != NULL, "the refusal names the rule the line broke");
+}
+
+static void test_route_widths_units_parse_and_name_their_refusals(void) {
+    char hexA[1024], body[4096];
+    rt_hex(hexA, 0x20);
+
+    rt_expect_refusal("WIDTHS FRAMES\nPRESS START 4\nEND\n",
+                      "WIDTHS VBLANKS or WIDTHS READS", "an unknown WIDTHS unit is refused");
+    rt_expect_refusal("WIDTHS\nEND\n",
+                      "WIDTHS VBLANKS or WIDTHS READS", "a WIDTHS with no unit is refused");
+    rt_expect_refusal("WIDTHS READS\nWIDTHS VBLANKS\nEND\n",
+                      "WIDTHS may be given once", "a second WIDTHS is refused, not applied to earlier steps");
+    rt_expect_refusal("PRESS START 4\nWIDTHS READS\nEND\n",
+                      "WIDTHS must precede every step", "WIDTHS after a step is refused");
+    rt_expect_refusal("READS\nEND\n",
+                      "must be followed by PRESS", "a unit word with no step is refused");
+    rt_expect_refusal("VBLANKS # no step on this line\nEND\n",
+                      "must be followed by PRESS", "a unit word followed only by a comment is refused");
+    rt_expect_refusal("READS WAIT_NID sceIoOpen 60\nEND\n",
+                      "apply to PRESS, DELAY, PRESS_UNTIL and PRESS_WHILE", "a unit on a WAIT_NID is refused");
+    rt_expect_refusal("READS SIGGRID 4 4\nEND\n",
+                      "apply to PRESS, DELAY, PRESS_UNTIL and PRESS_WHILE", "a unit on SIGGRID is refused");
+    rt_expect_refusal("READS END\n",
+                      "apply to PRESS, DELAY, PRESS_UNTIL and PRESS_WHILE", "a unit on END is refused");
+    rt_expect_refusal("WIDTHS READS\nPRESS START 0\nEND\n",
+                      "PRESS width must be >= 1", "a zero-read press is refused");
+    rt_expect_refusal("READS PRESS CROSSS 4\nEND\n",
+                      "is not a hex mask or a button name", "a unit does not excuse a mask that means nothing");
+
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "READS PRESS_UNTIL MAIN_MENU START 8 8 1000\nEND\n", hexA);
+    rt_expect_refusal(body, "with READS needs width >= 1, period > width",
+                      "a read-width PRESS_UNTIL whose period does not exceed its width is refused");
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "READS PRESS_WHILE MAIN_MENU START 4 8 0\nEND\n", hexA);
+    rt_expect_refusal(body, "timeout >= 1 vblank",
+                      "a read-width PRESS_WHILE with no timeout is refused");
+
+    /* Accepted forms: a file-wide WIDTHS, a per-line override either way, and the other two
+     * repeating steps. Every one loads and runs, and the narration says which unit it counts. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "WIDTHS READS\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 3\n"
+             "VBLANKS PRESS START 4\n"
+             "READS DELAY 2\n"
+             "READS PRESS_UNTIL MAIN_MENU CROSS 2 5 100\n"
+             "VBLANKS PRESS_WHILE MAIN_MENU CROSS 2 5 100\n"
+             "END\n", hexA);
+    rt_write(body);
+    char err[4096] = "";
+    FILE *capture = NULL;
+    int saved = -1;
+    int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+    int loaded = sr_route_load(RT_PATH);
+    if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+    expect(loaded == 1 && sr_route_status() == RT_RUNNING, "a program mixing both units loads");
+    expect(strstr(err, "step 1 (PRESS) presses CROSS (widths in guest reads)") != NULL,
+           "a PRESS under WIDTHS READS says its width is in guest reads");
+    expect(strstr(err, "step 2 (PRESS) presses START\n") != NULL,
+           "a VBLANKS line is narrated as before, with no unit suffix");
+    expect(strstr(err, "step 4 (PRESS_UNTIL) presses CROSS (widths in guest reads)") != NULL,
+           "a READS PRESS_UNTIL says its width is in guest reads");
+    remove(RT_PATH);
+
+    /* A file with no WIDTHS, and no READS or VBLANKS line, is an ordinary route program: its
+     * narration is unchanged and its widths are vblanks. */
+    sr_route_reset();
+    snprintf(body, sizeof body, "CHECKPOINT MAIN_MENU %s\nWAIT MAIN_MENU 1000\nPRESS START 4\nEND\n", hexA);
+    rt_write(body);
+    err[0] = '\0';
+    capturing = hle_data_stderr_capture_begin(&capture, &saved);
+    loaded = sr_route_load(RT_PATH);
+    if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+    expect(loaded == 1, "a plain route program still loads");
+    expect(strstr(err, "(widths in guest reads)") == NULL, "a plain route program never says reads");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
+/* One guest that reads the pad every vblank counts a read width exactly as it counts a vblank
+ * width, so the same program written either way must press the same buttons on the same
+ * vblanks. The mixed program also pins the mask sequence of a READS PRESS, a READS DELAY and a
+ * VBLANKS PRESS in one file. */
+static void test_route_read_widths_match_vblanks_for_a_guest_that_polls_every_vblank(void) {
+    char hexA[1024], body[4096];
+    uint8_t sigA[576];
+    static const uint32_t expected[10] = {
+        0x4000u, 0x4000u, 0x4000u,            /* PRESS CROSS 3: three reads, three vblanks */
+        0u, 0u,                               /* DELAY 2 in reads: two released reads */
+        0x0008u, 0x0008u, 0x0008u, 0x0008u,   /* VBLANKS PRESS START 4 */
+        0u                                    /* READS DELAY 1 */
+    };
+
+    rt_hex(hexA, 0x20);
+    rt_sig(sigA, 0x20);
+    snprintf(body, sizeof body,
+             "WIDTHS READS\n"
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 3\n"
+             "DELAY 2\n"
+             "VBLANKS PRESS START 4\n"
+             "DELAY 1\n"
+             "END\n", hexA);
+    sr_route_reset();
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the mixed-unit program loads");
+    for (uint32_t v = 0; v < 10; v++) {
+        uint32_t keys = rt_frame(v, v == 0 ? sigA : NULL);
+        expect(keys == expected[v], "each vblank presses what the mixed program says it presses");
+    }
+    expect(rt_frame(10, NULL) == 0u, "the program finishes once its last read-width release is read");
+    expect(sr_route_status() == RT_DONE, "the mixed-unit program completes");
+    remove(RT_PATH);
+
+    /* The same presses written in vblanks: identical output on a guest that reads every frame. */
+    sr_route_reset();
+    snprintf(body, sizeof body,
+             "CHECKPOINT MAIN_MENU %s\n"
+             "WAIT MAIN_MENU 1000\n"
+             "PRESS CROSS 3\n"
+             "DELAY 2\n"
+             "VBLANKS PRESS START 4\n"
+             "DELAY 1\n"
+             "END\n", hexA);
+    rt_write(body);
+    expect(sr_route_load(RT_PATH) == 1, "the all-vblank program loads");
+    for (uint32_t v = 0; v < 10; v++) {
+        uint32_t keys = rt_frame(v, v == 0 ? sigA : NULL);
+        expect(keys == expected[v], "a vblank width presses the same as a read width on a per-frame guest");
+    }
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 
 /* A press mask that names the wrong button cannot fail: the guest receives a bit the
  * screen ignores and the run looks exactly like a game that has frozen, which is how a
@@ -23738,6 +24053,76 @@ static void test_scripted_input_reaches_a_starved_guest(void) {
     ctrl_env("1", "", "", "");
     sr_route_reset();
     ctrl_drain(&cpu);
+}
+
+/* A read width is a count of the guest's own reads, so a press lasts that many reads however
+ * many vblanks a starved host covers between them. The batches below are the schedule the
+ * route-program case above uses: one batch of one vblank, then batches of thirty, with the
+ * guest reading once after each. The control is the same script in vblank widths, whose
+ * four-vblank press is latched inside one batch and handed to a single read. */
+static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) {
+    static const uint32_t batches[6] = { 1u, 30u, 30u, 30u, 30u, 30u };
+    CpuState cpu;
+    uint32_t seen[6];
+
+    /* --- read widths: CROSS for three reads, released for two, CROSS for one ----------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    starve_reset();
+    rt_write("WIDTHS READS\nPRESS CROSS 3\nDELAY 2\nPRESS CROSS 1\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING,
+           "a read-width route program loads");
+    for (int i = 0; i < 6; i++) {
+        starve_batch(batches[i]);
+        seen[i] = starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT;
+    }
+    expect(seen[0] == NK_PSP_BTN_CROSS_BIT && seen[1] == NK_PSP_BTN_CROSS_BIT &&
+           seen[2] == NK_PSP_BTN_CROSS_BIT, "CROSS reaches the starved guest on exactly its three reads");
+    expect(seen[3] == 0u && seen[4] == 0u, "and the release is read on exactly its two reads");
+    expect(seen[5] == NK_PSP_BTN_CROSS_BIT, "the next press starts after those two reads");
+    starve_batch(1u);
+    expect(sr_route_status() == RT_DONE, "the route completes once the last press was read");
+    remove(RT_PATH);
+
+    /* --- the control: the same schedule in vblank widths ---------------------------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    starve_reset();
+    rt_write("PRESS CROSS 3\nDELAY 2\nPRESS CROSS 1\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING,
+           "the vblank-width control route loads");
+    for (int i = 0; i < 6; i++) {
+        starve_batch(batches[i]);
+        seen[i] = starve_guest_read(&cpu) & NK_PSP_BTN_CROSS_BIT;
+    }
+    expect(seen[0] == NK_PSP_BTN_CROSS_BIT && seen[1] == 0u,
+           "a three-vblank press on a starved host reaches the guest in one read and is released");
+    expect(seen[2] == NK_PSP_BTN_CROSS_BIT, "its second press still arrives as a press");
+    remove(RT_PATH);
+
+    /* --- a read width the guest stops reading part-way fails the run, naming its reads ----- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    starve_reset();
+    _putenv("SR_PADSCRIPT_READ_BUDGET=30");
+    rt_write("WIDTHS READS\nPRESS START 3\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a three-read press loads with a 30-vblank read budget");
+    starve_batch(1u);
+    (void)starve_guest_read(&cpu);             /* one of its three reads */
+    {
+        char err[2048] = "";
+        FILE *capture = NULL;
+        int saved = -1;
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        starve_batch(30u);                     /* the budget runs out at vblank 31 */
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(sr_route_status() == RT_FAILED, "a read width that is not completed fails the route");
+        expect(strstr(err, "the guest read the controller only 1 of the 3 reads START was held for") != NULL,
+               "the failure names how many of its reads the guest made");
+    }
+    _putenv("SR_PADSCRIPT_READ_BUDGET=");
+    remove(RT_PATH);
+    sr_route_reset();
 }
 
 /* sceKernelExitGame is `void sceKernelExitGame(void)`:
@@ -25717,6 +26102,7 @@ int main(int argc, char **argv) {
     test_ge_break_continue();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
+    test_osk_keyboard_keeps_guest_time_running();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
@@ -25889,9 +26275,12 @@ int main(int argc, char **argv) {
     test_route_legacy_pad_script_is_unchanged();
     test_route_names_the_buttons_it_presses();
     test_route_gates_on_a_guest_event_not_a_signature();
+    test_route_widths_units_parse_and_name_their_refusals();
+    test_route_read_widths_match_vblanks_for_a_guest_that_polls_every_vblank();
 
     test_route_samples_by_elapsed_vcount_cadence();
     test_scripted_input_reaches_a_starved_guest();
+    test_route_read_widths_hold_for_their_reads_on_a_starved_host();
 
     check_coroutine_lifecycle();
 

@@ -346,7 +346,7 @@ The diagnostic does not skip guest work or change GE execution.
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
 | `SR_PADSTART=N` | Pad override start frame |
 | `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
-| `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800); not a whole number >= 1 refuses the script |
+| `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800; a press whose width is in guest reads may wait for all of them); not a whole number >= 1 refuses the script |
 | `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
 | `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
 | `SR_NOINPUT=1` | Disable the automatic START pulse; live and scripted input still work |
@@ -382,7 +382,8 @@ legacy `SR_PADSCRIPT` table, the route program's `PRESS`, `DELAY`, `PRESS_UNTIL`
 stretches. Each stretch ends only when both of these hold:
 
 - it has been latched for its authored width in controller samples (one sample per serviced
-  vblank);
+  vblank). A width written in guest reads ([below](#widths-in-guest-reads)) replaces this
+  condition with the number of guest reads it asks for;
 - the guest has read the controller (`sceCtrlReadBufferPositive` or
   `sceCtrlPeekBufferPositive`) and been handed a sample of it.
 
@@ -400,17 +401,28 @@ A press the guest does not read within `SR_PADSCRIPT_READ_BUDGET` vblanks (defau
 fails the run with `ROUTE_FAIL` naming the buttons, the step and the vblanks waited. That
 covers a legacy row and a `PRESS` step. A release waits without a budget, because a guest
 that is not polling cannot be pressed. So does a `PRESS_UNTIL` / `PRESS_WHILE` pulse, whose
-step timeout already bounds it.
+step timeout already bounds it. A press whose width is in guest reads
+([below](#widths-in-guest-reads)) has the same budget for the whole wait for its reads.
 `SR_INLOG=1` adds a `ctrl_read: vcount=<n> guest read scripted <mask>` line when the guest
 first reads each scripted state.
 
 ### Scripted keyboard answers
 
 `SR_PADSCRIPT` decides what a person *presses*; `SR_OSK_SCRIPT` decides what they *type*. The
-on-screen keyboard a title opens for a name is otherwise answered by a modal Windows input box,
-which an automated route cannot reach: it has to find that window and type into it, and the
-attempt races the game's own dialog timing. Both variables are off unless set, and neither
-changes how a person plays.
+on-screen keyboard a title opens for a name is otherwise answered by a person in a native
+Windows input box, which an automated route cannot reach: it has to find that window and type
+into it, and the attempt races the game's own dialog timing. Both variables are off unless set,
+and neither changes how a person plays.
+
+The keyboard never stops guest time, scripted or not. On the PSP it is a system overlay: the
+title keeps running underneath it, polling `sceUtilityOskGetStatus` once per frame. Every guest
+thread here runs on the one scheduler thread, so the input box is shown on a worker thread
+(`src/rt/osk_text_entry.c`) and each poll returns at once with `VISIBLE` until the person
+presses OK or Cancel; vblanks, frames, audio and the title's other threads carry on meanwhile.
+Under the offscreen presenter (`SR_VIDEO=offscreen`, headless bring-up) nobody can answer, so
+no window is opened at all: the keyboard stays open while the title keeps running, which is
+what a PSP nobody is typing at does, and stderr says so once. A headless route that has to get
+past a name entry answers it with one of the variables below.
 
 `SR_OSK_SCRIPT=FILE` holds one answer per keyboard field, in the order the keyboard presents
 them. Each line is the text to enter, or the keyword `CANCEL` to answer that field as
@@ -430,14 +442,16 @@ vanishing.
 
 While either variable is set **no native input box is ever opened**. A field the script does
 not cover is answered `CANCELLED` and the shortfall is named on stderr, because an automated
-run that reached an unanswered keyboard would otherwise block on a window nothing is going to
-dismiss. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
+run that reached an unanswered keyboard would otherwise wait at it for a person who is not
+there. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
 played one are read the same way.
 
 A scripted answer follows the same status sequence as a person's. `sceUtilityOskGetStatus`
-returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE`, then `QUIT`
-(whether the text was confirmed or cancelled; each field's result tells them apart) until the
-title calls `sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`.
+returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
+frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
+confirmed or cancelled; each field's result tells them apart) until the title calls
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
+or replaces with a new one, before the person answered closes its input box and writes nothing.
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
@@ -469,6 +483,8 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press the same way while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Release the pad for `n` samples and until the guest has read the release (input cadence *within* one screen) |
 | `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
+| `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL` and `PRESS_WHILE` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
+| `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL` or `PRESS_WHILE` line; overrides `WIDTHS` |
 | `END` | Route complete |
 
 A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
@@ -529,6 +545,55 @@ Two habits keep a program honest. Gate every screen *transition* with `WAIT`, an
 only for input cadence inside one screen — a `DELAY` standing in for a transition is the
 fixed-vblank bet again. And put an `EXPECT` after a press whose effect you care about: `WAIT`
 proves you arrived, `EXPECT` proves the press did what the route claims.
+
+### Widths in guest reads
+
+A press or a release is normally held for its width in vblanks. On a host that falls behind,
+one batch can cover several vblanks before the guest reads the pad again, so a press of four
+vblanks may reach the guest in a single read, and a menu that needs three frames of hold to
+move one step sees it once. A width given in guest reads does not depend on the host's pace:
+the press is held until the guest has read it that many times. `WIDTHS READS` states that for
+the whole file:
+
+```text
+WIDTHS READS
+PRESS DOWN 3          # DOWN until the guest has read it three times
+DELAY 2               # released until the guest has read the release twice
+PRESS DOWN 3
+END
+```
+
+A line may name its own unit with a word in front of the step, so one file can mix the two.
+Each stretch counts in the unit its line names:
+
+```text
+PRESS START 4         # four vblanks, the default for this file
+READS PRESS CROSS 2   # two guest reads
+VBLANKS DELAY 1       # one vblank
+```
+
+Only these rules differ from the vblank widths above:
+
+- A read counts when the guest's controller read (`sceCtrlReadBufferPositive` or
+  `sceCtrlPeekBufferPositive`) hands it a sample latched while that stretch was current. A
+  read that hands over several samples counts once, and a read that comes before the stretch's
+  first sample is latched counts for nothing.
+- A release is counted the same way: a `DELAY` in reads waits for that many reads that observe
+  the release.
+- The release is latched at the next vblank. A guest that reads once per vblank, which is what
+  most titles do, gets exactly the count. A guest that reads twice in one vblank may see the
+  last press in one of its extra reads.
+- `SR_PADSCRIPT_READ_BUDGET` bounds the whole wait for the reads. A read-width press that the
+  guest reads fewer times than it asked for fails the run, naming how many reads it got.
+- The timeouts of `WAIT`, `EXPECT`, `WAIT_NID` and `PRESS_UNTIL` / `PRESS_WHILE` stay in
+  vblanks, because they are time limits. `PRESS_UNTIL` and `PRESS_WHILE` take their width and
+  period in reads when they say `READS`.
+- `WIDTHS` must precede every step and may appear only once. `READS` and `VBLANKS` apply to
+  `PRESS`, `DELAY`, `PRESS_UNTIL` and `PRESS_WHILE` only, and anything else that names a unit is
+  refused at load, naming the line. No existing route starts a line with either word, so an
+  existing route parses and replays exactly as it did.
+- The legacy `frame hexmask width` table has no keyword lines, so it stays in vblanks. Write a
+  route program to use reads.
 
 ### Naming the buttons a route presses
 
