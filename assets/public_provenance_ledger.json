@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "92c6c3e57ac388f3868cf436c61b61710f3f7dc6001f0b603e370e0ef347f6c4"
+      "sha256": "b2e8dd2e4e5c434f07cf0220e09e4de1025890d72f2dbce0df3b3c3a30e91943"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1141,7 +1141,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b4fe1bad322fc1250ab55952d9121999858bfec8f4af9b02f3aec91f130beca"
+      "sha256": "a7b1b68ffd2839daf3227733a5c2d5008094eaf0e490c15ca69ecf8cffb91e32"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -5902,7 +5902,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7c54cc7afd5536dc9a101013e4a86d6c8907e4fe3794c9dbe44dc717ea99386b"
+      "sha256": "75d349fc0d8b56f58402b2745b85bd10b1940dbf0f8e12f35db4dfa73f128b1a"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -5928,7 +5928,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8125b25c56a7be27d64f41e0ef137221df163ec9de86a2900e8fab447538e073"
+      "sha256": "6013054d99cb7dca8a236f7ea2bb0de7bbe5d77046267c361471a1d54e369dbd"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -6544,7 +6544,19 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d1d9fdd10d951ec65ac3e8df08f5c8205625d48506501409b085a1fa888fb58e"
+      "sha256": "e402ed73ade1a32f58a6d972f5fdd8f21a59f6dc4e401067e47c62808c5a09cf"
+    },
+    {
+      "path": "tools/import_stub_census.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "import-stub-census",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "66a9ebb25098a2deec86e34b3d03f89732d25ee693035944febbab9bc88662ce"
     },
     {
       "path": "tools/imports.py",
@@ -6557,7 +6569,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c6b770c6c81f443a38f1d9d6424bc43afab779724ca86e66bad822bea5ed4ac1"
+      "sha256": "a5bca3755dbcd50e3128c3d14580f57ec9d8e085d2b5d8db599c9c41114f3eee"
     },
     {
       "path": "tools/library_sweep.py",
@@ -7498,7 +7510,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "82f28db7c4d1b7fc6a20c162811aa725e0af242a7bce464cddbfa7cd02b29076"
+      "sha256": "fdc0702f783c8a4301da5d9a304472911c0bdd91ef0bad842740620dcb4dc314"
     },
     {
       "path": "tools/test_analyze_tailcall.py",
@@ -7534,7 +7546,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c962e43b3aca7f70ac0f4f0afd20d31d78781b2bb506aa9acdee047c88c1b248"
+      "sha256": "0c5acaf8900d4ee5c4dbc94d0b867ff1d657dabd72283904ca6768d23855ec93"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -8449,6 +8461,18 @@
         "upstream_attribution": null
       },
       "sha256": "727cd288099315bda0a0a0d7cb07db328adc54f202860a6c78ca13cb5277b1ae"
+    },
+    {
+      "path": "tools/test_import_stub_census.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "import-stub-census",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "67292b919e715f9ee1047695f2435ecf31bd58f0c9fcb3ab4b05b979691f315f"
     },
     {
       "path": "tools/test_imports.py",
