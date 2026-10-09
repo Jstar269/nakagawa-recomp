@@ -2488,5 +2488,342 @@ class ToolsModuleImportPathTests(unittest.TestCase):
         )
 
 
+#: Module-level functions that delete the path passed as their first argument.
+_DELETING_FUNCTIONS = frozenset({
+    ("shutil", "rmtree"), ("os", "remove"), ("os", "unlink"), ("os", "rmdir"), ("os", "removedirs"),
+})
+#: Path methods that delete the path they are called on.
+_DELETING_METHODS = frozenset({"unlink", "rmdir"})
+_MAKE_PROGRAMS = frozenset({"make", "mingw32-make", "gmake"})
+_SCRATCH_ROOT_VARIABLES = ("BUILD_ROOT", "LOG_DIR")
+
+
+def _suite_test_files() -> list[Path]:
+    """Every Python test module the suite discovers under tools/ and tests/."""
+    return sorted((ROOT / "tools").glob("test_*.py")) + sorted((ROOT / "tests").rglob("test_*.py"))
+
+
+def _instance_attribute(node: ast.AST) -> str | None:
+    """`self.x` / `cls.x` as `@x`, so instance state is tracked apart from locals."""
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id in ("self", "cls")):
+        return "@" + node.attr
+    return None
+
+
+#: Path methods and properties whose result is still a path at or under the receiver.
+_PATH_DERIVING_ATTRIBUTES = frozenset({
+    "absolute", "expanduser", "glob", "iterdir", "joinpath", "parent", "parents",
+    "resolve", "rglob", "walk", "with_name", "with_stem", "with_suffix",
+})
+#: Callables that turn a path argument into a path (or its string spelling).
+_PATH_CONSTRUCTORS = frozenset({
+    "Path", "PurePath", "PosixPath", "WindowsPath", "str", "fspath",
+    "join", "abspath", "realpath", "normpath", "dirname",
+})
+
+
+def _is_anchored(node: ast.AST, anchored: set[str]) -> bool:
+    """True when ``node`` evaluates to a path derived from an anchored name.
+
+    Only path-preserving operations carry the anchor (`/`, `.parent`, `.resolve()`,
+    `.glob()`, `Path(...)`, `os.path.join(...)`, f-strings, containers), so data
+    read from a checkout file (`json.loads((ROOT / "x.json").read_text())`) does
+    not make everything computed from it look like a checkout path.
+    """
+    attribute = _instance_attribute(node)
+    if attribute is not None:
+        return attribute in anchored
+    if isinstance(node, ast.Name):
+        return node.id in anchored
+    if isinstance(node, ast.Attribute):
+        return node.attr in _PATH_DERIVING_ATTRIBUTES and _is_anchored(node.value, anchored)
+    if isinstance(node, ast.Subscript):
+        return _is_anchored(node.value, anchored)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
+        return _is_anchored(node.left, anchored)
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _PATH_DERIVING_ATTRIBUTES:
+            return _is_anchored(func.value, anchored)
+        name = func.id if isinstance(func, ast.Name) else (
+            func.attr if isinstance(func, ast.Attribute) else None)
+        return name in _PATH_CONSTRUCTORS and any(
+            _is_anchored(argument, anchored) for argument in node.args)
+    if isinstance(node, ast.IfExp):
+        return _is_anchored(node.body, anchored) or _is_anchored(node.orelse, anchored)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return any(_is_anchored(element, anchored) for element in node.elts)
+    if isinstance(node, (ast.Starred, ast.FormattedValue, ast.NamedExpr)):
+        return _is_anchored(node.value, anchored)
+    if isinstance(node, ast.JoinedStr):
+        return any(_is_anchored(value, anchored) for value in node.values)
+    return False
+
+
+def _bound_names(target: ast.AST) -> list[str]:
+    """Names a binding target rebinds; item or attribute stores rebind nothing."""
+    attribute = _instance_attribute(target)
+    if attribute is not None:
+        return [attribute]
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for element in target.elts for name in _bound_names(element)]
+    return []
+
+
+def _assignments(scope: ast.AST) -> list[tuple[list[str], ast.AST]]:
+    """(bound names, value) for every assignment and for-loop binding in ``scope``."""
+    bindings: list[tuple[list[str], ast.AST]] = []
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            targets, value = [node.target], node.iter
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            targets, value = [node.optional_vars], node.context_expr
+        else:
+            continue
+        names = [name for target in targets for name in _bound_names(target)]
+        if names:
+            bindings.append((names, value))
+    return bindings
+
+
+def _propagate(bindings: list[tuple[list[str], ast.AST]], anchored: set[str]) -> set[str]:
+    """Close ``anchored`` over ``bindings``: a name bound from an anchored value is anchored."""
+    anchored = set(anchored)
+    changed = True
+    while changed:
+        changed = False
+        for names, value in bindings:
+            if not set(names) <= anchored and _is_anchored(value, anchored):
+                anchored.update(names)
+                changed = True
+    return anchored
+
+
+def _is_make_program(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return Path(node.value).stem.lower() in _MAKE_PROGRAMS
+    if isinstance(node, ast.Name):
+        return node.id.lower() == "make"
+    return isinstance(node, ast.Attribute) and node.attr.lower() == "make"
+
+
+def _literal_prefix(node: ast.AST) -> str:
+    """The constant text an argv element starts with (an f-string's leading literal)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr) and node.values:
+        first = node.values[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+    return ""
+
+
+def _scan_for_checkout_deletions(source: str, label: str) -> list[str]:
+    """Report deletions and destructive Make goals that could reach the real checkout.
+
+    A path is *checkout-anchored* when it is computed from `__file__` (the usual
+    `ROOT = Path(__file__).resolve().parents[1]`), from a module-level name derived
+    from it (`ROOT`, `TOOLS`, `ROOT / "build"` ...), or from a local or `self`/`cls`
+    attribute bound to such a value. The scan reports:
+
+    * `shutil.rmtree`, `os.remove`/`unlink`/`rmdir`, `Path.unlink`/`rmdir` (called
+      directly or registered with `addCleanup`) on a checkout-anchored path;
+    * a Make command line naming a destructive goal (clean, clean-fixtures,
+      distclean, tidy, clean-all) without scratch `BUILD_ROOT=` and `LOG_DIR=`
+      overrides that are themselves not checkout-anchored;
+    * a Make command line naming a title (`GAME_NAME=`) without a scratch
+      `BUILD_ROOT=` or `BUILD_DIR=`: parsing alone rewrites that title's profile
+      stamps under the checkout's build/ and invalidates the objects there.
+
+    It is deliberately conservative about what it can see (a goal held in a variable
+    is invisible to it); `_run_scratch_make` refuses checkout roots at run time.
+    """
+    tree = ast.parse(source, label)
+    module_level = [node for node in tree.body if not isinstance(
+        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    module_bindings: list[tuple[list[str], ast.AST]] = []
+    for node in module_level:
+        module_bindings.extend(_assignments(node))
+    anchored_module = _propagate(module_bindings, {"__file__"})
+
+    # Attributes a class binds from anchored values in any of its methods. Each
+    # method's locals stay its own; only `self.x` / `cls.x` flow between methods.
+    class_attrs: dict[ast.ClassDef, set[str]] = {}
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        methods = [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        attrs: set[str] = set()
+        while True:
+            found = set(attrs)
+            for method in methods:
+                found |= {name for name in _propagate(_assignments(method), anchored_module | attrs)
+                          if name.startswith("@")}
+            if found == attrs:
+                break
+            attrs = found
+        class_attrs[cls] = attrs
+
+    owner: dict[ast.AST, ast.ClassDef] = {}
+    for cls in class_attrs:
+        for child in ast.walk(cls):
+            owner.setdefault(child, cls)
+
+    findings: list[tuple[int, str]] = []
+
+    def report(node: ast.AST, message: str) -> None:
+        findings.append((node.lineno, message))
+
+    def check_scope(scope: ast.AST, anchored: set[str]) -> None:
+        def is_anchored(expr: ast.AST) -> bool:
+            return _is_anchored(expr, anchored)
+
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Call):
+                func = node.func
+                target = None
+                if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                        and (func.value.id, func.attr) in _DELETING_FUNCTIONS):
+                    target = node.args[0] if node.args else None
+                elif isinstance(func, ast.Name) and func.id == "rmtree":
+                    target = node.args[0] if node.args else None
+                elif isinstance(func, ast.Attribute) and func.attr in _DELETING_METHODS:
+                    target = func.value
+                elif (isinstance(func, ast.Attribute)
+                      and func.attr in ("addCleanup", "addClassCleanup") and node.args):
+                    callback = node.args[0]
+                    if (isinstance(callback, ast.Attribute) and isinstance(callback.value, ast.Name)
+                            and (callback.value.id, callback.attr) in _DELETING_FUNCTIONS) or (
+                            isinstance(callback, ast.Name) and callback.id == "rmtree"):
+                        target = node.args[1] if len(node.args) > 1 else None
+                    elif isinstance(callback, ast.Attribute) and callback.attr in _DELETING_METHODS:
+                        target = callback.value
+                if target is not None and is_anchored(target):
+                    report(node, f"deletes a path inside the repository checkout: "
+                                 f"{ast.unparse(target)}")
+            elif isinstance(node, (ast.List, ast.Tuple)):
+                elements = node.elts
+                if not any(_is_make_program(e) for e in elements):
+                    continue
+                if any(_literal_prefix(e).startswith("GAME_NAME=") for e in elements):
+                    relocations = [e for e in elements if _literal_prefix(e).startswith(
+                        ("BUILD_ROOT=", "BUILD_DIR="))]
+                    if not relocations or any(is_anchored(e) for e in relocations):
+                        report(node, "runs Make for a named title without a scratch BUILD_ROOT= "
+                                     "or BUILD_DIR=; parsing alone rewrites that title's real "
+                                     "build tree and invalidates its objects")
+                goals = sorted({e.value for e in elements if isinstance(e, ast.Constant)
+                                and e.value in DESTRUCTIVE_MAKE_GOALS})
+                if not goals:
+                    continue
+                for variable in _SCRATCH_ROOT_VARIABLES:
+                    overrides = [e for e in elements
+                                 if _literal_prefix(e).startswith(variable + "=")]
+                    if not overrides:
+                        report(node, f"runs destructive Make goal(s) {goals} without a scratch "
+                                     f"{variable}=; use _run_scratch_make")
+                    elif any(is_anchored(e) for e in overrides):
+                        report(node, f"runs destructive Make goal(s) {goals} with {variable} "
+                                     f"inside the repository checkout")
+
+    functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    nested = {child for fn in functions for child in ast.walk(fn) if child is not fn
+              and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for fn in functions:
+        if fn in nested:
+            continue  # scanned with its enclosing function, whose bindings it closes over
+        anchored = set(anchored_module)
+        cls = owner.get(fn)
+        if cls is not None:
+            anchored |= class_attrs[cls]
+        check_scope(fn, _propagate(_assignments(fn), anchored))
+    for node in module_level:
+        check_scope(node, anchored_module)
+    findings.sort(key=lambda finding: finding[0])
+    return [f"{label}:{line}: {message}" for line, message in findings]
+
+
+class CheckoutDeletionGuardTests(unittest.TestCase):
+    """No test may delete from, or run a destructive Make goal against, the real checkout.
+
+    A developer's checkout keeps private title builds and packages under build/ and
+    run logs under logs/. A test that cleans those trees, rather than a scratch copy,
+    destroys them on every suite run; tools/test_build_truth.py once ran `clean-all`
+    against the checkout itself. This scan keeps that class of test from returning.
+    """
+
+    def test_no_test_deletes_from_the_real_checkout(self) -> None:
+        findings: list[str] = []
+        for path in _suite_test_files():
+            findings.extend(_scan_for_checkout_deletions(
+                path.read_text(encoding="utf-8"), path.relative_to(ROOT).as_posix()))
+        self.assertEqual(
+            findings, [],
+            "tests delete from or clean the real repository checkout; point them at a "
+            "scratch tree (tempfile, _run_scratch_make with BUILD_ROOT/LOG_DIR):\n"
+            + "\n".join(findings),
+        )
+
+    def test_scan_reports_each_destructive_shape(self) -> None:
+        source = textwrap.dedent('''
+            import os, shutil, subprocess
+            from pathlib import Path
+            ROOT = Path(__file__).resolve().parents[1]
+            BUILD = ROOT / "build"
+
+            class Case:
+                def setUp(self):
+                    self.logs = ROOT / "logs"
+
+                def test_offenders(self):
+                    subprocess.run([self.make, "--no-print-directory", "clean-all"], cwd=ROOT)
+                    subprocess.run([self.make, "tidy", f"BUILD_ROOT={BUILD}", "LOG_DIR=/x"], cwd=ROOT)
+                    shutil.rmtree(BUILD / "sub")
+                    doomed = ROOT / "build" / "title"
+                    shutil.rmtree(doomed, ignore_errors=True)
+                    (self.logs / "recomp_err.log").unlink()
+                    self.addCleanup(shutil.rmtree, doomed, True)
+                    os.remove(self.logs / "stdout_run.log")
+                    subprocess.run([self.make, "GAME_NAME=hst", "--eval", "v: ; @echo", "v"], cwd=ROOT)
+        ''')
+        findings = _scan_for_checkout_deletions(source, "case.py")
+        self.assertEqual(
+            [int(finding.split(":")[1]) for finding in findings],
+            [12, 12, 13, 14, 16, 17, 18, 19, 20],
+            "\n".join(findings),
+        )
+        self.assertIn("without a scratch BUILD_ROOT=", findings[0])
+        self.assertIn("without a scratch LOG_DIR=", findings[1])
+        self.assertIn("BUILD_ROOT inside the repository checkout", findings[2])
+        self.assertIn("named title without a scratch BUILD_ROOT=", findings[8])
+
+    def test_scan_accepts_scratch_trees_and_read_only_checkout_use(self) -> None:
+        source = textwrap.dedent('''
+            import shutil, subprocess, tempfile
+            from pathlib import Path
+            ROOT = Path(__file__).resolve().parents[1]
+
+            class Case:
+                def test_scratch(self):
+                    scratch = Path(tempfile.mkdtemp())
+                    self.addCleanup(shutil.rmtree, scratch, True)
+                    subprocess.run([self.make, "clean-all", f"BUILD_ROOT={scratch / 'b'}",
+                                    f"LOG_DIR={scratch / 'l'}"], cwd=ROOT)
+                    (scratch / "x.o").unlink()
+                    text = (ROOT / "Makefile").read_text()
+                    targets = ("clean", "clean-all")
+                    subprocess.run([self.make, "help"], cwd=ROOT)
+                    subprocess.run([self.make, "GAME_NAME=hst", f"BUILD_ROOT={scratch}", "v"], cwd=ROOT)
+        ''')
+        self.assertEqual(_scan_for_checkout_deletions(source, "case.py"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
