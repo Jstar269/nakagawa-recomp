@@ -84,6 +84,11 @@ NID_IO_OPEN = 0x109F50BC
 NID_IO_READ = 0x6A638D83
 NID_IO_CLOSE = 0x810C4BC3
 LIB_IOFILEMGR = "IoFileMgrForUser"
+
+# System-library export NIDs every PSP module publishes.
+NID_MODULE_START = 0xD632ACDB
+NID_MODULE_STOP = 0xCEE05613
+NID_MODULE_INFO = 0xF01D73A7
 L5_PAYLOAD_NAME = "platform_ladder_l5.txt"
 L5_PAYLOAD_BYTES = b"Nakagawa platform ladder L5 source-owned payload\n"
 L5_FAIL_SENTINEL = 0xF51D0001
@@ -1792,21 +1797,22 @@ def data_bytes_for(plan: Plan) -> bytes:
         DATA_LIB_STUB_BASE if plan.imports else 0,
         DATA_LIB_STUB_BASE + 20 * len(plan.imports) if plan.imports else 0,
     )
-    # One export entry pointing at the guest entry: the generic PSP way a
-    # module publishes its start address. The analyzer reconstructs exports
-    # from .lib.ent and seeds the address as a high-confidence function start.
-    # Fields: name, version, flags, entLen(words), varCount, funcCount,
-    # funcTable, varTable.
-    struct.pack_into("<I", blob, DATA_LIB_ENT_BASE + 0, DATA_MODULE_INFO_NAME_OFF)
-    struct.pack_into("<H", blob, DATA_LIB_ENT_BASE + 4, 0x0001)   # version
-    struct.pack_into("<H", blob, DATA_LIB_ENT_BASE + 6, 0x0000)   # flags
+    # One system-library export naming module_start at the guest entry: the
+    # generic PSP way a module publishes its start address. The record head is
+    # name (NULL for the system library), version, attribute, length in words,
+    # variable count, function count, entry table; the entry table holds the
+    # NIDs followed by the addresses. The analyzer seeds every exported function
+    # address from it, and the runtime loader reports module_start from it.
+    struct.pack_into("<I", blob, DATA_LIB_ENT_BASE + 0, 0)        # system library: no name
+    struct.pack_into("<H", blob, DATA_LIB_ENT_BASE + 4, 0x0000)   # version
+    struct.pack_into("<H", blob, DATA_LIB_ENT_BASE + 6, 0x8000)   # attribute: system library
     struct.pack_into("<B", blob, DATA_LIB_ENT_BASE + 8, 7)        # entLen words (=28B step)
     struct.pack_into("<B", blob, DATA_LIB_ENT_BASE + 9, 0)        # varCount
     struct.pack_into("<H", blob, DATA_LIB_ENT_BASE + 10, 1)       # funcCount
     struct.pack_into("<I", blob, DATA_LIB_ENT_BASE + 12, DATA_LIB_ENT_FUNC_TABLE)
     struct.pack_into("<I", blob, DATA_LIB_ENT_BASE + 16, DATA_LIB_ENT_FUNC_TABLE + 4)
-    struct.pack_into("<I", blob, DATA_LIB_ENT_FUNC_TABLE, plan.entry_offset)
-    struct.pack_into("<I", blob, DATA_LIB_ENT_FUNC_TABLE + 4, 0)
+    struct.pack_into("<I", blob, DATA_LIB_ENT_FUNC_TABLE, NID_MODULE_START)
+    struct.pack_into("<I", blob, DATA_LIB_ENT_FUNC_TABLE + 4, plan.entry_offset)
     name_cursor = DATA_MODULE_INFO_NAME_OFF
     for lib_index, (library, nids) in enumerate(plan.imports):
         entry = DATA_LIB_STUB_BASE + 20 * lib_index
@@ -1849,11 +1855,10 @@ def plan_relocations(
     # Module entry-table pointers (self-relative within the data segment).
     records.append((MODULE_INFO_ENT_TOP_FIELD, relocation_info(R_MIPS_32, 1, 1)))
     records.append((MODULE_INFO_ENT_END_FIELD, relocation_info(R_MIPS_32, 1, 1)))
-    records.append((DATA_LIB_ENT_BASE + 0, relocation_info(R_MIPS_32, 1, 1)))   # export name
-    records.append((DATA_LIB_ENT_BASE + 12, relocation_info(R_MIPS_32, 1, 1)))  # func table
-    records.append((DATA_LIB_ENT_BASE + 16, relocation_info(R_MIPS_32, 1, 1)))  # var table
-    # The exported function pointer itself targets the text segment.
-    records.append((DATA_LIB_ENT_FUNC_TABLE, relocation_info(R_MIPS_32, 1, 0)))
+    records.append((DATA_LIB_ENT_BASE + 12, relocation_info(R_MIPS_32, 1, 1)))  # entry table
+    records.append((DATA_LIB_ENT_BASE + 16, relocation_info(R_MIPS_32, 1, 1)))  # record tail word
+    # The exported module_start address itself targets the text segment.
+    records.append((DATA_LIB_ENT_FUNC_TABLE + 4, relocation_info(R_MIPS_32, 1, 0)))
     for offset in plan.data_text_pointers:
         records.append((offset, relocation_info(R_MIPS_32, 1, 0)))
     if plan.imports:

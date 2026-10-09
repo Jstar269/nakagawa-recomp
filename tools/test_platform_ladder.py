@@ -12,7 +12,9 @@ paths, exact hooks, or compatibility overrides).
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -40,19 +42,19 @@ SPEC.loader.exec_module(generator)
 
 
 EXPECTED_PRX_SHA256 = {
-    "ladder-zero": "f128b314b8011bc140e63ab03b6146ea75b539cdec1cb280201ad8c84e16f7c1",
-    "ladder-reloc": "2c213989399a14903429ae46bfc6a54496751b6bee6bb949109137fae41acad7",
-    "ladder-gap": "0a404ba7bf22033422cb98ef39118bed6f960ec9a039061091958b918709a663",
-    "ladder-sched": "758971ab4080215d6411f95cf69242658250316c75b1d94a560464bd0e9f51c1",
-    "ladder-fpu": "c32d6cf9d99c0369bc3e7f202b43ec36f806ef96777482992f7e9059782f2d90",
-    "ladder-fs": "7dea7d6f105f0994dd22164a732dd0666a5d912f657f7c2f6b0b638a5a182ae9",
-    "ladder-title2": "4288b0c5c45d469a8064d481f617d9e8a94de3fc097528901e362798f0bcdc17",
-    "ladder-title2-negative": "60b83d898ce64b55b742aa1c9dd638416609d44a0a1c6291a3034f15322896ce",
+    "ladder-zero": "36767dfb9c9f600d2dee63aa53acf2579cd2cbf4e46318a0778322ed782b8318",
+    "ladder-reloc": "7ea700a4af56737e6f6f61dd3c211d402118d3a6db40726395db72d4ba6513a2",
+    "ladder-gap": "f8004a6f62babb4d819337c41fbb9feb0963beb6056413837e6f6bf7866bb55f",
+    "ladder-sched": "00fd299577c9cc11f53c5402e794916c3d659e6a11320327120c34a299247373",
+    "ladder-fpu": "a4bae6e8b8e0f6ce2064fb9ed249dd32f2a00f666fab3300f04e87ee91aaa986",
+    "ladder-fs": "08c03b1b17693e943554be1e3d3a611ce139d87f07bfa734783de1ef95d1e76e",
+    "ladder-title2": "5b993d88991246de5b814469cceb61d83bd5175b16fbafea5916919e3301447e",
+    "ladder-title2-negative": "a35dffbda426acf3e2faa0a366be98bb181cca57c94521d9512ebec73054b219",
 }
 
 # Cross-platform differential: prxload output for ladder-zero is byte-identical
 # between Windows (mingw32 host) and Linux (gcc-13/WSL2) toolchains.
-L0_IMAGE_SHA256 = "9d8ec91be32fc66a959561bcf6ac0e643ffed3c3d055b6e775e88aa5def0bec4"
+L0_IMAGE_SHA256 = "98c138cfa96989cf9ef0093d10014f59b0530f2a70bf58261feb67aa0eb145a9"
 
 
 def _find_make() -> str | None:
@@ -205,17 +207,33 @@ class FixturePinTests(unittest.TestCase):
         self.assertTrue(offsets <= {
             generator.MODULE_INFO_ENT_TOP_FIELD,
             generator.MODULE_INFO_ENT_END_FIELD,
-            generator.DATA_LIB_ENT_BASE,
             generator.DATA_LIB_ENT_BASE + 12,
             generator.DATA_LIB_ENT_BASE + 16,
-            generator.DATA_LIB_ENT_FUNC_TABLE,
+            generator.DATA_LIB_ENT_FUNC_TABLE + 4,
         })
+
+    def test_analyzer_seeds_the_entry_from_the_export_table(self):
+        """The ladder ELF entry field is 0, so its only entry seed is module_start's
+        address in the system-library export entry table (NIDs, then addresses)."""
+        sys.path.insert(0, str(ROOT / "tools"))
+        import analyze
+        for workload in ("ladder-zero", "ladder-fpu"):
+            plan = generator.PLANS[workload]
+            prx, _ = generator.build_prx(plan)
+            self.assertEqual(struct.unpack_from("<I", prx, 24)[0], 0, "ELF entry field is unused")
+            with contextlib.redirect_stdout(io.StringIO()):
+                entries, _ranges = analyze.analyze(analyze.Elf(prx, base=plan.base))
+            self.assertIn(plan.entry, entries,
+                          f"{workload}: exported module_start is not an analyzer entry")
 
     def test_reloc_workload_declares_pointer_table_relocation(self):
         relocs = generator.plan_relocations(generator.PLANS["ladder-reloc"], [])
         offsets = {off for off, _ in relocs}
         self.assertIn(generator.L1_FN_TABLE, offsets)
-        self.assertIn(generator.DATA_LIB_ENT_FUNC_TABLE, offsets)
+        # The export entry table is NIDs then addresses: the relocated word is the
+        # module_start address, never its NID.
+        self.assertIn(generator.DATA_LIB_ENT_FUNC_TABLE + 4, offsets)
+        self.assertNotIn(generator.DATA_LIB_ENT_FUNC_TABLE, offsets)
 
 
 class StructuralNegativeTests(unittest.TestCase):

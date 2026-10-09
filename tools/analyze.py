@@ -2391,32 +2391,32 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
             val = int.from_bytes(blob[o:o + 4], 'little')
             if in_ranges(val, ranges) and (val & 3) == 0:
                 hc.add(val)
-    # Reconstruct exports from .lib.ent
+    # Exported functions from .lib.ent. Each export record is a 16-byte head --
+    # library name, version, attribute, length in words (at least 4), variable
+    # count, function count, entry table -- and the entry table holds the
+    # (functions + variables) NIDs followed by as many addresses, functions
+    # first. Every exported function address (module_start/module_stop and each
+    # library function another module links to) is a real function start, even
+    # when no call or prologue heuristic would find it. Variable exports are
+    # data, never seeds.
     libent = elf.sec(".lib.ent")
     if libent:
         blob = section_bytes(elf, libent)
         idx = 0
-        while idx < len(blob) - 19:
-            name_ptr, ver, flags, size, num_vars, num_funcs, func_table, var_table = struct.unpack(
-                "<IHHBBHII", blob[idx:idx + 20])
-            entry_size_bytes = size * 4
-            if entry_size_bytes < 20:
-                entry_size_bytes = 20
-            if num_funcs > 0 and func_table != 0:
-                for f_idx in range(num_funcs):
-                    fptr_bytes = elf.read_at_vaddr(func_table + f_idx * 4, 4)
-                    if fptr_bytes:
-                        fptr = int.from_bytes(fptr_bytes, 'little')
+        while idx + 16 <= len(blob):
+            _name_ptr, _ver, _flags, size, num_vars, num_funcs, entry_table = struct.unpack(
+                "<IHHBBHI", blob[idx:idx + 16])
+            if size < 4:
+                break  # malformed: a record shorter than its own head ends the table
+            count = num_funcs + num_vars
+            if num_funcs and entry_table:
+                addresses = elf.read_at_vaddr(entry_table + 4 * count, 4 * num_funcs)
+                if addresses is not None and len(addresses) == 4 * num_funcs:
+                    for f_idx in range(num_funcs):
+                        fptr = int.from_bytes(addresses[4 * f_idx:4 * f_idx + 4], 'little')
                         if in_ranges(fptr, ranges) and (fptr & 3) == 0:
                             hc.add(fptr)
-            if num_vars > 0 and var_table != 0:
-                for v_idx in range(num_vars):
-                    vptr_bytes = elf.read_at_vaddr(var_table + v_idx * 4, 4)
-                    if vptr_bytes:
-                        vptr = int.from_bytes(vptr_bytes, 'little')
-                        if in_ranges(vptr, ranges) and (vptr & 3) == 0:
-                            hc.add(vptr)
-            idx += entry_size_bytes
+            idx += size * 4
 
 
     # Reconstruct stubs from .sceStub.text or imports
