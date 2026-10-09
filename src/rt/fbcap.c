@@ -83,7 +83,7 @@ static int cap_ensure_parent_dir(const char *path) {
     while (sep > dir && cap_is_sep(sep[-1])) sep--;  /* "a//file" names directory "a" */
     *sep = '\0';
     n = (size_t)(sep - dir);
-    if (n == 0 || (n == 2 && dir[1] == ':')) return 1;   /* "/file" or "C:/file" */
+    if (n == 0 || (n == 2 && dir[1] == ':')) return 1;   /* a file directly under "/" or a drive root */
     for (char *q = dir + 1; *q; q++) {
         if (!cap_is_sep(*q) || cap_is_sep(q[-1])) continue;
         size_t len = (size_t)(q - dir);
