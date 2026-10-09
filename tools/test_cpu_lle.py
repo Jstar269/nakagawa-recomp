@@ -100,6 +100,108 @@ def _emit_generated_fatal_flow_fixture():
         codegen.LLE_CPU = previous_lle_cpu
 
 
+# LL/SC parity sequences (opcode 0x30/0x38). The same words are emitted as real
+# generated C here and run through the production interpreter by
+# src/rt/cpu_lle_selftest.c, which compares the two lanes and the expected values.
+LLSC_DEFAULT_ENTRY = 0x08810900   # default-lane emission of LLSC_SEQUENCE
+LLSC_LLE_ENTRY = 0x08810980       # --lle-cpu emission of LLSC_SEQUENCE
+LLSC_LLE_MISALIGNED_SC_ENTRY = 0x08810A00
+LLSC_LLE_MISALIGNED_LL_ENTRY = 0x08810A20
+A0, T0, T1, T2, T3, T4 = 4, 8, 9, 10, 11, 12
+
+
+def _ll(base, rt, offset):
+    return (0x30 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+
+def _sc(base, rt, offset):
+    return (0x38 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+
+def _addiu(rt, rs, immediate):
+    return (0x09 << 26) | (rs << 21) | (rt << 16) | (immediate & 0xFFFF)
+
+
+def _beq(rs, rt, offset_words):
+    return (0x04 << 26) | (rs << 21) | (rt << 16) | (offset_words & 0xFFFF)
+
+
+# Mirrored word-for-word by LLSC_SEQUENCE in src/rt/cpu_lle_selftest.c.
+LLSC_SEQUENCE = (
+    _sc(A0, T1, 0),          # 0x00 sc    t1, 0(a0)    link as seeded
+    _ll(A0, T2, 4),          # 0x04 ll    t2, 4(a0)
+    _addiu(T2, T2, 5),       # 0x08 addiu t2, t2, 5
+    _sc(A0, T2, 4),          # 0x0c sc    t2, 4(a0)    linked: stores, t2 = 1
+    _sc(A0, T3, 8),          # 0x10 sc    t3, 8(a0)    link left set: stores again
+    _ll(A0, 0, 12),          # 0x14 ll    zero, 12(a0) links, no register write
+    _ll(A0, T4, 20),         # 0x18 L: ll t4, 20(a0)
+    _addiu(T4, T4, 1),       # 0x1c addiu t4, t4, 1
+    _sc(A0, T4, 20),         # 0x20 sc    t4, 20(a0)
+    _beq(T4, 0, -4),         # 0x24 beq   t4, zero, L  (retry loop)
+    NOP,                     # 0x28
+    _sc(A0, A0, 24),         # 0x2c sc    a0, 24(a0)   rt == base
+    JR_RA,                   # 0x30
+    NOP,                     # 0x34
+)
+
+
+def _emit_llsc_parity_fixture():
+    """Emit the LL/SC sequences in both CPU lanes for the native parity test."""
+    generated = []
+    previous_lle_cpu = codegen.LLE_CPU
+    try:
+        for entry, words, lle in (
+                (LLSC_DEFAULT_ENTRY, LLSC_SEQUENCE, False),
+                (LLSC_LLE_ENTRY, LLSC_SEQUENCE, True),
+                (LLSC_LLE_MISALIGNED_SC_ENTRY, (_sc(A0, T1, 2), JR_RA, NOP), True),
+                (LLSC_LLE_MISALIGNED_LL_ENTRY, (_ll(A0, T1, 1), JR_RA, NOP), True)):
+            codegen.LLE_CPU = lle
+            image = {entry + 4 * i: word for i, word in enumerate(words)}
+            generated.extend(codegen.emit_function(
+                FakeElf(image), entry, [(entry, entry + 4 * len(words))], {entry},
+                lle_cpu=lle))
+    finally:
+        codegen.LLE_CPU = previous_lle_cpu
+    return "\n".join(generated)
+
+
+class LlScLleCodegenTests(unittest.TestCase):
+    """ll/sc under --lle-cpu carry the same width-4 address guard as lw/sw.
+
+    Failing-before evidence: effect() raised Unsupported for opcodes 0x30 and
+    0x38 in both lanes, so no guard (and no translation) existed."""
+
+    def test_ll_guard_runs_before_the_load_and_the_link(self):
+        stmt, saddr, _ = codegen.effect(0x1000, _ll(A0, T1, 8), lle_cpu=True)
+        guard = stmt.index("sr_cpu_guard_access(s, _ea, 4u, 0, 0x00001000u, 0u, 0u)")
+        self.assertLess(guard, stmt.index("MEM_R32(_ea)"))
+        self.assertLess(guard, stmt.index("s->llbit = 1u;"))
+        self.assertIsNone(saddr)
+
+    def test_sc_guard_runs_before_the_link_is_consulted(self):
+        stmt, saddr, _ = codegen.effect(0x1000, _sc(A0, T1, 8), lle_cpu=True)
+        guard = stmt.index("sr_cpu_guard_access(s, _ea, 4u, 1, 0x00001000u, 0u, 0u)")
+        self.assertLess(guard, stmt.index("s->llbit != 0u"))
+        self.assertLess(guard, stmt.index("MEM_W32_PC(_ea,"))
+        self.assertIs(saddr, codegen.SELF_TRACED)
+
+    def test_delay_slot_ll_sc_carry_the_branch_pc(self):
+        for word, is_store in ((_ll(A0, T1, 8), 0), (_sc(A0, T1, 8), 1)):
+            with self.subTest(store=is_store):
+                body = "\n".join(codegen.delay_slot_lines(0x1004, word, 0x1000, lle_cpu=True))
+                self.assertIn(f"sr_cpu_guard_access(s, _ea, 4u, {is_store}, "
+                              "0x00001004u, 0x00001000u, 1u)", body)
+
+    def test_generated_parity_fixture_emits_both_lanes(self):
+        source = _emit_llsc_parity_fixture()
+        self.assertIn(f"void f_{LLSC_DEFAULT_ENTRY:08x}(CpuState *s)", source)
+        self.assertIn(f"void f_{LLSC_LLE_ENTRY:08x}(CpuState *s)", source)
+        self.assertNotIn("sr_unimplemented", source)
+        default = source.split(f"void f_{LLSC_LLE_ENTRY:08x}")[0]
+        self.assertNotIn("sr_cpu_guard_access", default)
+        self.assertEqual(source.count("s->llbit = 1u;"), 2 * 3 + 1)
+
+
 class HleDefaultPreservedTests(unittest.TestCase):
 
     """Default-profile codegen still routes through the HLE path."""
@@ -941,6 +1043,8 @@ if __name__ == "__main__":
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("w", encoding="ascii", newline="\n") as generated_file:
             generated_file.write(_emit_generated_fatal_flow_fixture())
+            generated_file.write("\n")
+            generated_file.write(_emit_llsc_parity_fixture())
             generated_file.write("\n")
     elif len(sys.argv) == 1:
         unittest.main()

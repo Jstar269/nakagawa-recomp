@@ -25,6 +25,14 @@ PLAYER_EXE = Path(
 )
 if not PLAYER_EXE.is_absolute():
     PLAYER_EXE = ROOT / PLAYER_EXE
+# The player accepts a package only for the CpuState ABI it was compiled with, so a
+# synthetic ready package must name that same version (src/rt/recomp.h).
+CPU_STATE_ABI_VERSION = int(
+    re.search(
+        r"#define SR_CPUSTATE_ABI_VERSION (\d+)u",
+        (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8"),
+    ).group(1)
+)
 
 
 def read_bmp(path: Path) -> tuple[int, int, int, bytes]:
@@ -330,7 +338,7 @@ def synthetic_ready_package(
         "format": "nakagawa-build-report",
         "schema_version": 1,
         "title_id": title_id,
-        "runtime_abi": {"name": "CpuState", "version": 2},
+        "runtime_abi": {"name": "CpuState", "version": CPU_STATE_ABI_VERSION},
         "cache": cache,
         "input_hashes": inputs,
         "tools": {},
@@ -354,7 +362,7 @@ def synthetic_ready_package(
         "title_input_identity": identity,
         "runtime": {
             "abi": "CpuState",
-            "abi_version": 2,
+            "abi_version": CPU_STATE_ABI_VERSION,
             "abi_header_sha256": zero_hash,
             "run_entry": "0x00000000",
             "runtime_contract": None,

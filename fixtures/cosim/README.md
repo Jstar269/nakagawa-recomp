@@ -58,8 +58,8 @@ decorative. Scalar FPU adds a separate reference comparison described below.
    byte, so a write outside the log's view still fails.
 4. **State vector** — every compared 32-bit CpuState field (`r0..r31`, `hi`,
    `lo`, `fcr31`, `fpcond`, `f0..f31`, `v0..v127`, `vfpuCtrl0..15`,
-   `cop0[0]..cop0[31]`, `next_pc`, `in_delay_slot`, `flow_kind`, and
-   `flow_target`) as one ordered list, so a report names the first differing
+   `cop0[0]..cop0[31]`, `next_pc`, `in_delay_slot`, `flow_kind`,
+   `flow_target`, and `llbit`) as one ordered list, so a report names the first differing
    field rather than "states differ".
 
 `CpuState.pc` is deliberately **not** in the vector — see below.
@@ -198,6 +198,7 @@ returns through its callee's `jr $ra` instead.
 | `link` / `linkr` | `jal` and `jalr` link semantics with a conventional `$ra`-preserving frame |
 | `jrslot` / `jrtail` | a computed call and a computed tail call whose delay slots rewrite the target register |
 | `hilo` | `HI`/`LO` through signed and unsigned multiply (they differ in the high word only) |
+| `llsc` | `ll`/`sc` and the link bit: an unlinked `sc` fails, a linked one stores and reports 1, `sc` leaves the link set, `ll $zero` links, an atomic-increment retry loop, and `sc` whose `rt` is its own base |
 | `fpu` | scalar FPU over the #120 helper path, re-run under all four FCR31 rounding modes and with FS set |
 | `fpu_aot` | AOT-only instruction inventory checked against the independent scalar-FPU reference |
 | `xcall` / `xtail` | **cross-tier** — a returning call and a tail transfer that each drop into the interpreter mid-run and hand back |

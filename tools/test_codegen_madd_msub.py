@@ -401,5 +401,132 @@ class TestSyncDecoding(unittest.TestCase):
             codegen.effect(0x08804000, encode_special(4, 0, 0, 0x0F))
 
 
+def encode_ll(base, rt, offset):
+    return (0x30 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+
+def encode_sc(base, rt, offset):
+    return (0x38 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+
+class TestLoadLinkedStoreConditional(unittest.TestCase):
+    """`ll` (opcode 0x30) and `sc` (opcode 0x38) per the public MIPS32 contract.
+
+    `ll` loads a word and sets CpuState.llbit. `sc` stores and writes 1 to rt only while
+    llbit is set; otherwise it stores nothing and writes 0. Neither encoding has a reserved
+    field, so every rs/rt/offset form decodes. Before this change both opcodes raised
+    Unsupported and the whole containing function became an sr_unimplemented stub."""
+
+    def test_ll_loads_the_word_and_sets_the_link(self):
+        stmt, saddr, width = codegen.effect(0x08804000, encode_ll(4, 9, 8))
+        self.assertEqual(
+            stmt,
+            "{ uint32_t _ea = s->r[4] + 0x00000008u; s->r[9] = MEM_R32(_ea); s->llbit = 1u; }")
+        self.assertIsNone(saddr)
+        self.assertEqual(width, 0)
+
+    def test_sc_stores_and_reports_only_while_linked(self):
+        stmt, saddr, width = codegen.effect(0x08804000, encode_sc(4, 9, 8))
+        self.assertEqual(
+            stmt,
+            "{ uint32_t _ea = s->r[4] + 0x00000008u; "
+            "uint32_t _sc = s->llbit != 0u ? 1u : 0u; "
+            "if (_sc) { MEM_W32_PC(_ea, s->r[9], 0x08804000u); } s->r[9] = _sc; "
+            "sr_end(s, _ea, _sc ? 4 : 0); }")
+        self.assertIs(saddr, codegen.SELF_TRACED)
+        self.assertEqual(width, 0)
+
+    def test_sc_never_clears_or_sets_the_link(self):
+        # Release 2 operation: sc reads LLbit and leaves it. Only the runtime's
+        # window-ending events (sr_cpu_link_clear) may clear it.
+        stmt, _, _ = codegen.effect(0x08804000, encode_sc(4, 9, 8))
+        self.assertNotIn("s->llbit =", stmt)
+        self.assertNotIn("sr_cpu_link_clear", stmt)
+
+    def test_every_field_form_decodes(self):
+        offsets = {0x0000: "0x00000000u", 0x0004: "0x00000004u", 0x7FFC: "0x00007ffcu",
+                   0x8000: "0xffff8000u", 0xFFFC: "0xfffffffcu"}
+        for base in (0, 1, 4, 29, 31):
+            for rt in (0, 2, 9, 31):
+                for offset, imm in offsets.items():
+                    with self.subTest(base=base, rt=rt, offset=offset):
+                        base_expr = "0u" if base == 0 else f"s->r[{base}]"
+                        ll, _, _ = codegen.effect(0x08804000, encode_ll(base, rt, offset))
+                        self.assertIn(f"uint32_t _ea = {base_expr} + {imm};", ll)
+                        self.assertIn("s->llbit = 1u;", ll)
+                        if rt == 0:
+                            # $zero still links; only the register write is dropped.
+                            self.assertNotIn("s->r[0]", ll)
+                            self.assertIn("(void)_ea;", ll)
+                        else:
+                            self.assertIn(f"s->r[{rt}] = MEM_R32(_ea);", ll)
+                        sc, saddr, _ = codegen.effect(0x08804000, encode_sc(base, rt, offset))
+                        self.assertIs(saddr, codegen.SELF_TRACED)
+                        self.assertIn(f"uint32_t _ea = {base_expr} + {imm};", sc)
+                        value = "0u" if rt == 0 else f"s->r[{rt}]"
+                        self.assertIn(f"MEM_W32_PC(_ea, {value}, 0x08804000u);", sc)
+                        if rt == 0:
+                            self.assertNotIn("s->r[0]", sc)
+                        else:
+                            # The address is latched before rt -- possibly also the
+                            # base -- receives the result.
+                            self.assertLess(sc.index("_ea ="), sc.index(f"s->r[{rt}] = _sc;"))
+                            self.assertLess(sc.index("MEM_W32_PC"), sc.index(f"s->r[{rt}] = _sc;"))
+
+    def test_sc_line_closes_its_own_trace_once(self):
+        line = codegen.normal_line(0x08804000, encode_sc(4, 9, 8))
+        self.assertTrue(line.startswith("    sr_begin(s, 0x08804000u, 0xe0890008u); "))
+        self.assertEqual(line.count("sr_end("), 1)
+        self.assertIn("sr_end(s, _ea, _sc ? 4 : 0);", line)
+        ll_line = codegen.normal_line(0x08804000, encode_ll(4, 9, 8))
+        self.assertTrue(ll_line.endswith("sr_end(s, 0u, 0);"))
+
+    def test_ll_sc_are_not_control_and_run_in_a_delay_slot(self):
+        for word in (encode_ll(4, 9, 0), encode_sc(4, 9, 0)):
+            with self.subTest(word=f"0x{word:08x}"):
+                self.assertFalse(codegen.is_control(word))
+                lines = codegen.delay_slot_lines(0x08804004, word, 0x08804000)
+                self.assertEqual(len(lines), 1)
+                self.assertEqual(lines[0].count("sr_end("), 1)
+
+    def test_default_lane_has_no_lle_guard(self):
+        for word in (encode_ll(4, 9, 2), encode_sc(4, 9, 2)):
+            stmt, _, _ = codegen.effect(0x08804000, word)
+            self.assertNotIn("sr_cpu_guard_access", stmt)
+
+    def test_neighbouring_unmodelled_primaries_stay_fail_closed(self):
+        # MIPS32 PREF (0x33) and the unassigned 0x3B are not modelled. Implementing
+        # ll/sc must not make either decode, in either CPU lane.
+        for op in (0x33, 0x3B):
+            for lle in (False, True):
+                with self.subTest(op=f"0x{op:02x}", lle_cpu=lle):
+                    with self.assertRaises(codegen.Unsupported):
+                        codegen.effect(0x08804000, (op << 26) | (4 << 21) | (9 << 16) | 8,
+                                       lle_cpu=lle)
+
+    def test_static_verify_lattice_matches_the_emission(self):
+        regs = [None] * 32
+        regs[0] = 0
+        for i in range(1, 32):
+            regs[i] = 0x1000 + i
+        written = set()
+        codegen._sv_step(encode_ll(4, 9, 8), regs, written)
+        self.assertIsNone(regs[9])
+        self.assertEqual(written, {9})
+        regs[9] = 0x1009
+        written = set()
+        codegen._sv_step(encode_sc(4, 10, 8), regs, written)
+        self.assertIsNone(regs[10])
+        self.assertEqual(written, {10})
+        # Nothing else moved: before this change sc flushed the whole lattice.
+        for i in range(1, 32):
+            if i != 10:
+                self.assertEqual(regs[i], 0x1000 + i)
+        written = set()
+        codegen._sv_step(encode_sc(4, 0, 8), regs, written)
+        self.assertEqual(written, set())
+        self.assertEqual(regs[0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

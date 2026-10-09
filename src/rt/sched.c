@@ -1488,6 +1488,8 @@ static void deliver_vblank(void) {
 
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    /* Interrupt return: the interrupted ll..sc window, if any, is over. */
+    sr_cpu_link_clear(s_cpu);
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
 
@@ -1679,6 +1681,8 @@ static void scheduler_alarm_deliver(int slot) {
     const uint32_t period = s_cpu->r[2];
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    /* Interrupt return: the interrupted ll..sc window, if any, is over. */
+    sr_cpu_link_clear(s_cpu);
 
     /* The handler may have cancelled this very alarm, and the slot may even have been
      * reused: only the UID says whether the alarm is still the one that was delivered. */
@@ -2538,6 +2542,28 @@ static SrPerfSchedState sched_perf_state(void) {
 
 static uint32_t sched_perf_uid(void) {
     return s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u;
+}
+
+/* Switch thread t in: load its saved registers into the live CpuState. This is the only
+ * place sched_run() resumes a guest thread, so it is where a context switch takes effect.
+ *
+ * A context switch ends the incoming thread's ll..sc window: on the PSP a thread is only
+ * ever switched through an exception (a syscall that blocks or yields, or an interrupt
+ * that preempts), and the exception return clears LLbit (MIPS32 ERET). Clearing here --
+ * rather than when the outgoing thread is saved -- covers every path that parks a thread
+ * (sr_yield, a blocking HLE wait, preemption) without each having to remember it. */
+static void sched_load_thread_context(TCB *t) {
+    memcpy(s_cpu, &t->saved, sizeof(CpuState));
+    /* FRONTIER: r26/k0 is the PSP per-thread kernel-context pointer; libc's _getmodreent
+     * reads it via the recompiled f_0000fe3c. The codegen treats r26 as caller-saved
+     * scratch, so it may end as 0xDEADBEEF or 0 in the saved state. Real PSP thread
+     * bodies don't use r26 as scratch -- it's preserved per-thread. Restore it on every
+     * resume so the libc main-thread check never sees r26=0. */
+    if (t->k0_init) {
+        s_cpu->r[26] = t->k0_init;
+        t->saved.r[26] = t->k0_init;
+    }
+    sr_cpu_link_clear(s_cpu);
 }
 
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
@@ -3941,16 +3967,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         s_cur = idx;
         SCHED_LIVENESS_OWNER(t->uid);
         t->state = TH_RUNNING;
-        memcpy(s_cpu, &t->saved, sizeof(CpuState));   /* load this thread's registers */
-        /* FRONTIER: r26/k0 is the PSP per-thread kernel-context pointer; libc's _getmodreent
-         * reads it via the recompiled f_0000fe3c. The codegen treats r26 as caller-saved
-         * scratch, so it may end as 0xDEADBEEF or 0 in the saved state. Real PSP thread
-         * bodies don't use r26 as scratch -- it's preserved per-thread. Restore it on every
-         * resume so the libc main-thread check never sees r26=0. */
-        if (t->k0_init) {
-            s_cpu->r[26] = t->k0_init;
-            t->saved.r[26] = t->k0_init;
-        }
+        sched_load_thread_context(t);      /* load this thread's registers */
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);          /* a fresh slice for this run (the counter is global) */
         if (!t->started) {
             t->started = 1;

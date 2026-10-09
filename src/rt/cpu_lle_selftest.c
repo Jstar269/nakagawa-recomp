@@ -1875,6 +1875,323 @@ static void test_lle_gate_off_data_access(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "gate-off kernel-segment lw must not set flow");
 }
 
+/* ---- ll / sc (opcode 0x30 / 0x38) ---------------------------------------------------
+ *
+ * The same words run in three ways: the generated C emitted by tools/test_cpu_lle.py
+ * (default lane and --lle-cpu lane), and the production interpreter over the same
+ * bytes at the same guest address (the AOT bodies are never registered, so dispatch
+ * cannot hand the interpreter back to them). Each lane is checked against explicit
+ * expected values, not only against the other lane, so an error both lanes shared
+ * would still fail.
+ *
+ * Failing-before evidence: on the base tree CpuState has no llbit, codegen raises
+ * Unsupported for both opcodes (the fixture would not even contain these bodies), and
+ * the interpreter answers SR_GUEST_INTERP_UNSUPPORTED at the first ll/sc word. */
+
+#define LLSC_DEFAULT_ENTRY 0x08810900u
+#define LLSC_LLE_ENTRY 0x08810980u
+#define LLSC_LLE_MISALIGNED_SC_ENTRY 0x08810A00u
+#define LLSC_LLE_MISALIGNED_LL_ENTRY 0x08810A20u
+#define LLSC_DATA 0x08812000u
+#define LLSC_WORDS 7u
+
+void f_08810900(CpuState *s);
+void f_08810980(CpuState *s);
+void f_08810a00(CpuState *s);
+void f_08810a20(CpuState *s);
+
+static uint32_t enc_ll(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x30u, base, rt, offset);
+}
+static uint32_t enc_sc(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x38u, base, rt, offset);
+}
+
+/* Word-for-word the LLSC_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t LLSC_SEQUENCE[] = {
+    0xE0890000u,   /* 0x00 sc    t1, 0(a0)    link as seeded */
+    0xC08A0004u,   /* 0x04 ll    t2, 4(a0) */
+    0x254A0005u,   /* 0x08 addiu t2, t2, 5 */
+    0xE08A0004u,   /* 0x0c sc    t2, 4(a0)    linked: stores, t2 = 1 */
+    0xE08B0008u,   /* 0x10 sc    t3, 8(a0)    link left set: stores again */
+    0xC080000Cu,   /* 0x14 ll    zero, 12(a0) links, no register write */
+    0xC08C0014u,   /* 0x18 L: ll t4, 20(a0) */
+    0x258C0001u,   /* 0x1c addiu t4, t4, 1 */
+    0xE08C0014u,   /* 0x20 sc    t4, 20(a0) */
+    0x1180FFFCu,   /* 0x24 beq   t4, zero, L */
+    0x00000000u,   /* 0x28 nop */
+    0xE0840018u,   /* 0x2c sc    a0, 24(a0)   rt == base */
+    0x03E00008u,   /* 0x30 jr    ra */
+    0x00000000u,   /* 0x34 nop */
+};
+
+static void llsc_place(uint32_t entry, const uint32_t *words, unsigned count) {
+    for (unsigned i = 0; i < count; i++)
+        MEM_W32_PC(entry + 4u * i, words[i], entry + 4u * i);
+}
+
+static void llsc_seed(CpuState *s, uint32_t llbit) {
+    fresh_state(s);
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        MEM_W32_PC(LLSC_DATA + 4u * i, 0x1000u + 0x111u * i, LLSC_DATA);
+    for (unsigned i = 1; i < 32u; i++)
+        s->r[i] = 0xAAAA0000u | i;
+    s->r[4] = LLSC_DATA;
+    s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
+    s->llbit = llbit;
+}
+
+typedef struct {
+    CpuState state;
+    uint32_t data[LLSC_WORDS];
+} LlscOutcome;
+
+static void llsc_capture(LlscOutcome *out, const CpuState *s) {
+    out->state = *s;
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        out->data[i] = MEM_R32(LLSC_DATA + 4u * i);
+}
+
+static void llsc_check_expected(const LlscOutcome *o, uint32_t seed_llbit, const char *lane) {
+    const CpuState *s = &o->state;
+    if (seed_llbit) {
+        CHECK(s->r[9] == 1u && o->data[0] == 0xAAAA0009u,
+              "%s: sc with the link set must store t1 and report 1 (t1=0x%08x m0=0x%08x)",
+              lane, s->r[9], o->data[0]);
+    } else {
+        CHECK(s->r[9] == 0u && o->data[0] == 0x1000u,
+              "%s: sc with the link clear must store nothing and report 0 "
+              "(t1=0x%08x m0=0x%08x)", lane, s->r[9], o->data[0]);
+    }
+    CHECK(s->r[10] == 1u && o->data[1] == 0x1111u + 5u,
+          "%s: ll/addiu/sc must commit the increment (t2=0x%08x m1=0x%08x)",
+          lane, s->r[10], o->data[1]);
+    CHECK(s->r[11] == 1u && o->data[2] == 0xAAAA000Bu,
+          "%s: sc leaves LLbit set, so a second sc also stores (t3=0x%08x m2=0x%08x)",
+          lane, s->r[11], o->data[2]);
+    CHECK(s->r[0] == 0u, "%s: ll zero must not write r0", lane);
+    CHECK(o->data[3] == 0x1333u, "%s: ll must not write memory (m3=0x%08x)", lane, o->data[3]);
+    CHECK(s->r[12] == 1u && o->data[5] == 0x1555u + 1u,
+          "%s: the retry loop must complete in one pass (t4=0x%08x m5=0x%08x)",
+          lane, s->r[12], o->data[5]);
+    CHECK(o->data[6] == LLSC_DATA && s->r[4] == 1u,
+          "%s: sc a0,24(a0) must store the old base and then report 1 "
+          "(m6=0x%08x a0=0x%08x)", lane, o->data[6], s->r[4]);
+    CHECK(o->data[4] == 0x1444u, "%s: untouched word changed (m4=0x%08x)", lane, o->data[4]);
+    CHECK(s->llbit == 1u, "%s: the link must still be set at the end (llbit=%u)",
+          lane, s->llbit);
+    CHECK(s->flow_kind == SR_FLOW_NONE, "%s: clean ll/sc must not set flow", lane);
+}
+
+static void llsc_compare(const LlscOutcome *aot, const LlscOutcome *interp, const char *what) {
+    for (unsigned i = 0; i < 32u; i++)
+        CHECK(aot->state.r[i] == interp->state.r[i], "%s: r%u AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->state.r[i], interp->state.r[i]);
+    CHECK(aot->state.llbit == interp->state.llbit, "%s: llbit AOT=%u INTERP=%u",
+          what, aot->state.llbit, interp->state.llbit);
+    for (unsigned i = 0; i < 32u; i++)
+        CHECK(aot->state.cop0[i] == interp->state.cop0[i],
+              "%s: cop0[%u] AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->state.cop0[i], interp->state.cop0[i]);
+    CHECK(aot->state.flow_kind == interp->state.flow_kind &&
+          aot->state.flow_target == interp->state.flow_target,
+          "%s: flow AOT=%u/0x%08x INTERP=%u/0x%08x", what,
+          aot->state.flow_kind, aot->state.flow_target,
+          interp->state.flow_kind, interp->state.flow_target);
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        CHECK(aot->data[i] == interp->data[i], "%s: m%u AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->data[i], interp->data[i]);
+}
+
+/* Run one generated body and the interpreter over the same words. */
+static void llsc_run_both(RecompFn body, uint32_t entry, const uint32_t *words,
+                          unsigned count, uint32_t seed_llbit, int lle,
+                          LlscOutcome *aot, LlscOutcome *interp,
+                          SrGuestInterpResult *interp_result, SrGuestInterpFault *fault) {
+    CpuState s;
+    llsc_seed(&s, seed_llbit);
+    sr_cpu_lle_set_enabled(lle);
+    s.pc = entry;
+    body(&s);
+    llsc_capture(aot, &s);
+
+    llsc_seed(&s, seed_llbit);
+    sr_cpu_lle_set_enabled(lle);
+    llsc_place(entry, words, count);
+    s.pc = entry;
+    memset(fault, 0, sizeof *fault);
+    *interp_result = sr_guest_interp_run(&s, entry, fault);
+    llsc_capture(interp, &s);
+    sr_cpu_lle_set_enabled(0);
+}
+
+static void test_llsc_aot_interp_parity(void) {
+    const unsigned count = sizeof LLSC_SEQUENCE / sizeof LLSC_SEQUENCE[0];
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        int lle;
+        const char *lane;
+    } lanes[] = {
+        { f_08810900, LLSC_DEFAULT_ENTRY, 0, "default" },
+        { f_08810980, LLSC_LLE_ENTRY, 1, "lle-cpu" },
+    };
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        for (uint32_t seed = 0; seed <= 1u; seed++) {
+            LlscOutcome aot, interp;
+            SrGuestInterpResult r;
+            SrGuestInterpFault fault;
+            char what[64];
+            snprintf(what, sizeof what, "ll/sc %s lane, seed llbit %u", lanes[l].lane, seed);
+            llsc_run_both(lanes[l].body, lanes[l].entry, LLSC_SEQUENCE, count, seed,
+                          lanes[l].lle, &aot, &interp, &r, &fault);
+            CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+                  "%s: interpreter must run to the jr $ra and stop there (got %s at 0x%08x)",
+                  what, sr_guest_interp_result_name(r), fault.pc);
+            llsc_check_expected(&aot, seed, what);
+            llsc_check_expected(&interp, seed, what);
+            llsc_compare(&aot, &interp, what);
+        }
+    }
+}
+
+/* Under --lle-cpu a misaligned ll/sc is an address error before the link is consulted:
+ * nothing is loaded or stored, rt and LLbit are untouched (architectural MIPS32 order;
+ * not separately measured on the PSP for ll/sc). Both lanes must agree on EPC/Cause/
+ * BadVAddr as well. */
+static void test_llsc_lle_misaligned(void) {
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        uint32_t word;
+        unsigned code;
+        uint32_t ea;
+        const char *what;
+    } cases[] = {
+        { f_08810a00, LLSC_LLE_MISALIGNED_SC_ENTRY, 0xE0890002u, SR_EXC_ADES,
+          LLSC_DATA + 2u, "misaligned sc" },
+        { f_08810a20, LLSC_LLE_MISALIGNED_LL_ENTRY, 0xC0890001u, SR_EXC_ADEL,
+          LLSC_DATA + 1u, "misaligned ll" },
+    };
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        const uint32_t words[3] = { cases[c].word, 0x03E00008u, 0x00000000u };
+        LlscOutcome aot, interp;
+        SrGuestInterpResult r;
+        SrGuestInterpFault fault;
+        CHECK(cases[c].word == (cases[c].code == SR_EXC_ADES ? enc_sc(4u, 9u, 2u)
+                                                              : enc_ll(4u, 9u, 1u)),
+              "%s: fixture word drifted from its encoding", cases[c].what);
+        llsc_run_both(cases[c].body, cases[c].entry, words, 3u, 1u, 1, &aot, &interp,
+                      &r, &fault);
+        CHECK(r == SR_GUEST_INTERP_EXCEPTION, "%s: interpreter must raise (got %s)",
+              cases[c].what, sr_guest_interp_result_name(r));
+        for (int lane = 0; lane < 2; lane++) {
+            const LlscOutcome *o = lane == 0 ? &aot : &interp;
+            const char *name = lane == 0 ? "AOT" : "INTERP";
+            CHECK(CAUSE_EXCCODE(o->state.cop0[SR_CP0_CAUSE]) == cases[c].code,
+                  "%s %s: ExcCode=%u", cases[c].what, name,
+                  CAUSE_EXCCODE(o->state.cop0[SR_CP0_CAUSE]));
+            CHECK(o->state.cop0[SR_CP0_EPC] == cases[c].entry,
+                  "%s %s: EPC=0x%08x", cases[c].what, name, o->state.cop0[SR_CP0_EPC]);
+            CHECK(o->state.cop0[SR_CP0_BADVADDR] == cases[c].ea,
+                  "%s %s: BadVAddr=0x%08x", cases[c].what, name,
+                  o->state.cop0[SR_CP0_BADVADDR]);
+            CHECK(o->state.r[9] == 0xAAAA0009u, "%s %s: rt changed", cases[c].what, name);
+            CHECK(o->state.llbit == 1u, "%s %s: an address error must not touch LLbit",
+                  cases[c].what, name);
+            CHECK(o->data[0] == 0x1000u, "%s %s: memory changed", cases[c].what, name);
+            CHECK(o->state.flow_kind == SR_FLOW_EXCEPTION && o->state.pc == TEST_VECTOR,
+                  "%s %s: must transfer to the vector", cases[c].what, name);
+        }
+        llsc_compare(&aot, &interp, cases[c].what);
+    }
+}
+
+/* Interpreter-only field forms and the default lane's fail-closed alignment. */
+static void test_llsc_interpreter(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    /* sc with rt = $zero still stores while linked; only the result is dropped. */
+    llsc_seed(&s, 1u);
+    MEM_W32_PC(TEST_BASE + 0u, enc_sc(4u, 0u, 4u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY, "sc zero: got %s",
+          sr_guest_interp_result_name(r));
+    CHECK(MEM_R32(LLSC_DATA + 4u) == 0u && s.r[0] == 0u,
+          "sc zero must store 0 and leave r0 zero (m1=0x%08x)", MEM_R32(LLSC_DATA + 4u));
+
+    /* Default lane: a misaligned ll/sc keeps the historical fail-closed abort, before
+     * any architectural effect -- the link included. */
+    for (int store = 0; store <= 1; store++) {
+        llsc_seed(&s, store ? 1u : 0u);
+        MEM_W32_PC(TEST_BASE + 0u, store ? enc_sc(4u, 9u, 2u) : enc_ll(4u, 9u, 2u), TEST_BASE);
+        s.pc = TEST_BASE;
+        r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+        CHECK(r == SR_GUEST_INTERP_MISALIGNED_DATA,
+              "gate-off misaligned %s must stay MISALIGNED_DATA (got %s)",
+              store ? "sc" : "ll", sr_guest_interp_result_name(r));
+        CHECK(s.r[9] == 0xAAAA0009u && s.llbit == (store ? 1u : 0u),
+              "gate-off misaligned %s must not touch rt or LLbit", store ? "sc" : "ll");
+        CHECK(MEM_R32(LLSC_DATA) == 0x1000u, "gate-off misaligned sc must not store");
+    }
+
+    /* An ll..sc window with an eret between them: the eret clears the link, so the
+     * sc after it fails (MIPS32 ERET semantics), in the interpreter's eret path. */
+    llsc_seed(&s, 0u);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0x00u, enc_ll(4u, 9u, 0u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 0x04u, SR_OPCODE_ERET, TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 0x10u, enc_sc(4u, 9u, 0u), TEST_BASE + 0x10u);
+    MEM_W32_PC(TEST_BASE + 0x14u, 0x03E00008u, TEST_BASE + 0x14u);
+    MEM_W32_PC(TEST_BASE + 0x18u, 0x00000000u, TEST_BASE + 0x18u);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_ERET, "ll; eret must report ERET (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.llbit == 0u, "eret must clear the link set by ll (llbit=%u)", s.llbit);
+    r = sr_guest_interp_run(&s, s.pc, &fault);
+    CHECK(s.r[9] == 0u && MEM_R32(LLSC_DATA) == 0x1000u,
+          "sc after eret must fail and store nothing (t1=0x%08x m0=0x%08x)",
+          s.r[9], MEM_R32(LLSC_DATA));
+    sr_cpu_lle_set_enabled(0);
+    (void)r;
+}
+
+/* sr_cpu_eret is the one helper both CPU lanes call for an exception return. */
+static void test_eret_clears_link(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.llbit = 1u;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0 && s.flow_kind == SR_FLOW_ERET,
+          "eret must return");
+    CHECK(s.llbit == 0u, "eret must clear LLbit");
+
+    /* A user-mode eret is a coprocessor-unusable trap, not a return: link kept. */
+    fresh_state(&s);
+    s.llbit = 1u;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0 && s.flow_kind == SR_FLOW_EXCEPTION,
+          "user eret must trap");
+    CHECK(s.llbit == 1u, "a trapping eret is not a return and must keep LLbit");
+
+    /* Exception entry is not a return either (MIPS32 clears LLbit on ERET only). */
+    fresh_state(&s);
+    s.llbit = 1u;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "raise must transfer");
+    CHECK(s.llbit == 1u, "exception entry must keep LLbit for the handler's eret to clear");
+}
+
 int main(int argc, char **argv) {
     sr_mem_init();
     setup_spans();
@@ -1915,6 +2232,10 @@ int main(int argc, char **argv) {
     test_cop0_traps();
     test_interp_lane();
     test_config();
+    test_eret_clears_link();
+    test_llsc_interpreter();
+    test_llsc_aot_interp_parity();
+    test_llsc_lle_misaligned();
     sr_cpu_lle_reset_config();
     if (g_failed) {
         fprintf(stderr, "cpu-lle selftest: FAILED\n");

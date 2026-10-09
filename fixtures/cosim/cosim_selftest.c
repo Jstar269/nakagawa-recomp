@@ -194,7 +194,7 @@ static void trace_load(CosimTrace *trace, const char *path) {
  * separately, per lane, against its documented value.
  */
 
-#define COSIM_FIELD_COUNT (32 + 2 + 2 + 32 + 128 + 16 + 32 + 4)
+#define COSIM_FIELD_COUNT (32 + 2 + 2 + 32 + 128 + 16 + 32 + 5)
 
 typedef struct {
     char name[12];
@@ -249,6 +249,7 @@ static void vector_build(CosimVector *vector, const CpuState *s) {
     vector_push(vector, "delayslot", s->in_delay_slot);
     vector_push(vector, "flow_kind", s->flow_kind);
     vector_push(vector, "flow_target", s->flow_target);
+    vector_push(vector, "llbit", s->llbit);
 }
 
 /* ---- lane execution ------------------------------------------------------------- */
@@ -426,6 +427,7 @@ static void seed_state(CpuState *s, const CosimCase *test) {
     s->in_delay_slot = 0u;
     s->flow_kind = 0u;
     s->flow_target = 0u;
+    s->llbit = 0u;   /* no ll..sc window is open at a cell's entry */
 }
 
 static void seed_window(void) {
