@@ -127,6 +127,49 @@ jobs:
         shell: bash
         run: python tools/betterleaks_canary.py --betterleaks "$BETTERLEAKS_BIN"
 
+  markdown:
+    name: Markdown validation
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.21.0"
+
+      - name: Lint repository Markdown
+        run: npx --yes markdownlint-cli2@0.23.3
+
+  # Public-export candidate audit (#293/#294), in its own job so it overlaps the all-files
+  # hygiene checks instead of running after them (#735 item 5). It is a separate required
+  # result: ci_required fails unless it succeeds, and every gate that waited for hygiene
+  # also waits for it. The job runs on every event and gates no path, because publication
+  # integrity must never be path-dependent (tools/test_ci_paths.py).
+  public_export:
+    name: Public export candidate audit
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
       # #293/#294: represent the release-export candidate path in hosted CI.
       # One invocation runs the publication gates, generates the public-safe
       # candidate, and runs the exhaustive candidate-tree audit against the
@@ -159,30 +202,10 @@ jobs:
             exit 1
           fi
 
-  markdown:
-    name: Markdown validation
-    runs-on: ubuntu-24.04
-    needs: classify
-    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.21.0"
-
-      - name: Lint repository Markdown
-        run: npx --yes markdownlint-cli2@0.23.3
-
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     # The suite is ~10 minutes serially. Four runners split the test files with
     # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
     # measured per-module durations in tools/ci_test_weights.json (#693). Every
@@ -200,6 +223,7 @@ jobs:
         shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_python == 'true' }}
     timeout-minutes: 20
@@ -252,9 +276,10 @@ jobs:
   native_tools:
     name: Native and translation gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
     timeout-minutes: 45
@@ -588,9 +613,10 @@ jobs:
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run
     # is then merely redundant, which costs nothing on a public repository.
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
     # The gates are split into parallel matrix parts of comparable length (#694),
@@ -907,9 +933,10 @@ jobs:
   main_smoke:
     name: Main integration smoke
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.run_main_smoke == 'true' }}
     timeout-minutes: 10
     steps:
@@ -935,12 +962,13 @@ jobs:
   ci_required:
     name: CI required
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, markdown, python_tools, native_tools, windows_runtime, main_smoke]
+    needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]
     if: ${{ always() }}
     timeout-minutes: 5
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
       HYGIENE_RESULT: ${{ needs.hygiene.result }}
+      PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}
       MARKDOWN_RESULT: ${{ needs.markdown.result }}
       PYTHON_RESULT: ${{ needs.python_tools.result }}
       NATIVE_RESULT: ${{ needs.native_tools.result }}
