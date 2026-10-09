@@ -21,18 +21,24 @@ uint32_t h_PowerIsPowerOnline(CpuState *s) { (void)s; return 1; }
  * src/power/psppower.h (scePowerSetClockFrequency) and PPSSPP
  * Core/HLE/scePower.cpp, where the Set calls update the frequencies the Get
  * calls report. The getters below previously returned fixed 333/166; they now
- * reflect the last accepted Set request. Frequency validation, the PLL
- * parameter, and any 350 MHz ceiling difference between the two Set variants
- * are UNMEASURED here: every request is retained verbatim and reported back. */
-static uint32_t s_cpu_freq = 333u, s_bus_freq = 166u;
+ * reflect the last accepted Set request. Frequency validation and any 350 MHz
+ * ceiling difference between the two Set variants are UNMEASURED here: every
+ * request is retained verbatim and reported back.
+ *
+ * PLL: the PSPSDK header documents pllfreq as valid from 19 to 333 MHz, with
+ * cpufreq <= pllfreq and busfreq * 2 <= pllfreq. It documents no power-on value
+ * for the PLL. The 333 MHz default here is a project choice that matches the CPU
+ * default above (UNMEASURED on hardware). */
+static uint32_t s_pll_freq = 333u, s_cpu_freq = 333u, s_bus_freq = 166u;
 
+uint32_t h_PowerGetPllClockFrequencyInt(CpuState *s) { (void)s; return s_pll_freq; }
 uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s) { (void)s; return s_cpu_freq; }
 uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s) { (void)s; return s_bus_freq; }
 
 /* scePowerSetClockFrequency(pllfreq, cpufreq, busfreq): retain the requested
- * CPU/bus clocks. Same public references as the retained state above. */
+ * PLL, CPU and bus clocks. Same public references as the retained state above. */
 uint32_t h_PowerSetClockFrequency(CpuState *s) {
-    (void)A0;
+    s_pll_freq = A0;
     s_cpu_freq = A1;
     s_bus_freq = A2;
     return 0;
@@ -42,7 +48,7 @@ uint32_t h_PowerSetClockFrequency(CpuState *s) {
  * retained state. Whether firmware 350 permits a distinct PLL ceiling is
  * UNMEASURED here. */
 uint32_t h_PowerSetClockFrequency350(CpuState *s) {
-    (void)A0;
+    s_pll_freq = A0;
     s_cpu_freq = A1;
     s_bus_freq = A2;
     return 0;
@@ -51,7 +57,7 @@ uint32_t h_PowerSetClockFrequency350(CpuState *s) {
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only reset so the executable harness can isolate the retained
  * clock fixtures from one another. Adds no production behaviour. */
-void sr_hle_test_power_reset(void) { s_cpu_freq = 333u; s_bus_freq = 166u; }
+void sr_hle_test_power_reset(void) { s_pll_freq = 333u; s_cpu_freq = 333u; s_bus_freq = 166u; }
 #endif
 
 static uint32_t s_power_cb_slots[16];

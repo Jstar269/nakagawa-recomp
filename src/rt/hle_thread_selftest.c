@@ -325,6 +325,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_KERNEL_RELEASE_SUBINTR 0xd61e6961u
 #define NID_SCE_POWER_SET_CLOCK 0x737486f2u
 #define NID_SCE_POWER_SET_CLOCK_350 0xebd177d6u
+#define NID_SCE_POWER_GET_PLL_INT 0x34f9c463u
 #define NID_SCE_POWER_GET_CPU_INT 0xfdb5bfe9u
 #define NID_SCE_POWER_GET_BUS_INT 0x478fe6f5u
 #define NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD 0x3ad58b8cu
@@ -11143,22 +11144,29 @@ static void test_td24b_cheap_hle_batch(void) {
            "CPU clock reads the 333 MHz default");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u,
            "bus clock reads the 166 MHz default");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
+           "PLL clock reads the 333 MHz default (project choice; PSPSDK documents no default)");
     expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK, 222u, 111u, 55u, 0u) == 0u,
            "scePowerSetClockFrequency answers success");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 111u,
            "CPU clock reflects the last Set request, not the old fixed value");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 55u,
            "bus clock reflects the last Set request, not the old fixed value");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 222u,
+           "PLL clock reflects the last Set request's pllfreq");
     expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK_350, 333u, 300u, 150u, 0u) == 0u,
            "scePowerSetClockFrequency350 answers success");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 300u,
            "CPU clock reflects the 350-variant Set request through shared state");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 150u,
            "bus clock reflects the 350-variant Set request through shared state");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
+           "PLL clock reflects the 350-variant Set request's pllfreq (333, not the earlier 222)");
     sr_hle_test_power_reset();
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 333u &&
-               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u,
-           "the power reset restores the 333/166 defaults for later fixtures");
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
+           "the power reset restores the 333 PLL / 333 CPU / 166 bus defaults for later fixtures");
 
     /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
     reset_fixture();

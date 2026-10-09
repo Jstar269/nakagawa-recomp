@@ -21822,6 +21822,7 @@ static void hle_register_exit_game_handler(void) {
  * unregistered); the float-return shaping for the non-Int getters remains
  * tracked by #86. */
 static void hle_register_power_clock_handlers(void) {
+    sr_hle_register(0x34f9c463, "scePowerGetPllClockFrequencyInt", h_PowerGetPllClockFrequencyInt);
     sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
     sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
