@@ -133,6 +133,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
+| `prx_reloc_model.py` | Model every PSP module relocation as a function of the load base, for position-independent module translation. |
 | `host_stubs.py` | Semantic name overrides for known guest functions, imported by the generator. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
@@ -314,6 +315,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_no_shadow_stubs.py` | Guard the removal of two code-shadowing custom stubs. |
 | `test_codegen_profile_isolation.py` | A profile-free run must inherit no title-specific behavior. |
 | `test_codegen_retail_allocator.py` | Retail allocator APIs must bridge to the host allocator. |
+| `test_codegen_runtime_modules.py` | Position-independent translation contract of runtime-placed guest modules. |
 | `test_codegen_static_verify.py` | Static verification of the generator's constant-propagation state machine. |
 | `test_codegen_transfer_target_timing.py` | A computed transfer must read its target register at the transfer. |
 | `test_codegen_vfpu_fallback.py` | VFPU fallback emission, including unsupported forms failing closed. |
@@ -358,6 +360,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_native_host_backends.py` | Run the host-backend native tests from the Python gate. |
 | `test_platform_ladder.py` | Regressions for the source-owned second-platform workload ladder. |
 | `test_prx_loader_cleanroom.py` | Clean-room black-box tests for the PRX loader. |
+| `test_prx_reloc_model.py` | Pins the relocation model to the runtime PRX loader byte for byte at several bases. |
 | `test_ref_run_elf_hardening.py` | Malformed-input regression tests for the standalone reference ELF runner. |
 | `test_savedata_security.py` | Production-path regressions for the bounded savedata security successor. |
 | `test_savedata_spans.py` | Guest span validation, preflight ordering and portable contained-delete seams. |
