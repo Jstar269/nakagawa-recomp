@@ -406,6 +406,24 @@ step timeout already bounds it. A press whose width is in guest reads
 `SR_INLOG=1` adds a `ctrl_read: vcount=<n> guest read scripted <mask>` line when the guest
 first reads each scripted state.
 
+### The keyboard in the game window
+
+On the SDL3/Vulkan presenter (the default window) the keyboard a title opens is drawn in the
+game window (`src/rt/osk_overlay.c` for the state, `src/rt/osk_overlay_paint.c` for the
+drawing), and a person answers it with the pad or the keyboard: the d-pad or arrow keys move,
+Cross or Enter types the highlighted key, Circle or Esc cancels, Start or Tab confirms, and
+L/R switch letter case. A physical keyboard also types directly, and Backspace deletes. The
+field's maximum length and its inputtype (`SceUtilityOskData` at +0x10, PSPSDK layout) limit
+what it accepts. While it is open the title's pad reads nothing, and guest time keeps running.
+
+A route answers the in-window keyboard with ordinary `PRESS` steps. The keyboard reads every
+controller sample while it is open, as the system keyboard polls the pad on a PSP, so a press
+it takes counts as read by the route. `SR_OSK_TEXT` and `SR_OSK_SCRIPT` are not needed for it.
+`SR_WINDOW_HIDDEN=1` runs the same presenter with a hidden window, so a headless route keeps the
+window's keyboard and its frame capture without a visible window. Under the offscreen presenter
+the overlay is not drawn, and the variables below still answer. Where the presenter cannot draw
+the keyboard, the native input box is the fallback.
+
 ### Scripted keyboard answers
 
 `SR_PADSCRIPT` decides what a person *presses*; `SR_OSK_SCRIPT` decides what they *type*. The
