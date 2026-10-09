@@ -1007,8 +1007,8 @@ try {
             if (-not $detail) {
                 $detail = "manifest encoder could not resolve the declared roots."
             }
-            if ($detail -notmatch "Loose-content root binding #289") {
-                $detail = "Loose-content root binding #289 (in the works): $detail"
+            if ($detail -notmatch "Loose-content root binding") {
+                $detail = "Loose-content root binding: $detail"
             }
             throw $detail
         }
@@ -1021,10 +1021,10 @@ try {
                 ConvertFrom-Json -InputObject $encodedJson -ErrorAction Stop
             }
         } catch {
-            throw "Loose-content root binding #289 (in the works): manifest encoder returned an invalid value."
+            throw "Loose-content root binding: manifest encoder returned an invalid value."
         }
         if ($null -eq $looseRoots) {
-            throw "Loose-content root binding #289 (in the works): manifest encoder returned no value."
+            throw "Loose-content root binding: manifest encoder returned no value."
         }
         $env:SR_LOOSE_CONTENT_ROOTS = [string]$looseRoots
     }

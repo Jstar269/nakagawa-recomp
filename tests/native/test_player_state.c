@@ -1939,7 +1939,7 @@ int main(int argc, char **argv) {
         /* Another disc still gets the global profile: two mappings, one session. */
         GameRecord boxing;
         memset(&boxing, 0, sizeof(boxing));
-        snprintf(boxing.disc_id, sizeof(boxing.disc_id), "ULUS10041");
+        snprintf(boxing.disc_id, sizeof(boxing.disc_id), "TEST80001");
         assert(player_app_apply_input_profile_to_session(mapped, &boxing) == NK_OK);
         assert(strcmp(mapped->launch_session.config.input_profile_path,
                       global_profile) == 0);
@@ -2062,8 +2062,8 @@ int main(int argc, char **argv) {
         /* A title with missing package offers the BUILD PACKAGE button */
         stops->window_width = 1280;
         stops->game_count = 1;
-        seed_entry(&entry, "ULUS10041", "Street Supremacy");
-        snprintf(entry.title_id, sizeof(entry.title_id), "ulus-10041");
+        seed_entry(&entry, "TEST80001", "Synthetic Package Fixture");
+        snprintf(entry.title_id, sizeof(entry.title_id), "test-80001");
         stops->games[0] = entry;
         assert(player_app_focus_count(stops) == 4); /* build package + add + remove + mapping */
         stops->focus_index = 0;
@@ -3322,12 +3322,12 @@ int main(int argc, char **argv) {
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
                                    "Encrypted executable: supply decrypted modules.",
-                                   "C:/logs/build_ULUS10041.log");
+                                   "C:/logs/build_TEST80001.log");
         assert(bapp->active_view == VIEW_ERROR);
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
         assert(strstr(bapp->last_error.boundary_text, "supply decrypted modules") != NULL);
-        assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_ULUS10041.log") == 0);
+        assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_TEST80001.log") == 0);
 
         /* Cancellation transitions session */
         bapp->active_view = VIEW_BUILDING_PACKAGE;

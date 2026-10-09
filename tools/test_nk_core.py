@@ -1944,7 +1944,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
     @staticmethod
     def _record(**overrides) -> str:
         fields = {
-            '"disc_id"': '"ULES00123"',
+            '"disc_id"': '"TEST80002"',
             '"title_name"': '"Synthetic Title"',
             '"iso_path"': '"synthetic.iso"',
         }
@@ -1960,7 +1960,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         path = self.temp_dir / "library.json"
         lib = GameLibrary(storage_file=path)
         lib.add_or_update_game(LibraryGameRecord(
-            disc_id="ULES00123",
+            disc_id="TEST80002",
             title_name="Synthetic Title",
             iso_path="synthetic.iso",
             prepared_root="prepared",
@@ -1977,7 +1977,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         ))
         lib.save()
         loaded = GameLibrary.load(path)
-        record = loaded.get_game("ules00123")
+        record = loaded.get_game("test80002")
         self.assertIsNotNone(record)
         self.assertEqual(record.title_name, "Synthetic Title")
         self.assertEqual(record.play_count, 9)
@@ -1986,14 +1986,14 @@ class BoundedLibraryJsonTests(unittest.TestCase):
 
     def test_library_exactly_at_byte_limit_is_accepted(self) -> None:
         limit = package_cache.MAX_CACHE_JSON_BYTES
-        prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "ULES00123", "settings_override": {"pad": "'
+        prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "TEST80002", "settings_override": {"pad": "'
         suffix = '"}}]}'
         text = prefix + "A" * (limit - len(prefix) - len(suffix)) + suffix
         self.assertEqual(len(text.encode("utf-8")), limit)
         path = self._write("at_limit.json", text)
         loaded = GameLibrary.load(path)
         self.assertEqual(loaded.count(), 1)
-        self.assertIsNotNone(loaded.get_game("ules00123"))
+        self.assertIsNotNone(loaded.get_game("test80002"))
 
     def test_large_fully_populated_library_round_trip(self) -> None:
         path = self.temp_dir / "large_library.json"
@@ -2039,7 +2039,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
 
     def test_library_one_byte_over_limit_is_rejected(self) -> None:
         limit = package_cache.MAX_CACHE_JSON_BYTES
-        prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "ULES00123", "settings_override": {"pad": "'
+        prefix = '{"schema_version": 1, "updated_at": 1.5, "games": [{"disc_id": "TEST80002", "settings_override": {"pad": "'
         suffix = '"}}]}'
         text = prefix + "A" * (limit + 1 - len(prefix) - len(suffix)) + suffix
         self.assertEqual(len(text.encode("utf-8")), limit + 1)
@@ -2050,7 +2050,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
     def test_library_excessive_nesting_is_rejected(self) -> None:
         depth = 100_000  # stays under the byte ceiling so the depth gate fires
         text = (
-            '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "n": '
+            '{"schema_version": 1, "games": [{"disc_id": "TEST80002", "n": '
             + '{"n":' * depth + "1" + "}" * depth + "}]}")
         path = self._write("deep.json", text)
         with self.assertRaisesRegex(ValueError, "nesting exceeds 32"):
@@ -2119,7 +2119,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
     def test_library_unknown_record_and_root_fields_are_rejected(self) -> None:
         path = self._write(
             "unknown_record.json",
-            '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "wat": 1}]}',
+            '{"schema_version": 1, "games": [{"disc_id": "TEST80002", "wat": 1}]}',
         )
         with self.assertRaisesRegex(ValueError, "unsupported fields: wat"):
             GameLibrary.load(path)
@@ -2134,7 +2134,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         path = self._write(
             "repeat.json", '{"schema_version": 1, "games": [' + record + ", " + record + "]}"
         )
-        with self.assertRaisesRegex(ValueError, "repeats disc_id ULES00123"):
+        with self.assertRaisesRegex(ValueError, "repeats disc_id TEST80002"):
             GameLibrary.load(path)
 
     def test_library_missing_games_field_and_bad_schema_are_rejected(self) -> None:
@@ -2164,7 +2164,7 @@ class BoundedLibraryJsonTests(unittest.TestCase):
                 "unsupported fields",
             ),
             "unknown_record": (
-                '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "%s": 1}]}' % bulk,
+                '{"schema_version": 1, "games": [{"disc_id": "TEST80002", "%s": 1}]}' % bulk,
                 "unsupported fields",
             ),
             "schema_echo": (
@@ -2201,22 +2201,22 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         user_root = self.temp_dir / "user"
         user_root.mkdir()
         limit = package_cache.MAX_CACHE_JSON_BYTES
-        prefix = '{"schema_version": 1, "games": [{"disc_id": "ULES00123", "pad": "'
+        prefix = '{"schema_version": 1, "games": [{"disc_id": "TEST80002", "pad": "'
         suffix = '"}]}'
         (user_root / "library.json").write_text(
             prefix + "A" * (limit + 1 - len(prefix) - len(suffix)) + suffix, encoding="utf-8"
         )
         with self.assertRaisesRegex(nk_cli.PackageBuildError, "not valid bounded JSON"):
-            nk_cli._load_library_entry(user_root, "ULES00123")
+            nk_cli._load_library_entry(user_root, "TEST80002")
 
         valid = (
-            '{"schema_version": 1, "games": [{"disc_id": "ULES00123", '
-            '"title_id": "NPUG80318", "iso_path": "synthetic.iso", '
+            '{"schema_version": 1, "games": [{"disc_id": "TEST80002", '
+            '"title_id": "TEST80005", "iso_path": "synthetic.iso", '
             '"selected_executable": "BOOT.BIN", "is_experimental": false}]}'
         )
         (user_root / "library.json").write_text(valid, encoding="utf-8")
-        entry = nk_cli._load_library_entry(user_root, "ULES00123")
-        self.assertEqual(entry["title_id"], "NPUG80318")
+        entry = nk_cli._load_library_entry(user_root, "TEST80002")
+        self.assertEqual(entry["title_id"], "TEST80005")
         self.assertEqual(entry["iso_path"], "synthetic.iso")
 
     def _cli_library(self, count: int) -> Path:
