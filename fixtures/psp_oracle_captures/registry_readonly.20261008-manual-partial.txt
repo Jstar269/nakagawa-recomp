@@ -1,0 +1,2 @@
+NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 source_commit=5497dece74819ef6789fcfede9305f7c6041eaa1 fixture=nakagawa-psp-oracle-v1
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-REGISTRY-001 case_id=registry-open status=PASS result=0x00000000 out0=0x00000001 out1=0x00000001
