@@ -587,6 +587,60 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
     return app->showcase_count > 0;
 }
 
+size_t player_bitmap_glyph(const char *in, char out[3]) {
+    unsigned char lead = (unsigned char)in[0];
+    if (lead < 0x80) {
+        if (lead >= 0x20 && lead < 0x7F) {
+            out[0] = (char)lead;
+        } else if (lead == '\t' || lead == '\n' || lead == '\r') {
+            out[0] = ' ';
+        } else {
+            out[0] = '?';
+        }
+        out[1] = '\0';
+        return 1;
+    }
+    size_t seq = (lead >= 0xC2 && lead <= 0xDF) ? 2u
+               : (lead >= 0xE0 && lead <= 0xEF) ? 3u
+               : (lead >= 0xF0 && lead <= 0xF4) ? 4u
+               : 0u;
+    /* nk_json_validate_utf8 reads only the seq bytes given, so a NUL inside the
+     * sequence (or a missing continuation byte) fails here without overrun. */
+    if (seq == 0 || !nk_json_validate_utf8((const uint8_t *)in, seq)) {
+        out[0] = '?';
+        out[1] = '\0';
+        return 1;
+    }
+    if (lead == 0xE2 && (unsigned char)in[1] == 0x84 && (unsigned char)in[2] == 0xA2) {
+        out[0] = 'T';
+        out[1] = 'M';
+        out[2] = '\0';
+        return 3;
+    }
+    out[0] = '?';
+    out[1] = '\0';
+    return seq;
+}
+
+size_t player_text_for_bitmap_font(const char *in, char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    if (!in) return 0;
+    size_t used = 0;
+    const char *p = in;
+    while (*p) {
+        char glyph[3];
+        size_t advance = player_bitmap_glyph(p, glyph);
+        size_t glyph_len = strlen(glyph);
+        if (used + glyph_len + 1 > out_size) break;
+        memcpy(out + used, glyph, glyph_len);
+        used += glyph_len;
+        p += advance;
+    }
+    out[used] = '\0';
+    return used;
+}
+
 bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
     if (!app || !game || game->disc_id[0] == '\0') return false;
 

@@ -352,6 +352,19 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game);
  * prepared root and last-played time so re-adding never discards a completed
  * extraction. Returns true when anything was carried over. */
 bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming);
+
+/* Display-only text rules. They change what is drawn, never a stored value.
+ *
+ * player_bitmap_glyph: one display unit of UTF-8 text for the bitmap font
+ * (SDL_RenderDebugText, ASCII only). Writes its replacement to out (NUL-terminated,
+ * at most two bytes) and returns the input bytes it covers (at least one). The
+ * trademark sign becomes "TM"; any other non-ASCII code point, and any malformed
+ * byte, becomes "?"; tabs and line breaks become spaces.
+ * player_text_for_bitmap_font: applies that to a whole string. The output never
+ * exceeds out_size and is cut at a whole glyph; returns its length. */
+size_t player_bitmap_glyph(const char *in, char out[3]);
+size_t player_text_for_bitmap_font(const char *in, char *out, size_t out_size);
+
 bool player_app_remove_game(PlayerApp *app, int game_index);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);

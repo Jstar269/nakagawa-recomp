@@ -1500,10 +1500,46 @@ static void test_source_iso_member_path_validation(void) {
 }
 #endif
 
+/* The bitmap fallback (SDL_RenderDebugText) draws ASCII only. Every UTF-8 text
+ * it draws goes through player_text_for_bitmap_font, so a title that the system
+ * font can draw (the trademark sign) is readable there too, and nothing else
+ * reaches the debug font as raw bytes. */
+static void test_bitmap_font_text_fallback(void) {
+    char out[64];
+    size_t n = player_text_for_bitmap_font("Fixture\xE2\x84\xA2", out, sizeof(out));
+    assert(strcmp(out, "FixtureTM") == 0);
+    assert(n == strlen(out));
+
+    player_text_for_bitmap_font("caf\xC3\xA9", out, sizeof(out));
+    assert(strcmp(out, "caf?") == 0);
+
+    /* A truncated sequence and a stray continuation byte each become one '?'. */
+    player_text_for_bitmap_font("a\xE2\x84", out, sizeof(out));
+    assert(strcmp(out, "a??") == 0);
+    player_text_for_bitmap_font("\x80" "b", out, sizeof(out));
+    assert(strcmp(out, "?b") == 0);
+
+    player_text_for_bitmap_font("tab\there\x7f", out, sizeof(out));
+    assert(strcmp(out, "tab here?") == 0);
+
+    /* Output never overruns its buffer; the cut is at a whole glyph. */
+    char small[4];
+    n = player_text_for_bitmap_font("abcdef", small, sizeof(small));
+    assert(strcmp(small, "abc") == 0);
+    assert(n == 3);
+    char tiny[3];
+    n = player_text_for_bitmap_font("\xE2\x84\xA2" "x", tiny, sizeof(tiny));
+    assert(strcmp(tiny, "TM") == 0);
+    assert(n == 2);
+
+    printf("[PLAYER_STATE_TEST] bitmap font text fallback PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
     }
+    test_bitmap_font_text_fallback();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);

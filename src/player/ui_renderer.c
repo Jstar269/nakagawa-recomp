@@ -1100,10 +1100,17 @@ static bool ui_font_draw_cached(SDL_Renderer *ren, float x, float y, const char 
 static void draw_text(SDL_Renderer *ren, float x, float y, const char *str, float scale, SDL_Color c) {
     if (!str || !*str) return;
     if (ui_font_draw_cached(ren, x, y, str, scale, c)) return;
+    /* The bitmap fallback draws ASCII only. The rewrite never grows its input,
+     * so a buffer of strlen + 1 always holds the result. */
+    size_t len = strlen(str);
+    char *shown = (char *)malloc(len + 1);
+    if (!shown) return;
+    player_text_for_bitmap_font(str, shown, len + 1);
     set_draw_color(ren, c);
     SDL_SetRenderScale(ren, scale, scale);
-    SDL_RenderDebugText(ren, x / scale, y / scale, str);
+    SDL_RenderDebugText(ren, x / scale, y / scale, shown);
     SDL_SetRenderScale(ren, 1.0f, 1.0f);
+    free(shown);
 }
 
 /* Width of a string at scale 1: the single metric every layout helper
