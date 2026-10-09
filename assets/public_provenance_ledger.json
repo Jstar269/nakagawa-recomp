@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2fdefeb5f64469587608b0f77d236d1d515adb887f9f50d97de9502d9855d6ad"
+      "sha256": "bd422b4263260c3e05491f1eb9c256ee33d1935d954c4cc21f3607fc840c9a42"
     },
     {
       "path": "NOTICE.md",
@@ -7522,7 +7522,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d62eb6f96be864d1c80ea02cdc5670246c3079d1e43f0c346f806e17ec1da442"
+      "sha256": "8025a74ab870dbc2b953282d870bae5ca92c0532cba7cb1d9d591dc08e6ffd96"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -9168,7 +9168,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "14392ba720f87883e7f9f7361d735756cf001564879339bff174fce7eb5e8eed"
+      "sha256": "a43a087c1cbcb948541caeec085145604086c63802077a2cc5a2dd74b7a4eedc"
     },
     {
       "path": "tools/test_savedata_security.py",
